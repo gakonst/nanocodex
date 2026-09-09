@@ -605,6 +605,8 @@ function compactManagedEnvelopeRetention(envelopes: ManagedEvent[], seen: Set<st
     }
 
     const removable = [...groups.values()]
+      // Incomplete turns need every chunk when history is reprojected.
+      .filter((group) => group.complete)
       .flatMap((group) => group.envelopes.filter((envelope) => !group.mandatory.has(envelope)))
       .sort((left, right) => compareManagedCursor(left.cursor, right.cursor))[0];
     if (!removable) return;
@@ -705,6 +707,7 @@ export function terminalEvent(
           seq: sequence,
           payload: {
             ...event.payload,
+            ...(envelope.data.agent_id == null ? {} : { managed_agent_id: envelope.data.agent_id }),
             ...(typeof envelope.cursor === "string" ? { managed_event_cursor: envelope.cursor } : {}),
             managed_event_created_at: envelope.createdAt,
             ...(envelope.turnId ? { turn_id: envelope.turnId } : {}),
@@ -832,13 +835,14 @@ function rawAssistantMessageTurns(
 ): ReadonlySet<string> {
   const turns = new Set<string>();
   for (const candidate of history) {
-    if (!candidate.turnId || candidate.data.type !== "event") continue;
+    if (!candidate.turnId || candidate.data.type !== "event" || candidate.data.agent_id != null) continue;
     const event = candidate.data.event;
     if (
       event
       && typeof event === "object"
       && !Array.isArray(event)
       && (event as { type?: unknown }).type === "assistant.message"
+      && ((event as AgentEvent).payload?.phase == null || (event as AgentEvent).payload.phase === "final_answer")
     ) {
       turns.add(candidate.turnId);
     }

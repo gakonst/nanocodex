@@ -1094,8 +1094,9 @@ final class InboxModel: ObservableObject {
         }
     }
     private func trimOverview(_ id: String) {
-        while (overviewEvents[id]?.count ?? 0) > 1,
-              (overviewEvents[id]?.count ?? 0) > 512 || (overviewByteCounts[id] ?? 0) > 8 * 1024 * 1024 {
+        let removed = TranscriptRetention.removablePrefixCount(byteCounts: overviewBytes[id] ?? [],
+            retainedBytes: overviewByteCounts[id] ?? 0, byteLimit: 8 * 1024 * 1024)
+        for _ in 0..<removed {
             overviewEvents[id]?.removeFirst()
             overviewByteCounts[id, default: 0] -= overviewBytes[id]?.removeFirst() ?? 0
         }
@@ -1122,7 +1123,10 @@ final class InboxModel: ObservableObject {
             let bytes = frame.payloadBytes
             eventBytes.append(bytes); retainedBytes += bytes
             // Token arrival never re-encodes the complete transcript on the main actor.
-            while events.count > 1 && (events.count > 512 || retainedBytes > 16 * 1024 * 1024) {
+            // Bound bytes, not token count: a live response can contain thousands of deltas.
+            let removed = TranscriptRetention.removablePrefixCount(byteCounts: eventBytes,
+                retainedBytes: retainedBytes, byteLimit: 16 * 1024 * 1024)
+            for _ in 0..<removed {
                 events.removeFirst(); retainedBytes -= eventBytes.removeFirst(); hasOlder = true
             }
             olderBefore = events.first?.cursor

@@ -272,7 +272,9 @@ fixture to exercise multipart transfer. The phone UI journey
 conversation with a READY reply; it covers Files selection, preview, draft restore,
 agent checksum, keyboard dismissal, and original playback after reload.
 
-The live event working set is capped at 512 events / 16 MiB. Earlier history is
+The live event working set is bounded by payload size: 16 MiB in the focused
+conversation and 8 MiB in overview previews, always retaining the newest event.
+Token count does not truncate a live reply. Earlier history is
 loaded automatically as you scroll near the top, up to 2,048 events. Full history remains on the service.
 The transcript preserves manual scroll position; it does not force-scroll on
 every token.

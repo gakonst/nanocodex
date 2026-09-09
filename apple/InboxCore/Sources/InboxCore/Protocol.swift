@@ -178,7 +178,8 @@ public func transcript(_ events: [AgentEvent]) -> [TranscriptRow] {
         } else if envelope.type == "turn_completed" {
             let final = d["final_message"].string
             if !final.isEmpty {
-                if let last = rows.indices.last, rows[last].id.hasPrefix(turn + "::"), rows[last].role == "Agent" {
+                if let last = rows.lastIndex(where: { $0.id.hasPrefix(turn + "::") && $0.role == "Agent" && ($0.phase == "final_answer" || $0.phase == nil) }),
+                   last > (rows.lastIndex(where: { $0.id.hasPrefix(turn + ":") && $0.role == "You" }) ?? -1) {
                     rows[last].text = final; rows[last].phase = "final_answer"
                 } else if let index = rows.lastIndex(where: { $0.id.hasPrefix(turn + "::") && $0.role == "Agent" && $0.text == final }) {
                     rows[index].phase = "final_answer"
@@ -208,12 +209,12 @@ public func transcript(_ events: [AgentEvent]) -> [TranscriptRow] {
             let itemID = p["item_id"].string.isEmpty ? nil : p["item_id"].string
             switch type {
             case "assistant.delta", "reasoning.summary.delta":
-                if let last = rows.indices.last, rows[last].id.hasPrefix(prefix + ":"), rows[last].role == role, rows[last].running,
+                if let last = rows.lastIndex(where: { $0.id.hasPrefix(prefix + ":") && $0.role == role }), rows[last].running,
                    rows[last].phase == phase, rows[last].itemID == itemID {
                     rows[last].text += p["text"].string
                 } else { rows.append(.init(id: id, role: role, text: p["text"].string, running: true)) }
             case "assistant.message":
-                if let last = rows.indices.last, rows[last].id.hasPrefix(prefix + ":"), rows[last].role == "Agent", rows[last].running,
+                if let last = rows.lastIndex(where: { $0.id.hasPrefix(prefix + ":") && $0.role == "Agent" }), rows[last].running,
                    (phase == nil || rows[last].phase == phase), (itemID == nil || rows[last].itemID == itemID) {
                     if !p["text"].string.isEmpty { rows[last].text = p["text"].string }
                     rows[last].running = false

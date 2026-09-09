@@ -34,6 +34,41 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(ConversationItem.group([.init(id: "legacy", role: "Agent", text: "An untagged answer")]).first?.message?.text, "An untagged answer")
     }
 
+    func testStreamedAnswerSurvivesInterleavedEventsAndFinalization() throws {
+        var parser = SSEParser(), events: [AgentEvent] = []
+        func receive(_ cursor: Int, _ type: String, _ text: String, agent: String? = nil) throws {
+            var fields: [String: JSON] = ["event": .object(["type": .string(type), "payload": .object([
+                "text": .string(text), "phase": .string("final_answer"), "item_id": .string("answer")])])]
+            if let agent { fields["agent_id"] = .string(agent) }
+            let envelope = try event(String(cursor), "event", fields)
+            let data = try JSONEncoder().encode(envelope.data)
+            for line in ["id: \(cursor)", "data: " + String(decoding: data, as: UTF8.self)] { _ = try parser.append(line: line) }
+            events.append(try XCTUnwrap(parser.append(line: "")?.event))
+        }
+        func answer() throws -> TranscriptRow {
+            try XCTUnwrap(ConversationItem.group(transcript(events)).compactMap(\.message).first)
+        }
+        try receive(1, "assistant.delta", "Hello")
+        let identity = try answer().id
+        XCTAssertEqual(try answer().text, "Hello")
+        XCTAssertTrue(try answer().running)
+        try receive(2, "assistant.delta", "Helper", agent: "helper")
+        try receive(3, "assistant.delta", " world")
+        XCTAssertEqual(try answer().id, identity)
+        XCTAssertEqual(try answer().text, "Hello world")
+        let terminalOnly = events + [try event("40", "turn_completed", ["final_message": .string("Hello world!")])]
+        XCTAssertEqual(ConversationItem.group(transcript(terminalOnly)).compactMap(\.message).map(\.text), ["Hello world!"])
+        try receive(4, "assistant.delta", " update", agent: "helper")
+        try receive(5, "assistant.message", "Hello world!")
+        XCTAssertEqual(try answer().text, "Hello world!")
+        XCTAssertFalse(try answer().running)
+        try receive(6, "assistant.message", "Helper update", agent: "helper")
+        events.append(try event("7", "turn_completed", ["final_message": .string("Hello world!")]))
+        let answers = ConversationItem.group(transcript(events + events)).compactMap(\.message)
+        XCTAssertEqual(answers.map(\.text), ["Hello world!"])
+        XCTAssertEqual(answers.first?.id, identity)
+    }
+
     func event(_ cursor: String, _ type: String, _ fields: [String: JSON] = [:]) throws -> AgentEvent {
         try AgentEvent(.object(fields.merging(["cursor": .string(cursor), "type": .string(type), "turn_id": .string("t")]) { a, _ in a }))
     }

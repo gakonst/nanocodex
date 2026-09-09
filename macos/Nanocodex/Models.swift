@@ -432,7 +432,8 @@ private func projectTimeline(_ events: [ManagedEvent], toolOutputs: inout [Strin
         case "turn_completed":
             let final = d["final_message"].string
             if !final.isEmpty {
-                if let last = rows.indices.last, rows[last].turnId == turn, rows[last].kind == .assistant, rows[last].agent == nil {
+                if let last = rows.lastIndex(where: { $0.turnId == turn && $0.kind == .assistant && $0.agent == nil && ($0.phase == "final_answer" || $0.phase == nil) }),
+                   last > (rows.lastIndex(where: { $0.turnId == turn && $0.kind == .user }) ?? -1) {
                     rows[last].text = final
                     rows[last].phase = "final_answer"
                 } else if rows.last(where: { $0.turnId == turn && $0.kind == .assistant && $0.agent == nil })?.text != final {
@@ -458,12 +459,12 @@ private func projectTimeline(_ events: [ManagedEvent], toolOutputs: inout [Strin
             switch type {
             case "assistant.delta", "reasoning.summary.delta":
                 let kind: MessageEntry.Kind = type == "assistant.delta" ? .assistant : .reasoning
-                if let last = rows.indices.last, rows[last].turnId == turn, rows[last].kind == kind, rows[last].agent == agent, rows[last].streaming,
+                if let last = rows.lastIndex(where: { $0.turnId == turn && $0.kind == kind && $0.agent == agent }), rows[last].streaming,
                    rows[last].phase == phase, rows[last].itemID == itemID {
                     rows[last].text += p["text"].string
                 } else { rows.append(.init(id: id, turnId: turn, kind: kind, text: p["text"].string, streaming: true, agent: agent, phase: phase, itemID: itemID)) }
             case "assistant.message":
-                if let last = rows.indices.last, rows[last].turnId == turn, rows[last].kind == .assistant, rows[last].agent == agent, rows[last].streaming,
+                if let last = rows.lastIndex(where: { $0.turnId == turn && $0.kind == .assistant && $0.agent == agent }), rows[last].streaming,
                    (phase == nil || rows[last].phase == phase), (itemID == nil || rows[last].itemID == itemID) {
                     if !p["text"].string.isEmpty { rows[last].text = p["text"].string }
                     rows[last].streaming = false

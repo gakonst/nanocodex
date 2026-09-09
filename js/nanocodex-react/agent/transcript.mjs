@@ -118,7 +118,8 @@ export function turnFinished(state, error, finalMessage, promptId, historyEntryI
     }
     for (let index = next.entries.length - 1; index > userIndex; index -= 1) {
       const entry = next.entries[index];
-      if (entry?.kind === "assistant" && (turnId === undefined || entry.turnId === turnId)) {
+      if (entry?.kind === "assistant" && entry.responseIdentity?.agentId === undefined
+        && entry.responseIdentity?.phase !== "commentary" && (turnId === undefined || entry.turnId === turnId)) {
         assistantIndex = index;
         break;
       }
@@ -127,7 +128,7 @@ export function turnFinished(state, error, finalMessage, promptId, historyEntryI
       const assistant = next.entries[assistantIndex];
       if (assistant.text !== finalMessage || assistant.streaming) {
         const entries = next.entries.slice();
-        entries[assistantIndex] = { ...assistant, text: finalMessage, streaming: false };
+        entries[assistantIndex] = { ...assistant, text: finalMessage, streaming: false, responseComplete: true };
         next = { ...next, entries };
       }
     } else {
@@ -155,6 +156,7 @@ export function applyAgentEvents(state, events) {
   let bufferedKind;
   let bufferedId = "";
   let bufferedTurnId;
+  let bufferedIdentity;
   let bufferedText = [];
   const mutableEntries = () => {
     if (!ownsEntries) {
@@ -163,23 +165,31 @@ export function applyAgentEvents(state, events) {
     }
     return next.entries;
   };
-  const sealTail = () => {
-    const tail = next.entries.at(-1);
-    if (tail && (tail.kind === "assistant" || tail.kind === "reasoning") && tail.streaming) {
-      sealStreamingTail(mutableEntries());
+  const sealTail = (turnId) => {
+    for (let index = 0; index < next.entries.length; index += 1) {
+      const entry = next.entries[index];
+      if ((entry.kind === "assistant" || entry.kind === "reasoning") && entry.streaming
+        && (turnId === undefined || entry.turnId === turnId)) {
+        mutableEntries()[index] = { ...entry, streaming: false };
+      }
     }
   };
   const flushDeltas = () => {
     if (!bufferedKind || bufferedText.length === 0) return;
     const text = bufferedText.join("");
     const entries = mutableEntries();
-    const tail = entries.at(-1);
-    if (tail?.kind === bufferedKind && tail.streaming) {
-      entries[entries.length - 1] = { ...tail, text: tail.text + text };
+    const index = entries.findLastIndex(entry => entry.kind === bufferedKind && entry.turnId === bufferedTurnId
+      && sameResponse(entry.responseIdentity, bufferedIdentity));
+    const tail = entries[index];
+    if (tail?.responseComplete && (bufferedIdentity.itemId !== undefined
+      || bufferedIdentity.phase !== undefined || bufferedIdentity.modelCallIndex !== undefined)) {
+      // Canonical item text wins over a late/replayed chunk.
+    } else if (tail && !tail.responseComplete) {
+      entries[index] = { ...tail, text: tail.text + text, streaming: true };
     } else {
       sealStreamingTail(entries);
       entries.push({
-        id: bufferedId, kind: bufferedKind, text, streaming: true,
+        id: bufferedId, kind: bufferedKind, text, streaming: true, responseIdentity: bufferedIdentity,
         ...(bufferedTurnId === undefined ? {} : { turnId: bufferedTurnId }),
       });
     }
@@ -187,6 +197,7 @@ export function applyAgentEvents(state, events) {
     bufferedKind = undefined;
     bufferedId = "";
     bufferedTurnId = undefined;
+    bufferedIdentity = undefined;
     bufferedText = [];
   };
 
@@ -194,10 +205,14 @@ export function applyAgentEvents(state, events) {
     const payload = event.payload ?? {};
     if (event.type === "assistant.delta" || event.type === "reasoning.summary.delta") {
       const kind = event.type === "assistant.delta" ? "assistant" : "reasoning";
-      if (bufferedKind && bufferedKind !== kind) flushDeltas();
+      const turnId = payloadString(payload, "turn_id") ?? next.activeTurnId;
+      const identity = responseIdentity(payload);
+      if (bufferedKind && (bufferedKind !== kind || bufferedTurnId !== turnId
+        || !sameResponse(bufferedIdentity, identity))) flushDeltas();
+      bufferedIdentity = identity;
       bufferedKind = kind;
       bufferedId ||= `${kind}-${eventIdentity(event)}`;
-      bufferedTurnId ??= payloadString(payload, "turn_id") ?? next.activeTurnId;
+      bufferedTurnId = turnId;
       bufferedText.push(payloadString(payload, "text") ?? "");
       continue;
     }
@@ -223,6 +238,7 @@ export function applyAgentEvents(state, events) {
         break;
       }
       case "run.started": {
+        if (payload.managed_agent_id != null) break;
         const eventTurnId = payloadString(payload, "turn_id");
         const promptIndex = eventTurnId === undefined
           ? (next.queuedPrompts.length > 0 ? 0 : -1)
@@ -269,13 +285,19 @@ export function applyAgentEvents(state, events) {
       case "assistant.message": {
         const text = payloadString(payload, "text") ?? "";
         const turnId = payloadString(payload, "turn_id") ?? next.activeTurnId;
-        const tail = next.entries.at(-1);
-        if (tail?.kind === "assistant" && tail.turnId === turnId) {
+        const identity = responseIdentity(payload);
+        const index = next.entries.findLastIndex(entry => entry.kind === "assistant" && entry.turnId === turnId
+          && (sameResponse(entry.responseIdentity, identity)
+            || (identity.itemId === undefined && identity.phase === undefined
+              && entry.responseIdentity?.agentId === identity.agentId
+              && entry.responseIdentity?.phase !== "commentary")));
+        const tail = next.entries[index];
+        if (tail) {
           const entries = mutableEntries();
-          entries[entries.length - 1] = { ...tail, text, streaming: false };
+          entries[index] = { ...tail, text, streaming: false, responseComplete: true };
         } else if (text) {
           mutableEntries().push({
-            id: `assistant-${eventIdentity(event)}`, kind: "assistant", text, streaming: false,
+            id: `assistant-${eventIdentity(event)}`, kind: "assistant", text, streaming: false, responseComplete: true, responseIdentity: identity,
             ...(turnId === undefined ? {} : { turnId }),
           });
         }
@@ -326,10 +348,13 @@ export function applyAgentEvents(state, events) {
         break;
       }
       case "model.call.completed": next.modelCalls += 1; break;
-      case "run.error": next.pendingRunError = payloadString(payload, "message"); break;
+      case "run.error":
+        if (payload.managed_agent_id == null) next.pendingRunError = payloadString(payload, "message");
+        break;
       case "run.completed": {
-        sealTail();
+        if (payload.managed_agent_id != null) break;
         const turnId = payloadString(payload, "turn_id") ?? next.activeTurnId;
+        sealTail(turnId);
         if (next.pendingRunError && !hasProjectedError(next.entries, next.pendingRunError, turnId)) {
           next = appendError(next, next.pendingRunError, turnId);
           ownsEntries = true;
@@ -342,9 +367,10 @@ export function applyAgentEvents(state, events) {
         break;
       }
       case "run.failed": {
-        sealTail();
+        if (payload.managed_agent_id != null) break;
         const cancelled = payloadString(payload, "status") === "cancelled";
         const turnId = payloadString(payload, "turn_id") ?? next.activeTurnId;
+        sealTail(turnId);
         if (!cancelled && next.pendingRunError
           && !hasProjectedError(next.entries, next.pendingRunError, turnId)) {
           next = appendError(next, next.pendingRunError, turnId);
@@ -787,4 +813,12 @@ function formatValue(value) {
 
 function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// Provider items and helper agents are independent streams within one managed turn.
+function responseIdentity(payload) {
+  return { agentId: payload.managed_agent_id ?? undefined, itemId: payload.item_id ?? undefined, phase: payload.phase ?? undefined, modelCallIndex: payload.model_call_index ?? undefined };
+}
+function sameResponse(left, right) {
+  return ["agentId", "itemId", "phase", "modelCallIndex"].every(key => left?.[key] === right?.[key]);
 }

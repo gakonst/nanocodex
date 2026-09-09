@@ -1053,3 +1053,36 @@ test("voice projection hides lifecycle and incomplete envelopes and retains inpu
     assert.equal(project(text)[0].text, text);
   }
 });
+
+test("transcript keeps partial and final assistant text visible with tool activity hidden", async () => {
+  const { applyAgentEvents, initialState } = await import("../../nanocodex-react/agent/transcript.mjs");
+  let state = initialState();
+  let renderer;
+  const props = { canLoadOlder: false, composer: null, inactiveMessage: "", isLoadingOlder: false, mode: "full", showToolCalls: false, status: "running", onLoadOlder: async () => false };
+  const project = async (seq, type, text) => {
+    state = applyAgentEvents(state, [{ protocol_version: 1, request_id: "session", seq, type, payload: { text, turn_id: "turn" } }]);
+    await act(async () => {
+      const element = React.createElement(TerminalTranscriptSurface, { ...props, entries: state.entries });
+      if (renderer) renderer.update(element);
+      else renderer = TestRenderer.create(element, { createNodeMock: () => ({ clientHeight: 300, scrollHeight: 600, scrollTop: 0 }) });
+    });
+  };
+  try {
+    await project(1, "assistant.delta", "Partial");
+    assert.match(JSON.stringify(renderer.toJSON()), /Partial/);
+    assert.equal(renderer.root.findAllByType("details").length, 0);
+    assert.equal(renderer.root.findAllByProps({ className: "agent-terminal-markdown is-assistant" }).length, 1);
+    assert.equal(state.entries[0].streaming, true);
+    await project(2, "assistant.delta", " answer");
+    assert.match(JSON.stringify(renderer.toJSON()), /Partial answer/);
+    await project(3, "assistant.message", "Completed answer");
+    const rendered = JSON.stringify(renderer.toJSON());
+    assert.match(rendered, /Completed answer/);
+    assert.doesNotMatch(rendered, /Partial answer/);
+    assert.equal(renderer.root.findAllByProps({ className: "agent-terminal-markdown is-assistant" }).length, 1);
+    assert.equal(state.entries.length, 1);
+    assert.equal(state.entries[0].streaming, false);
+  } finally {
+    if (renderer) await act(async () => renderer.unmount());
+  }
+});

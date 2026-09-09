@@ -691,3 +691,123 @@ function fakeAnimationFrames() {
 async function flushFrames(frames) {
   await act(async () => { frames.flush(); });
 }
+
+
+test("live assistant chunks publish before completion and reconcile without a duplicate", async () => {
+  const frames = fakeAnimationFrames();
+  const source = fakeAgent();
+  let controller;
+  function Consumer() {
+    controller = useAgentController(source.agent);
+    return createElement("output", null, controller.entries.filter(e => e.kind === "assistant").map(e => e.text).join("|"));
+  }
+  let root;
+  try {
+    await act(async () => { root = create(createElement(Consumer)); });
+    await flushFrames(frames);
+    await act(async () => { await controller.submit("Hello"); });
+    await act(async () => {
+      source.emit(event(1, "run.started", { turn_id: "turn-1" }));
+      source.emit(event(2, "assistant.delta", { text: "Hell", turn_id: "turn-1" }));
+    });
+    await flushFrames(frames);
+    assert.equal(root.toJSON().children[0], "Hell");
+    assert.equal(controller.running, true);
+    assert.equal(controller.entries.at(-1).streaming, true);
+    const id = controller.entries.at(-1).id;
+    await act(async () => source.emit(event(3, "assistant.delta", { text: "o", turn_id: "turn-1" })));
+    await flushFrames(frames);
+    assert.equal(root.toJSON().children[0], "Hello");
+    assert.equal(controller.entries.at(-1).id, id);
+    await act(async () => {
+      source.emit(event(4, "assistant.message", { text: "Hello!", turn_id: "turn-1" }));
+      source.emit(event(5, "run.completed", { turn_id: "turn-1" }));
+      source.turns[0].complete("Hello!");
+    });
+    await flushFrames(frames);
+    assert.equal(root.toJSON().children[0], "Hello!");
+    assert.equal(controller.entries.filter(e => e.kind === "assistant").length, 1);
+    assert.equal(controller.entries.at(-1).id, id);
+    assert.equal(controller.entries.at(-1).streaming, false);
+    assert.equal(controller.running, false);
+  } finally {
+    if (root) await act(async () => root.unmount());
+    frames.restore();
+  }
+});
+
+test("delta reduction keeps adjacent managed turns separate in live and history batches", async () => {
+  const { applyAgentEvents, initialState } = await import("../agent/transcript.mjs");
+  const events = [
+    event(1, "assistant.delta", { text: "First", turn_id: "one" }),
+    event(2, "assistant.delta", { text: "Second", turn_id: "two" }),
+    event(3, "assistant.message", { text: "Second!", turn_id: "two" }),
+  ];
+  for (const state of [applyAgentEvents(initialState(), events), events.reduce((s, e) => applyAgentEvents(s, [e]), initialState())]) {
+    assert.deepEqual(state.entries.map(({ text, turnId, streaming }) => ({ text, turnId, streaming })), [
+      { text: "First", turnId: "one", streaming: false },
+      { text: "Second!", turnId: "two", streaming: false },
+    ]);
+  }
+});
+
+test("interleaved helper and response items reconcile independently by agent, phase, and model call", async () => {
+  const { applyAgentEvents, initialState, turnFinished } = await import("../agent/transcript.mjs");
+  let state = initialState();
+  let seq = 0;
+  const push = (type, text, identity = {}) => {
+    state = applyAgentEvents(state, [event(++seq, type, { turn_id: "turn", text, ...identity })]);
+  };
+  const commentary = { item_id: "comment", phase: "commentary", model_call_index: 0 };
+  const final = { item_id: "answer", phase: "final_answer", model_call_index: 1 };
+  const helper = { ...final, managed_agent_id: 1 };
+  push("assistant.delta", "Working", commentary);
+  push("assistant.message", "Working now", commentary);
+  push("assistant.delta", "Root", final);
+  push("assistant.delta", "Helper", helper);
+  push("reasoning.summary.delta", "Checking", { item_id: "reason" });
+  push("tool.call", undefined, { call_id: "tool", tool: "exec_command", arguments: { cmd: "pwd" } });
+  push("assistant.delta", " answer", final);
+  push("assistant.message", "Helper done", helper);
+  push("assistant.message", "Root answer!", final);
+  assert.deepEqual(state.entries.filter(e => e.kind === "assistant").map(e => e.text), ["Working now", "Root answer!", "Helper done"]);
+  assert.ok(state.entries.filter(e => e.kind === "assistant").every(e => !e.streaming));
+  state = turnFinished(state, undefined, "Authoritative root", undefined, "managed-user-turn");
+  assert.deepEqual(state.entries.filter(e => e.kind === "assistant").map(e => e.text), ["Working now", "Authoritative root", "Helper done"]);
+});
+
+
+test("late chunks cannot reopen canonical items and child lifecycle cannot end the root run", async () => {
+  const { applyAgentEvents, initialState } = await import("../agent/transcript.mjs");
+  const item = { turn_id: "turn", item_id: "answer", phase: "final_answer", model_call_index: 0 };
+  let state = applyAgentEvents(initialState(), [
+    event(1, "run.started", { turn_id: "turn" }),
+    event(2, "assistant.delta", { ...item, text: "Draft" }),
+    event(3, "assistant.message", { ...item, text: "Final" }),
+  ]);
+  state = applyAgentEvents(state, [
+    event(4, "assistant.delta", { ...item, text: " stale" }),
+    event(5, "run.started", { turn_id: "turn", managed_agent_id: 1 }),
+    event(6, "run.error", { turn_id: "turn", managed_agent_id: 1, message: "helper error" }),
+    event(7, "run.failed", { turn_id: "turn", managed_agent_id: 1 }),
+    event(8, "run.completed", { turn_id: "turn", managed_agent_id: 1 }),
+  ]);
+  assert.equal(state.running, true);
+  assert.equal(state.pendingRunError, undefined);
+  assert.equal(state.entries.length, 1);
+  assert.equal(state.entries[0].text, "Final");
+  assert.equal(state.entries[0].streaming, false);
+  state = applyAgentEvents(state, [event(9, "run.completed", { turn_id: "turn" })]);
+  assert.equal(state.running, false);
+});
+
+
+test("null provider identity fields reconcile with omitted final fields", async () => {
+  const { applyAgentEvents, initialState } = await import("../agent/transcript.mjs");
+  const state = applyAgentEvents(initialState(), [
+    event(1, "assistant.delta", { turn_id: "turn", text: "Hell", item_id: null, phase: null }),
+    event(2, "assistant.delta", { turn_id: "turn", text: "o" }),
+    event(3, "assistant.message", { turn_id: "turn", text: "Hello!", item_id: null, phase: null }),
+  ]);
+  assert.deepEqual(state.entries.map(({ text, streaming }) => ({ text, streaming })), [{ text: "Hello!", streaming: false }]);
+});
