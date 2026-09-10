@@ -37,7 +37,16 @@ COPY --from=waymote /src/waymote/zig-out/bin/waymote-streamd /src/waymote/zig-ou
 COPY scripts/bundle-hand-desktop.sh /tmp/bundle-hand-desktop.sh
 RUN sh /tmp/bundle-hand-desktop.sh
 
+# Linux toolchains; Apple SDKs and xcodebuild remain on macOS CI.
+FROM golang:1.26.5-bookworm AS go-toolchain
+FROM swift:6.3.3-jammy AS swift-toolchain
+FROM node:24.19.0-bookworm-slim AS node-toolchain
+RUN npm install --global pnpm@11.25.0
+
 FROM docker.io/cloudflare/sandbox:0.12.4
+COPY --from=swift-toolchain /usr /opt/swift/usr
+COPY --from=node-toolchain /usr/local /opt/node
+COPY --from=go-toolchain /usr/local/go /usr/local/go
 
 COPY --from=ghcr.io/astral-sh/uv:0.8.11 /uv /uvx /usr/local/bin/
 
@@ -45,7 +54,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     RUSTUP_HOME=/opt/rustup \
     CARGO_HOME=/opt/cargo \
     CARGO_TARGET_DIR=/tmp/nanocodex-cargo-target \
-    PATH=/opt/cargo/bin:${PATH}
+    PATH=/opt/node/bin:/opt/cargo/bin:/opt/swift/usr/bin:/usr/local/go/bin:${PATH}
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -62,6 +71,18 @@ RUN apt-get update \
         less \
         fonts-dejavu-core \
         libssl-dev \
+        libcurl4-openssl-dev \
+        libedit2 \
+        libgcc-11-dev \
+        libpython3-dev \
+        libsqlite3-0 \
+        libstdc++-11-dev \
+        libxml2-dev \
+        libz3-dev \
+        python3-lldb-13 \
+        tzdata \
+        zlib1g-dev \
+        musl-tools \
         ninja-build \
         openssh-client \
         pkg-config \
@@ -94,13 +115,18 @@ RUN curl --fail --location --proto '=https' --tlsv1.2 \
 
 RUN ln -s /usr/bin/fdfind /usr/local/bin/fd \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-        | sh -s -- -y --profile minimal --default-toolchain stable \
+        | sh -s -- -y --profile minimal --default-toolchain 1.97.0 \
     && rustup component add clippy rustfmt \
-    && npm install --global pnpm@11.25.0 \
+    && rustup target add wasm32-unknown-unknown x86_64-unknown-linux-musl \
+    && cargo install --locked wasm-bindgen-cli --version 0.2.126 \
+    && rm -rf "$CARGO_TARGET_DIR" \
     && cargo --version \
     && rustc --version \
     && pnpm --version \
     && uv --version
+
+COPY scripts/check-dev-stack.sh /usr/local/bin/nanocodex-check-dev-stack
+RUN sh /usr/local/bin/nanocodex-check-dev-stack
 
 COPY --from=hand /out/nanocodex-remote /usr/local/bin/nanocodex-remote
 COPY --from=desktop /opt/nanocodex-desktop /opt/nanocodex-desktop

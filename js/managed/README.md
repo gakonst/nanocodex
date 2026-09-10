@@ -278,6 +278,29 @@ deployment order, secret handling, and required browser evidence in
 [`../../AGENTS.md`](../../AGENTS.md). The package scripts provide its focused
 typecheck, test, and Wrangler dry-run build when that boundary changes.
 
+### Sandbox development tools
+
+New Cloudflare Sandbox images include Swift 6.3.3 (Ubuntu 22.04), Go 1.26.5,
+Node 24.19.0, pnpm 11.25.0, and Rust 1.97.0 with rustfmt, Clippy, the
+`wasm32-unknown-unknown` and `x86_64-unknown-linux-musl` targets, and
+wasm-bindgen-cli 0.2.126. Rust, Go, Node, pnpm, and wasm-bindgen versions align
+with the repository CI configuration; Swift is a pinned Linux toolchain, while
+Apple CI uses the Swift bundled with its Xcode runner. Python, uv, C/C++ build
+tools, CMake, Ninja, and musl-tools are also available.
+
+Run `sh /usr/local/bin/nanocodex-check-dev-stack` in a sandbox to check the
+installed tools and compile small Swift/Foundation, Go, Rust, musl, and WASM
+programs without fetching package dependencies. The image build runs the same
+check and fails if a compiler or required runtime library is missing.
+
+Linux Swift supports portable Swift packages. AppKit, SwiftUI, iOS simulators,
+Apple SDKs, and `xcodebuild` still require a Mac Hand or Apple CI; installing
+Swift does not make all `apple/` packages Linux compatible.
+
+These tools become available after the managed container image is built and
+rolled out. Existing running sandboxes need recreation with the updated image.
+When changing tool versions in CI, update the corresponding image pins too.
+
 ### Original video attachments
 
 The authenticated `/v1/agents/:id/attachments/:uuid` route stores original
