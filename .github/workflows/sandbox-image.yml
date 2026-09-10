@@ -26,6 +26,18 @@ jobs:
       - name: Prepare Hand sources
         run: node js/managed/scripts/prepare-hand-image.mjs
       - name: Build sandbox and exercise development tools
-        run: docker buildx build --platform linux/amd64 --load --tag nanocodex-sandbox:dev --file js/managed/Dockerfile js/managed
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! docker buildx build --progress plain --platform linux/amd64 --load --tag nanocodex-sandbox:dev --file js/managed/Dockerfile js/managed 2>&1 | tee "$RUNNER_TEMP/sandbox-build.log"; then
+            python3 - <<'PY'
+          import os
+          from pathlib import Path
+          message = "\\n".join(Path(os.environ["RUNNER_TEMP"], "sandbox-build.log").read_text().splitlines()[-40:])
+          message = message.replace("%", "%25").replace("\\r", "%0D").replace("\\n", "%0A")
+          print(f"::error title=Sandbox image build failed::{message}")
+          PY
+            exit 1
+          fi
       - name: Verify tools in the final image
         run: docker run --rm --network none --entrypoint sh nanocodex-sandbox:dev /usr/local/bin/nanocodex-check-dev-stack
