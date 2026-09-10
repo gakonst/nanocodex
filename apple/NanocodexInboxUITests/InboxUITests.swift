@@ -48,6 +48,61 @@ final class InboxUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Loaded saved conversation."].exists)
         XCTAssertTrue(app.buttons["browser-tab:other"].isSelected)
     }
+    func testOverviewClosesAndReopensTabWithoutDeletingConversation() {
+        let app = startupFixture()
+        XCTAssertTrue(app.buttons["browser-tab:saved"].waitForExistence(timeout: 20))
+        app.buttons["tab-overview"].tap()
+        let overview = app.descendants(matching: .any)["conversation-overview"].firstMatch
+        XCTAssertTrue(overview.waitForExistence(timeout: 10))
+        let close = app.buttons["overview-close:saved"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        close.tap()
+        gone(close)
+        XCTAssertTrue(overview.exists, "Closing a card must keep the overview open")
+        app.buttons["Done"].tap()
+        XCTAssertFalse(app.buttons["browser-tab:saved"].exists)
+        XCTAssertTrue(app.buttons["browser-tab:other"].isSelected)
+        XCUIDevice.shared.press(.home)
+        app.terminate(); app.launch()
+        XCTAssertTrue(app.buttons["browser-tab:other"].waitForExistence(timeout: 20))
+        XCTAssertFalse(app.buttons["browser-tab:saved"].exists, "Closed tabs must stay closed after relaunch")
+        app.buttons["tab-overview"].tap()
+        app.buttons["overview-more"].tap()
+        app.buttons["Closed tabs"].tap()
+        let saved = app.buttons["overview-card:saved"]
+        XCTAssertTrue(saved.waitForExistence(timeout: 10))
+        saved.tap()
+        XCTAssertTrue(app.buttons["browser-tab:saved"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["browser-tab:saved"].isSelected)
+        XCTAssertTrue(app.staticTexts["Loaded saved conversation."].waitForExistence(timeout: 20))
+    }
+
+    func testOverviewSwipeClosesLastTabAndCanReopen() {
+        let app = startupFixture()
+        XCTAssertTrue(app.buttons["browser-tab:saved"].waitForExistence(timeout: 20))
+        app.buttons["tab-overview"].tap()
+        let overview = app.descendants(matching: .any)["conversation-overview"].firstMatch
+        XCTAssertTrue(overview.waitForExistence(timeout: 10))
+        capture(app, "browser-tabs-overview")
+        for id in ["other", "slow"] {
+            let close = app.buttons["overview-close:" + id]
+            XCTAssertTrue(close.waitForExistence(timeout: 10))
+            close.tap(); gone(close)
+        }
+        app.buttons["overview-card:saved"].swipeLeft()
+        gone(app.buttons["overview-card:saved"])
+        XCTAssertTrue(overview.exists)
+        capture(app, "browser-tabs-all-closed")
+        app.buttons["Done"].tap()
+        XCTAssertFalse(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "browser-tab:")).firstMatch.exists)
+        app.buttons["tab-overview"].tap()
+        app.buttons["overview-more"].tap()
+        app.buttons["Closed tabs"].tap()
+        app.buttons["overview-card:saved"].tap()
+        XCTAssertTrue(app.buttons["browser-tab:saved"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["browser-tab:saved"].isSelected)
+    }
+
     func testStartupRejectsUnauthorizedRoster() {
         let app = startupFixture(reject: true)
         XCTAssertTrue(app.textFields["phone-number"].waitForExistence(timeout: 15))

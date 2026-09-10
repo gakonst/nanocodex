@@ -77,7 +77,7 @@ struct InboxView: View {
         }
         .foregroundStyle(Ink.text)
         .tint(Ink.accent)
-        .sheet(isPresented: $showOverview) {
+        .fullScreenCover(isPresented: $showOverview) {
             ConversationOverview(model: model) { id in
                 selectConversation(id)
                 showOverview = false
@@ -448,6 +448,8 @@ private struct ConversationOverview: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var query = ""
     @State private var runningOnly = false
+    @State private var showingClosed = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var order: [String]
 
     init(model: InboxModel, select: @escaping (String) -> Void) {
@@ -458,8 +460,10 @@ private struct ConversationOverview: View {
 
     private var visibleCards: [AgentCard] {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cards = Dictionary(uniqueKeysWithValues: model.overviewCards.map { ($0.id, $0) })
-        return order.compactMap { cards[$0] }.filter { card in
+        let source = showingClosed ? model.closedConversationCards : model.overviewCards
+        let cards = Dictionary(uniqueKeysWithValues: source.map { ($0.id, $0) })
+        let ordered = showingClosed ? source : order.compactMap { cards[$0] }
+        return ordered.filter { card in
             (!runningOnly || card.isRunning) && (text.isEmpty || card.title.localizedCaseInsensitiveContains(text)
                 || card.id.localizedCaseInsensitiveContains(text) || card.preview.localizedCaseInsensitiveContains(text))
         }
@@ -484,40 +488,24 @@ private struct ConversationOverview: View {
             ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 280 : 155), spacing: 14)], spacing: 18) {
                     ForEach(visibleCards) { card in
-                        Button { select(card.id) } label: {
-                            VStack(alignment: .leading, spacing: 9) {
-                                Text(card.title).font(.system(size: 15, weight: .semibold)).lineLimit(2, reservesSpace: true)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                ConversationMiniature(model: model, card: card, rows: model.overviewRows(for: card.id)).equatable()
-                                    .frame(height: 230)
-                                    .background(Ink.background)
-                                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: 16)
-                                            .strokeBorder(card.isRunning ? Color.green : model.focused?.id == card.id ? Ink.text : Ink.border,
-                                                          lineWidth: card.isRunning || model.focused?.id == card.id ? 2 : 0.75)
-                                    }
-                                    .accessibilityIdentifier("overview-preview:" + card.id)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityRepresentation {
-                            Button(card.title) { select(card.id) }
-                                .accessibilityValue(overviewDescription(card))
-                                .accessibilityHint("Open conversation")
-                                .accessibilityAddTraits(model.deck.focusedID == card.id ? [.isSelected] : [])
-                                .accessibilityIdentifier("overview-card:" + card.id)
-                        }
+                        ConversationOverviewCard(model: model, card: card,
+                            description: overviewDescription(card), canClose: !showingClosed,
+                            select: { select(card.id) }, close: {
+                                withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86)) {
+                                    model.closeConversationTab(card.id)
+                                }
+                            })
+                            .transition(reduceMotion ? .opacity : .scale(scale: 0.9).combined(with: .opacity))
                         .onAppear { model.setOverviewVisible(card.id, visible: true) }
                         .onDisappear { model.setOverviewVisible(card.id, visible: false) }
                     }
                 }.padding(16)
+                    .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86), value: visibleCards.map(\.id))
                 if visibleCards.isEmpty {
                     ContentUnavailableView(model.cards.isEmpty ? "No conversations" : "No matching conversations", systemImage: "bubble.left.and.bubble.right",
                                            description: Text(model.cards.isEmpty ? "Use + to start a conversation." : "Try another search or load older conversations below."))
                 }
-                if model.hasOlderConversations {
+                if !showingClosed && model.hasOlderConversations {
                     Button("Load older conversations") { model.loadOlderConversations() }
                         .buttonStyle(.bordered)
                         .padding(.bottom, 20)
@@ -527,10 +515,17 @@ private struct ConversationOverview: View {
             }
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search conversations")
             .background(Ink.background)
-            .navigationTitle("Conversations")
+            .navigationTitle(showingClosed ? "Closed tabs" : "Conversations")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItemGroup(placement: .bottomBar) {
+                    Menu {
+                        Button(showingClosed ? "Show open tabs" : "Closed tabs", systemImage: "clock") {
+                            showingClosed.toggle()
+                        }
+                    } label: { Text("More") }
+                    .accessibilityIdentifier("overview-more")
+                    Spacer()
                     Button {
                         model.newAgent()
                         dismiss()
@@ -541,7 +536,6 @@ private struct ConversationOverview: View {
                 }
             }
         }
-        .presentationDetents([.large]).presentationDragIndicator(.visible)
         .onChange(of: model.overviewCards.map(\.id)) { _, ids in
             // Live history updates must not move another window under a tap.
             let available = Set(ids)
@@ -550,6 +544,79 @@ private struct ConversationOverview: View {
             order.append(contentsOf: ids.filter { !known.contains($0) })
         }
         .onDisappear { model.stopOverview() }
+    }
+}
+
+private struct ConversationOverviewCard: View {
+    @ObservedObject var model: InboxModel
+    let card: AgentCard
+    let description: String
+    let canClose: Bool
+    var select: () -> Void
+    var close: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @GestureState private var swipe: CGFloat = 0
+
+    private var selected: Bool { model.deck.focusedID == card.id }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "bubble.left.fill")
+                    .foregroundStyle(card.isRunning ? Color.green : Color.secondary)
+                    .accessibilityHidden(true)
+                Text(card.title).font(.subheadline.weight(.medium)).lineLimit(1)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: select)
+                    .accessibilityRepresentation { Button("Open " + card.title, action: select) }
+                if canClose {
+                    Button(action: close) {
+                        Image(systemName: "xmark").font(.system(size: 12, weight: .medium))
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Close " + card.title)
+                    .accessibilityHint("Keeps the conversation and any running work")
+                    .accessibilityIdentifier("overview-close:" + card.id)
+                }
+            }.padding(.leading, 12)
+            ConversationMiniature(model: model, card: card, rows: model.overviewRows(for: card.id)).equatable()
+                    .frame(height: 230)
+                    .frame(maxWidth: .infinity)
+                    .background(Ink.background)
+                    .contentShape(Rectangle())
+                    // A tap recognizer fails when dragging; a plain Button can
+                    // activate on release after a simultaneous swipe gesture.
+                    .onTapGesture(perform: select)
+                    .accessibilityRepresentation {
+                        Button(card.title, action: select)
+                            .accessibilityValue(description)
+                            .accessibilityHint("Open conversation")
+                            .accessibilityAddTraits(selected ? [.isSelected] : [])
+                            .accessibilityIdentifier("overview-card:" + card.id)
+                    }
+        }
+        .buttonStyle(.plain)
+        .background(Ink.card)
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18)
+                .strokeBorder(selected ? Color.accentColor : Ink.border, lineWidth: selected ? 2 : 0.5)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("overview-preview:" + card.id)
+        .offset(x: reduceMotion ? 0 : swipe)
+        .opacity(1 - min(abs(swipe) / 300, 0.65))
+        .simultaneousGesture(DragGesture(minimumDistance: 24)
+            .updating($swipe) { value, offset, _ in
+                guard canClose, abs(value.translation.width) > abs(value.translation.height) * 1.5 else { return }
+                offset = value.translation.width
+            }
+            .onEnded { value in
+                guard canClose, abs(value.translation.width) > 90,
+                      abs(value.translation.width) > abs(value.translation.height) * 1.5 else { return }
+                close()
+            })
     }
 }
 
