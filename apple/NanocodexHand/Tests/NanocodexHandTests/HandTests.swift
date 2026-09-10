@@ -25,7 +25,16 @@ final class HandTests: XCTestCase {
         }
         try FileManager.default.createSymbolicLink(atPath: root.appendingPathComponent("one/link").path, withDestinationPath: root.appendingPathComponent("two").path)
         do { _ = try await one.call(name: "write_file", input: .object(["path": .string("link/secret"), "content": .string("bad")])); XCTFail("Symlink escape accepted") } catch { }
-        do { _ = try await one.call(name: "write_file", input: .object(["path": .string("large"), "content": .string(String(repeating: "x", count: 65537))])); XCTFail("Oversized file accepted") } catch { }
+        let large = String(repeating: "x", count: 1024 * 1024) + " full file"
+        _ = try await one.call(name: "write_file", input: .object(["path": .string("large"), "content": .string(large)]))
+        let complete = try await one.call(name: "read_file", input: .object(["path": .string("large")]))
+        XCTAssertEqual(complete["content"].string, large)
+        for index in 0..<225 {
+            _ = try await one.call(name: "write_file", input: .object(["path": .string("many/file-\(index)"), "content": .string("entry")]))
+        }
+        let all = try await one.call(name: "list_files", input: .object(["path": .string("many")]))
+        XCTAssertEqual(all["entries"].array.count, 225)
+        XCTAssertEqual(all["has_more"], .bool(false))
     }
     func testCatalogAdvertisesOnlyImplementedDeviceTools() throws {
         let hand = try HandWorkspace(id: "phone-one", name: "iPhone", root: directory())

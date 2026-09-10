@@ -37,8 +37,11 @@ final class InboxModel: ObservableObject {
         var events: [AgentEvent]
         var cursor: Cursor
         var hasOlder: Bool
+        var hasNewer: Bool = false
         var bytes: [Int]
         var rows: [TranscriptRow]
+        var retainedBytes: Int
+        var projector: TranscriptStreamProjection
     }
     private var tabHistories: [String: TabHistory] = [:]
     private var recentTabs: [String] = []
@@ -70,6 +73,10 @@ final class InboxModel: ObservableObject {
     private var schedulesFailures: [String: String] = [:]
     @Published var hasOlder = false
     @Published var loadingOlder = false
+    @Published var hasNewer = false
+    @Published var loadingNewer = false
+    private var followingLatest = true
+    private var protectedHistoryCursors: ClosedRange<Cursor>?
     @Published var selectedTurn = ""
     @Published private var pendingCreations = Set<String>()
     @Published private var creationErrors: [String: String] = [:]
@@ -316,6 +323,13 @@ final class InboxModel: ObservableObject {
         }
         return url
     }
+    func attachmentPreview(_ attachment: MessageAttachment, agentID: String) async throws -> Data {
+        guard let client else { throw APIError.invalidCredential }
+        let epoch = generation
+        let data = try await client.attachmentPreview(agentID: agentID, attachmentID: attachment.id)
+        guard epoch == generation, !Task.isCancelled else { throw CancellationError() }
+        return data
+    }
     private func cacheAttachment(_ attachment: MessageAttachment, scope: String) {
         guard let store = try? AttachmentStore(scope: scope) else { return }
         attachmentURLs[attachment.id] = try? store.previewURL(for: attachment)
@@ -331,10 +345,6 @@ final class InboxModel: ObservableObject {
     private func beginAttachmentImport(count: Int, target: AttachmentTarget) -> Bool {
         guard generation == target.generation, !attachmentImports.contains(resolvedAgentID(target.agentID)) else { return false }
         guard count > 0 else { return false }
-        guard (attachmentDrafts[resolvedAgentID(target.agentID)]?.count ?? 0) + count <= 4 else {
-            attachmentErrors[resolvedAgentID(target.agentID)] = "You can attach up to 4 photos or videos to a message."
-            return false
-        }
         attachmentImports.insert(resolvedAgentID(target.agentID)); attachmentErrors[resolvedAgentID(target.agentID)] = nil
         return true
     }
@@ -384,10 +394,11 @@ final class InboxModel: ObservableObject {
                             return prepared.attachment
                         }.value
                     } else {
-                        guard let data = try await item.loadTransferable(type: Data.self) else { throw APIError.invalidResponse }
+                        guard let picked = try await item.loadTransferable(type: PickedImage.self) else { throw AttachmentError.unsupportedImage }
+                        defer { try? FileManager.default.removeItem(at: picked.url) }
                         guard generation == target.generation else { return }
                         attachment = try await Task.detached(priority: .userInitiated) {
-                            let prepared = try AttachmentPreparation.prepare(data: data, name: "Photo \(index + 1)", mediaType: "image/jpeg")
+                            let prepared = try AttachmentPreparation.prepare(url: picked.url, name: "Photo \(index + 1)")
                             try AttachmentStore(scope: target.scope).save(prepared)
                             return prepared.attachment
                         }.value
@@ -640,7 +651,7 @@ final class InboxModel: ObservableObject {
         isDemo = false; cards = []; deck = InboxDeck(); rows = []; events = []; drafts = [:]; seen = [:]
         attachmentDrafts = [:]; attachmentURLs = [:]; attachmentMovieURLs = [:]; attachmentImports = []; attachmentErrors = [:]
         scope = ""; error = nil; notice = nil; busy = []; retries = [:]; refreshing = false
-        hasOlder = false; loadingOlder = false; connection = "Disconnected"; pending = []; pinnedThreadID = nil; demoRows = [:]; demoFaults = []
+        hasOlder = false; hasNewer = false; loadingOlder = false; loadingNewer = false; followingLatest = true; connection = "Disconnected"; pending = []; pinnedThreadID = nil; demoRows = [:]; demoFaults = []
     }
     func setActive(_ active: Bool) {
         let wasActive = isActive
@@ -661,7 +672,7 @@ final class InboxModel: ObservableObject {
         }
         if active { refreshContext() }
         if active { if isDemo { connection = "Demo" } else { resume() }; resumeOverview() }
-        else { releaseInactiveHistory(); focusedState?.cancel(); focusedState = nil; focusedHistoryRequest?.cancel(); focusedHistoryRequest = nil; finishPreferencesInBackground(); suspendOverview(); scheduleHandRefresh(); polling?.cancel(); streaming?.cancel(); streaming = nil; observation = UUID(); connection = "Paused" }
+        else { focusedState?.cancel(); focusedState = nil; focusedHistoryRequest?.cancel(); focusedHistoryRequest = nil; finishPreferencesInBackground(); suspendOverview(); scheduleHandRefresh(); polling?.cancel(); streaming?.cancel(); streaming = nil; observation = UUID(); connection = "Paused" }
         agentNotificationUpdate?.cancel(); agentNotificationUpdate = nil
         updateAgentNotifications()
     }
@@ -945,7 +956,7 @@ final class InboxModel: ObservableObject {
     }
     func advance(reviewed: Bool) {
         guard let card = focused else { return }
-        navigation.append((card.id, seen[card.id], deferred[card.id], filter)); if navigation.count > 50 { navigation.removeFirst() }
+        navigation.append((card.id, seen[card.id], deferred[card.id], filter))
         if reviewed { seen[card.id] = card.latestCursor.rawValue; persist() }
         deferred[card.id] = card.latestCursor
         prioritizeNext()
@@ -1082,7 +1093,6 @@ final class InboxModel: ObservableObject {
         } else {
             if wasFocused, let card = focused {
                 navigation.append((card.id, seen[card.id], deferred[card.id], filter))
-                if navigation.count > 50 { navigation.removeFirst() }
             }
             reconcile()
         }
@@ -1095,13 +1105,12 @@ final class InboxModel: ObservableObject {
         openedConversations.insert(id)
         if let card = focused, card.id != id {
             navigation.append((card.id, seen[card.id], deferred[card.id], filter))
-            if navigation.count > 50 { navigation.removeFirst() }
         }
         pinnedThreadID = id
         filter = .all; deck.focus(id); observeFocused()
     }
     private func trimTabCache() {
-        let bytes = recentTabs.map { tabHistories[$0]?.bytes.reduce(0, +) ?? 0 }
+        let bytes = recentTabs.map { tabHistories[$0]?.retainedBytes ?? 0 }
         let removed = TranscriptRetention.cachedPrefixCount(byteCounts: bytes,
             byteLimit: 24 * 1024 * 1024, countLimit: 8)
         for id in recentTabs.prefix(removed) { tabHistories[id] = nil }
@@ -1122,7 +1131,8 @@ final class InboxModel: ObservableObject {
         guard changed || restart else { return }
         if changed, let previous = observedAgentID, !isDemo, focusedHistoryLoaded {
             // Preserve loaded history along with each tab's draft.
-            tabHistories[previous] = TabHistory(events: events, cursor: cursor, hasOlder: hasOlder, bytes: eventBytes, rows: rows)
+            tabHistories[previous] = TabHistory(events: events, cursor: cursor, hasOlder: hasOlder, hasNewer: hasNewer,
+                                                bytes: eventBytes, rows: rows, retainedBytes: retainedBytes, projector: streamProjector)
             recentTabs.removeAll { $0 == previous }; recentTabs.append(previous)
             trimTabCache()
         }
@@ -1130,12 +1140,15 @@ final class InboxModel: ObservableObject {
         if let id = observedAgentID { cancelOverview(id) }
         focusedState?.cancel(); focusedState = nil
         focusedHistoryRequest?.cancel(); focusedHistoryRequest = nil
-        streaming?.cancel(); streaming = nil; projection?.cancel(); projection = nil; streamProjector = TranscriptStreamProjection(); observation = UUID(); projectedFirstCursor = nil; loadingOlder = false
+        streaming?.cancel(); streaming = nil; projection?.cancel(); projection = nil; observation = UUID(); projectedFirstCursor = nil; loadingOlder = false; loadingNewer = false
         threadError = nil
         if changed {
+            // Each cached reading window keeps its incremental projection. Tab
+            // switches and foregrounding only need to apply newly received events.
+            streamProjector = deck.focusedID.flatMap { tabHistories[$0]?.projector } ?? TranscriptStreamProjection()
             focusedHistoryLoaded = false
             rows = []; events = []; eventBytes = []; retainedBytes = 0; cursor = .zero
-            olderBefore = nil; hasOlder = false; selectedTurn = ""
+            olderBefore = nil; hasOlder = false; hasNewer = false; followingLatest = true; protectedHistoryCursors = nil; selectedTurn = ""
         }
         resumeOverview()
         guard let id = deck.focusedID else {
@@ -1152,8 +1165,8 @@ final class InboxModel: ObservableObject {
         if changed, let cached = tabHistories.removeValue(forKey: id) {
             recentTabs.removeAll { $0 == id }
             focusedHistoryLoaded = true
-            events = cached.events; cursor = cached.cursor; hasOlder = cached.hasOlder
-            eventBytes = cached.bytes; retainedBytes = eventBytes.reduce(0, +)
+            events = cached.events; cursor = cached.cursor; hasOlder = cached.hasOlder; hasNewer = cached.hasNewer
+            eventBytes = cached.bytes; retainedBytes = cached.retainedBytes
             olderBefore = events.first?.cursor; rows = cached.rows
         }
         threadLoading = !focusedHistoryLoaded
@@ -1203,7 +1216,7 @@ final class InboxModel: ObservableObject {
                         }
                         guard self.generation == epoch, self.observation == token, !Task.isCancelled else { return }
                         self.focusedHistoryRequest = nil
-                        self.events = prepared.events; self.hasOlder = prepared.hasMore
+                        self.events = prepared.events; self.hasOlder = prepared.hasMore; self.hasNewer = prepared.hasNewer
                         self.eventBytes = prepared.byteCounts; self.retainedBytes = prepared.byteCounts.reduce(0, +)
                         self.cursor = prepared.latest; self.olderBefore = self.events.first?.cursor
                         self.rows = prepared.rows; self.projectedFirstCursor = self.events.first?.cursor
@@ -1266,7 +1279,9 @@ final class InboxModel: ObservableObject {
             // An internal-only preview still needs the focused history recovery.
             if tabHistories[id] == nil {
                 tabHistories[id] = TabHistory(events: history, cursor: history.last?.cursor ?? .zero,
-                                             hasOlder: true, bytes: bytes, rows: projected)
+                                             hasOlder: true, bytes: bytes, rows: projected,
+                                             retainedBytes: overviewByteCounts[id] ?? bytes.reduce(0, +),
+                                             projector: overviewProjectors[id] ?? TranscriptStreamProjection())
                 recentTabs.removeAll { $0 == id }; recentTabs.append(id)
                 trimTabCache()
             }
@@ -1374,20 +1389,23 @@ final class InboxModel: ObservableObject {
     private func receive(_ frame: SSEFrame, id: String, epoch: UUID, token: UUID) {
         guard generation == epoch, observation == token else { return }
         if let event = frame.event, event.cursor > cursor {
-            events.append(event)
             reconcilePending(id: id, events: [event])
-            let bytes = frame.payloadBytes
-            eventBytes.append(bytes); retainedBytes += bytes
-            // Token arrival never re-encodes the complete transcript on the main actor.
-            // Bound bytes, not token count: a live response can contain thousands of deltas.
-            let removed = TranscriptRetention.removablePrefixCount(byteCounts: eventBytes,
-                retainedBytes: retainedBytes, byteLimit: 16 * 1024 * 1024)
-            if removed > 0 {
-                retainedBytes -= eventBytes.prefix(removed).reduce(0, +)
-                events.removeFirst(removed); eventBytes.removeFirst(removed); hasOlder = true
+            if hasNewer || !followingLatest || loadingOlder || loadingNewer {
+                // Keep the reader's window stationary. The live cursor advances
+                // independently; forward paging recovers every skipped event.
+                hasNewer = true
+                if let index = cards.firstIndex(where: { $0.id == id }) {
+                    var card = cards[index]; card.apply(events: [event])
+                    if cards[index] != card { cards[index] = card }
+                }
+            } else {
+                protectedHistoryCursors = nil
+                events.append(event)
+                eventBytes.append(frame.payloadBytes); retainedBytes += frame.payloadBytes
+                trimMeasuredEvents(towardOlder: false)
+                olderBefore = events.first?.cursor
+                scheduleProjection(id: id, epoch: epoch, token: token)
             }
-            olderBefore = events.first?.cursor
-            scheduleProjection(id: id, epoch: epoch, token: token)
         }
         if let position = frame.cursor { cursor = max(cursor, position) }
         // After a failure, the initial cursor alone does not establish a healthy
@@ -1429,15 +1447,84 @@ final class InboxModel: ObservableObject {
         }
         return revision != eventsRevision
     }
-    private func trimMeasuredEvents() {
-        retainedBytes = eventBytes.reduce(0, +)
-        let removed = TranscriptRetention.removablePrefixCount(byteCounts: eventBytes,
-            retainedBytes: retainedBytes, byteLimit: 16 * 1024 * 1024)
-        if removed > 0 {
+    func setHistoryAtLatest(_ atLatest: Bool) { followingLatest = atLatest && !hasNewer }
+
+    func protectHistoryRows(_ ids: Set<String>) {
+        let visible = rows.filter { ids.contains($0.id) || $0.turnID.map { ids.contains("activity-" + $0) } == true }
+        let turns = Set(visible.compactMap(\.turnID))
+        // A row's cursor is its admission, but later events can supply its text.
+        // Preserve every contribution to visible turns, not only their first delta.
+        let cursors = visible.compactMap(\.cursor) + events.filter { turns.contains($0.turnID) }.map(\.cursor)
+        if let first = cursors.min(), let last = cursors.max() { protectedHistoryCursors = first...last }
+        else { protectedHistoryCursors = nil }
+    }
+
+    private func trimMeasuredEvents(towardOlder: Bool, keeping: Int = 1) {
+        let proposed = towardOlder
+            ? TranscriptRetention.removableSuffixCount(byteCounts: eventBytes, retainedBytes: retainedBytes, byteLimit: 16 * 1024 * 1024)
+            : TranscriptRetention.removablePrefixCount(byteCounts: eventBytes, retainedBytes: retainedBytes, byteLimit: 16 * 1024 * 1024)
+        var removed = min(proposed, max(0, events.count - keeping))
+        if let visible = protectedHistoryCursors {
+            if towardOlder, let last = events.lastIndex(where: { $0.cursor <= visible.upperBound }) {
+                removed = min(removed, events.count - last - 1)
+            } else if !towardOlder, let first = events.firstIndex(where: { $0.cursor >= visible.lowerBound }) {
+                removed = min(removed, first)
+            }
+        }
+        if !towardOlder {
+            // A memory target must not clip an unfinished turn's answer.
+            let active = Set(focused?.activeTurns ?? [])
+            if let firstActive = events.firstIndex(where: { active.contains($0.turnID) }) { removed = min(removed, firstActive) }
+        }
+        guard removed > 0 else { return }
+        if towardOlder {
+            retainedBytes -= eventBytes.suffix(removed).reduce(0, +)
+            events.removeLast(removed); eventBytes.removeLast(removed); hasNewer = true
+        } else {
             retainedBytes -= eventBytes.prefix(removed).reduce(0, +)
             events.removeFirst(removed); eventBytes.removeFirst(removed); hasOlder = true
         }
     }
+
+    func loadNewer(latest: Bool = false) async {
+        guard let client, let id = focused?.id, !loadingOlder, !loadingNewer,
+              latest || hasNewer, let after = events.last?.cursor else { return }
+        let token = observation, epoch = generation
+        loadingNewer = true
+        defer { if token == observation { loadingNewer = false } }
+        do {
+            let opening = latest ? try await client.conversationHistory(id) : nil
+            let page = latest ? nil : try await client.history(id, after: after)
+            let loadedEvents = opening?.events ?? page!.events
+            let loadedLatest = opening?.latest ?? page!.latest
+            let loadedMore = opening?.hasMore ?? page!.hasMore
+            let bytes = try await TranscriptPreparation.byteCounts(loadedEvents)
+            guard token == observation, generation == epoch, !Task.isCancelled else { return }
+            if latest {
+                events = loadedEvents; eventBytes = bytes; hasOlder = loadedMore
+                hasNewer = opening!.hasNewer || loadedLatest < cursor
+                followingLatest = !hasNewer
+            } else {
+                guard !loadedMore || loadedEvents.last.map({ $0.cursor > after }) == true else { throw APIError.invalidResponse }
+                let added = loadedEvents.indices.filter { loadedEvents[$0].cursor > after }
+                let overlap = min(1, events.count)
+                events.append(contentsOf: added.map { loadedEvents[$0] })
+                eventBytes.append(contentsOf: added.map { bytes[$0] })
+                retainedBytes += added.reduce(0) { $0 + bytes[$1] }
+                hasNewer = loadedMore || (events.last?.cursor ?? .zero) < max(cursor, loadedLatest)
+                trimMeasuredEvents(towardOlder: false, keeping: added.count + overlap)
+            }
+            cursor = max(cursor, latest ? loadedLatest : (events.last?.cursor ?? .zero))
+            reconcilePending(id: id, events: loadedEvents)
+            retainedBytes = eventBytes.reduce(0, +)
+            olderBefore = events.first?.cursor
+            scheduleProjection(id: id, epoch: epoch, token: token)
+            repeat { await projection?.value }
+            while token == observation && generation == epoch && !Task.isCancelled
+                && projectedFirstCursor != events.first?.cursor && projection != nil
+        } catch { if token == observation { threadError = error.localizedDescription } }
+    }
+
     func loadOlder() async {
         if isDemo, ProcessInfo.processInfo.environment["NANOCODEX_DEMO_LONG_THREAD"] == "1", let id = focused?.id, hasOlder {
             guard !loadingOlder else { return }
@@ -1449,7 +1536,7 @@ final class InboxModel: ObservableObject {
             demoRows[id] = rows; hasOlder = false; loadingOlder = false
             return
         }
-        guard let client, let id = focused?.id, let before = olderBefore, hasOlder, !loadingOlder else { return }
+        guard let client, let id = focused?.id, let before = olderBefore, hasOlder, !loadingOlder, !loadingNewer else { return }
         let token = observation, epoch = generation
         loadingOlder = true
         defer { if token == observation { loadingOlder = false } }
@@ -1457,20 +1544,21 @@ final class InboxModel: ObservableObject {
             let page = try await client.history(id, before: before)
             let bytes = try await TranscriptPreparation.byteCounts(page.events)
             guard token == observation, generation == epoch, !Task.isCancelled else { return }
-            let known = Set(events.map(\.cursor.rawValue))
-            let inserted = page.events.indices.filter { !known.contains(page.events[$0].cursor.rawValue) }
+            guard !page.hasMore || page.events.first.map({ $0.cursor < before }) == true else { throw APIError.invalidResponse }
+            let inserted = page.events.indices.filter { page.events[$0].cursor < before }
+            let overlap = min(1, events.count)
             events.insert(contentsOf: inserted.map { page.events[$0] }, at: 0)
             eventBytes.insert(contentsOf: inserted.map { bytes[$0] }, at: 0)
-            // Older history is explicitly loaded; cap at 2,048 events and explain the limit.
-            if events.count > 2048 { events = Array(events.suffix(2048)); eventBytes = Array(eventBytes.suffix(2048)); notice = "History limit reached. Open the web conversation for earlier messages."; hasOlder = false }
-            else { hasOlder = page.hasMore }
-            trimMeasuredEvents(); olderBefore = events.first?.cursor
+            retainedBytes += inserted.reduce(0) { $0 + bytes[$1] }
+            hasOlder = page.hasMore
+            trimMeasuredEvents(towardOlder: true, keeping: inserted.count + overlap)
+            olderBefore = events.first?.cursor
             scheduleProjection(id: id, epoch: epoch, token: token)
             repeat { await projection?.value }
             while token == observation && generation == epoch && !Task.isCancelled
                 && projectedFirstCursor != events.first?.cursor && projection != nil
             guard token == observation, generation == epoch, !Task.isCancelled else { return }
-            if olderBefore == before { hasOlder = false; notice = "History limit reached. Earlier messages remain available on the service." }
+            if page.hasMore && olderBefore == before { throw APIError.invalidResponse }
         } catch { if token == observation { self.threadError = error.localizedDescription } }
     }
     func voiceConfiguration(agentID: String) async throws -> VoiceConfiguration {
@@ -1494,19 +1582,10 @@ final class InboxModel: ObservableObject {
         let input: String
         do {
             let context = try ContextPrompt.render(captured)
-            guard captured.count <= 24, context.utf8.count <= 96 * 1024 else {
-                error = "Too much context selected. Remove some captures from this message and try again."
-                return false
-            }
             input = captured.isEmpty ? request : context + "\n\nMy request:\n" + request
         }
         catch { self.error = error.localizedDescription; return false }
         let attachments = focusedAttachments
-        let textBytes = (try? JSONEncoder().encode(input).count) ?? Int.max
-        let imageBytes = attachments.reduce(0) { $0 + $1.promptByteCount }
-        guard textBytes < 1024 * 1024 - imageBytes - 256 else {
-            error = APIError.messageTooLarge.localizedDescription; return false
-        }
         let predecessor = focusedPending.last?.id ?? focusedTurn
         let message = PendingMessage(agentID: card.id, input: input, predecessor: predecessor, contextIDs: captured.map(\.id), attachments: attachments.isEmpty ? nil : attachments)
         attachmentDrafts[card.id] = nil; attachmentErrors[card.id] = nil
@@ -1646,18 +1725,15 @@ final class InboxModel: ObservableObject {
                 // Verify saved drafts before uploading, including legacy drafts.
                 _ = try await Task.detached(priority: .userInitiated) { try store.content(for: attachments) }.value
                 for attachment in attachments {
-                    if attachment.isVideo {
-                        let source = try store.url(for: attachment)
-                        let path = try await client.uploadVideo(agentID: message.agentID, attachment: attachment, source: source) { [weak self] in
-                            await MainActor.run {
-                                guard let self else { return true }
-                                return self.generation != epoch || self.pending.first(where: { $0.id == message.id }).map { $0.phase == .cancelling } != false
-                            }
+                    let source = try store.url(for: attachment)
+                    let preview = attachment.isVideo ? nil : (try store.previewURL(for: attachment))
+                    let path = try await client.uploadAttachment(agentID: message.agentID, attachment: attachment, source: source, preview: preview) { [weak self] in
+                        await MainActor.run {
+                            guard let self else { return true }
+                            return self.generation != epoch || self.pending.first(where: { $0.id == message.id }).map { $0.phase == .cancelling } != false
                         }
-                        command.images += try attachment.originalVideoContent(path: path)
-                    } else {
-                        command.images += try await Task.detached(priority: .userInitiated) { try store.content(for: [attachment]) }.value
                     }
+                    command.images += try attachment.originalContent(path: path)
                 }
             }
             guard generation == epoch, let current = pending.first(where: { $0.id == message.id }), current.phase != .cancelling else { return }

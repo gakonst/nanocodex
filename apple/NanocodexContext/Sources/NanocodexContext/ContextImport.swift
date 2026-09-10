@@ -2,35 +2,25 @@ import Foundation
 import UniformTypeIdentifiers
 import PDFKit
 import Vision
-import ImageIO
 
-/// Both entrypoints use the same bounded, on-device text extraction. Files are
+/// Both entrypoints use the same on-device text extraction. Files are
 /// never uploaded or fetched from their links as a side effect of capture.
 public enum ContextImport {
     public static func text(data: Data, type: UTType) throws -> String {
-        guard data.count <= 8 * 1024 * 1024 else { throw CaptureError.tooLarge }
         let text: String
         if type.conforms(to: .image) {
-            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-                  let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                    kCGImageSourceCreateThumbnailFromImageAlways: true,
-                    kCGImageSourceCreateThumbnailWithTransform: true,
-                    kCGImageSourceThumbnailMaxPixelSize: 2048
-                  ] as CFDictionary) else { throw CaptureError.unreadable }
             let request = VNRecognizeTextRequest()
             request.recognitionLevel = .accurate
-            try VNImageRequestHandler(cgImage: image).perform([request])
+            try VNImageRequestHandler(data: data).perform([request])
             text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
         } else if type.conforms(to: .pdf) {
             guard let document = PDFDocument(data: data), !document.isLocked else { throw CaptureError.unreadable }
-            guard document.pageCount <= 50 else { throw CaptureError.tooLarge }
             text = document.string ?? ""
         } else if type.conforms(to: .plainText) {
             guard let decoded = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .utf16) else { throw CaptureError.unreadable }
             text = decoded
         } else { throw CaptureError.unsupported }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CaptureError.unreadable }
-        guard text.utf8.count <= 24 * 1024 else { throw CaptureError.tooLarge }
         return text
     }
 
@@ -42,7 +32,7 @@ public enum ContextImport {
     }
 
     public static func load(_ providers: [NSItemProvider]) async throws -> [CaptureInput] {
-        guard !providers.isEmpty, providers.count <= 10 else { throw CaptureError.tooLarge }
+        guard !providers.isEmpty else { throw CaptureError.empty }
         var items: [CaptureInput] = []
         for provider in providers { items.append(try await load(provider)) }
         // Safari can supply both a URL and the preprocessing result for that URL.
@@ -81,7 +71,7 @@ public enum ContextImport {
                     if let error { continuation.resume(throwing: error) }
                     else if let value = value as? URL { continuation.resume(returning: value.absoluteString) }
                     else if let value = value as? String { continuation.resume(returning: value) }
-                    else if let value = value as? Data, value.count <= 4096, let text = String(data: value, encoding: .utf8) { continuation.resume(returning: text) }
+                    else if let value = value as? Data, let text = String(data: value, encoding: .utf8) { continuation.resume(returning: text) }
                     else { continuation.resume(throwing: CaptureError.unsupported) }
                 }
             }
@@ -97,10 +87,8 @@ public enum ContextImport {
                 do {
                     if let error { throw error }
                     guard let url else { throw CaptureError.unreadable }
-                    let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max
-                    guard size <= 8 * 1024 * 1024 else { throw CaptureError.tooLarge }
                     // Read while the provider's temporary file is still valid.
-                    continuation.resume(returning: (try Data(contentsOf: url), url.lastPathComponent))
+                    continuation.resume(returning: (try Data(contentsOf: url, options: .mappedIfSafe), url.lastPathComponent))
                 } catch { continuation.resume(throwing: error) }
             }
         }

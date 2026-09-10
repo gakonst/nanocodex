@@ -80,7 +80,6 @@ public struct SSEFrame: Sendable {
 /// are committed only at the empty-line boundary; heartbeats never become text.
 public struct SSEParser: Sendable {
     private var lines: [String] = []
-    private var size = 0
     private var lineBytes = Data()
     private var previousWasCR = false
     public init() {}
@@ -89,18 +88,15 @@ public struct SSEParser: Sendable {
         previousWasCR = byte == 13
         if byte == 10 || byte == 13 {
             guard let line = String(data: lineBytes, encoding: .utf8) else { throw APIError.invalidResponse }
-            lineBytes.removeAll(keepingCapacity: true)
+            lineBytes.removeAll(keepingCapacity: false)
             return try append(line: line)
         }
-        guard lineBytes.count + size < 16 * 1024 * 1024 else { throw APIError.invalidResponse }
         lineBytes.append(byte)
         return nil
     }
     public mutating func append(line: String) throws -> SSEFrame? {
-        size += line.utf8.count + 1
-        guard size <= 16 * 1024 * 1024 else { throw APIError.invalidResponse }
         guard line.isEmpty else { lines.append(line); return nil }
-        defer { lines.removeAll(keepingCapacity: true); size = 0 }
+        defer { lines.removeAll(keepingCapacity: true) }
         var id: String?, control: Cursor?, data: [String] = [], heartbeat = false
         for line in lines {
             if line.hasPrefix(": cursor ") { control = Cursor(rawValue: String(line.dropFirst(9))); continue }
@@ -128,6 +124,7 @@ public struct TranscriptRow: Identifiable, Codable, Equatable, Sendable {
     public var tool: ToolPresentation?
     public var images: [String]?
     public var videos: [TranscriptVideo]?
+    public var imageFiles: [MessageAttachment]?
     public var turnID: String?
     public var agentID: String?
     public var phase: String?
@@ -149,7 +146,26 @@ public struct TranscriptProjection: Sendable {
     private var terminalSessions: [String: Int] = [:]
     private var terminalPolls: [String: Int] = [:]
     private var toolStartedAt: [String: Double] = [:]
+    private struct StreamRole: Hashable {
+        let turn: String
+        let agent: String
+        let role: String
+    }
+    private var turnRows: [String: [Int]] = [:]
+    private var lastStreamRow: [StreamRole: Int] = [:]
+    private var lastUserRow: [String: Int] = [:]
+    private var lastFinalRow: [String: Int] = [:]
+    private var toolRows: [String: Int] = [:]
     public init() {}
+
+    private mutating func finish(_ turn: String, cancelled: Bool) {
+        for index in turnRows[turn] ?? [] {
+            if rows[index].running, rows[index].tool != nil {
+                rows[index].tool?.status = cancelled ? "Stopped" : "Result unavailable"
+            }
+            rows[index].running = false
+        }
+    }
 
     private func elapsedSeconds(_ id: String, at value: JSON) -> Double? {
         guard let start = toolStartedAt[id], case .number(let end) = value,
@@ -158,13 +174,14 @@ public struct TranscriptProjection: Sendable {
     }
     public mutating func append(_ events: ArraySlice<AgentEvent>) {
         for envelope in events where seen.insert(envelope.cursor.rawValue).inserted {
-            let d = envelope.data, turn = envelope.turnID
+            let d = envelope.data, turn = envelope.turnID, agent = envelope.data["agent_id"].pretty
             let firstNewRow = rows.count
-            let prefix = turn + ":" + d["agent_id"].pretty
+            let prefix = turn + ":" + agent
             let id = prefix + ":" + envelope.cursor.rawValue
             if envelope.type == "turn_accepted" {
                 let input = d["input"]
-                let media = VideoAttachmentContent.project(input.array)
+                let fileImages = ImageAttachmentContent.project(input.array)
+                let media = VideoAttachmentContent.project(fileImages.remaining)
                 let text = input.array.isEmpty ? input.string : media.remaining.compactMap {
                     $0["type"].string == "image" ? nil : $0["type"].string == "audio" ? "[Audio]" : $0["text"].string
                 }.joined(separator: "\n")
@@ -176,35 +193,26 @@ public struct TranscriptProjection: Sendable {
                 } else {
                     var row = TranscriptRow(id: id, role: "You", text: text, images: images.isEmpty ? nil : images)
                     row.videos = media.videos.isEmpty ? nil : media.videos
+                    row.imageFiles = fileImages.images.isEmpty ? nil : fileImages.images
                     rows.append(row)
                 }
             } else if envelope.type == "turn_completed" {
                 let final = d["final_message"].string
                 if !final.isEmpty {
-                    if let last = rows.lastIndex(where: { $0.id.hasPrefix(turn + "::") && $0.role == "Agent" && ($0.phase == "final_answer" || $0.phase == nil) }),
-                       last > (rows.lastIndex(where: { $0.id.hasPrefix(turn + ":") && $0.role == "You" }) ?? -1) {
+                    if let last = lastFinalRow[turn], last > (lastUserRow[turn] ?? -1) {
                         rows[last].text = final; rows[last].phase = "final_answer"
-                    } else if let index = rows.lastIndex(where: { $0.id.hasPrefix(turn + "::") && $0.role == "Agent" && $0.text == final }) {
+                    } else if let index = turnRows[turn]?.last(where: { rows[$0].agentID == nil && rows[$0].role == "Agent" && rows[$0].text == final }) {
                         rows[index].phase = "final_answer"
+                        lastFinalRow[turn] = max(lastFinalRow[turn] ?? -1, index)
                     } else {
                         var row = TranscriptRow(id: id, role: "Agent", text: final)
                         row.phase = "final_answer"; rows.append(row)
                     }
                 }
-                for index in rows.indices where rows[index].id.hasPrefix(turn + ":") {
-                    if rows[index].running, rows[index].tool != nil {
-                        rows[index].tool?.status = envelope.type == "turn_cancelled" ? "Stopped" : "Result unavailable"
-                    }
-                    rows[index].running = false
-                }
+                finish(turn, cancelled: envelope.type == "turn_cancelled")
             } else if envelope.type == "turn_failed" || envelope.type == "turn_cancelled" {
                 rows.append(.init(id: id, role: "Status", text: envelope.type == "turn_cancelled" ? "Stopped." : (d["error"].string.isEmpty ? "This turn failed. Open its activity for details." : d["error"].string)))
-                for index in rows.indices where rows[index].id.hasPrefix(turn + ":") {
-                    if rows[index].running, rows[index].tool != nil {
-                        rows[index].tool?.status = envelope.type == "turn_cancelled" ? "Stopped" : "Result unavailable"
-                    }
-                    rows[index].running = false
-                }
+                finish(turn, cancelled: envelope.type == "turn_cancelled")
             } else if envelope.type == "event" {
                 let event = d["event"], p = event["payload"], type = event["type"].string
                 let role = type == "reasoning.summary.delta" ? "Thinking" : "Agent"
@@ -212,12 +220,12 @@ public struct TranscriptProjection: Sendable {
                 let itemID = p["item_id"].string.isEmpty ? nil : p["item_id"].string
                 switch type {
                 case "assistant.delta", "reasoning.summary.delta":
-                    if let last = rows.lastIndex(where: { $0.id.hasPrefix(prefix + ":") && $0.role == role }), rows[last].running,
+                    if let last = lastStreamRow[.init(turn: turn, agent: agent, role: role)], rows[last].running,
                        rows[last].phase == phase, rows[last].itemID == itemID {
                         rows[last].text += p["text"].string
                     } else { rows.append(.init(id: id, role: role, text: p["text"].string, running: true)) }
                 case "assistant.message":
-                    if let last = rows.lastIndex(where: { $0.id.hasPrefix(prefix + ":") && $0.role == "Agent" }), rows[last].running,
+                    if let last = lastStreamRow[.init(turn: turn, agent: agent, role: "Agent")], rows[last].running,
                        (phase == nil || rows[last].phase == phase), (itemID == nil || rows[last].itemID == itemID) {
                         if !p["text"].string.isEmpty { rows[last].text = p["text"].string }
                         rows[last].running = false
@@ -229,7 +237,7 @@ public struct TranscriptProjection: Sendable {
                         toolStartedAt[toolID] = time
                     }
                     if p["tool"].string == "write_stdin",
-                       let index = terminalSessions[d["agent_id"].pretty + ":" + p["arguments"]["session_id"].pretty] {
+                       let index = terminalSessions[agent + ":" + p["arguments"]["session_id"].pretty] {
                         terminalPolls[prefix + ":tool:" + p["call_id"].string] = index
                         if p["arguments"]["chars"].string.isEmpty { continue }
                     }
@@ -248,19 +256,19 @@ public struct TranscriptProjection: Sendable {
                             if case .object(let object) = decoded { combined = object }
                             else { combined = ["output": decoded] }
                             let output = previous + combined["output", default: .null].string
-                            combined["output"] = .string(output.count > 4_000 ? "…\n" + String(output.suffix(3_998)) : output)
+                            combined["output"] = .string(output)
                             let elapsed = elapsedSeconds(rows[index].id, at: d["created_at"])
                             rows[index].tool?.finish(.object(combined), failed: p["is_error"].bool || p["isError"].bool, state: p["status"].string, metadata: p["metadata"], rawResult: p["result"], elapsedSeconds: elapsed)
                             rows[index].running = rows[index].tool?.status == "Running"
-                            if !rows.contains(where: { $0.id == toolID }) { continue }
+                            if toolRows[toolID] == nil { continue }
                         }
-                        if let index = rows.firstIndex(where: { $0.id == toolID }) {
+                        if let index = toolRows[toolID] {
                             let elapsed = elapsedSeconds(toolID, at: d["created_at"])
                             rows[index].tool?.finish(result, failed: p["is_error"].bool || p["isError"].bool, state: p["status"].string, metadata: p["metadata"], rawResult: p["result"], elapsedSeconds: elapsed)
                             rows[index].running = rows[index].tool?.status == "Running"
                             let session = ToolPresentation.decoded(result)["session_id"]
                             if p["tool"].string == "exec_command", session != .null {
-                                terminalSessions[d["agent_id"].pretty + ":" + session.pretty] = index
+                                terminalSessions[agent + ":" + session.pretty] = index
                             }
                         } else {
                             // History can start after a call. Its result must remain readable.
@@ -269,7 +277,7 @@ public struct TranscriptProjection: Sendable {
                             rows.append(.init(id: toolID, role: "Tool", text: tool.title, running: tool.status == "Running", tool: tool))
                         }
                     } else {
-                        if let index = rows.firstIndex(where: { $0.id == toolID }) {
+                        if let index = toolRows[toolID] {
                             rows[index].running = result.status == "Running"
                             rows[index].tool?.applyCompletion(result, metadata: p["metadata"])
                         } else {
@@ -286,7 +294,13 @@ public struct TranscriptProjection: Sendable {
             for index in firstNewRow..<rows.count {
                 rows[index].cursor = envelope.cursor
                 rows[index].turnID = turn
-                rows[index].agentID = d["agent_id"].pretty.isEmpty ? nil : d["agent_id"].pretty
+                rows[index].agentID = agent.isEmpty ? nil : agent
+                turnRows[turn, default: []].append(index)
+                lastStreamRow[.init(turn: turn, agent: agent, role: rows[index].role)] = index
+                if rows[index].role == "You" { lastUserRow[turn] = index }
+                if rows[index].role == "Agent", agent.isEmpty,
+                   rows[index].phase == nil || rows[index].phase == "final_answer" { lastFinalRow[turn] = index }
+                if rows[index].role == "Tool", toolRows[rows[index].id] == nil { toolRows[rows[index].id] = index }
             }
         }
     }

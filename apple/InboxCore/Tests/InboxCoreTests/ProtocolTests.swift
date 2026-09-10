@@ -102,6 +102,18 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(frames[0].event?.data["final_message"].string, "Έτοιμο 👋")
         XCTAssertEqual(frames[0].payloadBytes, #"{"type":"turn_completed","final_message":"Έτοιμο 👋"}"#.utf8.count)
     }
+    func testLargeSSEAnswerIsPreservedAndNextFrameStillParses() throws {
+        let answer = String(repeating: "x", count: 17 * 1024 * 1024) + " Έτοιμο 👋"
+        let payload = "id: 7\ndata: {\"type\":\"turn_completed\",\"final_message\":\"" + answer + "\"}\n\n"
+        var parser = SSEParser()
+        var result: SSEFrame?
+        for byte in payload.utf8 { if let frame = try parser.append(byte: byte) { result = frame } }
+        XCTAssertEqual(result?.event?.data["final_message"].string, answer)
+        for line in ["id: 8", "data: {\"type\":\"turn_completed\",\"final_message\":\"Next\"}"] {
+            XCTAssertNil(try parser.append(line: line))
+        }
+        XCTAssertEqual(try parser.append(line: "")?.event?.data["final_message"].string, "Next")
+    }
     func testRecentConversationOrderUsesDurableActivityAndIgnoresStaleReplay() throws {
         var old = AgentCard(id: "old", title: "Older conversation", updatedAt: 1000)
         var recent = AgentCard(id: "recent", title: "Recent conversation", updatedAt: 2000)
@@ -316,7 +328,7 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(try imageOnly.requestSpec().body?["input"], .array([image]), "Do not send an empty text item")
         var oversized = command
         oversized.images = [.object(["type": .string("image"), "image_url": .string(String(repeating: "a", count: 1024 * 1024))])]
-        XCTAssertThrowsError(try oversized.requestSpec()) { XCTAssertEqual($0 as? APIError, .messageTooLarge) }
+        XCTAssertEqual(try oversized.requestSpec().body?["input"].array.last, oversized.images.last)
     }
     func testImageHistoryProjectsPicturesSeparatelyFromMessageText() throws {
         let url = "data:image/png;base64,aGVsbG8="

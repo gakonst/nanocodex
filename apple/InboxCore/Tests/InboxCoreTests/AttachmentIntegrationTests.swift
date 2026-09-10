@@ -34,7 +34,7 @@ final class AttachmentIntegrationTests: XCTestCase {
         let restoredContent = try AttachmentStore(scope: scope).content(for: [restoredMetadata])
         XCTAssertTrue(restoredContent == prepared.content, "Stored image bytes changed during restoration.")
         XCTAssertEqual(restoredContent.count, 1)
-        XCTAssertEqual(restoredContent.first?["type"].string, "image")
+        XCTAssertEqual(restoredContent.first?["type"].string, "text")
 
         let client = ManagedClient(credential: credential)
         defer { client.close() }
@@ -48,8 +48,13 @@ final class AttachmentIntegrationTests: XCTestCase {
             try await Self.deleteAgent(agentID, client: cleanup)
         }
 
-        var command = AgentCommand(agentID: agentID, input: "Read the attached image. Reply with its exact heading, then the three shapes from left to right, giving each color followed by its shape. Do not use tools.", kind: .followUp)
-        command.images = restoredContent
+        let path = try await client.uploadAttachment(agentID: agentID, attachment: restoredMetadata, source: storedURL,
+                                                     preview: store.previewURL(for: restoredMetadata))
+        XCTAssertEqual(path, restoredMetadata.originalPath)
+        let preview = try await client.attachmentPreview(agentID: agentID, attachmentID: restoredMetadata.id)
+        XCTAssertEqual(preview, prepared.preview)
+        var command = AgentCommand(agentID: agentID, input: "Use image tools to read the attached original image at its /brain path. Reply with its exact heading, then the three shapes from left to right, giving each color followed by its shape.", kind: .followUp)
+        command.images = try restoredMetadata.originalContent(path: path)
         let accepted = try await client.command(command)
         XCTAssertEqual(accepted["turn_id"].string, command.requestID)
         let first = try await Self.completedTurn(command.requestID, agentID: agentID, client: client, deadline: deadline)
@@ -74,7 +79,7 @@ final class AttachmentIntegrationTests: XCTestCase {
         let rows = transcript(history.events)
         let user = try XCTUnwrap(rows.first { $0.role == "You" && $0.id.hasPrefix(command.requestID + ":") })
         XCTAssertEqual(user.text, command.input)
-        XCTAssertTrue(user.images == restoredContent.map { $0["image_url"].string }, "Reloaded transcript lost or changed the attachment bytes.")
+        XCTAssertEqual(user.imageFiles, [restoredMetadata], "Reloaded transcript lost the original image reference.")
         XCTAssertTrue(rows.contains { $0.role == "Agent" && $0.text == reply })
 
         let followUp = AgentCommand(agentID: agentID, input: "From the image in my previous message, which shape was in the middle and what four-digit number appeared in the heading? Reply concisely without tools.", kind: .followUp)

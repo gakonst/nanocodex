@@ -6,7 +6,7 @@ final class InboxUITests: XCTestCase {
     }
     override func setUp() { super.setUp(); continueAfterFailure = false }
     #if DEBUG && targetEnvironment(simulator)
-    private func startupFixture(reject: Bool = false) -> XCUIApplication {
+    private func startupFixture(reject: Bool = false, historyWindow: Bool = false, warmTabs: Bool = false) -> XCUIApplication {
         addUIInterruptionMonitor(withDescription: "Isolated simulator notifications") { alert in
             guard alert.buttons["Don’t Allow"].exists || alert.buttons["Don't Allow"].exists else { return false }
             let button = alert.buttons["Don’t Allow"].exists ? alert.buttons["Don’t Allow"] : alert.buttons["Don't Allow"]
@@ -14,7 +14,8 @@ final class InboxUITests: XCTestCase {
         }
         let app = XCUIApplication()
         app.launchEnvironment = ["NANOCODEX_STARTUP_FIXTURE": "1", "NANOCODEX_STARTUP_PROFILE": UUID().uuidString.lowercased(),
-                                 "NANOCODEX_STARTUP_REJECT": reject ? "1" : "0"]
+                                 "NANOCODEX_STARTUP_REJECT": reject ? "1" : "0", "NANOCODEX_STARTUP_HISTORY_WINDOW": historyWindow ? "1" : "0",
+                                 "NANOCODEX_STARTUP_WARM_TABS": warmTabs ? "1" : "0"]
         app.launch()
         return app
     }
@@ -40,6 +41,32 @@ final class InboxUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Loaded saved conversation."].exists)
         capture(app, "startup-restored-tab")
     }
+    func testCachedTabsSurviveBackgroundWithoutReloading() {
+        let app = startupFixture(warmTabs: true)
+        XCTAssertTrue(app.staticTexts["Loaded saved conversation."].waitForExistence(timeout: 10))
+        app.buttons["browser-tab:other"].tap()
+        XCTAssertTrue(app.staticTexts["Loaded other conversation."].waitForExistence(timeout: 10))
+        for _ in 0..<3 {
+            for id in ["saved", "other"] {
+                app.buttons["browser-tab:" + id].tap()
+                XCTAssertFalse(app.activityIndicators["conversation-loading"].exists)
+                XCTAssertTrue(app.staticTexts["Loaded \(id) conversation."].exists)
+            }
+        }
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        // Reveal the off-center tab before tapping; XCTest's implicit scroll
+        // can consume that first tap during the foreground transition.
+        app.scrollViews["browser-tabs"].swipeRight()
+        let saved = app.buttons["browser-tab:saved"]
+        saved.tap()
+        XCTAssertTrue(saved.isSelected)
+        XCTAssertFalse(app.activityIndicators["conversation-loading"].exists,
+                       "A normal background/foreground cycle must retain bounded cached tabs")
+        XCTAssertTrue(app.staticTexts["Loaded saved conversation."].exists)
+        capture(app, "warm-tab-restored-after-background")
+    }
+
     func testStartupSwitchCancelsObsoleteHistory() {
         let app = startupFixture()
         XCTAssertTrue(app.buttons["browser-tab:other"].waitForExistence(timeout: 15))
@@ -101,6 +128,44 @@ final class InboxUITests: XCTestCase {
         app.buttons["overview-card:saved"].tap()
         XCTAssertTrue(app.buttons["browser-tab:saved"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["browser-tab:saved"].isSelected)
+    }
+
+    func testNativeHistoryWindowCrossesEventAndByteBudgetsAndReturnsToLiveTail() {
+        let app = startupFixture(historyWindow: true)
+        XCTAssertTrue(app.buttons["browser-tab:saved"].waitForExistence(timeout: 15))
+        let conversation = app.scrollViews["conversation"]
+        XCTAssertTrue(conversation.waitForExistence(timeout: 10))
+        let first = conversation.staticTexts["History page 1 of 20"]
+        for _ in 0..<60 {
+            if first.exists && first.isHittable { break }
+            conversation.swipeDown(velocity: .fast)
+        }
+        XCTAssertTrue(first.isHittable, "Every page remains accessible beyond 2048 events and the 16 MiB memory target")
+        capture(app, "history-window-oldest-page")
+        let y = first.frame.minY
+        // Live delivery is scheduled by reaching the oldest HTTP page. Reading
+        // that page must remain stationary instead of refilling the newer tail.
+        let latest = app.buttons["latest-messages"]
+        XCTAssertTrue(latest.waitForExistence(timeout: 8))
+        let moved = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            !first.isHittable || abs(first.frame.minY - y) >= 8
+        }, object: nil)
+        moved.isInverted = true
+        XCTAssertEqual(XCTWaiter.wait(for: [moved], timeout: 4), .completed)
+        let next = conversation.staticTexts["History page 19 of 20"]
+        for _ in 0..<50 {
+            if next.exists && next.isHittable { break }
+            conversation.swipeUp(velocity: .fast)
+        }
+        XCTAssertTrue(next.isHittable, "Scrolling forward retrieves content trimmed while reading older pages")
+        capture(app, "history-window-forward-page")
+        latest.tap()
+        let live = conversation.staticTexts["Fixture live arrival beyond history window."]
+        XCTAssertTrue(live.waitForExistence(timeout: 15))
+        for _ in 0..<3 { if live.isHittable { break }; conversation.swipeUp() }
+        XCTAssertTrue(live.isHittable)
+        XCTAssertFalse(latest.exists, "The latest jump catches up to the independent live cursor")
+        capture(app, "history-window-live-tail")
     }
 
     func testStartupRejectsUnauthorizedRoster() {

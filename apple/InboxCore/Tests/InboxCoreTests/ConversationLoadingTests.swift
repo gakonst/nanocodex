@@ -2,6 +2,20 @@ import XCTest
 @testable import InboxCore
 
 final class ConversationLoadingTests: XCTestCase {
+    func testHistoryResponsePreservesAnAnswerLargerThanTheOldResponseAndWindowCaps() async throws {
+        let answer = String(repeating: "x", count: 33 * 1024 * 1024) + " full answer"
+        let fixture = try HTTPFixture { _ in
+            .init(body: "{\"data\":[{\"cursor\":\"1\",\"type\":\"turn_completed\",\"turn_id\":\"t\",\"final_message\":\"" + answer + "\"}],\"has_more\":false,\"latest_cursor\":\"1\"}")
+        }
+        defer { fixture.close() }
+        let client = ManagedClient(credential: try .init(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
+        defer { client.close() }
+        let history = try await client.conversationHistory("owned-agent")
+        XCTAssertEqual(history.rows.first?.text, answer)
+        XCTAssertEqual(history.events.count, 1)
+        XCTAssertFalse(history.hasMore)
+        XCTAssertFalse(history.hasNewer)
+    }
     func testTransportOnlyTailFindsMessagesWithoutAdvancingReplayCursor() async throws {
         var requests: [String] = []
         let fixture = try HTTPFixture { request in
@@ -37,19 +51,20 @@ final class ConversationLoadingTests: XCTestCase {
         XCTAssertTrue(history.hasMore)
     }
 
-    func testUnreadableTailRecoveryIsBoundedAndCancellationStopsPaging() async throws {
+    func testUnreadableTailRecoveryContinuesBeyondFourPagesAndCancellationStopsPaging() async throws {
         var count = 0
         let fixture = try HTTPFixture { _ in
             count += 1
+            if count == 9 { return .init(body: #"{"data":[{"cursor":"91","type":"turn_completed","turn_id":"t","final_message":"Found beyond the old cutoff"}],"has_more":false,"latest_cursor":"100"}"#) }
             return .init(body: "{\"data\":[{\"cursor\":\"\(100 - count)\",\"type\":\"transport_status\"}],\"has_more\":true,\"latest_cursor\":\"100\"}", delay: 0.01)
         }
         defer { fixture.close() }
         let client = ManagedClient(credential: try .init(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
         defer { client.close() }
         let history = try await client.conversationHistory("owned-agent")
-        XCTAssertEqual(count, 4)
-        XCTAssertTrue(history.hasMore)
-        XCTAssertTrue(history.rows.isEmpty)
+        XCTAssertEqual(count, 9)
+        XCTAssertFalse(history.hasMore)
+        XCTAssertEqual(history.rows.first?.text, "Found beyond the old cutoff")
         let request = Task { try await client.conversationHistory("owned-agent") }
         request.cancel()
         do { _ = try await request.value; XCTFail("Cancelled history returned a window") }

@@ -67,6 +67,32 @@ final class ToolPresentationTests: XCTestCase {
         }
     }
 
+    func testShellPollPreservesAllEarlierOutput() throws {
+        func event(_ cursor: String, _ type: String, _ payload: JSON) throws -> AgentEvent {
+            try AgentEvent(.object(["cursor": .string(cursor), "type": .string("event"), "turn_id": .string("t"), "event": .object(["type": .string(type), "payload": payload])]))
+        }
+        let original = "BEGIN\n" + String(repeating: "command line\n", count: 1000)
+        let final = String(repeating: "result line\n", count: 1000) + "END"
+        let events = try [
+            event("1", "tool.call", .object(["call_id": .string("c"), "tool": .string("exec_command"), "arguments": .object(["cmd": .string("command")])])),
+            event("2", "tool.result", .object(["call_id": .string("c"), "tool": .string("exec_command"), "structured_result": .object(["session_id": .number(42), "output": .string(original)])])),
+            event("3", "tool.call", .object(["call_id": .string("p"), "tool": .string("write_stdin"), "arguments": .object(["session_id": .number(42)])])),
+            event("4", "tool.result", .object(["call_id": .string("p"), "tool": .string("write_stdin"), "structured_result": .object(["exit_code": .number(0), "output": .string(final)])])),
+        ]
+        let rows = transcript(events)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.tool?.output.first { $0.label == "Output" }?.value, original + final)
+    }
+
+    func testGeneratedResultsRetainLargePayloads() throws {
+        let source = "BEGIN" + String(repeating: "a", count: 17 * 1024 * 1024) + "END"
+        var tool = ToolPresentation(name: "exec", arguments: .null)
+        tool.finish(.string(source))
+        let encoded = try XCTUnwrap(tool.generatedResults?.first)
+        XCTAssertEqual(try JSONDecoder().decode(String.self, from: Data(encoded.utf8)), source)
+        XCTAssertEqual(tool.output.first?.value, source)
+    }
+
     func testCommandPreservesInputAndFormatsResult() {
         var tool = ToolPresentation(name: "exec_command", arguments: .string("{\"cmd\":\"swift test\",\"workdir\":\"apple\"}"))
         tool.finish(.string("{\"output\":\"14 tests passed\",\"exit_code\":0}"))

@@ -1,4 +1,7 @@
 import Foundation
+import Darwin
+import UniformTypeIdentifiers
+import CoreTransferable
 #if canImport(ImageIO) && canImport(CoreGraphics)
 import ImageIO
 import CoreGraphics
@@ -11,13 +14,16 @@ public struct MessageAttachment: Identifiable, Codable, Equatable, Sendable {
     public let byteCount: Int
     public let video: VideoAttachmentInfo?
     public var isVideo: Bool { video != nil }
-    public var promptByteCount: Int { video?.promptByteCount ?? ((byteCount + 2) / 3) * 4 + 128 }
+    public var promptByteCount: Int { video?.promptByteCount ?? ((try? JSONEncoder().encode(ImageAttachmentContent.original(self)).count) ?? 0) }
+    public var originalPath: String {
+        isVideo ? VideoAttachmentContent.path(id: id, mediaType: mediaType) : ImageAttachmentContent.path(id: id, mediaType: mediaType)
+    }
 
     public init(id: String = UUID().uuidString, name: String, mediaType: String = "image/jpeg", byteCount: Int, video: VideoAttachmentInfo? = nil) throws {
-        guard Self.validID(id), !name.isEmpty, name.utf8.count <= 1024,
+        guard Self.validID(id), !name.isEmpty,
               !name.contains("/"), !name.contains("\\"), name != ".", name != "..",
               !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
-              (video == nil ? mediaType == "image/jpeg" && (1...AttachmentPreparation.maximumImageBytes).contains(byteCount)
+              (video == nil ? mediaType.range(of: #"^image/[a-z0-9][a-z0-9.+-]*$"#, options: .regularExpression) != nil && byteCount > 0
                : ["video/mp4", "video/quicktime"].contains(mediaType) && byteCount > 0) else {
             throw AttachmentError.invalidReference
         }
@@ -37,21 +43,34 @@ public struct MessageAttachment: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
-public struct PreparedAttachment: Equatable, Sendable {
+/// Photos provides original image files without materializing them as Data.
+public struct PickedImage: Transferable, Sendable {
+    public let url: URL
+    public static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .image) { received in
+            let copy = FileManager.default.temporaryDirectory.appendingPathComponent("picked-image-" + UUID().uuidString + "." + received.file.pathExtension)
+            try FileManager.default.copyItem(at: received.file, to: copy)
+            return PickedImage(url: copy)
+        }
+    }
+}
+
+public struct PreparedAttachment: Sendable {
+    public enum Source: Sendable { case file(URL), data(Data) }
     public let attachment: MessageAttachment
-    public let content: [JSON]
-    public init(attachment: MessageAttachment, content: [JSON]) {
-        self.attachment = attachment; self.content = content
+    public let source: Source
+    public let preview: Data
+    public var content: [JSON] { ImageAttachmentContent.original(attachment) }
+    public init(attachment: MessageAttachment, source: Source, preview: Data) {
+        self.attachment = attachment; self.source = source; self.preview = preview
     }
 }
 
 public enum AttachmentError: Error, LocalizedError, Equatable, Sendable {
-    case unsupportedImage, sourceTooLarge, imageTooLarge, invalidReference, invalidScope, unavailable
+    case unsupportedImage, invalidReference, invalidScope, unavailable
     public var errorDescription: String? {
         switch self {
-        case .unsupportedImage: return "Choose a supported still image, such as a JPEG, PNG, or HEIC photo."
-        case .sourceTooLarge: return "Choose an image smaller than 25 MB."
-        case .imageTooLarge: return "This image could not fit the attachment limit. Choose a smaller image."
+        case .unsupportedImage: return "Choose a supported image, such as a JPEG, PNG, or HEIC photo."
         case .invalidReference: return "This attachment is invalid. Remove it and add it again."
         case .invalidScope: return "Sign in before attaching media."
         case .unavailable: return "This attachment is no longer available. Remove it and add it again."
@@ -60,67 +79,41 @@ public enum AttachmentError: Error, LocalizedError, Equatable, Sendable {
 }
 
 public enum AttachmentPreparation {
-    public static let maximumSourceBytes = 25 * 1024 * 1024
-    public static let maximumImageBytes = 160 * 1024
-    public static let maximumPixelDimension = 1600
     static let dataURLPrefix = "data:image/jpeg;base64,"
 
-    public static func prepare(url: URL) throws -> PreparedAttachment {
+    public static func prepare(url: URL, name: String? = nil) throws -> PreparedAttachment {
         guard url.isFileURL else { throw AttachmentError.unsupportedImage }
-        #if os(iOS) || os(macOS)
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
-        #endif
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-        guard values.isRegularFile == true else { throw AttachmentError.unsupportedImage }
-        guard (values.fileSize ?? maximumSourceBytes + 1) <= maximumSourceBytes else { throw AttachmentError.sourceTooLarge }
-        return try prepare(data: Data(contentsOf: url, options: .mappedIfSafe), name: url.lastPathComponent, mediaType: "image/*")
+        guard values.isRegularFile == true, let count = values.fileSize, count > 0,
+              let image = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
+        else { throw AttachmentError.unsupportedImage }
+        return try prepare(image: image, source: .file(url), name: name ?? url.lastPathComponent, byteCount: count)
     }
 
     public static func prepare(data: Data, name: String, mediaType: String) throws -> PreparedAttachment {
-        guard data.count <= maximumSourceBytes else { throw AttachmentError.sourceTooLarge }
-        guard !data.isEmpty, mediaType.lowercased().hasPrefix("image/") else { throw AttachmentError.unsupportedImage }
-        #if canImport(ImageIO) && canImport(CoreGraphics)
-        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
-              CGImageSourceGetCount(source) == 1,
-              let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+        guard !data.isEmpty, mediaType.lowercased().hasPrefix("image/"),
+              let image = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary)
+        else { throw AttachmentError.unsupportedImage }
+        return try prepare(image: image, source: .data(data), name: name, byteCount: data.count)
+    }
+
+    private static func prepare(image: CGImageSource, source: PreparedAttachment.Source, name: String, byteCount: Int) throws -> PreparedAttachment {
+        guard CGImageSourceGetCount(image) > 0, let identifier = CGImageSourceGetType(image) as String?,
+              let mediaType = UTType(identifier)?.preferredMIMEType,
+              let thumbnail = CGImageSourceCreateThumbnailAtIndex(image, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: maximumPixelDimension,
+                kCGImageSourceThumbnailMaxPixelSize: 640,
                 kCGImageSourceShouldCacheImmediately: true
               ] as CFDictionary) else { throw AttachmentError.unsupportedImage }
-
-        for dimension in [maximumPixelDimension, 1280, 1024, 800, 640] {
-            let scale = min(1, CGFloat(dimension) / CGFloat(max(thumbnail.width, thumbnail.height)))
-            let width = max(1, Int(CGFloat(thumbnail.width) * scale))
-            let height = max(1, Int(CGFloat(thumbnail.height) * scale))
-            guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
-                                          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
-                throw AttachmentError.unsupportedImage
-            }
-            let rect = CGRect(x: 0, y: 0, width: width, height: height)
-            context.setFillColor(CGColor(gray: 1, alpha: 1)); context.fill(rect)
-            context.interpolationQuality = .high
-            context.draw(thumbnail, in: rect)
-            guard let image = context.makeImage() else { throw AttachmentError.unsupportedImage }
-            for quality in [0.82, 0.68, 0.52, 0.38] {
-                let bytes = NSMutableData()
-                guard let destination = CGImageDestinationCreateWithData(bytes, "public.jpeg" as CFString, 1, nil) else {
-                    throw AttachmentError.unsupportedImage
-                }
-                CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
-                guard CGImageDestinationFinalize(destination) else { throw AttachmentError.unsupportedImage }
-                if bytes.length <= maximumImageBytes {
-                    let jpeg = bytes as Data
-                    let attachment = try MessageAttachment(name: name, byteCount: jpeg.count)
-                    return PreparedAttachment(attachment: attachment, content: [imageContent(jpeg)])
-                }
-            }
-        }
-        throw AttachmentError.imageTooLarge
-        #else
-        throw AttachmentError.unsupportedImage
-        #endif
+        let bytes = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(bytes, "public.jpeg" as CFString, 1, nil) else { throw AttachmentError.unsupportedImage }
+        CGImageDestinationAddImage(destination, thumbnail, [kCGImageDestinationLossyCompressionQuality: 0.82] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { throw AttachmentError.unsupportedImage }
+        return PreparedAttachment(attachment: try MessageAttachment(name: name, mediaType: mediaType, byteCount: byteCount),
+                                  source: source, preview: bytes as Data)
     }
 
     static func imageContent(_ data: Data) -> JSON {
@@ -128,24 +121,13 @@ public enum AttachmentPreparation {
     }
 
     static func validateJPEG(_ data: Data, attachment: MessageAttachment) throws {
-        guard data.count == attachment.byteCount, data.count <= maximumImageBytes else { throw AttachmentError.invalidReference }
-        #if canImport(ImageIO) && canImport(CoreGraphics)
-        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
-              CGImageSourceGetType(source) as String? == "public.jpeg", CGImageSourceGetCount(source) == 1,
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let width = properties[kCGImagePropertyPixelWidth] as? Int,
-              let height = properties[kCGImagePropertyPixelHeight] as? Int,
-              (1...maximumPixelDimension).contains(width), (1...maximumPixelDimension).contains(height) else {
-            throw AttachmentError.invalidReference
-        }
-        #else
-        throw AttachmentError.unsupportedImage
-        #endif
+        guard data.count == attachment.byteCount,
+              let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              CGImageSourceGetType(source) as String? == "public.jpeg", CGImageSourceGetCount(source) > 0 else { throw AttachmentError.invalidReference }
     }
 }
 
-/// Like a local image prompt, retain a small file and create the data URL only
-/// when sending. Drafts and queued messages store only MessageAttachment metadata.
+/// Originals remain files. Only small path records enter turns and history.
 public struct AttachmentStore: Sendable {
     let directory: URL
 
@@ -164,44 +146,84 @@ public struct AttachmentStore: Sendable {
         var excluded = directory
         var values = URLResourceValues(); values.isExcludedFromBackup = true
         try excluded.setResourceValues(values)
+        try migrateOriginalImages()
+    }
+
+    /// Upgrade old JPEG-only drafts once; all reads then use the original-file layout.
+    private func migrateOriginalImages() throws {
+        let manager = FileManager.default
+        let marker = directory.appendingPathComponent(".original-images-v1")
+        guard !manager.fileExists(atPath: marker.path) else { return }
+        let lock = open(directory.appendingPathComponent(".migration.lock").path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard lock >= 0 else { throw AttachmentError.unavailable }
+        defer { close(lock) }
+        guard flock(lock, LOCK_EX) == 0 else { throw AttachmentError.unavailable }
+        defer { flock(lock, LOCK_UN) }
+        guard !manager.fileExists(atPath: marker.path) else { return }
+        for file in try manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) where file.pathExtension == "jpg" {
+            let id = file.deletingPathExtension().lastPathComponent
+            guard MessageAttachment.validID(id) else { continue }
+            let destination = try fileURL(for: id, extension: "original")
+            guard !manager.fileExists(atPath: destination.path),
+                  !["mp4", "mov", "json"].contains(where: { manager.fileExists(atPath: directory.appendingPathComponent(id + "." + $0).path) }) else { continue }
+            let temporary = destination.appendingPathExtension("migrating")
+            if manager.fileExists(atPath: temporary.path) { try manager.removeItem(at: temporary) }
+            defer { try? manager.removeItem(at: temporary) }
+            try manager.copyItem(at: fileURL(for: id), to: temporary)
+            try manager.moveItem(at: temporary, to: destination)
+        }
+        try Data().write(to: marker, options: .atomic)
     }
 
     public func save(_ prepared: PreparedAttachment) throws {
-        let content = prepared.content
-        guard content.count == 1, content[0]["type"].string == "image", content[0]["detail"].string == "high",
-              content[0]["image_url"].string.hasPrefix(AttachmentPreparation.dataURLPrefix),
-              let bytes = Data(base64Encoded: String(content[0]["image_url"].string.dropFirst(AttachmentPreparation.dataURLPrefix.count))) else {
-            throw AttachmentError.invalidReference
-        }
-        try AttachmentPreparation.validateJPEG(bytes, attachment: prepared.attachment)
-        let destination = try fileURL(for: prepared.attachment.id)
-        #if os(iOS)
-        try bytes.write(to: destination, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-        #else
-        try bytes.write(to: destination, options: .atomic)
-        #endif
+        let attachment = prepared.attachment
+        guard !attachment.isVideo else { throw AttachmentError.invalidReference }
+        let destination = try fileURL(for: attachment.id, extension: "original")
+        let preview = try fileURL(for: attachment.id)
+        guard !FileManager.default.fileExists(atPath: destination.path), !FileManager.default.fileExists(atPath: preview.path) else { throw AttachmentError.invalidReference }
+        try AttachmentPreparation.validateJPEG(prepared.preview, attachment: MessageAttachment(name: "preview.jpg", byteCount: prepared.preview.count))
+        do {
+            switch prepared.source {
+            case .file(let source):
+                let access = source.startAccessingSecurityScopedResource()
+                defer { if access { source.stopAccessingSecurityScopedResource() } }
+                guard source.isFileURL else { throw AttachmentError.invalidReference }
+                try FileManager.default.copyItem(at: source, to: destination)
+            case .data(let data): try data.write(to: destination, options: .atomic)
+            }
+            try validateImage(at: destination, attachment: attachment)
+            #if os(iOS)
+            try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: destination.path)
+            #endif
+            try prepared.preview.write(to: preview, options: .atomic)
+        } catch { try? remove(attachment); throw error }
+    }
+
+    private func validateImage(at url: URL, attachment: MessageAttachment) throws {
+        guard try url.resourceValues(forKeys: [.fileSizeKey]).fileSize == attachment.byteCount,
+              let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let identifier = CGImageSourceGetType(source) as String?,
+              UTType(identifier)?.preferredMIMEType == attachment.mediaType,
+              CGImageSourceGetCount(source) > 0 else { throw AttachmentError.invalidReference }
     }
 
     public func content(for attachments: [MessageAttachment]) throws -> [JSON] {
         try attachments.flatMap { attachment -> [JSON] in
             if attachment.isVideo { return try videoContent(for: attachment) }
             let location = try url(for: attachment)
-            let values = try location.resourceValues(forKeys: [.fileSizeKey])
-            guard values.fileSize == attachment.byteCount else { throw AttachmentError.invalidReference }
-            let bytes = try Data(contentsOf: location, options: .mappedIfSafe)
-            try AttachmentPreparation.validateJPEG(bytes, attachment: attachment)
-            return [AttachmentPreparation.imageContent(bytes)]
+            try validateImage(at: location, attachment: attachment)
+            return ImageAttachmentContent.original(attachment)
         }
     }
 
     public func url(for attachment: MessageAttachment) throws -> URL {
-        let location = try fileURL(for: attachment.id, extension: attachment.isVideo ? attachment.mediaType == "video/mp4" ? "mp4" : "mov" : "jpg")
+        let location = try fileURL(for: attachment.id, extension: attachment.isVideo ? attachment.mediaType == "video/mp4" ? "mp4" : "mov" : "original")
         guard FileManager.default.fileExists(atPath: location.path) else { throw AttachmentError.unavailable }
         return location
     }
 
     public func remove(_ attachment: MessageAttachment) throws {
-        for ext in attachment.isVideo ? ["jpg", "mp4", "mov", "json"] : ["jpg"] {
+        for ext in attachment.isVideo ? ["jpg", "mp4", "mov", "json", "original"] : ["jpg", "original"] {
             let location = try fileURL(for: attachment.id, extension: ext)
             if FileManager.default.fileExists(atPath: location.path) { try FileManager.default.removeItem(at: location) }
         }
@@ -212,13 +234,13 @@ public struct AttachmentStore: Sendable {
         let retained = Set(ids.map { $0.lowercased() })
         for file in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
             let id = file.deletingPathExtension().lastPathComponent
-            guard ["jpg", "mp4", "mov", "json"].contains(file.pathExtension), MessageAttachment.validID(id), !retained.contains(id.lowercased()) else { continue }
+            guard ["jpg", "mp4", "mov", "json", "original"].contains(file.pathExtension), MessageAttachment.validID(id), !retained.contains(id.lowercased()) else { continue }
             try FileManager.default.removeItem(at: try fileURL(for: id, extension: file.pathExtension))
         }
     }
 
     func fileURL(for id: String, extension ext: String = "jpg") throws -> URL {
-        guard MessageAttachment.validID(id), ["jpg", "mp4", "mov", "json"].contains(ext) else { throw AttachmentError.invalidReference }
+        guard MessageAttachment.validID(id), ["jpg", "mp4", "mov", "json", "original"].contains(ext) else { throw AttachmentError.invalidReference }
         let location = directory.appendingPathComponent(id.lowercased() + "." + ext, isDirectory: false)
         if FileManager.default.fileExists(atPath: location.path),
            try location.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey]).isRegularFile != true {

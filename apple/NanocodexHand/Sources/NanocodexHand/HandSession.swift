@@ -41,7 +41,8 @@ public final class HandSession {
             while !Task.isCancelled {
                 guard let self, self.generation == epoch else { return }
                 let socket = self.session.webSocketTask(with: self.request)
-                socket.maximumMessageSize = 256 * 1024
+                // Cloudflare Durable Objects accept WebSocket messages up to 32 MiB.
+                socket.maximumMessageSize = 32 * 1024 * 1024
                 self.socket = socket; socket.resume()
                 do { try await self.run(socket, epoch: epoch); delay = 1 }
                 catch {
@@ -71,7 +72,7 @@ public final class HandSession {
     }
     private func send(_ frame: JSON, _ socket: URLSessionWebSocketTask) async throws {
         let data = try JSONEncoder().encode(frame)
-        guard data.count <= 256 * 1024 else { throw HandFailure.protocolViolation }
+        guard data.count <= 32 * 1024 * 1024 else { throw HandFailure.protocolViolation }
         try await socket.send(.string(String(decoding: data, as: UTF8.self)))
     }
     private func run(_ socket: URLSessionWebSocketTask, epoch: UUID) async throws {
@@ -94,7 +95,7 @@ public final class HandSession {
             let message = try await socket.receive()
             let data: Data
             switch message { case .data(let value): data = value; case .string(let value): data = Data(value.utf8); @unknown default: throw HandFailure.protocolViolation }
-            guard data.count <= 256 * 1024 else { throw HandFailure.protocolViolation }
+            guard data.count <= 32 * 1024 * 1024 else { throw HandFailure.protocolViolation }
             let frame = try JSONDecoder().decode(JSON.self, from: data)
             guard generation == epoch, !Task.isCancelled else { return }
             switch frame["type"].string {
@@ -123,7 +124,7 @@ public final class HandSession {
         guard !closed else { throw CancellationError() }
         let id = frame["call_id"].string, budget = frame["output_byte_budget"].number
         guard !id.isEmpty, id.utf8.count <= 128, !frame["session_id"].string.isEmpty,
-              budget >= 0, budget <= 128 * 1024, frame["deadline_at"].number > 0 else { throw HandFailure.protocolViolation }
+              budget.isFinite, budget >= 0, frame["deadline_at"].number > 0 else { throw HandFailure.protocolViolation }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let identity = try encoder.encode(frame)
         if let retained = receipts[id] {
@@ -134,7 +135,6 @@ public final class HandSession {
             guard active.identity == identity else { throw HandFailure.protocolViolation }
             return try await active.task.value
         }
-        guard receipts.count < 512, calls.count < 64 else { throw HandFailure.protocolViolation }
         let task = Task { try await self.execute(frame, id: id, budget: budget) }
         calls[id] = (identity, task)
         defer { calls.removeValue(forKey: id) }

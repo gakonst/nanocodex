@@ -84,7 +84,7 @@ public struct ContextStore: Sendable {
         try capture(inputs, scope: scope, now: now, generation: nil)
     }
     private func capture(_ inputs: [CaptureInput], scope: String, now: Date = Date(), generation: String?) throws -> [CapturedContext] {
-        guard !inputs.isEmpty, inputs.count <= 10 else { throw CaptureError.tooLarge }
+        guard !inputs.isEmpty else { throw CaptureError.empty }
         let inputs = try inputs.map { try $0.validated() }
         return try transaction { state in
             guard state.activeScope == scope else { throw CaptureError.accountChanged }
@@ -99,7 +99,6 @@ public struct ContextStore: Sendable {
                     // briefly; identical later messages remain distinct events.
                     return item.input == input && abs(now.timeIntervalSince(item.capturedAt)) <= 300
                 }) { results.append(existing); continue }
-                guard account.items.count < 1000 else { throw CaptureError.full }
                 let item = CapturedContext(input: input, capturedAt: now)
                 account.items.append(item); results.append(item)
             }
@@ -111,7 +110,8 @@ public struct ContextStore: Sendable {
         try transaction { state in
             guard state.activeScope == scope else { throw CaptureError.accountChanged }
             guard var account = state.accounts[scope] else { return }
-            for index in account.items.indices where ids.contains(account.items[index].id) {
+            let selected = Set(ids)
+            for index in account.items.indices where selected.contains(account.items[index].id) {
                 account.items[index].usedBy[agentID] = turnID
             }
             state.accounts[scope] = account
@@ -142,15 +142,13 @@ public struct ContextStore: Sendable {
         var state = State()
         if manager.fileExists(atPath: file.path) {
             // Corrupt or unknown storage must not silently reset consent or data.
-            let data = try Data(contentsOf: file)
-            guard data.count <= 8 * 1024 * 1024 else { throw CaptureError.full }
+            let data = try Data(contentsOf: file, options: .mappedIfSafe)
             state = try JSONDecoder().decode(State.self, from: data)
             guard state.version == 1 else { throw CaptureError.unavailable }
         }
         let result = try operation(&state)
         if write {
             let data = try JSONEncoder().encode(state)
-            guard data.count <= 8 * 1024 * 1024 else { throw CaptureError.full }
             #if os(iOS)
             try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
             #else

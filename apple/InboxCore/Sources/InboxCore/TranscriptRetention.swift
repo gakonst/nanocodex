@@ -19,4 +19,15 @@ public enum TranscriptRetention {
         }
         return count
     }
+    /// Backward paging evicts the opposite edge. Even a single oversized event
+    /// remains readable; eviction never changes whether history exists.
+    public static func removableSuffixCount(byteCounts: [Int], retainedBytes: Int, byteLimit: Int) -> Int {
+        var remaining = retainedBytes, count = 0
+        while count + 1 < byteCounts.count, remaining > byteLimit {
+            remaining -= byteCounts[byteCounts.count - 1 - count]
+            count += 1
+        }
+        return count
+    }
+
 }

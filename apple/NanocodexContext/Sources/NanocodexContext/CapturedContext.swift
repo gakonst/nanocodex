@@ -1,15 +1,13 @@
 import Foundation
 
 public enum CaptureError: LocalizedError {
-    case unavailable, disabled, accountChanged, empty, tooLarge, full, unsupported, unreadable
+    case unavailable, disabled, accountChanged, empty, unsupported, unreadable
     public var errorDescription: String? {
         switch self {
         case .unavailable: return "Context storage is unavailable. Open Nanocodex and try again."
         case .disabled: return "Open Context in Nanocodex and enable capture for your account first."
         case .accountChanged: return "The connected account changed. Open Nanocodex and try again."
         case .empty: return "Add some text or a web link to capture."
-        case .tooLarge: return "This item is too large. Capture up to 24 KB of text or a file up to 8 MB."
-        case .full: return "Context storage is full. Remove some captures in Nanocodex and try again."
         case .unsupported: return "Share text, a web link, an image, a PDF, or a plain text file."
         case .unreadable: return "No readable text was found. Share text or a link instead."
         }
@@ -39,9 +37,6 @@ public struct CaptureInput: Codable, Equatable, Sendable {
         value.url = url.trimmingCharacters(in: .whitespacesAndNewlines)
         if value.source.isEmpty { value.source = "Shared" }
         guard !value.text.isEmpty || !value.url.isEmpty else { throw CaptureError.empty }
-        guard value.text.utf8.count <= 24 * 1024,
-              [value.source, sender, thread, externalID, filename].allSatisfy({ $0.utf8.count <= 512 }),
-              value.url.utf8.count <= 4096 else { throw CaptureError.tooLarge }
         if !value.url.isEmpty {
             guard let link = URL(string: value.url), ["https", "http"].contains(link.scheme?.lowercased() ?? ""),
                   link.host != nil, link.user == nil, link.password == nil else { throw CaptureError.unsupported }
@@ -92,17 +87,8 @@ public enum ContextPrompt {
     }
     public static func candidates(in snapshot: ContextSnapshot, agentID: String) -> [CapturedContext] {
         guard snapshot.enabled else { return [] }
-        var bytes = 0
-        var result: [CapturedContext] = []
-        for item in snapshot.items.reversed() {
-            if result.count == 12 { break }
-            guard snapshot.routes[item.input.sourceKey] == agentID, item.usedBy[agentID] == nil else { continue }
-            // Reserve room for JSON escaping and provenance inside a bounded turn.
-            let size = ((try? render([item]).utf8.count) ?? Int.max)
-            guard size <= 48 * 1024 - bytes else { continue }
-            bytes += size
-            result.append(item)
+        return snapshot.items.reversed().filter {
+            snapshot.routes[$0.input.sourceKey] == agentID && $0.usedBy[agentID] == nil
         }
-        return result
     }
 }

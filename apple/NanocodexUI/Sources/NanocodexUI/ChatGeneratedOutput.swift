@@ -15,33 +15,33 @@ public struct ChatGeneratedOutput: Identifiable, Equatable, Hashable, Sendable {
     private init(kind: Kind, text: String = "", source: String? = nil, mimeType: String? = nil, title: String = "") {
         self.kind = kind; self.text = text; self.source = source; self.mimeType = mimeType; self.title = title
         // Labels/metadata can differ between a nested tool and its outer exec.
-        let identity = kind.rawValue + "\n" + (source ?? (kind == .unsupported ? title + "\n" + text : text))
-        id = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
+        var hash = SHA256()
+        hash.update(data: Data((kind.rawValue + "\n").utf8))
+        let identity = source ?? (kind == .unsupported ? title + "\n" + text : text)
+        let bytes = identity.utf8
+        var offset = bytes.startIndex
+        while offset != bytes.endIndex {
+            let end = bytes.index(offset, offsetBy: 64 * 1024, limitedBy: bytes.endIndex) ?? bytes.endIndex
+            hash.update(data: Data(bytes[offset..<end])); offset = end
+        }
+        id = hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     public static func parse(results: [String], includeText: Bool = false) -> [Self] {
         var parser = Parser(includesText: includeText)
         for source in results {
-            guard source.utf8.count <= Parser.maxBytes else {
-                parser.append(.init(kind: .unsupported, text: "This generated output is too large to display.", title: "Generated output")); continue
-            }
-            parser.walk(decode(source) ?? source, depth: 0, includeText: includeText)
+            parser.walk(decode(source) ?? source, includeText: includeText)
         }
         return parser.outputs
     }
 
     /// Keep Activity readable without ever printing an embedded binary payload.
     public static func sanitizedText(_ source: String) -> String {
-        guard source.utf8.count <= Parser.maxBytes else { return "Generated output is too large to display." }
-        let value = sanitized(decode(source) ?? source, depth: 0)
-        if let text = value as? String { return abbreviated(text) }
+        let value = sanitized(decode(source) ?? source)
+        if let text = value as? String { return text }
         guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed, .sortedKeys, .prettyPrinted]),
               let text = String(data: data, encoding: .utf8) else { return "Generated output" }
-        return abbreviated(text)
-    }
-
-    private static func abbreviated(_ text: String) -> String {
-        text.count > 200_000 ? String(text.prefix(200_000)) + "\n\n[Additional output omitted from the preview]" : text
+        return text
     }
 
     private static func decode(_ text: String) -> Any? {
@@ -49,58 +49,86 @@ public struct ChatGeneratedOutput: Identifiable, Equatable, Hashable, Sendable {
         return try? JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])
     }
 
-    private static func sanitized(_ value: Any, depth: Int) -> Any {
-        guard depth < 12 else { return "Additional output omitted" }
-        if let text = value as? String {
-            if text.lowercased().hasPrefix("data:") { return "Embedded attachment" }
-            if let decoded = decode(text) { return sanitized(decoded, depth: depth + 1) }
-            // Data URLs can also occur inside emitted Markdown.
-            return text.replacingOccurrences(of: #"data:[^\s\)\]\"<>]+"#, with: "[embedded attachment]", options: .regularExpression)
-        }
-        if let array = value as? [Any] { return array.prefix(128).map { sanitized($0, depth: depth + 1) } }
-        if let object = value as? [String: Any] {
-            let type = object["type"] as? String ?? ""
-            let binary = ["image", "input_image", "audio", "input_audio", "video", "input_video"].contains(type)
-                || object["mimeType"] != nil || object["mime_type"] != nil
-            return object.reduce(into: [String: Any]()) { result, field in
-                if field.key == "blob" || (field.key == "data" && binary) { result[field.key] = "Embedded attachment" }
-                else { result[field.key] = sanitized(field.value, depth: depth + 1) }
+    private enum SanitizeStep {
+        case value(Any), array(Int), object([String])
+    }
+
+    private static func sanitized(_ value: Any) -> Any {
+        var work: [SanitizeStep] = [.value(value)]
+        var values: [Any] = []
+        while let step = work.popLast() {
+            switch step {
+            case .value(let value):
+                if let text = value as? String {
+                    if text.prefix(5).lowercased() == "data:" { values.append("Embedded attachment") }
+                    else if let decoded = decode(text) { work.append(.value(decoded)) }
+                    else {
+                        values.append(text.replacingOccurrences(of: #"data:[^\s\)\]\"<>]+"#,
+                            with: "[embedded attachment]", options: [.regularExpression, .caseInsensitive]))
+                    }
+                } else if let array = value as? [Any] {
+                    work.append(.array(array.count))
+                    work.append(contentsOf: array.reversed().map(SanitizeStep.value))
+                } else if let object = value as? [String: Any] {
+                    let type = object["type"] as? String ?? ""
+                    let binary = ["image", "input_image", "audio", "input_audio", "video", "input_video"].contains(type)
+                        || object["mimeType"] != nil || object["mime_type"] != nil
+                    let keys = object.keys.sorted()
+                    work.append(.object(keys))
+                    for key in keys.reversed() {
+                        work.append(.value(key == "blob" || (key == "data" && binary)
+                            ? "Embedded attachment" : object[key]!))
+                    }
+                } else { values.append(value) }
+            case .array(let count):
+                let array = Array(values.suffix(count))
+                values.removeLast(count); values.append(array)
+            case .object(let keys):
+                let object = Dictionary(uniqueKeysWithValues: zip(keys, values.suffix(keys.count)))
+                values.removeLast(keys.count); values.append(object)
             }
         }
-        return value
+        return values.first ?? NSNull()
     }
 
     private struct Parser {
-        static let maxBytes = 16 * 1024 * 1024
         // Tool content blocks and embedded resources are transport formats,
         // not permission to promote their text into the conversation.
         let includesText: Bool
         var outputs: [ChatGeneratedOutput] = []
         var seen = Set<String>()
-        var nodes = 0
         var recognized = 0
 
         mutating func append(_ output: ChatGeneratedOutput) {
-            guard outputs.count < 64, seen.insert(output.id).inserted else { return }
+            guard seen.insert(output.id).inserted else { return }
             outputs.append(output)
         }
 
-        mutating func walk(_ value: Any, depth: Int, includeText: Bool) {
-            nodes += 1
-            guard depth < 12, nodes <= 2048, outputs.count < 64 else { return }
-            if let string = value as? String {
-                if let decoded = ChatGeneratedOutput.decode(string) {
-                    let before = recognized
-                    walk(decoded, depth: depth + 1, includeText: false)
-                    if recognized > before || !includesText { return }
+        private enum Step {
+            case value(Any, includeText: Bool)
+            case fallback(String, recognized: Int, includeText: Bool)
+        }
+
+        mutating func walk(_ value: Any, includeText: Bool) {
+            var work: [Step] = [.value(value, includeText: includeText)]
+            while let step = work.popLast() {
+                switch step {
+                case .fallback(let string, let before, let includeText):
+                    if recognized == before, includesText, includeText { emitText(string) }
+                case .value(let value, let includeText):
+                    if let string = value as? String {
+                        if let decoded = ChatGeneratedOutput.decode(string) {
+                            work.append(.fallback(string, recognized: recognized, includeText: includeText))
+                            work.append(.value(decoded, includeText: false))
+                        } else if includeText { emitText(string) }
+                    } else if let array = value as? [Any] {
+                        work.append(contentsOf: array.reversed().map { .value($0, includeText: includeText) })
+                    } else { walkObject(value, includeText: includeText, work: &work) }
                 }
-                if includeText { emitText(string) }
-                return
             }
-            if let array = value as? [Any] {
-                for item in array.prefix(128) { walk(item, depth: depth + 1, includeText: includeText) }
-                return
-            }
+        }
+
+        private mutating func walkObject(_ value: Any, includeText: Bool, work: inout [Step]) {
             guard let object = value as? [String: Any] else { return }
             let type = object["type"] as? String ?? ""
             let mime = (object["mimeType"] ?? object["mime_type"]) as? String
@@ -108,7 +136,7 @@ public struct ChatGeneratedOutput: Identifiable, Equatable, Hashable, Sendable {
             if ["input_text", "text", "output_text", "image", "input_image", "image_url", "audio", "input_audio", "output_audio", "video", "input_video", "resource_link", "file", "input_file", "output_file", "resource", "unsupported"].contains(type) { recognized += 1 }
             switch type {
             case "input_text", "text", "output_text":
-                if let text = object["text"] { walk(text, depth: depth + 1, includeText: true) }
+                if let text = object["text"] { work.append(.value(text, includeText: true)) }
                 return
             case "image", "input_image", "image_url":
                 emitAsset(object, kind: .image, mime: mime ?? "image/png", title: title); return
@@ -119,7 +147,7 @@ public struct ChatGeneratedOutput: Identifiable, Equatable, Hashable, Sendable {
             case "resource_link", "file", "input_file", "output_file":
                 emitAsset(object, kind: kind(for: mime), mime: mime, title: title); return
             case "resource":
-                if let resource = object["resource"] { walkResource(resource, depth: depth + 1) }
+                if let resource = object["resource"] { walkResource(resource) }
                 return
             case "unsupported":
                 append(.init(kind: .unsupported, text: "This generated output is unavailable here.", title: title.isEmpty ? "Generated output" : title)); return
@@ -137,16 +165,16 @@ public struct ChatGeneratedOutput: Identifiable, Equatable, Hashable, Sendable {
                 emitAsset(object, kind: .video, mime: mime ?? "video/mp4", title: title)
             } else if mime != nil, object["url"] != nil || object["uri"] != nil || object["blob"] != nil {
                 recognized += 1
-                walkResource(object, depth: depth + 1)
+                walkResource(object)
             }
-            for key in ["content", "result", "structured_result", "structuredContent", "output", "outputs", "attachments", "artifacts", "files", "images", "data"] {
+            for key in ["content", "result", "structured_result", "structuredContent", "output", "outputs", "attachments", "artifacts", "files", "images", "data"].reversed() {
                 if let child = object[key], child is [Any] || child is [String: Any] || key != "data" {
-                    walk(child, depth: depth + 1, includeText: includeText && ["result", "output"].contains(key))
+                    work.append(.value(child, includeText: includeText && ["result", "output"].contains(key)))
                 }
             }
         }
 
-        mutating func walkResource(_ value: Any, depth: Int) {
+        mutating func walkResource(_ value: Any) {
             guard let resource = value as? [String: Any] else { return }
             let mime = (resource["mimeType"] ?? resource["mime_type"]) as? String
             let title = (resource["title"] ?? resource["name"]) as? String ?? resourceTitle(resource["uri"] as? String)
@@ -154,7 +182,7 @@ public struct ChatGeneratedOutput: Identifiable, Equatable, Hashable, Sendable {
                 if mime == "text/html" || mime == "image/svg+xml" {
                     emitSource("data:\(mime!);base64," + Data(text.utf8).base64EncodedString(), kind: .file, mime: mime, title: title)
                 } else {
-                    emitText(text, offerFullText: false)
+                    emitText(text)
                     let type = mime ?? "text/plain"
                     emitSource("data:\(type);base64," + Data(text.utf8).base64EncodedString(), kind: .file, mime: type, title: title)
                 }
@@ -163,27 +191,29 @@ public struct ChatGeneratedOutput: Identifiable, Equatable, Hashable, Sendable {
             }
         }
 
-        mutating func emitAsset(_ object: [String: Any], kind: Kind, mime: String?, title: String) {
-            if let blob = (object["data"] ?? object["blob"]) as? String, let mime {
-                emitSource(blob.hasPrefix("data:") ? blob : "data:\(mime);base64," + blob, kind: kind, mime: mime, title: title); return
-            }
-            for key in ["image_url", "audio_url", "video_url", "url", "uri", "file_url"] {
-                if let source = object[key] as? String { emitSource(source, kind: kind, mime: mime, title: title); return }
-                if let nested = object[key] as? [String: Any], let source = nested["url"] as? String {
-                    emitSource(source, kind: kind, mime: mime, title: title); return
+        mutating func emitAsset(_ value: [String: Any], kind: Kind, mime: String?, title: String) {
+            var object = value, kind = kind, mime = mime
+            while true {
+                if let blob = (object["data"] ?? object["blob"]) as? String, let mime {
+                    emitSource(blob.hasPrefix("data:") ? blob : "data:\(mime);base64," + blob, kind: kind, mime: mime, title: title); return
                 }
+                for key in ["image_url", "audio_url", "video_url", "url", "uri", "file_url"] {
+                    if let source = object[key] as? String { emitSource(source, kind: kind, mime: mime, title: title); return }
+                    if let nested = object[key] as? [String: Any], let source = nested["url"] as? String {
+                        emitSource(source, kind: kind, mime: mime, title: title); return
+                    }
+                }
+                guard let audio = object["input_audio"] as? [String: Any] else {
+                    append(.init(kind: .unsupported, text: "This generated attachment is unavailable here.", title: title.isEmpty ? "Generated file" : title)); return
+                }
+                object = audio; kind = .audio; mime = audioMime(audio["format"] as? String)
             }
-            if let audio = object["input_audio"] as? [String: Any] { emitAsset(audio, kind: .audio, mime: audioMime(audio["format"] as? String), title: title); return }
-            append(.init(kind: .unsupported, text: "This generated attachment is unavailable here.", title: title.isEmpty ? "Generated file" : title))
         }
 
         mutating func emitSource(_ source: String, kind: Kind, mime: String?, title: String) {
             let clean = source.trimmingCharacters(in: .whitespacesAndNewlines)
             let label = title.isEmpty ? (kind == .file ? resourceTitle(clean) : "Generated " + kind.rawValue) : title
-            guard clean.utf8.count <= Self.maxBytes else {
-                append(.init(kind: .unsupported, text: "This generated attachment is too large to display.", title: label)); return
-            }
-            if clean.lowercased().hasPrefix("data:"), let comma = clean.firstIndex(of: ","),
+            if clean.prefix(5).lowercased() == "data:", let comma = clean.firstIndex(of: ","),
                clean[..<comma].lowercased().hasSuffix(";base64") {
                 let actualMime = String(clean[clean.index(clean.startIndex, offsetBy: 5)..<comma]).lowercased().components(separatedBy: ";").first ?? mime
                 let safeKind: Kind = actualMime == "text/html" || actualMime == "image/svg+xml" ? .file : kind
@@ -198,14 +228,11 @@ public struct ChatGeneratedOutput: Identifiable, Equatable, Hashable, Sendable {
             append(.init(kind: .unsupported, text: "This resource is not available on this device.", title: label))
         }
 
-        mutating func emitText(_ value: String, offerFullText: Bool = true) {
+        mutating func emitText(_ value: String) {
             guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
             if value.range(of: #"^Script (completed|running[^\n]*)\nWall time [0-9.]+ seconds\nOutput:\s*$"#, options: .regularExpression) != nil { return }
             if value.hasPrefix("data:"), let type = value.dropFirst(5).split(separator: ";").first {
                 emitSource(value, kind: kind(for: String(type)), mime: String(type), title: ""); return
-            }
-            if includesText, offerFullText, value.count > 200_000 {
-                emitSource("data:text/plain;base64," + Data(value.utf8).base64EncodedString(), kind: .file, mime: "text/plain", title: "Full output.txt")
             }
             var cursor = value.startIndex
             // Foundation renders link text but not Markdown image attachments.
@@ -242,7 +269,7 @@ public struct ChatGeneratedOutput: Identifiable, Equatable, Hashable, Sendable {
         func audioMime(_ format: String?) -> String { format == "wav" ? "audio/wav" : "audio/mpeg" }
         func resourceTitle(_ source: String?) -> String {
             guard let source, !source.hasPrefix("data:"), let name = URL(string: source)?.lastPathComponent, !name.isEmpty else { return "Generated file" }
-            return String(name.prefix(160))
+            return name
         }
     }
 }

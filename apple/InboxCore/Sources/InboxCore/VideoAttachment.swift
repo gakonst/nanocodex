@@ -12,10 +12,10 @@ public struct VideoAttachmentInfo: Codable, Equatable, Sendable {
     public var hasAudio: Bool? = nil
     func validate() throws {
         guard duration.isFinite, duration > 0, duration < Double(Int.max),
-              (original == true ? timestamps.isEmpty : (1...VideoAttachmentPreparation.maximumFrames).contains(timestamps.count)),
+              (original == true ? timestamps.isEmpty : !timestamps.isEmpty),
               timestamps.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= duration }),
               zip(timestamps, timestamps.dropFirst()).allSatisfy({ $0.0 <= $0.1 }),
-              (1...VideoAttachmentPreparation.maximumPromptBytes).contains(promptByteCount) else { throw AttachmentError.invalidReference }
+              promptByteCount > 0 else { throw AttachmentError.invalidReference }
     }
 }
 
@@ -32,11 +32,10 @@ public struct TranscriptVideo: Identifiable, Codable, Equatable, Sendable {
 }
 
 public enum VideoAttachmentError: LocalizedError {
-    case unsupported, framesTooLarge
+    case unsupported
     public var errorDescription: String? {
         switch self {
         case .unsupported: return "Choose a playable MP4 or MOV video."
-        case .framesTooLarge: return "The video frames could not fit this message."
         }
     }
 }
@@ -64,11 +63,6 @@ public struct PreparedVideoAttachment: Sendable {
 }
 
 public enum VideoAttachmentPreparation {
-    // Retained limits for reading historical frame attachments. New uploads
-    // preserve the source file; a single poster is used only by the local UI.
-    public static let maximumFrames = 12
-    public static let maximumPromptBytes = 224 * 1024
-
     public static func prepare(url: URL, name: String? = nil) async throws -> PreparedVideoAttachment {
         guard url.isFileURL, ["mov", "mp4", "m4v"].contains(url.pathExtension.lowercased()) else { throw VideoAttachmentError.unsupported }
         let access = url.startAccessingSecurityScopedResource()
@@ -88,7 +82,7 @@ public enum VideoAttachmentPreparation {
         generator.maximumSize = CGSize(width: 640, height: 640)
         defer { generator.cancelAllCGImageGeneration() }
         let frame = try await generator.image(at: .zero)
-        let poster = try jpeg(frame.image, budget: AttachmentPreparation.maximumImageBytes)
+        let poster = try jpeg(frame.image)
         try Task.checkCancellation()
         let id = UUID().uuidString
         let title = name ?? url.lastPathComponent
@@ -100,24 +94,12 @@ public enum VideoAttachmentPreparation {
         return PreparedVideoAttachment(attachment: attachment, source: url, content: content, poster: poster)
     }
 
-    private static func jpeg(_ image: CGImage, budget: Int) throws -> Data {
-        for dimension in [1280, 1024, 800, 640, 480, 320] {
-            let scale = min(1, CGFloat(dimension) / CGFloat(max(image.width, image.height)))
-            let width = max(1, Int(CGFloat(image.width) * scale)), height = max(1, Int(CGFloat(image.height) * scale))
-            guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
-                                          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw VideoAttachmentError.unsupported }
-            context.setFillColor(CGColor(gray: 1, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-            context.interpolationQuality = .high; context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-            guard let scaled = context.makeImage() else { throw VideoAttachmentError.unsupported }
-            for quality in [0.82, 0.65, 0.45, 0.3] {
-                let bytes = NSMutableData()
-                guard let destination = CGImageDestinationCreateWithData(bytes, "public.jpeg" as CFString, 1, nil) else { throw VideoAttachmentError.unsupported }
-                CGImageDestinationAddImage(destination, scaled, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
-                guard CGImageDestinationFinalize(destination) else { throw VideoAttachmentError.unsupported }
-                if bytes.length <= budget { return bytes as Data }
-            }
-        }
-        throw VideoAttachmentError.framesTooLarge
+    private static func jpeg(_ image: CGImage) throws -> Data {
+        let bytes = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(bytes, "public.jpeg" as CFString, 1, nil) else { throw VideoAttachmentError.unsupported }
+        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.82] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { throw VideoAttachmentError.unsupported }
+        return bytes as Data
     }
 }
 
@@ -174,7 +156,7 @@ enum VideoAttachmentContent {
                let line = text.dropFirst(marker.count).split(separator: "\n").first,
                let header = try? JSONDecoder().decode(JSON.self, from: Data(line.utf8)),
                MessageAttachment.validID(header["id"].string), !header["name"].string.isEmpty,
-               header["name"].string.utf8.count <= 1024, header["audio_included"] == .bool(false),
+               header["audio_included"] == .bool(false),
                header["timestamps"].array.allSatisfy({ if case .number = $0 { return true }; return false }) {
                 let times = header["timestamps"].array.map(\.number)
                 let info = VideoAttachmentInfo(duration: header["duration"].number, timestamps: times, promptByteCount: 1)
@@ -200,7 +182,6 @@ enum VideoAttachmentContent {
 
 extension AttachmentStore {
     public func previewURL(for attachment: MessageAttachment) throws -> URL {
-        guard attachment.isVideo else { return try url(for: attachment) }
         let location = try fileURL(for: attachment.id)
         guard FileManager.default.fileExists(atPath: location.path) else { throw AttachmentError.unavailable }
         return location
@@ -235,14 +216,14 @@ extension AttachmentStore {
     func videoContent(for attachment: MessageAttachment) throws -> [JSON] {
         let location = try fileURL(for: attachment.id, extension: "json")
         guard let size = try location.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-              size == attachment.video?.promptByteCount, size <= VideoAttachmentPreparation.maximumPromptBytes else { throw AttachmentError.invalidReference }
+              size == attachment.video?.promptByteCount else { throw AttachmentError.invalidReference }
         let data = try Data(contentsOf: location)
         let content = try JSONDecoder().decode([JSON].self, from: data)
         _ = try validatedVideo(content, data: data, attachment: attachment)
         return content
     }
     private func validatedVideo(_ content: [JSON], data: Data, attachment: MessageAttachment) throws -> [String] {
-        guard let info = attachment.video, data.count == info.promptByteCount, data.count <= VideoAttachmentPreparation.maximumPromptBytes else { throw AttachmentError.invalidReference }
+        guard let info = attachment.video, data.count == info.promptByteCount else { throw AttachmentError.invalidReference }
         let parsed = VideoAttachmentContent.project(content)
         guard parsed.remaining.isEmpty, parsed.videos.count == 1, let video = parsed.videos.first,
               video.id == attachment.id, video.name == attachment.name, video.duration == info.duration, video.timestamps == info.timestamps else { throw AttachmentError.invalidReference }
@@ -251,13 +232,10 @@ extension AttachmentStore {
                   video.byteCount == attachment.byteCount, video.mediaType == attachment.mediaType,
                   video.hasAudio == info.hasAudio else { throw AttachmentError.invalidReference }
         } else if video.path != nil { throw AttachmentError.invalidReference }
-        var bytes = 0
         for image in video.images {
             guard let data = Data(base64Encoded: String(image.dropFirst(AttachmentPreparation.dataURLPrefix.count))) else { throw AttachmentError.invalidReference }
             try AttachmentPreparation.validateJPEG(data, attachment: MessageAttachment(name: "frame.jpg", byteCount: data.count))
-            bytes += data.count
         }
-        guard bytes <= AttachmentPreparation.maximumImageBytes else { throw AttachmentError.invalidReference }
         return video.images
     }
 }

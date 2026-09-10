@@ -247,13 +247,22 @@ enum StartupFixture {
 
 private final class StartupFixtureProtocol: URLProtocol, @unchecked Sendable {
     private static let queue = DispatchQueue(label: "nanocodex.startup-fixture")
+    private static var historyLive = false
+    private static var historyStreams: [String: StartupFixtureProtocol] = [:]
+    private static let historyPages = 20
+    private static let historyPageSize = 128
+    private static let historyPadding = String(repeating: "p", count: 1_200_000)
+    private static var warmTabs: Bool { ProcessInfo.processInfo.environment["NANOCODEX_STARTUP_WARM_TABS"] == "1" }
+    private static var historyWindow: Bool { ProcessInfo.processInfo.environment["NANOCODEX_STARTUP_HISTORY_WINDOW"] == "1" }
     private var stopped = false
     private let requestID = UUID().uuidString
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host?.hasPrefix("startup-fixture-") == true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-    private func record(_ phase: String) {
-        let event: [String: Any] = ["phase": phase, "request": requestID, "path": request.url!.path,
+    private func record(_ phase: String, bytes: Int? = nil) {
+        var event: [String: Any] = ["phase": phase, "request": requestID, "path": request.url!.path,
+                                    "query": request.url!.query ?? "",
                                     "time": ProcessInfo.processInfo.systemUptime, "process": ProcessInfo.processInfo.processIdentifier]
+        if let bytes { event["bytes"] = bytes }
         let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("startup-requests.jsonl")
         let data = (try! JSONSerialization.data(withJSONObject: event)) + Data("\n".utf8)
         if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
@@ -285,10 +294,24 @@ private final class StartupFixtureProtocol: URLProtocol, @unchecked Sendable {
             } else {
                 body = "{\"agent_id\":\"\(id)\",\"latest_event_cursor\":\"1\",\"active_turns\":[]}"
             }
+            if Self.warmTabs { delay = path.hasSuffix("/events/history") ? 2 : 0.1 }
+            if Self.historyWindow {
+                delay = 0.12
+                if path == "/v1/agents" {
+                    let now = Date().timeIntervalSince1970 * 1000
+                    body = #"{"data":["saved"],"summaries":{"saved":{"title":"History window fixture","updated_at":\#(now),"turn_count":20}}}"#
+                } else if path.hasSuffix("/events/history") {
+                    body = Self.historyBody(request.url!)
+                } else if isStream {
+                    Self.historyStreams[requestID] = self
+                } else if !path.hasSuffix("/triggers") {
+                    body = "{\"agent_id\":\"saved\",\"latest_event_cursor\":\"\(Self.historyLatest)\",\"active_turns\":[]}"
+                }
+            }
             let responseBody = body, responseStatus = status
             Self.queue.asyncAfter(deadline: .now() + delay) { [self] in
                 guard !stopped else { return }
-                record("response")
+                record("response", bytes: responseBody.utf8.count)
                 let response = HTTPURLResponse(url: request.url!, statusCode: responseStatus, httpVersion: "HTTP/1.1",
                                                headerFields: ["Content-Type": isStream ? "text/event-stream" : "application/json"])!
                 client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
@@ -298,7 +321,51 @@ private final class StartupFixtureProtocol: URLProtocol, @unchecked Sendable {
         }
     }
     override func stopLoading() {
-        Self.queue.async { [self] in stopped = true; record("stop") }
+        Self.queue.async { [self] in
+            stopped = true; Self.historyStreams[requestID] = nil; record("stop")
+        }
+    }
+
+    private static var historyLatest: Int { historyPages * historyPageSize + (historyLive ? 1 : 0) }
+    private static func historyEvent(_ cursor: Int) -> [String: Any] {
+        if cursor > historyPages * historyPageSize {
+            return ["cursor": String(cursor), "type": "turn_completed", "turn_id": "fixture-live",
+                    "final_message": "Fixture live arrival beyond history window."]
+        }
+        let page = (cursor - 1) / historyPageSize + 1
+        if cursor % historyPageSize == 0 {
+            return ["cursor": String(cursor), "type": "turn_completed", "turn_id": "fixture-page-\(page)",
+                    "final_message": "## History page \(page) of \(historyPages)\n\n"
+                        + String(repeating: "This page stays readable across native history paging and live updates. ", count: 8)]
+        }
+        var payload: [String: Any] = ["page": page]
+        if cursor % historyPageSize == 1 { payload["padding"] = historyPadding }
+        return ["cursor": String(cursor), "type": "event", "turn_id": "fixture-page-\(page)",
+                "event": ["type": "fixture.transport", "payload": payload]]
+    }
+    private static func historyBody(_ url: URL) -> String {
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let before = query.first { $0.name == "before" }?.value.flatMap(Int.init)
+        let after = query.first { $0.name == "after" }?.value.flatMap(Int.init)
+        let head = historyLatest
+        let first: Int, last: Int
+        if let after { first = after + 1; last = min(head, after + historyPageSize) }
+        else { last = min(head, (before ?? (head + 1)) - 1); first = max(1, last - historyPageSize + 1) }
+        let events = first <= last ? (first...last).map(historyEvent) : []
+        let body: [String: Any] = ["data": events, "latest_cursor": String(head),
+                                  "has_more": after == nil ? first > 1 : last < head]
+        if let before, before <= historyPageSize + 1, !historyLive {
+            historyLive = true
+            queue.asyncAfter(deadline: .now() + 2) {
+                let encoded = try! JSONSerialization.data(withJSONObject: historyEvent(historyLatest))
+                let frame = Data("id: \(historyLatest)\ndata: ".utf8) + encoded + Data("\n\n".utf8)
+                for stream in historyStreams.values where !stream.stopped {
+                    stream.record("live", bytes: frame.count)
+                    stream.client?.urlProtocol(stream, didLoad: frame)
+                }
+            }
+        }
+        return String(data: try! JSONSerialization.data(withJSONObject: body), encoding: .utf8)!
     }
 }
 #endif

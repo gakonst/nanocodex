@@ -65,7 +65,7 @@ final class ChatGeneratedOutputTests: XCTestCase {
         XCTAssertEqual(outputs.map(\.kind), [.text, .image, .file], "Markdown assets keep their emitted order")
     }
 
-    func testEmbeddedTextDownloadRetainsFullContentsBeyondPreviewLimit() throws {
+    func testEmbeddedTextAndDownloadBothRetainFullContents() throws {
         let original = "a,b\n" + String(repeating: "1,2\n", count: 50_001)
         let encoded = try json(["type": "resource", "resource": ["uri": "file:///report.csv", "mimeType": "text/csv", "text": original]])
         let outputs = ChatGeneratedOutput.parse(results: [encoded], includeText: true)
@@ -73,7 +73,7 @@ final class ChatGeneratedOutputTests: XCTestCase {
         let encodedBytes = try XCTUnwrap(file.source?.split(separator: ",", maxSplits: 1).last)
         XCTAssertEqual(Data(base64Encoded: String(encodedBytes)), Data(original.utf8))
         XCTAssertEqual(file.title, "report.csv")
-        XCTAssertTrue(outputs.first { $0.kind == .text }?.text.contains("Additional output omitted from the preview") == true)
+        XCTAssertEqual(outputs.first { $0.kind == .text }?.text, original)
         XCTAssertFalse(outputs.contains { $0.kind == .unsupported })
     }
 
@@ -118,4 +118,49 @@ final class ChatGeneratedOutputTests: XCTestCase {
         let encodedBytes = try XCTUnwrap(file.source?.split(separator: ",", maxSplits: 1).last)
         XCTAssertEqual(Data(base64Encoded: String(encodedBytes)), Data("{\"internal_record\":true}".utf8))
     }
+    func testAllArtifactsSurviveLargeArraysAndDeepEnvelopes() throws {
+        let artifacts = (0..<256).map { ["type": "resource_link", "uri": "https://example.com/\($0).pdf"] }
+        var payload: Any = ["content": Array(repeating: ["ignored": true] as [String: Any], count: 4096) + artifacts]
+        for _ in 0..<64 { payload = ["result": payload] }
+        let outputs = ChatGeneratedOutput.parse(results: [try json(payload)])
+        XCTAssertEqual(outputs.count, artifacts.count)
+        XCTAssertEqual(outputs.map(\.source), artifacts.map { $0["uri"] })
+    }
+
+    func testSanitizationRetainsEveryDiagnosticBeyondOldDepthArrayAndTextLimits() throws {
+        let text = "BEGIN\n" + String(repeating: "line\n", count: 50_000) + "END"
+        XCTAssertEqual(ChatGeneratedOutput.sanitizedText(text), text)
+        var payload: Any = ["content": (0..<256).map { ["number": $0, "text": "row-\($0)"] }]
+        for _ in 0..<64 { payload = ["result": payload] }
+        let sanitized = ChatGeneratedOutput.sanitizedText(try json(payload))
+        XCTAssertTrue(sanitized.contains("row-255"))
+        XCTAssertFalse(sanitized.contains("omitted"))
+    }
+
+    func testLargeEmbeddedAssetWritesAllBytesToFileAndCanBeReopened() async throws {
+        let original = Data(repeating: 0x61, count: 17 * 1024 * 1024 + 3)
+        let source = "data:application/octet-stream;base64," + original.base64EncodedString()
+        let output = try XCTUnwrap(ChatGeneratedOutput.parse(results: [try json([
+            "type": "file", "url": source, "name": "Large output.bin", "mimeType": "application/octet-stream"
+        ])]).first)
+        XCTAssertEqual(output.kind, .file)
+        let file = try await GeneratedAsset.playableURL(output)
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        XCTAssertTrue(file.isFileURL)
+        XCTAssertEqual(try Data(contentsOf: file, options: .mappedIfSafe), original)
+        let reopened = try await GeneratedAsset.playableURL(output)
+        XCTAssertEqual(reopened, file)
+    }
+
+    func testMalformedBase64NeverPublishesPartialFile() async throws {
+        let source = "data:application/octet-stream;base64," + String(repeating: "YWFh", count: 16_384) + "YQ==MORE"
+        let output = try XCTUnwrap(ChatGeneratedOutput.parse(results: [try json([
+            "type": "file", "url": source, "mimeType": "application/octet-stream"
+        ])]).first)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("CentaurGeneratedOutputs").appendingPathComponent(output.id)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        do { _ = try await GeneratedAsset.playableURL(output); XCTFail("Invalid base64 must fail") }
+        catch { XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: folder.path).isEmpty) }
+    }
+
 }

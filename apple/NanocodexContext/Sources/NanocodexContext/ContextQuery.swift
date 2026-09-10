@@ -55,7 +55,7 @@ public struct ContextQuery: Sendable {
     }
     public func search(query: String = "", source: String = "", sender: String = "", conversation: String = "",
                        after: Date? = nil, before: Date? = nil, limit: Int = 20, cursor: String? = nil) throws -> Results {
-        guard (1...50).contains(limit), [query, source, sender, conversation].allSatisfy({ $0.utf8.count <= 512 }),
+        guard limit > 0,
               after == nil || before == nil || after! <= before! else { throw QueryError.invalidInput }
         let snapshot = try store.handSnapshot(scope: scope)
         guard snapshot.enabled else { throw CaptureError.disabled }
@@ -71,24 +71,22 @@ public struct ContextQuery: Sendable {
             guard let index = items.firstIndex(where: { $0.id == cursor }) else { throw QueryError.invalidInput }
             start = index + 1
         }
-        var messages: [Match] = [], bytes = 0
-        for item in items.dropFirst(start) {
+        var messages: [Match] = []
+        for item in items.dropFirst(start).prefix(limit) {
             let match = Match(id: item.id, source: item.input.source, sender: item.input.sender,
                               conversation: item.input.thread, messageDate: item.input.occurredAt,
                               capturedAt: item.capturedAt, excerpt: String(item.input.text.unicodeScalars.prefix(240)))
-            let size = try JSONEncoder().encode(match).count
-            if messages.count == limit || bytes + size > 12 * 1024 { break }
-            messages.append(match); bytes += size
+            messages.append(match)
         }
         return Results(messages: messages, nextCursor: start + messages.count < items.count ? messages.last?.id : nil)
     }
-    public func read(id: String, offset: Int = 0) throws -> Message {
-        guard !id.isEmpty, id.utf8.count <= 128, offset >= 0 else { throw QueryError.invalidInput }
+    public func read(id: String, offset: Int = 0, limit: Int = 2000) throws -> Message {
+        guard !id.isEmpty, offset >= 0, limit > 0 else { throw QueryError.invalidInput }
         let snapshot = try store.handSnapshot(scope: scope)
         guard snapshot.enabled else { throw CaptureError.disabled }
         guard let item = snapshot.items.first(where: { $0.id == id }) else { throw QueryError.notFound }
         guard offset <= item.input.text.count else { throw QueryError.invalidInput }
-        let text = String(item.input.text.dropFirst(offset).prefix(2000))
+        let text = String(item.input.text.dropFirst(offset).prefix(limit))
         let next = offset + text.count
         return Message(id: item.id, source: item.input.source, sender: item.input.sender,
                        conversation: item.input.thread, messageDate: item.input.occurredAt,

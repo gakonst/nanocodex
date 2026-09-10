@@ -10,7 +10,6 @@ public actor HandWorkspace {
     private let root: URL
     private let platform: String
     private nonisolated let messageContext: ContextQuery?
-    static let maximumFileBytes = 64 * 1024
 
     public init(id: String, name: String, root: URL, platform: String = "ios", messageContext: ContextQuery? = nil) throws {
         guard id.range(of: #"^[A-Za-z0-9][A-Za-z0-9._:-]{0,122}$"#, options: .regularExpression) != nil,
@@ -37,8 +36,8 @@ public actor HandWorkspace {
             "tools": .array([
                 tool("device_info", "Read this Hand's device, workspace, and availability. It connects automatically unless disabled; iOS background execution is limited and not guaranteed.", properties: [:], required: []),
                 tool("list_files", "List files in this device's app workspace. No setup is needed. Other apps' files are not accessible.", properties: ["path": path], required: ["path"]),
-                tool("read_file", "Read a UTF-8 file from this device's app workspace, up to 64 KiB.", properties: ["path": path], required: ["path"]),
-                tool("write_file", "Write a UTF-8 file in this device's app workspace, up to 64 KiB. Creates parent folders and replaces the file atomically.", properties: ["path": path, "content": .object(["type": .string("string")])], required: ["path", "content"], parallel: false)
+                tool("read_file", "Read a UTF-8 file from this device's app workspace.", properties: ["path": path], required: ["path"]),
+                tool("write_file", "Write a UTF-8 file in this device's app workspace. Creates parent folders and replaces the file atomically.", properties: ["path": path, "content": .object(["type": .string("string")])], required: ["path", "content"], parallel: false)
             ] + contextTools)
         ])
     }
@@ -60,18 +59,18 @@ public actor HandWorkspace {
         switch name {
         case "list_files":
             let children = try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles]).sorted { $0.lastPathComponent < $1.lastPathComponent }
-            return .object(["entries": .array(try children.prefix(200).map { file in
+            return .object(["entries": .array(try children.map { file in
                 let values = try file.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
                 return .object(["name": .string(file.lastPathComponent), "kind": .string(values.isSymbolicLink == true ? "link" : values.isDirectory == true ? "directory" : "file")])
-            }), "has_more": .bool(children.count > 200)])
+            }), "has_more": .bool(false)])
         case "read_file":
-            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-            guard values.isRegularFile == true, (values.fileSize ?? Int.max) <= Self.maximumFileBytes else { throw HandFailure.fileLimit }
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey])
+            guard values.isRegularFile == true else { throw HandFailure.invalidFile }
             let data = try Data(contentsOf: url)
-            guard data.count <= Self.maximumFileBytes, let text = String(data: data, encoding: .utf8) else { throw HandFailure.fileLimit }
+            guard let text = String(data: data, encoding: .utf8) else { throw HandFailure.invalidFile }
             return .object(["content": .string(text)])
         default:
-            guard case .string(let content) = fields["content"], content.utf8.count <= Self.maximumFileBytes, url != root else { throw HandFailure.fileLimit }
+            guard case .string(let content) = fields["content"], url != root else { throw HandFailure.invalidFile }
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Task.checkCancellation()
             try Data(content.utf8).write(to: url, options: .atomic)
@@ -101,14 +100,14 @@ public actor HandWorkspace {
 }
 
 public enum HandFailure: Error, LocalizedError {
-    case invalidIdentity, invalidInput, outsideWorkspace, fileLimit, protocolViolation, connectionLost
+    case invalidIdentity, invalidInput, outsideWorkspace, invalidFile, protocolViolation, connectionLost
     case contextAccess(String)
     public var errorDescription: String? {
         switch self {
         case .invalidIdentity: return "Invalid Hand identity."
         case .invalidInput: return "Invalid device tool input."
         case .outsideWorkspace: return "This path is outside the device workspace."
-        case .fileLimit: return "Use a UTF-8 file no larger than 64 KiB."
+        case .invalidFile: return "Use a regular UTF-8 file."
         case .protocolViolation: return "The Hand received an invalid protocol frame."
         case .connectionLost: return "The device Hand is reconnecting."
         case .contextAccess(let message): return message

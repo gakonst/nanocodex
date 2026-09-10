@@ -78,7 +78,7 @@ names. Keep the bundle IDs and App Group aligned when configuring signing.
 ## Run
 
 Open `apple/NanocodexInbox.xcodeproj`, select the `NanocodexInbox` scheme, then
-choose an iPhone or iPad simulator. Requires iOS 17 or later.
+choose an iPhone or iPad simulator. Requires iOS 18 or later.
 Choose a development team in Signing & Capabilities to run on a physical device.
 Local package `InboxCore` owns the native protocol adapter, event projection,
 cursor ordering, and inbox policy. PhoneNumberKit provides country calling codes
@@ -140,7 +140,7 @@ Return/Tab/Esc controls below the video.
 | Tab overview | See agents’ latest content and running status; tap a preview to select it |
 | Drag down while typing | Interactively dismiss the keyboard while keeping the current conversation and draft |
 | Scroll a conversation | Read the full history, reasoning, and expandable tool details while keeping the composer available |
-| Attachment plus → Camera / Photos & Videos / Files | Take a photo or attach up to four photos/videos; preview or remove attachments before sending |
+| Attachment plus → Camera / Photos & Videos / Files | Take a photo or attach photos/videos; preview or remove attachments before sending |
 | Send / ⌘Return | Submit one durable follow-up; queue behind current work and dismiss the iPhone/iPad keyboard |
 | Steer now on queued message | Cancel the unfinished turn ahead of it so the follow-up can start |
 | Voice | Start an interactive spoken conversation with this agent; minimize the panel to keep talking |
@@ -258,29 +258,27 @@ saved voice choices migrate to these settings. Rust builds the subscription
 session and validates all preferences; `VoiceSession.speak`, `appendText`, and
 `appendContext` expose the same retained control queue as browser consumers.
 
-Image attachments follow Codex's local-image flow: keep a prepared JPEG with the
-agent's draft, then send it as inline image content through the existing managed
-turn endpoint. Camera opens the native still-photo capture screen on iPhone and
-iPad, requests access when needed, and supports cancelling or retaking before
-attaching. Captures stay with the selected draft; they are not added to the photo
-library. Photos & Videos and Files accept still images (including HEIC); preparation
-runs off the main thread, corrects orientation, and fits four images within the
-managed request limit. Images can be sent without text. Draft references and
-queued retries survive relaunch and stay scoped to the account and agent; only
-metadata goes in UserDefaults. Removed/delivered local copies are cleaned up,
-while sent images remain in durable conversation history.
+Image attachments preserve their original files, including full resolution and
+metadata. Camera opens the native still-photo capture screen on iPhone and iPad;
+captures remain with the selected draft and are not added to the photo library.
+Photos & Videos and Files transfer originals as files. ImageIO creates a separate
+small, correctly oriented JPEG preview without recompressing the original. The
+picker does not impose a selection count. Images can be sent without text.
+Account-scoped draft references and queued retries survive relaunch; only metadata
+goes in UserDefaults. Removed/delivered local copies are cleaned up.
 
-MP4/MOV video attachments retain their original bytes, including audio. Photos
-and Files transfer movies as files, and preparation creates one local poster
-without transcoding the source or adding sampled frames to the prompt. The
-original clip and metadata stay with the account-scoped draft across relaunch.
+MP4/MOV video attachments also retain their original bytes, including audio.
+Preparation creates one local poster without transcoding the source or adding
+sampled frames to the prompt.
 
-Sending uploads the file in resumable 8 MiB parts through the authenticated
-managed service to `/brain/attachments/<id>/original.mp4` (or `.mov`). The
-agent receives the path using an ordinary text part, as with filesystem
-attachments in codex-rs. Its tools can inspect the complete recording; native
-media programs can run on a Hand with `/brain` mounted. Large files are not
-buffered into a model request. Images retain their existing inline behavior.
+Sending streams original files in resumable parts (normally 8 MiB, scaled for large files) through the authenticated
+managed service to `/brain/attachments/<id>/original.<extension>`. A separate JPEG
+preview is uploaded alongside each image original. The agent receives filesystem paths
+in an ordinary text part; image tools can inspect the JPEG preview, and tools or
+native media programs on a Hand can inspect the complete original. File bytes
+are not embedded in a model request or conversation history. History images load
+authenticated previews through the account's HTTP cache, with immutable private
+cache headers.
 
 Sent videos appear as playable attachments after reload. Playback downloads
 the original using the account's authenticated client, passes a temporary
@@ -304,7 +302,7 @@ agent checksum, keyboard dismissal, and original playback after reload.
 The live event working set is bounded by payload size: 16 MiB in the focused
 conversation and 8 MiB in overview previews, always retaining the newest event.
 Token count does not truncate a live reply. Earlier history is
-loaded automatically as you scroll near the top, up to 2,048 events. Full history remains on the service.
+loaded automatically in either direction as you scroll, without a history-length cutoff. The working window can exceed its memory target to preserve a visible or unfinished turn. Full history remains on the service.
 The transcript preserves manual scroll position; it does not force-scroll on
 every token.
 
@@ -315,7 +313,7 @@ no enable step. Local package `NanocodexHand` owns the native Hosted Tools
 WebSocket connection and its `device_info`, `list_files`, `read_file`, and
 `write_file` tools. Files live in an account-scoped directory under the app's
 Documents/Nanocodex folder, exposed to agents as `/workspace`. Paths cannot leave
-that directory or traverse symlinks; text reads and writes are limited to 64 KiB.
+that directory or traverse symlinks; text reads and writes preserve full UTF-8 files. The Hosted Tools caller controls the result budget; the transport follows Cloudflare’s 32 MiB WebSocket message limit.
 This does not provide an iOS shell or access to other apps' private data.
 
 The Hand is enabled by default. **Make this device available as a Hand** in
@@ -444,24 +442,24 @@ it only captures text supplied by the notification, which can omit hidden
 previews and messages received in an open conversation.
 
 The Context inbox also supports local search/removal and optional prompt
-attachments. Assigning an agent includes up to 12 unused captures (within a
-48 KB budget) with its next message. Capture alone never starts an agent turn.
+attachments. Assigning an agent includes its unused captures with the next message. Capture alone never starts an agent turn.
 The conversation shows the request and expandable context; retry retains the
 same captured content and durable turn identity, even after relaunch.
 
 The iOS **Nanocodex** share extension accepts web links, text, images, PDFs,
 and plain text files through the system share sheet. Safari shares the selected
 text, or readable page content when there is no selection, together with its
-original URL. Long pages are capped at 24 KB with an explicit excerpt marker.
+original URL. Selected text or page text is retained in full.
 A URL from another app stays a URL unless that app also supplies text. Shared
 captions are preserved, and duplicate page/link representations are combined.
 **Capture Text from File**
 provides the same extraction in Shortcuts; **Add context** also supports file
 import. Image text recognition runs on-device. Only extracted text is retained;
 original files are not retained or uploaded, and links are not fetched during
-capture. Scanned PDFs and images without readable text are rejected. Inputs
-are limited to 24 KB text, 8 MB per file, and 10 items per share. Oversized or
-unsupported inputs produce an error without partially saving the batch.
+capture. Scanned PDFs and images without readable text are rejected. Native Vision handles
+image decoding for recognition. Capture imposes no additional text, file, PDF-page,
+or batch-count admission caps. Unsupported or unreadable inputs produce an error
+without partially saving the batch.
 
 The iOS app and share extension require the App Group
 `group.xyz.paradigm.centaur` on the same development team/profiles.
@@ -472,8 +470,8 @@ uses file protection after first unlock, atomic writes, and a process lock.
 Capture and Hand queries are scoped to the connected account; sign-out and
 capture toggles fence in-flight imports and invalidate query access. Demo
 storage is separate. Records retain supplied provenance
-without inventing a sender or thread. The store is capped at 1,000 records per
-connection and 8 MB total; it reports capacity rather than dropping history.
+without inventing a sender or thread. The JSON store retains captures without
+count or byte admission caps; reading and writing still processes its snapshot.
 Removing a capture does not erase content already submitted in a conversation.
 Simulator runs use ad-hoc signing so both targets receive their App Group
 entitlements; disabling signing only checks compilation and cannot exercise
@@ -641,5 +639,5 @@ SwiftUI rendering and the final model mutations stay on the main actor.
 Live transcript projection processes each new event once per reading window;
 older-history pagination and retained-prefix changes rebuild the projection.
 Inactive tabs share a 24 MiB serialized-payload budget (at most eight tabs),
-in addition to the focused reading window. Backgrounding and iOS memory warnings
+in addition to the focused reading window. iOS memory warnings
 release inactive tab caches without removing service history or drafts.

@@ -5,14 +5,13 @@ import FoundationNetworking
 #endif
 
 public enum APIError: LocalizedError, Equatable {
-    case invalidOrigin, invalidCredential, invalidResponse, agentDeleting, messageTooLarge, http(Int)
+    case invalidOrigin, invalidCredential, invalidResponse, agentDeleting, http(Int)
     public var errorDescription: String? {
         switch self {
         case .invalidOrigin: return "Enter an HTTPS server origin, without a path or query."
         case .invalidCredential: return "Enter a Nanocodex account API key."
         case .invalidResponse: return "Nanocodex returned an unreadable response. Refresh to reconnect."
         case .agentDeleting: return "This conversation is being deleted."
-        case .messageTooLarge: return "This message is too large. Remove an image or shorten the message."
         case .http(401), .http(403): return "This connection is no longer authorized. Reconnect your account."
         case .http(409): return "This turn changed before the action arrived. Refresh and try again."
         case .http(429): return "Too many requests. Wait a moment and try again."
@@ -114,7 +113,6 @@ public final class ManagedClient: @unchecked Sendable {
             }
             throw APIError.http(response.statusCode)
         }
-        guard data.count <= 32 * 1024 * 1024 else { throw APIError.invalidResponse }
         return data.isEmpty ? .null : try JSONDecoder().decode(JSON.self, from: data)
     }
     public func list() async throws -> [AgentCard] {
@@ -231,46 +229,40 @@ public final class ManagedClient: @unchecked Sendable {
         let cancelPath = try AgentCommand(agentID: agentID, turnID: turnID, kind: .stop).requestSpec().path
         return try await json(path: String(cancelPath.dropLast("/cancel".count)))
     }
-    public func history(_ id: String, before: Cursor? = nil) async throws -> EventPage {
-        let path = try Self.agentPath(id) + "/events/history?limit=128" + (before.map { "&before=" + $0.rawValue } ?? "")
+    public func history(_ id: String, before: Cursor? = nil, after: Cursor? = nil) async throws -> EventPage {
+        guard before == nil || after == nil else { throw APIError.invalidResponse }
+        let path = try Self.agentPath(id) + "/events/history?limit=128"
+            + (before.map { "&before=" + $0.rawValue } ?? "") + (after.map { "&after=" + $0.rawValue } ?? "")
         return try EventPage(try await json(path: path))
     }
-    /// Return a readable opening window without waiting for a state request.
-    /// Transport-only tails must not turn an existing conversation into an empty
-    /// composer. Bound recovery to four pages and the mobile history byte budget.
+    /// Find a readable opening window. Paging has no lifetime/event-count limit;
+    /// discarded newer pages remain addressable using the forward cursor.
     public func conversationHistory(_ id: String) async throws -> ConversationHistory {
         var page = try await history(id)
         let latest = page.latest
         var events = page.events
-        var rows = transcript(events)
-        for _ in 1..<4 {
+        var counts = try await TranscriptPreparation.byteCounts(events)
+        var rows = try await TranscriptPreparation.rows(events)
+        var hasNewer = false
+        while page.hasMore, !rows.contains(where: { $0.role == "You" || $0.role == "Agent" }) {
             try Task.checkCancellation()
-            guard page.hasMore, !rows.contains(where: { $0.role == "You" || $0.role == "Agent" }),
-                  let before = events.first?.cursor else { break }
+            guard let before = events.first?.cursor else { throw APIError.invalidResponse }
             let older = try await history(id, before: before)
-            let added = older.events.filter { $0.cursor < before }
+            guard let first = older.events.first?.cursor, first < before,
+                  older.events.allSatisfy({ $0.cursor < before }) else { throw APIError.invalidResponse }
             page = older
-            guard !added.isEmpty else { break }
-            events.insert(contentsOf: added, at: 0)
-            rows = transcript(events)
-        }
-        assert(!Thread.isMainThread)
-        let encoder = JSONEncoder()
-        var counts = try events.map { event in
-            try Task.checkCancellation()
-            return try encoder.encode(event.data).count
-        }
-        var bytes = counts.reduce(0, +), removed = 0
-        while events.count - removed > 1, bytes > 16 * 1024 * 1024 {
-            bytes -= counts[removed]; removed += 1
-        }
-        if removed > 0 {
-            events.removeFirst(removed); counts.removeFirst(removed)
-            rows = transcript(events)
+            events.insert(contentsOf: older.events, at: 0)
+            counts.insert(contentsOf: try await TranscriptPreparation.byteCounts(older.events), at: 0)
+            let removed = TranscriptRetention.removableSuffixCount(byteCounts: counts,
+                retainedBytes: counts.reduce(0, +), byteLimit: 16 * 1024 * 1024)
+            if removed > 0 {
+                events.removeLast(removed); counts.removeLast(removed); hasNewer = true
+            }
+            rows = try await TranscriptPreparation.rows(events)
         }
         try Task.checkCancellation()
-        return ConversationHistory(events: events, latest: latest, hasMore: page.hasMore || removed > 0,
-                                   byteCounts: counts, rows: rows)
+        return ConversationHistory(events: events, latest: latest, hasMore: page.hasMore,
+                                   byteCounts: counts, rows: rows, hasNewer: hasNewer)
     }
     @discardableResult
     public func command(_ command: AgentCommand) async throws -> JSON {
@@ -279,22 +271,25 @@ public final class ManagedClient: @unchecked Sendable {
     }
     /// Upload bounded chunks, retaining the attachment ID across retries. The
     /// service owns multipart state; credentials and upload IDs never enter a turn.
-    public func uploadVideo(agentID: String, attachment: MessageAttachment, source: URL,
+    public func uploadAttachment(agentID: String, attachment: MessageAttachment, source: URL, preview: URL? = nil,
                             isCancelled: @Sendable () async -> Bool = { false }) async throws -> String {
-        guard attachment.isVideo, source.isFileURL else { throw AttachmentError.invalidReference }
+        guard source.isFileURL else { throw AttachmentError.invalidReference }
         let values = try source.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true, values.fileSize == attachment.byteCount else { throw AttachmentError.invalidReference }
         let path = try Self.agentPath(agentID) + "/attachments/" + attachment.id.lowercased()
         let receipt = try await json(path: path, method: "POST", body: .object([
             "name": .string(attachment.name), "media_type": .string(attachment.mediaType), "size": .number(Double(attachment.byteCount))]))
         let filePath = receipt["path"].string
-        _ = try attachment.originalVideoContent(path: filePath)
+        _ = try attachment.originalContent(path: filePath)
         guard receipt["size"].number == Double(attachment.byteCount) else { throw APIError.invalidResponse }
-        if receipt["complete"] == .bool(true) { return filePath }
-        let partSize = 8 * 1024 * 1024
+        if receipt["complete"] == .bool(true) {
+            if let preview { try await uploadPreview(path: path, source: preview) }
+            return filePath
+        }
+        guard let partSize = Int(exactly: receipt["part_size"].number), partSize > 0 else { throw APIError.invalidResponse }
         let number = receipt["next_part"].number
         let count = (attachment.byteCount - 1) / partSize + 1
-        guard receipt["part_size"].number == Double(partSize), number >= 1, number <= Double(count + 1), number.rounded(.down) == number else { throw APIError.invalidResponse }
+        guard number >= 1, number <= Double(count + 1), number.rounded(.down) == number else { throw APIError.invalidResponse }
         let file = try FileHandle(forReadingFrom: source)
         defer { try? file.close() }
         var part = Int(number)
@@ -303,15 +298,23 @@ public final class ManagedClient: @unchecked Sendable {
             try Task.checkCancellation()
             if await isCancelled() { throw CancellationError() }
             let expected = min(partSize, attachment.byteCount - (part - 1) * partSize)
-            var bytes = Data()
-            while bytes.count < expected {
-                guard let chunk = try file.read(upToCount: expected - bytes.count), !chunk.isEmpty else { throw AttachmentError.unavailable }
-                bytes.append(chunk)
+            let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("attachment-part-" + UUID().uuidString)
+            guard FileManager.default.createFile(atPath: temporary.path, contents: nil) else { throw AttachmentError.unavailable }
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            let output = try FileHandle(forWritingTo: temporary)
+            defer { try? output.close() }
+            var remaining = expected
+            while remaining > 0 {
+                try Task.checkCancellation()
+                guard let chunk = try file.read(upToCount: min(8 * 1024 * 1024, remaining)), !chunk.isEmpty else { throw AttachmentError.unavailable }
+                try output.write(contentsOf: chunk)
+                remaining -= chunk.count
             }
+            try output.close()
             var request = try request(path: path + "/parts/" + String(part), method: "PUT")
             request.timeoutInterval = 120
             request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-            let (_, response) = try await session.upload(for: request, from: bytes)
+            let (_, response) = try await session.upload(for: request, fromFile: temporary)
             guard let response = response as? HTTPURLResponse else { throw APIError.invalidResponse }
             guard response.statusCode == 200 else { throw APIError.http(response.statusCode) }
             part += 1
@@ -321,7 +324,27 @@ public final class ManagedClient: @unchecked Sendable {
         let complete = try await json(path: path + "/complete", method: "POST")
         guard complete["complete"] == .bool(true), complete["path"].string == filePath,
               complete["size"].number == Double(attachment.byteCount) else { throw APIError.invalidResponse }
+        if let preview { try await uploadPreview(path: path, source: preview) }
         return filePath
+    }
+
+    private func uploadPreview(path: String, source: URL) async throws {
+        var request = try request(path: path + "/preview", method: "PUT")
+        request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+        let (_, response) = try await session.upload(for: request, fromFile: source)
+        guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw APIError.invalidResponse }
+    }
+
+    /// Account-scoped URLCache retains immutable previews; original bytes never
+    /// enter a scrolling transcript or the in-memory history projection.
+    public func attachmentPreview(agentID: String, attachmentID: String) async throws -> Data {
+        guard MessageAttachment.validID(attachmentID) else { throw AttachmentError.invalidReference }
+        let request = try request(path: Self.agentPath(agentID) + "/attachments/" + attachmentID.lowercased() + "/preview", method: "GET")
+        let (data, response) = try await session.data(for: request)
+        guard let response = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+        guard response.statusCode == 200 else { throw APIError.http(response.statusCode) }
+        guard response.mimeType == "image/jpeg" else { throw APIError.invalidResponse }
+        return data
     }
 
     /// AVPlayer receives a local file, never an account credential or bearer URL.
@@ -451,6 +474,7 @@ public struct ConversationHistory: Sendable {
     public let hasMore: Bool
     public let byteCounts: [Int]
     public let rows: [TranscriptRow]
+    public let hasNewer: Bool
 }
 
 public struct EventPage: Sendable {
@@ -461,7 +485,7 @@ public struct EventPage: Sendable {
         guard case .array(let data) = body["data"], case .bool(let more) = body["has_more"],
               let latest = Cursor(rawValue: body["latest_cursor"].string) else { throw APIError.invalidResponse }
         let events = try data.map { try AgentEvent($0) }
-        guard events.count <= 128, zip(events, events.dropFirst()).allSatisfy({ pair in pair.0.cursor < pair.1.cursor }),
+        guard zip(events, events.dropFirst()).allSatisfy({ pair in pair.0.cursor < pair.1.cursor }),
               events.last.map({ $0.cursor <= latest }) ?? true else { throw APIError.invalidResponse }
         self.events = events; self.latest = latest; hasMore = more
     }
@@ -485,10 +509,6 @@ public struct AgentCommand: Equatable, Sendable {
             (input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [] : [.object(["type": .string("text"), "text": .string(input)])]) + images
         )
         let body: JSON = .object(kind == .followUp ? ["id": .string(requestID), "input": content] : ["input": content])
-        if kind != .stop {
-            let encoder = JSONEncoder(); encoder.outputFormatting = [.withoutEscapingSlashes]
-            guard try encoder.encode(body).count <= 1024 * 1024 else { throw APIError.messageTooLarge }
-        }
         if kind == .followUp { return (path, body, "inbox:" + requestID) }
         guard !turnID.isEmpty, turnID.range(of: #"^[A-Za-z0-9._:-]{1,128}$"#, options: .regularExpression) != nil,
               let segment = turnID.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else { throw APIError.invalidResponse }

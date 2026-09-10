@@ -949,7 +949,7 @@ private struct AgentComposerView: View {
                 Button("Cancel", role: .cancel) {}
             } message: { Text("Enable Camera in Settings to take a photo for your message.") }
             #endif
-            .photosPicker(isPresented: $showPhotos, selection: $selectedPhotos, maxSelectionCount: 4, matching: .any(of: [.images, .videos]))
+            .photosPicker(isPresented: $showPhotos, selection: $selectedPhotos, maxSelectionCount: nil, matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
             .onChange(of: selectedPhotos) { _, items in
                 guard !items.isEmpty, let target = photoTarget else { return }
                 model.importAttachmentPhotos(items, target: target)
@@ -1078,6 +1078,7 @@ private struct PulsingText: View {
 private enum AttachmentImageSource: Hashable, Sendable {
     case file(URL)
     case inline(String)
+    case data(Data)
 }
 
 private func videoTime(_ seconds: Double) -> String {
@@ -1168,6 +1169,25 @@ private struct VideoAttachmentView: View {
     }
 }
 
+private struct OriginalImageAttachmentView: View {
+    let attachment: MessageAttachment
+    let model: InboxModel
+    let agentID: String
+    @State private var preview: Data?
+    @State private var error: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            AttachmentImageView(source: preview.map(AttachmentImageSource.data), contentMode: .fit)
+                .frame(maxWidth: 240).frame(height: 180).accessibilityIdentifier("message-image")
+            if let error { Text(error).font(.caption).foregroundStyle(.secondary) }
+        }.task(id: attachment.id) {
+            do { preview = try await model.attachmentPreview(attachment, agentID: agentID) }
+            catch is CancellationError { }
+            catch { self.error = error.localizedDescription }
+        }
+    }
+}
+
 private struct AttachmentImageView: View {
     let source: AttachmentImageSource?
     var contentMode: ContentMode = .fill
@@ -1204,6 +1224,7 @@ private struct AttachmentImageView: View {
                   value[..<separator].hasSuffix(";base64"),
                   let data = Data(base64Encoded: String(value[value.index(after: separator)...])) else { return nil }
             image = CGImageSourceCreateWithData(data as CFData, nil)
+        case .data(let data): image = CGImageSourceCreateWithData(data as CFData, nil)
         case nil: return nil
         }
         guard let image else { return nil }
@@ -1403,6 +1424,7 @@ private struct ConversationMessageContent: View, Equatable {
                             .accessibilityIdentifier("message-image")
                     }
                 }
+                ForEach(row.imageFiles ?? []) { OriginalImageAttachmentView(attachment: $0, model: model, agentID: agentID) }
                 ForEach(row.videos ?? []) { VideoAttachmentView(video: $0, model: model, agentID: agentID) }
                 if let pending {
                     ForEach(pending.attachments ?? []) { attachment in
@@ -1447,7 +1469,8 @@ private struct ConversationView: View {
                                                 title: model.focused?.title ?? "Conversation",
                                                 activeTurns: model.focused?.activeTurns ?? [],
                                                 loading: model.threadLoading, error: model.threadError,
-                                                hasOlder: model.hasOlder, loadingOlder: model.loadingOlder))
+                                                hasOlder: model.hasOlder, loadingOlder: model.loadingOlder,
+                                                hasNewer: model.hasNewer, loadingNewer: model.loadingNewer))
             .equatable()
     }
 }
@@ -1462,6 +1485,8 @@ private struct ConversationContentView: View, Equatable {
         var error: String?
         var hasOlder: Bool
         var loadingOlder: Bool
+        var hasNewer: Bool
+        var loadingNewer: Bool
     }
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.identity == rhs.identity && lhs.revision == rhs.revision && lhs.model === rhs.model
@@ -1477,7 +1502,8 @@ private struct ConversationContentView: View, Equatable {
     @State private var historyRestore: (id: String, anchor: UnitPoint)?
     @State private var historyContent = ConversationContentPosition()
     @State private var historyReady = false
-    @State private var historyRequestAllowed = true
+    private enum HistoryDirection { case older, newer }
+    @State private var historyDirection: HistoryDirection?
     @State private var historyRequestInFlight = false
     @State private var historyRequestFirstID: String?
     private var pendingSubmissions: [PendingMessage] {
@@ -1487,29 +1513,25 @@ private struct ConversationContentView: View, Equatable {
         }
     }
     private func rememberHistoryPosition(in viewport: GeometryProxy) {
+        model.protectHistoryRows(Set(rowFrames.filter { $0.value.maxY > 0 && $0.value.minY < viewport.size.height }.keys))
         guard let first = rowFrames.filter({ $0.value.maxY > 0 && $0.value.minY < viewport.size.height })
             .min(by: { $0.value.minY < $1.value.minY }) else { return }
         let available = viewport.size.height - first.value.height
         historyRestore = (first.key, UnitPoint(x: 0, y: abs(available) > 0.5 ? first.value.minY / available : 0))
     }
-    private func loadEarlierIfNeeded(in viewport: GeometryProxy) {
+    private func loadHistory(_ direction: HistoryDirection, in viewport: GeometryProxy) {
         guard model.focusedConversationIdentity == identity, pendingReadingRestore == nil,
-              historyReady, historyContent.nearTop, historyRequestAllowed, historyContent.firstID == model.rows.first?.id,
-              model.hasOlder, !model.threadLoading, !model.loadingOlder, !historyRequestInFlight else { return }
-        historyRequestAllowed = false
+              historyReady, !model.threadLoading, !model.loadingOlder, !model.loadingNewer,
+              !historyRequestInFlight, direction == .older ? model.hasOlder : model.hasNewer else { return }
         historyRequestInFlight = true
         historyRequestFirstID = model.rows.first?.id
         rememberHistoryPosition(in: viewport)
         Task {
-            await model.loadOlder()
+            if direction == .older { await model.loadOlder() }
+            else { await model.loadNewer() }
             guard model.focusedConversationIdentity == identity else { return }
-            let inserted = model.rows.first?.id != historyRequestFirstID
-            if !inserted { historyRestore = nil }
+            if model.rows.first?.id == historyRequestFirstID { historyRestore = nil }
             historyRequestInFlight = false
-            // Successful pages can prefetch again when their new beginning
-            // enters view. A failed page needs a new approach to the top.
-            if inserted { historyRequestAllowed = true }
-            updateHistoryPosition(in: viewport)
         }
     }
     private func updateHistoryPosition(in viewport: GeometryProxy) {
@@ -1521,14 +1543,17 @@ private struct ConversationContentView: View, Equatable {
             guard historyContent.atLatest || readingPositions.values[identity]?.atLatest == false else { return }
             historyReady = true
         }
-        if !historyContent.nearTop { historyRequestAllowed = true }
-        loadEarlierIfNeeded(in: viewport)
+        model.setHistoryAtLatest(historyContent.atLatest)
+        // Layout changes also cross these thresholds. Only the reader's chosen
+        // direction may load a page, so trimming cannot undo their navigation.
+        if historyDirection == .older, historyContent.nearTop { loadHistory(.older, in: viewport) }
+        else if historyDirection == .newer, historyContent.atLatest { loadHistory(.newer, in: viewport) }
     }
     private func saveReadingPosition(in viewport: GeometryProxy) {
         guard model.focusedConversationIdentity == identity, hasInitialPosition,
               pendingReadingRestore == nil, historyReady, historyContent.isMeasured,
               !historyRequestInFlight else { return }
-        if historyContent.atLatest {
+        if historyContent.atLatest && !model.hasNewer {
             readingPositions.values[identity] = .init(atLatest: true)
         } else if let first = rowFrames.filter({ $0.value.maxY > 0 && $0.value.minY < viewport.size.height })
             .sorted(by: {
@@ -1592,20 +1617,17 @@ private struct ConversationContentView: View, Equatable {
                             if historyContent.atLatest { scroll.scrollTo("latest", anchor: .bottom) }
                         }
                     }
+                    if model.hasNewer {
+                        Button("Load newer messages") {
+                            historyDirection = .newer
+                            loadHistory(.newer, in: viewport)
+                        }.disabled(model.loadingNewer).accessibilityIdentifier("load-newer")
+                    }
                     Color.clear.frame(height: 1).id("latest")
                 }.padding(.horizontal, 20).padding(.vertical, verticalPadding).frame(maxWidth: 780).frame(minHeight: viewport.size.height, alignment: .top).frame(maxWidth: .infinity)
-                    .background(GeometryReader { geometry in
-                        let frame = geometry.frame(in: .named("conversation-viewport"))
-                        // Publish threshold changes, not every fractional offset
-                        // or lazy height estimate, to avoid driving another layout.
-                        Color.clear.preference(key: ConversationContentFrame.self, value: ConversationContentPosition(
-                            firstID: model.rows.first?.id, nearTop: frame.minY >= -240,
-                            // The latest marker precedes the bottom padding.
-                            atLatest: frame.maxY <= viewport.size.height + verticalPadding + 1,
-                            isMeasured: frame.height > 0))
-                    })
             }
-            .modifier(ChatScrollAnchors(initialAnchor: readingPositions.values[identity]?.atLatest == false ? .top : .bottom))
+            .defaultScrollAnchor(.top)
+            .defaultScrollAnchor(readingPositions.values[identity]?.atLatest == false ? .top : .bottom, for: .initialOffset)
             .scrollDismissesKeyboard(.interactively)
             .scrollBounceBehavior(.always, axes: .vertical)
             .coordinateSpace(name: "conversation-viewport")
@@ -1630,8 +1652,16 @@ private struct ConversationContentView: View, Equatable {
                     rememberHistoryPosition(in: viewport)
                 }
             }
-            .onPreferenceChange(ConversationContentFrame.self) { content in
-                historyContent = content
+            .onScrollGeometryChange(for: ConversationContentPosition.self) { geometry in
+                return ConversationContentPosition(
+                    nearTop: geometry.contentOffset.y + geometry.contentInsets.top <= 240,
+                    // containerSize already excludes the bottom safe-area
+                    // inset occupied by the composer and browser toolbar.
+                    atLatest: geometry.contentSize.height - geometry.contentOffset.y
+                        - geometry.containerSize.height <= verticalPadding + 1,
+                    isMeasured: geometry.containerSize.height > 0)
+            } action: { _, position in
+                historyContent = position
                 updateHistoryPosition(in: viewport)
                 saveReadingPosition(in: viewport)
             }
@@ -1639,13 +1669,33 @@ private struct ConversationContentView: View, Equatable {
             .onChange(of: model.hasOlder) { _, _ in updateHistoryPosition(in: viewport) }
             .onChange(of: model.threadLoading) { _, _ in updateHistoryPosition(in: viewport) }
             .onChange(of: model.loadingOlder) { _, _ in updateHistoryPosition(in: viewport) }
-            .simultaneousGesture(DragGesture(minimumDistance: 1).onChanged { _ in
+            .simultaneousGesture(DragGesture(minimumDistance: 1).onChanged { value in
                 pendingReadingRestore = nil
+                historyDirection = value.translation.height > 0 ? .older : .newer
                 if hasInitialPosition { historyReady = true }
+                updateHistoryPosition(in: viewport)
             })
             .background(Ink.background)
             .accessibilityLabel(revision.title)
             .accessibilityIdentifier("conversation")
+            .overlay(alignment: .bottomTrailing) {
+                if model.hasNewer {
+                    Button {
+                        historyDirection = nil
+                        historyRestore = nil
+                        Task {
+                            await model.loadNewer(latest: true)
+                            guard model.focusedConversationIdentity == identity else { return }
+                            scroll.scrollTo("latest", anchor: .bottom)
+                        }
+                    } label: {
+                        Label("Latest messages", systemImage: "arrow.down").foregroundStyle(Ink.background)
+                    }
+                        .buttonStyle(.borderedProminent).tint(Ink.text).padding(12)
+                        .disabled(model.loadingNewer || model.loadingOlder)
+                        .accessibilityIdentifier("latest-messages")
+                }
+            }
             .overlay {
                 if model.threadLoading {
                     ProgressView()
@@ -1717,20 +1767,6 @@ private struct InboxGeneratedOutputView: View, Equatable {
     }
 }
 
-private struct ChatScrollAnchors: ViewModifier {
-    var initialAnchor: UnitPoint = .bottom
-    func body(content: Content) -> some View {
-        if #available(iOS 18.0, macOS 15.0, *) {
-            // Lazy Markdown rows can acquire their height after ScrollViewReader's
-            // first scrollTo. Let the scroll view place new chats itself,
-            // while keyboard and history resizing continue to retain the top edge.
-            content.defaultScrollAnchor(.top).defaultScrollAnchor(initialAnchor, for: .initialOffset)
-        } else {
-            content.defaultScrollAnchor(initialAnchor)
-        }
-    }
-}
-
 private struct ConversationRowFrames: PreferenceKey {
     static var defaultValue: [String: CGRect] { [:] }
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
@@ -1739,18 +1775,9 @@ private struct ConversationRowFrames: PreferenceKey {
 }
 
 private struct ConversationContentPosition: Equatable {
-    var firstID: String?
     var nearTop = false
     var atLatest = false
     var isMeasured = false
-}
-
-private struct ConversationContentFrame: PreferenceKey {
-    static var defaultValue: ConversationContentPosition { ConversationContentPosition() }
-    static func reduce(value: inout ConversationContentPosition, nextValue: () -> ConversationContentPosition) {
-        let next = nextValue()
-        if next.isMeasured { value = next }
-    }
 }
 
 private struct ConversationActivityView: View {

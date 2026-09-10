@@ -7,7 +7,7 @@ public struct ChatGeneratedOutputs: View {
     public init(outputs: [ChatGeneratedOutput]) { self.outputs = outputs }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        LazyVStack(alignment: .leading, spacing: 14) {
             ForEach(outputs) { output in
                 switch output.kind {
                 case .text: ChatMarkdown(text: output.text)
@@ -126,9 +126,8 @@ private struct GeneratedFile: View {
     }
 }
 
-private enum GeneratedAsset {
+enum GeneratedAsset {
     enum Failure: Error { case unavailable }
-    static let limit = 16 * 1024 * 1024
     static let thumbnails: NSCache<NSString, CGImage> = {
         let cache = NSCache<NSString, CGImage>()
         cache.totalCostLimit = 32 * 1024 * 1024; cache.countLimit = 24
@@ -143,58 +142,81 @@ private enum GeneratedAsset {
 
     static func thumbnail(_ output: ChatGeneratedOutput) async throws -> CGImage? {
         if let cached = thumbnails.object(forKey: output.id as NSString) { return cached }
-        let data = try await data(output)
-        let image = await Task.detached(priority: .utility) { () -> CGImage? in
-            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let url: URL
+        let downloaded: Bool
+        if output.source?.hasPrefix("data:") == true {
+            url = try await playableURL(output); downloaded = false
+        } else {
+            guard let source = output.source, let remote = URL(string: source),
+                  ["https", "http"].contains(remote.scheme) else { throw Failure.unavailable }
+            let (file, response) = try await session.download(from: remote)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                try? FileManager.default.removeItem(at: file); throw Failure.unavailable
+            }
+            url = file; downloaded = true
+        }
+        defer { if downloaded { try? FileManager.default.removeItem(at: url) } }
+        try Task.checkCancellation()
+        let decoding = Task.detached(priority: .utility) { () throws -> CGImage? in
+            try Task.checkCancellation()
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
             return CGImageSourceCreateThumbnailAtIndex(source, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceCreateThumbnailWithTransform: true,
                 kCGImageSourceThumbnailMaxPixelSize: 1600,
                 kCGImageSourceShouldCacheImmediately: true,
             ] as CFDictionary)
-        }.value
+        }
+        let image = try await withTaskCancellationHandler(operation: { try await decoding.value }, onCancel: { decoding.cancel() })
+        try Task.checkCancellation()
         if let image { thumbnails.setObject(image, forKey: output.id as NSString, cost: image.bytesPerRow * image.height) }
         return image
-    }
-
-    static func data(_ output: ChatGeneratedOutput) async throws -> Data {
-        guard let source = output.source else { throw Failure.unavailable }
-        if source.hasPrefix("data:") {
-            return try await Task.detached(priority: .utility) {
-                guard let comma = source.firstIndex(of: ","), source[..<comma].hasSuffix(";base64"),
-                      let data = Data(base64Encoded: String(source[source.index(after: comma)...])), data.count <= limit else { throw Failure.unavailable }
-                return data
-            }.value
-        }
-        guard let url = URL(string: source), ["https", "http"].contains(url.scheme) else { throw Failure.unavailable }
-        let (bytes, response) = try await session.bytes(from: url)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), response.expectedContentLength <= limit else { throw Failure.unavailable }
-        var data = Data()
-        for try await byte in bytes {
-            if data.count >= limit { throw Failure.unavailable }
-            data.append(byte)
-        }
-        try Task.checkCancellation()
-        return data
     }
 
     static func playableURL(_ output: ChatGeneratedOutput) async throws -> URL {
         guard let source = output.source else { throw Failure.unavailable }
         if !source.hasPrefix("data:"), let url = URL(string: source), ["https", "http"].contains(url.scheme) { return url }
-        let bytes = try await data(output)
-        return try await Task.detached(priority: .utility) {
-            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CentaurGeneratedOutputs", isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let extensions = ["audio/wav": "wav", "audio/mpeg": "mp3", "audio/mp4": "m4a", "video/mp4": "mp4", "text/html": "html", "text/csv": "csv", "application/pdf": "pdf", "application/json": "json", "image/svg+xml": "svg", "text/plain": "txt", "text/markdown": "md"]
-            let suffix = extensions[output.mimeType ?? ""] ?? "bin"
-            let folder = directory.appendingPathComponent(output.id, isDirectory: true)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            var name = String((output.title as NSString).lastPathComponent.prefix(120))
-                .replacingOccurrences(of: "[^A-Za-z0-9 ._-]", with: "-", options: .regularExpression)
-            if name.isEmpty || name == "." || name == ".." { name = "Generated file" }
-            let url = (name as NSString).pathExtension.isEmpty ? folder.appendingPathComponent(name).appendingPathExtension(suffix) : folder.appendingPathComponent(name)
-            if !FileManager.default.fileExists(atPath: url.path) { try bytes.write(to: url, options: .atomic) }
-            return url
-        }.value
+        let writing = Task.detached(priority: .utility) { try embeddedURL(output, source: source) }
+        return try await withTaskCancellationHandler(operation: { try await writing.value }, onCancel: { writing.cancel() })
+    }
+
+    private static func embeddedURL(_ output: ChatGeneratedOutput, source: String) throws -> URL {
+        try Task.checkCancellation()
+        guard source.hasPrefix("data:"), let comma = source.firstIndex(of: ","),
+              source[..<comma].hasSuffix(";base64") else { throw Failure.unavailable }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CentaurGeneratedOutputs", isDirectory: true)
+        let folder = directory.appendingPathComponent(output.id, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let extensions = ["audio/wav": "wav", "audio/mpeg": "mp3", "audio/mp4": "m4a", "video/mp4": "mp4", "text/html": "html", "text/csv": "csv", "application/pdf": "pdf", "application/json": "json", "image/svg+xml": "svg", "text/plain": "txt", "text/markdown": "md"]
+        let suffix = extensions[output.mimeType ?? ""] ?? "bin"
+        // The content hash is filesystem-safe regardless of title length.
+        // The original title remains the visible/share label.
+        let url = folder.appendingPathComponent(output.id).appendingPathExtension(suffix)
+        if FileManager.default.fileExists(atPath: url.path) { return url }
+        let temporary = folder.appendingPathComponent(UUID().uuidString + ".tmp")
+        guard FileManager.default.createFile(atPath: temporary.path, contents: nil) else { throw Failure.unavailable }
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let file = try FileHandle(forWritingTo: temporary)
+        do {
+            // Chunk size only controls working memory. No source/output size
+            // limit: each complete base64 quartet is decoded once into the file.
+            let bytes = source[source.index(after: comma)...].utf8
+            var offset = bytes.startIndex
+            while offset != bytes.endIndex {
+                try Task.checkCancellation()
+                let end = bytes.index(offset, offsetBy: 64 * 1024, limitedBy: bytes.endIndex) ?? bytes.endIndex
+                let encoded = Data(bytes[offset..<end])
+                if let padding = encoded.firstIndex(of: 61) {
+                    guard end == bytes.endIndex, encoded[padding...].allSatisfy({ $0 == 61 }) else { throw Failure.unavailable }
+                }
+                guard let decoded = Data(base64Encoded: encoded) else { throw Failure.unavailable }
+                try file.write(contentsOf: decoded); offset = end
+            }
+            try Task.checkCancellation()
+            try file.close()
+        } catch { try? file.close(); throw error }
+        do { try FileManager.default.moveItem(at: temporary, to: url) }
+        catch { if !FileManager.default.fileExists(atPath: url.path) { throw error } }
+        return url
     }
 }

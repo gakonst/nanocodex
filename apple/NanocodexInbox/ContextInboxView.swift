@@ -155,8 +155,12 @@ private struct MessagingSetupView: View {
                 if items.isEmpty {
                     Text("No messages captured yet. Setting up a shortcut does not import existing conversations.").foregroundStyle(.secondary)
                 }
-                ForEach(items.prefix(5)) { item in
-                    Text(item.input.text).lineLimit(3)
+                ForEach(items) { item in
+                    NavigationLink {
+                        ContextDetailView(model: model, item: item)
+                    } label: {
+                        Text(item.input.text).lineLimit(3)
+                    }
                 }
             }
         }.navigationTitle(source.title)
@@ -255,10 +259,9 @@ private struct AddContextView: View {
                         let content = try await Task.detached {
                             let access = url.startAccessingSecurityScopedResource()
                             defer { if access { url.stopAccessingSecurityScopedResource() } }
-                            let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentTypeKey])
-                            guard (values.fileSize ?? Int.max) <= 8 * 1024 * 1024 else { throw CaptureError.tooLarge }
+                            let values = try url.resourceValues(forKeys: [.contentTypeKey])
                             guard let type = values.contentType else { throw CaptureError.unsupported }
-                            return try ContextImport.text(data: Data(contentsOf: url), type: type)
+                            return try ContextImport.text(data: Data(contentsOf: url, options: .mappedIfSafe), type: type)
                         }.value
                         text = content; filename = url.lastPathComponent; error = nil
                     } catch { self.error = error.localizedDescription }

@@ -7,12 +7,16 @@
         <key>NSExtensionPrincipalClass</key><string>$(PRODUCT_MODULE_NAME).ShareViewController</string>
     <key>NSExtensionAttributes</key><dict>
             <key>NSExtensionJavaScriptPreprocessingFile</key><string>CaptureWebPage</string>
-            <key>NSExtensionActivationRule</key><dict>
+            <key>NSExtensionActivationRule</key>
+            <dict>
                 <key>NSExtensionActivationSupportsText</key><true/>
-                <key>NSExtensionActivationSupportsWebURLWithMaxCount</key><integer>10</integer>
-                <key>NSExtensionActivationSupportsWebPageWithMaxCount</key><integer>1</integer>
-                <key>NSExtensionActivationSupportsImageWithMaxCount</key><integer>10</integer>
-                <key>NSExtensionActivationSupportsFileWithMaxCount</key><integer>10</integer>
+                <!-- Native activation requires maximum-count keys, including
+                     the webpage key that enables Safari preprocessing. Use the
+                     native 32-bit count range instead of a product admission cap. -->
+                <key>NSExtensionActivationSupportsImageWithMaxCount</key><integer>2147483647</integer>
+                <key>NSExtensionActivationSupportsFileWithMaxCount</key><integer>2147483647</integer>
+                <key>NSExtensionActivationSupportsWebURLWithMaxCount</key><integer>2147483647</integer>
+                <key>NSExtensionActivationSupportsWebPageWithMaxCount</key><integer>2147483647</integer>
             </dict>
         </dict>
     </dict>

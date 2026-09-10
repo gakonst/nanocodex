@@ -187,16 +187,18 @@ final class ContextUITests: XCTestCase {
         safari.launch()
         let address = safari.textFields.firstMatch
         XCTAssertTrue(address.waitForExistence(timeout: 20), safari.debugDescription)
-        address.tap()
-        // iPad Safari replaces the tab title field with a focused editor.
-        let editor = safari.textFields.matching(NSPredicate(format: "identifier BEGINSWITH %@", "SearchFieldItemView")).firstMatch
+        address.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        // Safari replaces the floating tab title with a focused URL editor.
+        let editor = safari.textFields.matching(NSPredicate(format: "identifier BEGINSWITH %@ OR identifier == %@", "SearchFieldItemView", "URL")).firstMatch
         if editor.waitForExistence(timeout: 2) { editor.typeText(link + XCUIKeyboardKey.return.rawValue) }
         else { address.typeText(link + XCUIKeyboardKey.return.rawValue) }
         let share = safari.buttons["Share"]
         if !share.waitForExistence(timeout: 3) {
             let more = safari.buttons["More"]
             XCTAssertTrue(more.waitForExistence(timeout: 20), safari.debugDescription)
-            more.tap()
+            // Safari's floating toolbar can report an invalid automatic hit
+            // point even when its accessibility frame is on screen.
+            more.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         }
         XCTAssertTrue(share.waitForExistence(timeout: 10), safari.debugDescription)
         let shareReady = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: share)

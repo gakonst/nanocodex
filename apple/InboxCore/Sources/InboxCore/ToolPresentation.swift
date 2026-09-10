@@ -51,12 +51,11 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
 
     public mutating func finish(_ value: JSON, failed: Bool = false, state: String = "", metadata: JSON = .null, rawResult: JSON = .null, elapsedSeconds: Double? = nil) {
         let result = Self.decoded(value)
-        var retained: [String] = [], bytes = 0
+        var retained: [String] = []
         let encoder = JSONEncoder(); encoder.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
         for candidate in [value, rawResult] where candidate != .null {
             guard let data = try? encoder.encode(candidate), let text = String(data: data, encoding: .utf8), !retained.contains(text) else { continue }
-            if bytes + data.count <= 16 * 1024 * 1024 { retained.append(text); bytes += data.count }
-            else { retained.append("{\"type\":\"unsupported\",\"title\":\"Large generated output\"}") }
+            retained.append(text)
         }
         generatedResults = retained.isEmpty ? nil : retained
         let exitFailed: Bool

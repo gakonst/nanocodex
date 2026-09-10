@@ -87,7 +87,7 @@ final class VideoAttachmentTests: XCTestCase {
         try store.prune(keeping: [restored.id])
         XCTAssertNoThrow(try store.content(for: [restored]))
         try store.remove(restored)
-        XCTAssertTrue(try FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("video-one"), includingPropertiesForKeys: nil).isEmpty)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("video-one"), includingPropertiesForKeys: nil, options: .skipsHiddenFiles).isEmpty)
     }
 
     func testVideoMetadataAndPayloadTamperingAreRejected() async throws {
@@ -130,8 +130,8 @@ final class VideoAttachmentTests: XCTestCase {
             defer { cleanup.close() }
             _ = try await cleanup.json(path: ManagedClient.agentPath(agent), method: "DELETE")
         }
-        let path = try await client.uploadVideo(agentID: agent, attachment: prepared.attachment, source: source)
-        let resumed = try await client.uploadVideo(agentID: agent, attachment: prepared.attachment, source: source)
+        let path = try await client.uploadAttachment(agentID: agent, attachment: prepared.attachment, source: source)
+        let resumed = try await client.uploadAttachment(agentID: agent, attachment: prepared.attachment, source: source)
         XCTAssertEqual(resumed, path)
         let digest = SHA256.hash(data: try Data(contentsOf: source, options: .mappedIfSafe)).map { String(format: "%02x", $0) }.joined()
         var command = AgentCommand(agentID: agent, input: "Use tools to compute the SHA-256 and byte count of the attached original video file at its /brain path. Reply ORIGINAL_FILE_OK, the computed digest and byte count. Do not infer the bytes from the filename or metadata. For a file over 64 MiB, use a native execution Hand with /brain mounted.", kind: .followUp)
