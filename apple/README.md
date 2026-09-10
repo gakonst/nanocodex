@@ -30,8 +30,14 @@ for background work, while older transcripts load only when opened or visible.
 The composer grows up to six lines, then scrolls; its expand button opens a larger
 editor sharing the same draft and attachments.
 
-Each tab opens the full conversation directly. Overview cards render miniature
-transcripts with the same message components and latest available content.
+Each tab opens the full conversation directly. The full-screen overview shows
+searchable cards with miniature transcripts and an outline around the selected tab.
+Close a card with its × button or a horizontal swipe; the overview stays open while
+the remaining cards rearrange. Closing the selected tab selects its neighbor.
+Closed tabs remain closed across launches on this device and can be reopened from
+**More → Closed tabs**. Closing preserves conversation history, drafts, and running work.
+Overview cards render miniature transcripts with the same message components and
+latest available content.
 Unchanged Markdown stays behind an equality boundary, so typing, scrolling, and
 another row's streamed updates do not reparse completed messages. Parsing runs on
 a background actor with a bounded cache; streamed changes coalesce for 32 ms,

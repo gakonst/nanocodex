@@ -273,7 +273,8 @@ private final class StartupFixtureProtocol: URLProtocol, @unchecked Sendable {
             if path == "/v1/agents" {
                 delay = 6
                 if ProcessInfo.processInfo.environment["NANOCODEX_STARTUP_REJECT"] == "1" { status = 401 }
-                body = #"{"data":["saved","other","slow"],"summaries":{"saved":{"title":"Saved conversation","updated_at":3,"turn_count":1,"may_have_scheduled_jobs":true},"other":{"title":"Other conversation","updated_at":2,"turn_count":1,"may_have_scheduled_jobs":true},"slow":{"title":"Background conversation","updated_at":1,"turn_count":1,"may_have_scheduled_jobs":true}}}"#
+            let now = Date().timeIntervalSince1970 * 1000
+                body = #"{"data":["saved","other","slow"],"summaries":{"saved":{"title":"Saved conversation","updated_at":\#(now),"turn_count":1,"may_have_scheduled_jobs":true},"other":{"title":"Other conversation","updated_at":\#(now - 1),"turn_count":1,"may_have_scheduled_jobs":true},"slow":{"title":"Background conversation","updated_at":\#(now - 2),"turn_count":1,"may_have_scheduled_jobs":true}}}"#
             } else if path.hasSuffix("/events/history") {
                 delay = id == "slow" ? 20 : 10
                 body = "{\"data\":[{\"cursor\":\"1\",\"type\":\"turn_completed\",\"turn_id\":\"t\",\"final_message\":\"Loaded \(id) conversation.\"}],\"has_more\":false,\"latest_cursor\":\"1\"}"

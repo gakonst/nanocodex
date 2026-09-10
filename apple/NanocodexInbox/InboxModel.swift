@@ -30,6 +30,7 @@ final class InboxModel: ObservableObject {
     @Published var threadError: String?
     private var observedAgentID: String?
     private var tabOrder: [String] = []
+    @Published private(set) var closedConversationIDs = Set<String>()
     @Published private var openedConversations = Set<String>()
     @Published private var olderConversationLimit = 0
     private struct TabHistory {
@@ -196,17 +197,20 @@ final class InboxModel: ObservableObject {
     }
     var tabCards: [AgentCard] {
         let byID = Dictionary(uniqueKeysWithValues: cards.map { ($0.id, $0) })
-        return tabOrder.compactMap { byID[$0] }
+        return tabOrder.filter { !closedConversationIDs.contains($0) }.compactMap { byID[$0] }
     }
     private var recentConversationIDs: Set<String> {
-        Set(cards.filter { ConversationWindow.includes($0, focusedID: deck.focusedID,
+        Set(cards.filter { !closedConversationIDs.contains($0.id) && ConversationWindow.includes($0, focusedID: deck.focusedID,
             openedIDs: openedConversations) }.map(\.id))
     }
     var overviewCards: [AgentCard] {
-        ConversationWindow.overview(cards, focusedID: deck.focusedID,
+        ConversationWindow.overview(cards.filter { !closedConversationIDs.contains($0.id) }, focusedID: deck.focusedID,
             openedIDs: openedConversations, olderLimit: olderConversationLimit)
     }
-    var hasOlderConversations: Bool { overviewCards.count < cards.count }
+    var closedConversationCards: [AgentCard] {
+        cards.filter { closedConversationIDs.contains($0.id) }.sorted(by: AgentCard.mostRecentFirst)
+    }
+    var hasOlderConversations: Bool { overviewCards.count < cards.filter { !closedConversationIDs.contains($0.id) }.count }
     func loadOlderConversations() { olderConversationLimit += ConversationWindow.pageSize }
     var creationError: String? { focused.flatMap { creationErrors[$0.id] } }
     private func resolvedAgentID(_ id: String) -> String { createdAgentIDs[id] ?? id }
@@ -567,6 +571,7 @@ final class InboxModel: ObservableObject {
             request.setValue("Bearer " + credential.apiKey, forHTTPHeaderField: "Authorization")
         }
         scope = accountScope
+        closedConversationIDs = Set(UserDefaults.standard.stringArray(forKey: "inbox.closedTabs." + scope) ?? [])
         configureDeviceHand(credential)
         activateContext()
         drafts = UserDefaults.standard.dictionary(forKey: "inbox.drafts." + scope) as? [String: String] ?? [:]
@@ -584,8 +589,8 @@ final class InboxModel: ObservableObject {
         }
         cards = initial
         restoreCreations()
-        if let previousID, cards.contains(where: { $0.id == previousID }) {
-            deck.reconcile(cards.map(\.id)); deck.focus(previousID)
+        if let previousID, !closedConversationIDs.contains(previousID), cards.contains(where: { $0.id == previousID }) {
+            deck.reconcile(cards.filter { !closedConversationIDs.contains($0.id) }.map(\.id)); deck.focus(previousID)
             if let openingRequest {
                 openingHistory = (previousID, openingRequest)
                 handedOff = true
@@ -605,7 +610,7 @@ final class InboxModel: ObservableObject {
         agentNotificationUpdate?.cancel(); agentNotificationUpdate = nil
         stopOverview()
         overviewTranscripts = [:]; tabHistories = [:]; recentTabs = []; tabOrder = []
-        openedConversations = []; olderConversationLimit = 0
+        openedConversations = []; closedConversationIDs = []; olderConversationLimit = 0
         handTasks.endAllObservations()
         schedulesTask?.cancel(); schedulesTask = nil; schedulesFailures = [:]
         scheduledJobs = []; scheduledJobAgents = [:]; schedulesLoading = false; schedulesLoaded = false; schedulesError = nil
@@ -902,7 +907,7 @@ final class InboxModel: ObservableObject {
         tabOrder.append(contentsOf: cards.sorted(by: AgentCard.mostRecentFirst).map(\.id).filter { available.contains($0) && !known.contains($0) })
         let previous = deck.focusedID
         let eligible = cards.filter { card in
-            guard available.contains(card.id) else { return false }
+            guard !closedConversationIDs.contains(card.id), available.contains(card.id) else { return false }
             if card.id == pinnedThreadID { return true }
             switch filter {
             case .inbox: return card.isInInbox(seen: seenCursor(card.id), deferred: deferred[card.id])
@@ -950,6 +955,8 @@ final class InboxModel: ObservableObject {
     func back() {
         while let previous = navigation.popLast() {
             guard previous.id != focused?.id, cards.contains(where: { $0.id == previous.id }) else { continue }
+            closedConversationIDs.remove(previous.id)
+            openedConversations.insert(previous.id)
             pinnedThreadID = previous.id
             seen[previous.id] = previous.seen; deferred[previous.id] = previous.deferred
             persist(); filter = previous.filter
@@ -1056,8 +1063,34 @@ final class InboxModel: ObservableObject {
         select(id)
     }
 
+    // Closing a browser tab only hides it locally; work, drafts and history remain intact.
+    func closeConversationTab(_ id: String) {
+        let id = resolvedAgentID(id)
+        guard cards.contains(where: { $0.id == id }), !closedConversationIDs.contains(id) else { return }
+        let order = tabCards.map(\.id)
+        let neighbor: String? = order.firstIndex(of: id).flatMap { index in
+            if index + 1 < order.count { return order[index + 1] }
+            return index > 0 ? order[index - 1] : nil
+        }
+        let wasFocused = deck.focusedID == id
+        closedConversationIDs.insert(id)
+        if pinnedThreadID == id { pinnedThreadID = nil }
+        persist()
+        if wasFocused, let neighbor {
+            select(neighbor)
+        } else {
+            if wasFocused, let card = focused {
+                navigation.append((card.id, seen[card.id], deferred[card.id], filter))
+                if navigation.count > 50 { navigation.removeFirst() }
+            }
+            reconcile()
+        }
+    }
+
     func select(_ id: String) {
+        let id = resolvedAgentID(id)
         guard cards.contains(where: { $0.id == id }) else { return }
+        if closedConversationIDs.remove(id) != nil { persist() }
         openedConversations.insert(id)
         if let card = focused, card.id != id {
             navigation.append((card.id, seen[card.id], deferred[card.id], filter))
@@ -1969,6 +2002,7 @@ final class InboxModel: ObservableObject {
     private func bindCreatedAgent(_ localID: String, to id: String) {
         let wasFocused = deck.focusedID == localID
         createdAgentIDs[localID] = id
+        if closedConversationIDs.remove(localID) != nil { closedConversationIDs.insert(id) }
         if openedConversations.remove(localID) != nil { openedConversations.insert(id) }
         // A concurrent roster can list the real agent before create returns.
         // Keep the placeholder's position and avoid duplicate SwiftUI identities.
@@ -2000,8 +2034,8 @@ final class InboxModel: ObservableObject {
         pendingCreations.remove(localID); creationErrors[localID] = nil
         unlistedAgents.insert(id)
         // Rebind without navigating: a late response must never steal focus.
-        deck.reconcile(deck.order.map { $0 == localID ? id : $0 })
-        if wasFocused { deck.focus(id) }
+        deck.reconcile(deck.order.map { $0 == localID ? id : $0 }.filter { !closedConversationIDs.contains($0) })
+        if wasFocused, !closedConversationIDs.contains(id) { deck.focus(id) }
         persist(); observeFocused()
     }
     private func restoreCreations() {
@@ -2011,11 +2045,13 @@ final class InboxModel: ObservableObject {
     private func persist() {
         guard !scope.isEmpty else { return }
         let scope = scope, drafts = drafts, attachmentDrafts = attachmentDrafts, seen = seen
+        let closedConversationIDs = closedConversationIDs
         let selectedContext = selectedContext, excludedContext = excludedContext
         let pending = pending, cancellations = cancellations, pendingCreations = pendingCreations
         let isDemo = isDemo, demoRows = demoRows
         let demoTurns = isDemo ? Dictionary(uniqueKeysWithValues: cards.map { ($0.id, $0.activeTurns) }) : [:]
         preferences.enqueue { defaults in
+            defaults.set(Array(closedConversationIDs).sorted(), forKey: "inbox.closedTabs." + scope)
             defaults.set(drafts, forKey: "inbox.drafts." + scope)
             if let data = try? JSONEncoder().encode(attachmentDrafts) { defaults.set(data, forKey: "inbox.attachments." + scope) }
             defaults.set(seen, forKey: "inbox.seen." + scope)
@@ -2045,6 +2081,7 @@ final class InboxModel: ObservableObject {
             remoteService = try? RemoteService(origin: URL(string: "http://127.0.0.1:18965")!) { _ in }
         }
         scope = "demo." + (ProcessInfo.processInfo.environment["NANOCODEX_DEMO_PROFILE"] ?? "default")
+        closedConversationIDs = Set(UserDefaults.standard.stringArray(forKey: "inbox.closedTabs." + scope) ?? [])
         cards = DemoContent.cards()
         if let profile = ProcessInfo.processInfo.environment["NANOCODEX_DEMO_PROFILE"] {
             scope = "demo." + profile
