@@ -234,7 +234,7 @@ export function createNodeHost(options = {}) {
     });
   }
 
-  function next(handle, timeoutMs) {
+  function next(handle) {
     const connection = connections.get(handle);
     if (!connection) {
       return Promise.resolve(JSON.stringify({ kind: "closed", detail: "before the next frame" }));
@@ -246,12 +246,7 @@ export function createNodeHost(options = {}) {
     }
     if (connection.waiter) return Promise.reject(new Error("concurrent reads are unsupported"));
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        connection.waiter = undefined;
-        resolve(JSON.stringify({ kind: "timeout" }));
-      }, timeoutMs);
       connection.waiter = (message) => {
-        clearTimeout(timer);
         connection.waiter = undefined;
         resolve(JSON.stringify(message));
       };

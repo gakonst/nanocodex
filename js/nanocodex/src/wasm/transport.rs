@@ -26,7 +26,7 @@ extern "C" {
     fn host_send(handle: u32, message: &str) -> Result<Promise, JsValue>;
 
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = next)]
-    fn host_next(handle: u32, timeout_ms: u32) -> Result<Promise, JsValue>;
+    fn host_next(handle: u32) -> Result<Promise, JsValue>;
 
     #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = close)]
     fn host_close(handle: u32);
@@ -80,7 +80,6 @@ enum HostMessageWire {
         #[serde(default = "default_reconnectable")]
         reconnectable: bool,
     },
-    Timeout,
     Binary,
 }
 
@@ -171,11 +170,10 @@ impl HostConnection for JavaScriptHostConnection {
         })
     }
 
-    fn next(&mut self, idle_timeout: Duration) -> HostFuture<'_, Result<HostMessage, HostError>> {
+    fn next(&mut self) -> HostFuture<'_, Result<HostMessage, HostError>> {
         Box::pin(async move {
-            let timeout_ms = u32::try_from(idle_timeout.as_millis()).unwrap_or(u32::MAX);
-            let promise = host_next(self.handle, timeout_ms)
-                .map_err(|error| decode_host_error(&error, true))?;
+            let promise =
+                host_next(self.handle).map_err(|error| decode_host_error(&error, true))?;
             let message: HostMessageWire = await_json(promise)
                 .await
                 .map_err(|error| decode_host_error(&error, true))?;
@@ -186,7 +184,6 @@ impl HostConnection for JavaScriptHostConnection {
                     detail,
                     reconnectable,
                 } => Err(HostError::new(detail).with_reconnectable(reconnectable)),
-                HostMessageWire::Timeout => Ok(HostMessage::Timeout),
                 HostMessageWire::Binary => Ok(HostMessage::Binary),
             }
         })

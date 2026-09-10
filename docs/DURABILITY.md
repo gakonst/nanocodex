@@ -135,6 +135,12 @@ I/O); historical storage grows with completed work. No turn duration or step
 count cap is imposed. Arbitrary allocations inside user tools are outside this
 bound and belong on an appropriate execution host.
 
+Model event reads have no silence deadline: a reasoning call can remain quiet
+without being failed or replayed. Rust owns cancellation and releases the
+connection when the response is dropped. Native HTTP, native WebSocket, and
+WASM hosts follow the same rule. Connection setup and sends retain their own
+deadlines; explicit connection failures still enter normal recovery.
+
 A run terminal is emitted only after settlement and recovery classification.
 An interrupted attempt classified as retry or reopen emits no `run.failed` or
 `run.completed`. A later attempt or exact receipt replay emits the committed

@@ -38,6 +38,25 @@ async function waitForToolDefinition(host, name) {
   throw new Error(`MCP discovery did not publish ${name}`);
 }
 
+test("quiet model reads survive six minutes and release on cancellation", async (t) => {
+  const socket = new ManagedSocket();
+  const host = createNodeHost({ mpp: { async ws() { return socket; } } });
+  await host.connect("wss://paid.test", "mpp-managed", "session");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let settled = false;
+  const pending = host.next(1).then((value) => { settled = true; return JSON.parse(value); });
+  t.mock.timers.tick(360_000);
+  await Promise.resolve();
+  assert.equal(settled, false);
+  await assert.rejects(host.next(1), /concurrent reads/);
+  socket.message('{"type":"response.completed"}');
+  assert.deepEqual(await pending, { kind: "text", text: '{"type":"response.completed"}' });
+  const cancelled = host.next(1);
+  host.close(1);
+  assert.deepEqual(JSON.parse(await cancelled), { kind: "closed", detail: "by the WASM runtime" });
+  assert.equal(socket.readyState, 3);
+});
+
 test("Node host opens application sockets through MPP", async () => {
   const socket = new ManagedSocket();
   const endpoints = [];
@@ -53,11 +72,11 @@ test("Node host opens application sockets through MPP", async () => {
   assert.equal(JSON.parse(await host.connect("wss://paid.test", "mpp-managed", "session")).status, 101);
   assert.deepEqual(endpoints, ["wss://paid.test"]);
   socket.message('{"type":"paid"}');
-  assert.equal(JSON.parse(await host.next(1, 10)).text, '{"type":"paid"}');
+  assert.equal(JSON.parse(await host.next(1)).text, '{"type":"paid"}');
   assert.equal(JSON.parse(await host.send(1, "request")).ok, true);
   assert.deepEqual(socket.sent.map(JSON.parse), [{ mpp: "message", data: "request" }]);
   socket.close(3008, "requested voucher amount exceeds local maxDeposit");
-  assert.deepEqual(JSON.parse(await host.next(1, 10)), {
+  assert.deepEqual(JSON.parse(await host.next(1)), {
     kind: "error",
     detail: "MPP WebSocket payment flow failed with code 3008: requested voucher amount exceeds local maxDeposit",
     reconnectable: false,

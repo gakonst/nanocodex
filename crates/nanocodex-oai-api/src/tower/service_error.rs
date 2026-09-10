@@ -161,7 +161,6 @@ impl std::error::Error for ResponsesServiceError {
 impl From<ResponsesError> for ResponsesServiceError {
     fn from(error: ResponsesError) -> Self {
         let phase = match error {
-            ResponsesError::IdleTimeout { .. } => FailurePhase::Idle,
             ResponsesError::UnexpectedEnd
             | ResponsesError::Closed { .. }
             | ResponsesError::Receive { .. } => FailurePhase::Receive,
@@ -208,7 +207,6 @@ pub(crate) enum FailurePhase {
     Encode,
     Send,
     Receive,
-    Idle,
     Api,
     Protocol,
     Completion,

@@ -469,10 +469,10 @@ const hostBridge = Object.freeze({
       ? connection.host.send(connection.handle, message)
       : Promise.resolve(JSON.stringify({ ok: false, reconnectable: true, error: "unknown WebSocket handle" }));
   },
-  next(handle, timeoutMs) {
+  next(handle) {
     const connection = hostConnections.get(handle);
     return connection
-      ? connection.host.next(connection.handle, timeoutMs)
+      ? connection.host.next(connection.handle)
       : Promise.resolve(JSON.stringify({ kind: "closed", detail: "for an unknown WebSocket handle" }));
   },
   close(handle) {

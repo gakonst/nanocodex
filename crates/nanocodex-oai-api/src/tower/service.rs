@@ -831,7 +831,7 @@ async fn receive_warmup(
     request: &ResponsesAttempt,
 ) -> Result<WarmupResponse, ResponsesServiceError> {
     loop {
-        let received = socket.next_text_or_idle_timeout().await?;
+        let received = socket.next_text().await?;
         let raw_event = parse_raw_json(received.text.as_str())?;
         tracing::trace!(
             target: "nanocodex_oai_api",

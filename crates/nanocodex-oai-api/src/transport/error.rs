@@ -77,12 +77,6 @@ pub enum ResponsesError {
         /// Configured timeout in seconds.
         seconds: u64,
     },
-    /// No response event arrived before the idle deadline.
-    #[error("Responses WebSocket produced no event for {seconds} seconds")]
-    IdleTimeout {
-        /// Configured idle timeout in seconds.
-        seconds: u64,
-    },
     /// The WebSocket stream ended without a close frame.
     #[error("Responses WebSocket closed without a close frame")]
     UnexpectedEnd,
@@ -201,7 +195,6 @@ impl ResponsesError {
                 reconnectable: true,
                 ..
             } => ("send_transport", None),
-            Self::IdleTimeout { .. } => ("event_idle_timeout", None),
             Self::UnexpectedEnd | Self::Closed { .. } => ("premature_close", None),
             Self::Receive {
                 reconnectable: true,
@@ -244,7 +237,6 @@ impl ResponsesError {
             Self::HandshakeRejected { .. } => "handshake_rejected",
             Self::Send { .. } => "send",
             Self::SendTimeout { .. } => "send_timeout",
-            Self::IdleTimeout { .. } => "event_idle_timeout",
             Self::UnexpectedEnd => "premature_close",
             Self::Receive { .. } => "receive",
             Self::InvalidJson(_) => "invalid_json",

@@ -67,7 +67,7 @@ criterion.workspace = true
 eyre.workspace = true
 simd-json.workspace = true
 sonic-rs.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 tracing-subscriber.workspace = true
 
 [[bench]]

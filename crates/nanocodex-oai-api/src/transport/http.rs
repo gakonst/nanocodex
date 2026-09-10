@@ -2,16 +2,10 @@ use std::time::Duration;
 
 use crate::{OpenAiAuthSnapshot, monotonic_now_ns};
 use http::header;
-use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Utf8Bytes;
 
 use crate::{EncodedRequest, ResponsesError, socket::ReceivedText};
 
-const EVENT_IDLE_TIMEOUT: Duration = if cfg!(test) {
-    Duration::from_millis(100)
-} else {
-    Duration::from_mins(5)
-};
 const RESPONSES_LITE_HEADER: &str = "x-openai-internal-codex-responses-lite";
 const TURN_STATE_HEADER: &str = "x-codex-turn-state";
 
@@ -103,17 +97,7 @@ impl ResponsesHttp {
 }
 
 impl ResponsesHttpStream {
-    pub(crate) async fn next_text_or_idle_timeout(
-        &mut self,
-    ) -> Result<ReceivedText, ResponsesError> {
-        timeout(EVENT_IDLE_TIMEOUT, self.next_text())
-            .await
-            .map_err(|_| ResponsesError::IdleTimeout {
-                seconds: EVENT_IDLE_TIMEOUT.as_secs(),
-            })?
-    }
-
-    async fn next_text(&mut self) -> Result<ReceivedText, ResponsesError> {
+    pub(crate) async fn next_text(&mut self) -> Result<ReceivedText, ResponsesError> {
         loop {
             if let Some(text) = self.decoder.next()? {
                 return Ok(ReceivedText {

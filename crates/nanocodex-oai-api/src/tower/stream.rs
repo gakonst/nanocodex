@@ -223,16 +223,12 @@ struct ReceivedServerEvent {
 }
 
 pub(crate) trait ResponseEventSource {
-    async fn next_text_or_idle_timeout(
-        &mut self,
-    ) -> Result<crate::socket::ReceivedText, ResponsesError>;
+    async fn next_text(&mut self) -> Result<crate::socket::ReceivedText, ResponsesError>;
 }
 
 impl ResponseEventSource for ResponsesSocket {
-    async fn next_text_or_idle_timeout(
-        &mut self,
-    ) -> Result<crate::socket::ReceivedText, ResponsesError> {
-        Self::next_text_or_idle_timeout(self).await
+    async fn next_text(&mut self) -> Result<crate::socket::ReceivedText, ResponsesError> {
+        Self::next_text(self).await
     }
 }
 
@@ -462,7 +458,7 @@ where
     S: ResponseEventSource,
 {
     let receive_started_at = Instant::now();
-    let received = source.next_text_or_idle_timeout().await?;
+    let received = source.next_text().await?;
     timing.pipeline.receive_wait_duration_ns = timing
         .pipeline
         .receive_wait_duration_ns

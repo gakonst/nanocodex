@@ -21,11 +21,6 @@ pub(crate) use crate::transport::wire::{decode_event, parse_raw_json};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const SEND_TIMEOUT: Duration = Duration::from_secs(30);
-const EVENT_IDLE_TIMEOUT: Duration = if cfg!(test) {
-    Duration::from_millis(100)
-} else {
-    Duration::from_mins(5)
-};
 const SOCKET_MESSAGE_CAPACITY: usize = 32;
 const RESPONSES_WEBSOCKETS_BETA: &str = "responses_websockets=2026-02-06";
 const RESPONSES_LITE_HEADER: &str = "x-openai-internal-codex-responses-lite";
@@ -186,21 +181,6 @@ impl ResponsesSocket {
             })?
             .map_err(map_send_error)?;
         Ok(())
-    }
-
-    /// Receives the next text event within the configured idle timeout.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for timeout, socket failure, closure, or an unexpected frame.
-    pub(crate) async fn next_text_or_idle_timeout(
-        &mut self,
-    ) -> Result<ReceivedText, ResponsesError> {
-        timeout(EVENT_IDLE_TIMEOUT, self.next_text())
-            .await
-            .map_err(|_| ResponsesError::IdleTimeout {
-                seconds: EVENT_IDLE_TIMEOUT.as_secs(),
-            })?
     }
 
     /// Receives the next text event while handling control frames in the pump.
