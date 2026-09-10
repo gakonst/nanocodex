@@ -250,17 +250,12 @@ export class ManagedEventArchive<Message extends { type: string }> {
       throw new Error("managed event archive source is not newer than its ownership fence");
     }
 
-    const events = selected.map((row) => ({
-      cursor: row.cursor,
-      created_at: row.created_at,
-      message: JSON.parse(row.message_json) as Message,
-      turn_id: row.turn_id,
-    }));
-    const segmentBody = JSON.stringify({
-      version: VERSION,
-      kind: "managed_event_segment",
-      events,
-    } satisfies SegmentEnvelope<Message>);
+    // Stored messages are already canonical JSON. Embed them directly instead
+    // of retaining a second decoded copy of the complete segment during upload.
+    const segmentBody = '{"version":1,"kind":"managed_event_segment","events":['
+      + selected.map((row) => '{"cursor":' + JSON.stringify(row.cursor)
+        + ',"created_at":' + row.created_at + ',"message":' + row.message_json
+        + ',"turn_id":' + JSON.stringify(row.turn_id) + '}').join(',') + ']}';
     const segmentBytes = encoder.encode(segmentBody);
     const segmentHash = await sha256Hex(segmentBytes);
     const descriptor: SegmentDescriptor = {
@@ -382,7 +377,8 @@ export class ManagedEventArchive<Message extends { type: string }> {
   ): Promise<DurableEvent<Message>[]> {
     const state = this.#state();
     if (BigInt(after) >= BigInt(state.archived_through)) return [];
-    const descriptors = await this.#descriptorsAfter(after, limit);
+    // One immutable segment per page; never accumulate many decoded segments.
+    const descriptors = await this.#descriptorsAfter(after, 1);
     const events: DurableEvent<Message>[] = [];
     for (const descriptor of descriptors) {
       const segment = await this.#readSegment(descriptor, cache);
@@ -418,10 +414,10 @@ export class ManagedEventArchive<Message extends { type: string }> {
   ): Promise<DurableEvent<Message>[]> {
     while (true) {
       const fence = this.#readFence();
-      const archived = await this.pageAfter(after, limit, cache);
-      const localAfter = archived.at(-1)?.cursor ?? after;
-      const tail = archived.length >= limit ? [] : local.page(localAfter, limit - archived.length);
-      if (sameFence(fence, this.#readFence())) return [...archived, ...tail];
+      const events = BigInt(after) < BigInt(fence.archived_through)
+        ? await this.pageAfter(after, limit, cache)
+        : local.page(after, limit);
+      if (sameFence(fence, this.#readFence())) return events;
     }
   }
 
@@ -435,23 +431,17 @@ export class ManagedEventArchive<Message extends { type: string }> {
       const fence = this.#readFence();
       const localPage = local.history(before, limit);
       let page: DurableEventHistory<Message>;
-      if (localPage.data.length >= limit) {
+      // Do not skip a byte-truncated local page to fill it from the archive.
+      // Cursor pagination crosses the storage boundary on the next request.
+      if (localPage.data.length > 0 || fence.archived_events === 0) {
         page = {
           ...localPage,
           has_more: localPage.has_more || fence.archived_events > 0,
           latest_cursor: maxCursor(localPage.latest_cursor, fence.archived_through),
         };
-      } else if (fence.archived_events === 0) {
-        page = localPage;
       } else {
-        const archiveBefore = localPage.data[0]?.cursor ?? before;
-        const remaining = limit - localPage.data.length;
-        const archived = await this.#historyBefore(archiveBefore, remaining, cache);
-        page = {
-          data: [...archived.data, ...localPage.data],
-          has_more: archived.has_more,
-          latest_cursor: maxCursor(localPage.latest_cursor, fence.archived_through),
-        };
+        const archived = await this.#historyBefore(before, limit, cache);
+        page = { ...archived, latest_cursor: maxCursor(localPage.latest_cursor, fence.archived_through) };
       }
       if (sameFence(fence, this.#readFence())) return page;
     }
@@ -523,9 +513,11 @@ export class ManagedEventArchive<Message extends { type: string }> {
     if (limit <= 0) return { data: [], has_more: this.#state().archived_events > 0 };
     const boundary = BigInt(before ?? (BigInt(this.archivedThrough()) + 1n).toString());
     const collected: DurableEvent<Message>[] = [];
+    let stoppedAtSegmentBoundary = false;
     const consume = async (descriptors: SegmentDescriptor[]): Promise<boolean> => {
       for (const descriptor of [...descriptors].reverse()) {
         if (BigInt(descriptor.start_cursor) >= boundary) continue;
+        if (collected.length > 0) { stoppedAtSegmentBoundary = true; return true; }
         const segment = await this.#readSegment(descriptor, cache);
         for (const event of [...segment].reverse()) {
           if (BigInt(event.cursor) >= boundary) continue;
@@ -558,8 +550,8 @@ export class ManagedEventArchive<Message extends { type: string }> {
         if (await consume(node.descriptors)) break;
       }
     }
-    const hasMore = collected.length > limit;
-    if (hasMore) collected.pop();
+    const hasMore = stoppedAtSegmentBoundary || collected.length > limit;
+    if (collected.length > limit) collected.pop();
     return { data: collected.reverse(), has_more: hasMore };
   }
 

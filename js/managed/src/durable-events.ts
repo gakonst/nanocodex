@@ -1,5 +1,6 @@
 const REPLAY_PAGE_SIZE = 256;
 export const MAX_HISTORY_PAGE_SIZE = 256;
+export const MAX_HISTORY_PAGE_BYTES = 4 * 1024 * 1024;
 const KEEPALIVE_MS = 15_000;
 const MAX_SUBSCRIBERS = 32;
 const MAX_CURSOR = 9_223_372_036_854_775_807n;
@@ -225,52 +226,48 @@ export class DurableEventLog<Message extends { type: string }> {
   }
 
   page(after: string, limit = REPLAY_PAGE_SIZE): DurableEvent<Message>[] {
-    const rows = this.#storage.sql.exec<ManagedEventRow>(
-      `SELECT CAST(cursor AS TEXT) AS cursor, turn_id, message_json, created_at
-       FROM managed_events
-       WHERE cursor > CAST(? AS INTEGER)
-       ORDER BY managed_events.cursor
-       LIMIT ?`,
-      after,
-      limit,
-    ).toArray();
-    return hydrateManagedEventRows(this.#storage, rows).map((row) => ({
-      cursor: row.cursor,
-      created_at: row.created_at,
-      message: JSON.parse(row.message_json) as Message,
-      turn_id: row.turn_id,
-    }));
+    return this.#readPage(after, limit, false).data;
   }
 
-  /** Returns a newest-first storage query in chronological presentation order. */
+  /** Reads a bounded payload window in chronological presentation order. */
   history(before: string | undefined, limit: number): DurableEventHistory<Message> {
-    const rows = (before === undefined
-      ? this.#storage.sql.exec<ManagedEventRow>(
-        `SELECT CAST(cursor AS TEXT) AS cursor, turn_id, message_json, created_at
-         FROM managed_events
-         ORDER BY managed_events.cursor DESC
-         LIMIT ?`,
-        limit + 1,
-      )
-      : this.#storage.sql.exec<ManagedEventRow>(
-        `SELECT CAST(cursor AS TEXT) AS cursor, turn_id, message_json, created_at
-         FROM managed_events
-         WHERE cursor < CAST(? AS INTEGER)
-         ORDER BY managed_events.cursor DESC
-         LIMIT ?`,
-        before,
-        limit + 1,
-      )).toArray();
-    const hasMore = rows.length > limit;
-    if (hasMore) rows.pop();
+    return this.#readPage(before, limit, true);
+  }
+
+  #readPage(cursor: string | undefined, limit: number, newestFirst: boolean): DurableEventHistory<Message> {
+    const direction = newestFirst ? "DESC" : "ASC";
+    const boundary = cursor === undefined ? "" : `WHERE events.cursor ${newestFirst ? "<" : ">"} CAST(? AS INTEGER)`;
+    // Select sizes before crossing the SQLite/JS boundary. A row-count limit
+    // alone can hydrate hundreds of megabytes of chunked tool/image payloads.
+    const candidates = this.#storage.sql.exec<{ cursor: string; bytes: number }>(
+      `SELECT CAST(events.cursor AS TEXT) AS cursor,
+              LENGTH(CAST(events.message_json AS BLOB)) + COALESCE((
+                SELECT SUM(LENGTH(CAST(chunks.message_json AS BLOB)))
+                FROM managed_event_chunks chunks WHERE chunks.cursor = events.cursor
+              ), 0) AS bytes
+       FROM managed_events events ${boundary}
+       ORDER BY events.cursor ${direction} LIMIT ?`,
+      ...(cursor === undefined ? [] : [cursor]), limit + 1,
+    ).toArray();
+    let count = 0, bytes = 0;
+    for (const candidate of candidates) {
+      if (count >= limit || (count > 0 && bytes + candidate.bytes > MAX_HISTORY_PAGE_BYTES)) break;
+      count++; bytes += candidate.bytes;
+    }
+    const selected = candidates.slice(0, count);
+    const first = selected[0]?.cursor, last = selected.at(-1)?.cursor;
+    const rows = first === undefined || last === undefined ? [] : this.#storage.sql.exec<ManagedEventRow>(
+      `SELECT CAST(cursor AS TEXT) AS cursor, turn_id, message_json, created_at
+       FROM managed_events WHERE cursor >= CAST(? AS INTEGER) AND cursor <= CAST(? AS INTEGER)
+       ORDER BY managed_events.cursor`,
+      newestFirst ? last : first, newestFirst ? first : last,
+    ).toArray();
     return {
-      data: hydrateManagedEventRows(this.#storage, rows).reverse().map((row) => ({
-        cursor: row.cursor,
-        created_at: row.created_at,
-        message: JSON.parse(row.message_json) as Message,
-        turn_id: row.turn_id,
+      data: hydrateManagedEventRows(this.#storage, rows).map((row) => ({
+        cursor: row.cursor, created_at: row.created_at,
+        message: JSON.parse(row.message_json) as Message, turn_id: row.turn_id,
       })),
-      has_more: hasMore,
+      has_more: candidates.length > count,
       latest_cursor: this.latestCursor(),
     };
   }

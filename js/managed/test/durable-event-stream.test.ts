@@ -47,3 +47,23 @@ it("releases event stream slots across Durable Object fetch disconnects", async 
     await stub.fetch("https://memory.internal/clear");
   }
 });
+
+it("pages large chunked payloads by bytes without losing cursors", async () => {
+  const namespace = (env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace }).NANOCODEX_MEMORY;
+  await runInDurableObject(namespace.getByName(crypto.randomUUID()), async (_instance, ctx) => {
+    const log = new DurableEventLog<{ type: string; text: string }>(ctx.storage);
+    for (let index = 0; index < 7; index++) log.append({ type: "large", text: "x".repeat(1_100_000) });
+    const newest = log.history(undefined, 256);
+    expect(newest.data.map((event) => event.cursor)).toEqual(["5", "6", "7"]);
+    expect(newest.has_more).toBe(true);
+    const middle = log.history("5", 256);
+    expect(middle.data.map((event) => event.cursor)).toEqual(["2", "3", "4"]);
+    expect(log.history("2", 256).has_more).toBe(false);
+    expect(log.page("0").map((event) => event.cursor)).toEqual(["1", "2", "3"]);
+    expect(log.page("3").map((event) => event.cursor)).toEqual(["4", "5", "6"]);
+    // A single oversized event still makes progress, rather than hiding a turn.
+    log.append({ type: "oversized", text: "y".repeat(4_300_000) });
+    expect(log.history(undefined, 256).data.map((event) => event.cursor)).toEqual(["8"]);
+    log.clear();
+  });
+});

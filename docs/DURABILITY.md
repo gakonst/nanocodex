@@ -376,3 +376,15 @@ total-state replacement as its step status. Therefore its minimal equivalent
 is the single `effect_pending -> completed(output)` settlement above. This
 preserves the crash boundary while removing one full payload serialization and
 one backend transaction from every successful external effect.
+
+History observation does not instantiate the execution runtime. WebSocket and SSE
+observers follow durable cursors independently; only accepted work or an active
+realtime session keeps execution resident past its idle timeout.
+
+History page limits are maxima, not requested fill counts. SQLite selects event
+sizes before loading payloads and returns up to 4 MiB per page (always allowing
+one event to make progress). Archive reads retain one immutable segment per page.
+Readers continue from the returned cursor/`has_more`; a short page is not EOF.
+Archive sealing embeds stored JSON directly instead of decoding another complete
+copy of the segment. Working memory scales with the page or largest individual
+event, not with total thread history.
