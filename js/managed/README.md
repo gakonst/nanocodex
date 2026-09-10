@@ -295,3 +295,19 @@ Session deletion fences new work, cancels body readers, drains pending writes,
 and aborts incomplete uploads before the existing `/brain` cleanup. The
 `attachments.test.ts` Worker tests exercise real local R2 multipart behavior,
 reconstruction, retries, filesystem reads, deletion fencing, and account isolation.
+
+## Browser on the Cloudflare sandbox desktop
+
+The AMD64 Sandbox image includes Google Chrome. From the remote desktop's
+terminal, open a visible browser with:
+
+```sh
+google-chrome --no-sandbox --ozone-platform=wayland --disable-dev-shm-usage \
+  --no-first-run --start-maximized about:blank
+```
+
+The terminal inherits the running desktop's Wayland environment. A separate
+shell execution does not automatically inherit that environment. The Sandbox
+runs as root, so this command disables Chrome's process sandbox; use it only
+inside the isolated Sandbox container. It does not disable TLS verification.
+The Debian server Hand image separately provides `chromium`.
