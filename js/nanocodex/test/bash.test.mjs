@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { justBash } from "../tools/bash.mjs";
+import { createJustBashRuntime, justBash } from "../tools/bash.mjs";
+import { Bash } from "nanocodex-tools/just-bash/browser";
 
 test("Just Bash advertises its cloud workspace execution", async () => {
   const { descriptor, instructions, tool } = await justBash({ filesystem: memoryWorkspace() });
@@ -31,6 +32,46 @@ test("Just Bash advertises its cloud workspace execution", async () => {
   assert.match(instructions, /all current files, without .git or history/);
   assert.match(instructions, /Do not add depth, filter, branch, or other flags/);
   assert.doesNotMatch(instructions, /\bwget\b/);
+});
+
+test("ordinary sequence commands work with host-managed interpreter limits", async () => {
+  const runtime = await justBash({ filesystem: memoryWorkspace() });
+  const result = await runtime.tool.handler({
+    cmd: "for i in $(seq 1 12); do echo tick$i; done > progress.txt; tail -n 1 progress.txt",
+  }, context());
+  assert.equal(result.exit_code, 0, result.output);
+  assert.equal(result.output, "tick12\n");
+  assert.equal(new TextDecoder().decode(await runtime.filesystem.readFile("progress.txt")),
+    Array.from({ length: 12 }, (_, index) => `tick${index + 1}\n`).join(""));
+});
+
+test("buffer compatibility preserves finite host limits and explicit unlimited policy", async () => {
+  for (const executionLimits of [
+    { maxOutputSize: 8 },
+    { maxStringLength: 8 },
+    { maxOutputSize: Infinity, maxStringLength: Infinity },
+  ]) {
+    const filesystem = new Bash().fs;
+    await filesystem.mkdir("/workspace", { recursive: true });
+    const runtime = await createJustBashRuntime({
+      filesystem,
+      cwd: "/workspace",
+      executionLimits,
+    });
+    const small = await runtime.tool.handler({ cmd: "seq 1 3" }, context());
+    assert.equal(small.exit_code, 0, small.output);
+    assert.equal(small.output, "1\n2\n3\n");
+    const larger = await runtime.tool.handler({ cmd: "seq 1 12" }, context());
+    if (Object.values(executionLimits).includes(8)) {
+      assert.notEqual(larger.exit_code, 0);
+      assert.match(larger.output, /output size limit exceeded/);
+      assert.deepEqual(runtime.descriptor.limits, executionLimits);
+    } else {
+      assert.equal(larger.exit_code, 0, larger.output);
+      assert.equal(larger.output, Array.from({ length: 12 }, (_, index) => `${index + 1}\n`).join(""));
+      assert.deepEqual(runtime.descriptor.limits, {});
+    }
+  }
 });
 
 test("Just Bash mounts one persistent workspace without a process sandbox", async () => {

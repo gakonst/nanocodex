@@ -142,6 +142,12 @@ describe("durable brain without hands", () => {
         await expect(exec.handler({ cmd: "pwd && echo no && true", workdir }, context()))
           .resolves.toMatchObject({ exit_code: 0, output: "/brain\nno\n" });
       }
+      await expect(exec.handler({
+        cmd: "for i in $(seq 1 12); do echo tick$i; done > progress.txt; tail -n 1 progress.txt",
+      }, context())).resolves.toMatchObject({ exit_code: 0, output: "tick12\n" });
+      expect(await (await bucket.get(`brains/${id}/progress.txt`))!.text()).toBe(
+        Array.from({ length: 12 }, (_, index) => `tick${index + 1}\n`).join(""),
+      );
       await expect(exec.handler({ cmd: "mkdir -p notes && printf 'persistent\\n' > notes/result" }, context()))
         .resolves.toMatchObject({ exit_code: 0 });
       expect(await (await bucket.get(`brains/${id}/notes/result`))!.text()).toBe("persistent\n");

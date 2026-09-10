@@ -161,7 +161,14 @@ export async function createJustBashRuntime(options) {
         : { network: options.network }),
     ...(customCommands === undefined ? {} : { customCommands: [...customCommands] }),
     executionLimitProfile: "normal",
-    executionLimits,
+    // Allocation builders require safe integer capacities, even for tiny output.
+    // Keep the host's declared policy in the descriptor, while representing its
+    // unlimited buffer capacities with the largest supported integer internally.
+    executionLimits: {
+      ...executionLimits,
+      maxOutputSize: Math.min(executionLimits.maxOutputSize, Number.MAX_SAFE_INTEGER),
+      maxStringLength: Math.min(executionLimits.maxStringLength, Number.MAX_SAFE_INTEGER),
+    },
   });
   const descriptor = describeRuntime({
     bash,
