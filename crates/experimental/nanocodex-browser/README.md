@@ -84,6 +84,33 @@ loopback port. The owner shuts down the DevTools controller, Chromium, gvproxy,
 the VMM, and the disposable disk together. The image definition and guest init
 script live in `image/`.
 
+For a browser that runs outside the operator's own hardware, the `popcorn`
+module rents an isolated session from a [Popcorn](https://github.com/reclaimprotocol/popcorn-oss)
+control plane and attaches the same controller to it over CDP. Popcorn sessions
+run headful Chromium inside a TEE, expose a LiveView page a human can open to
+watch or take over, and are released on shutdown. The agent only ever sees
+`tools.browser`; the session URLs stay with the caller.
+
+```no_run
+use nanocodex_browser::popcorn::{PopcornBrowser, PopcornConfig};
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let browser = PopcornBrowser::spawn(PopcornConfig::from_env()?).await?;
+println!("live view: {}", browser.live_view_url());
+
+let tool = browser.tool();
+// Pass `tool` to `Tools::builder().provider(tool)`.
+drop(tool);
+browser.shutdown().await?;
+# Ok(())
+# }
+```
+
+`PopcornConfig::from_env()` reads `POPCORN_CONTROL_PLANE_URL`,
+`POPCORN_CLIENT_ID`, `POPCORN_CLIENT_SECRET`, and optionally `POPCORN_REGION`
+and `POPCORN_TTL_SECONDS`. A runnable version lives at
+`examples/popcorn_agent.rs`.
+
 For trusted local development, `Browser` provides the same typed actions
 without a VM:
 
