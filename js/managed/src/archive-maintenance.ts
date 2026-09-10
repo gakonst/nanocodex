@@ -12,6 +12,9 @@ export class ArchiveMaintenance {
   }
 
   nextAttemptAt(): number {
+    // A slow upload still has a live owner. Its original durable deadline is
+    // only for reconstruction; alarms must not spin after that deadline passes.
+    if (this.#task) return this.now() + 60_000;
     return this.storage.sql.exec<{ retry_at: number }>(
       "SELECT retry_at FROM managed_archive_maintenance WHERE singleton = 1",
     ).toArray()[0]?.retry_at ?? 0;
@@ -27,6 +30,12 @@ export class ArchiveMaintenance {
     );
     const task = Promise.resolve().then(work).then(() => {
       this.storage.sql.exec("DELETE FROM managed_archive_maintenance WHERE singleton = 1");
+    }).catch((error) => {
+      this.storage.sql.exec(
+        "UPDATE managed_archive_maintenance SET retry_at = ? WHERE singleton = 1",
+        this.now() + 60_000,
+      );
+      throw error;
     }).finally(() => { this.#task = undefined; });
     this.#task = task;
     return task;

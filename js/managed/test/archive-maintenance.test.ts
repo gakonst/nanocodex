@@ -28,11 +28,15 @@ it("owns one upload while retaining a durable recovery deadline before that uplo
   const sessions = (env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace }).NANOCODEX_MEMORY;
   await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (_instance, state) => {
     let release!: () => void;
+    let now = 5_000;
     const upload = new Promise<void>((resolve) => { release = resolve; });
-    const maintenance = new ArchiveMaintenance(state.storage, () => 5_000);
+    const maintenance = new ArchiveMaintenance(state.storage, () => now);
     const task = maintenance.start(() => upload);
     expect(maintenance.nextAttemptAt()).toBe(65_000);
     expect(maintenance.start(async () => { throw new Error("duplicate upload"); })).toBeUndefined();
+    now = 70_000;
+    expect(maintenance.nextAttemptAt()).toBe(130_000);
+    expect(new ArchiveMaintenance(state.storage, () => now).nextAttemptAt()).toBe(65_000);
     release();
     await task;
     expect(maintenance.nextAttemptAt()).toBe(0);
