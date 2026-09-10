@@ -81,6 +81,17 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/cache/apt/* /var/lib/apt/lists/*
 
+# Ubuntu 22.04's chromium-browser package requires Snap, which is unavailable
+# in the Sandbox container. Install Google's native AMD64 Debian package.
+RUN curl --fail --location --proto '=https' --tlsv1.2 \
+        https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+        -o /tmp/google-chrome.deb \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends /tmp/google-chrome.deb \
+    && google-chrome --version \
+    && apt-get clean \
+    && rm -rf /tmp/google-chrome.deb /var/cache/apt/* /var/lib/apt/lists/*
+
 RUN ln -s /usr/bin/fdfind /usr/local/bin/fd \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --profile minimal --default-toolchain stable \
