@@ -414,7 +414,11 @@ export class ManagedEventArchive<Message extends { type: string }> {
   ): Promise<DurableEvent<Message>[]> {
     while (true) {
       const fence = this.#readFence();
-      const events = BigInt(after) < BigInt(fence.archived_through)
+      const archived = BigInt(after) < BigInt(fence.archived_through);
+      // A caught-up subscriber must not pin its last decoded archive segment
+      // for the lifetime of an otherwise idle SSE/WebSocket connection.
+      if (!archived) cache.segment = undefined;
+      const events = archived
         ? await this.pageAfter(after, limit, cache)
         : local.page(after, limit);
       if (sameFence(fence, this.#readFence())) return events;

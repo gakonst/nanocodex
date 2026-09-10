@@ -6,6 +6,27 @@ on:
   pull_request:
   push:
     branches: [master]
+    # Native client releases must not evict unrelated live Durable Objects.
+    # Manual production dispatch remains available for an explicit redeploy.
+    paths:
+      - "js/**"
+      - "!js/desktop-runtime/**"
+      - "crates/**"
+      - "hands/**"
+      - "examples/**"
+      - "scripts/**"
+      - "docs/**"
+      - "patches/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain*"
+      - ".cargo/**"
+      - ".npmrc"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "turbo.json"
+      - ".github/workflows/cloudflare.yml"
   workflow_dispatch:
     inputs:
       target:
