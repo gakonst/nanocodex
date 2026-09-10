@@ -271,12 +271,12 @@ struct InboxView: View {
                 guard !draggingTabs else { return }
                 composerFocused = false; showOverview = true
             } label: {
-                Text(String(model.cards.count)).font(.system(size: 13, weight: .semibold)).monospacedDigit()
+                Text(String(model.tabCards.count)).font(.system(size: 13, weight: .semibold)).monospacedDigit()
                     .frame(minWidth: 23, minHeight: 25)
                     .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Ink.text, lineWidth: 1.5))
                     .frame(width: 44, height: 44)
             }
-            .accessibilityLabel("Conversation overview").accessibilityValue("\(model.cards.count) conversations")
+            .accessibilityLabel("Conversation overview").accessibilityValue("\(model.tabCards.count) active conversations")
             .accessibilityHint("Tap to show windows. Drag left or right to move through tabs; hold at an edge to keep scrolling.")
             .accessibilityIdentifier("tab-overview")
             .highPriorityGesture(tabScrubGesture)
@@ -453,12 +453,12 @@ private struct ConversationOverview: View {
     init(model: InboxModel, select: @escaping (String) -> Void) {
         self.model = model
         self.select = select
-        _order = State(initialValue: model.cards.sorted(by: AgentCard.mostRecentFirst).map(\.id))
+        _order = State(initialValue: model.overviewCards.sorted(by: AgentCard.mostRecentFirst).map(\.id))
     }
 
     private var visibleCards: [AgentCard] {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cards = Dictionary(uniqueKeysWithValues: model.cards.map { ($0.id, $0) })
+        let cards = Dictionary(uniqueKeysWithValues: model.overviewCards.map { ($0.id, $0) })
         return order.compactMap { cards[$0] }.filter { card in
             (!runningOnly || card.isRunning) && (text.isEmpty || card.title.localizedCaseInsensitiveContains(text)
                 || card.id.localizedCaseInsensitiveContains(text) || card.preview.localizedCaseInsensitiveContains(text))
@@ -515,13 +515,19 @@ private struct ConversationOverview: View {
                 }.padding(16)
                 if visibleCards.isEmpty {
                     ContentUnavailableView(model.cards.isEmpty ? "No conversations" : "No matching conversations", systemImage: "bubble.left.and.bubble.right",
-                                           description: Text(model.cards.isEmpty ? "Use + to start a conversation." : "Try another search or show all conversations."))
+                                           description: Text(model.cards.isEmpty ? "Use + to start a conversation." : "Try another search or load older conversations below."))
+                }
+                if model.hasOlderConversations {
+                    Button("Load older conversations") { model.loadOlderConversations() }
+                        .buttonStyle(.bordered)
+                        .padding(.bottom, 20)
+                        .accessibilityIdentifier("load-older-conversations")
                 }
             }.scrollDismissesKeyboard(.interactively).accessibilityIdentifier("conversation-overview")
             }
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search conversations")
             .background(Ink.background)
-            .navigationTitle("Conversations (\(model.cards.count))")
+            .navigationTitle("Conversations")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItemGroup(placement: .bottomBar) {
@@ -536,7 +542,7 @@ private struct ConversationOverview: View {
             }
         }
         .presentationDetents([.large]).presentationDragIndicator(.visible)
-        .onChange(of: model.cards.map(\.id)) { _, ids in
+        .onChange(of: model.overviewCards.map(\.id)) { _, ids in
             // Live history updates must not move another window under a tap.
             let available = Set(ids)
             order.removeAll { !available.contains($0) }
@@ -638,6 +644,7 @@ private struct AgentComposerView: View {
     @ObservedObject var model: InboxModel
     @FocusState.Binding var focused: Bool
     var onVoiceChat: @MainActor () -> Void = {}
+    @State private var showExpandedEditor = false
     @State private var showPhotos = false
     @State private var showFiles = false
     @State private var selectedPhotos: [PhotosPickerItem] = []
@@ -785,9 +792,17 @@ private struct AgentComposerView: View {
                     Image(systemName: "plus").frame(width: 44, height: 44).contentShape(Rectangle())
                 }.menuStyle(.borderlessButton).accessibilityLabel("Add attachments").accessibilityIdentifier("add-attachments")
                 TextField("Ask Nanocodex", text: $model.draft, axis: .vertical)
-                    .lineLimit(1...4).textFieldStyle(.plain).font(.body).focused($focused)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(1...6).textFieldStyle(.plain).font(.body).focused($focused)
                     .padding(.vertical, 8).accessibilityIdentifier("composer")
+                Button {
+                    focused = false
+                    showExpandedEditor = true
+                } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain).foregroundStyle(Ink.muted)
+                    .accessibilityLabel("Expand message editor")
+                    .accessibilityIdentifier("expand-composer")
                 if let agentID = model.focused?.id {
                     NanocodexVoiceControl(session: model.voice, onReturnToChat: onVoiceChat) {
                         focused = false
@@ -823,7 +838,27 @@ private struct AgentComposerView: View {
             .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(Color.primary.opacity(focused ? 0.18 : 0.1)))
             .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
             .padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 8).background(Ink.background)
-            .onChange(of: model.focusedConversationIdentity) { _, _ in focused = false }
+            .onChange(of: model.focusedConversationIdentity) { _, _ in
+                showExpandedEditor = false
+                focused = false
+            }
+            .sheet(isPresented: $showExpandedEditor) {
+                ExpandedAgentComposer(
+                    draft: $model.draft,
+                    canSend: model.canSend,
+                    attachmentCount: model.focusedAttachments.count,
+                    onCollapse: {
+                        showExpandedEditor = false
+                        focused = true
+                    },
+                    onSend: {
+                        if model.send() {
+                            showExpandedEditor = false
+                            focused = false
+                        }
+                    }
+                )
+            }
             #if os(iOS)
             .fullScreenCover(isPresented: $showCamera, onDismiss: { cameraTarget = nil }) {
                 CameraPicker { image in
@@ -868,6 +903,61 @@ private struct AgentComposerView: View {
         cameraTarget = target; focused = false; showCamera = true
     }
     #endif
+}
+
+private struct ExpandedAgentComposer: View {
+    @Binding var draft: String
+    let canSend: Bool
+    let attachmentCount: Int
+    let onCollapse: () -> Void
+    let onSend: () -> Void
+    @FocusState private var editorFocused: Bool
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 8) {
+                TextEditor(text: $draft)
+                    .font(.body)
+                    .scrollContentBackground(.hidden)
+                    .focused($editorFocused)
+                    .accessibilityLabel("Message")
+                    .accessibilityIdentifier("expanded-composer")
+                    .overlay(alignment: .topLeading) {
+                        if draft.isEmpty {
+                            Text("Ask Nanocodex")
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 5).padding(.top, 8)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                if attachmentCount > 0 {
+                    Label("Attachments: \(attachmentCount)", systemImage: "paperclip")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .padding(16)
+            .background(Ink.background)
+            .navigationTitle("Message")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(action: onCollapse) {
+                        Label("Collapse", systemImage: "arrow.down.right.and.arrow.up.left")
+                    }.accessibilityLabel("Collapse message editor")
+                        .accessibilityIdentifier("collapse-composer")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Send", action: onSend)
+                        .disabled(!canSend)
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .accessibilityIdentifier("expanded-composer-send")
+                }
+            }
+            .task { editorFocused = true }
+        }
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+    }
 }
 
 #if os(iOS)

@@ -173,3 +173,26 @@ public struct InboxDeck: Equatable, Sendable {
     public mutating func back() { if let id = previous.popLast() { focusedID = id } }
     public var canGoBack: Bool { !previous.isEmpty }
 }
+
+/// The mobile tab window uses server activity timestamps in milliseconds.
+public enum ConversationWindow {
+    public static let pageSize = 24
+    public static let duration: TimeInterval = 24 * 60 * 60
+
+    public static func includes(_ card: AgentCard, focusedID: String? = nil,
+                                openedIDs: Set<String> = [], now: Date = Date()) -> Bool {
+        card.isRunning || card.id == focusedID || openedIDs.contains(card.id)
+            || (card.updatedAt.isFinite && card.updatedAt >= (now.timeIntervalSince1970 - duration) * 1000)
+    }
+
+    public static func overview(_ cards: [AgentCard], focusedID: String? = nil,
+                                openedIDs: Set<String> = [], olderLimit: Int = 0,
+                                now: Date = Date()) -> [AgentCard] {
+        let ordered = cards.sorted(by: AgentCard.mostRecentFirst)
+        let current = Set(ordered.filter {
+            includes($0, focusedID: focusedID, openedIDs: openedIDs, now: now)
+        }.map(\.id))
+        let older = Set(ordered.filter { !current.contains($0.id) }.prefix(max(0, olderLimit)).map(\.id))
+        return ordered.filter { current.contains($0.id) || older.contains($0.id) }
+    }
+}

@@ -22,6 +22,14 @@ HighlightSwift in light and dark mode. Unsupported languages remain readable
 as plain code. Desktop pane
 arrangement, tiling, navigation shortcuts, and per-agent state remain owned by
 the existing workspace.
+The mobile tab strip and switcher count default to conversations touched in the last
+24 hours, plus running, focused, and explicitly opened conversations. The overview
+loads older conversations in batches of 24 with **Load older conversations**; browsing
+older previews does not add them to the tab strip. Roster and state checks continue
+for background work, while older transcripts load only when opened or visible.
+The composer grows up to six lines, then scrolls; its expand button opens a larger
+editor sharing the same draft and attachments.
+
 Each tab opens the full conversation directly. Overview cards render miniature
 transcripts with the same message components and latest available content.
 Unchanged Markdown stays behind an equality boundary, so typing, scrolling, and
