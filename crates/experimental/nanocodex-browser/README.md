@@ -85,18 +85,11 @@ the VMM, and the disposable disk together. The image definition and guest init
 script live in `image/`.
 
 For a browser that runs outside the operator's own hardware, the `popcorn`
-module rents an isolated session from [Popcorn](https://popcorn.reclaimprotocol.org)
-and attaches the same controller to it over CDP. Popcorn sessions run headful
-Chromium inside a TEE, expose a LiveView page a human can open to watch or take
-over, and are released on shutdown. The agent only ever sees `tools.browser`;
-the session capability stays with the caller.
-
-The default path needs no account. Each five-minute block costs $0.01 in USDC
-on Base, paid per request with x402: Popcorn answers the first request with a
-payment challenge, the module checks the offer against a policy compiled into
-the crate, signs an EIP-3009 transfer authorization, and repeats the request.
-Point `POPCORN_PAYER_PRIVATE_KEY` at an EVM key holding a little USDC and
-enough ETH for gas on Base.
+module rents an isolated session from a [Popcorn](https://github.com/reclaimprotocol/popcorn-oss)
+control plane and attaches the same controller to it over CDP. Popcorn sessions
+run headful Chromium inside a TEE, expose a LiveView page a human can open to
+watch or take over, and are released on shutdown. The agent only ever sees
+`tools.browser`; the session URLs stay with the caller.
 
 ```no_run
 use nanocodex_browser::popcorn::{PopcornBrowser, PopcornConfig};
@@ -113,15 +106,9 @@ browser.shutdown().await?;
 # }
 ```
 
-A session starts with one block. `PopcornBrowser::extend` buys more in whole
-blocks while at least four minutes remain, keeping the same browser and the
-same URLs, and `shutdown` ends the session when the task is done. Unused paid
-time is not refunded.
-
-Dedicated deployments keep the credentialed control plane instead. Set
-`POPCORN_CONTROL_PLANE_URL`, `POPCORN_CLIENT_ID`, and `POPCORN_CLIENT_SECRET`,
-optionally with `POPCORN_REGION` and `POPCORN_TTL_SECONDS`, and no payment is
-involved. A runnable version of both paths lives at
+`PopcornConfig::from_env()` reads `POPCORN_CONTROL_PLANE_URL`,
+`POPCORN_CLIENT_ID`, `POPCORN_CLIENT_SECRET`, and optionally `POPCORN_REGION`
+and `POPCORN_TTL_SECONDS`. A runnable version lives at
 `examples/popcorn_agent.rs`.
 
 For trusted local development, `Browser` provides the same typed actions

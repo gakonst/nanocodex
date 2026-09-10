@@ -55,7 +55,6 @@ alloy-primitives = { version = "1.6.1", default-features = false, features = ["s
 alloy-rlp = "0.3.16"
 alloy-signer = "2.4.1"
 alloy-signer-local = "2.4.1"
-alloy-sol-types = { version = "1.6.1", default-features = false, features = ["std"] }
 arcbox-ext4 = "0.1.2"
 axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "query", "tokio"] }
 bm25 = { version = "2.3.2", default-features = false }
