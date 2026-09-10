@@ -14,9 +14,7 @@
 //! ```
 
 use eyre::{Result, WrapErr};
-use nanocodex::agent::events::{
-    AgentEvent, AgentEventKind, AssistantMessage, ReasoningSummaryDelta,
-};
+use nanocodex::agent::events::{AgentEvent, AgentEventKind, AssistantMessage};
 use nanocodex::{AgentEvents, Nanocodex, OpenAi, Thinking, Tools};
 use nanocodex_browser::popcorn::{PopcornBrowser, PopcornConfig};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -93,16 +91,14 @@ async fn write_turn_jsonl(
     events: &mut AgentEvents,
     output: &mut (impl AsyncWrite + Unpin),
 ) -> Result<()> {
-    let mut echo = AgentEcho::default();
     while let Some(event) = events.recv().await {
         let terminal = event.kind.is_terminal();
         let mut record = serde_json::to_vec(&event)?;
         record.push(b'\n');
         output.write_all(&record).await?;
         output.flush().await?;
-        echo.observe(&event);
+        echo_assistant_message(&event);
         if terminal {
-            echo.flush();
             return Ok(());
         }
     }
@@ -111,52 +107,20 @@ async fn write_turn_jsonl(
     ))
 }
 
-/// Echoes the agent's own words to stderr so a human watching the terminal can
-/// follow a turn while the JSONL contract on stdout stays byte-for-byte the same.
+/// Echoes one completed assistant message to stderr so a human watching the
+/// terminal can follow a turn while the JSONL contract on stdout stays
+/// byte-for-byte the same.
 ///
-/// Only assistant messages and API-visible reasoning summaries are echoed. Tool
-/// calls, tool results, and raw provider events are deliberately skipped.
-#[derive(Default)]
-struct AgentEcho {
-    /// Reasoning-summary text received but not yet terminated by a newline.
-    pending_summary: String,
-}
-
-impl AgentEcho {
-    /// Echoes any human-readable text carried by one event.
-    fn observe(&mut self, event: &AgentEvent) {
-        match event.kind {
-            AgentEventKind::AssistantMessage => {
-                self.flush();
-                if let Ok(message) = event.decode_payload::<AssistantMessage>() {
-                    echo_lines(&message.text);
-                }
-            }
-            AgentEventKind::ReasoningSummaryDelta => {
-                let Ok(delta) = event.decode_payload::<ReasoningSummaryDelta>() else {
-                    return;
-                };
-                self.pending_summary.push_str(&delta.text);
-                while let Some(newline) = self.pending_summary.find('\n') {
-                    let line = self.pending_summary[..newline].to_owned();
-                    self.pending_summary.drain(..=newline);
-                    echo_lines(&line);
-                }
-            }
-            _ => {}
-        }
+/// Every other event is skipped, including tool calls, tool results, reasoning,
+/// and raw provider events.
+fn echo_assistant_message(event: &AgentEvent) {
+    if event.kind != AgentEventKind::AssistantMessage {
+        return;
     }
-
-    /// Emits summary text that never received a trailing newline.
-    fn flush(&mut self) {
-        let pending = std::mem::take(&mut self.pending_summary);
-        echo_lines(&pending);
-    }
-}
-
-/// Writes one `agent:` line per non-blank line of `text`.
-fn echo_lines(text: &str) {
-    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+    let Ok(message) = event.decode_payload::<AssistantMessage>() else {
+        return;
+    };
+    for line in message.text.lines().filter(|line| !line.trim().is_empty()) {
         eprintln!("agent: {line}");
     }
 }
