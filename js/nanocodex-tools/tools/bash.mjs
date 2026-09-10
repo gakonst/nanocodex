@@ -12,50 +12,53 @@ const decoder = new TextDecoder();
 
 // The host owns resources and cancellation. Interpreter ceilings must not
 // turn otherwise valid commands, repositories, or data files into errors.
+// Just Bash's bounded builders require safe integers, so use JavaScript's
+// largest exact integer instead of Infinity for effectively unbounded work.
+const PRACTICALLY_UNBOUNDED = Number.MAX_SAFE_INTEGER;
 const UNLIMITED_EXECUTION_LIMITS = Object.freeze({
-  maxSourceBytes: Infinity,
-  maxExecDepth: Infinity,
-  maxCallDepth: Infinity,
-  maxCommandCount: Infinity,
-  maxLoopIterations: Infinity,
-  maxAwkIterations: Infinity,
-  maxSedIterations: Infinity,
-  maxJqIterations: Infinity,
-  maxQueryTokens: Infinity,
-  maxQueryDepth: Infinity,
-  maxQueryElements: Infinity,
-  maxAwkParserTokens: Infinity,
-  maxAwkParserDepth: Infinity,
-  maxAwkParserOperations: Infinity,
-  maxCsvRows: Infinity,
-  maxCsvCells: Infinity,
-  maxWorkUnits: Infinity,
-  maxTraversalEntries: Infinity,
-  maxTraversalDepth: Infinity,
-  maxTraversalWork: Infinity,
-  maxLiveBytes: Infinity,
-  maxInputBytes: Infinity,
-  maxFileSystemBytes: Infinity,
-  maxDatabaseBytes: Infinity,
-  maxDatabaseResultBytes: Infinity,
-  maxArchiveBytes: Infinity,
-  maxArchiveCompressedBytes: Infinity,
-  maxArchiveEntryBytes: Infinity,
-  maxArchiveEntries: Infinity,
-  maxWorkerMessageBytes: Infinity,
-  maxExecutionTimeMs: Infinity,
-  maxSqliteTimeoutMs: Infinity,
-  maxPythonTimeoutMs: Infinity,
-  maxJsTimeoutMs: Infinity,
-  maxGlobOperations: Infinity,
-  maxStringLength: Infinity,
-  maxArrayElements: Infinity,
-  maxHeredocSize: Infinity,
-  maxSubstitutionDepth: Infinity,
-  maxBraceExpansionResults: Infinity,
-  maxOutputSize: Infinity,
-  maxFileDescriptors: Infinity,
-  maxSourceDepth: Infinity,
+  maxSourceBytes: PRACTICALLY_UNBOUNDED,
+  maxExecDepth: PRACTICALLY_UNBOUNDED,
+  maxCallDepth: PRACTICALLY_UNBOUNDED,
+  maxCommandCount: PRACTICALLY_UNBOUNDED,
+  maxLoopIterations: PRACTICALLY_UNBOUNDED,
+  maxAwkIterations: PRACTICALLY_UNBOUNDED,
+  maxSedIterations: PRACTICALLY_UNBOUNDED,
+  maxJqIterations: PRACTICALLY_UNBOUNDED,
+  maxQueryTokens: PRACTICALLY_UNBOUNDED,
+  maxQueryDepth: PRACTICALLY_UNBOUNDED,
+  maxQueryElements: PRACTICALLY_UNBOUNDED,
+  maxAwkParserTokens: PRACTICALLY_UNBOUNDED,
+  maxAwkParserDepth: PRACTICALLY_UNBOUNDED,
+  maxAwkParserOperations: PRACTICALLY_UNBOUNDED,
+  maxCsvRows: PRACTICALLY_UNBOUNDED,
+  maxCsvCells: PRACTICALLY_UNBOUNDED,
+  maxWorkUnits: PRACTICALLY_UNBOUNDED,
+  maxTraversalEntries: PRACTICALLY_UNBOUNDED,
+  maxTraversalDepth: PRACTICALLY_UNBOUNDED,
+  maxTraversalWork: PRACTICALLY_UNBOUNDED,
+  maxLiveBytes: PRACTICALLY_UNBOUNDED,
+  maxInputBytes: PRACTICALLY_UNBOUNDED,
+  maxFileSystemBytes: PRACTICALLY_UNBOUNDED,
+  maxDatabaseBytes: PRACTICALLY_UNBOUNDED,
+  maxDatabaseResultBytes: PRACTICALLY_UNBOUNDED,
+  maxArchiveBytes: PRACTICALLY_UNBOUNDED,
+  maxArchiveCompressedBytes: PRACTICALLY_UNBOUNDED,
+  maxArchiveEntryBytes: PRACTICALLY_UNBOUNDED,
+  maxArchiveEntries: PRACTICALLY_UNBOUNDED,
+  maxWorkerMessageBytes: PRACTICALLY_UNBOUNDED,
+  maxExecutionTimeMs: PRACTICALLY_UNBOUNDED,
+  maxSqliteTimeoutMs: PRACTICALLY_UNBOUNDED,
+  maxPythonTimeoutMs: PRACTICALLY_UNBOUNDED,
+  maxJsTimeoutMs: PRACTICALLY_UNBOUNDED,
+  maxGlobOperations: PRACTICALLY_UNBOUNDED,
+  maxStringLength: PRACTICALLY_UNBOUNDED,
+  maxArrayElements: PRACTICALLY_UNBOUNDED,
+  maxHeredocSize: PRACTICALLY_UNBOUNDED,
+  maxSubstitutionDepth: PRACTICALLY_UNBOUNDED,
+  maxBraceExpansionResults: PRACTICALLY_UNBOUNDED,
+  maxOutputSize: PRACTICALLY_UNBOUNDED,
+  maxFileDescriptors: PRACTICALLY_UNBOUNDED,
+  maxSourceDepth: PRACTICALLY_UNBOUNDED,
 });
 
 const DEVICES = new Set(["/dev/full", "/dev/null", "/dev/stderr", "/dev/stdout"]);
@@ -288,7 +291,7 @@ function describeRuntime({
     commands: Object.freeze([...bash.commands.keys()].sort()),
     customCommands: Object.freeze(customCommandNames.sort()),
     cwd,
-    limits: Object.freeze(Object.fromEntries(Object.entries(executionLimits).filter(([, value]) => Number.isFinite(value)))),
+    limits: Object.freeze(Object.fromEntries(Object.entries(executionLimits).filter(([, value]) => value !== PRACTICALLY_UNBOUNDED))),
     network: Object.freeze({
       enabled: networkEnabled,
       mode: networkMode ?? (networkEnabled ? "http" : "disabled"),
@@ -322,6 +325,7 @@ class WorkspaceShellFileSystem {
   #root;
   #maxEntries;
   #entries = new Map();
+  #children = new Map();
   #sortedPaths;
 
   constructor(workspace, maxEntries) {
@@ -333,8 +337,9 @@ class WorkspaceShellFileSystem {
   async open() {
     const entries = await this.#source.list(".", { recursive: true, ...(this.#maxEntries === undefined ? {} : { maxEntries: this.#maxEntries }) });
     this.#entries.clear();
+    this.#children.clear();
     this.#sortedPaths = undefined;
-    this.#entries.set(this.#root, directoryEntry());
+    this.#set(this.#root, directoryEntry());
     for (const entry of entries) {
       const path = resolvePath(this.#root, this.#root, entry.path);
       this.#addParents(path);
@@ -453,14 +458,7 @@ class WorkspaceShellFileSystem {
     const absolute = resolvePath(this.#root, this.#root, path);
     const entry = this.#require(absolute);
     if (entry.kind !== "directory") throw fsError("ENOTDIR", `${absolute} is not a directory`);
-    const prefix = `${absolute}/`;
-    const names = new Set();
-    for (const candidate of this.#entries.keys()) {
-      if (!candidate.startsWith(prefix)) continue;
-      const remainder = candidate.slice(prefix.length);
-      if (remainder && !remainder.includes("/")) names.add(remainder);
-    }
-    return [...names].sort();
+    return [...this.#children.get(absolute) ?? []].sort();
   }
 
   async readdirWithFileTypes(path) {
@@ -515,7 +513,7 @@ class WorkspaceShellFileSystem {
   }
 
   resolvePath(base, path) {
-    return resolvePath(this.#root, base, path);
+    return resolveShellPath(this.#root, base, path);
   }
 
   getAllPaths() {
@@ -561,10 +559,21 @@ class WorkspaceShellFileSystem {
   }
 
   #set(path, entry) {
-    if (this.#maxEntries !== undefined && !this.#entries.has(path) && this.#entries.size - 1 >= this.#maxEntries) {
+    const exists = this.#entries.has(path);
+    if (this.#maxEntries !== undefined && !exists && this.#entries.size - 1 >= this.#maxEntries) {
       throw fsError("EFBIG", `workspace exceeds ${this.#maxEntries} entries`);
     }
     this.#entries.set(path, entry);
+    if (entry.kind === "directory") {
+      if (!this.#children.has(path)) this.#children.set(path, new Set());
+    } else {
+      this.#children.delete(path);
+    }
+    if (!exists && path !== this.#root) {
+      const parent = parentPath(path);
+      if (!this.#children.has(parent)) this.#children.set(parent, new Set());
+      this.#children.get(parent).add(path.slice(parent.length + 1));
+    }
     this.#sortedPaths = undefined;
   }
 
@@ -593,17 +602,21 @@ class WorkspaceShellFileSystem {
   }
 
   #remove(path) {
+    const removed = [];
     for (const candidate of this.#entries.keys()) {
-      if (candidate === path || candidate.startsWith(`${path}/`)) this.#entries.delete(candidate);
+      if (candidate === path || candidate.startsWith(`${path}/`)) removed.push(candidate);
+    }
+    for (const candidate of removed) {
+      this.#entries.delete(candidate);
+      this.#children.delete(candidate);
+      const parent = parentPath(candidate);
+      this.#children.get(parent)?.delete(candidate.slice(parent.length + 1));
     }
     this.#sortedPaths = undefined;
   }
 
   #hasChildren(path) {
-    for (const candidate of this.#entries.keys()) {
-      if (candidate.startsWith(`${path}/`)) return true;
-    }
-    return false;
+    return (this.#children.get(path)?.size ?? 0) > 0;
   }
 }
 
@@ -645,6 +658,26 @@ function resolvePath(root, base, path) {
     throw fsError("EPERM", `path escapes ${root}`);
   }
   return absolute;
+}
+
+function resolveShellPath(root, base, path) {
+  if (DEVICES.has(path)) return path;
+  if (path.startsWith("/")) return resolvePath(root, base, path);
+  const safeBase = normalizeRoot(base);
+  if (safeBase !== root && !safeBase.startsWith(`${root}/`)) {
+    throw fsError("EPERM", `working directory escapes ${root}`);
+  }
+  const rootSegments = root.split("/").filter(Boolean);
+  const segments = safeBase.split("/").filter(Boolean);
+  for (const segment of path.replaceAll("\\", "/").split("/")) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      if (segments.length > rootSegments.length) segments.pop();
+    } else {
+      segments.push(segment);
+    }
+  }
+  return `/${segments.join("/")}`;
 }
 
 function normalizeRoot(root) {

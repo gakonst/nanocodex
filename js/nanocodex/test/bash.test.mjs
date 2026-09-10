@@ -56,6 +56,26 @@ test("Just Bash mounts one persistent workspace without a process sandbox", asyn
   assert.equal(persisted.output, "forty two\n");
 });
 
+test("rg --files traverses a large mounted workspace without escaping or stalling", async () => {
+  const workspace = memoryWorkspace();
+  const expected = [];
+  for (let index = 0; index < 6_000; index += 1) {
+    const path = `/workspace/package-${index}/source-${index}.ts`;
+    expected.push(`package-${index}/source-${index}.ts`);
+    await workspace.writeFile(path, "export {};\n");
+  }
+
+  const runtime = await justBash({ filesystem: workspace, maxOutputTokens: 100_000 });
+  const startedAt = performance.now();
+  const result = await runtime.tool.handler({ cmd: "rg --files" }, context());
+  const elapsedMs = performance.now() - startedAt;
+
+  assert.equal(result.exit_code, 0);
+  assert.deepEqual(result.output.trim().split("\n"), expected.sort());
+  assert.ok(elapsedMs < 3_000, `rg --files took ${Math.round(elapsedMs)}ms`);
+  assert.doesNotMatch(result.output, /invalid bounded allocation count|path escapes/);
+});
+
 test("the returned filesystem is the authoritative bounded mutation handle", async () => {
   const source = memoryWorkspace();
   const runtime = await justBash({ filesystem: source });
