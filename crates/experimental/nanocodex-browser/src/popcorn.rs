@@ -322,6 +322,7 @@ impl PopcornBrowser {
         config: PopcornConfig,
         browser: BrowserBuilder,
     ) -> Result<Self, PopcornError> {
+        nanocodex_oai_api::transport::install_default_rustls_crypto_provider();
         let client = Client::builder().timeout(config.request_timeout).build()?;
         let session = create_session(&client, &config).await?;
         debug!(
@@ -330,9 +331,28 @@ impl PopcornBrowser {
             region = ?session.region,
             "rented popcorn session"
         );
-        let browser = browser
+        // The session is already rented, so release it rather than leaking it to
+        // the TTL controller when the controller cannot be attached.
+        let browser = match browser
             .cdp_endpoint(session.cdp_internal_url.clone())
-            .build()?;
+            .build()
+        {
+            Ok(browser) => browser,
+            Err(error) => {
+                if let Err(release_error) =
+                    delete_session(&client, &config, &session.session_id).await
+                {
+                    warn!(
+                        target: "nanocodex_browser",
+                        session = %session.session_id,
+                        error = %release_error,
+                        "popcorn session release failed after a failed attach; \
+                         TTL controller will reclaim it"
+                    );
+                }
+                return Err(error.into());
+            }
+        };
         Ok(Self {
             config,
             client,

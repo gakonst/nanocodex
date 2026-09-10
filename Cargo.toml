@@ -60,6 +60,10 @@ axum = { version = "0.8.9", default-features = false, features = ["form", "http1
 bm25 = { version = "2.3.2", default-features = false }
 chrono = { version = "0.4.43", default-features = false, features = ["clock", "std", "wasmbind"] }
 chromiumoxide = "0.9.1"
+# chromiumoxide pins async-tungstenite without a TLS feature, so its CDP socket
+# cannot dial `wss://`. Depending on it here unifies the feature and lets the
+# controller attach to remote, TLS-terminated CDP endpoints.
+async-tungstenite = { version = "0.32", features = ["tokio-rustls-native-certs"] }
 landlock = "0.4.4"
 clap = { version = "4.5.54", features = ["derive", "env"] }
 cpal = "0.16.0"

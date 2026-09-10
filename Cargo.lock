@@ -1469,7 +1469,10 @@ dependencies = [
  "futures-util",
  "log",
  "pin-project-lite",
+ "rustls-native-certs",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite 0.28.0",
 ]
 
@@ -5692,6 +5695,7 @@ name = "nanocodex-browser"
 version = "0.5.0"
 dependencies = [
  "async-trait",
+ "async-tungstenite",
  "base64 0.22.1",
  "chromiumoxide",
  "chrono",
@@ -10951,6 +10955,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.5",
+ "rustls",
+ "rustls-pki-types",
  "sha1 0.10.7",
  "thiserror 2.0.18",
  "utf-8",
