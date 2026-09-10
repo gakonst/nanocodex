@@ -30,6 +30,8 @@ final class InboxModel: ObservableObject {
     @Published var threadError: String?
     private var observedAgentID: String?
     private var tabOrder: [String] = []
+    @Published private var openedConversations = Set<String>()
+    @Published private var olderConversationLimit = 0
     private struct TabHistory {
         var events: [AgentEvent]
         var cursor: Cursor
@@ -196,6 +198,16 @@ final class InboxModel: ObservableObject {
         let byID = Dictionary(uniqueKeysWithValues: cards.map { ($0.id, $0) })
         return tabOrder.compactMap { byID[$0] }
     }
+    private var recentConversationIDs: Set<String> {
+        Set(cards.filter { ConversationWindow.includes($0, focusedID: deck.focusedID,
+            openedIDs: openedConversations) }.map(\.id))
+    }
+    var overviewCards: [AgentCard] {
+        ConversationWindow.overview(cards, focusedID: deck.focusedID,
+            openedIDs: openedConversations, olderLimit: olderConversationLimit)
+    }
+    var hasOlderConversations: Bool { overviewCards.count < cards.count }
+    func loadOlderConversations() { olderConversationLimit += ConversationWindow.pageSize }
     var creationError: String? { focused.flatMap { creationErrors[$0.id] } }
     private func resolvedAgentID(_ id: String) -> String { createdAgentIDs[id] ?? id }
     var attentionCount: Int { cards.filter { $0.isInInbox(seen: seenCursor($0.id), deferred: deferred[$0.id]) && $0.needsAttention(seen: seenCursor($0.id)) }.count }
@@ -593,6 +605,7 @@ final class InboxModel: ObservableObject {
         agentNotificationUpdate?.cancel(); agentNotificationUpdate = nil
         stopOverview()
         overviewTranscripts = [:]; tabHistories = [:]; recentTabs = []; tabOrder = []
+        openedConversations = []; olderConversationLimit = 0
         handTasks.endAllObservations()
         schedulesTask?.cancel(); schedulesTask = nil; schedulesFailures = [:]
         scheduledJobs = []; scheduledJobAgents = [:]; schedulesLoading = false; schedulesLoaded = false; schedulesError = nil
@@ -805,9 +818,8 @@ final class InboxModel: ObservableObject {
             } + created
             if cards != merged { cards = merged }
             reconcile()
-            // Keep all agents covered: roster timestamps do not version replies
-            // or settings. Prioritize interactive work without waiting for an
-            // entire four-agent batch before publishing completed results.
+            // Keep state coverage for running work, but fetch older history only
+            // when the user opens the conversation or reveals its overview.
             let pendingIDs = Set(pending.map(\.agentID) + cancellations.map(\.agentID)).union(busy)
             let byID = Dictionary(uniqueKeysWithValues: cards.map { ($0.id, $0) })
             let updateCards = listing.map { byID[$0.id] ?? $0 }
@@ -831,6 +843,11 @@ final class InboxModel: ObservableObject {
         // The focused observer owns history. Evaluate this when the operation
         // starts rather than capturing the old tab at the start of the sweep.
         if id == observedAgentID && streaming != nil { return AgentRefreshHistory.stateOnly }
+        let interactive = pending.contains { $0.agentID == id }
+            || cancellations.contains { $0.agentID == id } || busy.contains(id)
+            || voice.conversationID == id || overviewVisible.contains(id)
+        guard interactive || ConversationWindow.includes(card, focusedID: deck.focusedID,
+            openedIDs: openedConversations) else { return .stateOnly }
         return card.checked && card.error == nil ? .changed(after: historyCursors[id] ?? .zero) : .initial
     }
     private func applyRefresh(_ result: Result<AgentRefreshResult, Error>, id: String, epoch: UUID) async {
@@ -877,13 +894,15 @@ final class InboxModel: ObservableObject {
         reconcile()
     }
     private func reconcile() {
-        let available = Set(cards.map(\.id))
+        openedConversations.formIntersection(Set(cards.map(\.id)))
+        let available = recentConversationIDs
         var unique = Set<String>()
         tabOrder.removeAll { !available.contains($0) || !unique.insert($0).inserted }
         let known = Set(tabOrder)
-        tabOrder.append(contentsOf: cards.map(\.id).filter { !known.contains($0) })
+        tabOrder.append(contentsOf: cards.sorted(by: AgentCard.mostRecentFirst).map(\.id).filter { available.contains($0) && !known.contains($0) })
         let previous = deck.focusedID
         let eligible = cards.filter { card in
+            guard available.contains(card.id) else { return false }
             if card.id == pinnedThreadID { return true }
             switch filter {
             case .inbox: return card.isInInbox(seen: seenCursor(card.id), deferred: deferred[card.id])
@@ -1039,6 +1058,7 @@ final class InboxModel: ObservableObject {
 
     func select(_ id: String) {
         guard cards.contains(where: { $0.id == id }) else { return }
+        openedConversations.insert(id)
         if let card = focused, card.id != id {
             navigation.append((card.id, seen[card.id], deferred[card.id], filter))
             if navigation.count > 50 { navigation.removeFirst() }
@@ -1949,6 +1969,7 @@ final class InboxModel: ObservableObject {
     private func bindCreatedAgent(_ localID: String, to id: String) {
         let wasFocused = deck.focusedID == localID
         createdAgentIDs[localID] = id
+        if openedConversations.remove(localID) != nil { openedConversations.insert(id) }
         // A concurrent roster can list the real agent before create returns.
         // Keep the placeholder's position and avoid duplicate SwiftUI identities.
         tabOrder = tabOrder.filter { $0 != id }.map { $0 == localID ? id : $0 }
