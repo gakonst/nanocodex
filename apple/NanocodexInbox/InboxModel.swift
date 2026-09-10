@@ -603,6 +603,7 @@ final class InboxModel: ObservableObject {
         try ContextStore.shared().activate(nil)
         // Leaving sample agents must not touch a saved account or require Keychain access.
         if !isDemo { try KeychainAccount.remove() }
+        client?.clearCachedResponses()
         agentNotifications.update(account: "", threads: [], foreground: false)
         reset()
     }

@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -43,22 +44,51 @@ final class NoRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     }
 }
 
+/// Foundation owns HTTP freshness, validators, disk eviction and cache I/O.
+/// Account-separated stores prevent credentials sharing a history cache, even
+/// when callers create short-lived clients for Shortcuts or reconnects.
+enum ManagedResponseCache {
+    private static let lock = NSLock()
+    private static let stores: NSCache<NSString, URLCache> = {
+        let stores = NSCache<NSString, URLCache>()
+        stores.countLimit = 4
+        return stores
+    }()
+    static func cache(for credential: AccountCredential) -> URLCache {
+        let digest = SHA256.hash(data: Data((credential.origin + "\n" + credential.apiKey).utf8))
+        let key = digest.map { String(format: "%02x", $0) }.joined()
+        lock.lock(); defer { lock.unlock() }
+        if let cache = stores.object(forKey: key as NSString) { return cache }
+        let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("NanocodexHistory", isDirectory: true)
+            .appendingPathComponent(key, isDirectory: true)
+        let cache = URLCache(memoryCapacity: 8 * 1024 * 1024,
+                             diskCapacity: 128 * 1024 * 1024, directory: directory)
+        stores.setObject(cache, forKey: key as NSString)
+        return cache
+    }
+}
+
 /// Native HTTP/SSE adapter for the existing /v1/agents contract. No embedded
 /// runtime, model credentials, or execution environment is owned by this client.
 public final class ManagedClient: @unchecked Sendable {
     private let credential: AccountCredential
     private let session: URLSession
+    private let responseCache: URLCache?
     public init(credential: AccountCredential, configuration: URLSessionConfiguration? = nil) {
         self.credential = credential
-        let config = configuration ?? URLSessionConfiguration.ephemeral
+        let config = configuration ?? URLSessionConfiguration.default
         config.httpShouldSetCookies = false
         config.httpCookieStorage = nil
-        config.urlCache = nil
+        if configuration == nil { config.urlCache = ManagedResponseCache.cache(for: credential) }
+        responseCache = config.urlCache
         config.timeoutIntervalForRequest = 45
         config.timeoutIntervalForResource = 3600
         session = URLSession(configuration: config, delegate: NoRedirects(), delegateQueue: nil)
     }
     public func close() { session.invalidateAndCancel() }
+    /// Call on explicit sign-out, not when suspending an observer.
+    public func clearCachedResponses() { responseCache?.removeAllCachedResponses() }
     public func request(path: String, method: String = "GET", body: JSON? = nil, idempotencyKey: String? = nil) throws -> URLRequest {
         guard path.hasPrefix("/v1/"), !path.contains(".."), !path.contains("#"),
               let url = URL(string: credential.origin + path) else { throw APIError.invalidResponse }
