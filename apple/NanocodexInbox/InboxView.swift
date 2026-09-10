@@ -39,7 +39,7 @@ struct InboxView: View {
     @Environment(\.scenePhase) private var scenePhase
     @ScaledMetric(relativeTo: .subheadline) private var tabWidth = 154.0
     @ScaledMetric(relativeTo: .subheadline) private var tabHeight = 44.0
-    @FocusState private var composerFocused: Bool
+    @State private var composerFocused = false
 
     private struct TabScrub {
         let ids: [String]
@@ -140,7 +140,7 @@ struct InboxView: View {
                         screenDivider(available: available)
                     }
                     if let identity = model.focusedConversationIdentity {
-                        ConversationView(model: model, composerFocused: $composerFocused,
+                        ConversationView(model: model,
                                          identity: identity, readingPositions: readingPositions)
                             .id(identity)
                     } else {
@@ -709,9 +709,10 @@ private struct ConnectionStatusView: View {
 
 private struct AgentComposerView: View {
     @ObservedObject var model: InboxModel
-    @FocusState.Binding var focused: Bool
+    @Binding var focused: Bool
     var onVoiceChat: @MainActor () -> Void = {}
     @State private var showExpandedEditor = false
+    @State private var composerOverflows = false
     @State private var showPhotos = false
     @State private var showFiles = false
     @State private var selectedPhotos: [PhotosPickerItem] = []
@@ -858,18 +859,14 @@ private struct AgentComposerView: View {
                 } label: {
                     Image(systemName: "plus").frame(width: 44, height: 44).contentShape(Rectangle())
                 }.menuStyle(.borderlessButton).accessibilityLabel("Add attachments").accessibilityIdentifier("add-attachments")
-                TextField("Ask Nanocodex", text: $model.draft, axis: .vertical)
-                    .lineLimit(1...6).textFieldStyle(.plain).font(.body).focused($focused)
-                    .padding(.vertical, 8).accessibilityIdentifier("composer")
-                Button {
-                    focused = false
-                    showExpandedEditor = true
-                } label: {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .frame(width: 44, height: 44).contentShape(Rectangle())
-                }.buttonStyle(.plain).foregroundStyle(Ink.muted)
-                    .accessibilityLabel("Expand message editor")
-                    .accessibilityIdentifier("expand-composer")
+                ChatComposerEditor(text: $model.draft, focused: $focused, overflowing: $composerOverflows)
+                    .accessibilityIdentifier("composer")
+                    .overlay(alignment: .topLeading) {
+                        if model.draft.isEmpty {
+                            Text("Ask Nanocodex").font(.body).foregroundStyle(.tertiary)
+                                .padding(.top, 8).allowsHitTesting(false).accessibilityHidden(true)
+                        }
+                    }
                 if let agentID = model.focused?.id {
                     NanocodexVoiceControl(session: model.voice, onReturnToChat: onVoiceChat) {
                         focused = false
@@ -898,7 +895,21 @@ private struct AgentComposerView: View {
                     .accessibilityLabel(sendShowsStop ? stopRequest.map { $0.error == nil ? "Stopping turn" : "Retry stop" } ?? "Stop turn" : model.focused?.isRunning == true ? "Queue message" : "Send message")
                     .accessibilityIdentifier("send")
                     .keyboardShortcut(sendShowsStop ? nil : KeyboardShortcut(.return, modifiers: .command))
-            }.padding(.horizontal, 8).padding(.bottom, 8).padding(.top, visiblePending.isEmpty ? 8 : 0)
+            }
+                .overlay(alignment: .topTrailing) {
+                    if composerOverflows {
+                        Button {
+                            focused = false
+                            showExpandedEditor = true
+                        } label: {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .frame(width: 44, height: 44).contentShape(Rectangle())
+                        }.buttonStyle(.plain).foregroundStyle(Ink.muted)
+                            .accessibilityLabel("Expand message editor")
+                            .accessibilityIdentifier("expand-composer")
+                    }
+                }
+                .padding(.horizontal, 8).padding(.bottom, 8).padding(.top, visiblePending.isEmpty ? 8 : 0)
                 .padding(.leading, 6).accessibilityElement(children: .contain).accessibilityIdentifier("composer-input")
 
         }.background(ChatPalette.composer, in: RoundedRectangle(cornerRadius: 28))
@@ -1426,19 +1437,17 @@ private final class ConversationReadingPositions {
 
 private struct ConversationView: View {
     @ObservedObject var model: InboxModel
-    @FocusState.Binding var composerFocused: Bool
     let identity: String
     let readingPositions: ConversationReadingPositions
 
     var body: some View {
-        ConversationContentView(model: model, composerFocused: $composerFocused,
+        ConversationContentView(model: model,
                                 identity: identity, readingPositions: readingPositions,
                                 revision: .init(rows: model.rows, pending: model.focusedPending,
                                                 title: model.focused?.title ?? "Conversation",
                                                 activeTurns: model.focused?.activeTurns ?? [],
                                                 loading: model.threadLoading, error: model.threadError,
-                                                hasOlder: model.hasOlder, loadingOlder: model.loadingOlder,
-                                                draft: model.draft, composerFocused: composerFocused))
+                                                hasOlder: model.hasOlder, loadingOlder: model.loadingOlder))
             .equatable()
     }
 }
@@ -1453,15 +1462,12 @@ private struct ConversationContentView: View, Equatable {
         var error: String?
         var hasOlder: Bool
         var loadingOlder: Bool
-        var draft: String
-        var composerFocused: Bool
     }
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.identity == rhs.identity && lhs.revision == rhs.revision && lhs.model === rhs.model
     }
     private let verticalPadding: CGFloat = 24
     let model: InboxModel
-    @FocusState.Binding var composerFocused: Bool
     let identity: String
     let readingPositions: ConversationReadingPositions
     let revision: Revision
@@ -1474,7 +1480,6 @@ private struct ConversationContentView: View, Equatable {
     @State private var historyRequestAllowed = true
     @State private var historyRequestInFlight = false
     @State private var historyRequestFirstID: String?
-    @State private var resizeRestore: [(id: String, y: CGFloat, height: CGFloat)]?
     private var pendingSubmissions: [PendingMessage] {
         model.focusedPending.filter { message in
             message.predecessor.isEmpty && message.phase != .failed
@@ -1518,33 +1523,6 @@ private struct ConversationContentView: View, Equatable {
         }
         if !historyContent.nearTop { historyRequestAllowed = true }
         loadEarlierIfNeeded(in: viewport)
-    }
-    private func rememberReadingPosition(in viewport: GeometryProxy) {
-        let frame = viewport.frame(in: .global)
-        resizeRestore = rowFrames.filter { $0.value.maxY > 0 && $0.value.minY < frame.height }
-            .sorted {
-                let leftVisible = $0.value.minY >= 0 && $0.value.maxY <= frame.height
-                let rightVisible = $1.value.minY >= 0 && $1.value.maxY <= frame.height
-                return leftVisible == rightVisible ? $0.value.minY < $1.value.minY : leftVisible
-            }
-            .map { ($0.key, $0.value.minY + frame.minY, $0.value.height) }
-    }
-    private func restoreReadingPosition(using scroll: ScrollViewProxy, in viewport: GeometryProxy) {
-        guard let targets = resizeRestore else { return }
-        let viewportFrame = viewport.frame(in: .global)
-        for target in targets {
-            guard let current = rowFrames[target.id] else { continue }
-            // Native scrolling often already preserves the point. Correct only
-            // when keyboard resizing or asynchronous Markdown moved that row.
-            if abs(current.minY + viewportFrame.minY - target.y) < 1 { return }
-            let available = viewportFrame.height - current.height
-            guard abs(available) > 0.5 else { continue }
-            let anchorY = (target.y - viewportFrame.minY) / available
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) { scroll.scrollTo(target.id, anchor: UnitPoint(x: 0, y: anchorY)) }
-            break
-        }
     }
     private func saveReadingPosition(in viewport: GeometryProxy) {
         guard model.focusedConversationIdentity == identity, hasInitialPosition,
@@ -1633,7 +1611,6 @@ private struct ConversationContentView: View, Equatable {
             .coordinateSpace(name: "conversation-viewport")
             .onPreferenceChange(ConversationRowFrames.self) {
                 rowFrames = $0
-                restoreReadingPosition(using: scroll, in: viewport)
                 if let target = pendingReadingRestore, let id = target.rowID, let frame = $0[id] {
                     if abs(frame.minY - target.offsetY) < 1 {
                         pendingReadingRestore = nil
@@ -1662,15 +1639,7 @@ private struct ConversationContentView: View, Equatable {
             .onChange(of: model.hasOlder) { _, _ in updateHistoryPosition(in: viewport) }
             .onChange(of: model.threadLoading) { _, _ in updateHistoryPosition(in: viewport) }
             .onChange(of: model.loadingOlder) { _, _ in updateHistoryPosition(in: viewport) }
-            .onChange(of: composerFocused) { _, _ in rememberReadingPosition(in: viewport) }
-            .onChange(of: model.draft) { _, _ in
-                if resizeRestore == nil { rememberReadingPosition(in: viewport) }
-            }
-            .onChange(of: viewport.frame(in: .global)) { _, _ in
-                restoreReadingPosition(using: scroll, in: viewport)
-            }
             .simultaneousGesture(DragGesture(minimumDistance: 1).onChanged { _ in
-                resizeRestore = nil
                 pendingReadingRestore = nil
                 if hasInitialPosition { historyReady = true }
             })

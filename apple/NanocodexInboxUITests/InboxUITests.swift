@@ -1953,6 +1953,51 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(detail.buttons["Copied"].waitForExistence(timeout: 3))
     }
 
+    func testComposerExpandsOnlyAfterFiveRenderedLinesAndKeepsDraft() {
+        let app = launch()
+        let input = composer(app)
+        let expand = app.buttons["expand-composer"]
+        XCTAssertFalse(expand.exists)
+        input.tap()
+        input.typeText("One\nTwo\nThree\nFour\nFive")
+        XCTAssertEqual(input.value as? String, "One\nTwo\nThree\nFour\nFive")
+        XCTAssertFalse(expand.exists, "Five visible lines fit without an expansion action")
+        let fiveLineHeight = input.frame.height
+        input.typeText("\n")
+        XCTAssertTrue(expand.waitForExistence(timeout: 5), "The empty sixth line also overflows")
+        input.typeText("Six")
+        XCTAssertEqual(input.frame.height, fiveLineHeight, accuracy: 2, "Overflow scrolls inside the editor")
+        XCTAssertLessThan(expand.frame.maxY, app.buttons["send"].frame.minY)
+        XCTAssertEqual(expand.frame.midX, app.buttons["send"].frame.midX, accuracy: 2)
+        expand.tap()
+        let expanded = app.textViews["expanded-composer"]
+        XCTAssertTrue(expanded.waitForExistence(timeout: 5))
+        XCTAssertEqual(expanded.value as? String, "One\nTwo\nThree\nFour\nFive\nSix")
+        expanded.typeText(" edited")
+        app.buttons["collapse-composer"].tap()
+        XCTAssertEqual(input.value as? String, "One\nTwo\nThree\nFour\nFive\nSix edited")
+        capture(app, "composer-five-line-overflow")
+    }
+
+    func testComposerWrappedTextScrollsWithoutChangingDraft() {
+        let app = launch()
+        let input = composer(app)
+        let draft = String(repeating: "Native editing preserves selection and scrolling. ", count: 12)
+        input.tap(); input.typeText(draft)
+        XCTAssertTrue(app.buttons["expand-composer"].waitForExistence(timeout: 5), "Soft wrapping also counts toward the five-line limit")
+        let boundedHeight = input.frame.height
+        input.swipeDown(); input.swipeUp()
+        XCTAssertEqual(input.value as? String, draft)
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "Scrolling inside the native editor keeps editing active")
+        XCTAssertEqual(input.frame.height, boundedHeight, accuracy: 2)
+        app.buttons["expand-composer"].tap()
+        let expanded = app.textViews["expanded-composer"]
+        XCTAssertTrue(expanded.waitForExistence(timeout: 5))
+        expanded.typeText("END")
+        app.buttons["collapse-composer"].tap()
+        XCTAssertEqual(input.value as? String, draft + "END")
+    }
+
     func testSwipeDownDismissesKeyboardAndKeepsDraft() {
         for longThread in [false, true] {
             let app = launch(longThread ? ["NANOCODEX_DEMO_LONG_THREAD": "1"] : [:])
@@ -2106,7 +2151,7 @@ final class InboxUITests: XCTestCase {
         XCTAssertNotNil(anchor)
         guard let anchor else { return }
         let label = anchor.label, y = anchor.frame.minY
-        selectTab(app, id: "durability", title: "Make long sessions bulletproof")
+        selectTab(app, id: "data", title: "Tighten the fuel forecast")
         selectTab(app, id: "inbox", title: "Build the agent inbox")
         XCTAssertEqual(composer(app).value as? String, "Keep my place")
         let restored = conversation.staticTexts[label]

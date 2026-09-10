@@ -47,7 +47,7 @@ final class ContextUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 20), .completed)
         let title = "Message Hand check " + String(UUID().uuidString.prefix(8)) + ". Reply READY"
         print("Live message Hand UI conversation title: " + title)
-        let composer = app.textFields["composer"]
+        let composer = app.textViews["composer"]
         composer.tap(); composer.typeText(title); app.buttons["send"].tap()
         let seeded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true"), object: self.assistantText(app, matching: NSPredicate(format: "label == %@", "READY")))
         XCTAssertEqual(XCTWaiter.wait(for: [seeded], timeout: 60), .completed)
@@ -142,7 +142,7 @@ final class ContextUITests: XCTestCase {
         app.staticTexts["Dinner with Alex on Friday"].tap()
         app.buttons["context-use"].tap()
         XCTAssertTrue(app.buttons["composer-context"].waitForExistence(timeout: 5))
-        let composer = app.textFields["composer"].exists ? app.textFields["composer"] : app.textViews["composer"]
+        let composer = app.textViews["composer"]
         composer.tap(); composer.typeText("Help me plan Friday")
         app.buttons["send"].tap()
         XCTAssertTrue(app.buttons["retry-pending"].waitForExistence(timeout: 5))
@@ -252,12 +252,12 @@ final class ContextUITests: XCTestCase {
         XCTAssertTrue(app.buttons["tab-overview"].waitForExistence(timeout: 30))
         app.buttons["new-conversation"].tap()
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            app.staticTexts["agent-title"].label == "New agent" && app.textFields["composer"].isEnabled
+            app.staticTexts["agent-title"].label == "New agent" && app.textViews["composer"].isEnabled
         }, object: app)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 20), .completed)
         let title = "Context check " + String(UUID().uuidString.prefix(8)) + ". Reply READY"
         print("Live context UI conversation title: " + title)
-        let composer = app.textFields["composer"]
+        let composer = app.textViews["composer"]
         composer.tap(); composer.typeText(title); app.buttons["send"].tap()
         XCTAssertTrue(app.scrollViews["conversation"].waitForExistence(timeout: 10))
         let completed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true"), object: self.assistantText(app, matching: NSPredicate(format: "label == %@", "READY")))
