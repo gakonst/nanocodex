@@ -58,7 +58,7 @@ fs2.workspace = true
 nanocodex-vm.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
-nanocodex-hand = { path = "../../../crates/experimental/nanocodex-hand" }
+nanocodex-hand = { version = "0.5.0", path = "../../../crates/experimental/nanocodex-hand" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nanocodex-vm = { workspace = true, features = ["desktop"] }

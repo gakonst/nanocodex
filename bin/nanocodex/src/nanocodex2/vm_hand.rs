@@ -295,14 +295,13 @@ impl VmHand {
                         .timeout(Duration::from_secs(5)),
                 )
                 .await;
-            if let Some(mut task) = desktop.task.take() {
-                if tokio::time::timeout(Duration::from_secs(5), &mut task)
+            if let Some(mut task) = desktop.task.take()
+                && tokio::time::timeout(Duration::from_secs(5), &mut task)
                     .await
                     .is_err()
-                {
-                    task.abort();
-                    let _ = task.await;
-                }
+            {
+                task.abort();
+                let _ = task.await;
             }
         }
         drop(self.tools);
