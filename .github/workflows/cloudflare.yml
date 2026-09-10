@@ -299,4 +299,4 @@ jobs:
         env:
           NANOCODEX_DURABILITY_TEST_API_KEY: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
           NANOCODEX_DURABILITY_RECOVERY_AGENTS: ${{ vars.NANOCODEX_DURABILITY_RECOVERY_AGENTS || '[]' }}
-        run: node --test js/managed/test/live-durability.test.mjs
+        run: node --test js/managed/test/live-durability.test.mjs js/managed/test/live-large-input.test.mjs
