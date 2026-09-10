@@ -1,4 +1,5 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { ArchiveMaintenance } from "./archive-maintenance";
 import { managedCredentialSubject, scopedManagedModelEgress, sessionCredentialOwner } from "./session-credential-ownership";
 import { remoteICE } from "./hand-remote-ice";
 import { REMOTE_VM_ASSERTION, type RemoteVMPublisher } from "./hand-remote";
@@ -2601,6 +2602,7 @@ export class DurableAgentSession extends DurableComputerSession {
   readonly #eventLog: DurableEventLog<StreamMessage>;
   readonly #eventArchive: ManagedEventArchive<StreamMessage>;
   #eventArchiveTask?: Promise<ManagedEventSealResult>;
+  readonly #archiveMaintenance: ArchiveMaintenance;
   readonly #turnArchive: ManagedTurnArchive;
   #turnArchiveTask?: Promise<ManagedTurnSealResult>;
   readonly #realtimeArchive: ManagedRealtimeArchive;
@@ -2817,6 +2819,7 @@ export class DurableAgentSession extends DurableComputerSession {
       ),
       renewLeasedAttachment: (renewal) => this.#renewVmHostAttachment(renewal),
     });
+    this.#archiveMaintenance = new ArchiveMaintenance(this.ctx.storage);
     this.#eventLog = new DurableEventLog<StreamMessage>(this.ctx.storage);
     this.#eventArchive = new ManagedEventArchive<StreamMessage>(
       this.ctx.storage,
@@ -3613,17 +3616,9 @@ export class DurableAgentSession extends DurableComputerSession {
       return;
     }
     await this.#fireCronTriggers();
-    if (this.#eventArchive.needsSeal(this.#eventLog)) {
-      // A failed alarm is retried by Durable Objects. This is the persistent
-      // continuation for a seal that outlived or failed its originating turn.
-      await this.#sealEventArchive(false);
-    }
-    // Receipt archival has the same durable continuation as event archival.
-    // Busy sessions must retry failed seals too: returning to recovery first
-    // would keep scheduling an immediate alarm without draining the backlog.
-    // Seal one bounded batch per alarm so live admissions can keep progressing.
-    if (this.#turnArchive.needsSeal()) await this.#sealTurnArchive(false);
-    if (this.#realtimeArchive.needsSeal()) await this.#sealRealtimeArchive(false);
+    // Archival owns a separate durable retry deadline. It must neither block
+    // accepted work nor keep retrying an unavailable bucket on every alarm.
+    this.#maintainArchives();
     if (this.#historyProjectionTask) await this.#historyProjectionTask.catch(() => {});
     else await this.#drainHistoryProjections();
     // An alarm may be the first event delivered to a freshly reconstructed
@@ -3651,13 +3646,6 @@ export class DurableAgentSession extends DurableComputerSession {
       return;
     }
     this.#logCapacity("idle_shutdown");
-    if (this.#eventArchive.needsSeal(this.#eventLog)) await this.#sealEventArchive(false);
-    while (this.#turnArchive.needsSeal()) {
-      if (!(await this.#sealTurnArchive(false)).sealed) break;
-    }
-    while (this.#realtimeArchive.needsSeal()) {
-      if (!(await this.#sealRealtimeArchive(false)).sealed) break;
-    }
     if (this.#managedBrowserRuntimePromise) {
       await this.#managedBrowserRuntimePromise
         .then((runtime) => runtime.expireAndSweep())
@@ -5027,7 +5015,7 @@ export class DurableAgentSession extends DurableComputerSession {
             );
           }
           if (this.#realtimeArchive.needsSeal()) {
-            void this.#sealRealtimeArchive(false).catch(() => {});
+            this.#maintainArchives();
             void this.#scheduleNextAlarm().catch(() => {});
           }
           return result;
@@ -8149,7 +8137,7 @@ export class DurableAgentSession extends DurableComputerSession {
       if (isTerminalState(committed.state)) {
         this.#maybeLogTerminalCapacity();
         if (this.#turnArchive.needsSeal()) {
-          void this.#sealTurnArchive(false).catch(() => {});
+          this.#maintainArchives();
         }
       }
     }
@@ -8397,8 +8385,31 @@ export class DurableAgentSession extends DurableComputerSession {
       ...(event.turn_id === null ? {} : { turn_id: event.turn_id }),
     });
     if (this.#eventArchive.needsSeal(this.#eventLog)) {
-      void this.#sealEventArchive(false).catch(() => {});
+      this.#maintainArchives();
     }
+  }
+
+  #archivesNeedMaintenance(): boolean {
+    return this.#eventArchive.needsSeal(this.#eventLog)
+      || this.#turnArchive.needsSeal() || this.#realtimeArchive.needsSeal();
+  }
+
+  #maintainArchives(): void {
+    if (this.#deleting || !this.#archivesNeedMaintenance()) return;
+    const task = this.#archiveMaintenance.start(async () => {
+      await this.#scheduleNextAlarm();
+      let failed = false, failure: unknown;
+      // One bounded batch per archive, sequentially, keeps upload buffers small.
+      for (const seal of [
+        () => this.#eventArchive.needsSeal(this.#eventLog) ? this.#sealEventArchive(false) : undefined,
+        () => this.#turnArchive.needsSeal() ? this.#sealTurnArchive(false) : undefined,
+        () => this.#realtimeArchive.needsSeal() ? this.#sealRealtimeArchive(false) : undefined,
+      ]) {
+        try { await seal(); } catch (error) { failed = true; failure = error; }
+      }
+      if (failed) throw failure;
+    });
+    if (task) this.ctx.waitUntil(task.catch(() => {}).then(() => this.#scheduleNextAlarm()));
   }
 
   #sealEventArchive(force: boolean): Promise<ManagedEventSealResult> {
@@ -8408,11 +8419,9 @@ export class DurableAgentSession extends DurableComputerSession {
       return force ? active.then(() => this.#sealEventArchive(true)) : active;
     }
     const started = performance.now();
-    const observed = this.#scheduleNextAlarm()
-      .then(() => this.#eventArchive.seal(force))
-      .then(async (result) => {
+    const observed = this.#eventArchive.seal(force)
+      .then((result) => {
         this.#logEventArchiveSeal(result, started);
-        await this.#scheduleNextAlarm();
         return result;
       }).catch((error) => {
         console.warn({ type: "managed.event_archive_seal_failed", error_kind: errorKind(error) });
@@ -9092,10 +9101,8 @@ export class DurableAgentSession extends DurableComputerSession {
       const cronAlarm = this.#cronTriggers.nextAlarm();
       if (cronAlarm !== undefined) targets.push(cronAlarm);
     }
-    if (this.#eventArchive.needsSeal(this.#eventLog)
-      || this.#turnArchive.needsSeal()
-      || this.#realtimeArchive.needsSeal()) {
-      targets.push(now + 1);
+    if (this.#archivesNeedMaintenance()) {
+      targets.push(Math.max(now + 1, this.#archiveMaintenance.nextAttemptAt()));
     }
     const unfinished = this.#recoverableTurnCount() > 0;
     // Keep a durable wakeup while in-memory work is owned, including when a

@@ -2,11 +2,13 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import type { DurableAgentSession } from "../src/index";
+import { ArchiveMaintenance } from "../src/archive-maintenance";
+import { DurableEventLog } from "../src/durable-events";
 
 const FIXTURE_UNFINISHED_TURNS = 20;
 
 describe("managed durable turn admission", () => {
-  it("retries a failed cold cancellation at its durable alarm", async () => {
+  it("retries a failed cold cancellation while archival remains in durable backoff", async () => {
     const sessions = (env as unknown as {
       NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
     }).NANOCODEX_SESSIONS;
@@ -36,6 +38,14 @@ describe("managed durable turn admission", () => {
                    'cancelling', 0, 1, 48, ?, ?, ?, ?)`,
         now - 1, now - 6 * 60 * 60_000, now - 6 * 60 * 60_000, now - 60_000,
       );
+      // A real oversized local tail needs archival, but an unavailable bucket
+      // must not turn its maintenance alarm into a barrier for cancellation.
+      const log = new DurableEventLog<{ type: string; text: string }>(state.storage);
+      for (let i = 0; i < 513; i++) log.append({ type: "fixture", text: "x".repeat(32_768) });
+      const maintenance = new ArchiveMaintenance(state.storage);
+      await expect(maintenance.start(async () => { throw new Error("bucket unavailable"); }))
+        .rejects.toThrow("bucket unavailable");
+      const archiveRetryAt = maintenance.nextAttemptAt();
       const row = () => state.storage.sql.exec<{
         state: string; attempt_count: number; retry_at: number;
       }>("SELECT state, attempt_count, retry_at FROM managed_turns WHERE id = 'cancel-retry'").one();
@@ -47,6 +57,10 @@ describe("managed durable turn admission", () => {
             await new Promise((resolve) => setTimeout(resolve, 10));
           }
           expect(row()).toMatchObject({ state: "cancelling", attempt_count: attempt });
+          expect(maintenance.nextAttemptAt()).toBe(archiveRetryAt);
+          expect(state.storage.sql.exec<{ archived_events: number }>(
+            "SELECT archived_events FROM managed_event_archive_state WHERE singleton = 1",
+          ).one().archived_events).toBe(0);
           expect(row().retry_at).toBeGreaterThan(Date.now() + 59_000);
           const alarm = await state.storage.getAlarm();
           expect(alarm).not.toBeNull();
@@ -55,6 +69,8 @@ describe("managed durable turn admission", () => {
         }
       } finally {
         state.storage.sql.exec("UPDATE managed_turns SET state = 'cancelled', retry_at = NULL WHERE id = 'cancel-retry'");
+        log.clear();
+        await state.storage.deleteAlarm();
       }
     });
   });
@@ -190,7 +206,7 @@ describe("managed durable turn admission", () => {
           });
           await session.alarm();
           for (const table of ["managed_turn_archive_state", "managed_realtime_archive_state"]) {
-            expect(state.storage.sql.exec<{ archived_receipts: number }>(
+            await expect.poll(() => state.storage.sql.exec<{ archived_receipts: number }>(
               `SELECT archived_receipts FROM ${table} WHERE singleton = 1`,
             ).one().archived_receipts).toBe(1);
           }

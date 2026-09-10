@@ -388,3 +388,11 @@ Readers continue from the returned cursor/`has_more`; a short page is not EOF.
 Archive sealing embeds stored JSON directly instead of decoding another complete
 copy of the segment. Working memory scales with the page or largest individual
 event, not with total thread history.
+
+Background archival owns one persisted retry deadline, separate from turn
+recovery. It records a 60-second recovery deadline before external storage I/O,
+seals one bounded batch per archive sequentially, and clears the deadline only
+after success. Failed uploads retain their SQLite source and deadline across
+object reconstruction. Alarms and new events cannot bypass that backoff, and
+archival never blocks admission or cancellation recovery. Explicit export and
+seal requests still report their own storage failures to their caller.
