@@ -177,12 +177,27 @@ pub(crate) async fn serve(client: &ManagedClient, command: NativeHand) -> Result
         .machine_name
         .unwrap_or_else(|| host::bounded_display_name(whoami::devicename()));
     let state = NativeState::open(&command.workspace, &directory, name)?;
-    run(
-        client.account_attachment_target()?,
-        state,
-        shutdown_signal(),
+    let target = client.account_attachment_target()?;
+    let screen = match super::screen_native::NativeScreen::start(
+        &target,
+        &state.machine,
+        &directory,
     )
     .await
+    {
+        Ok(screen) => Some(screen),
+        Err(error) => {
+            tracing::warn!(target: "nanocodex2", stage = "native.screen.unavailable", %error,
+                "Native screen unavailable; shell and filesystem remain connected");
+            None
+        }
+    };
+    let result = run(target, state, shutdown_signal()).await;
+    let stopped = match screen {
+        Some(screen) => screen.shutdown().await,
+        None => Ok(()),
+    };
+    result.and(stopped)
 }
 
 async fn run(
@@ -223,7 +238,7 @@ async fn run(
     }
 }
 
-async fn shutdown_signal() -> Result<(), ManagedError> {
+pub(crate) async fn shutdown_signal() -> Result<(), ManagedError> {
     #[cfg(unix)]
     {
         let mut terminate =

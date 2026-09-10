@@ -1291,11 +1291,9 @@ mod supported {
                     });
                 }
                 let attached = async {
-                    if !config.vm_no_network {
-                        hand.start_desktop(&spec.attachment_target)
-                            .await
-                            .map_err(|error| VmHostError::Resource(error.to_string()))?;
-                    }
+                    hand.start_desktop(&spec.attachment_target)
+                        .await
+                        .map_err(|error| VmHostError::Resource(error.to_string()))?;
                     connect_vm_attachment(&hand, spec.attachment_target).await
                 }
                 .await;

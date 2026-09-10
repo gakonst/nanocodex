@@ -14,6 +14,10 @@ mod host;
 #[allow(dead_code)]
 mod installation;
 mod native_hand;
+#[cfg(target_os = "macos")]
+mod screen_macos;
+mod screen_native;
+mod screen_publisher;
 #[allow(dead_code)]
 mod skill;
 #[allow(dead_code, unused_imports)]
@@ -86,6 +90,12 @@ enum Command {
     Hand(Hand),
     /// Connect this machine's native workspace to the account over outbound HTTPS.
     NativeHand(native_hand::NativeHand),
+    /// Publish this Hand's native screen; owned by the desktop runtime.
+    #[command(name = "__hand-screen", hide = true)]
+    HandScreen(screen_native::ScreenCommand),
+    #[cfg(target_os = "linux")]
+    #[command(name = "__hand-desktop", hide = true)]
+    HandDesktop(screen_native::DesktopCommand),
     /// Serve a bounded pool of on-demand libkrun VM hands.
     Host(Host),
     /// Create a managed agent and print its receipt as JSON.
@@ -384,6 +394,8 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         }
         Some(Command::Account(command)) => return command.run().await.map_err(auth_error),
         Some(Command::VmRunConfig(command)) => return vm_hand::run_config(&command.config),
+        #[cfg(target_os = "linux")]
+        Some(Command::HandDesktop(command)) => return screen_native::serve_desktop(command).await,
         Some(Command::Host(command)) => {
             let _observability = command
                 .observability
@@ -413,6 +425,9 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
             serve_vm_hand(&client, command).await
         }
         Some(Command::NativeHand(command)) => native_hand::serve(&client, command).await,
+        Some(Command::HandScreen(command)) => screen_native::serve(&client, command).await,
+        #[cfg(target_os = "linux")]
+        Some(Command::HandDesktop(_)) => unreachable!("handled before managed client setup"),
         Some(Command::Host(_)) => unreachable!("handled before managed client setup"),
         Some(Command::New(settings)) => {
             write_json(&client.create_with_settings(settings.resolve()).await?)
@@ -512,9 +527,13 @@ async fn launch_vm_hand(command: &Hand) -> Result<vm_hand::VmHand, ManagedError>
 
 async fn serve_vm_hand(client: &ManagedClient, command: Hand) -> Result<(), ManagedError> {
     let target = client.account_attachment_target()?;
-    let hand = launch_vm_hand(&command).await?;
+    let mut hand = launch_vm_hand(&command).await?;
     drop(command);
-    let connected = connect_vm_hand(&hand, target).await;
+    let connected = async {
+        hand.start_desktop(&target).await?;
+        connect_vm_hand(&hand, target).await
+    }
+    .await;
     let attachment = match connected {
         Ok(Some(attachment)) => attachment,
         Ok(None) => {

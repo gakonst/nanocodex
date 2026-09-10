@@ -8,6 +8,7 @@ members = [
     "crates/nanocodex",
     "crates/nanocodex-agent",
     "crates/nanocodex-managed",
+    "crates/experimental/nanocodex-hand",
     "crates/nanocodex-durability",
     "crates/experimental/nanocodex-browser",
     "crates/experimental/nanocodex-egress",
@@ -109,6 +110,7 @@ iana-time-zone = "0.1.64"
 js-sys = "0.3.82"
 nix = { version = "0.31.3", default-features = false, features = ["process", "resource", "signal", "socket", "user"] }
 portable-pty = "0.9.0"
+vt100 = "0.15.2"
 pulldown-cmark = { version = "0.10", default-features = false }
 syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
 two-face = { version = "0.5.1", default-features = false, features = ["syntect-fancy"] }

@@ -13,14 +13,23 @@ export async function desktopEnvironment(file = process.env.NANOCODEX_ENV_FILE) 
 
 export async function desktopDefaults(environment = process.env) {
   const defaults = {};
+  // An installed app keeps its prepared VM recipe across Finder launches. This
+  // file contains local asset paths only, never account credentials.
+  let recipe = {};
+  const directory = environment.NANOCODEX_DESKTOP_DATA ?? join(homedir(), "Library", "Application Support", "Nanocodex", "Native");
+  try { recipe = JSON.parse(await readFile(join(directory, "vm.json"), "utf8")); }
+  catch (error) { if (error.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error; }
+  if (!recipe || typeof recipe !== "object" || Array.isArray(recipe)) recipe = {};
   const candidates = {
-    binary: [environment.NANOCODEX_HAND_BINARY, environment.NANOCODEX_ENV_FILE && join(dirname(environment.NANOCODEX_ENV_FILE), "target", "debug", "nanocodex2")],
-    rootfs: [environment.NANOCODEX_VM_ROOTFS],
-    guestRuntime: [environment.NANOCODEX_VM_GUEST_RUNTIME, environment.NANOCODEX_ENV_FILE && join(dirname(environment.NANOCODEX_ENV_FILE), "target", "aarch64-unknown-linux-musl", "debug", "nanocodex-vm-guest")],
+    binary: [environment.NANOCODEX_HAND_BINARY, recipe.binary, environment.NANOCODEX_ENV_FILE && join(dirname(environment.NANOCODEX_ENV_FILE), "target", "debug", "nanocodex2")],
+    rootfs: [environment.NANOCODEX_VM_ROOTFS, recipe.rootfs],
+    guestRuntime: [environment.NANOCODEX_VM_GUEST_RUNTIME, recipe.guestRuntime, environment.NANOCODEX_ENV_FILE && join(dirname(environment.NANOCODEX_ENV_FILE), "target", "aarch64-unknown-linux-musl", "debug", "nanocodex-vm-guest")],
+    firmware: [environment.NANOCODEX_KRUNFW_DIR, recipe.firmware],
   };
   await Promise.all(Object.entries(candidates).map(async ([name, paths]) => {
     for (const path of paths.filter(Boolean)) {
-      try { if ((await stat(path)).isFile()) { defaults[name] = path; break; } } catch { /* Unavailable defaults stay unset. */ }
+      if (typeof path !== "string") continue;
+      try { const info = await stat(path); if (name === "firmware" ? info.isDirectory() : info.isFile()) { defaults[name] = path; break; } } catch { /* Unavailable defaults stay unset. */ }
     }
   }));
   return defaults;

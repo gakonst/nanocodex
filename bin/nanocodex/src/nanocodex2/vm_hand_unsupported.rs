@@ -25,6 +25,13 @@ impl VmHand {
         unreachable!("unsupported VM hand cannot be constructed")
     }
 
+    pub(crate) async fn start_desktop(
+        &mut self,
+        _target: &nanocodex_tools::attachment::AttachmentTarget,
+    ) -> Result<(), ManagedError> {
+        Err(unsupported())
+    }
+
     pub(crate) async fn shutdown(self) -> Result<(), ManagedError> {
         Ok(())
     }

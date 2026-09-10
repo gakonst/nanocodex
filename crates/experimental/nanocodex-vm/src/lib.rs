@@ -149,3 +149,6 @@ pub mod host {
     )
 ))]
 pub use workspace::{VmWorkspace, VmWorkspaceBuilder, VmWorkspaceError};
+
+#[cfg(all(feature = "desktop", target_os = "linux"))]
+pub mod desktop;

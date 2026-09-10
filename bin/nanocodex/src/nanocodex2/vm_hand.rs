@@ -28,10 +28,11 @@ const FIRMWARE_LIBRARY: &str = if cfg!(target_os = "macos") {
 };
 const CAPABILITY_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const CAPABILITY_DRAIN_INTERVAL: Duration = Duration::from_millis(10);
-const DESKTOP_CREDENTIAL: &str = "/run/nanocodex-remote/credential";
-const DESKTOP_EXECUTABLE: &str = "/usr/local/bin/nanocodex-remote";
+const DESKTOP_RUNTIME: &str = "/run/nanocodex-hand-desktop";
 
 struct VmDesktop {
+    publisher: Option<super::screen_publisher::ScreenPublisher>,
+    executable: String,
     task: Option<tokio::task::JoinHandle<Result<VmCommandOutput, VmToolSessionError>>>,
 }
 
@@ -155,81 +156,49 @@ impl VmHand {
         self.tools.clone()
     }
 
-    /// Images containing the companion opt into an owned interactive desktop.
-    /// Existing shell-only images retain their previous startup contract.
+    /// The host owns signaling; the Rust guest runtime owns its desktop.
+    /// Account and allocation credentials never enter the guest filesystem.
     pub(crate) async fn start_desktop(
         &mut self,
         target: &AttachmentTarget,
     ) -> Result<(), ManagedError> {
+        use super::screen_publisher::{ScreenBackend, ScreenPublisher};
+        use std::sync::Arc;
         let control = self.workspace.control();
         let present = control
             .command(
                 VmCommand::new("/bin/sh")
                     .arg("-c")
-                    .arg("test -x /usr/local/bin/nanocodex-remote")
+                    .arg("command -v Xvfb >/dev/null && command -v xterm >/dev/null")
                     .timeout(Duration::from_secs(5)),
             )
             .await
             .map_err(|_| configuration("failed to inspect VM desktop image"))?;
         if present.exit_code != 0 {
+            tracing::info!(target: "nanocodex2", stage = "vm.screen.unavailable",
+                "VM image has no desktop; install Xvfb, openbox, xterm, and fonts");
             return Ok(());
         }
-        let mut endpoint = target.endpoint().clone();
-        let path = endpoint
-            .path()
-            .strip_suffix("/tool-host")
-            .filter(|path| path.starts_with("/v1/vm-host-attachments/"))
-            .ok_or_else(|| configuration("VM desktop requires an allocation attachment"))?;
-        let path = format!("{path}/hands");
-        let scheme = if endpoint.scheme() == "wss" {
-            "https"
-        } else {
-            "http"
-        };
-        endpoint
-            .set_scheme(scheme)
-            .map_err(|()| configuration("invalid VM desktop endpoint"))?;
-        endpoint.set_path(&path);
-        control
-            .create_directory("/run/nanocodex-remote", 0o700, None)
-            .await
-            .map_err(|_| configuration("failed to prepare private VM desktop directory"))?;
-        control
-            .write_file(
-                DESKTOP_CREDENTIAL,
-                target.bearer().as_bytes().to_vec(),
-                0o600,
-            )
-            .await
-            .map_err(|_| configuration("failed to deliver VM desktop credential"))?;
-        let clean = control
-            .command(
-                VmCommand::new("/bin/rm")
-                    .arg("-f")
-                    .arg(format!("{DESKTOP_CREDENTIAL}.ready"))
-                    .timeout(Duration::from_secs(5)),
-            )
-            .await
-            .map_err(|_| configuration("failed to clear VM desktop readiness"))?;
-        if clean.exit_code != 0 {
-            return Err(configuration("failed to clear VM desktop readiness"));
+        let runtime = control.command(VmCommand::new("/bin/sh").arg("-c")
+            .arg("for p in /run/nanocodex/nanocodex-vm-guest /nanocodex-vm-guest /usr/local/bin/nanocodex-vm-guest; do if test -x \"$p\"; then printf '%s' \"$p\"; exit 0; fi; done; exit 1")
+            .timeout(Duration::from_secs(5))).await.map_err(|_| configuration("failed to resolve Rust guest runtime"))?;
+        if runtime.exit_code != 0 {
+            return Err(configuration(
+                "Rust guest runtime is unavailable for desktop startup",
+            ));
         }
-        let command = VmCommand::new(DESKTOP_EXECUTABLE)
-            .arg("desktop-host")
-            .arg("--url")
-            .arg(endpoint.to_string())
-            .arg("--credential-file")
-            .arg(DESKTOP_CREDENTIAL)
-            .arg("--machine-id")
-            .arg(self.machine.id())
-            .arg("--name")
-            .arg(self.machine.name())
-            .arg("--workspace")
+        let executable = String::from_utf8(runtime.stdout)
+            .map_err(|_| configuration("invalid guest runtime path"))?;
+        let runner = self.workspace.control();
+        let command = VmCommand::new(&executable)
+            .arg("--desktop")
             .arg(self.workspace.guest_workspace())
+            .arg(DESKTOP_RUNTIME)
             .timeout(Duration::from_secs(365 * 24 * 60 * 60))
             .max_output_bytes(64 * 1024);
-        let runner = self.workspace.control();
         self.desktop = Some(VmDesktop {
+            publisher: None,
+            executable: executable.clone(),
             task: Some(tokio::spawn(async move { runner.command(command).await })),
         });
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -240,56 +209,100 @@ impl VmHand {
                 .and_then(|desktop| desktop.task.as_ref())
                 .is_some_and(tokio::task::JoinHandle::is_finished)
             {
-                return Err(configuration("VM desktop exited before readiness"));
+                let task = self
+                    .desktop
+                    .as_mut()
+                    .and_then(|desktop| desktop.task.take())
+                    .expect("finished desktop task");
+                let detail = match task.await {
+                    Ok(Ok(output)) => String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+                    _ => "guest command failed".to_owned(),
+                };
+                return Err(configuration(format!(
+                    "Rust VM desktop exited before readiness: {detail}"
+                )));
             }
             if control
-                .read_file(format!("{DESKTOP_CREDENTIAL}.ready"))
+                .read_file(format!("{DESKTOP_RUNTIME}/ready"))
                 .await
-                .is_ok_and(|value| value == b"ready\n")
+                .is_ok()
             {
-                return Ok(());
+                break;
             }
             if Instant::now() >= deadline {
                 return Err(configuration(
-                    "VM desktop compositor did not become ready within 30 seconds",
+                    "VM desktop did not become ready within 30 seconds",
                 ));
             }
             sleep(Duration::from_millis(100)).await;
         }
+        let runner = self.workspace.control();
+        let backend: ScreenBackend = Arc::new(move |input| {
+            let control = runner.clone();
+            let executable = executable.clone();
+            Box::pin(async move {
+                let output = control
+                    .command(
+                        VmCommand::new(executable)
+                            .arg("--desktop-request")
+                            .arg(input.to_string())
+                            .arg(DESKTOP_RUNTIME)
+                            .timeout(Duration::from_secs(8))
+                            .max_output_bytes(750_000),
+                    )
+                    .await
+                    .map_err(|_| configuration("VM desktop request failed"))?;
+                if output.exit_code != 0 {
+                    return Err(configuration("VM desktop request was rejected"));
+                }
+                serde_json::from_slice(&output.stdout)
+                    .map_err(|_| configuration("invalid VM desktop result"))
+            })
+        });
+        let publisher = ScreenPublisher::start(target, &self.machine, backend).await?;
+        self.desktop.as_mut().expect("desktop started").publisher = Some(publisher);
+        tracing::info!(target: "nanocodex2", stage = "vm.screen.ready", "Rust VM screen is published");
+        Ok(())
     }
 
     pub(crate) async fn refresh_desktop(
         &self,
         target: &AttachmentTarget,
     ) -> Result<(), ManagedError> {
-        if self.desktop.is_some() {
-            self.workspace
-                .control()
-                .write_file(
-                    DESKTOP_CREDENTIAL,
-                    target.bearer().as_bytes().to_vec(),
-                    0o600,
-                )
-                .await
-                .map_err(|_| configuration("failed to refresh VM desktop credential"))?;
+        if let Some(publisher) = self
+            .desktop
+            .as_ref()
+            .and_then(|desktop| desktop.publisher.as_ref())
+        {
+            publisher.refresh(target).await?;
         }
         Ok(())
     }
 
     pub(crate) async fn shutdown(mut self) -> Result<(), ManagedError> {
         if let Some(mut desktop) = self.desktop.take() {
+            if let Some(publisher) = desktop.publisher.take() {
+                let _ = publisher.shutdown().await;
+            }
             let _ = self
                 .workspace
                 .control()
-                .write_file(DESKTOP_CREDENTIAL, Vec::new(), 0o600)
+                .command(
+                    VmCommand::new(&desktop.executable)
+                        .arg("--desktop-request")
+                        .arg(r#"{"action":"shutdown"}"#)
+                        .arg(DESKTOP_RUNTIME)
+                        .timeout(Duration::from_secs(5)),
+                )
                 .await;
-            if let Some(mut task) = desktop.task.take()
-                && tokio::time::timeout(Duration::from_secs(5), &mut task)
+            if let Some(mut task) = desktop.task.take() {
+                if tokio::time::timeout(Duration::from_secs(5), &mut task)
                     .await
                     .is_err()
-            {
-                task.abort();
-                let _ = task.await;
+                {
+                    task.abort();
+                    let _ = task.await;
+                }
             }
         }
         drop(self.tools);
@@ -319,6 +332,35 @@ fn validate_common_config(config: &VmHandConfig) -> Result<(), ManagedError> {
             "--vm-workspace must be an absolute guest path, got {:?}",
             config.vm_workspace
         )));
+    }
+    #[cfg(target_os = "linux")]
+    preflight_kvm_device(Path::new("/dev/kvm"))?;
+    Ok(())
+}
+
+// Check before the host advertises a factory or prepares a guest disk. A Linux
+// Hand can run ordinary processes inside a container without being able to host
+// VMs; it needs a passed-through, accessible KVM character device as well.
+#[cfg(any(target_os = "linux", test))]
+fn preflight_kvm_device(path: &Path) -> Result<(), ManagedError> {
+    use std::os::unix::fs::FileTypeExt as _;
+
+    let unavailable = |detail: String| {
+        configuration(format!(
+            "Linux VM hosting requires a readable and writable KVM character device at {}: {detail}. Enable hardware virtualization and grant this user access to /dev/kvm; containers and nested VMs must expose /dev/kvm from a host that supports nested virtualization",
+            path.display()
+        ))
+    };
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|error| unavailable(error.to_string()))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| unavailable(error.to_string()))?;
+    if !metadata.file_type().is_char_device() {
+        return Err(unavailable("the path is not a character device".to_owned()));
     }
     Ok(())
 }
@@ -432,5 +474,32 @@ mod tests {
         std::fs::create_dir(&firmware).unwrap();
         std::fs::write(firmware.join(FIRMWARE_LIBRARY), b"firmware fixture").unwrap();
         assert_eq!(bundled_firmware_directory(&runtime), Some(firmware));
+    }
+
+    #[test]
+    fn kvm_preflight_rejects_missing_devices_without_creating_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("kvm");
+        let error = preflight_kvm_device(&path).unwrap_err().to_string();
+        assert!(error.contains("Linux VM hosting requires"));
+        assert!(error.contains("nested virtualization"));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn kvm_preflight_rejects_regular_files_without_modifying_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("kvm");
+        std::fs::write(&path, b"not a hypervisor").unwrap();
+        let error = preflight_kvm_device(&path).unwrap_err().to_string();
+        assert!(error.contains("not a character device"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"not a hypervisor");
+    }
+
+    #[test]
+    fn kvm_preflight_accepts_an_accessible_character_device() {
+        // This checks device access only. The VMM still verifies the KVM API
+        // when opening the real /dev/kvm during launch.
+        preflight_kvm_device(Path::new("/dev/null")).unwrap();
     }
 }

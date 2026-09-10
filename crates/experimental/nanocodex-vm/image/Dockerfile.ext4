@@ -1,0 +1,6 @@
+# Filesystem tools run only on the build host and never enter the VM template.
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends e2fsprogs \
+    && rm -rf /var/lib/apt/lists/*
+COPY populate-ext4.sh /usr/local/bin/populate-ext4
+ENTRYPOINT ["/bin/sh", "/usr/local/bin/populate-ext4"]

@@ -1,0 +1,25 @@
+[package]
+name = "nanocodex-hand"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Native screen capture and input linked into the Nanocodex Hand"
+
+[dependencies]
+base64.workspace = true
+image.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+objc2 = "0.6.3"
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSError", "NSObject"] }
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "SCShareableContent", "SCScreenshotManager", "SCStream", "block2", "objc2-core-foundation", "objc2-core-graphics"] }
+
+[lints.rust]
+unsafe_code = "deny"

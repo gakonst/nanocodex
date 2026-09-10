@@ -35,7 +35,9 @@ host = [
     "dep:zstd",
     "nanocodex-tools/native",
 ]
+desktop = ["dep:x11rb", "dep:image", "dep:nix"]
 guest-runtime = [
+    "desktop",
     "dep:futures-util",
     "dep:landlock",
     "dep:nix",
@@ -51,14 +53,18 @@ filetime.workspace = true
 futures-util = { workspace = true, optional = true }
 landlock = { workspace = true, optional = true }
 nanocodex-tools = { path = "../../nanocodex-tools", version = "0.5.0", default-features = false }
-nix = { workspace = true, optional = true, features = ["fs", "mount"] }
+nix = { workspace = true, optional = true, features = ["fs", "mount", "poll"] }
 rtnetlink = { workspace = true, optional = true }
 rustix = { workspace = true, optional = true }
 seccompiler = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "io-std", "io-util", "macros", "process", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-std", "io-util", "macros", "process", "rt", "rt-multi-thread", "sync", "time", "signal"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13.2", optional = true, features = ["xtest"] }
+image = { version = "0.25.9", default-features = false, features = ["jpeg"], optional = true }
 
 [target.'cfg(any(all(target_os = "linux", not(target_env = "musl")), all(target_os = "macos", target_arch = "aarch64")))'.dependencies]
 arcbox-ext4 = { workspace = true, optional = true }

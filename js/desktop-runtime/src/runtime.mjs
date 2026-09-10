@@ -12,6 +12,7 @@ import * as Workspace from "nanocodex/node/workspace";
 import { createNodeProcessTools } from "nanocodex-tools/node";
 import WebSocket from "ws";
 import { mergeAccountHands, restoredAccountHands } from "./account-hands.mjs";
+import { createVmTools, supportsLocalVms } from "./vm-tools.mjs";
 
 export const DEFAULT_ORIGIN = "https://nanocodex.gakonst.workers.dev";
 export const DEFAULT_SETTINGS = Object.freeze({ model: "gpt-5.6-sol", thinking: "high", reasoning_mode: "standard", fast_mode: false });
@@ -59,6 +60,9 @@ export function validateHand(value) {
     if (!Number.isInteger(value.cpus) || value.cpus < 1 || value.cpus > 255) throw new Error("VM CPUs must be between 1 and 255.");
     if (!Number.isInteger(value.memoryMiB) || value.memoryMiB < 128 || value.memoryMiB > 1_048_576) throw new Error("Choose valid VM memory in MiB.");
     Object.assign(config, { cpus: value.cpus, memoryMiB: value.memoryMiB, network: value.network !== false });
+    if (typeof value.vmHost === "string" && /^[a-z0-9][a-z0-9._-]{0,62}$/.test(value.vmHost)) config.vmHost = value.vmHost;
+    if (typeof value.vmName === "string" && /^[a-z0-9][a-z0-9-]{0,39}$/.test(value.vmName)) config.vmName = value.vmName;
+    if (typeof value.firmware === "string" && isAbsolute(value.firmware)) config.firmware = value.firmware;
     delete config.agentId; // The existing VM CLI attaches at account scope.
   }
   return config;
@@ -171,6 +175,7 @@ export class DesktopRuntime extends EventEmitter {
   #refreshPending;
   #handDiscoveryPending;
   #eventSnapshots = new WeakMap();
+  #vmLaunchQueue = Promise.resolve();
 
   constructor({ baseUrl = DEFAULT_ORIGIN, apiKey, saved = {}, defaults = {}, dataDirectory = join(homedir(), "Library", "Application Support", "Nanocodex", "Runtime"), persist = async () => {}, saveConnection = async () => {} } = {}) {
     super();
@@ -541,6 +546,12 @@ export class DesktopRuntime extends EventEmitter {
     this.#requireConnection();
     const generation = this.#generation;
     const config = validateHand(input);
+    if (config.kind === "vm") {
+      // Native forms edit visible VM settings and may omit ownership metadata.
+      // Keep the existing remote name and firmware when saving that same VM.
+      const previous = this.#state.hands.find(hand => hand.id === config.id && hand.kind === "vm");
+      for (const key of ["vmHost", "vmName", "firmware"]) if (previous?.[key] && !config[key]) config[key] = previous[key];
+    }
     if (config.kind === "local" && config.workspace === this.#state.defaults.workspace) await mkdir(config.workspace, { recursive: true, mode: 0o700 });
     if (config.kind === "local") {
       if (!(await stat(config.workspace)).isDirectory()) throw new Error("Choose an existing folder.");
@@ -699,7 +710,8 @@ export class DesktopRuntime extends EventEmitter {
     resource.abort.signal.throwIfAborted();
     const workspace = await Workspace.open({ path: hand.workspace, root: hand.workspace });
     resource.abort.signal.throwIfAborted();
-    const tools = await createTools({ tools: processes.tools, workspace, attachmentId: hand.id, machines: [{ id: hand.id, name: hand.name, workspace: hand.workspace, capabilities: ["native", "shell", "filesystem", "process", "pipes"] }] });
+    const vmTools = this.#localVmTools(hand, resource);
+    const tools = await createTools({ tools: [...processes.tools, ...vmTools], workspace, attachmentId: hand.id, machines: [{ id: hand.id, name: hand.name, workspace: hand.workspace, capabilities: ["native", "shell", "filesystem", "process", "pipes", ...(vmTools.length ? ["vm_host"] : [])] }] });
     resource.add(() => tools.close());
     resource.abort.signal.throwIfAborted();
     const endpoint = new URL(hand.agentId ? `/v1/agents/${encodeURIComponent(hand.agentId)}/tool-host` : "/v1/account/tool-host", this.#options.baseUrl);
@@ -710,6 +722,11 @@ export class DesktopRuntime extends EventEmitter {
     resource.abort.signal.throwIfAborted();
     hand.status = "connected";
     this.#log(hand, hand.agentId ? "Connected to the selected thread." : "Connected to your account. Available to all your agents.");
+    if (!hand.agentId && this.#state.defaults.binary && ["darwin", "linux"].includes(process.platform)) {
+      // The Hand binary owns platform capture/input. A recording-permission
+      // failure must not disconnect the already usable shell/filesystem Hand.
+      await this.#startNativeScreen(hand, resource).catch(error => this.#log(hand, this.#safeError(error)));
+    }
     const monitor = setInterval(() => {
       if (resource.abort.signal.aborted) return;
       const status = connection.connected ? "connected" : "connecting";
@@ -739,6 +756,84 @@ export class DesktopRuntime extends EventEmitter {
       void resource.close().finally(() => { if (this.#resources.get(hand.id) === resource) this.#resources.delete(hand.id); });
     });
   }
+  async #startNativeScreen(hand, resource) {
+    const binary = await this.#prepareVmHelper(this.#state.defaults.binary);
+    const scope = createHash("sha256").update(`${this.#options.baseUrl}\0${this.#options.apiKey}`).digest("hex");
+    const stateDirectory = join(this.#dataDirectory, "screens", scope, hand.id);
+    await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
+    resource.abort.signal.throwIfAborted();
+    const env = Object.fromEntries(["PATH", "HOME", "TMPDIR", "LANG"].filter(key => process.env[key]).map(key => [key, process.env[key]]));
+    Object.assign(env, { NANOCODEX_API_KEY: this.#options.apiKey, NANOCODEX_MANAGED_URL: this.#options.baseUrl });
+    const child = spawn(binary, ["__hand-screen", "--workspace", hand.workspace, "--machine-id", hand.id,
+      "--machine-name", hand.name, "--state-dir", stateDirectory],
+      { env, detached: process.platform !== "win32", stdio: ["ignore", "ignore", "pipe"] });
+    let resolveClosed;
+    const closed = new Promise(resolve => { resolveClosed = resolve; });
+    let resolveReady, rejectReady;
+    const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+    let buffer = "";
+    child.stderr.on("data", chunk => {
+      buffer = (buffer + chunk.toString()).slice(-8192);
+      const lines = buffer.split("\n"); buffer = lines.pop();
+      for (const line of lines) {
+        if (line === "Hand screen is ready") { this.#log(hand, "Rust Hand screen is available."); resolveReady(); }
+        else if (line.startsWith("Error: ")) rejectReady(new Error(line.slice(7)));
+      }
+    });
+    child.on("error", error => { resolveClosed(); rejectReady(error); });
+    child.on("close", () => { resolveClosed(); rejectReady(new Error("The native Hand screen publisher stopped.")); });
+    resource.add(async () => {
+      if (child.exitCode !== null || child.signalCode !== null || !child.pid) return;
+      try { process.kill(process.platform === "win32" ? child.pid : -child.pid, "SIGTERM"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+      await Promise.race([closed, delay(7_000, undefined, { ref: false })]);
+      if (child.exitCode === null && child.signalCode === null) {
+        try { process.kill(process.platform === "win32" ? child.pid : -child.pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+      }
+    });
+    const abort = () => rejectReady(resource.abort.signal.reason);
+    resource.abort.signal.addEventListener("abort", abort, { once: true });
+    const timer = setTimeout(() => rejectReady(new Error("The native Hand screen did not publish within 40 seconds.")), 40_000);
+    timer.unref();
+    try { await ready; } finally { clearTimeout(timer); resource.abort.signal.removeEventListener("abort", abort); }
+  }
+
+  #localVmTools(host, resource) {
+    const recipe = this.#state.defaults;
+    if (host.agentId || !supportsLocalVms() || !["binary", "rootfs", "guestRuntime"].every(key => recipe[key])) return [];
+    const generation = this.#generation;
+    const check = () => { this.#sameAccount(generation); resource.abort.signal.throwIfAborted(); };
+    const owned = () => this.#state.hands.filter(hand => hand.kind === "vm" && hand.vmHost === host.id);
+    const summary = hand => ({ name: hand.vmName, machine_id: hand.id, workspace: hand.workspace, status: hand.status, ...(hand.error ? { error: hand.error } : {}) });
+    resource.add(() => Promise.all(owned().map(hand => this.#stopHand(hand.id))));
+    return createVmTools({ hostName: host.name,
+      list: () => { check(); return { vms: owned().map(summary) }; },
+      start: (name, signal) => {
+        const operation = this.#vmLaunchQueue.catch(() => {}).then(async () => {
+          check(); signal?.throwIfAborted();
+          let hand = owned().find(hand => hand.vmName === name);
+          if (hand?.status === "connected") return summary(hand);
+          if (this.#state.hands.filter(hand => hand.kind === "vm" && ["connecting", "connected"].includes(hand.status)).length >= 4) throw new Error("Four VMs are already running on this computer. Stop one before starting another.");
+          if (!hand) {
+            const id = `vm-${createHash("sha256").update(`${host.id}\0${name}`).digest("hex").slice(0, 20)}`;
+            await this.saveHand({ ...recipe, id, kind: "vm", name: `${name} on ${host.name}`, vmHost: host.id, vmName: name, workspace: "/app", cpus: 2, memoryMiB: 2048 });
+            check(); signal?.throwIfAborted();
+            hand = owned().find(hand => hand.id === id);
+          }
+          const abort = () => { void this.#stopHand(hand.id); };
+          signal?.addEventListener("abort", abort, { once: true });
+          try {
+            await this.#startHand(hand.id); check(); signal?.throwIfAborted();
+            if (hand.status !== "connected") throw new Error(hand.error || "The VM did not connect.");
+            return summary(hand);
+          } finally { signal?.removeEventListener("abort", abort); }
+        });
+        this.#vmLaunchQueue = operation;
+        return operation;
+      },
+      stop: async name => { check(); const hand = owned().find(hand => hand.vmName === name); if (!hand) throw new Error("No VM with that name belongs to this Hand."); await this.#stopHand(hand.id); check(); return summary(hand); },
+    });
+  }
+
   async #startVm(hand, resource) {
     for (const path of [hand.binary, hand.rootfs, hand.guestRuntime]) await stat(path);
     const binary = await this.#prepareVmHelper(hand.binary);
@@ -747,6 +842,7 @@ export class DesktopRuntime extends EventEmitter {
     resource.abort.signal.throwIfAborted();
     const args = ["hand", "--vm", hand.rootfs, "--vm-guest-runtime", hand.guestRuntime, "--vm-cache", cache, "--vm-workspace", hand.workspace, "--vm-cpus", String(hand.cpus), "--vm-memory-mib", String(hand.memoryMiB), "--machine-id", hand.id, "--machine-name", hand.name, "--log-format", "json"];
     if (!hand.network) args.push("--vm-no-network");
+    if (hand.firmware) args.push("--vm-firmware", hand.firmware);
     const env = Object.fromEntries(["PATH", "HOME", "TMPDIR", "LANG", "NANOCODEX_KRUNFW_DIR"].filter(key => process.env[key]).map(key => [key, process.env[key]]));
     Object.assign(env, { NANOCODEX_API_KEY: this.#options.apiKey, NANOCODEX_MANAGED_URL: this.#options.baseUrl });
     const child = spawn(binary, args, { env, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
@@ -802,8 +898,10 @@ export class DesktopRuntime extends EventEmitter {
     });
     const abort = () => readyReject(resource.abort.signal.reason);
     resource.abort.signal.addEventListener("abort", abort, { once: true });
+    const timeout = setTimeout(() => readyReject(new Error("The VM did not become ready within 90 seconds. Check its Hand logs and retry.")), 90_000);
+    timeout.unref();
     try { resource.abort.signal.throwIfAborted(); await ready; }
-    finally { resource.abort.signal.removeEventListener("abort", abort); }
+    finally { clearTimeout(timeout); resource.abort.signal.removeEventListener("abort", abort); }
   }
 
   async #prepareVmHelper(source) {

@@ -35,6 +35,46 @@ use seccompiler::{
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut arguments = std::env::args_os().skip(1);
     let first = arguments.next();
+    if first.as_deref() == Some(OsStr::new("--desktop")) {
+        let workspace = arguments
+            .next()
+            .ok_or_else(|| invalid_input("--desktop requires WORKSPACE"))?;
+        let runtime = arguments
+            .next()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/run/nanocodex-desktop"));
+        if arguments.next().is_some() {
+            return Err(invalid_input("--desktop accepts WORKSPACE and optional RUNTIME").into());
+        }
+        return nanocodex_vm::desktop::serve(PathBuf::from(workspace), runtime)
+            .await
+            .map_err(|error| error as Box<dyn std::error::Error>);
+    }
+    if first.as_deref() == Some(OsStr::new("--desktop-request")) {
+        let input = arguments
+            .next()
+            .ok_or_else(|| invalid_input("--desktop-request requires JSON"))?;
+        let input = input
+            .to_str()
+            .ok_or_else(|| invalid_input("desktop JSON must be UTF-8"))?;
+        if input.len() > 8192 {
+            return Err(invalid_input("desktop request exceeds 8192 bytes").into());
+        }
+        let input = serde_json::from_str(input)?;
+        let runtime = arguments
+            .next()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/run/nanocodex-desktop"));
+        if arguments.next().is_some() {
+            return Err(
+                invalid_input("--desktop-request accepts JSON and optional RUNTIME").into(),
+            );
+        }
+        let result = nanocodex_vm::desktop::request(&runtime, input)
+            .map_err(|error| error as Box<dyn std::error::Error>)?;
+        println!("{}", serde_json::to_string(&result)?);
+        return Ok(());
+    }
     if first.as_deref() == Some(OsStr::new("--host-capture-only")) {
         let port = capture_port(&mut arguments, "--host-capture-only")?;
         let program = arguments

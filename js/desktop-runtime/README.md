@@ -80,6 +80,32 @@ Optional VM defaults are `NANOCODEX_HAND_BINARY`, `NANOCODEX_VM_ROOTFS`, and
 and guest ELF beside `NANOCODEX_ENV_FILE`. Cloud provisioning remains an ordinary
 managed agent tool call through the canonical service.
 
+A configured account-wide local Hand exposes `list_vms`, `start_vm`, and
+`stop_vm` to the account's agents, including conversations started on a phone.
+For example, ask: **On my Mac Hand, start a VM named phone-demo, then run uname
+inside that VM.** The caller supplies a stable name; the host owns the executable,
+image, firmware, and credentials. `start_vm` returns the connected machine ID.
+Repeating a name reconnects its retained disk. At most four VMs run concurrently;
+stopping the parent Hand or quitting the app stops its VMs while preserving their
+files. A failed launch returns its error, with a 90-second readiness deadline.
+These VM Hands expose shell/files/processes; a graphical desktop requires a
+desktop-enabled image and publisher.
+
+Installed apps can retain a prepared recipe in `vm.json` under
+`NANOCODEX_DESKTOP_DATA` (the Mac app uses
+`~/Library/Application Support/Nanocodex/Native`). Its `binary`, `rootfs`, and
+`guestRuntime` fields are absolute paths; optional `firmware` is the libkrunfw
+directory. Environment settings override this file. Restart the Hand after
+changing the recipe so its tool catalog refreshes. Assets must already be
+prepared using the existing VM build tooling; this file contains no secrets.
+
+Local VM hosting supports Apple Silicon macOS and glibc Linux with readable,
+writable `/dev/kvm`. Linux containers need that device passed through from a
+host with virtualization support. Native Windows VM hosting is not implemented;
+a Windows machine would need a separately configured Linux/WSL2 host exposing
+working nested KVM to use the Linux CLI. Windows and Intel Mac desktops do not
+advertise these VM tools.
+
 `refreshAccountHands()` reads the account-owned `/v1/account/hands` catalog.
 The native app polls it every five seconds while connected. These devices are
 separate from locally managed `hands`: they can be selected without creating or
