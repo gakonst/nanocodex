@@ -41,11 +41,11 @@ RUN sh /tmp/bundle-hand-desktop.sh
 FROM golang:1.26.5-bookworm AS go-toolchain
 FROM swift:6.3.3-jammy AS swift-toolchain
 FROM node:24.19.0-bookworm-slim AS node-toolchain
+RUN npm install --global pnpm@11.25.0
 
 FROM docker.io/cloudflare/sandbox:0.12.4
 COPY --from=swift-toolchain /usr /opt/swift/usr
-COPY --from=node-toolchain /usr/local/bin/node /usr/local/bin/node
-COPY --from=node-toolchain /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=node-toolchain /usr/local /opt/node
 COPY --from=go-toolchain /usr/local/go /usr/local/go
 
 COPY --from=ghcr.io/astral-sh/uv:0.8.11 /uv /uvx /usr/local/bin/
@@ -54,7 +54,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     RUSTUP_HOME=/opt/rustup \
     CARGO_HOME=/opt/cargo \
     CARGO_TARGET_DIR=/tmp/nanocodex-cargo-target \
-    PATH=/opt/cargo/bin:/opt/swift/usr/bin:/usr/local/go/bin:${PATH}
+    PATH=/opt/node/bin:/opt/cargo/bin:/opt/swift/usr/bin:/usr/local/go/bin:${PATH}
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -120,9 +120,6 @@ RUN ln -s /usr/bin/fdfind /usr/local/bin/fd \
     && rustup target add wasm32-unknown-unknown x86_64-unknown-linux-musl \
     && cargo install --locked wasm-bindgen-cli --version 0.2.126 \
     && rm -rf "$CARGO_TARGET_DIR" \
-    && ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
-    && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
-    && npm install --global pnpm@11.25.0 \
     && cargo --version \
     && rustc --version \
     && pnpm --version \
