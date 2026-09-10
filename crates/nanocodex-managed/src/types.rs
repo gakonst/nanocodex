@@ -62,7 +62,7 @@ pub struct CronTriggerConfig {
     pub cron: String,
     /// IANA timezone, such as `Europe/Athens`.
     pub timezone: String,
-    /// Prompt submitted on each occurrence, at most 64 KiB of UTF-8.
+    /// Complete prompt submitted on each occurrence.
     pub input: String,
     /// Whether future occurrences are scheduled.
     pub enabled: bool,
@@ -75,13 +75,11 @@ impl CronTriggerConfig {
         if self.cron.len() > 256
             || self.cron.split_whitespace().count() != 5
             || self.input.trim().is_empty()
-            || self.input.len() > 64 * 1024
             || self.timezone.is_empty()
             || self.timezone.len() > 128
         {
             return Err(ManagedError::Configuration(
-                "expected a five-field cron, timezone, and non-empty input of at most 64 KiB"
-                    .to_owned(),
+                "expected a five-field cron, timezone, and non-empty input".to_owned(),
             ));
         }
         Ok(())
@@ -564,15 +562,6 @@ mod reasoning_mode_serde {
     }
 }
 
-/// Input for one currently active managed turn.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ActiveTurn {
-    /// Stable active turn identifier.
-    pub id: String,
-    /// Complete accepted input.
-    pub input: PromptInput,
-}
-
 /// Current durable state for an account-owned agent.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AgentState {
@@ -588,8 +577,6 @@ pub struct AgentState {
     pub last_active: f64,
     /// Stable identifiers of active turns.
     pub active_turns: Vec<String>,
-    /// Complete input details for active turns.
-    pub active_turn_details: Vec<ActiveTurn>,
     /// Whether the agent runtime is currently loaded.
     pub agent_loaded: bool,
     /// Number of connected event clients.
@@ -1108,6 +1095,18 @@ mod tests {
     use super::{
         FindSessionsRequest, ManagedEvent, ManagedEventData, MemoryKey, ReadSessionRequest,
     };
+
+    #[test]
+    fn cron_input_has_no_client_byte_ceiling() {
+        let config = super::CronTriggerConfig {
+            cron: "* * * * *".to_owned(),
+            timezone: "UTC".to_owned(),
+            input: "scheduled context😀".repeat(20_000),
+            enabled: true,
+            session_mode: super::CronSessionMode::Continue,
+        };
+        assert!(config.validate().is_ok());
+    }
 
     #[test]
     fn validates_account_history_requests_before_network_io() {

@@ -172,7 +172,7 @@ async fn serve(mut socket: WebSocket, service: Service, cursor: u64) {
     let (outgoing, mut events) = mpsc::unbounded_channel::<Value>();
     let ready = json!({
         "type": "ready", "session_id": AGENT, "restored": false,
-        "active_turns": if service.active { vec![REMOTE_TURN] } else { vec![] }, "active_turn_details": [], "latest_event_cursor": latest_cursor,
+        "active_turns": if service.active { vec![REMOTE_TURN] } else { vec![] }, "latest_event_cursor": latest_cursor,
         "capabilities": {"durable_turns": true, "resumable_events": true,
             "live_steer": true, "live_cancel": true, "workspace": "cloudflare-computer",
             "execution_environments": true, "execution_namespace": "cwd-root-v1", "native_cross_mounts": false},
@@ -222,7 +222,7 @@ async fn state(State(service): State<Service>) -> Json<Value> {
     Json(json!({
         "agent_id": AGENT, "session_id": AGENT, "has_snapshot": false,
         "completed_turns": 0, "last_active": 1, "agent_loaded": true, "connected_clients": 1,
-        "active_turns": if service.active { vec![REMOTE_TURN] } else { vec![] }, "active_turn_details": [],
+        "active_turns": if service.active { vec![REMOTE_TURN] } else { vec![] },
         "capabilities": {"durable_turns": true, "resumable_events": true,
             "live_steer": true, "live_cancel": true, "workspace": "cloudflare-computer",
             "execution_environments": true, "execution_namespace": "cwd-root-v1", "native_cross_mounts": false},

@@ -11,7 +11,7 @@ test("managed memory sends account-level operations with API-key auth and freeze
   const key = { id: 7, version: 2 };
   const record = {
     key,
-    content: "Deploy on Tuesdays",
+    content: "Deploy on Tuesdays".repeat(100),
     created_at_ms: 10,
     updated_at_ms: 20,
     last_scanned_at_ms: 21,
@@ -20,6 +20,7 @@ test("managed memory sends account-level operations with API-key auth and freeze
     use_count: 0,
     probation_until_ms: 30,
   };
+  const query = "deploy ".repeat(100);
   const operations = [];
   const fetch = async (input, init) => {
     const request = new Request(input, init);
@@ -46,23 +47,23 @@ test("managed memory sends account-level operations with API-key auth and freeze
   };
   const options = { baseUrl: origin, apiKey, fetch };
 
-  const scanned = await Agent.memory({ operation: "scan", query: "deploy", limit: 1 }, options);
+  const scanned = await Agent.memory({ operation: "scan", query, limit: 1 }, options);
   const read = await Agent.memory({ operation: "read", keys: [key] }, options);
   const put = await Agent.memory({
     operation: "put",
-    content: "Deploy on Tuesdays",
+    content: record.content,
     replace: key,
   }, options);
   const deleted = await Agent.memory({ operation: "delete", key }, options);
 
   assert.deepEqual(operations, [
-    { operation: "scan", query: "deploy", limit: 1 },
+    { operation: "scan", query, limit: 1 },
     { operation: "read", keys: [key] },
-    { operation: "put", content: "Deploy on Tuesdays", replace: key },
+    { operation: "put", content: record.content, replace: key },
     { operation: "delete", key },
   ]);
   assert.equal(scanned.candidates[0].key.version, 2);
-  assert.equal(read.memories[0].content, "Deploy on Tuesdays");
+  assert.equal(read.memories[0].content, record.content);
   assert.equal(put.replaced, true);
   assert.deepEqual(deleted.key, key);
   for (const value of [scanned, scanned.candidates, scanned.candidates[0], scanned.candidates[0].key,
@@ -82,7 +83,7 @@ test("managed memory validates operations and rejects malformed server records",
   };
   await assert.rejects(
     Agent.memory({ operation: "scan", query: " ", limit: 1 }, options),
-    /query must be 1-512 UTF-8 bytes/,
+    /query must be a nonempty string/,
   );
   await assert.rejects(
     Agent.memory({ operation: "delete", key: { id: 0, version: 1 } }, options),
@@ -509,6 +510,32 @@ test("managed event history requests one bounded chronological page before a cur
   assert.equal(requests.length, 2, "one create plus one history request");
   await assert.rejects(() => agent.events.page({ before: "0" }), /positive decimal/);
   await assert.rejects(() => agent.events.page({ limit: 257 }), /1 through 256/);
+});
+
+test("managed event history pages forward exclusively and validates its boundary", async () => {
+  let requestCount = 0;
+  let responseCursors = ["1", "2"];
+  const agent = await Agent.create({
+    baseUrl: origin,
+    fetch: async (input, init) => {
+      const request = new Request(input, init);
+      if (request.method === "POST") return Response.json({ agent_id: agentId }, { status: 201 });
+      requestCount++;
+      assert.equal(new URL(request.url).search, "?limit=2&after=0");
+      return Response.json({ data: responseCursors.map(eventData), has_more: true, latest_cursor: "9" });
+    },
+  });
+  const page = await agent.events.page({ after: "0", limit: 2 });
+  assert.deepEqual(page.data.map((event) => event.cursor), ["1", "2"]);
+  assert.equal(page.hasMore, true);
+  assert.equal(page.latestCursor, "9");
+  for (const after of ["", "-1", "01", 0]) {
+    await assert.rejects(() => agent.events.page({ after }), /nonnegative decimal/);
+  }
+  await assert.rejects(() => agent.events.page({ before: "9", after: "0" }), /either before or after/);
+  assert.equal(requestCount, 1, "invalid bounds must not reach the server");
+  responseCursors = ["0", "1"];
+  await assert.rejects(() => agent.events.page({ after: "0", limit: 2 }), /ordering is malformed/);
 });
 
 test("managed event history forwards caller cancellation to the fetch boundary", async () => {
@@ -1537,26 +1564,35 @@ test("an inactive managed SSE reconnects from the exact cursor", async () => {
   }
 });
 
-test("managed SSE rejects an unterminated decoded frame beyond its byte budget", async () => {
+test("managed SSE queues one event beyond 32 MiB and then consumes the following frame", { timeout: 10_000 }, async () => {
   const connections = [];
+  const payload = "x".repeat(33 * 1024 * 1024);
   const agent = Agent.open(agentId, {
     baseUrl: origin,
     fetch: async (input, init) => {
-      const request = new Request(input, init);
-      const connection = controlledEventStream(request.signal, () => {});
+      const connection = controlledEventStream(new Request(input, init).signal, () => {});
       connections.push(connection);
       return connection.response;
     },
   });
   const events = agent.events.watch({ cursor: "0" });
-  const next = events.next();
   await waitFor(() => connections.length === 1);
-  connections[0].send(`data: ${"x".repeat(16 * 1024 * 1024)}`);
-  await assert.rejects(next, (error) => {
-    assert(error instanceof ManagedError);
-    assert.equal(error.code, "event_frame_too_large");
-    return true;
-  });
+  const frame = sse("1", "api.event", { cursor: "1", type: "api.event", payload }).replaceAll("\n", "\r\n");
+  // Split a CRLF and the large JSON body over distinct network reads. There
+  // is deliberately no pending next(), so this also exercises the queue.
+  const firstCR = frame.indexOf("\r");
+  connections[0].send(frame.slice(0, firstCR + 1));
+  await new Promise(setImmediate);
+  connections[0].send(frame.slice(firstCR + 1, 17 * 1024 * 1024));
+  await new Promise(setImmediate);
+  connections[0].send(frame.slice(17 * 1024 * 1024));
+  await new Promise(setImmediate);
+  const event = await events.next();
+  assert.equal(event.value.cursor, "1");
+  assert.equal(event.value.data.payload, payload);
+  connections[0].send(sse("2", "api.event", { cursor: "2", type: "api.event", payload: "next" }));
+  assert.equal((await events.next()).value.data.payload, "next");
+  await events.return();
 });
 
 test("managed SSE accepts one frame just above the old 2 MiB ceiling", async () => {
@@ -1582,7 +1618,7 @@ test("managed SSE accepts one frame just above the old 2 MiB ceiling", async () 
   await events.return();
 });
 
-test("managed SSE bounds coalesced complete frames independently", async () => {
+test("managed SSE consumes coalesced complete frames independently", async () => {
   const payload = "x".repeat(9 * 1024 * 1024);
   const agent = Agent.open(agentId, {
     baseUrl: origin,
@@ -1990,7 +2026,6 @@ function agentState() {
     completed_turns: 0,
     last_active: 1,
     active_turns: [],
-    active_turn_details: [],
     agent_loaded: false,
     connected_clients: 0,
     capabilities: {

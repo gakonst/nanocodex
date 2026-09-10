@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { initializeTurnInputs, inputChunks, lazyTurnInput, readTurnInput, storeTurnInput } from "./managed-turn-input";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { ArchiveMaintenance } from "./archive-maintenance";
 import { managedCredentialSubject, scopedManagedModelEgress, sessionCredentialOwner } from "./session-credential-ownership";
@@ -29,7 +31,7 @@ import { createBrainWorkspace } from "./brain-workspace";
 import { createBrainBucket } from "./brain-bucket";
 import { browseX, X_API } from "nanocodex-tools/x";
 import { managedCodeEvaluator } from "./code-evaluator";
-import { CronTriggers, CronTriggerLimitError, CRON_TRIGGER_ID, cronTriggerView, nextCronRun, parseCronTrigger, type CronTriggerConfig } from "./cron-triggers";
+import { CronTriggers, CRON_TRIGGER_ID, cronTriggerView, nextCronRun, parseCronTrigger, type CronTriggerConfig } from "./cron-triggers";
 import { createCronTool } from "./cron-tool";
 import {
   cloudflareSandboxTools,
@@ -154,7 +156,6 @@ export { ContainerProxy, Sandbox };
 export { CodemodeRuntime } from "agents/browser";
 
 import {
-  type ActiveTurn,
   type AgentCapabilities,
   type ClientCommand,
   ProtocolError,
@@ -278,13 +279,8 @@ export { AccountHostedTools } from "./account-hosted-tools";
 export { VmHostPool } from "./vm-host-pool";
 export { ApiKeyRecord, NonceStorage, Organization, UserAccount } from "./account-auth";
 
-const MAX_CLIENT_MESSAGE_BYTES = 1024 * 1024;
-const MAX_PRE_ADMISSION_CANCELLATIONS = 64;
-const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
-const MAX_REALTIME_REQUEST_BYTES = 64 * 1024;
 // Storage placement only: larger exact-replay receipts go directly to R2.
 const INLINE_REALTIME_RESPONSE_BYTES = 512 * 1024;
-const DISPATCH_INPUT_CHUNK_CODE_UNITS = 256_000;
 const MAX_RETRY_DELAY_MS = 60_000;
 const MAX_IMPORT_BATCHES_PER_CREATE = 4;
 const UUID =
@@ -690,6 +686,7 @@ type SessionSocketAttachment = Readonly<{
 }>;
 
 type HistoryProjectionOutboxRow = {
+  source_cursor: string;
   turn_id: string;
   payload_json: string;
   attempt_count: number;
@@ -775,6 +772,7 @@ type ManagedRealtimePortability = Readonly<{
 type ManagedSessionPortability = Readonly<{
   accepted_turns: number;
   completed_turns: number;
+  /** Display preview; full input is retained in accepted events and turn receipts. */
   first_prompt: string;
   last_active: number;
   stream_error: string | null;
@@ -908,9 +906,9 @@ function managedSubagentDescriptor(value: unknown): ManagedSubagentDescriptor {
         || !/^[A-Za-z0-9._:-]{1,128}$/u.test(descriptor.parentAgentId)))
     || typeof descriptor.sessionId !== "string" || !SESSION_ID.test(descriptor.sessionId)
     || typeof descriptor.role !== "string" || descriptor.role.length === 0
-    || descriptor.role.length > 1_024 || descriptor.role.includes("\0")
+    || descriptor.role.includes("\0")
     || typeof descriptor.task !== "string" || descriptor.task.length === 0
-    || descriptor.task.length > MAX_REQUEST_BODY_BYTES || descriptor.task.includes("\0")) {
+    || descriptor.task.includes("\0")) {
     throw new TypeError("invalid managed subagent descriptor");
   }
   return Object.freeze({
@@ -922,6 +920,28 @@ function managedSubagentDescriptor(value: unknown): ManagedSubagentDescriptor {
   }) as ManagedSubagentDescriptor;
 }
 
+// Authorization needs identity, not another retained copy of task content.
+function descriptorDigest(value: string): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+/** One-time atomic conversion; runtime authorization has one digest format. */
+export function initializeManagedSubagentDigests(storage: DurableObjectStorage): void {
+  const columns = storage.sql.exec<{ name: string }>("PRAGMA table_info(managed_subagent_authorizations)");
+  if (![...columns].some(({ name }) => name === "task")) return;
+  storage.transactionSync(() => {
+    storage.sql.exec("ALTER TABLE managed_subagent_authorizations RENAME COLUMN role TO role_digest");
+    storage.sql.exec("ALTER TABLE managed_subagent_authorizations RENAME COLUMN task TO task_digest");
+    // Iterate rows directly: never materialize all retained tasks together.
+    for (const row of storage.sql.exec<{ session_id: string; role_digest: string; task_digest: string }>(
+      "SELECT session_id, role_digest, task_digest FROM managed_subagent_authorizations",
+    )) {
+      storage.sql.exec(`UPDATE managed_subagent_authorizations SET role_digest = ?, task_digest = ? WHERE session_id = ?`,
+        descriptorDigest(row.role_digest), descriptorDigest(row.task_digest), row.session_id);
+    }
+  });
+}
+
 function sameManagedSubagentDescriptor(
   row: ManagedSubagentAuthorizationRow,
   descriptor: ManagedSubagentDescriptor,
@@ -929,8 +949,8 @@ function sameManagedSubagentDescriptor(
   return row.agentId === descriptor.agentId
     && row.parentAgentId === descriptor.parentAgentId
     && row.sessionId === descriptor.sessionId
-    && row.role === descriptor.role
-    && row.task === descriptor.task;
+    && row.role === descriptorDigest(descriptor.role)
+    && row.task === descriptorDigest(descriptor.task);
 }
 
 /** Managed half of the private Cloudflare subagent lifecycle transaction. */
@@ -981,7 +1001,7 @@ export function applyManagedSubagentLifecycle(
   const hostContextRef = event.hostContextRef;
   const retained = storage.sql.exec<ManagedSubagentAuthorizationRow>(
     `SELECT root_session_id, session_id AS sessionId, agent_id AS agentId,
-            parent_agent_id AS parentAgentId, role, task, host_context_ref, authorization_json
+            parent_agent_id AS parentAgentId, role_digest AS role, task_digest AS task, host_context_ref, authorization_json
      FROM managed_subagent_authorizations WHERE session_id = ?`,
     sessionId,
   ).toArray()[0];
@@ -1041,15 +1061,15 @@ export function applyManagedSubagentLifecycle(
   }
   storage.sql.exec(
     `INSERT INTO managed_subagent_authorizations
-       (session_id, root_session_id, agent_id, parent_agent_id, role, task,
+       (session_id, root_session_id, agent_id, parent_agent_id, role_digest, task_digest,
         host_context_ref, authorization_json, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     descriptor.sessionId,
     rootSessionId,
     descriptor.agentId,
     descriptor.parentAgentId,
-    descriptor.role,
-    descriptor.task,
+    descriptorDigest(descriptor.role),
+    descriptorDigest(descriptor.task),
     hostContextRef,
     authorizationJson,
     Date.now(),
@@ -1073,7 +1093,7 @@ export function managedAuthorizationForToolContext(
   if (descriptor.sessionId !== context.sessionId) return undefined;
   const retained = storage.sql.exec<ManagedSubagentAuthorizationRow>(
     `SELECT root_session_id, session_id AS sessionId, agent_id AS agentId,
-            parent_agent_id AS parentAgentId, role, task, host_context_ref, authorization_json
+            parent_agent_id AS parentAgentId, role_digest AS role, task_digest AS task, host_context_ref, authorization_json
      FROM managed_subagent_authorizations WHERE session_id = ?`,
     context.sessionId,
   ).toArray()[0];
@@ -1845,7 +1865,6 @@ async function managedFetch(
             completed_turns: 0,
             last_active: Date.now(),
             active_turns: [],
-            active_turn_details: [],
             agent_loaded: false,
             connected_clients: 0,
             capabilities: AGENT_CAPABILITIES,
@@ -2651,6 +2670,7 @@ export class DurableAgentSession extends DurableComputerSession {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    initializeTurnInputs(ctx.storage, "managed_history_projection_chunks");
     this.#cronTriggers = new CronTriggers(ctx.storage);
     this.#startupContext = new ManagedStartupContext(ctx.storage);
     this.ctx.storage.sql.exec(`
@@ -2725,8 +2745,8 @@ export class DurableAgentSession extends DurableComputerSession {
         root_session_id TEXT NOT NULL,
         agent_id TEXT NOT NULL,
         parent_agent_id TEXT,
-        role TEXT NOT NULL,
-        task TEXT NOT NULL,
+        role_digest TEXT NOT NULL,
+        task_digest TEXT NOT NULL,
         host_context_ref TEXT NOT NULL,
         authorization_json TEXT NOT NULL,
         created_at INTEGER NOT NULL,
@@ -2805,6 +2825,7 @@ export class DurableAgentSession extends DurableComputerSession {
       );
     `);
     initializeManagedAgentSettingsSchema(this.ctx.storage);
+    initializeManagedSubagentDigests(this.ctx.storage);
     // A pending realtime mutation belonged to the previous in-memory owner.
     // Its external outcome is unknown, so cold construction must not replay it.
     this.ctx.storage.sql.exec(
@@ -2820,6 +2841,10 @@ export class DurableAgentSession extends DurableComputerSession {
       renewLeasedAttachment: (renewal) => this.#renewVmHostAttachment(renewal),
     });
     this.#archiveMaintenance = new ArchiveMaintenance(this.ctx.storage);
+    if (!this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(history_projection_outbox)")
+      .toArray().some(({ name }) => name === "source_cursor")) {
+      this.ctx.storage.sql.exec("ALTER TABLE history_projection_outbox ADD COLUMN source_cursor TEXT NOT NULL DEFAULT '0'");
+    }
     this.#eventLog = new DurableEventLog<StreamMessage>(this.ctx.storage);
     this.#eventArchive = new ManagedEventArchive<StreamMessage>(
       this.ctx.storage,
@@ -3081,7 +3106,7 @@ export class DurableAgentSession extends DurableComputerSession {
           ownership.owner_id,
           ownership.session_id,
           this.#ownershipIoTimeoutMs(),
-          this.#cronTriggers.list().length > 0,
+          this.#cronTriggers.hasTriggers(),
         ));
       } catch {
         return new Response(null, { status: 503 });
@@ -3148,7 +3173,7 @@ export class DurableAgentSession extends DurableComputerSession {
       }
     }
     if (request.method === "POST" && url.pathname === "/durability/export") {
-      if (this.#cronTriggers.list().length > 0 || this.#cronTriggers.deliveries().length > 0) {
+      if (this.#cronTriggers.hasTriggers() || this.#cronTriggers.hasDeliveries()) {
         return json({ error: "cron_triggers_present", message: "Delete cron triggers and wait for pending deliveries before exporting this agent; schedules are not portable yet." }, { status: 409 });
       }
       if (this.#durabilityImportState === "pending") {
@@ -3354,8 +3379,13 @@ export class DurableAgentSession extends DurableComputerSession {
       const requestedBefore = url.searchParams.get("before");
       const before =
         requestedBefore === null ? undefined : parseCursor(requestedBefore);
+      const requestedAfter = url.searchParams.get("after");
+      const after =
+        requestedAfter === null ? undefined : parseCursor(requestedAfter);
       const requestedLimit = url.searchParams.get("limit") ?? "128";
       if (
+        (requestedBefore !== null && requestedAfter !== null) ||
+        (requestedAfter !== null && (requestedAfter === "" || after === undefined)) ||
         (requestedBefore !== null &&
           (before === undefined || before === "0")) ||
         !/^[1-9][0-9]*$/.test(requestedLimit)
@@ -3368,7 +3398,7 @@ export class DurableAgentSession extends DurableComputerSession {
       }
       // Cursor and archive ownership are small indexed reads. Revalidation
       // must happen before loading, decoding, or serializing event payloads.
-      const historyTag = () => `W/"history-v1-${this.#sessionId()}-${before ?? "latest"}-${limit}-${this.#eventArchive.latestCursor(this.#eventLog)}-${this.#eventArchive.archivedThrough()}"`;
+      const historyTag = () => `W/"history-v2-${this.#sessionId()}-${after === undefined ? `before-${before ?? "latest"}` : `after-${after}`}-${limit}-${this.#eventArchive.latestCursor(this.#eventLog)}-${this.#eventArchive.archivedThrough()}"`;
       const etag = historyTag();
       const cacheHeaders = {
         "cache-control": "private, no-cache",
@@ -3381,7 +3411,9 @@ export class DurableAgentSession extends DurableComputerSession {
       }
       let page;
       try {
-        page = await this.#eventArchive.history(this.#eventLog, before, limit);
+        page = after === undefined
+          ? await this.#eventArchive.history(this.#eventLog, before, limit)
+          : await this.#eventArchive.historyAfter(this.#eventLog, after, limit);
       } catch (error) {
         return json({
           error: "event_archive_unavailable",
@@ -3493,7 +3525,6 @@ export class DurableAgentSession extends DurableComputerSession {
         first_prompt: this.#firstPrompt(),
         last_active: session.last_active,
         active_turns: this.#activeTurnIds(),
-        active_turn_details: this.#activeTurnDetails(),
         agent_loaded: this.#agent !== undefined,
         connected_clients: this.ctx.getWebSockets().length,
         capabilities: this.#capabilities(),
@@ -3560,11 +3591,6 @@ export class DurableAgentSession extends DurableComputerSession {
     }
     if (typeof message !== "string") {
       this.#send(socket, { type: "error", code: "binary_unsupported", message: "text frames are required" });
-      return;
-    }
-    if (message.length > MAX_CLIENT_MESSAGE_BYTES
-      || encoder.encode(message).byteLength > MAX_CLIENT_MESSAGE_BYTES) {
-      closeSocket(socket, 1009, "message exceeds 1 MiB");
       return;
     }
     const attachment = socket.deserializeAttachment() as DeviceHostAttachment | { sessionId?: string } | null;
@@ -3740,7 +3766,7 @@ export class DurableAgentSession extends DurableComputerSession {
       asserted.ownerId,
       sessionId,
       this.#ownershipIoTimeoutMs(),
-      this.#cronTriggers.list().length > 0,
+      this.#cronTriggers.hasTriggers(),
     ));
     this.ctx.waitUntil(registration.catch((error) => {
       console.warn({
@@ -3919,7 +3945,6 @@ export class DurableAgentSession extends DurableComputerSession {
       session_id: session.session_id,
       restored: session.has_snapshot !== 0,
       active_turns: this.#activeTurnIds(),
-      active_turn_details: this.#activeTurnDetails(),
       capabilities: this.#capabilities(),
       latest_event_cursor: latestCursor,
       settings: this.#settings(),
@@ -4270,7 +4295,6 @@ export class DurableAgentSession extends DurableComputerSession {
       this.#send(socket, {
         type: "status",
         active_turns: this.#activeTurnIds(),
-        active_turn_details: this.#activeTurnDetails(),
         agent_loaded: this.#agent !== undefined,
         connected_clients: this.ctx.getWebSockets().length,
         settings: this.#settings(),
@@ -4349,9 +4373,7 @@ export class DurableAgentSession extends DurableComputerSession {
     if (!this.#sessionId()) return json({ error: "not_found" }, { status: 404 });
     let patch: ManagedAgentSettingsPatch;
     try {
-      patch = parseAgentSettingsPatch(JSON.parse(
-        await readBoundedRequestText(request, 2_048),
-      ));
+      patch = parseAgentSettingsPatch(await request.json());
     } catch (error) {
       return json({
         error: error instanceof SyntaxError ? "invalid_json" : "invalid_request",
@@ -4397,9 +4419,8 @@ export class DurableAgentSession extends DurableComputerSession {
       return new Response(null, { status: 204 });
     }
     try {
-      const encoded = await readBoundedRequestText(request, 128 * 1024);
       let config;
-      try { config = parseCronTrigger(JSON.parse(encoded), Date.now(), this.#cronTriggers.get(id)?.session_mode); }
+      try { config = parseCronTrigger(await request.json(), Date.now(), this.#cronTriggers.get(id)?.session_mode); }
       catch (error) { return json({ error: "invalid_trigger", message: errorMessage(error) }, { status: 400 }); }
       const { trigger, exists } = await this.#saveCronTrigger(id, config, authorization);
       return json(trigger, { status: exists ? 200 : 201 });
@@ -4459,16 +4480,9 @@ export class DurableAgentSession extends DurableComputerSession {
       || previous.authorization_epoch !== session.authorization_epoch)) {
       throw new ManagedRequestError(409, "trigger_exists", "cron trigger id already exists with different settings or authorization; choose a new id");
     }
-    try {
-      const row = this.#cronTriggers.put(id, config, encodedAuthorization, session.authorization_epoch, hash, Date.now());
-      await this.#scheduleNextAlarm();
-      return { trigger: cronTriggerView(row, session.session_id), exists: previous !== undefined };
-    } catch (error) {
-      if (error instanceof CronTriggerLimitError) {
-        throw new ManagedRequestError(429, "cron_trigger_limit", error.message);
-      }
-      throw error;
-    }
+    const row = this.#cronTriggers.put(id, config, encodedAuthorization, session.authorization_epoch, hash, Date.now());
+    await this.#scheduleNextAlarm();
+    return { trigger: cronTriggerView(row, session.session_id), exists: previous !== undefined };
   }
 
   async #fireCronTriggers(): Promise<void> {
@@ -4487,10 +4501,12 @@ export class DurableAgentSession extends DurableComputerSession {
         const id = `cron:${trigger.revision}:${trigger.next_run_at}`;
         const agentId = await idempotentAgentId(session.owner_id, `cron:${session.session_id}:${id}`);
         if (this.#deleting || this.#deleted) return;
-        this.#cronTriggers.enqueue(trigger, next, {
+        const current = this.#cronTriggers.get(trigger.id);
+        if (current?.revision !== trigger.revision || current.next_run_at !== trigger.next_run_at) continue;
+        this.#cronTriggers.enqueue(current, next, {
           id, trigger_id: trigger.id, trigger_created_at: trigger.created_at,
           agent_id: agentId, scheduled_at: trigger.next_run_at!, retry_at: now,
-          payload_json: JSON.stringify({ input: trigger.input, settings: this.#settings(),
+          payload_json: JSON.stringify({ input: current.input, settings: this.#settings(),
             authorization: parseTurnAuthorization(trigger.authorization_json), epoch: trigger.authorization_epoch }),
         });
         continue;
@@ -4584,15 +4600,9 @@ export class DurableAgentSession extends DurableComputerSession {
       && !authorization.connectGrant.connectors.includes("chatgpt")) {
       return json({ error: "connector_forbidden" }, { status: 403 });
     }
-    let encoded: string;
-    try {
-      encoded = await readBoundedRequestText(request, MAX_REQUEST_BODY_BYTES);
-    } catch (error) {
-      return managedErrorResponse(error);
-    }
     let value: unknown;
     try {
-      value = JSON.parse(encoded);
+      value = await request.json();
     } catch {
       return json({ error: "invalid_json" }, { status: 400 });
     }
@@ -4685,14 +4695,13 @@ export class DurableAgentSession extends DurableComputerSession {
 
   async #prefetchRealtimeContext(request: Request, authorization: TurnAuthorization): Promise<Response> {
     try {
-      const encoded = await readBoundedRequestText(request, 2_048);
       let body;
-      try { body = JSON.parse(encoded); }
+      try { body = await request.json<Record<string, unknown>>(); }
       catch { return json({ error: "invalid_json" }, { status: 400 }); }
       if (!body || typeof body !== "object" || Array.isArray(body)
         || Object.keys(body).some((key) => key !== "voice_session_id" && key !== "query")
         || typeof body.voice_session_id !== "string" || !REALTIME_ID.test(body.voice_session_id)
-        || typeof body.query !== "string" || body.query.trim() === "" || encoder.encode(body.query).length > 512) {
+        || typeof body.query !== "string" || body.query.trim() === "") {
         return json({ error: "invalid_request" }, { status: 400 });
       }
       const epoch = this.#session()?.authorization_epoch;
@@ -4733,18 +4742,9 @@ export class DurableAgentSession extends DurableComputerSession {
       && !authorization.connectGrant.connectors.includes("chatgpt")) {
       return json({ error: "connector_forbidden" }, { status: 403 });
     }
-    let encoded: string;
-    try {
-      encoded = await readBoundedRequestText(
-        request,
-        MAX_REALTIME_REQUEST_BYTES,
-      );
-    } catch (error) {
-      return managedErrorResponse(error);
-    }
     let value: unknown;
     try {
-      value = JSON.parse(encoded);
+      value = await request.json();
     } catch {
       return json({ error: "invalid_json" }, { status: 400 });
     }
@@ -4789,13 +4789,12 @@ export class DurableAgentSession extends DurableComputerSession {
     if (kind === "delegate") {
       if (
         typeof body.input !== "string" ||
-        body.input.trim() === "" ||
-        encoder.encode(body.input).byteLength > MAX_REALTIME_REQUEST_BYTES / 2
+        body.input.trim() === ""
       ) {
         return json(
           {
             error: "invalid_prompt",
-            message: `delegation input must be a non-empty string of at most ${MAX_REALTIME_REQUEST_BYTES / 2} bytes`,
+            message: "delegation input must be a non-empty string",
           },
           { status: 400 },
         );
@@ -5198,11 +5197,7 @@ export class DurableAgentSession extends DurableComputerSession {
       return json({ error: "durability_transfer_pending" }, { status: 409 });
     }
     try {
-      const encoded = await readBoundedRequestText(
-        request,
-        MAX_REQUEST_BODY_BYTES,
-      );
-      const value = JSON.parse(encoded) as { input?: unknown; message_id?: unknown };
+      const value = await request.json() as { input?: unknown; message_id?: unknown };
       if (!value || typeof value !== "object" || Array.isArray(value)) {
         throw new ProtocolError(
           "invalid_request",
@@ -5244,7 +5239,7 @@ export class DurableAgentSession extends DurableComputerSession {
   async #withdrawSteerHttpTurn(id: string, request: Request, authorization: TurnAuthorization): Promise<Response> {
     try {
       this.#assertDurabilityAdmissionActive();
-      const value = JSON.parse(await readBoundedRequestText(request, MAX_REQUEST_BODY_BYTES)) as { message_id?: unknown };
+      const value = await request.json() as { message_id?: unknown };
       if (!value || typeof value !== "object" || Array.isArray(value)
         || typeof value.message_id !== "string" || !TURN_ID.test(value.message_id)) {
         throw new ProtocolError("invalid_request", "message_id must be a valid identifier");
@@ -5383,7 +5378,7 @@ export class DurableAgentSession extends DurableComputerSession {
     // Persist it with the managed adoption so cold recovery never derives a
     // different account- or memory-enriched form for the routed operation.
     const dispatchChunks = dispatchInputChunks(JSON.stringify(input));
-    const firstPrompt = promptInputText(input);
+    const firstPrompt = conversationTitle(promptInputText(input));
     let event: DurableEvent<StreamMessage> | undefined;
     this.ctx.storage.transactionSync(() => {
       this.#assertDurabilityAdmissionActive();
@@ -5404,7 +5399,7 @@ export class DurableAgentSession extends DurableComputerSession {
         id,
         requestKey,
         requestHash,
-        JSON.stringify(input),
+        storeTurnInput(this.ctx.storage, id, JSON.stringify(input)),
         JSON.stringify(authorization),
         dispatchChunks.length,
         event.cursor,
@@ -5543,7 +5538,7 @@ export class DurableAgentSession extends DurableComputerSession {
     }
     const now = Date.now();
     const accepted: StreamMessage = { type: "turn_accepted", id, input, replayed: false };
-    const firstPrompt = promptInputText(input);
+    const firstPrompt = conversationTitle(promptInputText(input));
     let event: DurableEvent<StreamMessage> | undefined;
     let cancellingEvent: DurableEvent<StreamMessage> | undefined;
     let cancellationRequested = false;
@@ -5569,7 +5564,7 @@ export class DurableAgentSession extends DurableComputerSession {
         id,
         requestKey,
         requestHash,
-        JSON.stringify(input),
+        storeTurnInput(this.ctx.storage, id, JSON.stringify(input)),
         JSON.stringify(authorization),
         cancellationRequested ? "cancelling" : "accepted",
         event.cursor,
@@ -5619,16 +5614,6 @@ export class DurableAgentSession extends DurableComputerSession {
         id,
       ).toArray()[0];
       if (existing) return;
-      const count = this.ctx.storage.sql.exec<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM managed_turn_cancel_intents",
-      ).one().count;
-      if (count >= MAX_PRE_ADMISSION_CANCELLATIONS) {
-        throw new ManagedRequestError(
-          429,
-          "cancellation_queue_full",
-          `at most ${MAX_PRE_ADMISSION_CANCELLATIONS} pre-admission cancellations may be retained`,
-        );
-      }
       this.ctx.storage.sql.exec(
         "INSERT INTO managed_turn_cancel_intents (turn_id, created_at) VALUES (?, ?)",
         id,
@@ -6230,6 +6215,10 @@ export class DurableAgentSession extends DurableComputerSession {
     CloudflareAgent.destroy(this);
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_dispatch_chunks");
+      this.ctx.storage.sql.exec("DELETE FROM managed_turn_input_chunks");
+      this.ctx.storage.sql.exec("DELETE FROM managed_turn_terminal_chunks");
+      this.ctx.storage.sql.exec("DELETE FROM managed_history_projection_chunks");
+      this.ctx.storage.sql.exec("DELETE FROM managed_cron_input_chunks");
       this.ctx.storage.sql.exec("DELETE FROM managed_startup_tools");
       this.ctx.storage.sql.exec("DELETE FROM managed_prompt_startup_tools");
       this.ctx.storage.sql.exec("DELETE FROM managed_startup_context");
@@ -8018,6 +8007,7 @@ export class DurableAgentSession extends DurableComputerSession {
         ? { type: "turn_cancelling", id }
         : { type: "turn_retryable", id, error: "recovering an unsettled durable operation" };
       event = this.#eventLog.append(message, id);
+      this.ctx.storage.sql.exec("DELETE FROM managed_turn_terminal_chunks WHERE turn_id = ?", id);
       this.ctx.storage.sql.exec(
         `UPDATE managed_turns SET state = ?, terminal_json = NULL, terminal_cursor = NULL,
            error = NULL, retry_at = NULL, updated_at = ? WHERE id = ?`,
@@ -8040,96 +8030,7 @@ export class DurableAgentSession extends DurableComputerSession {
   }
 
   #commitManagedMessage(id: string, requested: ManagedTurnTransition): ManagedTurnRow {
-    const original = this.#managedTurn(id);
-    if (!original) throw new Error(`managed turn ${id} does not exist`);
-    const now = Date.now();
-    let event: DurableEvent<StreamMessage> | undefined;
-    let committed = original;
-    this.ctx.storage.transactionSync(() => {
-      const row = this.#managedTurn(id);
-      if (!row) throw new Error(`managed turn ${id} disappeared`);
-      if (isTerminalState(row.state)) {
-        committed = row;
-        return;
-      }
-
-      let message: ManagedTurnTransition = requested;
-      let state = managedStateForMessage(message);
-      if (row.state === "cancelling" && message.type === "turn_retryable") {
-        message = {
-          type: "turn_cancelling",
-          id,
-          error: "error" in requested ? requested.error : "cancellation will be retried",
-        };
-        state = "cancelling";
-      }
-      let attemptCount = row.attempt_count;
-      let retryAt: number | null = null;
-      const retrying = message.type === "turn_retryable"
-        || (state === "cancelling" && "error" in message && message.error !== undefined);
-      if (retrying) {
-        const detail = "error" in message ? message.error ?? null : null;
-        if (row.state === state && row.error === detail && row.retry_at !== null && row.retry_at > now) {
-          committed = row;
-          return;
-        }
-        attemptCount = Math.min(Number.MAX_SAFE_INTEGER, attemptCount + 1);
-        retryAt = now + retryDelayMs(attemptCount);
-        if (message.type === "turn_cancelling") message = { ...message, retry_at: retryAt };
-      }
-
-      const terminal = isTerminalState(state);
-      const detail = "error" in message ? message.error ?? null : null;
-      const encoded = terminal ? JSON.stringify(message) : null;
-      event = this.#eventLog.append(message, id);
-      this.ctx.storage.sql.exec(
-        `UPDATE managed_turns
-         SET state = ?, terminal_json = ?, terminal_cursor = ?, error = ?,
-             attempt_count = ?, retry_at = ?, updated_at = ?
-         WHERE id = ? AND state NOT IN ('completed', 'cancelled', 'failed')`,
-        state,
-        encoded,
-        terminal ? event.cursor : null,
-        detail,
-        attemptCount,
-        retryAt,
-        now,
-        id,
-      );
-      if (state === "completed") {
-        const session = this.#session();
-        if (session?.runtime_profile === "managed" && message.type === "turn_completed") {
-          const projection: HistoryProjection = {
-            thread_id: session.session_id,
-            turn_id: id,
-            cursor: event.cursor,
-            title: conversationTitle(this.#firstPrompt()),
-            input: JSON.parse(row.input_json) as PromptInput,
-            final_message: message.final_message,
-            created_at: row.created_at,
-          };
-          this.ctx.storage.sql.exec(
-            `INSERT INTO history_projection_outbox (turn_id, payload_json, attempt_count, retry_at)
-             VALUES (?, ?, 0, 0)
-             ON CONFLICT(turn_id) DO UPDATE SET payload_json = excluded.payload_json`,
-            id,
-            JSON.stringify(projection),
-          );
-        }
-      }
-      this.ctx.storage.sql.exec(
-        `UPDATE session_state
-         SET completed_turns = completed_turns + ?,
-             last_active = ?
-         WHERE singleton = 1`,
-        state === "completed" ? 1 : 0,
-        now,
-      );
-      if (terminal) {
-        this.ctx.storage.sql.exec("DELETE FROM turn_history_citations WHERE turn_id = ?", id);
-      }
-      committed = this.#managedTurn(id) ?? row;
-    });
+    const { committed, event } = commitManagedTransition(this.ctx.storage, this.#eventLog, id, requested);
     if (event) {
       this.#publish(event);
       this.#observe("managed.turn.transition", {
@@ -8234,7 +8135,7 @@ export class DurableAgentSession extends DurableComputerSession {
     const session = this.#session();
     if (!session || session.runtime_profile !== "managed") return;
     const rows = this.ctx.storage.sql.exec<HistoryProjectionOutboxRow>(
-      `SELECT turn_id, payload_json, attempt_count, retry_at
+      `SELECT turn_id, payload_json, attempt_count, retry_at, source_cursor
        FROM history_projection_outbox
        WHERE retry_at <= ?
        ORDER BY rowid
@@ -8255,22 +8156,27 @@ export class DurableAgentSession extends DurableComputerSession {
             [MEMORY_ORGANIZATION_ASSERTION]: session.organization_id,
             [MEMORY_TEAM_ASSERTION]: session.team_id,
           },
-          body: row.payload_json,
+          body: readTurnInput(this.ctx.storage, row.turn_id, row.payload_json, "managed_history_projection_chunks"),
         });
         if (!projected.ok) throw new Error(`memory projection failed with HTTP ${projected.status}`);
-        this.ctx.storage.sql.exec(
-          "DELETE FROM history_projection_outbox WHERE turn_id = ?",
-          row.turn_id,
-        );
+        this.ctx.storage.transactionSync(() => {
+          // A recovered completion can replace this outbox while the request
+          // is in flight. Only the exact projected cursor may release its body.
+          const removed = this.ctx.storage.sql.exec<{ turn_id: string }>(
+            "DELETE FROM history_projection_outbox WHERE turn_id = ? AND source_cursor = ? RETURNING turn_id",
+            row.turn_id, row.source_cursor,
+          ).toArray();
+          if (removed.length > 0) this.ctx.storage.sql.exec("DELETE FROM managed_history_projection_chunks WHERE turn_id = ?", row.turn_id);
+        });
       } catch (error) {
         const attempt = row.attempt_count + 1;
         this.ctx.storage.sql.exec(
           `UPDATE history_projection_outbox
            SET attempt_count = ?, retry_at = ?
-           WHERE turn_id = ?`,
+           WHERE turn_id = ? AND source_cursor = ?`,
           attempt,
           Date.now() + retryDelayMs(attempt),
-          row.turn_id,
+          row.turn_id, row.source_cursor,
         );
         throw error;
       }
@@ -8619,7 +8525,7 @@ export class DurableAgentSession extends DurableComputerSession {
          WHERE singleton = 1`,
         adoption.session.accepted_turns,
         adoption.session.completed_turns,
-        adoption.session.first_prompt,
+        conversationTitle(adoption.session.first_prompt),
         adoption.session.last_active,
         adoption.session.stream_error,
       );
@@ -9026,17 +8932,7 @@ export class DurableAgentSession extends DurableComputerSession {
     clause: string,
     ...args: (string | number | null)[]
   ): ManagedTurnRow[] {
-    return this.ctx.storage.sql
-      .exec<ManagedTurnRow>(
-        `SELECT id, request_key, request_hash, input_json, authorization_json, state,
-              dispatch_input_chunks,
-              CAST(accepted_cursor AS TEXT) AS accepted_cursor,
-              terminal_json, CAST(terminal_cursor AS TEXT) AS terminal_cursor,
-              error, may_have_inner_operation, attempt_count, CAST(retry_at AS INTEGER) AS retry_at,
-              created_at, accepted_at, updated_at
-       FROM managed_turns ${clause}`,
-      ...args,
-    ).toArray();
+    return managedTurns(this.ctx.storage, clause, ...args);
   }
 
   #managedDispatchInput(row: ManagedTurnRow): string | undefined {
@@ -9188,12 +9084,6 @@ export class DurableAgentSession extends DurableComputerSession {
     ).toArray().map(({ id }) => id);
   }
 
-  #activeTurnDetails(): ActiveTurn[] {
-    return this.ctx.storage.sql.exec<{ id: string; input_json: string }>(
-      "SELECT id, input_json FROM managed_turns WHERE state IN ('accepted', 'cancelling') ORDER BY created_at, rowid",
-    ).toArray().map(({ id, input_json }) => ({ id, input: JSON.parse(input_json) as PromptInput }));
-  }
-
   #idleTimeoutMs(): number {
     const configured = Number(this.env.AGENT_IDLE_TIMEOUT_MS ?? 30_000);
     return Number.isFinite(configured) ? Math.min(15 * 60_000, Math.max(1_000, configured)) : 30_000;
@@ -9290,6 +9180,128 @@ export class DurableAgentSession extends DurableComputerSession {
   }
 }
 
+/** Atomically commits a runtime transition and its durable history projection. */
+export function commitManagedTransition(
+  storage: DurableObjectStorage,
+  eventLog: DurableEventLog<StreamMessage>,
+  id: string,
+  requested: ManagedTurnTransition,
+): { committed: ManagedTurnRow; event?: DurableEvent<StreamMessage> } {
+  const original = managedTurns(storage, "WHERE id = ?", id)[0];
+  if (!original) throw new Error(`managed turn ${id} does not exist`);
+  const now = Date.now();
+  let event: DurableEvent<StreamMessage> | undefined;
+  let committed = original;
+  storage.transactionSync(() => {
+    const row = managedTurns(storage, "WHERE id = ?", id)[0];
+    if (!row) throw new Error(`managed turn ${id} disappeared`);
+    if (isTerminalState(row.state)) {
+      committed = row;
+      return;
+    }
+
+    let message: ManagedTurnTransition = requested;
+    let state = managedStateForMessage(message);
+    if (row.state === "cancelling" && message.type === "turn_retryable") {
+      message = {
+        type: "turn_cancelling",
+        id,
+        error: "error" in requested ? requested.error : "cancellation will be retried",
+      };
+      state = "cancelling";
+    }
+    let attemptCount = row.attempt_count;
+    let retryAt: number | null = null;
+    const retrying = message.type === "turn_retryable"
+      || (state === "cancelling" && "error" in message && message.error !== undefined);
+    if (retrying) {
+      const detail = "error" in message ? message.error ?? null : null;
+      if (row.state === state && row.error === detail && row.retry_at !== null && row.retry_at > now) {
+        committed = row;
+        return;
+      }
+      attemptCount = Math.min(Number.MAX_SAFE_INTEGER, attemptCount + 1);
+      retryAt = now + retryDelayMs(attemptCount);
+      if (message.type === "turn_cancelling") message = { ...message, retry_at: retryAt };
+    }
+
+    const terminal = isTerminalState(state);
+    const detail = "error" in message ? message.error ?? null : null;
+    storage.sql.exec("DELETE FROM managed_turn_terminal_chunks WHERE turn_id = ?", id);
+    const encoded = terminal
+      ? storeTurnInput(storage, id, JSON.stringify(message), "managed_turn_terminal_chunks")
+      : null;
+    event = eventLog.append(message, id);
+    storage.sql.exec(
+      `UPDATE managed_turns
+       SET state = ?, terminal_json = ?, terminal_cursor = ?, error = ?,
+           attempt_count = ?, retry_at = ?, updated_at = ?
+       WHERE id = ? AND state NOT IN ('completed', 'cancelled', 'failed')`,
+      state,
+      encoded,
+      terminal ? event.cursor : null,
+      detail,
+      attemptCount,
+      retryAt,
+      now,
+      id,
+    );
+    if (state === "completed") {
+      const session = storage.sql.exec<{ runtime_profile: string; session_id: string; first_prompt: string }>(
+        "SELECT runtime_profile, session_id, first_prompt FROM session_state WHERE singleton = 1",
+      ).toArray()[0];
+      if (session?.runtime_profile === "managed" && message.type === "turn_completed") {
+        const projection: HistoryProjection = {
+          thread_id: session.session_id,
+          turn_id: id,
+          cursor: event.cursor,
+          title: conversationTitle(session.first_prompt),
+          input: JSON.parse(row.input_json) as PromptInput,
+          final_message: message.final_message,
+          created_at: row.created_at,
+        };
+        storage.sql.exec("DELETE FROM managed_history_projection_chunks WHERE turn_id = ?", id);
+        storage.sql.exec(
+          `INSERT INTO history_projection_outbox (turn_id, payload_json, attempt_count, retry_at, source_cursor)
+           VALUES (?, ?, 0, 0, ?)
+           ON CONFLICT(turn_id) DO UPDATE SET payload_json = excluded.payload_json,
+             source_cursor = excluded.source_cursor, attempt_count = 0, retry_at = 0`,
+          id,
+          storeTurnInput(storage, id, JSON.stringify(projection), "managed_history_projection_chunks"),
+          event.cursor,
+        );
+      }
+    }
+    storage.sql.exec(
+      `UPDATE session_state
+       SET completed_turns = completed_turns + ?,
+           last_active = ?
+       WHERE singleton = 1`,
+      state === "completed" ? 1 : 0,
+      now,
+    );
+    if (terminal) {
+      storage.sql.exec("DELETE FROM turn_history_citations WHERE turn_id = ?", id);
+    }
+    committed = managedTurns(storage, "WHERE id = ?", id)[0] ?? row;
+  });
+  return { committed, event };
+}
+
+function managedTurns(storage: DurableObjectStorage, clause: string, ...args: (string | number | null)[]): ManagedTurnRow[] {
+  return storage.sql
+    .exec<ManagedTurnRow>(
+      `SELECT id, request_key, request_hash, input_json, authorization_json, state,
+            dispatch_input_chunks,
+            CAST(accepted_cursor AS TEXT) AS accepted_cursor,
+            terminal_json, CAST(terminal_cursor AS TEXT) AS terminal_cursor,
+            error, may_have_inner_operation, attempt_count, CAST(retry_at AS INTEGER) AS retry_at,
+            created_at, accepted_at, updated_at
+     FROM managed_turns ${clause}`,
+    ...args,
+  ).toArray().map((row) => lazyTurnInput(storage, row));
+}
+
 class ManagedRequestError extends Error {
   constructor(
     readonly status: number,
@@ -9351,26 +9363,7 @@ function sameAgentSettings(
 }
 
 function dispatchInputChunks(input: string): string[] {
-  const chunks: string[] = [];
-  for (let offset = 0; offset < input.length;) {
-    let end = Math.min(offset + DISPATCH_INPUT_CHUNK_CODE_UNITS, input.length);
-    if (end < input.length
-      && isHighSurrogate(input.charCodeAt(end - 1))
-      && isLowSurrogate(input.charCodeAt(end))) {
-      end -= 1;
-    }
-    chunks.push(input.slice(offset, end));
-    offset = end;
-  }
-  return chunks;
-}
-
-function isHighSurrogate(codeUnit: number): boolean {
-  return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
-}
-
-function isLowSurrogate(codeUnit: number): boolean {
-  return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+  return [...inputChunks(input)];
 }
 
 function conversationTitle(input: string): string {
@@ -9848,7 +9841,7 @@ function managedErrorResponse(error: unknown, fallbackCode?: string): Response {
 async function parseHistoryRequestBody(request: Request): Promise<unknown> {
   let value: unknown;
   try {
-    value = JSON.parse(await readBoundedRequestText(request, MAX_REQUEST_BODY_BYTES));
+    value = await request.json();
   } catch (error) {
     if (error instanceof ManagedRequestError) throw error;
     throw new HistorySearchError(400, "invalid_json", "request body must be JSON");
@@ -10016,33 +10009,8 @@ function initializeMemoryScope(
   });
 }
 
-async function readBoundedRequestText(request: Request, limit: number): Promise<string> {
-  const declared = Number(request.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > limit) {
-    throw new ManagedRequestError(413, "request_too_large", `request exceeds ${limit} bytes`);
-  }
-  if (!request.body) return "";
-  const reader = request.body.getReader();
-  const decoder = new TextDecoder();
-  let total = 0;
-  let text = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) return text + decoder.decode();
-    total += value.byteLength;
-    if (total > limit) {
-      await reader.cancel();
-      throw new ManagedRequestError(413, "request_too_large", `request exceeds ${limit} bytes`);
-    }
-    text += decoder.decode(value, { stream: true });
-  }
-}
-
 async function hashManagedInput(input: PromptInput): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(canonicalJson(input)));
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+  return createHash("sha256").update(canonicalJson(input)).digest("hex");
 }
 
 function canonicalJson(value: unknown): string {
@@ -10160,7 +10128,7 @@ async function createMultiplayerRoom(
 
   let body: unknown;
   try {
-    body = JSON.parse(await readBoundedRequestText(request, 4_096));
+    body = await request.json();
   } catch {
     return json({ error: "invalid_request" }, { status: 400 });
   }

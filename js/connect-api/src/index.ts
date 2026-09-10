@@ -2967,7 +2967,6 @@ function projectManagedJson(value: unknown, grant: GrantRecord, resource: string
   }
   const projected = projectManagedEvent(value, grant) ?? {};
   if (!history) {
-    if ("active_turn_details" in projected) projected.active_turn_details = [];
     if ("input" in projected) projected.input = "";
     if ("first_prompt" in projected) projected.first_prompt = "";
     if ("completed_turns" in projected) projected.completed_turns = 0;

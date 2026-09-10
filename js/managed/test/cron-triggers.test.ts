@@ -39,6 +39,23 @@ describe("cron policy", () => {
     expect(nextCronRun("0 0 29 2 *", "UTC", now)).toBe(Date.parse("2028-02-29T00:00:00Z"));
   });
 
+  it("stores a canonical schedule without imposing an expression byte limit", () => {
+    expect(parseCronTrigger({ ...config, cron: `${"0,".repeat(2_000)}0 * * * *` }, now).cron).toBe("0 * * * *");
+  });
+
+  it.each([
+    "*/15 * * * *", "0 7 * * MON-FRI", "0 0 1 * MON", "0 0 */1 * MON",
+    "0 0 * * 0-7", "0 0 L * *", "0 0 * * 1L", "0 0 29 FEB *",
+  ])("preserves schedule semantics when canonicalizing %s", (cron) => {
+    const canonical = parseCronTrigger({ ...config, cron, timezone: "Europe/Athens" }, now).cron;
+    let after = now;
+    for (let occurrence = 0; occurrence < 5; occurrence++) {
+      const expected = nextCronRun(cron, "Europe/Athens", after);
+      expect(nextCronRun(canonical, "Europe/Athens", after)).toBe(expected);
+      after = expected;
+    }
+  });
+
   it("keeps the local morning hour across both DST transitions", () => {
     expect(nextCronRun("0 7 * * *", "Europe/Athens", Date.parse("2026-03-28T06:00:00Z")))
       .toBe(Date.parse("2026-03-29T04:00:00Z"));
@@ -49,8 +66,8 @@ describe("cron policy", () => {
   it.each([
     { cron: "* * * * * *" }, { cron: "@daily" }, { cron: "H * * * *" },
     { cron: "61 * * * *" }, { cron: "0 0 31 2 *" }, { timezone: "Mars/Olympus" },
-    { input: " " }, { input: "x".repeat(65_537) }, { enabled: "yes" }, { extra: true }, { session_mode: "fork" },
-  ])("rejects invalid or unbounded configuration %#", (patch) => {
+    { input: " " }, { enabled: "yes" }, { extra: true }, { session_mode: "fork" },
+  ])("rejects invalid configuration %#", (patch) => {
     expect(() => parseCronTrigger({ ...config, ...patch }, now)).toThrow();
   });
 });
@@ -80,6 +97,50 @@ describe("cron Durable Object protocol", () => {
       expect(await state.storage.getAlarm()).toBeNull();
       const listed = await session.fetch(new Request("https://session.internal/triggers"));
       expect(await listed.json()).toEqual({ data: [] });
+    });
+  });
+
+  it("retains >2 MiB schedules and delivery snapshots through edits, retries and cleanup", async () => {
+    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
+      await initialize(state);
+      const input = "chunks:" + "😀".repeat(600_000);
+      const body = { ...config, input, session_mode: "new" };
+      const created = await session.fetch(request("large", body));
+      expect(created.status).toBe(201);
+      expect((await created.json<{ input: string }>()).input === input).toBe(true);
+      const triggers = new CronTriggers(state.storage);
+      const original = triggers.get("large")!;
+      const payload = JSON.stringify({ input });
+      const delivery = { id: "large-delivery", trigger_id: original.id, trigger_created_at: original.created_at,
+        agent_id: crypto.randomUUID(), scheduled_at: original.next_run_at!, payload_json: payload, retry_at: Date.now() };
+      expect(triggers.enqueue(original, original.next_run_at! + 60_000, delivery)).toBe(true);
+      expect(state.storage.sql.exec<{ bytes: number }>(
+        "SELECT MAX(LENGTH(CAST(input_json AS BLOB))) AS bytes FROM managed_cron_input_chunks",
+      ).one().bytes).toBeLessThan(1_024_000);
+      const edited = await session.fetch(request("large", { ...body, input: "replacement", enabled: false }));
+      expect(edited.status).toBe(200);
+      expect(new CronTriggers(state.storage).get("large")!.input).toBe("replacement");
+      expect([...new CronTriggers(state.storage).deliveries()][0]!.payload_json === payload).toBe(true);
+      expect(state.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM managed_cron_input_chunks WHERE turn_id = ?", `trigger/${original.revision}`,
+      ).one().count).toBe(0);
+      triggers.delete("large");
+      const retained = [...triggers.deliveries()][0]!;
+      expect(retained.payload_json === payload).toBe(true);
+      triggers.finishDelivery(retained, true);
+      expect(state.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM managed_cron_input_chunks").one().count).toBe(0);
+      await state.storage.deleteAlarm();
+    });
+  });
+
+  it("converts old plaintext cron inputs once without changing their contents", async () => {
+    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
+      await initialize(state);
+      await session.fetch(request("existing", { ...config, input: "chunks:3", enabled: false }));
+      state.storage.sql.exec("ALTER TABLE managed_cron_triggers RENAME COLUMN input_json TO input");
+      state.storage.sql.exec("UPDATE managed_cron_triggers SET input = 'chunks:3'");
+      expect(new CronTriggers(state.storage).get("existing")!.input).toBe("chunks:3");
+      expect(new CronTriggers(state.storage).get("existing")!.input).toBe("chunks:3");
     });
   });
 
@@ -158,8 +219,8 @@ describe("cron Durable Object protocol", () => {
       triggers.retry(due, retryAt);
       const restored = new CronTriggers(state.storage);
       expect(restored.nextAlarm()).toBe(retryAt);
-      expect(restored.due(Date.now())).toEqual([]);
-      expect(restored.due(retryAt)).toHaveLength(1);
+      expect([...restored.due(Date.now())]).toEqual([]);
+      expect([...restored.due(retryAt)]).toHaveLength(1);
       await session.fetch(request("daily", { ...config, input: "replacement" }));
       expect(restored.get("daily")!.retry_at).toBeNull();
       restored.retry(due, retryAt + 60_000);
@@ -196,14 +257,14 @@ describe("cron Durable Object protocol", () => {
         throw new Error("rollback");
       })).toThrow("rollback");
       expect(triggers.get(row.id)).toEqual(row);
-      expect(triggers.deliveries()).toEqual([]);
+      expect([...triggers.deliveries()]).toEqual([]);
       expect(triggers.enqueue(row, row.next_run_at! + 60_000, delivery)).toBe(true);
       expect(triggers.enqueue(row, row.next_run_at! + 60_000, delivery)).toBe(false);
-      expect(triggers.due(Number.MAX_SAFE_INTEGER)).toEqual([]);
+      expect([...triggers.due(Number.MAX_SAFE_INTEGER)]).toEqual([]);
       await session.fetch(request("fresh", { ...config, session_mode: "new", enabled: false }));
       const restored = new CronTriggers(state.storage);
       expect(restored.nextAlarm()).toBe(delivery.retry_at);
-      expect(restored.deliveries()).toEqual([delivery]);
+      expect([...restored.deliveries()]).toEqual([delivery]);
       restored.finishDelivery(delivery, true);
       expect(restored.get(row.id)).toMatchObject({ enabled: 0, last_agent_id: delivery.agent_id, last_turn_id: delivery.id });
       expect(restored.nextAlarm()).toBeUndefined();
@@ -250,7 +311,7 @@ describe("cron Durable Object protocol", () => {
         JSON.stringify({ capabilities: ["agents:read", "agents:write", "tools:use"] }));
       await expect(session.alarm()).rejects.toThrow("lost admission response");
       const triggers = new CronTriggers(state.storage);
-      expect(triggers.deliveries()).toHaveLength(1);
+      expect([...triggers.deliveries()]).toHaveLength(1);
       expect(triggers.get("fresh")!.last_turn_id).toBeNull();
       expect(creations[0]!.body).toMatchObject({ owner_id: owner });
       expect(Object.keys(creations[0]!.body)).not.toContain("durability");
@@ -261,12 +322,12 @@ describe("cron Durable Object protocol", () => {
       await session.fetch(request("fresh", { ...config, session_mode: "new", enabled: false }));
       state.storage.sql.exec("DELETE FROM managed_turns WHERE id = 'busy'");
       loseResponse = false;
-      triggers.retryDelivery(triggers.deliveries()[0]!.id, 0);
+      triggers.retryDelivery([...triggers.deliveries()][0]!.id, 0);
       await session.alarm();
       expect(admissions).toHaveLength(2);
       expect(admissions[1]).toEqual(admissions[0]);
       expect(creations[1]).toEqual(creations[0]);
-      expect(triggers.deliveries()).toEqual([]);
+      expect([...triggers.deliveries()]).toEqual([]);
       expect(triggers.get("fresh")).toMatchObject({ last_agent_id: admissions[0]!.agentId, last_turn_id: admissions[0]!.id, next_run_at: null });
       expect(state.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM managed_turns").one().count).toBe(0);
       await session.alarm();
@@ -274,17 +335,18 @@ describe("cron Durable Object protocol", () => {
     });
   });
 
-  it("enforces ownership assertions and the per-agent limit", async () => {
+  it("enforces ownership assertions without an artificial trigger count limit", async () => {
     await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (session, state) => {
       await initialize(state);
       const wrongOwner = request("daily");
       wrongOwner.headers.set("x-nanocodex-owner-id", "other");
       expect((await session.fetch(wrongOwner)).status).toBe(404);
-      for (let index = 0; index < 32; index++) expect((await session.fetch(request(`t${index}`))).status).toBe(201);
+      for (let index = 0; index < 70; index++) expect((await session.fetch(request(`t${index}`))).status).toBe(201);
       const overflow = await session.fetch(request("overflow"));
-      expect(overflow.status).toBe(429);
-      expect(await overflow.json()).toEqual({ error: "cron_trigger_limit", message: "at most 32 cron triggers per agent" });
-      expect(new CronTriggers(state.storage).list()).toHaveLength(32);
+      expect(overflow.status).toBe(201);
+      const triggers = new CronTriggers(state.storage);
+      expect(triggers.list()).toHaveLength(71);
+      expect([...triggers.due(Number.MAX_SAFE_INTEGER)]).toHaveLength(71);
       expect((await session.fetch(request("t0"))).status).toBe(200);
       expect((await session.fetch(request("bad", { ...config, timezone: "invalid" }))).status).toBe(400);
     });

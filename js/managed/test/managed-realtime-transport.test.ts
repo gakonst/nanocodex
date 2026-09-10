@@ -13,6 +13,9 @@ describe("ChatGPT subscription voice call boundary", () => {
       expect(validRealtimeSession({ ...session(), delegation: { type: "client", ack_filler } })).toBe(true);
     }
   });
+  it("accepts full instructions beyond the former 32 KiB cutoff", () => {
+    expect(validRealtimeSession({ ...session(), instructions: "x".repeat(96 * 1024) })).toBe(true);
+  });
   it("rejects malformed acknowledgements and arbitrary provider fields", () => {
     for (const ack_filler of [null, "false", 0, {}, []]) {
       expect(validRealtimeSession({ ...session(), delegation: { type: "client", ack_filler } })).toBe(false);

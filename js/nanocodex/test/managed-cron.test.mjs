@@ -49,7 +49,7 @@ test("cron SDK rejects invalid ids and bodies before making a request", async ()
     await assert.rejects(agent.triggers.delete(id), TypeError);
   }
   for (const config of [{}, { cron: "* * * * * *", input: "text" },
-    { cron: "* * * * *", input: " " }, { cron: "* * * * *", input: "x".repeat(65_537) },
+    { cron: "* * * * *", input: " " },
     { cron: "* * * * *", input: "text", extra: true }, { cron: "* * * * *", input: "text", session_mode: "fork" }]) {
     await assert.rejects(agent.triggers.put("test", config), TypeError);
   }
@@ -90,4 +90,16 @@ test("cron SDK accepts UUIDv8 session IDs created by idempotent scheduling", asy
     ...trigger, last_agent_id: childId, last_turn_id: "cron:fixture:1788630780000", last_run_at: 1_800_000,
   }) });
   assert.equal((await agent.triggers.get("morning")).last_agent_id, childId);
+});
+
+
+test("cron SDK preserves prompts beyond the former 64 KiB limit", async () => {
+  const input = "scheduled context😀".repeat(20_000);
+  const agent = Agent.open(agentId, { baseUrl: "https://managed.example", fetch: async (url, init) => {
+    const body = await new Request(url, init).json();
+    assert.equal(body.input, input);
+    return Response.json({ ...trigger, input: body.input });
+  } });
+  const saved = await agent.triggers.put("morning", { cron: trigger.cron, input });
+  assert.equal(saved.input, input);
 });

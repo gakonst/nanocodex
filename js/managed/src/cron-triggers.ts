@@ -1,12 +1,7 @@
 import { CronExpressionParser } from "cron-parser";
 
 export const CRON_TRIGGER_ID = /^[A-Za-z0-9_-]{1,64}$/;
-const MAX_TRIGGERS = 32;
-const encoder = new TextEncoder();
-
-export class CronTriggerLimitError extends Error {
-  constructor() { super(`at most ${MAX_TRIGGERS} cron triggers per agent`); }
-}
+import { initializeTurnInputs, readTurnInput, storeTurnInput } from "./managed-turn-input";
 
 export type CronTriggerConfig = {
   cron: string;
@@ -47,26 +42,31 @@ export function parseCronTrigger(value: unknown, now: number, defaultMode: CronT
   }
   const body = value as Record<string, unknown>;
   if (Object.keys(body).some((key) => !["cron", "timezone", "input", "enabled", "session_mode"].includes(key))
-    || typeof body.cron !== "string" || body.cron.length > 256
+    || typeof body.cron !== "string"
     || body.cron.trim().split(/\s+/).length !== 5
     // Do not accept random H fields: every occurrence must be deterministic.
     || /[^\d\s*,/\-A-Za-z]/.test(body.cron) || /H/i.test(body.cron.replace(/THU/gi, ""))
     || typeof body.input !== "string" || body.input.trim().length === 0
-    || encoder.encode(body.input).byteLength > 64 * 1024
     || (body.session_mode !== undefined && body.session_mode !== "new" && body.session_mode !== "continue")
     || (body.enabled !== undefined && typeof body.enabled !== "boolean")
     || (body.timezone !== undefined && typeof body.timezone !== "string")) {
-    throw new Error("expected a five-field cron, a non-empty input (at most 64 KiB), optional timezone, enabled and session_mode (new or continue)");
+    throw new Error("expected a five-field cron, a non-empty input, optional timezone, enabled and session_mode (new or continue)");
   }
   const timezone = body.timezone as string | undefined ?? "UTC";
-  if (timezone.length > 128) throw new Error("invalid timezone");
   new Intl.DateTimeFormat("en", { timeZone: timezone });
+  const expression = CronExpressionParser.parse(body.cron, { tz: timezone, currentDate: now });
+  expression.next();
+  const fields = expression.fields;
+  // Store semantic calendar values, not an arbitrarily long spelling with
+  // repeated ranges. Preserve wildcard identity for day-of-month/week rules.
+  const cron = [fields.minute, fields.hour, fields.dayOfMonth, fields.month, fields.dayOfWeek]
+    .map((field) => field.isWildcard ? "*" : [...new Set<number | string>(field.values)].join(","))
+    .join(" ");
   const config: CronTriggerConfig = {
     session_mode: body.session_mode as CronTriggerConfig["session_mode"] | undefined ?? defaultMode,
-    cron: body.cron.trim().replace(/\s+/g, " "), timezone,
+    cron, timezone,
     input: body.input, enabled: body.enabled as boolean | undefined ?? true,
   };
-  nextCronRun(config.cron, timezone, now);
   return config;
 }
 
@@ -91,57 +91,97 @@ export type CronDelivery = {
   retry_at: number;
 };
 
+type StoredTrigger = Omit<CronTriggerRow, "input"> & { input_json: string };
+
 /** Session-owned schedules; dispatch advances this table in the turn-admission transaction. */
 export class CronTriggers {
   constructor(private readonly storage: DurableObjectStorage) {
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS managed_cron_triggers (
       id TEXT PRIMARY KEY, revision TEXT NOT NULL, cron TEXT NOT NULL,
-      timezone TEXT NOT NULL, input TEXT NOT NULL, enabled INTEGER NOT NULL,
+      timezone TEXT NOT NULL, input_json TEXT NOT NULL, enabled INTEGER NOT NULL,
       authorization_json TEXT NOT NULL, authorization_epoch INTEGER NOT NULL,
       request_hash TEXT NOT NULL, next_run_at INTEGER, retry_at INTEGER, last_run_at INTEGER,
       last_turn_id TEXT, last_skipped_at INTEGER,
       created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
     )`);
+    initializeTurnInputs(storage, "managed_cron_input_chunks");
     // Rows written before execution modes existed must keep continuing their session.
     const columns = new Set(storage.sql.exec<{ name: string }>("PRAGMA table_info(managed_cron_triggers)").toArray().map((column) => column.name));
+    if (columns.has("input")) storage.transactionSync(() => {
+      storage.sql.exec("ALTER TABLE managed_cron_triggers RENAME COLUMN input TO input_json");
+      for (const row of storage.sql.exec<{ id: string; input_json: string }>("SELECT id, input_json FROM managed_cron_triggers")) {
+        storage.sql.exec("UPDATE managed_cron_triggers SET input_json = ? WHERE id = ?", JSON.stringify(row.input_json), row.id);
+      }
+    });
     if (!columns.has("session_mode")) storage.sql.exec("ALTER TABLE managed_cron_triggers ADD COLUMN session_mode TEXT NOT NULL DEFAULT 'continue'");
     if (!columns.has("last_agent_id")) storage.sql.exec("ALTER TABLE managed_cron_triggers ADD COLUMN last_agent_id TEXT");
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS managed_cron_deliveries (
       id TEXT PRIMARY KEY, trigger_id TEXT NOT NULL UNIQUE, trigger_created_at INTEGER NOT NULL,
       agent_id TEXT NOT NULL, scheduled_at INTEGER NOT NULL, payload_json TEXT NOT NULL, retry_at INTEGER NOT NULL
     )`);
+    storage.sql.exec("CREATE INDEX IF NOT EXISTS managed_cron_due ON managed_cron_triggers(next_run_at, id) WHERE enabled = 1");
+    storage.sql.exec("CREATE INDEX IF NOT EXISTS managed_cron_delivery_due ON managed_cron_deliveries(scheduled_at, id)");
+  }
+
+  hasTriggers(): boolean {
+    return this.storage.sql.exec("SELECT 1 FROM managed_cron_triggers LIMIT 1").toArray().length > 0;
+  }
+
+  hasDeliveries(): boolean {
+    return this.storage.sql.exec("SELECT 1 FROM managed_cron_deliveries LIMIT 1").toArray().length > 0;
+  }
+
+  private deleteChunks(key: string): void {
+    this.storage.sql.exec("DELETE FROM managed_cron_input_chunks WHERE turn_id = ?", key);
+  }
+
+  private hydrateTrigger(stored: StoredTrigger): CronTriggerRow {
+    const { input_json, ...row } = stored;
+    let hydrated: string | undefined;
+    return Object.defineProperty(row, "input", { enumerable: true, get: () => hydrated ??= JSON.parse(
+      readTurnInput(this.storage, `trigger/${row.revision}`, input_json, "managed_cron_input_chunks"),
+    ) }) as CronTriggerRow;
   }
 
   list(): CronTriggerRow[] {
-    return this.storage.sql.exec<CronTriggerRow>("SELECT * FROM managed_cron_triggers ORDER BY id").toArray();
+    return this.storage.sql.exec<StoredTrigger>("SELECT * FROM managed_cron_triggers ORDER BY id").toArray().map((row) => this.hydrateTrigger(row));
   }
 
   get(id: string): CronTriggerRow | undefined {
-    return this.storage.sql.exec<CronTriggerRow>("SELECT * FROM managed_cron_triggers WHERE id = ?", id).toArray()[0];
+    const row = this.storage.sql.exec<StoredTrigger>("SELECT * FROM managed_cron_triggers WHERE id = ?", id).toArray()[0];
+    return row && this.hydrateTrigger(row);
   }
 
   put(id: string, config: CronTriggerConfig, authorization: string, epoch: number, hash: string, now: number): CronTriggerRow {
     const previous = this.get(id);
-    if (!previous && this.list().length >= MAX_TRIGGERS) throw new CronTriggerLimitError();
     if (previous && previous.cron === config.cron && previous.timezone === config.timezone
       && previous.session_mode === config.session_mode && previous.input === config.input && previous.enabled === Number(config.enabled)
       && previous.authorization_json === authorization && previous.authorization_epoch === epoch) return previous;
     const next = config.enabled ? nextCronRun(config.cron, config.timezone, now) : null;
-    this.storage.sql.exec(`INSERT INTO managed_cron_triggers (
-      id, revision, cron, timezone, input, enabled, session_mode, authorization_json,
-      authorization_epoch, request_hash, next_run_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET revision = excluded.revision, cron = excluded.cron,
-      timezone = excluded.timezone, input = excluded.input, enabled = excluded.enabled, session_mode = excluded.session_mode,
-      authorization_json = excluded.authorization_json, authorization_epoch = excluded.authorization_epoch,
-      request_hash = excluded.request_hash, next_run_at = excluded.next_run_at, retry_at = NULL, updated_at = excluded.updated_at`,
-    id, crypto.randomUUID(), config.cron, config.timezone, config.input, Number(config.enabled), config.session_mode,
-    authorization, epoch, hash, next, now, now);
+    this.storage.transactionSync(() => {
+      const revision = crypto.randomUUID();
+      const input = storeTurnInput(this.storage, `trigger/${revision}`, JSON.stringify(config.input), "managed_cron_input_chunks");
+      this.storage.sql.exec(`INSERT INTO managed_cron_triggers (
+        id, revision, cron, timezone, input_json, enabled, session_mode, authorization_json,
+        authorization_epoch, request_hash, next_run_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET revision = excluded.revision, cron = excluded.cron,
+        timezone = excluded.timezone, input_json = excluded.input_json, enabled = excluded.enabled, session_mode = excluded.session_mode,
+        authorization_json = excluded.authorization_json, authorization_epoch = excluded.authorization_epoch,
+        request_hash = excluded.request_hash, next_run_at = excluded.next_run_at, retry_at = NULL, updated_at = excluded.updated_at`,
+      id, revision, config.cron, config.timezone, input, Number(config.enabled), config.session_mode,
+      authorization, epoch, hash, next, now, now);
+      if (previous) this.deleteChunks(`trigger/${previous.revision}`);
+    });
     return this.get(id)!;
   }
 
   delete(id: string): void {
-    this.storage.sql.exec("DELETE FROM managed_cron_triggers WHERE id = ?", id);
+    this.storage.transactionSync(() => {
+      const row = this.get(id);
+      this.storage.sql.exec("DELETE FROM managed_cron_triggers WHERE id = ?", id);
+      if (row) this.deleteChunks(`trigger/${row.revision}`);
+    });
   }
 
   nextAlarm(): number | undefined {
@@ -154,10 +194,26 @@ export class CronTriggers {
     ).toArray()[0]?.next_run_at ?? undefined;
   }
 
-  due(now: number): CronTriggerRow[] {
-    return this.storage.sql.exec<CronTriggerRow>(
-      "SELECT * FROM managed_cron_triggers WHERE enabled = 1 AND next_run_at <= ? AND (retry_at IS NULL OR retry_at <= ?) AND id NOT IN (SELECT trigger_id FROM managed_cron_deliveries) ORDER BY next_run_at, id", now, now,
-    ).toArray();
+  *due(now: number): Generator<CronTriggerRow> {
+    let cursorTime = -1;
+    let cursorId = "";
+    while (true) {
+      const page = this.storage.sql.exec<{ id: string; revision: string; next_run_at: number }>(
+        `SELECT id, revision, next_run_at FROM managed_cron_triggers
+         WHERE enabled = 1 AND next_run_at <= ? AND (retry_at IS NULL OR retry_at <= ?)
+           AND (next_run_at, id) > (?, ?)
+           AND id NOT IN (SELECT trigger_id FROM managed_cron_deliveries)
+         ORDER BY next_run_at, id LIMIT 64`, now, now, cursorTime, cursorId,
+      ).toArray();
+      if (!page.length) return;
+      for (const item of page) {
+        cursorTime = item.next_run_at;
+        cursorId = item.id;
+        const row = this.get(item.id);
+        if (row?.enabled === 1 && row.revision === item.revision && row.next_run_at === item.next_run_at
+          && (row.retry_at === null || row.retry_at <= now)) yield row;
+      }
+    }
   }
 
   retry(row: CronTriggerRow, retryAt: number): void {
@@ -186,13 +242,34 @@ export class CronTriggers {
       if (!claimed) return false;
       this.storage.sql.exec(`INSERT INTO managed_cron_deliveries
         (id, trigger_id, trigger_created_at, agent_id, scheduled_at, payload_json, retry_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      delivery.id, delivery.trigger_id, delivery.trigger_created_at, delivery.agent_id, delivery.scheduled_at, delivery.payload_json, delivery.retry_at);
+      delivery.id, delivery.trigger_id, delivery.trigger_created_at, delivery.agent_id, delivery.scheduled_at, storeTurnInput(this.storage, `delivery/${delivery.id}`, delivery.payload_json, "managed_cron_input_chunks"), delivery.retry_at);
       return true;
     });
   }
 
-  deliveries(now = Number.MAX_SAFE_INTEGER): CronDelivery[] {
-    return this.storage.sql.exec<CronDelivery>("SELECT * FROM managed_cron_deliveries WHERE retry_at <= ? ORDER BY scheduled_at, id", now).toArray();
+  *deliveries(now = Number.MAX_SAFE_INTEGER): Generator<CronDelivery> {
+    let cursorTime = -1;
+    let cursorId = "";
+    while (true) {
+      const page = this.storage.sql.exec<{ id: string; scheduled_at: number }>(
+        `SELECT id, scheduled_at FROM managed_cron_deliveries
+         WHERE retry_at <= ? AND (scheduled_at, id) > (?, ?)
+         ORDER BY scheduled_at, id LIMIT 64`, now, cursorTime, cursorId,
+      ).toArray();
+      if (!page.length) return;
+      for (const item of page) {
+        cursorTime = item.scheduled_at;
+        cursorId = item.id;
+        const row = this.storage.sql.exec<CronDelivery>(
+          "SELECT * FROM managed_cron_deliveries WHERE id = ? AND retry_at <= ?", item.id, now,
+        ).toArray()[0];
+        if (!row) continue;
+        const stored = row.payload_json;
+        let hydrated: string | undefined;
+        Object.defineProperty(row, "payload_json", { enumerable: true, get: () => hydrated ??= readTurnInput(this.storage, `delivery/${row.id}`, stored, "managed_cron_input_chunks") });
+        yield row;
+      }
+    }
   }
 
   retryDelivery(id: string, at: number): void {
@@ -205,6 +282,7 @@ export class CronTriggers {
         WHERE id = ? AND created_at = ? AND (last_run_at IS NULL OR last_run_at <= ?)`,
       delivery.scheduled_at, delivery.id, delivery.agent_id, delivery.trigger_id, delivery.trigger_created_at, delivery.scheduled_at);
       this.storage.sql.exec("DELETE FROM managed_cron_deliveries WHERE id = ?", delivery.id);
+      this.deleteChunks(`delivery/${delivery.id}`);
     });
   }
 }

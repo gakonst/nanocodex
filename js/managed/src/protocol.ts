@@ -18,11 +18,6 @@ export type TurnCompleted = {
   usage_error?: string;
 };
 
-export type ActiveTurn = {
-  id: string;
-  input: PromptInput;
-};
-
 export type AgentCapabilities = Readonly<{
   durable_turns: true;
   resumable_events: true;
@@ -35,7 +30,7 @@ export type AgentCapabilities = Readonly<{
 }>;
 
 export type ServerMessage = (
-  | { type: "ready"; session_id: string; restored: boolean; active_turns: string[]; active_turn_details: ActiveTurn[]; capabilities: AgentCapabilities; latest_event_cursor: string; settings: ManagedAgentSettings }
+  | { type: "ready"; session_id: string; restored: boolean; active_turns: string[]; capabilities: AgentCapabilities; latest_event_cursor: string; settings: ManagedAgentSettings }
   | { type: "agent_created"; agent_id: string; capabilities: AgentCapabilities }
   | { type: "turn_accepted"; id: string; input: PromptInput; replayed: boolean }
   | { type: "turn_cancelling"; id: string; error?: string; retry_at?: number }
@@ -45,7 +40,7 @@ export type ServerMessage = (
   | { type: "turn_failed"; id: string; error: string }
   | { type: "event"; event: AgentEvent; agent_id?: number }
   | { type: "stream_failed"; error: string }
-  | { type: "status"; active_turns: string[]; active_turn_details: ActiveTurn[]; agent_loaded: boolean; connected_clients: number; settings: ManagedAgentSettings }
+  | { type: "status"; active_turns: string[]; agent_loaded: boolean; connected_clients: number; settings: ManagedAgentSettings }
   | { type: "pong"; nonce?: string }
   | { type: "error"; code: string; message: string }
 ) & { cursor?: string; created_at?: number; turn_id?: string | null };

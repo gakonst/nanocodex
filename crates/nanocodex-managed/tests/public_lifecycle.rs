@@ -987,7 +987,6 @@ fn agent_state_json(agent_id: &str, latest_event_cursor: &str) -> Value {
         "completed_turns": 0,
         "last_active": 1,
         "active_turns": [],
-        "active_turn_details": [],
         "agent_loaded": true,
         "connected_clients": 0,
         "capabilities": {

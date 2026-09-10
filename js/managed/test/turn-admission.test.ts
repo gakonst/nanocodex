@@ -8,6 +8,35 @@ import { DurableEventLog } from "../src/durable-events";
 const FIXTURE_UNFINISHED_TURNS = 20;
 
 describe("managed durable turn admission", () => {
+  it("retains more than 64 pre-admission cancellations and consumes only the matching turn", async () => {
+    const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
+    await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
+      const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
+      Object.defineProperty(session, "env", { value: { ...runtimeEnv,
+        NANOCODEX_ACCOUNT_TOOLS: { getByName: () => { throw Object.assign(new Error("fixture unavailable"), { code: "retryable" }); } },
+      } });
+      state.storage.sql.exec(`INSERT INTO session_state (
+        singleton, session_id, owner_id, organization_id, team_id, authorization_epoch,
+        public_origin, runtime_profile, last_active
+      ) VALUES (1, ?, 'fixture-owner', 'fixture-organization', 'fixture-team', 1,
+        'https://nanocodex.example/', 'managed', ?)`, crypto.randomUUID(), Date.now());
+      for (let index = 0; index < 96; index++) {
+        expect((await session.fetch(new Request(`https://session.internal/turns/before-${index}/cancel`, { method: "POST" }))).status).toBe(202);
+      }
+      expect((await session.fetch(new Request("https://session.internal/turns/before-0/cancel", { method: "POST" }))).status).toBe(202);
+      expect(state.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM managed_turn_cancel_intents").one().count).toBe(96);
+      const admitted = await session.fetch(new Request("https://session.internal/turns", {
+        method: "POST", body: JSON.stringify({ id: "before-95", input: "never execute uncancelled" }),
+      }));
+      expect(admitted.status).toBe(202);
+      expect(await admitted.json()).toMatchObject({ turn_id: "before-95", state: "cancelling" });
+      expect(state.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM managed_turn_cancel_intents").one().count).toBe(95);
+      expect(state.storage.sql.exec<{ state: string }>("SELECT state FROM managed_turns WHERE id = 'before-95'").one().state).toBe("cancelling");
+      state.storage.sql.exec("UPDATE managed_turns SET state = 'cancelled', retry_at = NULL WHERE id = 'before-95'");
+      await state.storage.deleteAlarm();
+    });
+  });
+
   it("retries a failed cold cancellation while archival remains in durable backoff", async () => {
     const sessions = (env as unknown as {
       NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
@@ -289,7 +318,6 @@ describe("managed durable turn admission", () => {
       const status = await session.fetch(new Request("https://session.internal/state"));
       const retained = await status.json<{
         active_turns: string[];
-        active_turn_details: { id: string; input: string }[];
         agent_loaded: boolean;
       }>();
       expect(retained.agent_loaded).toBe(false);
@@ -297,9 +325,9 @@ describe("managed durable turn admission", () => {
         ...Array.from({ length: FIXTURE_UNFINISHED_TURNS }, (_, index) => `fixture-${index}`),
         "accepted-beyond-sixteen",
       ]);
-      expect(retained.active_turn_details.at(-1)).toEqual({
-        id: "accepted-beyond-sixteen", input: "queued prompt",
-      });
+      expect(retained).not.toHaveProperty("active_turn_details");
+      const accepted = await session.fetch(new Request("https://session.internal/turns/accepted-beyond-sixteen"));
+      expect(await accepted.json()).toMatchObject({ turn_id: "accepted-beyond-sixteen", input: "queued prompt" });
 
       const steer = await session.fetch(new Request("https://session.internal/turns/fixture-0/steer", {
         method: "POST",

@@ -160,7 +160,6 @@ export type State = Readonly<{
   accepted_turns: number;
   last_active: number;
   active_turns: readonly string[];
-  active_turn_details: readonly Readonly<{ id: string; input: PromptInput }>[];
   agent_loaded: boolean;
   connected_clients: number;
   capabilities: Capabilities;
@@ -247,18 +246,26 @@ export type WatchEventsOptions = Readonly<{
   signal?: AbortSignal | undefined;
 }>;
 
-export type EventHistoryOptions = Readonly<{
-  /** Fetch events strictly before this durable cursor. Omit for the newest page. */
+export type EventHistoryOptions = Readonly<({
+  /** Fetch events strictly before this durable cursor. Omit both boundaries for the newest page. */
   before?: string | undefined;
+  after?: never;
+} | {
+  /** Fetch events strictly after this durable cursor, including `"0"` for the beginning. */
+  after?: string | undefined;
+  before?: never;
+}) & {
   /** Page size from 1 through 256. Defaults to 128. */
   limit?: number | undefined;
   signal?: AbortSignal | undefined;
 }>;
 
 export type EventHistoryPage = Readonly<{
+  /** Events are always in ascending cursor order, for either page direction. */
   data: readonly Event[];
+  /** More events remain in the requested direction (older by default). */
   hasMore: boolean;
-  /** Cursor captured with the page; attach the live watcher strictly after it. */
+  /** Durable head captured with the page. Forward paging must reach it before switching to a watcher. */
   latestCursor: string;
 }>;
 

@@ -111,6 +111,21 @@ storage ownership.
   live on different factories while remaining visible in one namespace.
   Subagents inherit the spawning turn's exact namespace authorization, so a
   long-lived child cannot borrow capabilities from a later root turn.
+- Turn input has no application byte ceiling. HTTP uses native JSON parsing;
+  incoming WebSockets use Cloudflare's platform limit. SQLite stores large raw
+  inputs and frozen dispatch inputs in Unicode-safe chunks below its row limit.
+  Coordination scans load metadata; a receipt or dispatch hydrates its own turn.
+  Terminal receipts archive sequentially to R2 before their local chunks are
+  deleted. `/state.first_prompt` and the portability session's `first_prompt`
+  are display previews, not prompt content. Accepted events and turn receipts
+  retain the exact full input. Subagent authorization keeps task/role identity
+  digests instead of duplicate content. Inline JSON still requires memory for
+  the individual request; Cloudflare's shared 128 MB isolate heap applies.
+  Cron schedules likewise have no prompt-size or schedule-count admission cap.
+  Their input and frozen delivery snapshots use the same chunk placement; alarm
+  scans page through indexed metadata and hydrate one occurrence at a time.
+  Replacing a schedule releases its old input while queued deliveries retain
+  their original payload until delivery is acknowledged.
 - Agent events are a durable, ordered cursor stream. SSE resumes with `cursor`
   or `Last-Event-ID`; same-origin browser WebSockets carry the typed
   prompt/steer/cancel protocol. Realtime calls and sideband transport have
@@ -301,16 +316,16 @@ These tools become available after the managed container image is built and
 rolled out. Existing running sandboxes need recreation with the updated image.
 When changing tool versions in CI, update the corresponding image pins too.
 
-### Original video attachments
+### Original media attachments
 
 The authenticated `/v1/agents/:id/attachments/:uuid` route stores original
-MP4/MOV bytes in the agent's existing `/brain/attachments/:uuid/original.*`
+image or MP4/MOV bytes in the agent's existing `/brain/attachments/:uuid/original.*`
 filesystem. `POST` accepts `{name, media_type, size}` and returns the file path,
-8 MiB part size, next part number, and completion state. `PUT .../parts/:number`
+part size, next part number, and completion state. Parts are normally 8 MiB and scale up to 100 MB to fit R2’s 10,000-part limit. The current Free/Pro 100 MB request ingress limit therefore permits files up to 1 TB. Parts stream through hashing to R2 with backpressure, and the service serializes ingestion across attachments. `PUT .../parts/:number`
 accepts exact binary chunks in order; identical retries are safe and conflicting
 bytes are rejected. `POST .../complete` finalizes the file idempotently. `GET`
 returns private, uncached bytes and supports ranges. Multipart upload IDs remain
-server-side. No image frames or audio conversions occur at this boundary.
+server-side. Image previews use a separate immutable authenticated endpoint; original bytes remain unchanged.
 
 Account ownership, organization, team, authorization epoch, and capabilities
 are checked before filesystem access. Connect grants cannot use this route.

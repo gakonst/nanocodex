@@ -180,8 +180,14 @@ function turnCapacity(storage: DurableObjectStorage): ManagedCapacitySnapshot["t
     `SELECT COUNT(*) AS total_rows,
             COALESCE(SUM(LENGTH(CAST(input_json AS BLOB))), 0)
               + (SELECT COALESCE(SUM(LENGTH(CAST(input_json AS BLOB))), 0)
-                 FROM managed_turn_dispatch_chunks) AS input_bytes,
-            COALESCE(SUM(LENGTH(CAST(terminal_json AS BLOB))), 0) AS terminal_bytes,
+                 FROM managed_turn_dispatch_chunks)
+              + ${tableExists(storage, "managed_turn_input_chunks")
+                ? "(SELECT COALESCE(SUM(LENGTH(CAST(input_json AS BLOB))), 0) FROM managed_turn_input_chunks)"
+                : "0"} AS input_bytes,
+            COALESCE(SUM(LENGTH(CAST(terminal_json AS BLOB))), 0)
+              + ${tableExists(storage, "managed_turn_terminal_chunks")
+                ? "(SELECT COALESCE(SUM(LENGTH(CAST(input_json AS BLOB))), 0) FROM managed_turn_terminal_chunks)"
+                : "0"} AS terminal_bytes,
             SUM(CASE WHEN state IN ('completed', 'cancelled', 'failed') THEN 1 ELSE 0 END)
               AS terminal_rows,
             SUM(CASE WHEN state IN ('accepted', 'cancelling') AND retry_at IS NOT NULL THEN 1 ELSE 0 END)

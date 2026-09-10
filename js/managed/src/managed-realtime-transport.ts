@@ -13,9 +13,6 @@ const AGENT_ID =
 const VOICE_SESSION_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CALL_ID = /^(?:rtc_[A-Za-z0-9._:-]{1,196}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
-const MAX_CALL_BODY_BYTES = 64 * 1024;
-const MAX_INSTRUCTIONS_BYTES = 32 * 1024;
-const MAX_SDP_BYTES = 32 * 1024;
 const PROVIDER_PLACEHOLDER = "Bearer NANOCODEX_PROVIDER_CREDENTIAL";
 const REALTIME_MODEL = "gpt-live-1-codex";
 const REALTIME_VOICES = new Set([
@@ -108,9 +105,7 @@ async function validatedCallBody(request: Request, url: URL): Promise<string | R
     !== "application/json") {
     return json({ error: "invalid_content_type" }, 415);
   }
-  let body: string;
-  try { body = await readBoundedText(request, MAX_CALL_BODY_BYTES); }
-  catch { return json({ error: "request_too_large" }, 413); }
+  const body = await request.text();
   let decoded: unknown;
   try { decoded = JSON.parse(body); }
   catch { return json({ error: "invalid_request" }, 400); }
@@ -118,7 +113,6 @@ async function validatedCallBody(request: Request, url: URL): Promise<string | R
     || !exactKeys(decoded, ["sdp", "session"])
     || typeof decoded.sdp !== "string"
     || !decoded.sdp.trim()
-    || encodedBytes(decoded.sdp) > MAX_SDP_BYTES
     || !validRealtimeSession(decoded.session)) {
     return json({ error: "invalid_request" }, 400);
   }
@@ -217,26 +211,6 @@ function internalHeaders(
   return headers;
 }
 
-async function readBoundedText(request: Request, limit: number): Promise<string> {
-  const declared = Number(request.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > limit) throw new Error("request too large");
-  if (!request.body) return "";
-  const reader = request.body.getReader();
-  const decoder = new TextDecoder();
-  let total = 0;
-  let text = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) return text + decoder.decode();
-    total += value.byteLength;
-    if (total > limit) {
-      await reader.cancel();
-      throw new Error("request too large");
-    }
-    text += decoder.decode(value, { stream: true });
-  }
-}
-
 function sanitizedHeaders(source: Headers): Headers {
   const headers = new Headers(source);
   for (const name of [
@@ -260,7 +234,6 @@ export function validRealtimeSession(value: unknown): boolean {
     || value.model !== REALTIME_MODEL
     || typeof value.instructions !== "string"
     || !value.instructions
-    || encodedBytes(value.instructions) > MAX_INSTRUCTIONS_BYTES
     || !isRecord(value.delegation)
     || !(exactKeys(value.delegation, ["type"]) || (exactKeys(value.delegation, ["type", "ack_filler"])
       && typeof value.delegation.ack_filler === "boolean"))
@@ -280,9 +253,6 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[]):
     && [...expected].sort().every((key, index) => key === keys[index]);
 }
 
-function encodedBytes(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
-}
 
 function json(body: unknown, status: number): Response {
   return Response.json(body, {

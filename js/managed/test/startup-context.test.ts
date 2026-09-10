@@ -99,7 +99,7 @@ describe("managed first-prompt bootstrap boundary", () => {
       expect((await request(body, { "x-nanocodex-owner-id": crypto.randomUUID() })).status).toBe(404);
       expect((await request(body, { "x-nanocodex-authorization-epoch": "2" })).status).toBe(404);
       expect((await request({ ...body, voice_session_id: "019d2f5d-7491-7000-8000-000000000004" })).status).toBe(409);
-      expect((await request({ ...body, query: "a".repeat(513) })).status).toBe(400);
+      expect((await request({ ...body, query: "a".repeat(4_096) })).status).toBe(200);
       expect((await request({ ...body, operation: "put" })).status).toBe(400);
       state.storage.sql.exec("DELETE FROM managed_realtime_session");
       expect((await request()).status).toBe(409);

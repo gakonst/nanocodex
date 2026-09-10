@@ -1663,14 +1663,17 @@ async fn wait_for_active_turn(
             .await?;
         assert_success(&output, "nanocodex2 state")?;
         let state: Value = serde_json::from_slice(&output.stdout)?;
-        if let Some(turn_id) = state["active_turn_details"].as_array().and_then(|turns| {
-            turns.iter().find_map(|turn| {
-                (turn["input"] == prompt)
-                    .then(|| turn["id"].as_str().map(str::to_owned))
-                    .flatten()
-            })
-        }) {
-            return Ok(turn_id);
+        if let Some(turns) = state["active_turns"].as_array() {
+            for turn_id in turns.iter().filter_map(Value::as_str) {
+                let output = client
+                    .output(["turn", agent_id, turn_id], "nanocodex2 turn")
+                    .await?;
+                assert_success(&output, "nanocodex2 turn")?;
+                let turn: Value = serde_json::from_slice(&output.stdout)?;
+                if turn["input"] == prompt {
+                    return Ok(turn_id.to_owned());
+                }
+            }
         }
         if Instant::now() >= deadline {
             return Err(eyre!(

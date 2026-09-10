@@ -31,6 +31,12 @@ async function checkManaged() {
   // @ts-expect-error thread terminology was replaced by sessions.
   Agent.readThread;
   const created: ManagedAgent = await Agent.create();
+  await created.events.page({ after: "0", limit: 128 });
+  await created.events.page({ before: "99" });
+  const optionalCursor: string | undefined = Math.random() > 0.5 ? "1" : undefined;
+  await created.events.page({ after: optionalCursor });
+  // @ts-expect-error history has a single exclusive direction.
+  await created.events.page({ before: "99", after: "0" });
   await Agent.create({
     settings: {
       model: "gpt-6-astra",

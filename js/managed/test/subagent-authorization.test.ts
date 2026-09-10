@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyManagedSubagentLifecycle,
+  initializeManagedSubagentDigests,
   managedAuthorizationForToolContext,
   type DurableAgentSession,
 } from "../src/index";
@@ -45,6 +46,36 @@ describe("managed subagent authorization ownership", () => {
       expect(() => bind(state.storage, "bind", descriptor(
         "orphan", "missing", crypto.randomUUID(), "orphan",
       ), "account-turn")).toThrow("parent is missing");
+    });
+  });
+
+  it("converts existing authorization content once and preserves exact reconstruction", async () => {
+    await withSession(async (state) => {
+      insertTurn(state.storage, "account-turn", account);
+      const child = descriptor("existing", null, ACCOUNT_SESSION, "existing task");
+      bind(state.storage, "bind", child, "account-turn");
+      state.storage.sql.exec("ALTER TABLE managed_subagent_authorizations RENAME COLUMN role_digest TO role");
+      state.storage.sql.exec("ALTER TABLE managed_subagent_authorizations RENAME COLUMN task_digest TO task");
+      state.storage.sql.exec("UPDATE managed_subagent_authorizations SET role = ?, task = ?", child.role, child.task);
+      initializeManagedSubagentDigests(state.storage);
+      initializeManagedSubagentDigests(state.storage);
+      expect(authorization(state.storage, child, account)).toEqual(account);
+      bind(state.storage, "reconstruct", child, "account-turn");
+    });
+  });
+
+  it("retains only identity digests for large task and role content", async () => {
+    await withSession(async (state) => {
+      insertTurn(state.storage, "account-turn", account);
+      const child = { ...descriptor("large", null, ACCOUNT_SESSION, "x".repeat(2 * 1024 * 1024)), role: "r".repeat(2 * 1024 * 1024) };
+      bind(state.storage, "bind", child, "account-turn");
+      expect(authorization(state.storage, child, account)).toEqual(account);
+      bind(state.storage, "reconstruct", child, "account-turn");
+      expect(state.storage.sql.exec<{ role: string; task: string }>(
+        "SELECT role_digest AS role, task_digest AS task FROM managed_subagent_authorizations WHERE session_id = ?", ACCOUNT_SESSION,
+      ).one()).toEqual({ role: expect.stringMatching(/^[a-f0-9]{64}$/), task: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      expect(authorization(state.storage, { ...child, task: child.task + "different" }, account)).toBeUndefined();
+      expect(authorization(state.storage, { ...child, role: child.role + "different" }, account)).toBeUndefined();
     });
   });
 
@@ -135,7 +166,7 @@ function descriptor(
   sessionId: string,
   task: string,
 ) {
-  return Object.freeze({ agentId, parentAgentId, sessionId, role: "worker", task });
+  return Object.freeze({ agentId, parentAgentId, sessionId, role: "worker" as string, task });
 }
 
 function bind(

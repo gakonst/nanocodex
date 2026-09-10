@@ -841,7 +841,6 @@ fn agent_state_value(latest_event_cursor: &str) -> serde_json::Value {
         "completed_turns": usize::from(latest_event_cursor != "0"),
         "last_active": 1,
         "active_turns": [],
-        "active_turn_details": [],
         "agent_loaded": latest_event_cursor != "0",
         "connected_clients": 0,
         "capabilities": {
@@ -1153,7 +1152,6 @@ async fn agent_state(State(state): State<TestState>, headers: HeaderMap) -> impl
             "completed_turns": 0,
             "last_active": 1,
             "active_turns": [],
-            "active_turn_details": [],
             "agent_loaded": false,
             "connected_clients": 0,
             "capabilities": {
@@ -1250,7 +1248,6 @@ async fn failed_create_live_socket(
                         "session_id": "wrong-agent",
                         "restored": false,
                         "active_turns": [],
-                        "active_turn_details": [],
                         "capabilities": agent_capabilities(),
                         "settings": agent_settings(),
                         "latest_event_cursor": "not-a-cursor"
@@ -1299,7 +1296,6 @@ async fn send_ready(socket: &mut WebSocket, cursor: &str, restored: bool) {
                 "session_id": AGENT_ID,
                 "restored": restored,
                 "active_turns": [],
-                "active_turn_details": [],
                 "capabilities": agent_capabilities(),
                 "settings": agent_settings(),
                 "latest_event_cursor": cursor

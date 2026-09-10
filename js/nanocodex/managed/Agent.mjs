@@ -18,9 +18,6 @@ const TERMINAL_CACHE_CAPACITY = 256;
 const TERMINAL_CACHE_BYTES = 8 * 1024 * 1024;
 const SUBSCRIBER_QUEUE_CAPACITY = 4_096;
 const SUBSCRIBER_QUEUE_BYTES = 32 * 1024 * 1024;
-// Managed logical events are bounded to 14 MiB; retain envelope allowance for
-// cursor, turn, SSE, and JSON framing on the client boundary.
-const EVENT_STREAM_FRAME_BYTES = 16 * 1024 * 1024;
 const EVENT_STREAM_INACTIVITY_TIMEOUT_MS = 45_000;
 const TURN_SUBMISSION_TIMEOUT_MS = 10_000;
 const TURN_STATE_POLL_INITIAL_MS = 1_000;
@@ -278,7 +275,6 @@ function cronTriggerBody(config) {
     || typeof config.cron !== "string" || config.cron.length > 256
     || config.cron.trim().split(/\s+/).length !== 5
     || typeof config.input !== "string" || config.input.trim().length === 0
-    || UTF8.encode(config.input).byteLength > 64 * 1024
     || (config.session_mode !== undefined && config.session_mode !== "new" && config.session_mode !== "continue")
     || (config.timezone !== undefined && typeof config.timezone !== "string")
     || (config.enabled !== undefined && typeof config.enabled !== "boolean")) {
@@ -410,8 +406,15 @@ async function eventHistoryPage(client, agentId, options) {
     throw new TypeError("managed event history options must be an object");
   }
   const before = options.before;
+  const after = options.after;
+  if (before !== undefined && after !== undefined) {
+    throw new TypeError("managed event history accepts either before or after, not both");
+  }
   if (before !== undefined && (typeof before !== "string" || !CURSOR.test(before) || before === "0")) {
     throw new TypeError("managed event history cursor must be a positive decimal string");
+  }
+  if (after !== undefined && (typeof after !== "string" || !CURSOR.test(after))) {
+    throw new TypeError("managed event history after cursor must be a nonnegative decimal string");
   }
   const limit = options.limit ?? 128;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 256) {
@@ -419,6 +422,7 @@ async function eventHistoryPage(client, agentId, options) {
   }
   const query = new URLSearchParams({ limit: String(limit) });
   if (before !== undefined) query.set("before", before);
+  if (after !== undefined) query.set("after", after);
   const body = await client.json(`${agentPath(agentId)}/events/history?${query}`, {
     signal: options.signal,
   });
@@ -429,7 +433,8 @@ async function eventHistoryPage(client, agentId, options) {
   const data = body.data.map((event) => managedEvent(event));
   if (data.length > limit || data.some((event, index) =>
     (index > 0 && !cursorBefore(data[index - 1].cursor, event.cursor))
-    || (before !== undefined && !cursorBefore(event.cursor, before)))) {
+    || (before !== undefined && !cursorBefore(event.cursor, before))
+    || (after !== undefined && !cursorBefore(after, event.cursor)))) {
     throw new ManagedError("invalid_response", "managed event history ordering is malformed");
   }
   return Object.freeze({ data: Object.freeze(data), hasMore: body.has_more, latestCursor });
@@ -874,7 +879,6 @@ function managedMemoryCandidate(value) {
 function managedMemoryRecord(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)
     || typeof value.content !== "string" || !value.content.trim()
-    || UTF8.encode(value.content).byteLength > 1_024
     || !nonnegativeSafeInteger(value.created_at_ms)
     || !nonnegativeSafeInteger(value.updated_at_ms)
     || !nullableNonnegativeSafeInteger(value.last_scanned_at_ms)
@@ -1081,7 +1085,7 @@ function replayableEventStream(client, agentId) {
               const bytes = encodedBytes(event.data);
               if (
                 subscriber.queue.length >= SUBSCRIBER_QUEUE_CAPACITY
-                || subscriber.bufferedBytes + bytes > SUBSCRIBER_QUEUE_BYTES
+                || (subscriber.queue.length > 0 && subscriber.bufferedBytes + bytes > SUBSCRIBER_QUEUE_BYTES)
               ) {
                 subscriber.overflowed = true;
                 subscriber.done = true;
@@ -1271,6 +1275,8 @@ async function* readEvents(client, agentId, initialCursor, signal, onControlCurs
 
     const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
     let buffer = "";
+    let searchFrom = 0;
+    let skipLeadingLF = false;
     try {
       while (!signal?.aborted) {
         let chunk;
@@ -1281,14 +1287,17 @@ async function* readEvents(client, agentId, initialCursor, signal, onControlCurs
           break;
         }
         if (chunk.done) break;
-        buffer += chunk.value.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+        let text = chunk.value;
+        if (skipLeadingLF && text.startsWith("\n")) text = text.slice(1);
+        if (chunk.value.length > 0) skipLeadingLF = chunk.value.endsWith("\r");
+        buffer += text.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
         while (true) {
-          const boundary = buffer.indexOf("\n\n");
-          if (boundary < 0) break;
+          const boundary = buffer.indexOf("\n\n", searchFrom);
+          if (boundary < 0) { searchFrom = Math.max(0, buffer.length - 1); break; }
           const frame = buffer.slice(0, boundary);
-          assertEventFrameSize(frame);
           const parsed = parseEventFrame(frame);
           buffer = buffer.slice(boundary + 2);
+          searchFrom = 0;
           if (!parsed) continue;
           if (parsed.retry !== undefined) reconnectDelay = parsed.retry;
           if (parsed.controlCursor !== undefined) {
@@ -1302,24 +1311,13 @@ async function* readEvents(client, agentId, initialCursor, signal, onControlCurs
           cursor = eventCursor;
           yield managedEvent(data, eventCursor, parsed.event);
         }
-        // Only the incomplete trailing frame remains here. Complete frames are
-        // bounded independently above because one network read may coalesce
-        // several valid SSE frames.
-        assertEventFrameSize(buffer);
+
       }
     } finally {
       void reader.cancel().catch(() => {});
     }
     if (!signal?.aborted) await delay(reconnectDelay, signal);
   }
-}
-
-function assertEventFrameSize(frame) {
-  if (encodedBytes(frame) <= EVENT_STREAM_FRAME_BYTES) return;
-  throw new ManagedError(
-    "event_frame_too_large",
-    `managed event frame exceeds ${EVENT_STREAM_FRAME_BYTES} decoded bytes`,
-  );
 }
 
 function encodedBytes(value) {
@@ -1592,9 +1590,8 @@ function validateMemoryOperation(value) {
   }
   if (value.operation === "scan") {
     assertOnlyFields(value, ["operation", "query", "limit"], "managed memory scan");
-    if (typeof value.query !== "string" || !value.query.trim()
-      || UTF8.encode(value.query).byteLength > 512) {
-      throw new TypeError("managed memory scan query must be 1-512 UTF-8 bytes");
+    if (typeof value.query !== "string" || !value.query.trim()) {
+      throw new TypeError("managed memory scan query must be a nonempty string");
     }
     if (value.limit !== undefined
       && (!Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 5)) {
@@ -1612,9 +1609,8 @@ function validateMemoryOperation(value) {
   }
   if (value.operation === "put") {
     assertOnlyFields(value, ["operation", "content", "replace"], "managed memory put");
-    if (typeof value.content !== "string" || !value.content.trim()
-      || UTF8.encode(value.content).byteLength > 1_024) {
-      throw new TypeError("managed memory content must be 1-1024 UTF-8 bytes");
+    if (typeof value.content !== "string" || !value.content.trim()) {
+      throw new TypeError("managed memory content must be a nonempty string");
     }
     if (value.replace !== undefined) validateMemoryKey(value.replace);
     return;

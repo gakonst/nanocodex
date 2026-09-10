@@ -11,7 +11,6 @@ use crate::{
     client::{agent_path, response_error},
 };
 
-const MAX_SSE_FRAME_BYTES: usize = 3 * 1024 * 1024;
 const DEFAULT_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const MIN_RECONNECT_DELAY: Duration = Duration::from_millis(100);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
@@ -93,6 +92,7 @@ pub struct ManagedEventStream {
     reconnect_delay: Duration,
     response: Option<Response>,
     buffer: Vec<u8>,
+    search_from: usize,
 }
 
 /// Boxed future returned by a caller-defined managed event source.
@@ -167,6 +167,7 @@ impl ManagedEventStream {
             reconnect_delay: DEFAULT_RECONNECT_DELAY,
             response: None,
             buffer: Vec::new(),
+            search_from: 0,
         }
     }
 
@@ -183,11 +184,10 @@ impl ManagedEventStream {
     ///
     /// # Errors
     ///
-    /// Returns a terminal HTTP error or a malformed, mismatched, or oversized
-    /// SSE frame.
+    /// Returns a terminal HTTP error or a malformed or mismatched SSE frame.
     pub async fn next(&mut self) -> Result<ManagedEvent, ManagedError> {
         loop {
-            if let Some(frame) = take_sse_frame(&mut self.buffer)? {
+            if let Some(frame) = take_sse_frame(&mut self.buffer, &mut self.search_from) {
                 let parsed = parse_sse_frame(&frame)?;
                 if let Some(delay) = parsed.retry {
                     self.reconnect_delay = delay;
@@ -246,11 +246,11 @@ impl ManagedEventStream {
             match chunk {
                 Ok(Some(bytes)) => {
                     self.buffer.extend_from_slice(&bytes);
-                    validate_buffer_bound(&self.buffer)?;
                 }
                 Ok(None) | Err(_) => {
                     self.response = None;
-                    self.buffer.clear();
+                    self.buffer = Vec::new();
+                    self.search_from = 0;
                     sleep(self.reconnect_delay).await;
                 }
             }
@@ -321,34 +321,19 @@ struct ParsedSseFrame {
     data: Option<String>,
 }
 
-fn take_sse_frame(buffer: &mut Vec<u8>) -> Result<Option<Vec<u8>>, ManagedError> {
-    validate_buffer_bound(buffer)?;
-    let Some((index, delimiter)) = find_sse_boundary(buffer) else {
-        return Ok(None);
+fn take_sse_frame(buffer: &mut Vec<u8>, search_from: &mut usize) -> Option<Vec<u8>> {
+    let Some((index, delimiter)) = find_sse_boundary(&buffer[*search_from..]) else {
+        // Preserve only the delimiter overlap for the next network chunk.
+        *search_from = buffer.len().saturating_sub(3);
+        return None;
     };
-    let frame = buffer[..index].to_vec();
-    buffer.drain(..index + delimiter);
-    Ok(Some(frame))
-}
-
-fn validate_buffer_bound(buffer: &[u8]) -> Result<(), ManagedError> {
-    let mut remaining = buffer;
-    loop {
-        match find_sse_boundary(remaining) {
-            Some((index, delimiter)) => {
-                if index > MAX_SSE_FRAME_BYTES {
-                    return Err(oversized_frame());
-                }
-                remaining = &remaining[index + delimiter..];
-            }
-            None if remaining.len() > MAX_SSE_FRAME_BYTES => return Err(oversized_frame()),
-            None => return Ok(()),
-        }
-    }
-}
-
-fn oversized_frame() -> ManagedError {
-    ManagedError::InvalidEvent(format!("SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes"))
+    let index = index + *search_from;
+    let remaining = buffer.split_off(index + delimiter);
+    buffer.truncate(index);
+    *search_from = 0;
+    // Transfer the completed allocation instead of copying it and retaining
+    // the largest historical frame's capacity for this connection's lifetime.
+    Some(std::mem::replace(buffer, remaining))
 }
 
 fn find_sse_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
@@ -356,11 +341,11 @@ fn find_sse_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
         if matches!(window, b"\n\n" | b"\r\r") {
             return Some((index, 2));
         }
+        if window == b"\r\n" && buffer[index..].starts_with(b"\r\n\r\n") {
+            return Some((index, 4));
+        }
     }
-    buffer
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .map(|index| (index, 4))
+    None
 }
 
 fn parse_sse_frame(frame: &[u8]) -> Result<ParsedSseFrame, ManagedError> {
@@ -448,8 +433,7 @@ mod tests {
     };
 
     use super::{
-        EventCursor, MAX_RECONNECT_DELAY, MAX_SSE_FRAME_BYTES, MIN_RECONNECT_DELAY,
-        parse_sse_frame, take_sse_frame,
+        EventCursor, MAX_RECONNECT_DELAY, MIN_RECONNECT_DELAY, parse_sse_frame, take_sse_frame,
     };
     use crate::{ManagedApiKey, ManagedClient, ManagedError, ManagedEventData};
 
@@ -484,31 +468,68 @@ mod tests {
     }
 
     #[test]
-    fn sse_frame_bound_is_three_mebibytes_and_per_frame() {
-        let mut exact = vec![b'x'; MAX_SSE_FRAME_BYTES];
-        exact.extend_from_slice(b"\n\n");
+    fn large_fragmented_frames_and_mixed_delimiters_preserve_following_frames() {
+        let payload = vec![b'x'; 4 * 1024 * 1024];
+        let mut buffer = Vec::new();
+        let mut search_from = 0;
+        for chunk in payload.chunks(4096) {
+            buffer.extend_from_slice(chunk);
+            assert!(take_sse_frame(&mut buffer, &mut search_from).is_none());
+        }
+        buffer.extend_from_slice(b"\r\n\r");
+        assert!(take_sse_frame(&mut buffer, &mut search_from).is_none());
+        buffer.extend_from_slice(b"\nid: 2\n\n");
         assert_eq!(
-            take_sse_frame(&mut exact).unwrap().unwrap().len(),
-            MAX_SSE_FRAME_BYTES
+            take_sse_frame(&mut buffer, &mut search_from).unwrap(),
+            payload
         );
-        let mut oversized = vec![b'x'; MAX_SSE_FRAME_BYTES + 1];
-        assert!(matches!(
-            take_sse_frame(&mut oversized),
-            Err(ManagedError::InvalidEvent(_))
-        ));
-        let mut two_frames = vec![b'x'; 2 * 1024 * 1024];
-        two_frames.extend_from_slice(b"\n\n");
-        two_frames.extend(std::iter::repeat_n(b'y', 2 * 1024 * 1024));
-        two_frames.extend_from_slice(b"\n\n");
-        assert!(take_sse_frame(&mut two_frames).unwrap().is_some());
-        assert!(take_sse_frame(&mut two_frames).unwrap().is_some());
+        assert_eq!(
+            take_sse_frame(&mut buffer, &mut search_from).unwrap(),
+            b"id: 2"
+        );
+        assert!(buffer.is_empty());
+    }
 
-        let mut complete_then_oversized_tail = b"id: 1\n\n".to_vec();
-        complete_then_oversized_tail.extend(std::iter::repeat_n(b'z', MAX_SSE_FRAME_BYTES + 1));
-        assert!(matches!(
-            take_sse_frame(&mut complete_then_oversized_tail),
-            Err(ManagedError::InvalidEvent(_))
-        ));
+    #[tokio::test]
+    async fn reads_large_http_event_and_advances_to_the_following_frame() {
+        let payload = "x".repeat(4 * 1024 * 1024);
+        let first = serde_json::json!({ "cursor": "1", "created_at": 1, "turn_id": "turn-1",
+            "type": "turn_completed", "id": "turn-1", "final_message": payload,
+            "usage": null, "citations": [] });
+        let body = format!(
+            "id: 1\nevent: turn_completed\ndata: {first}\n\nid: 2\nevent: turn_cancelled\ndata: {{\"cursor\":\"2\",\"type\":\"turn_cancelled\",\"id\":\"turn-2\"}}\n\n"
+        );
+        let app = Router::new().route(
+            "/v1/agents/{agent_id}/events",
+            get(move || {
+                let body = body.clone();
+                async move {
+                    Response::builder()
+                        .header("content-type", "text/event-stream")
+                        .body(Body::from(body))
+                        .unwrap()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ManagedClient::new(
+            format!("http://{address}"),
+            ManagedApiKey::parse(key()).unwrap(),
+        )
+        .unwrap();
+        let mut events = client
+            .events("agent-1", EventCursor::parse("0").unwrap())
+            .unwrap();
+        let event = events.next().await.unwrap();
+        assert_eq!(
+            event.data.terminal_result("turn-1").unwrap().unwrap(),
+            payload
+        );
+        assert_eq!(events.next().await.unwrap().cursor, "2");
+        assert_eq!(events.cursor().as_str(), "2");
+        server.abort();
     }
 
     #[derive(Clone)]

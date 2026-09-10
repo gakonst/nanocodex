@@ -451,6 +451,20 @@ export class ManagedEventArchive<Message extends { type: string }> {
     }
   }
 
+  async historyAfter(
+    local: DurableEventLog<Message>,
+    after: string,
+    limit: number,
+  ): Promise<DurableEventHistory<Message>> {
+    const data = await this.page(local, after, limit);
+    const latest = this.latestCursor(local);
+    return {
+      data,
+      has_more: BigInt(data.at(-1)?.cursor ?? after) < BigInt(latest),
+      latest_cursor: latest,
+    };
+  }
+
   async deleteAll(): Promise<number> {
     let deleted = 0;
     while (true) {

@@ -856,16 +856,9 @@ impl Database {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(|_| ApiError::not_found("agent_not_found", "managed agent does not exist"))?;
-        let active = db.prepare("SELECT turn_id,input_json FROM local_managed_turns WHERE agent_id=?1 AND state IN ('accepted','cancelling') ORDER BY created_at").map_err(ApiError::internal)?.query_map([agent],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(ApiError::internal)?.collect::<rusqlite::Result<Vec<_>>>().map_err(ApiError::internal)?;
-        let ids = active.iter().map(|v| v.0.clone()).collect::<Vec<_>>();
-        let details = active
-            .into_iter()
-            .filter_map(|(id, input)| {
-                serde_json::from_str::<Value>(&input)
-                    .ok()
-                    .map(|input| json!({"id":id,"input":input}))
-            })
-            .collect::<Vec<_>>();
+        let ids = db.prepare("SELECT turn_id FROM local_managed_turns WHERE agent_id=?1 AND state IN ('accepted','cancelling') ORDER BY created_at")
+            .map_err(ApiError::internal)?.query_map([agent], |row| row.get::<_, String>(0))
+            .map_err(ApiError::internal)?.collect::<rusqlite::Result<Vec<_>>>().map_err(ApiError::internal)?;
         let latest: i64 = db
             .query_row(
                 "SELECT COALESCE(MAX(cursor),0) FROM local_managed_events WHERE agent_id=?1",
@@ -874,7 +867,7 @@ impl Database {
             )
             .map_err(ApiError::internal)?;
         Ok(
-            json!({"agent_id":agent,"session_id":agent,"has_snapshot":completed>0,"completed_turns":completed,"last_active":last,"active_turns":ids,"active_turn_details":details,"agent_loaded":loaded,"connected_clients":connected_clients,"capabilities":capabilities(),"settings":{"model":nanocodex::Model::default().as_str(),"thinking":nanocodex::Thinking::default(),"reasoning_mode":nanocodex::ReasoningMode::default().as_str(),"fast_mode":false},"latest_event_cursor":latest.to_string(),"stream_error":null}),
+            json!({"agent_id":agent,"session_id":agent,"has_snapshot":completed>0,"completed_turns":completed,"last_active":last,"active_turns":ids,"agent_loaded":loaded,"connected_clients":connected_clients,"capabilities":capabilities(),"settings":{"model":nanocodex::Model::default().as_str(),"thinking":nanocodex::Thinking::default(),"reasoning_mode":nanocodex::ReasoningMode::default().as_str(),"fast_mode":false},"latest_event_cursor":latest.to_string(),"stream_error":null}),
         )
     }
 

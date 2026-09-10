@@ -1,3 +1,4 @@
+import { initializeTurnInputs, readTurnInput } from "./managed-turn-input";
 import { sha256Hex } from "./archive-hash";
 
 const VERSION = 1;
@@ -95,6 +96,8 @@ export class ManagedTurnArchive {
     recentTerminalTurns = DEFAULT_RECENT_TERMINAL_TURNS,
   ) {
     this.#storage = storage;
+    initializeTurnInputs(storage);
+    initializeTurnInputs(storage, "managed_turn_terminal_chunks");
     this.#bucket = bucket;
     this.#prefix = `agents/${agentStorageId}/managed-turns/`;
     this.#recentTerminalTurns = Number.isSafeInteger(recentTerminalTurns)
@@ -195,12 +198,16 @@ export class ManagedTurnArchive {
     ).toArray();
     if (receipts.length === 0) return emptySeal();
 
-    const encoded = await Promise.all(receipts.map(async (receipt) => {
+    const result = { ...emptySeal() };
+    // Hydrate and upload one receipt at a time. Count-bounded batches alone do
+    // not bound memory when individual prompts are large.
+    for (const retainedReceipt of receipts) {
+      const receipt = { ...retainedReceipt, input_json: readTurnInput(
+        this.#storage, retainedReceipt.id, retainedReceipt.input_json,
+      ), terminal_json: readTurnInput(this.#storage, retainedReceipt.id, retainedReceipt.terminal_json, "managed_turn_terminal_chunks") };
       validateReceipt(receipt);
       const body = encoder.encode(JSON.stringify({
-        version: VERSION,
-        kind: "managed_turn_receipt",
-        receipt,
+        version: VERSION, kind: "managed_turn_receipt", receipt,
       } satisfies ReceiptEnvelope));
       const bodyHash = await sha256Hex(body);
       const keys = [
@@ -209,46 +216,29 @@ export class ManagedTurnArchive {
           `${this.#prefix}by-request/${await sha256Hex(encoder.encode(receipt.request_key))}.json`,
         ]),
       ];
-      await Promise.all(keys.map((key) => this.#putImmutable(key, body, bodyHash)));
-      return { bodyBytes: body.byteLength, keys, receipt };
-    }));
-
-    this.#storage.transactionSync(() => {
-      for (const item of encoded) {
+      for (const key of keys) await this.#putImmutable(key, body, bodyHash);
+      this.#storage.transactionSync(() => {
         const retained = this.#storage.sql.exec<ManagedTurnReceipt>(
-          `${RECEIPT_SELECT} WHERE id = ?`,
-          item.receipt.id,
+          `${RECEIPT_SELECT} WHERE id = ?`, receipt.id,
         ).toArray()[0];
-        if (!retained || JSON.stringify(retained) !== JSON.stringify(item.receipt)) {
+        if (!retained || JSON.stringify(retained) !== JSON.stringify(retainedReceipt)) {
           throw new Error("managed turn archive receipt changed before commit");
         }
-      }
-      this.#storage.sql.exec(
-        `DELETE FROM managed_turn_dispatch_chunks
-         WHERE turn_id IN (${encoded.map(() => "?").join(",")})`,
-        ...encoded.map(({ receipt }) => receipt.id),
-      );
-      this.#storage.sql.exec(
-        `DELETE FROM managed_turns WHERE id IN (${encoded.map(() => "?").join(",")})`,
-        ...encoded.map(({ receipt }) => receipt.id),
-      );
-      this.#storage.sql.exec(
-        `UPDATE managed_turn_archive_state
-         SET archived_receipts = archived_receipts + ?,
-             archived_bytes = archived_bytes + ?,
-             object_count = object_count + ?
-         WHERE singleton = 1`,
-        encoded.length,
-        encoded.reduce((sum, item) => sum + item.bodyBytes * item.keys.length, 0),
-        encoded.reduce((sum, item) => sum + item.keys.length, 0),
-      );
-    });
-    return {
-      archived_bytes: encoded.reduce((sum, item) => sum + item.bodyBytes * item.keys.length, 0),
-      archived_receipts: encoded.length,
-      objects: encoded.reduce((sum, item) => sum + item.keys.length, 0),
-      sealed: true,
-    };
+        this.#storage.sql.exec("DELETE FROM managed_turn_dispatch_chunks WHERE turn_id = ?", receipt.id);
+        this.#storage.sql.exec("DELETE FROM managed_turn_input_chunks WHERE turn_id = ?", receipt.id);
+        this.#storage.sql.exec("DELETE FROM managed_turn_terminal_chunks WHERE turn_id = ?", receipt.id);
+        this.#storage.sql.exec("DELETE FROM managed_turns WHERE id = ?", receipt.id);
+        this.#storage.sql.exec(`UPDATE managed_turn_archive_state
+          SET archived_receipts = archived_receipts + 1,
+              archived_bytes = archived_bytes + ?, object_count = object_count + ?
+          WHERE singleton = 1`, body.byteLength * keys.length, keys.length);
+      });
+      result.archived_bytes += body.byteLength * keys.length;
+      result.archived_receipts += 1;
+      result.objects += keys.length;
+      result.sealed = true;
+    }
+    return result;
   }
 
   async identityBatch(): Promise<ManagedTurnArchiveTransferResult> {

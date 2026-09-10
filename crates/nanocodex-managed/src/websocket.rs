@@ -4,14 +4,14 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, connect_async,
-    tungstenite::{Message, client::IntoClientRequest as _},
+    MaybeTlsStream, WebSocketStream, connect_async_with_config,
+    tungstenite::{Message, client::IntoClientRequest as _, protocol::WebSocketConfig},
 };
 
 use crate::{
-    ActiveTurn, AgentCapabilities, AgentReceipt, AgentSettings, AgentState, EventCursor,
-    ManagedClient, ManagedError, ManagedEvent, ManagedEventData, ManagedEventFuture,
-    ManagedEventSource, PromptInput, TurnState, TurnView,
+    AgentCapabilities, AgentReceipt, AgentSettings, AgentState, EventCursor, ManagedClient,
+    ManagedError, ManagedEvent, ManagedEventData, ManagedEventFuture, ManagedEventSource,
+    PromptInput, TurnState, TurnView,
     client::{agent_path, validate_id, validate_idempotency_key},
 };
 
@@ -74,7 +74,6 @@ struct ReadyMessage {
     session_id: String,
     restored: bool,
     active_turns: Vec<String>,
-    active_turn_details: Vec<ActiveTurn>,
     capabilities: AgentCapabilities,
     settings: AgentSettings,
     latest_event_cursor: String,
@@ -117,7 +116,6 @@ impl ManagedSocket {
                     .as_secs_f64()
                     * 1_000.0,
                 active_turns: ready.active_turns,
-                active_turn_details: ready.active_turn_details,
                 agent_loaded: false,
                 connected_clients: 1,
                 capabilities: ready.capabilities,
@@ -517,10 +515,19 @@ async fn connect_endpoint(
         tokio_tungstenite::tungstenite::http::header::AUTHORIZATION,
         authorization,
     );
-    let (mut socket, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
-        .await
-        .map_err(|_| live_error("managed WebSocket handshake timed out"))?
-        .map_err(|error| live_error(format!("managed WebSocket handshake failed: {error}")))?;
+    // The service's ingress limit applies to client writes, not event reads.
+    // Retain transport backpressure without imposing tungstenite's default
+    // 16 MiB frame / 64 MiB message ceiling on durable event replay.
+    let config = WebSocketConfig::default()
+        .max_message_size(None)
+        .max_frame_size(None);
+    let (mut socket, _) = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        connect_async_with_config(request, Some(config), false),
+    )
+    .await
+    .map_err(|_| live_error("managed WebSocket handshake timed out"))?
+    .map_err(|error| live_error(format!("managed WebSocket handshake failed: {error}")))?;
     match tokio::time::timeout(CONNECT_TIMEOUT, socket.next())
         .await
         .map_err(|_| live_error("managed WebSocket ready timed out"))?
@@ -571,6 +578,83 @@ mod tests {
     use super::{ReadyMessage, append_create_settings};
     use crate::AgentSettings;
 
+    #[tokio::test]
+    async fn receives_event_above_default_frame_limit_and_the_following_frame() {
+        use crate::{ManagedApiKey, ManagedClient, ManagedEvent};
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        let payload = "x".repeat(17 * 1024 * 1024);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let output = payload.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let ready = json!({ "type": "ready", "session_id": "agent-1", "restored": true,
+                "active_turns": [], "latest_event_cursor": "0",
+                "capabilities": { "durable_turns": true, "resumable_events": true,
+                    "live_steer": true, "live_cancel": true, "workspace": "cloud",
+                    "execution_environments": true, "execution_namespace": "cwd-root-v1", "native_cross_mounts": false },
+                "settings": { "model": "gpt-6-astra", "thinking": "low", "reasoning_mode": "standard", "fast_mode": false } });
+            socket
+                .send(Message::Text(ready.to_string().into()))
+                .await
+                .unwrap();
+            let event = json!({ "cursor": "1", "type": "turn_completed", "id": "turn-1",
+                "final_message": output, "usage": null, "citations": [] });
+            socket
+                .send(Message::Text(event.to_string().into()))
+                .await
+                .unwrap();
+            socket
+                .send(Message::Text(
+                    json!({ "cursor": "2", "type": "turn_cancelled", "id": "turn-2" })
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+        });
+        let key = format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43));
+        let client = ManagedClient::new(
+            format!("http://{address}"),
+            ManagedApiKey::parse(key).unwrap(),
+        )
+        .unwrap();
+        let endpoint = url::Url::parse(&format!("ws://{address}/v1/agents/agent-1/ws")).unwrap();
+        let (mut connected, _) = super::connect_endpoint(&client, endpoint, Some("agent-1"), "0")
+            .await
+            .unwrap();
+        let event = connected
+            .socket
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_text()
+            .unwrap();
+        let event: ManagedEvent = serde_json::from_str(event.as_str()).unwrap();
+        assert_eq!(
+            event.data.terminal_result("turn-1").unwrap().unwrap(),
+            payload
+        );
+        let next = connected
+            .socket
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_text()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<ManagedEvent>(next.as_str())
+                .unwrap()
+                .cursor,
+            "2"
+        );
+        server.await.unwrap();
+    }
+
     #[test]
     fn create_live_uses_exact_canonical_settings_query() {
         let mut endpoint = url::Url::parse("wss://managed.example/v1/agents/live")
@@ -597,7 +681,6 @@ mod tests {
             "session_id": "agent-1",
             "restored": false,
             "active_turns": [],
-            "active_turn_details": [],
             "capabilities": {
                 "durable_turns": true,
                 "resumable_events": true,
