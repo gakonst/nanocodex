@@ -49,8 +49,6 @@ struct InboxView: View {
         var selectedID: String { ids[index] }
     }
 
-    private var highlightedTabID: String? { tabScrub?.selectedID ?? model.focused?.id }
-
     var body: some View {
         NavigationStack {
             inbox
@@ -203,32 +201,38 @@ struct InboxView: View {
     }
 
     private var browserTabs: some View {
-        GeometryReader { geometry in
+        // Capture selection once. A lazy strip may evaluate distant tabs during
+        // layout; resolving the focused card inside each label makes that work
+        // quadratic in the number of conversations.
+        let selectedID = model.deck.focusedID
+        let highlightedID = tabScrub?.selectedID ?? selectedID
+        let cards = model.tabCards
+        return GeometryReader { geometry in
             let width = min(tabWidth, geometry.size.width)
             ScrollViewReader { scroll in
                 ScrollView(.horizontal) {
                     LazyHStack(spacing: 6) {
-                        ForEach(model.tabCards) { card in
+                        ForEach(cards) { card in
                             Button { selectConversation(card.id) } label: {
                                 HStack(spacing: 6) {
-                                    Text(card.title).font(.subheadline.weight(highlightedTabID == card.id ? .semibold : .regular))
+                                    Text(card.title).font(.subheadline.weight(highlightedID == card.id ? .semibold : .regular))
                                         .lineLimit(1).frame(maxWidth: width - 24)
                                 }
                                 .padding(.horizontal, 12).frame(height: tabHeight - 8)
-                                .background(highlightedTabID == card.id ? Ink.surface : Color.clear, in: RoundedRectangle(cornerRadius: 12))
-                                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(highlightedTabID == card.id ? Ink.border : Color.clear))
+                                .background(highlightedID == card.id ? Ink.surface : Color.clear, in: RoundedRectangle(cornerRadius: 12))
+                                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(highlightedID == card.id ? Ink.border : Color.clear))
                             }
                             // Stable widths keep distant selections accurate in a lazy strip.
                             .frame(width: width, height: tabHeight).id(card.id)
                             .accessibilityLabel(card.title)
                             .accessibilityValue(card.status)
-                            .accessibilityAddTraits(model.focused?.id == card.id ? [.isSelected] : [])
+                            .accessibilityAddTraits(selectedID == card.id ? [.isSelected] : [])
                             .accessibilityIdentifier("browser-tab:" + card.id)
                         }
                     }
                 }
                 .scrollIndicators(.hidden)
-                .onChange(of: highlightedTabID, initial: true) { _, id in
+                .onChange(of: highlightedID, initial: true) { _, id in
                     guard let id else { return }
                     withAnimation(tabScrub == nil || reduceMotion ? nil : .interactiveSpring(response: 0.18, dampingFraction: 0.92)) {
                         scroll.scrollTo(id, anchor: .center)
@@ -502,7 +506,7 @@ private struct ConversationOverview: View {
                             Button(card.title) { select(card.id) }
                                 .accessibilityValue(overviewDescription(card))
                                 .accessibilityHint("Open conversation")
-                                .accessibilityAddTraits(model.focused?.id == card.id ? [.isSelected] : [])
+                                .accessibilityAddTraits(model.deck.focusedID == card.id ? [.isSelected] : [])
                                 .accessibilityIdentifier("overview-card:" + card.id)
                         }
                         .onAppear { model.setOverviewVisible(card.id, visible: true) }

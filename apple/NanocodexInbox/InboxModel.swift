@@ -185,7 +185,10 @@ final class InboxModel: ObservableObject {
         select(id)
     }
 
-    var focused: AgentCard? { cards.first { $0.id == deck.focusedID } }
+    var focused: AgentCard? {
+        let id = deck.focusedID
+        return cards.first { $0.id == id }
+    }
     var focusedConversationIdentity: String? {
         focused.map { card in createdAgentIDs.first(where: { $0.value == card.id })?.key ?? card.id }
     }
@@ -197,7 +200,11 @@ final class InboxModel: ObservableObject {
     private func resolvedAgentID(_ id: String) -> String { createdAgentIDs[id] ?? id }
     var attentionCount: Int { cards.filter { $0.isInInbox(seen: seenCursor($0.id), deferred: deferred[$0.id]) && $0.needsAttention(seen: seenCursor($0.id)) }.count }
     var runningCount: Int { cards.filter(\.isRunning).count }
-    var controllableTurns: [String] { (focused?.activeTurns ?? []).filter { id in !pending.contains { $0.agentID == focused?.id && $0.id == id } } }
+    var controllableTurns: [String] {
+        guard let card = focused else { return [] }
+        let queued = Set(pending.filter { $0.agentID == card.id }.map(\.id))
+        return card.activeTurns.filter { !queued.contains($0) }
+    }
     var focusedTurn: String { controllableTurns.contains(selectedTurn) ? selectedTurn : controllableTurns.first ?? "" }
     var stopTarget: String { focusedTurn.isEmpty ? focusedPending.first?.id ?? "" : focusedTurn }
     func cancellation(agentID: String, turnID: String) -> PendingTurnCancellation? {
@@ -213,8 +220,9 @@ final class InboxModel: ObservableObject {
     }
     var hasUnconfirmedMessage: Bool { focusedPending.contains { $0.phase == .failed } }
     var focusedPending: [PendingMessage] {
-        pending.filter { message in
-            guard message.agentID == focused?.id else { return false }
+        let id = deck.focusedID
+        return pending.filter { message in
+            guard message.agentID == id else { return false }
             let stop = cancellation(agentID: message.agentID, turnID: message.id)
             // A cancelled queued turn may wait behind running work before its
             // terminal event. Its durable cancellation must not block the queue.
@@ -831,6 +839,7 @@ final class InboxModel: ObservableObject {
            let apiError = error as? APIError, apiError == .agentDeleting || apiError == .http(404) {
             forgetUnavailableAgent(id); return
         }
+        var changed = false
         do {
             let update = try result.get()
             let prepared = try await TranscriptPreparation.rows(update.page?.events ?? [])
@@ -841,13 +850,18 @@ final class InboxModel: ObservableObject {
                 card.apply(events: page.events, transcriptRows: prepared)
                 historyCursors[id] = max(historyCursors[id] ?? .zero, page.latest)
             }
-            if cards[index] != card { cards[index] = card }
+            if cards[index] != card { cards[index] = card; changed = true }
             reconcilePending(id: id, events: update.page?.events ?? [], state: card)
         } catch {
             guard generation == epoch, !Task.isCancelled else { return }
-            if let index = cards.firstIndex(where: { $0.id == id }) { cards[index].error = error.localizedDescription }
+            if let index = cards.firstIndex(where: { $0.id == id }), cards[index].error != error.localizedDescription {
+                cards[index].error = error.localizedDescription
+                changed = true
+            }
         }
-        reconcile()
+        // Unchanged roster reads must not re-sort every conversation or publish
+        // the same error again. Both invalidate the entire visible SwiftUI tree.
+        if changed { reconcile() }
     }
     private func seenCursor(_ id: String) -> Cursor? { seen[id].flatMap { Cursor(rawValue: $0) } }
     private func forgetUnavailableAgent(_ id: String) {
@@ -890,13 +904,14 @@ final class InboxModel: ObservableObject {
         }
     }
     private func prioritizeNext() {
-        let visible = Set(deck.order)
+        let order = Dictionary(uniqueKeysWithValues: deck.order.enumerated().map { ($0.element, $0.offset) })
+        let visible = Set(order.keys)
         let ranked = cards.filter { visible.contains($0.id) }.sorted { a, b in
             let ad = deferred[a.id] == a.latestCursor, bd = deferred[b.id] == b.latestCursor
             if ad != bd { return !ad }
             let ar = a.needsAttention(seen: seenCursor(a.id)), br = b.needsAttention(seen: seenCursor(b.id))
             if ar != br { return ar }
-            let ai = deck.order.firstIndex(of: a.id) ?? 0, bi = deck.order.firstIndex(of: b.id) ?? 0
+            let ai = order[a.id] ?? 0, bi = order[b.id] ?? 0
             return ai < bi
         }
         var nextDeck = deck
