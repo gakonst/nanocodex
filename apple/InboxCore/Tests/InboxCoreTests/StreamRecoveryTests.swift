@@ -70,21 +70,33 @@ final class StreamRecoveryTests: XCTestCase {
 
     func testProgressDuringStateReadPreventsStaleReconnect() async throws {
         let progressed = expectation(description: "Completion delivered while state read waits")
+        let checkedAgain = expectation(description: "Watchdog continued after the concurrent delivery")
+        let stateStarted = DispatchGroup(), eventDelivered = DispatchGroup()
+        stateStarted.enter(); eventDelivered.enter()
+        var stateReads = 0
         let fixture = try HTTPFixture { request in
             if request.path.hasSuffix("/events") {
                 return .init(headers: ["Content-Type": "text/event-stream"], body: ": keepalive\n\n", streaming: true,
-                    chunks: [(delay: 0.04, body: "id: 2\ndata: {\"type\":\"turn_completed\",\"id\":\"owned-turn\"}\n\n")])
+                    chunks: [(delay: 0, body: "id: 2\ndata: {\"type\":\"turn_completed\",\"id\":\"owned-turn\"}\n\n")],
+                    chunkGate: stateStarted)
             }
-            return .init(body: #"{"agent_id":"owned-agent","latest_event_cursor":"2"}"#, delay: 0.05)
+            stateReads += 1
+            if stateReads == 1 { stateStarted.leave() }
+            if stateReads == 2 { checkedAgain.fulfill() }
+            return .init(body: #"{"agent_id":"owned-agent","latest_event_cursor":"2"}"#, gate: eventDelivered)
         }
         defer { fixture.close() }
         let client = ManagedClient(credential: try .init(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
         defer { client.close() }
         let reader = Task { try await client.stream(agent, after: Cursor(rawValue: "1")!, idleCheckInterval: .milliseconds(20)) { frame in
-            if frame.event != nil { progressed.fulfill() }
+            if frame.event != nil {
+                progressed.fulfill()
+                eventDelivered.leave()
+            }
         } }
-        await fulfillment(of: [progressed], timeout: 0.5)
-        try await Task.sleep(for: .milliseconds(100))
+        // Gate the event on the first state read, and its response on delivery.
+        // Callback delays cannot establish that ordering on a loaded CI runner.
+        await fulfillment(of: [progressed, checkedAgain], timeout: 2)
         reader.cancel()
         do { try await bounded { try await reader.value }; XCTFail("Cancelled stream completed normally") }
         catch is CancellationError { }

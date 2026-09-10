@@ -23,6 +23,7 @@ struct FixtureReply {
     var gate: DispatchGroup?
     var streaming = false
     var chunks: [(delay: Double, body: String)] = []
+    var chunkGate: DispatchGroup?
 }
 
 /// Each test gets an isolated HTTPS origin and URLSession protocol.
@@ -75,10 +76,14 @@ private final class SMSFixtureProtocol: URLProtocol, @unchecked Sendable {
                 self.client?.urlProtocol(self, didLoad: Data(reply.body.utf8))
                 if reply.streaming {
                     for chunk in reply.chunks {
-                        fixture.queue.asyncAfter(deadline: .now() + chunk.delay) {
-                            guard !self.isStopped else { return }
-                            self.client?.urlProtocol(self, didLoad: Data(chunk.body.utf8))
+                        let schedule: @Sendable () -> Void = {
+                            fixture.queue.asyncAfter(deadline: .now() + chunk.delay) {
+                                guard !self.isStopped else { return }
+                                self.client?.urlProtocol(self, didLoad: Data(chunk.body.utf8))
+                            }
                         }
+                        if let gate = reply.chunkGate { gate.notify(queue: fixture.queue, execute: schedule) }
+                        else { schedule() }
                     }
                     self.heartbeat(fixture)
                 } else { self.client?.urlProtocolDidFinishLoading(self) }
