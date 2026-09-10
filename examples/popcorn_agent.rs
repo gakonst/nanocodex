@@ -4,13 +4,26 @@
 //! reached over CDP. The LiveView URL is printed so a human can watch the
 //! session or take over when the agent gets stuck.
 //!
+//! Sessions come from the public pay-per-use endpoint at
+//! <https://popcorn.reclaimprotocol.org>. No account is needed: each
+//! five-minute block costs $0.01 in USDC on Base, paid per request with x402.
+//! Point `POPCORN_PAYER_PRIVATE_KEY` at an EVM key holding a little USDC and
+//! enough ETH for gas on Base.
+//!
 //! ```sh
 //! export OPENAI_API_KEY=...
+//! export POPCORN_PAYER_PRIVATE_KEY=0x...
+//! cargo run -p nanocodex-examples --bin popcorn-agent -- \
+//!   "Open https://example.com, inspect the page, and report its main heading."
+//! ```
+//!
+//! Dedicated deployments use the credentialed control plane instead, with no
+//! payment involved:
+//!
+//! ```sh
 //! export POPCORN_CONTROL_PLANE_URL=https://...
 //! export POPCORN_CLIENT_ID=...
 //! export POPCORN_CLIENT_SECRET=...
-//! cargo run -p nanocodex-examples --bin popcorn-agent -- \
-//!   "Open https://example.com, inspect the page, and report its main heading."
 //! ```
 //!
 //! A literal `--` between two prompts runs them as two turns on the same agent
@@ -44,7 +57,7 @@ async fn main() -> Result<()> {
     let api_key = std::env::var("OPENAI_API_KEY").wrap_err("OPENAI_API_KEY is required")?;
     let config = PopcornConfig::from_env()?;
     let popcorn = PopcornBrowser::spawn(config).await?;
-    eprintln!("popcorn session: {}", popcorn.session().session_id);
+    eprintln!("popcorn session: {}", popcorn.session().session_id());
     eprintln!("live view: {}", popcorn.live_view_url());
 
     let tools = Tools::builder().provider(popcorn.tool()).build()?;
