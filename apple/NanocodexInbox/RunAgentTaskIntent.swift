@@ -83,16 +83,3 @@ private final class HandIntentInvocation {
     }
 }
 #endif
-
-enum HandTaskError: LocalizedError {
-    case signIn, disabled, accountChanged, emptyRequest, delivery(String)
-    var errorDescription: String? {
-        switch self {
-        case .signIn: "Open Nanocodex and sign in before running this shortcut."
-        case .disabled: "This device's Hand is disabled. Enable it in Nanocodex Settings to run this task."
-        case .accountChanged: "This shortcut's agent belongs to a different account. Choose an agent from the connected account."
-        case .emptyRequest: "Enter a request for the agent."
-        case .delivery(let message): message
-        }
-    }
-}

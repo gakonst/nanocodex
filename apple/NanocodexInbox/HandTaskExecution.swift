@@ -5,7 +5,7 @@ import BackgroundTasks
 import UIKit
 #endif
 
-/// Runtime belongs to a particular user request, never an idle Hand socket.
+/// Owns local observation and device runtime, never the remote turn lifecycle.
 @MainActor
 final class HandTaskExecution {
     nonisolated static let identifierPrefix = "xyz.paradigm.centaur.hand.turn."
@@ -13,16 +13,15 @@ final class HandTaskExecution {
         let identifier = HandTaskExecution.identifierPrefix + UUID().uuidString
         var title: String
         let progress: Progress
-        let cancel: () -> Void
         var activity: HandTaskProgress
         var lastUpdate = Date.distantPast
         var work: Task<String, Error>?
         var hasRuntime: Bool
         var update: (() -> Void)?
         var finish: ((Bool) -> Void)?
-        init(id: String, title: String, progress: Progress, hasRuntime: Bool, cancel: @escaping () -> Void) {
+        init(id: String, title: String, progress: Progress, hasRuntime: Bool) {
             self.title = title.isEmpty ? "Nanocodex task" : String(title.prefix(80))
-            self.progress = progress; self.hasRuntime = hasRuntime; self.cancel = cancel
+            self.progress = progress; self.hasRuntime = hasRuntime
             activity = HandTaskProgress(turnID: id)
         }
     }
@@ -37,10 +36,10 @@ final class HandTaskExecution {
 
     @discardableResult
     func start(id: String, title: String, progress: Progress = Progress(totalUnitCount: 1),
-               runtimeProvided: Bool = false, cancel: @escaping () -> Void,
+               runtimeProvided: Bool = false,
                operation: @escaping (Progress) async throws -> String) -> Task<String, Error> {
         if let existing = runs[id]?.work { return existing }
-        let run = Run(id: id, title: title, progress: progress, hasRuntime: runtimeProvided, cancel: cancel)
+        let run = Run(id: id, title: title, progress: progress, hasRuntime: runtimeProvided)
         runs[id] = run
         progress.localizedDescription = run.title
         progress.localizedAdditionalDescription = "Submitting request"
@@ -71,8 +70,11 @@ final class HandTaskExecution {
                 progress.completedUnitCount = progress.totalUnitCount
                 success = true
                 return result
+            } catch HandTaskError.cancelled {
+                run.activity.finish(.stopped)
+                throw HandTaskError.cancelled
             } catch {
-                run.activity.finish(error is CancellationError ? .stopped : .failed)
+                run.activity.finish(error is CancellationError ? .paused : .failed)
                 throw error
             }
         }
@@ -106,10 +108,8 @@ final class HandTaskExecution {
         }
     }
 
-    func cancel(id: String, stopTurn: Bool = true, outcome: HandTaskOutcome = .stopped) {
+    func endObservation(id: String, outcome: HandTaskOutcome = .paused) {
         guard let run = runs.removeValue(forKey: id) else { return }
-        // Persist/send the exact turn's Stop while the background grant still exists.
-        if stopTurn { run.cancel() }
         run.activity.finish(outcome)
         run.progress.localizedAdditionalDescription = run.activity.detail
         run.update?()
@@ -123,12 +123,12 @@ final class HandTaskExecution {
         changed()
     }
 
-    func cancelAll(stopTurns: Bool) {
-        for id in Array(runs.keys) { cancel(id: id, stopTurn: stopTurns, outcome: stopTurns ? .stopped : .paused) }
+    func endAllObservations() {
+        for id in Array(runs.keys) { endObservation(id: id) }
     }
 
     func suspendWithoutRuntime() {
-        for id in runs.keys.filter({ runs[$0]?.hasRuntime == false }) { cancel(id: id, stopTurn: false, outcome: .paused) }
+        for id in runs.keys.filter({ runs[$0]?.hasRuntime == false }) { endObservation(id: id) }
     }
 
     #if os(iOS)
@@ -153,7 +153,8 @@ final class HandTaskExecution {
                 task.expirationHandler = { [weak self, weak run] in
                     Task { @MainActor in
                         guard let self, let run, self.runs[id] === run else { return }
-                        self.cancel(id: id)
+                        // Expiration does not establish a user intent to stop cloud work.
+                        self.endObservation(id: id)
                     }
                 }
                 run.update?(); self.changed()
@@ -169,4 +170,18 @@ final class HandTaskExecution {
         catch { failed("iOS couldn't grant background time. Keep Nanocodex open for this device's tools.") }
     }
     #endif
+}
+
+enum HandTaskError: LocalizedError {
+    case signIn, disabled, accountChanged, emptyRequest, cancelled, delivery(String)
+    var errorDescription: String? {
+        switch self {
+        case .signIn: "Open Nanocodex and sign in before running this shortcut."
+        case .disabled: "This device's Hand is disabled. Enable it in Nanocodex Settings to run this task."
+        case .accountChanged: "This shortcut's agent belongs to a different account. Choose an agent from the connected account."
+        case .emptyRequest: "Enter a request for the agent."
+        case .cancelled: "The remote turn was stopped."
+        case .delivery(let message): message
+        }
+    }
 }

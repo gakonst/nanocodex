@@ -110,7 +110,7 @@ final class InboxModel: ObservableObject {
         didSet {
             guard deviceHandEnabled != oldValue else { return }
             UserDefaults.standard.set(deviceHandEnabled, forKey: "inbox.hand.enabled")
-            if !deviceHandEnabled { handTasks.cancelAll(stopTurns: false); endHandBackgroundTime() }
+            if !deviceHandEnabled { handTasks.endAllObservations(); endHandBackgroundTime() }
             updateDeviceHand(); scheduleHandRefresh()
         }
     }
@@ -593,7 +593,7 @@ final class InboxModel: ObservableObject {
         agentNotificationUpdate?.cancel(); agentNotificationUpdate = nil
         stopOverview()
         overviewTranscripts = [:]; tabHistories = [:]; recentTabs = []; tabOrder = []
-        handTasks.cancelAll(stopTurns: false)
+        handTasks.endAllObservations()
         schedulesTask?.cancel(); schedulesTask = nil; schedulesFailures = [:]
         scheduledJobs = []; scheduledJobAgents = [:]; schedulesLoading = false; schedulesLoaded = false; schedulesError = nil
         for task in creationTasks.values { task.cancel() }
@@ -1477,11 +1477,7 @@ final class InboxModel: ObservableObject {
                                progress: Progress = Progress(totalUnitCount: 1),
                                runtimeProvided: Bool = false) -> Task<String, Error> {
         handTasks.start(id: message.id, title: cards.first(where: { $0.id == message.agentID })?.title ?? "Agent working",
-                        progress: progress, runtimeProvided: runtimeProvided, cancel: { [weak self] in
-            guard let self, self.generation == epoch else { return }
-            self.prepareHandForBackground()
-            self.stop(agentID: self.resolvedAgentID(message.agentID), turnID: message.id)
-        }) { [weak self] progress in
+                        progress: progress, runtimeProvided: runtimeProvided) { [weak self] progress in
             guard let self, self.generation == epoch else { throw CancellationError() }
             await self.submit(message, epoch: epoch)
             try Task.checkCancellation()
@@ -1522,7 +1518,7 @@ final class InboxModel: ObservableObject {
                     guard self.generation == epoch else { throw CancellationError() }
                     switch turn["state"].string {
                     case "completed": return turn["terminal"]["final_message"].string
-                    case "cancelled": throw CancellationError()
+                    case "cancelled": throw HandTaskError.cancelled
                     case "failed": throw HandTaskError.delivery("The agent task failed. Open the conversation in Nanocodex for details.")
                     default: break
                     }
@@ -1574,7 +1570,7 @@ final class InboxModel: ObservableObject {
         // The OS can deliver Swift cancellation before the reason callback.
         // A later explicit Stop must still fence the exact remote turn.
         if stopTurn, connected, scope == agent.account { stop(agentID: agent.agentID, turnID: id) }
-        handTasks.cancel(id: id, stopTurn: false, outcome: stopTurn ? .stopped : .paused)
+        handTasks.endObservation(id: id, outcome: stopTurn ? .stopped : .paused)
     }
 
     private func submit(_ message: PendingMessage, epoch: UUID) async {
@@ -1658,7 +1654,7 @@ final class InboxModel: ObservableObject {
     private func requestCancellation(agentID: String, turnID: String) {
         guard connected, !turnID.isEmpty else { return }
         prepareHandForBackground()
-        handTasks.cancel(id: turnID, stopTurn: false)
+        handTasks.endObservation(id: turnID, outcome: .stopped)
         let intent = PendingTurnCancellation(agentID: agentID, turnID: turnID)
         if let index = cancellations.firstIndex(where: { $0.id == intent.id }) {
             cancellations[index].error = nil

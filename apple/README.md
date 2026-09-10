@@ -316,8 +316,10 @@ Hand stays connected after leaving the app or locking the screen. The system
 shows progress and cancellation. Progress counts actual activity from that turn's
 event stream; replayed events, other turns, and heartbeats do not advance it.
 The work is resumable at the service; losing a connection does not resubmit it.
-Completion releases runtime, and expiry/Stop persists cancellation for the exact
-turn. If iOS refuses runtime, the message can still run in the foreground.
+Completion releases runtime. Expiry releases local observation and device tools;
+it never cancels the durable cloud turn. Only an explicit in-app Stop or a
+Shortcut user-cancellation request can persist cancellation for that exact turn.
+If iOS refuses runtime, cloud work continues and device tools require foreground time.
 There is no permanent continued-processing task for an idle Hand.
 
 **Run Agent Task** is an App Shortcut with an account-scoped agent picker and a
