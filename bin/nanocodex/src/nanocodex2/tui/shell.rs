@@ -331,7 +331,7 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let cancellation = tokio_util::sync::CancellationToken::new();
         let mut command = tokio::process::Command::new("/bin/sh");
-        command.args(["-c", "printf 'before cancellation'; (printf ready > ready; sleep 1; printf leaked > survived) & wait"]);
+        command.args(["-c", "printf 'before cancellation'; (printf ready > ready; while [ ! -e release ]; do sleep 0.01; done; printf leaked > survived) & wait"]);
         super::configure(&mut command, workspace.path());
         let token = cancellation.clone();
         let task = tokio::spawn(async move { super::run(&mut command, token).await.unwrap() });
@@ -353,6 +353,9 @@ mod tests {
             "captured output must survive cancellation: {:?}",
             result.text
         );
+        // A busy runner may pause between seeing `ready` and cancelling. Only let a
+        // surviving descendant write its marker after cancellation has completed.
+        std::fs::write(workspace.path().join("release"), "").unwrap();
         tokio::time::sleep(Duration::from_millis(1100)).await;
         assert!(
             !workspace.path().join("survived").exists(),
