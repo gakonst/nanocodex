@@ -92,9 +92,9 @@ test("managed memory validates operations and rejects malformed server records",
   await assert.rejects(
     Agent.memory({
       operation: "read",
-      keys: Array.from({ length: 21 }, (_, index) => ({ id: index + 1, version: 1 })),
+      keys: [],
     }, options),
-    /from 1 through 20 keys/,
+    /at least one key/,
   );
   await assert.rejects(
     Agent.memory({ operation: "read", keys: [{ id: 1, version: 1 }] }, options),
@@ -2188,4 +2188,28 @@ test("identified steer withdrawal waits for admission and preserves the receipt"
   assert.deepEqual(requests.at(-1), ["withdraw-steer", { message_id: "pending" }]);
   assert.equal((await turn.withdrawSteer({ messageId: "consumed" })).withdrawn, false);
   await assert.rejects(turn.withdrawSteer({ messageId: "" }), /messageId/);
+});
+
+
+test("managed memory preserves requested scan/read batches above former maxima", async () => {
+  const records = Array.from({ length: 30 }, (_, index) => ({
+    key: { id: index + 1, version: 1 }, content: "Complete record", created_at_ms: 1,
+    updated_at_ms: 1, last_scanned_at_ms: null, scan_count: 0,
+    last_used_at_ms: null, use_count: 0, probation_until_ms: null,
+  }));
+  const options = { baseUrl: origin, apiKey, fetch: async (input, init) => {
+    const body = await new Request(input, init).json();
+    if (body.operation === "scan") {
+      assert.equal(body.limit, 30);
+      return Response.json({ operation: "scan", abstained: false,
+        candidates: records.map(({ key }) => ({ key, preview: "Complete record", score: 1 })) });
+    }
+    assert.equal(body.keys.length, 30);
+    return Response.json({ operation: "read", memories: records });
+  } };
+  const scanned = await Agent.memory({ operation: "scan", query: "complete", limit: 30 }, options);
+  assert.equal(scanned.candidates.length, 30);
+  const read = await Agent.memory({ operation: "read", keys: scanned.candidates.map(({ key }) => key) }, options);
+  assert.equal(read.memories.length, 30);
+  assert.equal(read.memories[29].key.id, 30);
 });

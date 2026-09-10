@@ -2,13 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   DEFAULT_MEMORY_SCAN_LIMIT,
-  MAX_MEMORY_READ_KEYS,
-  MAX_MEMORY_SCAN_RESULTS,
   MEMORY_PROBATION_DURATION_MS,
   memoryPreview,
   normalizeMemoryIdentity,
   parseMemoryOperation,
-  parseMemoryToolOperation,
   rankMemories,
   tokenizeMemory,
   type MemoryRecord,
@@ -64,7 +61,7 @@ describe("durable memory contract", () => {
     })).toThrow("supported memory key fields are id and version");
   });
 
-  it("validates positive safe keys and byte-bounded nonempty input", () => {
+  it("validates positive safe keys and nonempty input", () => {
     for (const key of [
       { id: 0, version: 1 },
       { id: 1, version: -1 },
@@ -89,21 +86,17 @@ describe("durable memory contract", () => {
       .toMatchObject({ operation: "put" });
     expect(parseMemoryOperation({ operation: "put", content: "é".repeat(1_100_000) }))
       .toMatchObject({ operation: "put" });
-    for (const limit of [0, 6, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    for (const limit of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
       expect(() => parseMemoryOperation({ operation: "scan", query: "rust", limit })).toThrow(
-        "integer from 1 to 5",
+        "positive safe integer",
       );
     }
     expect(() => parseMemoryOperation({ operation: "read", keys: [] })).toThrow(
       "requires at least one key",
     );
-    expect(() => parseMemoryOperation({
-      operation: "read",
-      keys: Array.from({ length: MAX_MEMORY_READ_KEYS + 1 }, (_, index) => ({
-        id: index + 1,
-        version: 1,
-      })),
-    })).toThrow(`at most ${MAX_MEMORY_READ_KEYS} keys`);
+    expect(parseMemoryOperation({
+      operation: "read", keys: Array.from({ length: 120 }, (_, index) => ({ id: index + 1, version: 1 })),
+    })).toMatchObject({ keys: expect.arrayContaining([{ id: 120, version: 1 }]) });
     expect(parseMemoryOperation({
       operation: "read",
       keys: [{ id: 1, version: 1 }, { id: 1, version: 1 }, { id: 1, version: 2 }],
@@ -113,20 +106,10 @@ describe("durable memory contract", () => {
     });
   });
 
-  it("bounds oversized model-authored scan limits without relaxing the public parser", () => {
-    expect(parseMemoryToolOperation({ operation: "scan", query: "rust", limit: 10 })).toEqual({
-      operation: "scan",
-      query: "rust",
-      limit: MAX_MEMORY_SCAN_RESULTS,
+  it("preserves caller-selected scan limits without a separate model-only parser", () => {
+    expect(parseMemoryOperation({ operation: "scan", query: "rust", limit: 120 })).toEqual({
+      operation: "scan", query: "rust", limit: 120,
     });
-    expect(() => parseMemoryOperation({ operation: "scan", query: "rust", limit: 10 })).toThrow(
-      "integer from 1 to 5",
-    );
-    for (const limit of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
-      expect(() => parseMemoryToolOperation({ operation: "scan", query: "rust", limit })).toThrow(
-        "integer from 1 to 5",
-      );
-    }
   });
 
   it("exports the probation duration", () => {

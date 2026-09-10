@@ -30,6 +30,15 @@ describe("durable memory content storage", () => {
             VALUES (1, 'team', ?, ?, 1, 1)`, JSON.stringify(content), memoryIdentityDigest(content));
         }
       });
+      const allScanned = await operate(memory, { operation: "scan", query: "local ballast", limit: 600 });
+      expect(allScanned.status).toBe(200);
+      const allCandidates = await allScanned.json() as { candidates: { key: { id: number; version: number } }[] };
+      expect(allCandidates.candidates).toHaveLength(600);
+      const allRead = await operate(memory, { operation: "read", keys: allCandidates.candidates.map(({ key }) => key) });
+      expect(allRead.status).toBe(200);
+      expect((await allRead.json() as { memories: unknown[] }).memories).toHaveLength(600);
+      // Each key executes its own bounded SQL statement; 600 requested keys
+      // cannot overflow SQLite's per-statement parameter ceiling.
       await scan(memory, "copper lighthouse");
       const content = "copper lighthouse ".repeat(130_000) + "😀 conclusion tail";
       const inserted = await operate(memory, { operation: "put", content });

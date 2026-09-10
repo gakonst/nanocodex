@@ -2,7 +2,7 @@ import type { NamedTool, ToolContext } from "nanocodex";
 import {
   MEMORY_TOOL_DESCRIPTION,
   memoryToolInputSchema,
-  parseMemoryToolOperation,
+  parseMemoryOperation,
   type MemoryOperation,
   type MemoryResult,
 } from "nanocodex-tools/memory";
@@ -88,7 +88,7 @@ export function memorySessionTools(options: MemorySessionToolOptions): readonly 
       description: MEMORY_TOOL_DESCRIPTION,
       parameters: memoryToolInputSchema(),
       handler: async (input: unknown, context: ToolContext) => {
-        const operation = parseMemoryToolOperation(input);
+        const operation = parseMemoryOperation(input);
         if (operation.operation === "scan" || operation.operation === "read") {
           options.requireCapability("memory:read", context);
         } else {

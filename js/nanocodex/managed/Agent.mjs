@@ -827,7 +827,6 @@ function managedMemoryResponse(value, expectedOperation) {
   }
   if (value.operation === "scan") {
     if (typeof value.abstained !== "boolean" || !Array.isArray(value.candidates)
-      || value.candidates.length > 5
       || value.abstained !== (value.candidates.length === 0)) {
       throw new ManagedError("invalid_response", "managed memory scan response is malformed");
     }
@@ -1594,15 +1593,15 @@ function validateMemoryOperation(value) {
       throw new TypeError("managed memory scan query must be a nonempty string");
     }
     if (value.limit !== undefined
-      && (!Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 5)) {
-      throw new TypeError("managed memory scan limit must be an integer from 1 through 5");
+      && (!Number.isSafeInteger(value.limit) || value.limit < 1)) {
+      throw new TypeError("managed memory scan limit must be a positive safe integer");
     }
     return;
   }
   if (value.operation === "read") {
     assertOnlyFields(value, ["operation", "keys"], "managed memory read");
-    if (!Array.isArray(value.keys) || value.keys.length === 0 || value.keys.length > 20) {
-      throw new TypeError("managed memory read requires from 1 through 20 keys");
+    if (!Array.isArray(value.keys) || value.keys.length === 0) {
+      throw new TypeError("managed memory read requires at least one key");
     }
     value.keys.forEach(validateMemoryKey);
     return;

@@ -1,5 +1,3 @@
-export const MAX_MEMORY_SCAN_RESULTS = 5;
-export const MAX_MEMORY_READ_KEYS = 20;
 export const DEFAULT_MEMORY_SCAN_LIMIT = 5;
 export const MEMORY_PROBATION_DURATION_MS = 7 * 24 * 60 * 60 * 1_000;
 
@@ -98,7 +96,7 @@ export type MemoryResult =
 
 export const MEMORY_TOOL_DESCRIPTION = [
   "Explicitly scan, read, store, replace, or delete team memory.",
-  "Scan returns at most 5 candidates; preserve exact keys returned by scan, read, or put.",
+  "Scan defaults to 5 candidates; set limit to retrieve more. Preserve exact keys returned by scan, read, or put.",
   "Scan before put. Put and delete are available only to the root agent when the active turn permits writes.",
 ].join(" ");
 
@@ -131,10 +129,10 @@ export function parseMemoryOperation(value: unknown): MemoryOperation {
         throw new DurableMemoryError("invalid_query", "memory scan query must be non-empty");
       }
       if (value.limit !== undefined && (!Number.isSafeInteger(value.limit)
-        || Number(value.limit) < 1 || Number(value.limit) > MAX_MEMORY_SCAN_RESULTS)) {
+        || Number(value.limit) < 1)) {
         throw new DurableMemoryError(
           "invalid_limit",
-          `memory scan limit must be an integer from 1 to ${MAX_MEMORY_SCAN_RESULTS}`,
+          "memory scan limit must be a positive safe integer",
         );
       }
       return {
@@ -147,12 +145,6 @@ export function parseMemoryOperation(value: unknown): MemoryOperation {
       assertSupportedFields(value, "read", ["operation", "keys"]);
       if (!Array.isArray(value.keys) || value.keys.length === 0) {
         throw new DurableMemoryError("invalid_keys", "memory read requires at least one key");
-      }
-      if (value.keys.length > MAX_MEMORY_READ_KEYS) {
-        throw new DurableMemoryError(
-          "invalid_keys",
-          `memory read accepts at most ${MAX_MEMORY_READ_KEYS} keys`,
-        );
       }
       const keys = value.keys.map(parseMemoryKey);
       return {
@@ -180,21 +172,6 @@ export function parseMemoryOperation(value: unknown): MemoryOperation {
         "memory operation must be scan, read, put, or delete",
       );
   }
-}
-
-/**
- * Parses model-authored memory input while bounding an optional result-count hint.
- * Public callers still use the strict parser above; only the owned agent tool gets
- * this recovery for a positive integer that exceeds the advertised maximum.
- */
-export function parseMemoryToolOperation(value: unknown): MemoryOperation {
-  if (isRecord(value)
-    && value.operation === "scan"
-    && Number.isSafeInteger(value.limit)
-    && Number(value.limit) > MAX_MEMORY_SCAN_RESULTS) {
-    return parseMemoryOperation({ ...value, limit: MAX_MEMORY_SCAN_RESULTS });
-  }
-  return parseMemoryOperation(value);
 }
 
 export function parseMemoryKey(value: unknown): MemoryKey {
@@ -231,7 +208,6 @@ export function memoryToolInputSchema() {
           limit: {
             type: "integer",
             minimum: 1,
-            maximum: MAX_MEMORY_SCAN_RESULTS,
             default: DEFAULT_MEMORY_SCAN_LIMIT,
           },
         },
@@ -246,7 +222,6 @@ export function memoryToolInputSchema() {
             type: "array",
             items: key,
             minItems: 1,
-            maxItems: MAX_MEMORY_READ_KEYS,
           },
         },
         required: ["operation", "keys"],
@@ -289,7 +264,6 @@ export function parseMemoryResult(
   switch (value.operation) {
     case "scan": {
       if (typeof value.abstained !== "boolean" || !Array.isArray(value.candidates)
-        || value.candidates.length > MAX_MEMORY_SCAN_RESULTS
         || value.abstained !== (value.candidates.length === 0)) {
         throw invalidMemoryResponse();
       }
@@ -300,7 +274,7 @@ export function parseMemoryResult(
       };
     }
     case "read": {
-      if (!Array.isArray(value.memories) || value.memories.length > MAX_MEMORY_READ_KEYS) {
+      if (!Array.isArray(value.memories)) {
         throw invalidMemoryResponse();
       }
       return { operation: "read", memories: value.memories.map(parseMemoryRecord) };
@@ -440,12 +414,33 @@ export function rankMemories(
     }
     if (score === 0) continue;
     const candidate = { key: memory.key, preview: "", score };
-    if (candidates.length === limit && compare(candidate, candidates.at(-1)!) >= 0) continue;
+    // Worst-first binary heap: caller-selected large result sets should not
+    // repeatedly sort the entire retained prefix for every matching record.
+    if (candidates.length === limit && compare(candidate, candidates[0]!) >= 0) continue;
     candidate.preview = memoryPreview(memory.content);
-    candidates.push(candidate);
-    candidates.sort(compare);
-    if (candidates.length > limit) candidates.pop();
+    if (candidates.length < limit) {
+      let index = candidates.push(candidate) - 1;
+      while (index > 0) {
+        const parent = (index - 1) >>> 1;
+        if (compare(candidates[index]!, candidates[parent]!) <= 0) break;
+        [candidates[index], candidates[parent]] = [candidates[parent]!, candidates[index]!];
+        index = parent;
+      }
+    } else {
+      candidates[0] = candidate;
+      let index = 0;
+      while (true) {
+        const left = index * 2 + 1;
+        if (left >= candidates.length) break;
+        const right = left + 1;
+        const worst = right < candidates.length && compare(candidates[right]!, candidates[left]!) > 0 ? right : left;
+        if (compare(candidates[worst]!, candidates[index]!) <= 0) break;
+        [candidates[index], candidates[worst]] = [candidates[worst]!, candidates[index]!];
+        index = worst;
+      }
+    }
   }
+  candidates.sort(compare);
   return { abstained: candidates.length === 0, candidates };
 }
 
