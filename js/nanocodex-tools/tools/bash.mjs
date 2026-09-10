@@ -298,7 +298,9 @@ function describeRuntime({
     commands: Object.freeze([...bash.commands.keys()].sort()),
     customCommands: Object.freeze(customCommandNames.sort()),
     cwd,
-    limits: Object.freeze(Object.fromEntries(Object.entries(executionLimits).filter(([, value]) => value !== PRACTICALLY_UNBOUNDED))),
+    limits: Object.freeze(Object.fromEntries(Object.entries(executionLimits).filter(
+      ([, value]) => Number.isFinite(value) && value !== PRACTICALLY_UNBOUNDED,
+    ))),
     network: Object.freeze({
       enabled: networkEnabled,
       mode: networkMode ?? (networkEnabled ? "http" : "disabled"),
