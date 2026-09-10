@@ -2050,7 +2050,8 @@ async fn cold_reopen_recovers_idle_routed_prompt_without_a_second_model_call() -
 }
 
 #[tokio::test]
-async fn cold_reopened_started_prompt_cancels_with_a_checkpoint_without_model_replay() -> Result<()> {
+async fn cold_reopened_started_prompt_cancels_with_a_checkpoint_without_model_replay() -> Result<()>
+{
     let store = crate::MemoryStore::new()?;
     let failing_store = FailReplaceOnce {
         inner: store.clone(),
@@ -2067,9 +2068,7 @@ async fn cold_reopened_started_prompt_cancels_with_a_checkpoint_without_model_re
             .build()
     };
     let workspace = temporary_workspace("cancel-durability-cold-reopen")?;
-    let request = || {
-        PromptRequest::new("cancel recovered input").request_id("recovered-cancel")
-    };
+    let request = || PromptRequest::new("cancel recovered input").request_id("recovered-cancel");
 
     let state = crate::DurableSession::open(failing_store, "cancel-cold-reopen").await?;
     let (first, first_events) = Nanocodex::builder(openai()?)

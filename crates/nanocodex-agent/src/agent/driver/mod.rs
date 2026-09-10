@@ -1127,9 +1127,7 @@ where
             let (fork_snapshots, mut fork_snapshot_rx) = watch::channel(None);
             let mut fork_snapshots_open = true;
             let mut cancel = Some(cancel);
-            if cancel_on_admission
-                && let Some(cancel) = cancel.take()
-            {
+            if cancel_on_admission && let Some(cancel) = cancel.take() {
                 let _ = cancel.send(());
             }
             let mut cancel_result = None;

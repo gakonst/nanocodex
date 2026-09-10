@@ -722,15 +722,12 @@ impl Driver {
                                 Ok(()) => {
                                     let admissible = match checkpoint.as_ref() {
                                         Some(_) => self.require_running(&operation_id),
-                                        None
-                                            if self.running.contains(&operation_id)
-                                                || self
-                                                    .state
-                                                    .operation(&operation_id)
-                                                    .is_some_and(|operation| {
-                                                        operation
-                                                            .cancellation_requires_checkpoint()
-                                                    }) =>
+                                        None if self.running.contains(&operation_id)
+                                            || self.state.operation(&operation_id).is_some_and(
+                                                |operation| {
+                                                    operation.cancellation_requires_checkpoint()
+                                                },
+                                            ) =>
                                         {
                                             Err(Error::CancellationCheckpointRequired {
                                                 operation_id: operation_id.clone(),
