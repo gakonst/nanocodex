@@ -564,18 +564,45 @@ export class ManagedEventArchive<Message extends { type: string }> {
     cache: SegmentReadCache<Message>,
   ): Promise<DurableEvent<Message>[]> {
     if (cache.segment?.key === descriptor.key) return cache.segment.events;
-    const object = await this.#bucket.get(this.#portableObjectKey(descriptor.key));
-    if (!object || !object.body) throw new Error("managed event archive segment is unavailable");
-    if (object.size !== descriptor.bytes) {
-      await object.body.cancel();
-      throw new Error("managed event archive segment size does not match its descriptor");
-    }
-    const encoded = new Uint8Array(await object.arrayBuffer());
-    const expectedHash = object.customMetadata?.sha256;
-    if (!expectedHash || object.customMetadata?.kind !== "managed_event_segment"
-      || object.customMetadata?.version !== String(VERSION)
-      || await sha256Hex(encoded) !== expectedHash) {
-      throw new Error("managed event archive segment checksum mismatch");
+    // Only content-addressed segments are cached. Ordinal index keys can be
+    // reused by portability, so they still come from the authoritative bucket.
+    // This named cache is internal; public history still checks authorization.
+    const key = this.#portableObjectKey(descriptor.key);
+    const cacheKey = `https://managed-history.internal/${key}`;
+    // Oversized individual events still work, but never grow a cache buffer
+    // beyond the normal segment target.
+    const sharedCache = descriptor.bytes <= DEFAULT_SEGMENT_TARGET_BYTES
+      ? await caches.open("nanocodex-managed-event-segments-v1").catch(() => undefined)
+      : undefined;
+    const cached = await sharedCache?.match(cacheKey).then(async (response) => {
+      if (!response) return undefined;
+      const bytes = await readCachedSegment(response, descriptor.bytes);
+      return bytes && await sha256Hex(bytes) === descriptor.key.slice(-69, -5) ? bytes : undefined;
+    }).catch(() => undefined);
+    let encoded = cached;
+    if (!encoded) {
+      const object = await this.#bucket.get(key);
+      if (!object || !object.body) throw new Error("managed event archive segment is unavailable");
+      if (object.size !== descriptor.bytes) {
+        await object.body.cancel();
+        throw new Error("managed event archive segment size does not match its descriptor");
+      }
+      encoded = new Uint8Array(await object.arrayBuffer());
+      const expectedHash = object.customMetadata?.sha256;
+      if (!expectedHash || object.customMetadata?.kind !== "managed_event_segment"
+        || object.customMetadata?.version !== String(VERSION)
+        || await sha256Hex(encoded) !== expectedHash) {
+        throw new Error("managed event archive segment checksum mismatch");
+      }
+      if (expectedHash !== descriptor.key.slice(-69, -5)) {
+        throw new Error("managed event archive segment checksum does not match its key");
+      }
+      // Cache failure or eviction never affects durable history availability.
+      // Await the write so the next page can reuse it without an in-isolate map.
+      await sharedCache?.put(cacheKey, new Response(encoded, { headers: {
+        "content-type": "application/json",
+        "cache-control": "public, max-age=86400, immutable",
+      } })).catch(() => {});
     }
     const value = JSON.parse(new TextDecoder().decode(encoded)) as SegmentEnvelope<Message>;
     if (value.version !== VERSION || value.kind !== "managed_event_segment"
@@ -710,6 +737,28 @@ export class ManagedEventArchive<Message extends { type: string }> {
     }
     return descriptors;
   }
+}
+
+/** The descriptor bounds both allocation and reads, even for a broken cache. */
+async function readCachedSegment(response: Response, size: number): Promise<Uint8Array | undefined> {
+  if (!response.body) return undefined;
+  const length = response.headers.get("content-length");
+  if (length !== null && Number(length) !== size) {
+    await response.body.cancel();
+    return undefined;
+  }
+  const reader = response.body.getReader();
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return offset === size ? bytes : undefined;
+      if (value.byteLength > size - offset) return undefined;
+      bytes.set(value, offset);
+      offset += value.byteLength;
+    }
+  } finally { await reader.cancel(); }
 }
 
 function decodeDescriptors(encoded: string): SegmentDescriptor[] {

@@ -395,6 +395,17 @@ Archive sealing embeds stored JSON directly instead of decoding another complete
 copy of the segment. Working memory scales with the page or largest individual
 event, not with total thread history.
 
+History HTTP responses use private, revalidated caching. Their ETag covers the
+session, page boundary, limit, latest event cursor and archive ownership fence.
+A matching validator returns 304 before loading event payloads; the owner and
+scope checks still run first. Responses observed across a concurrent append or
+archive movement are not cached. Content-addressed archive segments also use
+Cloudflare's named Cache API, scoped by the destination agent object ID and
+content hash. Cache hits are size/checksum verified and misses or cache failures
+fall back to R2. Only immutable segments enter that cache: ordinal index objects
+and the mutable transcript tip never receive an immutable cache lifetime. No
+cache entry is a public route or an authorization decision.
+
 Background archival owns one persisted retry deadline, separate from turn
 recovery. It records a 60-second recovery deadline before external storage I/O,
 seals one bounded batch per archive sequentially, and clears the deadline only

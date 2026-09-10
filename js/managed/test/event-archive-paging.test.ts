@@ -35,3 +35,36 @@ it("walks local and archived pages completely while retaining one archive segmen
     } finally { await archive.deleteAll(); log.clear(); }
   });
 });
+
+
+it("reuses verified immutable segments across cold archive readers without reading R2 again", async () => {
+  const runtime = env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace; NANOCODEX_HISTORY: R2Bucket };
+  await runInDurableObject(runtime.NANOCODEX_MEMORY.getByName(crypto.randomUUID()), async (_instance, ctx) => {
+    const log = new DurableEventLog<{ type: string; text: string }>(ctx.storage);
+    const archive = new ManagedEventArchive(ctx.storage, runtime.NANOCODEX_HISTORY, ctx.id.toString());
+    log.append({ type: "message", text: "retained private history" });
+    log.append({ type: "message", text: "live tail" });
+    try {
+      await archive.seal(true);
+      let reads = 0;
+      const bucket = { get: (key: string) => { reads++; return runtime.NANOCODEX_HISTORY.get(key); } } as R2Bucket;
+      const reader = () => new ManagedEventArchive<{ type: string; text: string }>(ctx.storage, bucket, ctx.id.toString());
+      const first = await reader().history(log, "2", 128);
+      expect(reads).toBe(1);
+      const second = await reader().history(log, "2", 128);
+      expect(second).toEqual(first);
+      expect(reads).toBe(1);
+      expect(second.data[0]!.message.text).toBe("retained private history");
+      // A damaged cache entry is disposable; the durable object repairs it
+      // from R2 instead of allowing cached bytes into a transcript.
+      const state = archive.portableState();
+      const descriptor = JSON.parse(state.recent_json)[0];
+      const cache = await caches.open("nanocodex-managed-event-segments-v1");
+      await cache.put(`https://managed-history.internal/${descriptor.key}`, new Response("broken", {
+        headers: { "cache-control": "public, max-age=86400" },
+      }));
+      expect(await reader().history(log, "2", 128)).toEqual(first);
+      expect(reads).toBe(2);
+    } finally { await archive.deleteAll(); log.clear(); }
+  });
+});

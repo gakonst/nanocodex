@@ -3366,6 +3366,19 @@ export class DurableAgentSession extends DurableComputerSession {
       if (!Number.isSafeInteger(limit) || limit > MAX_HISTORY_PAGE_SIZE) {
         return json({ error: "invalid_history_page" }, { status: 400 });
       }
+      // Cursor and archive ownership are small indexed reads. Revalidation
+      // must happen before loading, decoding, or serializing event payloads.
+      const historyTag = () => `W/"history-v1-${this.#sessionId()}-${before ?? "latest"}-${limit}-${this.#eventArchive.latestCursor(this.#eventLog)}-${this.#eventArchive.archivedThrough()}"`;
+      const etag = historyTag();
+      const cacheHeaders = {
+        "cache-control": "private, no-cache",
+        "vary": "Authorization, Cookie",
+        etag,
+      };
+      const validators = request.headers.get("if-none-match")?.split(",").map((value) => value.trim().replace(/^W\//, ""));
+      if (validators?.some((value) => value === "*" || value === etag.slice(2))) {
+        return new Response(null, { status: 304, headers: cacheHeaders });
+      }
       let page;
       try {
         page = await this.#eventArchive.history(this.#eventLog, before, limit);
@@ -3387,7 +3400,7 @@ export class DurableAgentSession extends DurableComputerSession {
         })),
         has_more: page.has_more,
         latest_cursor: page.latest_cursor,
-      }, { headers: { "cache-control": "no-store" } });
+      }, { headers: historyTag() === etag ? cacheHeaders : { "cache-control": "no-store" } });
     }
     if (request.method === "POST" && url.pathname === "/events/archive") {
       if (this.#deleting)
