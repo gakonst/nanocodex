@@ -534,7 +534,8 @@ async fn map_admission(
     admission: Admission<crate::context::Snapshot, ExecutionOutput>,
 ) -> AgentResult<ExecutionAdmission> {
     Ok(match admission {
-        Admission::Accepted | Admission::Pending => ExecutionAdmission::Execute,
+        Admission::Accepted => ExecutionAdmission::Execute,
+        Admission::Pending => ExecutionAdmission::Resume,
         Admission::Completed { checkpoint, output } => ExecutionAdmission::Completed {
             snapshot: crate::context::restore_snapshot(owner.into(), checkpoint)
                 .await

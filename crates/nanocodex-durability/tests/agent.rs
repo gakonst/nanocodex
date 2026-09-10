@@ -2050,6 +2050,83 @@ async fn cold_reopen_recovers_idle_routed_prompt_without_a_second_model_call() -
 }
 
 #[tokio::test]
+async fn cold_reopened_started_prompt_cancels_with_a_checkpoint_without_model_replay() -> Result<()>
+{
+    let store = crate::MemoryStore::new()?;
+    let failing_store = FailReplaceOnce {
+        inner: store.clone(),
+        expected_revision: 7,
+        failed: Arc::new(AtomicBool::new(false)),
+    };
+    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let openai = || {
+        let generations = Arc::clone(&generations);
+        OpenAi::builder("test-key")
+            .service(move || DurableReplayService {
+                generations: Arc::clone(&generations),
+            })
+            .build()
+    };
+    let workspace = temporary_workspace("cancel-durability-cold-reopen")?;
+    let request = || PromptRequest::new("cancel recovered input").request_id("recovered-cancel");
+
+    let state = crate::DurableSession::open(failing_store, "cancel-cold-reopen").await?;
+    let (first, first_events) = Nanocodex::builder(openai()?)
+        .workspace(&workspace)
+        .session_id(test_session_id())
+        .durability(state)
+        .await?
+        .build()?;
+    let first_error = first
+        .prompt(request())
+        .await?
+        .result()
+        .await
+        .expect_err("the injected terminal replacement must leave a pending operation");
+    assert!(
+        first_error
+            .to_string()
+            .contains("injected replacement failure")
+    );
+    first.shutdown().await?;
+    drop((first, first_events));
+
+    let state = crate::DurableSession::open(store, "cancel-cold-reopen").await?;
+    let (reopened, reopened_events) = Nanocodex::builder(openai()?)
+        .workspace(&workspace)
+        .session_id(test_session_id())
+        .durability(state.clone())
+        .await?
+        .build()?;
+    let cancelled = reopened
+        .prompt(request().cancel_on_admission())
+        .await?
+        .result()
+        .await;
+    assert!(matches!(cancelled, Err(NanocodexError::TurnCancelled)));
+    assert_eq!(
+        generations.load(Ordering::SeqCst),
+        1,
+        "cancelling recovered work must not dispatch another model call",
+    );
+    let retained = state.state().await?;
+    assert!(matches!(
+        &retained
+            .operation("recovered-cancel")
+            .expect("cancelled operation remains retained")
+            .status,
+        OperationStatus::Cancelled {
+            checkpoint: Some(_)
+        }
+    ));
+
+    reopened.shutdown().await?;
+    drop((reopened, reopened_events));
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn active_routed_input_is_retained_in_the_durable_checkpoint() -> Result<()> {
     let store = crate::MemoryStore::new()?;
     let state = crate::DurableSession::open(store, "active-routed-input").await?;

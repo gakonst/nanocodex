@@ -113,8 +113,7 @@ where
                             break Command::Prompt {
                                 key,
                                 prompt,
-                                execution_operation: execution_operation
-                                    .map(ExecutionOperation::Admitted),
+                                execution_operation,
                                 accepted: None,
                                 cancel_on_admission: false,
                                 thinking: Some(thinking),
@@ -125,6 +124,7 @@ where
                             };
                         }
                         QueuedTurn::Cancelled {
+                            key,
                             prompt,
                             execution_operation,
                             cancellation_committed,
@@ -134,6 +134,23 @@ where
                             events,
                             result,
                         } => {
+                            if execution_operation
+                                .as_ref()
+                                .is_some_and(ExecutionOperation::is_recovered)
+                            {
+                                break Command::Prompt {
+                                    key,
+                                    prompt,
+                                    execution_operation,
+                                    accepted: None,
+                                    cancel_on_admission: true,
+                                    thinking: Some(thinking),
+                                    fast_mode: Some(fast_mode),
+                                    parent,
+                                    events,
+                                    result,
+                                };
+                            }
                             turn_index += 1;
                             let prompt_content = tracing::enabled!(
                                 target: "nanocodex",
@@ -170,8 +187,10 @@ where
                             let _guard = turn_span.enter();
                             let persisted = if cancellation_committed {
                                 Ok(())
-                            } else if let Some(operation_id) = &execution_operation {
-                                self.execution.cancel_operation(operation_id, &prompt).await
+                            } else if let Some(operation) = &execution_operation {
+                                self.execution
+                                    .cancel_operation(operation.id(), &prompt)
+                                    .await
                             } else {
                                 Ok(())
                             };
@@ -202,7 +221,10 @@ where
                             };
                             let outcome = self
                                 .execution
-                                .recover_failure(execution_operation.as_deref(), outcome)
+                                .recover_failure(
+                                    execution_operation.as_ref().map(ExecutionOperation::id),
+                                    outcome,
+                                )
                                 .await;
                             if !commands_open
                                 && let Err(error) = &outcome
@@ -469,7 +491,10 @@ where
                             continue;
                         }
                     };
-                    if !matches!(admission, AdmittedExecution::Execute) {
+                    if !matches!(
+                        admission,
+                        AdmittedExecution::Execute | AdmittedExecution::Resume
+                    ) {
                         let error = NanocodexError::InvalidExecutionPolicy(
                             "standalone compaction identity resolved to an unexpected terminal operation"
                                 .to_owned(),
@@ -577,8 +602,6 @@ where
                                         events,
                                         result,
                                     }) => {
-                                        let execution_operation =
-                                            execution_operation.map(ExecutionOperation::into_id);
                                         queued_turns.push_back(queued_prompt(
                                             key,
                                             prompt,
@@ -632,7 +655,7 @@ where
                                         queued_turns.push_back(queued_prompt(
                                             key,
                                             prompt,
-                                            execution_operation.map(ExecutionOperation::into_id),
+                                            execution_operation,
                                             cancel_on_admission,
                                             default_thinking,
                                             default_fast_mode,
@@ -654,23 +677,26 @@ where
                                             &queued_turns,
                                             key,
                                         ) {
-                                            Some((operation_id, prompt)) => {
-                                                let persisted = match operation_id {
-                                                    Some(operation_id) => {
+                                            Some((operation, prompt)) => {
+                                                let recovered = operation
+                                                    .as_ref()
+                                                    .is_some_and(ExecutionOperation::is_recovered);
+                                                let persisted = match operation.as_ref() {
+                                                    Some(operation) if !recovered => {
                                                         self.execution
                                                             .cancel_operation(
-                                                                &operation_id,
+                                                                operation.id(),
                                                                 &prompt,
                                                             )
                                                             .await
                                                     }
-                                                    None => Ok(()),
+                                                    Some(_) | None => Ok(()),
                                                 };
                                                 persisted.and_then(|()| {
                                                     if cancel_queued_turn(
                                                         &mut queued_turns,
                                                         key,
-                                                        true,
+                                                        !recovered,
                                                     ) {
                                                         Ok(())
                                                     } else {
@@ -974,6 +1000,9 @@ where
                 );
                 continue;
             };
+            let recovered_operation = execution_operation
+                .as_ref()
+                .is_some_and(ExecutionOperation::is_recovered);
             let execution_operation = execution_operation.map(ExecutionOperation::into_id);
             let thinking = thinking.unwrap_or(default_thinking);
             let fast_mode = fast_mode.unwrap_or(default_fast_mode);
@@ -988,11 +1017,11 @@ where
                 drop(result.send(outcome));
                 continue;
             }
-            if cancel_on_admission {
+            if cancel_on_admission && !recovered_operation {
                 queued_turns.push_front(queued_prompt(
                     key,
                     prompt,
-                    execution_operation,
+                    execution_operation.map(ExecutionOperation::Admitted),
                     true,
                     thinking,
                     fast_mode,
@@ -1098,6 +1127,9 @@ where
             let (fork_snapshots, mut fork_snapshot_rx) = watch::channel(None);
             let mut fork_snapshots_open = true;
             let mut cancel = Some(cancel);
+            if cancel_on_admission && let Some(cancel) = cancel.take() {
+                let _ = cancel.send(());
+            }
             let mut cancel_result = None;
             model.set_events(events);
             let mut execution = Box::pin(
@@ -1179,8 +1211,6 @@ where
                                 events,
                                 result,
                             }) => {
-                                let execution_operation =
-                                    execution_operation.map(ExecutionOperation::into_id);
                                 queued_turns.push_back(queued_prompt(
                                     key,
                                     prompt,
@@ -1303,20 +1333,23 @@ where
                                         &queued_turns,
                                         target,
                                     ) {
-                                        Some((operation_id, prompt)) => {
-                                            let persisted = match operation_id {
-                                                Some(operation_id) => {
+                                        Some((operation, prompt)) => {
+                                            let recovered = operation
+                                                .as_ref()
+                                                .is_some_and(ExecutionOperation::is_recovered);
+                                            let persisted = match operation.as_ref() {
+                                                Some(operation) if !recovered => {
                                                     self.execution
-                                                        .cancel_operation(&operation_id, &prompt)
+                                                        .cancel_operation(operation.id(), &prompt)
                                                         .await
                                                 }
-                                                None => Ok(()),
+                                                Some(_) | None => Ok(()),
                                             };
                                             persisted.and_then(|()| {
                                                 if cancel_queued_turn(
                                                     &mut queued_turns,
                                                     target,
-                                                    true,
+                                                    !recovered,
                                                 ) {
                                                     Ok(())
                                                 } else {
@@ -1889,6 +1922,9 @@ async fn accept_execution_command(
         ExecutionOperation::Admitted(operation_id) => {
             Ok((operation_id, AdmittedExecution::Execute))
         }
+        ExecutionOperation::Recovered(operation_id) => {
+            Ok((operation_id, AdmittedExecution::Resume))
+        }
     };
     match admission {
         Ok((operation_id, AdmittedExecution::Execute)) => {
@@ -1900,6 +1936,24 @@ async fn accept_execution_command(
                 key,
                 prompt,
                 execution_operation: Some(ExecutionOperation::Admitted(operation_id)),
+                accepted: None,
+                cancel_on_admission,
+                thinking,
+                fast_mode,
+                parent,
+                events,
+                result,
+            })
+        }
+        Ok((operation_id, AdmittedExecution::Resume)) => {
+            if accepted.send(Ok(operation_id.clone())).is_err() {
+                execution.release_claim(&operation_id).await;
+                return None;
+            }
+            Some(Command::Prompt {
+                key,
+                prompt,
+                execution_operation: Some(ExecutionOperation::Recovered(operation_id)),
                 accepted: None,
                 cancel_on_admission,
                 thinking,
@@ -2024,6 +2078,29 @@ async fn accept_idle_route(
                 key,
                 prompt,
                 execution_operation: Some(ExecutionOperation::Admitted(operation_id)),
+                accepted: None,
+                cancel_on_admission: false,
+                thinking: None,
+                fast_mode: None,
+                parent,
+                events,
+                result: turn_result,
+            })
+        }
+        Ok((operation_id, AdmittedExecution::Resume)) => {
+            if route_result
+                .send(Ok(PromptRouteKind::Started {
+                    request_id: Some(operation_id.clone()),
+                }))
+                .is_err()
+            {
+                execution.release_claim(&operation_id).await;
+                return None;
+            }
+            Some(Command::Prompt {
+                key,
+                prompt,
+                execution_operation: Some(ExecutionOperation::Recovered(operation_id)),
                 accepted: None,
                 cancel_on_admission: false,
                 thinking: None,
