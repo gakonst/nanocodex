@@ -490,10 +490,12 @@ pub(super) enum Command {
 }
 
 #[cfg(feature = "openai")]
+#[derive(Clone)]
 pub(super) enum ExecutionOperation {
     Caller(String),
     Automatic(String),
     Admitted(String),
+    Recovered(String),
 }
 
 #[cfg(feature = "openai")]
@@ -502,8 +504,22 @@ impl ExecutionOperation {
         match self {
             Self::Caller(operation_id)
             | Self::Automatic(operation_id)
-            | Self::Admitted(operation_id) => operation_id,
+            | Self::Admitted(operation_id)
+            | Self::Recovered(operation_id) => operation_id,
         }
+    }
+
+    pub(super) fn id(&self) -> &str {
+        match self {
+            Self::Caller(operation_id)
+            | Self::Automatic(operation_id)
+            | Self::Admitted(operation_id)
+            | Self::Recovered(operation_id) => operation_id,
+        }
+    }
+
+    pub(super) const fn is_recovered(&self) -> bool {
+        matches!(self, Self::Recovered(_))
     }
 }
 
@@ -518,7 +534,7 @@ pub(super) enum QueuedTurn {
     Pending {
         key: TurnKey,
         prompt: Prompt,
-        execution_operation: Option<String>,
+        execution_operation: Option<ExecutionOperation>,
         thinking: Thinking,
         fast_mode: bool,
         parent: Option<tracing::Span>,
@@ -526,8 +542,9 @@ pub(super) enum QueuedTurn {
         result: oneshot::Sender<Result<TurnResult>>,
     },
     Cancelled {
+        key: TurnKey,
         prompt: Prompt,
-        execution_operation: Option<String>,
+        execution_operation: Option<ExecutionOperation>,
         cancellation_committed: bool,
         thinking: Thinking,
         fast_mode: bool,

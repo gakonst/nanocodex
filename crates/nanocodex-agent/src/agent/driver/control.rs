@@ -109,7 +109,7 @@ impl DriverShutdown {
 pub(super) fn queued_execution_operation(
     queued_turns: &VecDeque<QueuedTurn>,
     target: TurnKey,
-) -> Option<(Option<String>, Prompt)> {
+) -> Option<(Option<ExecutionOperation>, Prompt)> {
     queued_turns.iter().find_map(|queued| match queued {
         QueuedTurn::Pending {
             key,
@@ -125,7 +125,7 @@ pub(super) fn queued_execution_operation(
 pub(super) fn queued_prompt(
     key: TurnKey,
     prompt: Prompt,
-    execution_operation: Option<String>,
+    execution_operation: Option<ExecutionOperation>,
     cancel_on_admission: bool,
     thinking: Thinking,
     fast_mode: bool,
@@ -135,6 +135,7 @@ pub(super) fn queued_prompt(
 ) -> QueuedTurn {
     if cancel_on_admission {
         QueuedTurn::Cancelled {
+            key,
             prompt,
             execution_operation,
             cancellation_committed: false,
@@ -173,6 +174,7 @@ pub(super) fn cancel_queued_turn(
         return false;
     };
     let QueuedTurn::Pending {
+        key,
         prompt,
         execution_operation,
         thinking,
@@ -188,6 +190,7 @@ pub(super) fn cancel_queued_turn(
     queued_turns.insert(
         position,
         QueuedTurn::Cancelled {
+            key,
             prompt,
             execution_operation,
             cancellation_committed,
@@ -205,6 +208,7 @@ pub(super) fn mark_all_queued_turns_cancelled(queued_turns: &mut VecDeque<Queued
     let accepted = std::mem::take(queued_turns);
     queued_turns.extend(accepted.into_iter().map(|queued| match queued {
         QueuedTurn::Pending {
+            key,
             prompt,
             execution_operation,
             thinking,
@@ -214,6 +218,7 @@ pub(super) fn mark_all_queued_turns_cancelled(queued_turns: &mut VecDeque<Queued
             result,
             ..
         } => QueuedTurn::Cancelled {
+            key,
             prompt,
             execution_operation,
             cancellation_committed: false,
@@ -256,7 +261,6 @@ pub(super) async fn begin_shutdown(
                 events,
                 result,
             } => {
-                let execution_operation = execution_operation.map(ExecutionOperation::into_id);
                 queued_turns.push_back(queued_prompt(
                     key,
                     prompt,

@@ -29,8 +29,10 @@ pub type ExecutionFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 /// Result of admitting one identified execution into an attached policy.
 pub enum ExecutionAdmission {
-    /// Execute the newly accepted or previously interrupted operation.
+    /// Execute a newly accepted operation.
     Execute,
+    /// Resume an unfinished operation admitted by an earlier host instance.
+    Resume,
     /// Return an already completed operation without executing it again.
     Completed {
         /// Session boundary committed with the output.
@@ -535,6 +537,7 @@ pub(crate) struct Execution {
 
 pub(crate) enum AdmittedExecution {
     Execute,
+    Resume,
     Completed {
         output: ExecutionOutput,
         snapshot: SessionSnapshot,
@@ -792,6 +795,7 @@ impl Execution {
 fn map_admission(admission: ExecutionAdmission) -> AdmittedExecution {
     match admission {
         ExecutionAdmission::Execute => AdmittedExecution::Execute,
+        ExecutionAdmission::Resume => AdmittedExecution::Resume,
         ExecutionAdmission::Completed { snapshot, output } => {
             AdmittedExecution::Completed { output, snapshot }
         }
@@ -1124,7 +1128,7 @@ async fn cancel_with_reclaim(
         .await
         .map_err(reopen_after_cancel_retry)?;
     match admission {
-        ExecutionAdmission::Execute => {
+        ExecutionAdmission::Execute | ExecutionAdmission::Resume => {
             if snapshot.is_some() {
                 policy
                     .begin_attempt(operation_id.clone())

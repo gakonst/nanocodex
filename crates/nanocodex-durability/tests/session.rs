@@ -932,6 +932,44 @@ async fn active_operation_cancellation_requires_a_checkpoint() {
 }
 
 #[tokio::test]
+async fn cold_reopened_started_operation_cancellation_requires_a_checkpoint() {
+    let store = MemoryStore::new().unwrap();
+    let session = DurableSession::open(store.clone(), "cold-active-cancel-checkpoint")
+        .await
+        .unwrap();
+    session.admit("turn-1", &"one").await.unwrap();
+    session.begin_attempt("turn-1").await.unwrap();
+    session
+        .begin_step("turn-1", "model-1", "model_call", &"request")
+        .await
+        .unwrap();
+    session.release("turn-1").await.unwrap();
+    drop(session);
+
+    let reopened = DurableSession::open(store, "cold-active-cancel-checkpoint")
+        .await
+        .unwrap();
+    assert!(matches!(
+        reopened.admit("turn-1", &"one").await,
+        Ok(Admission::Pending)
+    ));
+    assert!(matches!(
+        reopened.cancel("turn-1").await,
+        Err(Error::CancellationCheckpointRequired { operation_id }) if operation_id == "turn-1"
+    ));
+    assert!(matches!(
+        reopened
+            .state()
+            .await
+            .unwrap()
+            .operation("turn-1")
+            .unwrap()
+            .status,
+        nanocodex_durability::OperationStatus::Pending
+    ));
+}
+
+#[tokio::test]
 async fn definitely_uncommitted_terminal_replace_reopens_the_exact_claim_for_retry() {
     let store = MemoryStore::new().unwrap();
     let failed = Arc::new(AtomicBool::new(false));

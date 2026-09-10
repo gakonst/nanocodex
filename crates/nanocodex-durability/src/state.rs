@@ -382,6 +382,13 @@ pub struct OperationState {
 }
 
 impl OperationState {
+    pub(crate) fn cancellation_requires_checkpoint(&self) -> bool {
+        self.continuation.is_some()
+            || self.retired_model_calls != 0
+            || !self.steps.is_empty()
+            || !self.steers.is_empty()
+    }
+
     fn retire_steps(&mut self) {
         for (id, step) in &self.steps {
             if step.kind == "model_call"
@@ -664,9 +671,7 @@ impl DurableState {
             if matches!(
                 &operation.status,
                 OperationStatus::Cancelled { checkpoint: None }
-            ) && (operation.retired_model_calls != 0
-                || !operation.steps.is_empty()
-                || !operation.steers.is_empty())
+            ) && operation.cancellation_requires_checkpoint()
             {
                 return Err(Error::InvalidState(format!(
                     "started operation `{operation_id}` was cancelled without a checkpoint"
@@ -957,11 +962,7 @@ impl DurableState {
                 let operation = self.pending_operation(operation_id)?;
                 if checkpoint.is_some() {
                     self.ensure_prior_operations_terminal(operation_id)?;
-                } else if operation.continuation.is_some()
-                    || operation.retired_model_calls != 0
-                    || !operation.steps.is_empty()
-                    || !operation.steers.is_empty()
-                {
+                } else if operation.cancellation_requires_checkpoint() {
                     return Err(Error::InvalidState(format!(
                         "started operation `{operation_id}` was cancelled without a checkpoint"
                     )));
