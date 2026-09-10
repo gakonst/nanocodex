@@ -1,13 +1,12 @@
 const DATABASE_NAME = "nanocodex-local-transcripts-v1";
-const DATABASE_VERSION = 4;
+const DATABASE_VERSION = 5;
 const TURNS_STORE = "turns";
 const SESSIONS_STORE = "sessions";
 const THREAD_ORDER_INDEX = "thread-order";
-const THREAD_STATUS_INDEX = "thread-status";
+const THREAD_PENDING_INDEX = "thread-pending-order";
 
-export const MAX_LOCAL_TRANSCRIPT_TURNS = 100;
-export const MAX_LOCAL_UNFINISHED_TURNS = 32;
-export const MAX_LOCAL_TRANSCRIPT_STEERS = 32;
+// This bounds one IndexedDB read, never admission or durable retention.
+const TRANSCRIPT_PAGE_SIZE = 128;
 
 export type LocalTranscriptTurnStatus =
   | "pending"
@@ -29,6 +28,7 @@ export type LocalTranscriptTurn = Readonly<{
   threadId: string;
   turnId: string;
   createdAt: number;
+  order?: string;
   prompt?: string;
   steers?: readonly LocalTranscriptSteer[];
   assistant?: string;
@@ -40,6 +40,7 @@ export type LocalTranscriptTurn = Readonly<{
 export type LocalTranscriptLoad = Readonly<{
   initialized: boolean;
   turns: readonly LocalTranscriptTurn[];
+  next?: string;
 }>;
 
 export type LocalTranscriptTransition = Readonly<{
@@ -49,7 +50,9 @@ export type LocalTranscriptTransition = Readonly<{
 
 export type LocalTranscriptJournal = Readonly<{
   watch(threadId: string, listener: () => void): () => void;
-  load(threadId: string): Promise<LocalTranscriptLoad>;
+  load(threadId: string, before?: string): Promise<LocalTranscriptLoad>;
+  get(threadId: string, turnId: string): Promise<LocalTranscriptTurn | undefined>;
+  pending(threadId: string): AsyncIterable<LocalTranscriptTurn>;
   bootstrap(threadId: string, turns: readonly LocalTranscriptTurn[]): Promise<void>;
   recordPrompt(turn: LocalTranscriptTurn): Promise<void>;
   appendSteer(
@@ -154,24 +157,51 @@ export function createLocalTranscriptJournal(options: {
       };
     },
 
-    async load(threadId) {
+    async load(threadId, before) {
       const db = await open();
       const transaction = db.transaction([SESSIONS_STORE, TURNS_STORE], "readonly");
       const completed = transactionCompletion(transaction);
       const initialized = requestResult<{ initialized?: unknown } | undefined>(
         transaction.objectStore(SESSIONS_STORE).get(threadId),
       );
-      const range = keyRange.bound([threadId, ""], [threadId, "\uffff"]);
-      const turns = recentTurns(
+      const range = keyRange.bound([threadId, ""], [threadId, before ?? "\uffff"], false, before !== undefined);
+      const turns = readTurns(
         transaction.objectStore(TURNS_STORE).index(THREAD_ORDER_INDEX),
         range,
         threadId,
+        "prev",
       );
       const [session, recent] = await Promise.all([initialized, turns, completed]);
       return Object.freeze({
         initialized: session?.initialized === true,
-        turns: Object.freeze(recent),
+        ...recent,
       });
+    },
+
+    async get(threadId, turnId) {
+      const db = await open();
+      const transaction = db.transaction(TURNS_STORE, "readonly");
+      const completed = transactionCompletion(transaction);
+      const [value] = await Promise.all([
+        requestResult(transaction.objectStore(TURNS_STORE).get([threadId, turnId])), completed,
+      ]);
+      return value === undefined ? undefined : decodeRequiredTurn(value, threadId);
+    },
+
+    async *pending(threadId) {
+      let after: string | undefined;
+      do {
+        const db = await open();
+        const transaction = db.transaction(TURNS_STORE, "readonly");
+        const completed = transactionCompletion(transaction);
+        const range = keyRange.bound([threadId, 1, after ?? ""], [threadId, 1, "\uffff"], after !== undefined);
+        const [page] = await Promise.all([
+          readTurns(transaction.objectStore(TURNS_STORE).index(THREAD_PENDING_INDEX), range, threadId, "next"),
+          completed,
+        ]);
+        after = page.next;
+        for (const turn of page.turns) yield turn;
+      } while (after !== undefined);
     },
 
     async bootstrap(threadId, turns) {
@@ -188,7 +218,7 @@ export function createLocalTranscriptJournal(options: {
             resolve();
             return;
           }
-          const bootstrapTurns = turns.slice(-MAX_LOCAL_TRANSCRIPT_TURNS);
+          const bootstrapTurns = turns;
           if (bootstrapTurns.length === 0) {
             markInitialized();
             return;
@@ -260,27 +290,14 @@ export function createLocalTranscriptJournal(options: {
             transaction.abort();
             return;
           }
-          void countUnfinishedTurns(turns.index(THREAD_STATUS_INDEX), keyRange, turn.threadId)
-            .then((unfinished) => {
-              if (unfinished >= MAX_LOCAL_UNFINISHED_TURNS) {
-                reject(new Error(
-                  `local thread ${turn.threadId} already has ${MAX_LOCAL_UNFINISHED_TURNS} unfinished turns; recover or replace it before submitting more work`,
-                ));
-                transaction.abort();
-                return;
-              }
-              const sequence = session.nextSequence + 1;
-              const added = turns.add(storedTurn({ ...turn, status: "pending" }, false, sequence));
-              added.onerror = () => reject(added.error ?? new Error("writing local transcript prompt failed"));
-              added.onsuccess = () => {
-                const advanced = sessions.put({ ...session.value, threadId: turn.threadId, nextSequence: sequence });
-                advanced.onerror = () => reject(advanced.error ?? new Error("writing local transcript sequence failed"));
-                advanced.onsuccess = () => resolve();
-              };
-            }, (error) => {
-              reject(error);
-              transaction.abort();
-            });
+          const sequence = session.nextSequence + 1;
+          const added = turns.add(storedTurn({ ...turn, status: "pending" }, false, sequence));
+          added.onerror = () => reject(added.error ?? new Error("writing local transcript prompt failed"));
+          added.onsuccess = () => {
+            const advanced = sessions.put({ ...session.value, threadId: turn.threadId, nextSequence: sequence });
+            advanced.onerror = () => reject(advanced.error ?? new Error("writing local transcript sequence failed"));
+            advanced.onsuccess = () => resolve();
+          };
         };
       });
       await Promise.all([recorded, completed]);
@@ -310,6 +327,7 @@ export function createLocalTranscriptJournal(options: {
             ...request.result,
             assistant: turn.assistant,
             status: "completed",
+            pending: 0,
             error: undefined,
           };
           const put = turns.put(next);
@@ -320,15 +338,7 @@ export function createLocalTranscriptJournal(options: {
           }));
         };
       });
-      const pruning = updated.then((transition) => transition.applied
-        && terminalStatus(transition.turn.status)
-        ? pruneTerminalTurns(
-          turns.index(THREAD_ORDER_INDEX),
-          keyRange.bound([turn.threadId, ""], [turn.threadId, "\uffff"]),
-          turn.threadId,
-        )
-        : undefined);
-      const [transition] = await Promise.all([updated, pruning, completed]);
+      const [transition] = await Promise.all([updated, completed]);
       if (transition.applied) notifyThread(turn.threadId);
       return transition;
     },
@@ -360,13 +370,6 @@ export function createLocalTranscriptJournal(options: {
               return;
             }
             resolve(Object.freeze({ applied: false, turn: current }));
-            return;
-          }
-          if (steers.length >= MAX_LOCAL_TRANSCRIPT_STEERS) {
-            reject(new Error(
-              `durable turn ${turn.turnId} already has ${MAX_LOCAL_TRANSCRIPT_STEERS} retained steers`,
-            ));
-            transaction.abort();
             return;
           }
           const next = { ...request.result, steers: [...steers, steer] };
@@ -489,6 +492,7 @@ export function createLocalTranscriptJournal(options: {
           const next = {
             ...request.result,
             status: update.status,
+            pending: terminalStatus(update.status) ? 0 : 1,
             error: update.error,
           };
           const put = turns.put(next);
@@ -499,15 +503,7 @@ export function createLocalTranscriptJournal(options: {
           }));
         };
       });
-      const pruning = updated.then((transition) => transition.applied
-        && terminalStatus(transition.turn.status)
-        ? pruneTerminalTurns(
-          turns.index(THREAD_ORDER_INDEX),
-          keyRange.bound([turn.threadId, ""], [turn.threadId, "\uffff"]),
-          turn.threadId,
-        )
-        : undefined);
-      const [transition] = await Promise.all([updated, pruning, completed]);
+      const [transition] = await Promise.all([updated, completed]);
       if (transition.applied) notifyThread(turn.threadId);
       return transition;
     },
@@ -528,69 +524,29 @@ function openDatabase(
       if (!database.objectStoreNames.contains(SESSIONS_STORE)) {
         database.createObjectStore(SESSIONS_STORE, { keyPath: "threadId" });
       }
-      if (!database.objectStoreNames.contains(TURNS_STORE)) {
-        const turns = database.createObjectStore(TURNS_STORE, {
-          keyPath: ["threadId", "turnId"],
-        });
+      const turns = database.objectStoreNames.contains(TURNS_STORE)
+        ? request.transaction!.objectStore(TURNS_STORE)
+        : database.createObjectStore(TURNS_STORE, { keyPath: ["threadId", "turnId"] });
+      if (!turns.indexNames.contains(THREAD_ORDER_INDEX)) {
         turns.createIndex(THREAD_ORDER_INDEX, ["threadId", "order"], { unique: false });
-        turns.createIndex(THREAD_STATUS_INDEX, ["threadId", "status"], { unique: false });
-      } else {
-        const turns = request.transaction?.objectStore(TURNS_STORE);
-        if (turns && !turns.indexNames.contains(THREAD_ORDER_INDEX)) {
-          turns.createIndex(THREAD_ORDER_INDEX, ["threadId", "order"], { unique: false });
-        }
-        if (turns && !turns.indexNames.contains(THREAD_STATUS_INDEX)) {
-          turns.createIndex(THREAD_STATUS_INDEX, ["threadId", "status"], { unique: false });
-        }
       }
-      if (event.oldVersion < 4) {
-        const turns = request.transaction?.objectStore(TURNS_STORE);
-        const cursorRequest = turns?.openCursor();
-        if (turns && cursorRequest) {
-          const terminalTurnsByThread = new Map<string, Record<string, unknown>[]>();
-          const retainedTurns: Record<string, unknown>[] = [];
-          cursorRequest.onsuccess = () => {
-            const cursor = cursorRequest.result;
-            if (!cursor) {
-              turns.clear();
-              for (const retained of retainedTurns) turns.put(retained);
-              for (const terminalTurns of terminalTurnsByThread.values()) {
-                for (const retained of terminalTurns) turns.put(retained);
-              }
-              return;
-            }
-            const value = cursor.value;
-            if (value && typeof value === "object" && !Array.isArray(value)
-              && typeof value.threadId === "string"
-              && typeof value.order === "string") {
-              const status = value.status
-                ?? (value.assistant === undefined ? "pending" : "completed");
-              const normalized = value.status === undefined ? { ...value, status } : value;
-              if (terminalStatus(status)) {
-                const terminalTurns = terminalTurnsByThread.get(value.threadId) ?? [];
-                terminalTurns.push(normalized);
-                terminalTurns.sort((left, right) =>
-                  indexedDb.cmp(String(right.order), String(left.order))
-                );
-                if (terminalTurns.length > MAX_LOCAL_TRANSCRIPT_TURNS) terminalTurns.pop();
-                terminalTurnsByThread.set(value.threadId, terminalTurns);
-              } else {
-                retainedTurns.push(normalized);
-              }
-            } else {
-              // A row omitted by the order index cannot participate in ordered
-              // recovery. Abort the owning upgrade and preserve the old database
-              // byte-for-byte instead of clearing evidence that loading cannot see.
-              upgradeError = new Error(
-                "persisted local transcript contains a row that cannot be migrated safely",
-              );
-              request.transaction?.abort();
-              return;
-            }
-            cursor.continue();
-          };
+      if (turns.indexNames.contains("thread-status")) turns.deleteIndex("thread-status");
+      turns.createIndex(THREAD_PENDING_INDEX, ["threadId", "pending", "order"], { unique: false });
+      const cursorRequest = turns.openCursor();
+      cursorRequest.onsuccess = () => {
+        const cursor = cursorRequest.result;
+        if (!cursor) return;
+        const value = cursor.value;
+        if (!value || typeof value !== "object" || Array.isArray(value)
+          || typeof value.threadId !== "string" || typeof value.order !== "string") {
+          upgradeError = new Error("persisted local transcript contains a row that cannot be migrated safely");
+          request.transaction?.abort();
+          return;
         }
-      }
+        const status = value.status ?? (value.assistant === undefined ? "pending" : "completed");
+        cursor.update({ ...value, status, pending: terminalStatus(status) ? 0 : 1 });
+        cursor.continue();
+      };
       if (event.oldVersion === 1) {
         const sessions = request.transaction?.objectStore(SESSIONS_STORE);
         const cursorRequest = sessions?.openCursor();
@@ -633,22 +589,22 @@ function openDatabase(
   });
 }
 
-function recentTurns(
+function readTurns(
   index: IDBIndex,
   range: IDBKeyRange,
   threadId: string,
-): Promise<LocalTranscriptTurn[]> {
+  direction: "next" | "prev",
+): Promise<Readonly<{ turns: readonly LocalTranscriptTurn[]; next?: string }>> {
   return new Promise((resolve, reject) => {
     const turns: LocalTranscriptTurn[] = [];
-    let terminalTurns = 0;
-    let unfinishedTurns = 0;
-    const request = index.openCursor(range, "prev");
+    const request = index.openCursor(range, direction);
     request.onerror = () => reject(request.error ?? new Error("reading local transcript failed"));
     request.onsuccess = () => {
       const cursor = request.result;
-      if (!cursor) {
-        turns.reverse();
-        resolve(turns);
+      if (!cursor || turns.length === TRANSCRIPT_PAGE_SIZE) {
+        const next = cursor ? turns.at(-1)!.order : undefined;
+        if (direction === "prev") turns.reverse();
+        resolve(Object.freeze({ turns: Object.freeze(turns), ...(next === undefined ? {} : { next }) }));
         return;
       }
       const turn = decodeTurn(cursor.value, threadId);
@@ -656,73 +612,8 @@ function recentTurns(
         reject(new Error(`persisted local transcript row for thread ${threadId} is invalid`));
         return;
       }
-      if (terminalStatus(turn.status)) {
-        terminalTurns += 1;
-        if (terminalTurns <= MAX_LOCAL_TRANSCRIPT_TURNS) turns.push(turn);
-      } else {
-        unfinishedTurns += 1;
-        if (unfinishedTurns > MAX_LOCAL_UNFINISHED_TURNS) {
-          reject(new Error(
-            `local thread ${threadId} exceeds the ${MAX_LOCAL_UNFINISHED_TURNS}-turn unfinished recovery limit; recover or replace it`,
-          ));
-          return;
-        }
-        turns.push(turn);
-      }
+      turns.push(turn);
       cursor.continue();
-    };
-  });
-}
-
-async function countUnfinishedTurns(
-  index: IDBIndex,
-  keyRange: typeof IDBKeyRange,
-  threadId: string,
-): Promise<number> {
-  const statuses: readonly LocalTranscriptTurnStatus[] = [
-    "pending",
-    "retryable",
-    "blocked",
-    "reopen_required",
-  ];
-  const counts = await Promise.all(statuses.map((status) => requestResult<number>(
-    index.count(keyRange.only([threadId, status])),
-  )));
-  return counts.reduce((total, count) => total + count, 0);
-}
-
-function pruneTerminalTurns(
-  index: IDBIndex,
-  range: IDBKeyRange,
-  threadId: string,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let terminalTurns = 0;
-    const request = index.openCursor(range, "prev");
-    request.onerror = () => reject(request.error ?? new Error("pruning local transcript failed"));
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (!cursor) {
-        resolve();
-        return;
-      }
-      const turn = decodeTurn(cursor.value, threadId);
-      if (!turn) {
-        reject(new Error(`persisted local transcript row for thread ${threadId} is invalid`));
-        return;
-      }
-      if (!terminalStatus(turn.status)) {
-        cursor.continue();
-        return;
-      }
-      terminalTurns += 1;
-      if (terminalTurns <= MAX_LOCAL_TRANSCRIPT_TURNS) {
-        cursor.continue();
-        return;
-      }
-      const deleted = cursor.delete();
-      deleted.onerror = () => reject(deleted.error ?? new Error("deleting expired local transcript turn failed"));
-      deleted.onsuccess = () => cursor.continue();
     };
   });
 }
@@ -736,6 +627,7 @@ function storedTurn(turn: LocalTranscriptTurn, bootstrap = false, sequence = 0):
   return Object.freeze({
     ...turn,
     sequence,
+    pending: terminalStatus(turn.status ?? (turn.assistant === undefined ? "pending" : "completed")) ? 0 : 1,
     order: `${prefix}:${String(sequence).padStart(16, "0")}`,
   });
 }
@@ -756,6 +648,7 @@ function decodeTurn(value: unknown, threadId: string): LocalTranscriptTurn | und
     threadId,
     turnId: turn.turnId,
     createdAt: turn.createdAt,
+    ...(typeof turn.order === "string" ? { order: turn.order } : {}),
     ...(turn.prompt === undefined ? {} : { prompt: turn.prompt }),
     ...(turn.steers === undefined ? {} : { steers: Object.freeze(turn.steers.map((steer) => Object.freeze({
       ...steer,
@@ -811,7 +704,6 @@ function terminalStatus(
 
 function validSteers(value: unknown): value is readonly LocalTranscriptSteer[] {
   return Array.isArray(value)
-    && value.length <= MAX_LOCAL_TRANSCRIPT_STEERS
     && value.every((steer) => steer
       && typeof steer === "object"
       && !Array.isArray(steer)

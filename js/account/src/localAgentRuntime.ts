@@ -2,7 +2,6 @@ import type { AgentEvent, AgentSessionContext } from "nanocodex";
 import type { Agent, AgentTurn } from "nanocodex-react/agent";
 import {
   createLocalTranscriptJournal,
-  MAX_LOCAL_TRANSCRIPT_TURNS,
   type LocalTranscriptJournal,
   type LocalTranscriptSteer,
   type LocalTranscriptTransition,
@@ -10,7 +9,6 @@ import {
   type LocalTranscriptTurnStatus,
 } from "./localTranscriptJournal.ts";
 
-const MAX_LOCAL_HISTORY_MESSAGES = 200;
 const DEFAULT_RECOVERY_TIMEOUT_MS = 30_000;
 const browserJournal = createLocalTranscriptJournal();
 
@@ -53,6 +51,11 @@ export function localTerminalAgent(
   beforeTurn: () => Promise<void> = async () => {},
 ): Agent {
   let latestHistory: readonly AgentEvent[] | undefined;
+  const visibleTurns = new Map<string, LocalTranscriptTurn>();
+  let visibleHistoryChanged = true;
+  let historyInitialized = false;
+  let olderBefore: string | undefined;
+  let newestOrder: string | undefined;
   const reopenBarriers = new Set<string>();
   let processorTail: Promise<void> = Promise.resolve();
   const processLocally = <T>(operation: () => Promise<T>): Promise<T> => {
@@ -65,33 +68,102 @@ export function localTerminalAgent(
     delivered: boolean;
   }>();
   let refreshTail: Promise<void> = Promise.resolve();
+  const publishHistory = (publish: boolean): readonly AgentEvent[] => {
+    if (!visibleHistoryChanged && latestHistory) return latestHistory;
+    const turns = [...visibleTurns.values()].sort((left, right) => {
+      const a = left.order ?? "", b = right.order ?? "";
+      return a === b ? left.createdAt - right.createdAt : a < b ? -1 : 1;
+    });
+    const events = localTranscriptEvents(turns, agent.sessionId);
+    latestHistory = events;
+    visibleHistoryChanged = false;
+    if (publish) {
+      for (const subscription of historyListeners) {
+        if (subscription.delivered) notifyHistoryListener(subscription.listener, events);
+      }
+    }
+    return events;
+  };
+  const retainPage = (turns: readonly LocalTranscriptTurn[]) => {
+    for (const turn of turns) {
+      const retained = visibleTurns.get(turn.turnId);
+      if (retained && sameTranscriptTurn(retained, turn)) continue;
+      visibleTurns.set(turn.turnId, turn);
+      visibleHistoryChanged = true;
+    }
+  };
   const refreshHistory = (publish: boolean): Promise<readonly AgentEvent[]> => {
     const refresh = refreshTail.then(async () => {
-      const retained = await journal.load(threadId);
-      const events = localTranscriptEvents(retained.turns, agent.sessionId);
-      const changed = !latestHistory || !sameHistory(latestHistory, events);
-      latestHistory = events;
-      if (publish && changed) {
-        for (const subscription of historyListeners) {
-          if (subscription.delivered) notifyHistoryListener(subscription.listener, events);
+      let page = await journal.load(threadId);
+      const newest = page.turns.at(-1)?.order;
+      const refreshed = new Set(page.turns.map(({ turnId }) => turnId));
+      retainPage(page.turns);
+      if (!historyInitialized) {
+        olderBefore = page.next;
+        historyInitialized = true;
+      } else {
+        // Catch up only the gap since the last observed page, not all saved
+        // history. Older terminal rows are immutable; only unfinished rows in
+        // the current presentation need individual refreshes.
+        while (page.next !== undefined
+          && (newestOrder === undefined || page.turns[0]!.order! > newestOrder)) {
+          page = await journal.load(threadId, page.next);
+          const added = page.turns.filter((turn) => newestOrder === undefined || turn.order! > newestOrder);
+          retainPage(added);
+          for (const turn of added) refreshed.add(turn.turnId);
+        }
+        for (const turn of visibleTurns.values()) {
+          if (refreshed.has(turn.turnId) || terminalTranscriptStatus(transcriptStatus(turn))) continue;
+          const current = await journal.get(threadId, turn.turnId);
+          if (current) retainPage([current]);
         }
       }
-      return events;
+      newestOrder = newest ?? newestOrder;
+      return publishHistory(publish);
     });
     refreshTail = refresh.then(() => undefined, () => undefined);
     return refresh;
+  };
+  const loadOlder = (): Promise<boolean> => {
+    const load = refreshTail.then(async () => {
+      if (olderBefore === undefined) return false;
+      const page = await journal.load(threadId, olderBefore);
+      retainPage(page.turns);
+      olderBefore = page.next;
+      publishHistory(true);
+      return page.turns.length > 0;
+    });
+    refreshTail = load.then(() => undefined, () => undefined);
+    return load;
   };
   let journalWatchers = 0;
   let stopJournalWatch: (() => void) | undefined;
   const acquireJournalWatch = () => {
     journalWatchers += 1;
     if (journalWatchers !== 1) return;
+    let stopped = false;
+    let pending = false;
+    let refreshing = false;
     const refresh = () => {
-      void refreshHistory(true).catch((error) => onInitializationError?.(error));
+      pending = true;
+      if (refreshing) return;
+      refreshing = true;
+      // Visibility, focus and pageshow often describe the same tab activation.
+      // Coalesce that burst; a notification during a read requests one followup.
+      queueMicrotask(async () => {
+        try {
+          while (pending && !stopped) {
+            pending = false;
+            await refreshHistory(true);
+          }
+        } catch (error) { onInitializationError?.(error); }
+        finally { refreshing = false; }
+      });
     };
     const stopBroadcastWatch = journal.watch(threadId, refresh);
     const stopActivityWatch = transcriptActivity.watch(refresh);
     stopJournalWatch = () => {
+      stopped = true;
       stopBroadcastWatch();
       stopActivityWatch();
     };
@@ -284,7 +356,8 @@ export function localTerminalAgent(
             const subscription = { listener, delivered: false };
             historyListeners.add(subscription);
             ownedHistoryListeners.add(subscription);
-            void startHistory().then(() => refreshHistory(false)).then((events) => {
+            const loaded = history === undefined ? startHistory() : startHistory().then(() => refreshHistory(false));
+            void loaded.then((events) => {
               if (!disposed && historyListeners.has(subscription)) {
                 notifyHistoryListener(listener, latestHistory ?? events);
                 subscription.delivered = true;
@@ -300,6 +373,11 @@ export function localTerminalAgent(
               historyListeners.delete(subscription);
               ownedHistoryListeners.delete(subscription);
             };
+          },
+          async loadOlder() {
+            await startHistory();
+            if (disposed) return false;
+            return loadOlder();
           },
           off() {
             if (disposed) return;
@@ -494,8 +572,19 @@ async function processPendingTurns(
   setActiveTurn: (turnId?: string) => void = () => {},
   beforeTurn: () => Promise<void> = async () => {},
 ): Promise<Awaited<ReturnType<AgentTurn["result"]>> | Error | undefined> {
-  const retained = await journal.load(threadId);
-  for (const transcript of retained.turns) {
+  const settledTarget = async () => {
+    if (!target) return undefined;
+    const retained = await journal.get(threadId, target.turnId);
+    if (!retained) return undefined;
+    const status = transcriptStatus(retained);
+    if (status === "completed") return retainedCompletion(retained);
+    if (status === "cancelled") return retainedCancellation(retained);
+    if (status === "failed") return retainedTerminalFailure(retained);
+    return undefined;
+  };
+  const alreadySettled = await settledTarget();
+  if (alreadySettled !== undefined) return alreadySettled;
+  for await (const transcript of journal.pending(threadId)) {
     const status = transcriptStatus(transcript);
     if (status === "completed") {
       if (transcript.turnId === target?.turnId) return retainedCompletion(transcript);
@@ -634,7 +723,9 @@ async function processPendingTurns(
       turn?.dispose();
     }
   }
-  return undefined;
+  // Another tab may settle the target after the first read, removing it
+  // from the pending index before our cursor reaches it. Absorb that winner.
+  return settledTarget();
 }
 
 function boundedRecoveryResult(
@@ -717,9 +808,8 @@ export function localContextTurns(
     if (pending && pending.assistant === undefined) pending.assistant = assistant;
     else turns.push({ assistant, turnId: `bootstrap-${turns.length}-assistant` });
   }
-  const recent = turns.slice(-MAX_LOCAL_TRANSCRIPT_TURNS);
-  const start = Date.now() - recent.length;
-  return Object.freeze(recent.map((turn, index) => Object.freeze({
+  const start = Date.now() - turns.length;
+  return Object.freeze(turns.map((turn, index) => Object.freeze({
     ...turn,
     threadId,
     createdAt: start + index,
@@ -731,23 +821,19 @@ export function localTranscriptEvents(
   sessionId: string,
 ): readonly AgentEvent[] {
   const events: AgentEvent[] = [];
-  for (const projection of projectedTranscriptTurns(turns)) {
-    const { turn } = projection;
-    if (turn.prompt !== undefined || projection.unfinished) {
+  for (const turn of turns) {
+    const unfinished = !terminalTranscriptStatus(transcriptStatus(turn));
+    if (turn.prompt !== undefined || unfinished) {
       events.push(historyEvent(sessionId, events.length + 1, "managed.prompt", {
         text: turn.prompt ?? "",
         turn_id: turn.turnId,
-        ...(projection.unfinished ? {
+        ...(unfinished ? {
           status: turn.cancelRequested ? "cancelling" : transcriptStatus(turn),
           ...(turn.prompt === undefined ? { input_missing: true } : {}),
-          ...(projection.detailTruncated ? {
-            detail_truncated: true,
-            omitted_steers: (turn.steers?.length ?? 0) - projection.steers.length,
-          } : {}),
         } : {}),
       }));
     }
-    for (const steer of projection.steers) {
+    for (const steer of turn.steers ?? []) {
       events.push(historyEvent(sessionId, events.length + 1, "managed.steer", {
         text: steer.text,
         steer_id: steer.id,
@@ -783,84 +869,13 @@ export function localTranscriptEvents(
   return Object.freeze(events);
 }
 
-type ProjectedTranscriptTurn = Readonly<{
-  turn: LocalTranscriptTurn;
-  steers: readonly LocalTranscriptSteer[];
-  unfinished: boolean;
-  detailTruncated: boolean;
-}>;
-
-function projectedTranscriptTurns(
-  turns: readonly LocalTranscriptTurn[],
-): readonly ProjectedTranscriptTurn[] {
-  const indexed = turns.map((turn, index) => ({ turn, index }));
-  const unfinished = indexed.filter(({ turn }) => !terminalTranscriptStatus(transcriptStatus(turn)));
-  const terminal = indexed.filter(({ turn }) => terminalTranscriptStatus(transcriptStatus(turn)));
-  const mandatoryUnfinishedEvents = unfinished.reduce(
-    (total, { turn }) => total + unfinishedMandatoryEventCount(turn),
-    0,
-  );
-  let remaining = MAX_LOCAL_HISTORY_MESSAGES - mandatoryUnfinishedEvents;
-  if (remaining < 0) {
-    throw new Error("unfinished local transcript state exceeds the bounded mandatory projection");
-  }
-  const selected: Array<{ index: number; projection: ProjectedTranscriptTurn }> = [];
-  for (const [unfinishedIndex, candidate] of unfinished.entries()) {
-    const steers = candidate.turn.steers ?? [];
-    const remainingTurns = unfinished.length - unfinishedIndex;
-    const retainedSteers = Math.min(steers.length, Math.floor(remaining / remainingTurns));
-    remaining -= retainedSteers;
-    selected.push({
-      index: candidate.index,
-      projection: Object.freeze({
-        turn: candidate.turn,
-        steers: Object.freeze(retainedSteers === 0 ? [] : steers.slice(-retainedSteers)),
-        unfinished: true,
-        detailTruncated: retainedSteers < steers.length,
-      }),
-    });
-  }
-  const recentTerminal: typeof selected = [];
-  for (const candidate of [...terminal].reverse()) {
-    const size = transcriptEventCount(candidate.turn);
-    if (size > remaining) continue;
-    recentTerminal.push({
-      index: candidate.index,
-      projection: Object.freeze({
-        turn: candidate.turn,
-        steers: Object.freeze(candidate.turn.steers ?? []),
-        unfinished: false,
-        detailTruncated: false,
-      }),
-    });
-    remaining -= size;
-  }
-  selected.push(...recentTerminal);
-  selected.sort((left, right) => left.index - right.index);
-  return selected.map(({ projection }) => projection);
-}
-
-function unfinishedMandatoryEventCount(turn: LocalTranscriptTurn): number {
-  const status = transcriptStatus(turn);
-  return status === "pending" ? 1 : 3;
-}
-
-function transcriptEventCount(turn: LocalTranscriptTurn): number {
-  let count = (turn.prompt === undefined ? 0 : 1) + (turn.steers?.length ?? 0);
-  if (turn.assistant !== undefined) return count + 1;
-  const status = transcriptStatus(turn);
-  if (status === "cancelled") return count + 1;
-  if (status !== "pending" && status !== "completed") count += 2;
-  return count;
-}
-
 function terminalTranscriptStatus(
   status: LocalTranscriptTurnStatus,
 ): status is "completed" | "cancelled" | "failed" {
   return status === "completed" || status === "cancelled" || status === "failed";
 }
 
-/** Retained for focused projection tests and context-bootstrap compatibility. */
+/** Project model context when initializing a browser-owned transcript. */
 export function localHistoryEvents(
   history: readonly Record<string, unknown>[],
   sessionId: string,
@@ -1033,9 +1048,16 @@ function notifyHistoryListener(
   }
 }
 
-function sameHistory(
-  left: readonly AgentEvent[],
-  right: readonly AgentEvent[],
-): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+function sameTranscriptTurn(left: LocalTranscriptTurn, right: LocalTranscriptTurn): boolean {
+  return left.threadId === right.threadId && left.turnId === right.turnId
+    && left.order === right.order && left.createdAt === right.createdAt
+    && left.prompt === right.prompt && left.assistant === right.assistant
+    && left.status === right.status && left.error === right.error
+    && left.cancelRequested === right.cancelRequested
+    && (left.steers?.length ?? 0) === (right.steers?.length ?? 0)
+    && (left.steers ?? []).every((steer, index) => {
+      const other = right.steers![index]!;
+      return steer.id === other.id && steer.text === other.text
+        && steer.status === other.status && steer.error === other.error;
+    });
 }

@@ -280,3 +280,101 @@ test("null-phase root message does not synthesize a duplicate final", async () =
   ];
   assert.equal(managedHistoryEvents(history, FIRST_AGENT_ID, undefined).filter(event => event.type === "assistant.message").length, 1);
 });
+
+test("long-history tabs fetch only requested pages and preserve the loaded window across offline gaps", async (t) => {
+  t.after(() => appQueryClient.clear());
+  const events: ManagedEvent[] = [];
+  const append = (count: number) => {
+    for (let i = 0; i < count; i++) {
+      const cursor = String(events.length + 1), id = `turn-${cursor}`;
+      events.push({ cursor, createdAt: 1, turnId: id, type: "turn_accepted",
+        data: { type: "turn_accepted", cursor, created_at: 1, turn_id: id, id, input: `message-${cursor}`, replayed: false } });
+    }
+  };
+  append(1024);
+  const pages: (string | undefined)[] = [];
+  const cursors: string[] = [];
+  let caughtUp!: () => void;
+  let gapReady = new Promise<void>(resolve => { caughtUp = resolve; });
+  const source: ManagedTerminalSource = {
+    id: FIRST_AGENT_ID, type: "managed", turn: { prompt() { throw new Error("not used"); } },
+    events: {
+      async page({ before, limit = 128 } = {}) {
+        pages.push(before);
+        const end = before === undefined ? events.length : Number(before) - 1;
+        const start = Math.max(0, end - limit);
+        return { data: events.slice(start, end), hasMore: start > 0, latestCursor: String(events.length) };
+      },
+      async *watch({ cursor = "0", signal } = {}) {
+        cursors.push(cursor);
+        for (const event of events) if (Number(event.cursor) > Number(cursor)) yield event;
+        caughtUp();
+        if (!signal?.aborted) await new Promise<void>(resolve => signal?.addEventListener("abort", () => resolve(), { once: true }));
+      },
+    },
+  };
+  const first = await watchHistory(source, "paged-tabs");
+  await gapReady;
+  assert.deepEqual(pages, [undefined]);
+  assert.equal(first.history.length, 128);
+  assert.equal(await first.watcher.loadOlder!(), true);
+  let loaded: readonly AgentEvent[] = [];
+  first.watcher.onHistory!(history => { loaded = history; });
+  assert.equal(loaded.length, 256);
+  first.watcher.off();
+  const original = loaded;
+  append(3);
+  gapReady = new Promise<void>(resolve => { caughtUp = resolve; });
+  const returning = managedTerminalAgent(source, { accountId: "paged-tabs" }).events.watch();
+  t.after(() => returning.off());
+  let immediate: readonly AgentEvent[] = [];
+  returning.onHistory!(history => { immediate = history; });
+  assert.deepEqual(immediate, original);
+  await gapReady;
+  assert.deepEqual(pages, [undefined, "897"]);
+  assert.deepEqual(cursors, ["1024", "1024"]);
+  let restored: readonly AgentEvent[] = [];
+  returning.onHistory!(history => { restored = history; });
+  assert.equal(restored.length, 259);
+  assert.deepEqual(restored.slice(0, 256), original);
+  assert.deepEqual(restored.slice(-3).map(event => event.payload.text), ["message-1025", "message-1026", "message-1027"]);
+  assert.equal(original.length, 256, "previous immutable snapshots remain unchanged");
+  assert.equal(await returning.loadOlder!(), true);
+  assert.deepEqual(pages, [undefined, "897", "769"]);
+  assert.equal(restored.length, 387);
+  assert.deepEqual(restored.slice(128, 384).map(event => event.payload.text), original.map(event => event.payload.text));
+});
+
+test("streaming work grows linearly instead of rescanning the incomplete transcript for every token", async (t) => {
+  t.after(() => appQueryClient.clear());
+  const count = 1200;
+  let reads = 0;
+  let delivered!: () => void;
+  const ready = new Promise<void>(resolve => { delivered = resolve; });
+  const source: ManagedTerminalSource = {
+    id: FIRST_AGENT_ID, type: "managed", turn: { prompt() { throw new Error("not used"); } },
+    events: {
+      async page() { return { data: [], hasMore: false, latestCursor: "0" }; },
+      async *watch({ signal } = {}) {
+        for (let seq = 1; seq <= count; seq++) {
+          const data: ManagedEvent["data"] = { type: "event", cursor: String(seq), created_at: 1, turn_id: "long",
+            event: { type: "assistant.delta", payload: { text: "x", item_id: "answer" } } };
+          yield { cursor: String(seq), createdAt: 1, turnId: "long", type: "event",
+            get data() { reads++; return data; } };
+        }
+        delivered();
+        if (!signal?.aborted) await new Promise<void>(resolve => signal?.addEventListener("abort", () => resolve(), { once: true }));
+      },
+    },
+  };
+  const watcher = managedTerminalAgent(source, { accountId: "linear-stream" }).events.watch();
+  t.after(() => watcher.off());
+  await ready;
+  t.diagnostic(`${reads} envelope reads for ${count} deltas`);
+  assert.ok(reads < count * 50, `${reads} envelope reads for ${count} deltas`);
+  let history: readonly AgentEvent[] = [];
+  watcher.onHistory!(events => { history = events; });
+  assert.equal(history.length, count);
+  assert.equal(history.map(event => event.payload.text).join(""), "x".repeat(count));
+  assert.ok(Object.isFrozen(history));
+});

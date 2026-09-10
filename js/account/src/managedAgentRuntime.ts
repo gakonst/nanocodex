@@ -254,6 +254,7 @@ function managedEventWatcher(
   const historyListeners = new Set<(events: readonly AgentEvent[]) => void>();
   const envelopes: ManagedEvent[] = [...(cached?.envelopes ?? [])];
   const seen = new Set(envelopes.map(({ cursor }) => cursor));
+  let assistantTurns = rawAssistantMessageTurns(envelopes);
   let sequence = cached?.sequence ?? 0;
   let hasOlder = cached?.hasOlder ?? false;
   let historyLoaded = cached !== undefined;
@@ -267,6 +268,15 @@ function managedEventWatcher(
   let latestLiveCursor = cached?.latestCursor;
   let olderBeforeCursor = cached?.olderBeforeCursor;
   let historySnapshot: readonly AgentEvent[] = cached?.events ?? Object.freeze([]);
+  let historyEvents: AgentEvent[] = [...historySnapshot];
+  let historyDirty = false;
+  const currentHistory = (): readonly AgentEvent[] => {
+    if (historyDirty) {
+      historySnapshot = Object.freeze([...historyEvents]);
+      historyDirty = false;
+    }
+    return historySnapshot;
+  };
   const emit = (event: AgentEvent) => {
     for (const listener of listeners) listener(event);
   };
@@ -278,6 +288,8 @@ function managedEventWatcher(
   const emitHistory = () => {
     const events = projectedHistory();
     historySnapshot = events;
+    historyEvents = [...events];
+    historyDirty = false;
     sequence = Math.max(sequence, events.length);
     for (const listener of historyListeners) listener(events);
   };
@@ -285,6 +297,7 @@ function managedEventWatcher(
     if (seen.has(envelope.cursor)) return false;
     seen.add(envelope.cursor);
     envelopes.push(envelope);
+    if (rawAssistantMessageTurn(envelope)) assistantTurns.add(envelope.turnId!);
     return true;
   };
   const requestHistoryPage = (
@@ -322,13 +335,13 @@ function managedEventWatcher(
   };
   const scheduleHistoryRetry = () => {
     if (controller.signal.aborted
-      || (historyLoaded && !hasOlder)
+      || historyLoaded
       || historyRetryTimer !== undefined) return;
     const delay = historyRetryDelay;
     historyRetryDelay = Math.min(historyRetryDelay * 2, MANAGED_HISTORY_RETRY_MAX_MS);
     historyRetryTimer = setTimeout(() => {
       historyRetryTimer = undefined;
-      void (historyLoaded ? loadRemainingHistory() : loadInitial());
+      void loadInitial();
     }, delay);
   };
   const startTail = (cursor: string) => {
@@ -353,19 +366,23 @@ function managedEventWatcher(
           }
           const projected = managedEnvelopeEvents(
             envelope,
-            rawAssistantMessageTurns(envelopes),
+            assistantTurns,
             managed.id,
             submitted,
             sequence + 1,
           );
           sequence += projected.length;
           if (historyEnabled && projected.length > 0) {
-            historySnapshot = Object.freeze([...historySnapshot, ...projected]);
+            historyEvents.push(...projected);
+            historyDirty = true;
           }
           for (const event of projected) emit(event);
           if (turnId && managedOuterTerminal(envelope)) submitted?.delete(turnId);
-          if (historyLoaded && !hasOlder) {
+          // Incomplete turns cannot be compacted. Scanning their growing
+          // transcript on every token made long streaming turns quadratic.
+          if (historyLoaded && !hasOlder && managedOuterTerminal(envelope)) {
             compactManagedEnvelopeRetention(envelopes, seen);
+            assistantTurns = rawAssistantMessageTurns(envelopes);
           }
         }
       } catch (error) {
@@ -431,17 +448,16 @@ function managedEventWatcher(
       historyRetryTimer = undefined;
       emitHistory();
       startTail(initial.latestCursor);
-      if (hasOlder) void loadRemainingHistory();
-      else compactManagedEnvelopeRetention(envelopes, seen);
+      if (!hasOlder) compactManagedEnvelopeRetention(envelopes, seen);
       return true;
     })().finally(() => { loadingInitial = undefined; });
     return loadingInitial;
   };
   const retryWhenOnline = () => {
-    if (controller.signal.aborted || (historyLoaded && !hasOlder)) return;
+    if (controller.signal.aborted || historyLoaded) return;
     if (historyRetryTimer !== undefined) clearTimeout(historyRetryTimer);
     historyRetryTimer = undefined;
-    void (historyLoaded ? loadRemainingHistory() : loadInitial());
+    void loadInitial();
   };
   const loadOlderPage = (): Promise<boolean> => {
     if (!historyEnabled || !historyLoaded || !hasOlder || controller.signal.aborted) {
@@ -488,24 +504,10 @@ function managedEventWatcher(
     }).finally(() => { loadingOlder = undefined; });
     return loadingOlder;
   };
-  const loadRemainingHistory = async () => {
-    try {
-      while (hasOlder && !controller.signal.aborted) {
-        const added = await loadOlderPage();
-        if (!added) break;
-      }
-    } catch (error) {
-      reportHistoryOutage(error);
-      scheduleHistoryRetry();
-    } finally {
-      if (!hasOlder) compactManagedEnvelopeRetention(envelopes, seen);
-    }
-  };
   if (historyEnabled) {
     globalThis.addEventListener?.("online", retryWhenOnline);
     if (cached) {
       startTail(cached.latestCursor);
-      if (hasOlder) void loadRemainingHistory();
     } else void loadInitial();
   } else {
     historyLoaded = true;
@@ -518,7 +520,7 @@ function managedEventWatcher(
     },
     onHistory(listener: (events: readonly AgentEvent[]) => void) {
       historyListeners.add(listener);
-      if (historyLoaded) listener(historySnapshot);
+      if (historyLoaded) listener(currentHistory());
       return () => historyListeners.delete(listener);
     },
     loadOlder() {
@@ -531,7 +533,7 @@ function managedEventWatcher(
       if (cacheObserver && historyLoaded && latestLiveCursor !== undefined
         && cacheQuery === appQueryClient.getQueryCache().find({ queryKey: cacheKey, exact: true })) {
         appQueryClient.setQueryData<RetainedManagedHistory>(cacheKey, {
-          envelopes: [...envelopes], events: historySnapshot, sequence, hasOlder,
+          envelopes: [...envelopes], events: currentHistory(), sequence, hasOlder,
           latestCursor: latestLiveCursor, olderBeforeCursor,
         });
       }
@@ -830,23 +832,17 @@ function terminalTurnId(envelope: ManagedEvent): string {
   return typeof id === "string" ? id : envelope.turnId ?? "unknown";
 }
 
-function rawAssistantMessageTurns(
-  history: readonly ManagedEvent[],
-): ReadonlySet<string> {
+function rawAssistantMessageTurn(candidate: ManagedEvent): boolean {
+  if (!candidate.turnId || candidate.data.type !== "event" || candidate.data.agent_id != null) return false;
+  const event = candidate.data.event;
+  return Boolean(event && typeof event === "object" && !Array.isArray(event)
+    && (event as { type?: unknown }).type === "assistant.message"
+    && ((event as AgentEvent).payload?.phase == null || (event as AgentEvent).payload.phase === "final_answer"));
+}
+
+function rawAssistantMessageTurns(history: readonly ManagedEvent[]): Set<string> {
   const turns = new Set<string>();
-  for (const candidate of history) {
-    if (!candidate.turnId || candidate.data.type !== "event" || candidate.data.agent_id != null) continue;
-    const event = candidate.data.event;
-    if (
-      event
-      && typeof event === "object"
-      && !Array.isArray(event)
-      && (event as { type?: unknown }).type === "assistant.message"
-      && ((event as AgentEvent).payload?.phase == null || (event as AgentEvent).payload.phase === "final_answer")
-    ) {
-      turns.add(candidate.turnId);
-    }
-  }
+  for (const candidate of history) if (rawAssistantMessageTurn(candidate)) turns.add(candidate.turnId!);
   return turns;
 }
 
