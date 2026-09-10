@@ -113,7 +113,6 @@ async fn run_handoff(
     let Some(second) = second else {
         return Ok(first_result);
     };
-    echo_agent_lines(first_result.final_message());
     eprintln!("waiting for human: log in via the live view, then press Enter");
     wait_for_enter().await?;
     run_turn(agent, events, output, second).await
