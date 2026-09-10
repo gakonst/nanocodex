@@ -349,3 +349,7 @@ shell execution does not automatically inherit that environment. The Sandbox
 runs as root, so this command disables Chrome's process sandbox; use it only
 inside the isolated Sandbox container. It does not disable TLS verification.
 The Debian server Hand image separately provides `chromium`.
+
+Reusable definitions, environment templates, signed lifecycle webhooks, usage
+inspection, immutable turn artifacts and HTTP tool results are documented in
+[Managed agent configuration and operations](../../docs/MANAGED_AGENT_CONFIGURATION.md).

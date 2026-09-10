@@ -55,7 +55,7 @@ export class DurableEventLog<Message extends { type: string }> {
   readonly #storage: DurableObjectStorage;
   readonly #subscribers = new Set<Subscriber>();
 
-  constructor(storage: DurableObjectStorage) {
+  constructor(storage: DurableObjectStorage, readonly onAppend?: (event: DurableEvent<{ type: string }>) => void) {
     this.#storage = storage;
     storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS managed_events (
@@ -127,7 +127,9 @@ export class DurableEventLog<Message extends { type: string }> {
       "UPDATE managed_event_meta SET total_bytes = total_bytes + ? WHERE singleton = 1",
       messageBytes,
     );
-    return { cursor: inserted.cursor, created_at: createdAt, message, turn_id: turnId };
+    const event = { cursor: inserted.cursor, created_at: createdAt, message, turn_id: turnId };
+    this.onAppend?.(event);
+    return event;
   }
 
   record(message: Message, turnId: string | null = null): DurableEvent<Message> {

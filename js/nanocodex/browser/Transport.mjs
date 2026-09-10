@@ -59,3 +59,5 @@ function connection(options = {}) {
     websocketWarmup: options.websocketWarmup,
   };
 }
+
+export { multiplex } from "../runtime/response-lanes.mjs";

@@ -667,6 +667,21 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(fixture.broker.machines()).toEqual([]);
   });
 
+  it("accepts HTTP results through the pinned broker lifecycle and rejects conflicts", async () => {
+    const fixture = createFixture(); const host = fixture.socket(); await catalog(fixture.broker, host);
+    const pending = fixture.broker.provider().resolve("fixture__lookup")!.handler({ id: "42" }, {
+      sessionId: "session:1", callId: "source:1", model: "gpt-5.6-luna",
+    });
+    const outcome = JSON.parse(result(IDS[1]!, "done")).outcome;
+    fixture.broker.completeHttpResult(IDS[1]!, outcome);
+    await expect(pending).resolves.toMatchObject({ success: true, output: "done" });
+    fixture.broker.completeHttpResult(IDS[1]!, outcome);
+    expect(() => fixture.broker.completeHttpResult(IDS[1]!, JSON.parse(result(IDS[1]!, "different")).outcome)).toThrow();
+    expect(() => fixture.broker.completeHttpResult("missing", outcome)).toThrow();
+    fixture.broker.close(host.webSocket, "host retired");
+    expect(() => fixture.broker.completeHttpResult(IDS[1]!, outcome)).toThrow();
+  });
+
   it("durably dispatches an exact call and ACKs both the result and duplicate receipt", async () => {
     const fixture = createFixture();
     const host = fixture.socket();

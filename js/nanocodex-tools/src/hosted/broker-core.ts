@@ -358,6 +358,18 @@ export class HostedToolsBrokerCore {
     });
   }
 
+  /** Trusted owner HTTP facade. Retains the same lease, deadline, schema and result-conflict checks as WebSocket delivery. */
+  completeHttpResult(callId: string, outcome: unknown): void {
+    const frame = parseHostedToolsHostFrame(JSON.stringify({ type: "result", call_id: callId, outcome }));
+    if (frame.type !== "result") throw new HostedToolsProtocolError("invalid_result", "expected a tool result");
+    const row = this.#persistence.call(callId);
+    if (!row) throw new HostedToolsProtocolError("unknown_call", "no retained tool call");
+    const state = this.#persistence.states().find(state => state.lease_id === row.lease_id && state.generation === row.generation);
+    const socket = this.#socketForState(state);
+    if (!socket) throw new HostedToolsProtocolError("stale_socket", "tool result requires its active pinned attachment");
+    this.#completeResult(socket, frame);
+  }
+
   owns(socket: HostedToolsSocket): boolean { return this.handles(socket); }
 
   async message(socket: HostedToolsSocket, message: string): Promise<void> {

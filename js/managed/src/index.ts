@@ -1,3 +1,6 @@
+import { prepareEnvironment } from "./environment-setup";
+import { SessionOperations } from "./session-operations";
+import { parseConfiguration, type AgentConfiguration } from "./agent-configuration";
 import { createHash } from "node:crypto";
 import { initializeTurnInputs, inputChunks, lazyTurnInput, readTurnInput, storeTurnInput } from "./managed-turn-input";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
@@ -393,6 +396,7 @@ type SessionInitialization = {
   public_origin?: unknown;
   runtime_profile?: unknown;
   settings?: unknown;
+  configuration?: unknown;
 };
 
 type DeviceHostAttachment = {
@@ -1454,6 +1458,19 @@ async function managedFetch(
         capabilities: machine.capabilities,
       })) }, { headers: { "cache-control": "no-store" } });
     }
+    if (/^\/v1\/(agent-definitions|environment-templates)(?:\/|$)/.test(url.pathname)) {
+      const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
+      if (!principal) return json({ error: "unauthorized" }, { status: 401 });
+      if (principal.connectGrant || !principal.capabilities.includes(request.method === "GET" ? "agents:read" : "agents:write"))
+        return json({ error: "forbidden" }, { status: 403 });
+      if (request.method !== "GET") {
+        const failure = requireSameOriginMutation(request, url, principal);
+        if (failure) return failure;
+      }
+      return env.NANOCODEX_USERS.getByName(principal.userId).fetch(`https://account.internal${url.pathname.slice(3)}${url.search}`, {
+        method: request.method, body: request.body, headers: { "content-type": "application/json" },
+      });
+    }
     if (request.method === "GET" && url.pathname === "/v1/agents") {
       const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
       if (!principal) return json({ error: "unauthorized" }, { status: 401 });
@@ -1607,11 +1624,34 @@ async function managedFetch(
       let durabilityArchive: unknown;
       let creationSettings = DEFAULT_AGENT_SETTINGS;
       let settingsProvided = false;
+      let creationConfiguration: AgentConfiguration = {};
       try {
         const body = parseAgentCreateBody(await request.text());
         durabilityArchive = body.durability;
         creationSettings = body.settings;
         settingsProvided = body.settingsProvided;
+        creationConfiguration = body.configuration ?? {};
+        if (body.definition_id || body.environment_template_id || Object.keys(creationConfiguration).length) {
+          if (principal.connectGrant) return json({ error: "forbidden" }, { status: 403 });
+          const catalog = env.NANOCODEX_USERS.getByName(principal.userId);
+          const readTemplate = async (kind: string, id: string) => {
+            const response = await catalog.fetch(`https://account.internal/${kind}/${id}`);
+            if (!response.ok) throw new TypeError("template not found");
+            return (await response.json<{ configuration: Record<string, unknown> }>()).configuration;
+          };
+          if (body.definition_id) creationConfiguration = parseConfiguration({
+            ...await readTemplate("agent-definitions", body.definition_id), ...creationConfiguration,
+          });
+          if (body.environment_template_id) {
+            if (creationConfiguration.environment) throw new TypeError("choose an environment template or inline environment");
+            creationConfiguration = parseConfiguration({ ...creationConfiguration,
+              environment: await readTemplate("environment-templates", body.environment_template_id) });
+          }
+          if (body.durability !== undefined) throw new TypeError("configuration cannot be combined with durability import");
+          if (creationConfiguration.environment && !principal.capabilities.includes("tools:use")) return json({ error: "forbidden" }, { status: 403 });
+          if (!settingsProvided && creationConfiguration.settings) creationSettings = creationConfiguration.settings;
+        }
+
       } catch (error) {
         return json({ error: "invalid_request", message: errorMessage(error) }, { status: 400 });
       }
@@ -1744,6 +1784,7 @@ async function managedFetch(
             authorization_epoch: principal.authorizationEpoch,
             public_origin: url.origin,
             settings: creationSettings,
+            configuration: creationConfiguration,
           }),
         }, ownershipTimeoutMs, "agent initialization"),
         initializeMemoryScope(memory, principal.organizationId),
@@ -1756,6 +1797,9 @@ async function managedFetch(
       }
       if (memoryInitialization.status === "fulfilled") {
         await memoryInitialization.value.body?.cancel();
+      }
+      if (initialization.status === "fulfilled" && initialization.value.status === 409) {
+        return json({ error: "agent_initialization_conflict", message: "The retained agent has different settings or configuration." }, { status: 409 });
       }
       const initializedAt = performance.now();
       const credentialUnavailable = credentialBinding.status === "rejected"
@@ -2017,6 +2061,18 @@ async function managedFetch(
         if (failure) return failure;
       }
       return stub.fetch(`https://session.internal/${resource}`, {
+        method: request.method, headers: sessionHeaders, body: request.body, signal: request.signal,
+      });
+    }
+    if (["configuration", "environment", "webhook", "usage", "usage/requests", "artifacts", "required-actions"].includes(resource) || resource.startsWith("artifacts/") || resource.startsWith("required-actions/")) {
+      if (principal.connectGrant || !principal.capabilities.includes(request.method === "GET" ? "agents:read" : "agents:write"))
+        return json({ error: "forbidden" }, { status: 403 });
+      if (resource.startsWith("required-actions") && !principal.capabilities.includes("tools:use")) return json({ error: "forbidden" }, { status: 403 });
+      if (request.method !== "GET") {
+        const failure = requireSameOriginMutation(request, url, principal);
+        if (failure) return failure;
+      }
+      return stub.fetch(`https://session.internal/${resource}${url.search}`, {
         method: request.method, headers: sessionHeaders, body: request.body, signal: request.signal,
       });
     }
@@ -2610,6 +2666,7 @@ const DurableComputerSession = withWorkspace(
 );
 
 export class DurableAgentSession extends DurableComputerSession {
+  #operations: SessionOperations;
   #brainStorage?: R2Bucket;
   #agent?: CloudflareAgent.Agent;
   #agentPromise?: Promise<CloudflareAgent.Agent>;
@@ -2825,6 +2882,7 @@ export class DurableAgentSession extends DurableComputerSession {
       );
     `);
     initializeManagedAgentSettingsSchema(this.ctx.storage);
+    this.#operations = new SessionOperations(this.ctx.storage);
     initializeManagedSubagentDigests(this.ctx.storage);
     // A pending realtime mutation belonged to the previous in-memory owner.
     // Its external outcome is unknown, so cold construction must not replay it.
@@ -2845,7 +2903,7 @@ export class DurableAgentSession extends DurableComputerSession {
       .toArray().some(({ name }) => name === "source_cursor")) {
       this.ctx.storage.sql.exec("ALTER TABLE history_projection_outbox ADD COLUMN source_cursor TEXT NOT NULL DEFAULT '0'");
     }
-    this.#eventLog = new DurableEventLog<StreamMessage>(this.ctx.storage);
+    this.#eventLog = new DurableEventLog<StreamMessage>(this.ctx.storage, event => this.#operations.record(event, this.#sessionId()));
     this.#eventArchive = new ManagedEventArchive<StreamMessage>(
       this.ctx.storage,
       this.env.NANOCODEX_HISTORY,
@@ -3173,6 +3231,9 @@ export class DurableAgentSession extends DurableComputerSession {
       }
     }
     if (request.method === "POST" && url.pathname === "/durability/export") {
+      if (Object.keys(this.#configuration()).length || this.ctx.storage.sql.exec("SELECT singleton FROM managed_webhook").toArray().length
+        || this.ctx.storage.sql.exec("SELECT id FROM managed_artifacts LIMIT 1").toArray().length)
+        return json({ error: "session_resources_not_portable", message: "Configured sessions, webhooks and published artifacts are not yet portable." }, { status: 409 });
       if (this.#cronTriggers.hasTriggers() || this.#cronTriggers.hasDeliveries()) {
         return json({ error: "cron_triggers_present", message: "Delete cron triggers and wait for pending deliveries before exporting this agent; schedules are not portable yet." }, { status: 409 });
       }
@@ -3224,6 +3285,34 @@ export class DurableAgentSession extends DurableComputerSession {
     if (this.#durabilityExported
       && !(request.method === "DELETE" && url.pathname === "/session")) {
       return json({ error: "durability_exported" }, { status: 409 });
+    }
+    if (url.pathname === "/required-actions" || url.pathname.startsWith("/required-actions/")) {
+      if (!this.#sessionId() || this.#deleting || this.#deleted) return json({ error: "not_found" }, { status: 404 });
+      if (request.method === "GET" && url.pathname === "/required-actions") return json({ data: this.ctx.storage.sql.exec<{
+        call_id: string; session_id: string; source_call_id: string; name: string; input_json: string; deadline_at: number;
+      }>("SELECT call_id,session_id,source_call_id,name,input_json,deadline_at FROM hosted_tool_calls WHERE state='dispatched' ORDER BY created_at LIMIT 256").toArray()
+        .map(({ input_json, ...row }) => ({ ...row, input: JSON.parse(input_json) })) });
+      const id = url.pathname.match(/^\/required-actions\/([A-Za-z0-9._:-]{1,256})\/result$/)?.[1];
+      if (request.method !== "POST" || !id || url.search) return json({ error: "invalid_request" }, { status: 400 });
+      try {
+        const encoded = await request.text();
+        if (encoded.length > 1_000_000) return json({ error: "result_too_large" }, { status: 413 });
+        this.#hostedTools.completeHttpResult(id, JSON.parse(encoded));
+        return new Response(null, { status: 204 });
+      } catch (error) { return json({ error: "tool_result_rejected", message: errorMessage(error) }, { status: 409 }); }
+    }
+    if (["/configuration", "/environment", "/webhook", "/usage", "/usage/requests", "/artifacts"].includes(url.pathname) || url.pathname.startsWith("/artifacts/")) {
+      if (!this.#sessionId() || this.#deleting || this.#deleted) return json({ error: "not_found" }, { status: 404 });
+      if (url.pathname === "/webhook") {
+        const result = await this.#operations.webhook(request);
+        await this.#scheduleNextAlarm(); return result;
+      }
+      if (request.method !== "GET") return new Response(null, { status: 405 });
+      if (url.pathname === "/configuration") return json(this.#configuration());
+      if (url.pathname === "/environment") return json(this.ctx.storage.sql.exec("SELECT state,step,error FROM managed_environment_setup").toArray()[0] ?? { state: "uninitialized", step: 0, error: null });
+      if (url.pathname === "/usage/requests") return this.#operations.requests(url.searchParams.get("after") ?? "0", url.searchParams.get("agent_id"));
+      if (url.pathname === "/usage") return this.#operations.usage(url.searchParams.get("after") ?? "0");
+      return this.#operations.artifacts(request);
     }
     const forwardedOrigin = url.searchParams.get("public_origin");
     if (!this.#deleting
@@ -3654,6 +3743,7 @@ export class DurableAgentSession extends DurableComputerSession {
       }
       return;
     }
+    if (this.#operations.nextAlarm() !== undefined) await this.#operations.drain();
     await this.#fireCronTriggers();
     // Archival owns a separate durable retry deadline. It must neither block
     // accepted work nor keep retrying an unavailable bucket on every alarm.
@@ -3785,6 +3875,9 @@ export class DurableAgentSession extends DurableComputerSession {
     const authorizationEpoch = initialization.authorization_epoch;
     const publicOrigin = initialization.public_origin;
     const runtimeProfile = initialization.runtime_profile ?? "managed";
+    let configuration: AgentConfiguration;
+    try { configuration = parseConfiguration(initialization.configuration); }
+    catch { return json({ error: "invalid_configuration" }, { status: 400 }); }
     let settings: ManagedAgentSettings;
     try {
       settings = parseCompleteAgentSettings(initialization.settings);
@@ -3869,7 +3962,7 @@ export class DurableAgentSession extends DurableComputerSession {
           );
         }
         if (retained) {
-          if (!sameAgentSettings(this.#settings(), settings)) {
+          if (canonicalJson(this.#configuration()) !== canonicalJson(configuration) || !sameAgentSettings(this.#settings(), settings)) {
             throw new ManagedRequestError(
               409,
               "agent_initialized",
@@ -3897,6 +3990,7 @@ export class DurableAgentSession extends DurableComputerSession {
           Date.now(),
         );
         this.#storeSettings(settings);
+        this.ctx.storage.sql.exec("INSERT INTO managed_configuration VALUES (1, ?)", JSON.stringify(configuration));
         event = this.#eventLog.append({
           type: "agent_created",
           agent_id: sessionId,
@@ -6214,6 +6308,7 @@ export class DurableAgentSession extends DurableComputerSession {
     this.#assertDeletionGeneration(generation);
     CloudflareAgent.destroy(this);
     this.ctx.storage.transactionSync(() => {
+      for (const table of ["managed_configuration", "managed_environment_setup", "managed_webhook", "managed_webhook_deliveries", "managed_turn_usage", "managed_model_usage", "managed_artifacts", "managed_artifact_publications"]) this.ctx.storage.sql.exec(`DELETE FROM ${table}`);
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_dispatch_chunks");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_input_chunks");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_terminal_chunks");
@@ -6632,16 +6727,34 @@ export class DurableAgentSession extends DurableComputerSession {
     return runtime;
   }
 
+  #configuration(): AgentConfiguration {
+    const row = this.ctx.storage.sql.exec<{ body: string }>("SELECT body FROM managed_configuration WHERE singleton=1").toArray()[0];
+    return row ? JSON.parse(row.body) as AgentConfiguration : {};
+  }
+
+  async #prepareEnvironment(computer: Awaited<ReturnType<typeof createManagedComputerRuntime>>): Promise<void> {
+    const config = this.#configuration().environment;
+    if (!config) return;
+    await prepareEnvironment(this.ctx.storage, config, computer.filesystem, async (cmd, step) => (
+      await computer.tool.handler({ cmd, workdir: "/brain", max_output_tokens: 1024 }, {
+        sessionId: this.#sessionId()!, callId: `setup:${step}`, parentCallId: "", model: this.#settings().model,
+        signal: AbortSignal.timeout(30_000),
+      }) as { exit_code?: number; output?: string }
+    ));
+  }
+
   async #createAgent(accountMcpRefreshMs: number): Promise<CloudflareAgent.Agent> {
     const constructionStartedAt = performance.now();
     let phaseStartedAt = constructionStartedAt;
     const session = this.#session();
     if (!session) throw new Error("session is not initialized");
     const multiplayer = session.runtime_profile === "multiplayer";
+    const configuration = this.#configuration();
+    const restrictedEnvironment = configuration.environment?.network.access !== undefined && configuration.environment.network.access !== "enabled";
     if (!multiplayer) await this.#ensureCredentialBinding(session);
     const credentialBindingMs = performance.now() - phaseStartedAt;
     phaseStartedAt = performance.now();
-    const browserRuntime = multiplayer ? undefined : await this.#managedBrowserRuntime(session);
+    const browserRuntime = multiplayer || restrictedEnvironment ? undefined : await this.#managedBrowserRuntime(session);
     const browserRuntimeMs = performance.now() - phaseStartedAt;
     phaseStartedAt = performance.now();
     const workspace = await getWorkspace(this);
@@ -6654,6 +6767,7 @@ export class DurableAgentSession extends DurableComputerSession {
       computer: workspace,
       ...(multiplayer ? {} : { filesystem: createBrainWorkspace(this.#brainBucket(), session.session_id) }),
       egress: this.env.NANOCODEX,
+      networkPolicy: configuration.environment?.network,
       ...(multiplayer ? {} : { subject: this.#credentialSubject() }),
       connectorAllowed: (connector, connectionId, context) => (
         this.#toolConnectorAllowed(connector, connectionId, context)
@@ -6663,6 +6777,8 @@ export class DurableAgentSession extends DurableComputerSession {
       sshIdentityAllowed: (_reference, context) => context !== undefined
         && this.#hasFullAccountAuthority(this.#authorizationForToolContext(context)),
     });
+    try { if (!multiplayer) await this.#prepareEnvironment(computer); }
+    catch (error) { computer.dispose(); throw error; }
     const sharedBrainWorkspace = createSharedBrainReadWorkspace(
       this.#brainBucket(),
       session.session_id,
@@ -6696,7 +6812,7 @@ export class DurableAgentSession extends DurableComputerSession {
     };
     const internalRuntime = Symbol.for("nanocodex.cloudflare.internalRuntime");
     const internalConfiguration = Symbol.for("nanocodex.cloudflare.internalConfiguration");
-    const hostedProviders = multiplayer ? [] : [
+    const hostedProviders = multiplayer || restrictedEnvironment || configuration.tools !== undefined ? [] : [
       this.#hostedTools.provider(),
       ...(this.#accountHostedTools === undefined ? [] : [this.#accountHostedTools]),
     ];
@@ -6921,11 +7037,14 @@ export class DurableAgentSession extends DurableComputerSession {
     let cloudflareAgentMs = 0;
     try {
       phaseStartedAt = performance.now();
+      const selectedTools = restrictedEnvironment ? [computer.tool, viewImage({ workspace: sharedBrainWorkspace }), updatePlan()] : cloudTools;
+      const configuredTools = configuration.tools === undefined ? selectedTools : selectedTools.filter(tool => configuration.tools!.includes(tool.name));
+      if (configuration.tools?.some(name => !selectedTools.some(tool => tool.name === name))) throw new Error("configuration names an unavailable tool");
       preparedTools = multiplayer
         ? undefined
         : await createDefaultManagedTools(
-            cloudTools,
-            managedMcp,
+            configuredTools,
+            restrictedEnvironment || configuration.tools !== undefined ? {} : managedMcp,
             (serverName) => accountMcpProviders.get(serverName),
           );
       managedToolsMs = performance.now() - phaseStartedAt;
@@ -6968,6 +7087,9 @@ export class DurableAgentSession extends DurableComputerSession {
             "When the user asks you to remember a durable fact or preference, scan memory, read relevant matches, then put the concise fact (with replace for an outdated match). Use memory delete when asked to forget it. A startup scan does not replace a fresh scan immediately before storing a new conclusion.",
             "When the user asks for recurring work, use create_cron with a stable id, a five-field cron expression, the user's time zone when known, and a self-contained prompt. It persists after disconnect. By default each occurrence starts a fresh session; use session_mode continue only when the work should resume this conversation. Report the saved schedule and time zone only after the tool succeeds.",
             MEMORY_TOOL_INSTRUCTIONS,
+            "Write finished deliverables to /brain/outputs to publish immutable turn artifacts.",
+            configuration.instructions ?? "",
+            ...(configuration.environment?.skills.map(skill => `Available skill: ${skill.name}. Read /brain/skills/${skill.name}/SKILL.md before applying it.`) ?? []),
           ].join("\n\n"),
         tools: preparedTools ?? cloudTools,
       };
@@ -6975,6 +7097,7 @@ export class DurableAgentSession extends DurableComputerSession {
         ...hostedRuntime,
         // Voice and session control can start while the owned Responses relay warms up.
         waitForPreconnect: false,
+        responseControls: { outputSchema: configuration.output_schema, promptCache: configuration.prompt_cache },
       } });
       Object.defineProperty(agentOptions, internalConfiguration, { value: this.#settings() });
       phaseStartedAt = performance.now();
@@ -7884,6 +8007,8 @@ export class DurableAgentSession extends DurableComputerSession {
     hostAppToolCatalogDigest?: string,
     context?: Pick<ToolContext, "sessionId" | "subagent">,
   ): boolean {
+    const configuration = this.#configuration();
+    if (configuration.tools !== undefined || (configuration.environment && configuration.environment.network.access !== "enabled")) return false;
     const authorization = context === undefined
       ? this.#activeTurnAuthorization()
       : this.#authorizationForToolContext(context);
@@ -7931,6 +8056,10 @@ export class DurableAgentSession extends DurableComputerSession {
         };
       }
       if (materialized.kind === "terminal" && materialized.terminal.type === "turn_completed") {
+        const publicationGeneration = this.#deletionGeneration;
+        await this.#operations.publish(id, createBrainWorkspace(this.#brainBucket(), this.#sessionId()!),
+          () => !this.#deleting && !this.#deleted && this.#deletionGeneration === publicationGeneration);
+        if (this.#deleting) return;
         materialized = {
           ...materialized,
           terminal: {
@@ -8297,6 +8426,7 @@ export class DurableAgentSession extends DurableComputerSession {
 
   #publish(event: DurableEvent<StreamMessage>): void {
     this.#eventLog.publish(event);
+    if (this.#operations.nextAlarm() !== undefined) this.ctx.waitUntil(this.#scheduleNextAlarm());
     this.#broadcast({
       ...event.message,
       cursor: event.cursor,
@@ -9006,6 +9136,8 @@ export class DurableAgentSession extends DurableComputerSession {
     if (this.#deleting || !this.#sessionId()) return;
     const now = Date.now();
     const targets: number[] = [];
+    const webhookAlarm = this.#operations.nextAlarm();
+    if (webhookAlarm !== undefined) targets.push(webhookAlarm);
     if (!this.#durabilityExported && this.#durabilityImportState !== "pending") {
       const cronAlarm = this.#cronTriggers.nextAlarm();
       if (cronAlarm !== undefined) targets.push(cronAlarm);

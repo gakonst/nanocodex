@@ -1,3 +1,4 @@
+import { networkAllows, type NetworkPolicy } from "./agent-configuration";
 import {
   createComputerRuntime,
   createWorkspaceFilesystem,
@@ -28,6 +29,7 @@ export type ManagedComputerRuntime = ComputerRuntime & Readonly<{
 /** Wires managed persistence, egress, and SSH policy into the generic JS tools. */
 export async function createManagedComputerRuntime(options: Readonly<{
   computer: DisposableComputerWorkspace;
+  networkPolicy?: NetworkPolicy;
   filesystem?: Workspace;
   connectorAllowed?: (
     connector: ManagedEgressConnectorId,
@@ -58,6 +60,7 @@ export async function createManagedComputerRuntime(options: Readonly<{
       options.connectorAllowed === undefined ? undefined
         : (connector, connectionId) => options.connectorAllowed!(connector, connectionId, calls.getStore()),
       () => options.vaultAllowed?.(calls.getStore()) ?? true,
+      options.networkPolicy,
     );
     const runtime = await createComputerRuntime({
       filesystem,
@@ -66,7 +69,7 @@ export async function createManagedComputerRuntime(options: Readonly<{
       networkMode: options.subject === undefined
         ? "public-http-only"
         : "connector-http-gateway",
-      commands: ({ filesystem: mountedFilesystem }) => [{
+      commands: ({ filesystem: mountedFilesystem }) => options.networkPolicy && options.networkPolicy.access !== "enabled" ? [] : [{
         name: "ssh",
         load: async () => createCloudflareSshCommand({
           egress: options.egress,
@@ -105,8 +108,10 @@ function createManagedShellFetch(
     connectionId?: string,
   ) => ManagedEgressConnectorAccess,
   vaultAllowed: () => boolean = () => true,
+  networkPolicy?: NetworkPolicy,
 ): ShellFetch {
   const stream: NonNullable<ShellFetch["stream"]> = async (url, options = {}) => {
+    if (!networkAllows(networkPolicy, url)) throw new Error("session network policy denied the destination");
     const method = (options.method ?? "GET").toUpperCase();
     const request = new Request(url, {
       method,
