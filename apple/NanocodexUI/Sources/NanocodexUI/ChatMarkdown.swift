@@ -155,21 +155,34 @@ final class ChatMarkdownRenderer: ObservableObject {
 /// messages. Theme and Dynamic Type styling remain in the SwiftUI renderer.
 actor ChatMarkdownParser {
     static let shared = ChatMarkdownParser()
-    private var cache: [String: [ChatMarkdownBlock]] = [:]
-    private var recent: [String] = []
-    private var bytes = 0
+    private final class Parsed {
+        let blocks: [ChatMarkdownBlock]
+        init(_ blocks: [ChatMarkdownBlock]) { self.blocks = blocks }
+    }
+    private let cache: NSCache<NSString, Parsed> = {
+        let cache = NSCache<NSString, Parsed>()
+        cache.countLimit = 64
+        cache.totalCostLimit = 8 * 1024 * 1024
+        return cache
+    }()
     func blocks(for text: String) throws -> [ChatMarkdownBlock] {
         assert(!Thread.isMainThread)
         try Task.checkCancellation()
-        if let blocks = cache[text] { return blocks }
+        let key = text as NSString
+        if let parsed = cache.object(forKey: key) { return parsed.blocks }
         let blocks = ChatMarkdownBlock.parse(text)
         try Task.checkCancellation()
-        let cost = text.utf8.count
-        if cost <= 1_000_000 {
-            cache[text] = blocks; recent.append(text); bytes += cost
-            while recent.count > 64 || bytes > 4_000_000 {
-                let old = recent.removeFirst(); bytes -= old.utf8.count; cache.removeValue(forKey: old)
+        if text.utf8.count <= 1_000_000 {
+            // Account for both the source key and rendered text/runs. NSCache
+            // also releases recreatable results under system memory pressure.
+            var cost = key.length * 4
+            for block in blocks {
+                cost += MemoryLayout<ChatMarkdownBlock>.stride + block.text.runs.count * 128
+                if case .table(let rows) = block.kind {
+                    cost += rows.reduce(0) { $0 + $1.reduce(0) { $0 + $1.runs.count * 128 } }
+                }
             }
+            if cost <= cache.totalCostLimit { cache.setObject(Parsed(blocks), forKey: key, cost: cost) }
         }
         return blocks
     }

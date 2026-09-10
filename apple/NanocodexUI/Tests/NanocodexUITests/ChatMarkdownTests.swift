@@ -14,7 +14,8 @@ final class ChatMarkdownTests: XCTestCase {
         XCTAssertEqual(blocks.count, 3000)
         let cached = try await parser.blocks(for: source)
         XCTAssertEqual(cached.map(\.id), blocks.map(\.id))
-        let cancelled = Task { try await parser.blocks(for: "cancelled") }
+        // Cancellation must still win when a revisited message is cached.
+        let cancelled = Task { try await parser.blocks(for: source) }
         cancelled.cancel()
         do { _ = try await cancelled.value; XCTFail("Cancelled parse must not publish") }
         catch is CancellationError { }
@@ -92,5 +93,19 @@ final class ChatMarkdownTests: XCTestCase {
         XCTAssertEqual(String(unknown.characters), partial)
         let empty = await ChatCodeHighlighter.highlight("\n\t ", language: "swift", dark: false)
         XCTAssertEqual(String(empty.characters), "\n\t ")
+    }
+
+    func testRevisitedCodeKeepsSourceLanguageAndAppearanceIndependent() async {
+        let source = "let value = 7\n"
+        let light = await ChatCodeHighlighter.highlight(source, language: "swift", dark: false)
+        let dark = await ChatCodeHighlighter.highlight(source, language: "swift", dark: true)
+        let unknown = await ChatCodeHighlighter.highlight(source, language: "not-a-code-language", dark: false)
+        let longer = await ChatCodeHighlighter.highlight(source + "let other = 8\n", language: "swift", dark: false)
+        let revisited = await ChatCodeHighlighter.highlight(source, language: "SWIFT", dark: false)
+        XCTAssertEqual(revisited, light)
+        XCTAssertNotEqual(revisited, dark)
+        XCTAssertEqual(unknown, AttributedString(source))
+        XCTAssertEqual(String(longer.characters), source + "let other = 8\n")
+        XCTAssertEqual(String(revisited.characters), source)
     }
 }

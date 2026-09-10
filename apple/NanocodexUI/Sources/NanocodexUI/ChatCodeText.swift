@@ -26,12 +26,26 @@ struct ChatCodeText: View {
 
 enum ChatCodeHighlighter {
     private static let engine = Highlight()
+    private final class Rendered {
+        let text: AttributedString
+        init(_ text: AttributedString) { self.text = text }
+    }
+    private static let cache: NSCache<NSString, Rendered> = {
+        let cache = NSCache<NSString, Rendered>()
+        cache.countLimit = 64
+        cache.totalCostLimit = 8 * 1024 * 1024
+        return cache
+    }()
 
     static func highlight(_ source: String, language: String, dark: Bool) async -> AttributedString {
         let plain = AttributedString(source)
         let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return plain }
+        guard !trimmed.isEmpty, !Task.isCancelled else { return plain }
         let alias = language.split(whereSeparator: \.isWhitespace).first.map(String.init)?.lowercased() ?? ""
+        // Length-prefix the language so arbitrary fence hints cannot collide
+        // with source text. Appearance is part of the rendered attributes.
+        let key = "\(dark):\(alias.utf8.count):\(alias)\(source)" as NSString
+        if let rendered = cache.object(forKey: key) { return rendered.text }
         let mode: HighlightMode = alias.isEmpty ? .automatic : .languageAliasIgnoreIllegal(alias)
         guard let result = try? await engine.request(source, mode: mode, colors: dark ? .dark(.github) : .light(.github)) else { return plain }
 
@@ -44,6 +58,10 @@ enum ChatCodeHighlighter {
         var text = AttributedString(String(source[..<originalRange.lowerBound]))
         text.append(AttributedString(result.attributedText[renderedRange]))
         text.append(AttributedString(String(source[originalRange.upperBound...])))
+        if !Task.isCancelled, source.utf8.count <= 1_000_000 {
+            let cost = key.length * 4 + text.runs.count * 128
+            if cost <= cache.totalCostLimit { cache.setObject(Rendered(text), forKey: key, cost: cost) }
+        }
         return text
     }
 }
