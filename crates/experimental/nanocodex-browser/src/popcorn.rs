@@ -115,6 +115,7 @@ const LIVE_VIEW_KEYS: &[&str] = &[
 const REGION_KEYS: &[&str] = &["region"];
 const EXPIRES_KEYS: &[&str] = &["expires_at", "expiresAt"];
 const CHECKOUT_KEYS: &[&str] = &["checkout_url", "checkoutUrl"];
+const NEXT_ACTION_KEYS: &[&str] = &["next_action", "nextAction"];
 
 /// How a session is rented.
 #[derive(Clone)]
@@ -659,7 +660,11 @@ fn lookup_str(payload: &Value, keys: &[&str]) -> Option<String> {
     walk(payload, keys, MAX_DEPTH)
 }
 
-/// Returns a human-readable shortfall when a metered account is out of credit.
+/// Describes the shortfall when a metered account has no session credit left.
+///
+/// This is diagnostic only. The authoritative out-of-credit signal is the
+/// `create_browser_session` response, which carries the checkout link a human
+/// needs; see [`call_mcp_tool`].
 fn credit_shortfall(payload: &Value) -> Option<String> {
     let metered = payload
         .get("metered")
@@ -669,9 +674,9 @@ fn credit_shortfall(payload: &Value) -> Option<String> {
     if !metered || credits > 0.0 {
         return None;
     }
-    let checkout =
-        lookup_str(payload, CHECKOUT_KEYS).unwrap_or_else(|| CREDIT_CHECKOUT_URL.to_owned());
-    Some(format!("buy credits at {checkout} and run again"))
+    Some(format!(
+        "{credits} credits remaining on a metered deployment"
+    ))
 }
 
 /// Errors from renting, driving, or releasing a Popcorn session.
@@ -921,13 +926,18 @@ async fn create_mcp_session(
     handle: &McpHandle,
     config: &PopcornConfig,
 ) -> Result<PopcornSession, PopcornError> {
-    // Checking the balance first is free and turns an out-of-credit run into a
-    // clear instruction instead of a failed session creation.
-    let balance = call_mcp_tool(handle, BALANCE_TOOL, Map::new()).await?;
-    if let Ok(payload) = balance.json()
-        && let Some(message) = credit_shortfall(&payload)
+    // The balance is free to read and worth logging, but it must not short
+    // circuit creation: only `create_browser_session` returns the human
+    // checkout link for buying credits, so an out-of-credit run has to reach it.
+    if let Ok(balance) = call_mcp_tool(handle, BALANCE_TOOL, Map::new()).await
+        && let Ok(payload) = balance.json()
+        && let Some(shortfall) = credit_shortfall(&payload)
     {
-        return Err(PopcornError::InsufficientCredit { message });
+        debug!(
+            target: "nanocodex_browser",
+            shortfall,
+            "popcorn reports no session credit; asking the server for a checkout link"
+        );
     }
 
     let mut arguments = Map::new();
@@ -995,19 +1005,60 @@ async fn call_mcp_tool(
         return Ok(call);
     }
     let detail = call.text().trim().to_owned();
-    let checkout = call
-        .json()
-        .ok()
-        .as_ref()
-        .and_then(|payload| lookup_str(payload, CHECKOUT_KEYS));
+    let payload = call.json().ok();
+    let checkout = payload.as_ref().and_then(checkout_link);
+    // An out-of-credit creation answers with a checkout link for the human;
+    // hand it over unchanged and stop rather than retrying.
     if let Some(checkout) = checkout {
         return Err(PopcornError::InsufficientCredit {
-            message: format!("buy credits at {checkout} and run again"),
+            message: format!(
+                "open {checkout} to buy credits, then retry with the same idempotency key"
+            ),
+        });
+    }
+    if payload.as_ref().is_some_and(payload_is_out_of_credit) {
+        // The server sent no `checkout_url` field, so pass its own wording
+        // through: deployments put the payment link in the message text.
+        return Err(PopcornError::InsufficientCredit {
+            message: if detail.is_empty() {
+                format!("buy credits at {CREDIT_CHECKOUT_URL}")
+            } else {
+                truncate(&detail)
+            },
         });
     }
     Err(PopcornError::Mcp {
         message: format!("`{tool}` failed: {}", truncate(&detail)),
     })
+}
+
+/// Finds the human approval link in an out-of-credit refusal.
+///
+/// The hosted server answers with a `next_action` of type `external_approval`
+/// holding the link; other deployments may name it `checkout_url`. The link is
+/// read only from those positions, never from a generic `url` field, so a
+/// session's LiveView URL can never be mistaken for a payment link.
+fn checkout_link(payload: &Value) -> Option<String> {
+    for key in NEXT_ACTION_KEYS {
+        if let Some(action) = payload.get(*key)
+            && let Some(url) = lookup_str(action, &["url"])
+        {
+            return Some(url);
+        }
+    }
+    lookup_str(payload, CHECKOUT_KEYS)
+}
+
+/// Detects an out-of-credit refusal that carried no checkout link.
+fn payload_is_out_of_credit(payload: &Value) -> bool {
+    payload
+        .get("error")
+        .or_else(|| payload.get("code"))
+        .and_then(Value::as_str)
+        .is_some_and(|error| {
+            let error = error.to_ascii_lowercase();
+            error.contains("credit") || error.contains("payment")
+        })
 }
 
 const fn map_mcp_error(message: String) -> PopcornError {
@@ -1593,8 +1644,7 @@ mod tests {
             "session_block_seconds": 600,
             "credits_per_operation": 1
         });
-        let message = credit_shortfall(&empty).expect("no credit left");
-        assert!(message.contains(CREDIT_CHECKOUT_URL), "{message}");
+        assert!(credit_shortfall(&empty).is_some(), "no credit left");
 
         let funded = json!({ "credits": 12, "metered": true });
         assert!(credit_shortfall(&funded).is_none());
@@ -1606,16 +1656,69 @@ mod tests {
     }
 
     #[test]
-    fn a_shortfall_prefers_the_servers_checkout_url() {
-        let payload = json!({
-            "credits": 0,
-            "metered": true,
+    fn an_out_of_credit_refusal_is_recognised_by_its_error_field() {
+        assert!(payload_is_out_of_credit(
+            &json!({ "error": "INSUFFICIENT_CREDIT" })
+        ));
+        assert!(payload_is_out_of_credit(
+            &json!({ "code": "payment_required" })
+        ));
+        assert!(!payload_is_out_of_credit(
+            &json!({ "error": "no capacity" })
+        ));
+        assert!(!payload_is_out_of_credit(&json!({ "session_id": "pop-1" })));
+    }
+
+    #[test]
+    fn the_hosted_servers_refusal_yields_its_approval_link() {
+        // Verbatim shape returned by the hosted server when credit runs out.
+        let refusal = json!({
+            "error": "insufficient_credit",
+            "message": "Not enough usage credit for this operation.",
+            "next_action": {
+                "type": "external_approval",
+                "url": "https://popcorn-billing-gcp.reclaimprotocol.org/checkout?token=opaque"
+            },
+            "next": "Give the human next_action to obtain more credit, then retry with the same idempotency_key."
+        });
+        assert!(payload_is_out_of_credit(&refusal));
+        assert_eq!(
+            checkout_link(&refusal).as_deref(),
+            Some("https://popcorn-billing-gcp.reclaimprotocol.org/checkout?token=opaque")
+        );
+    }
+
+    #[test]
+    fn a_live_view_url_is_never_read_as_a_payment_link() {
+        // A successful creation has a `url`, which must not look like checkout.
+        let created = json!({
+            "session_id": "pop-1",
+            "url": "https://browser.example.com/liveview/pop-1/tok/",
+            "cdp_url": "wss://browser.example.com/cdp/pop-1/tok/"
+        });
+        assert!(checkout_link(&created).is_none());
+        assert!(!payload_is_out_of_credit(&created));
+    }
+
+    #[test]
+    fn the_servers_checkout_link_is_found_in_a_refusal() {
+        // Only the creation response carries the link a human can pay at, so it
+        // must survive whatever envelope the server wraps it in.
+        let flat = json!({
+            "error": "insufficient_credit",
             "checkout_url": "https://checkout.example.com/session/abc"
         });
-        let message = credit_shortfall(&payload).expect("no credit left");
-        assert!(
-            message.contains("https://checkout.example.com/session/abc"),
-            "{message}"
+        assert_eq!(
+            lookup_str(&flat, CHECKOUT_KEYS).as_deref(),
+            Some("https://checkout.example.com/session/abc")
+        );
+        let nested = json!({
+            "error": { "code": "insufficient_credit" },
+            "billing": { "checkoutUrl": "https://checkout.example.com/session/xyz" }
+        });
+        assert_eq!(
+            lookup_str(&nested, CHECKOUT_KEYS).as_deref(),
+            Some("https://checkout.example.com/session/xyz")
         );
     }
 
