@@ -2120,6 +2120,48 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed)
         capture(app, "12-activity-failure")
     }
+    func testStreamingGrowthDoesNotMoveReaderInEarlierParagraphs() {
+        let app = launch(["NANOCODEX_DEMO_STREAMING_GROWTH": "1"]); selectInbox(app)
+        let conversation = app.scrollViews["conversation"]
+        let middle = conversation.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Stream paragraph 20.")).firstMatch
+        XCTAssertTrue(middle.waitForExistence(timeout: 15))
+        conversation.swipeDown()
+        let anchor = conversation.staticTexts.allElementsBoundByIndex.first {
+            $0.isHittable && $0.label.hasPrefix("Stream paragraph ") && $0.frame.minY >= conversation.frame.minY
+        }!
+        let label = anchor.label, y = anchor.frame.minY
+        Thread.sleep(forTimeInterval: 12)
+        XCTAssertTrue(conversation.staticTexts[label].isHittable)
+        XCTAssertEqual(conversation.staticTexts[label].frame.minY, y, accuracy: 4,
+                       "Streaming into the same response must preserve the paragraph being read")
+        capture(app, "streaming-preserves-reading-position")
+    }
+
+    func testLiveTailFollowsUpdatesAndOffersCompactJumpAfterReadingHistory() {
+        let app = launch(["NANOCODEX_DEMO_STREAMING_GROWTH": "1"]); selectInbox(app)
+        let conversation = app.scrollViews["conversation"]
+        XCTAssertTrue(conversation.waitForExistence(timeout: 5))
+        let update = conversation.staticTexts["Streaming response complete."]
+        XCTAssertTrue(update.waitForExistence(timeout: 20))
+        XCTAssertTrue(update.isHittable, "New response layout should follow the live tail")
+        conversation.swipeDown(); conversation.swipeDown()
+        let jump = app.buttons["latest-messages"]
+        capture(app, "streaming-history-before-jump")
+        XCTAssertTrue(jump.waitForExistence(timeout: 5))
+        XCTAssertTrue(jump.isHittable)
+        XCTAssertEqual(jump.frame.width, 44, accuracy: 2)
+        XCTAssertEqual(jump.frame.height, 44, accuracy: 2)
+        XCTAssertEqual(jump.frame.midX, conversation.frame.midX, accuracy: 2)
+        XCTAssertEqual(jump.label, "Latest messages")
+        XCTAssertLessThanOrEqual(jump.frame.maxY, composer(app).frame.minY)
+        XCTAssertLessThan(composer(app).frame.minY - jump.frame.maxY, 80,
+                          "The down arrow should sit immediately above the composer")
+        capture(app, "compact-latest-messages")
+        jump.tap()
+        XCTAssertTrue(update.isHittable)
+        gone(jump)
+    }
+
     func testLongThreadKeepsPlaceAcrossUpdatesHistoryAndForeground() {
         let app = launch(["NANOCODEX_DEMO_LONG_THREAD": "1", "NANOCODEX_DEMO_HISTORY_DELAY_MS": "6000"]); selectInbox(app)
 
