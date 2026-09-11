@@ -493,11 +493,12 @@ public struct EventPage: Sendable {
 
 /// Capture agent and turn identity at the button press, before any await or swipe.
 public struct AgentCommand: Equatable, Sendable {
-    public enum Kind: Equatable, Sendable { case followUp, steer, stop }
+    public enum Kind: Equatable, Sendable { case followUp, steer, withdrawSteer, stop }
     public let agentID: String
     public let turnID: String
     public let input: String
     public var images: [JSON] = []
+    public var rawInput: JSON?
     public let kind: Kind
     public let requestID: String
     public init(agentID: String, turnID: String = "", input: String = "", kind: Kind, requestID: String = UUID().uuidString) {
@@ -505,13 +506,14 @@ public struct AgentCommand: Equatable, Sendable {
     }
     public func requestSpec() throws -> (path: String, body: JSON?, key: String?) {
         let path = try ManagedClient.agentPath(agentID) + "/turns"
-        let content: JSON = images.isEmpty ? .string(input) : .array(
+        let content: JSON = rawInput ?? (images.isEmpty ? .string(input) : .array(
             (input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [] : [.object(["type": .string("text"), "text": .string(input)])]) + images
-        )
-        let body: JSON = .object(kind == .followUp ? ["id": .string(requestID), "input": content] : ["input": content])
+        ))
+        let body: JSON = .object(kind == .followUp ? ["id": .string(requestID), "input": content] : ["input": content, "message_id": .string(requestID)])
         if kind == .followUp { return (path, body, "inbox:" + requestID) }
         guard !turnID.isEmpty, turnID.range(of: #"^[A-Za-z0-9._:-]{1,128}$"#, options: .regularExpression) != nil,
               let segment = turnID.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else { throw APIError.invalidResponse }
+        if kind == .withdrawSteer { return (path + "/" + segment + "/withdraw-steer", .object(["message_id": .string(requestID)]), nil) }
         return (path + "/" + segment + (kind == .steer ? "/steer" : "/cancel"), kind == .steer ? body : nil, nil)
     }
 }

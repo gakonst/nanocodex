@@ -142,7 +142,7 @@ Return/Tab/Esc controls below the video.
 | Scroll a conversation | Read the full history, reasoning, and expandable tool details while keeping the composer available |
 | Attachment plus → Camera / Photos & Videos / Files | Take a photo or attach photos/videos; preview or remove attachments before sending |
 | Send / ⌘Return | Submit one durable follow-up; queue behind current work and dismiss the iPhone/iPad keyboard |
-| Interrupt & run on queued message | Cancel the unfinished turn ahead of it so the follow-up can start |
+| Steer now on queued message | Inject the queued input into the active turn through the steering API |
 | Voice | Start an interactive spoken conversation with this agent; minimize the panel to keep talking |
 | Stop turn | Immediately cancel the selected turn from the send button |
 | Bottom menu → Account settings | Manage the account and device Hand |
@@ -196,9 +196,18 @@ on the service. Foregrounding reloads history and resumes. Active-turn state
 reads cannot overwrite newer streamed events. Changing accounts invalidates old
 callbacks and cancels owned requests. Follow-up retries reuse the same turn ID
 and idempotency key. The compact queued-message row sits flush above the input inside the composer surface and survives navigation and relaunch.
-“Interrupt & run” uses cancel-and-continue: it resolves the unfinished predecessor from
-the current queue, captures that exact target at the tap, and cancels it without
-resubmitting the durable follow-up. This is not in-flight runtime injection.
+“Steer now” reads the queued turn's exact admitted input, durably cancels only
+that queued follow-up, and posts its payload to the captured active turn's
+`/steer` endpoint with a stable `message_id`. The active turn keeps running;
+the runtime applies steering at its model boundary. Cancellation of the queued
+source prevents the same input from also executing as a later turn.
+`/withdraw-steer` handles withdrawal with the same identity. A false response
+means withdrawal was not confirmed, never that the active turn should be stopped.
+Steering transfer phases and accepted markers survive relaunch. An uncertain
+POST is retained as unconfirmed and is not automatically retried: identified
+steering rejects duplicate identities, and `run.steered` does not identify the
+client message. Accepted steering is shown in conversation with a steering label;
+preparation/errors remain in the queue. Terminal-target rejection retains input.
 Stop and queued-message cancellation remain available during submission and
 account refresh. Cancellation intent survives relaunch; the send button shows
 progress until the exact turn is terminal, with a retry on an unconfirmed stop.
@@ -603,7 +612,7 @@ Verified on 2026-09-06: seven native UI checks passed, including creation delaye
 
 Conversation scroll targets retain the visible message across prepended history and new output, and new conversations open at the latest messages. Returning to the foreground resumes the existing cursor and transcript rather than clearing the screen. Conversation scrolling preserves the selected agent; navigation uses the tab strip and overview.
 
-The conversation keeps the same agent composer fixed above the keyboard while you read older messages. Sending dismisses the iPhone/iPad keyboard. Pending input appears once in the queue above the composer, including first sends, attachments, and delivery errors. Admission does not create a sent bubble: execution evidence promotes the message into the conversation. The queue follows server order across devices and relaunch; messages whose content has not loaded retain a placeholder and queue position. Cancelling and retrying keep the same identity. “Interrupt & run” stops the current turn to let the next queued message run. With an empty draft and a running turn, the send button becomes Stop; adding text or an image restores Send in the same position. Drafts, queued follow-ups, steering, and stop controls belong to the selected agent. Switching tabs or opening the overview preserves that work.
+The conversation keeps the same agent composer fixed above the keyboard while you read older messages. Sending dismisses the iPhone/iPad keyboard. Pending input appears once in the queue above the composer, including first sends, attachments, and delivery errors. Follow-up admission does not create a sent bubble: execution evidence promotes it into the conversation. API-accepted steering appears with an explicit steering label. The queue follows server order across devices and relaunch; messages whose content has not loaded retain a placeholder and queue position. Cancelling and retrying keep the same identity. “Steer now” injects the input through the active turn’s steering API without stopping that turn. With an empty draft and a running turn, the send button becomes Stop; adding text or an image restores Send in the same position. Drafts, queued follow-ups, steering, and stop controls belong to the selected agent. Switching tabs or opening the overview preserves that work.
 
 Verified on 2026-09-08: focused iPhone/iPad checks cover browser tabs, searchable live previews, the All/Running filter, app-menu navigation, independent drafts, keyboard placement, point-based reading restoration, slow creation, cancellation, and retry. The signed-in iPhone 17 Pro completed a real reply, relaunched, and retained both messages through three round trips to other tabs. InboxCore passed 68 tests with three skips. The top tab strip, bottom Back/+/overview/screens/menu bar, Back draft restoration, and activity-sorted overview were checked in iPhone and iPad simulators. These tab checks do not establish voice latency or microphone performance.
 

@@ -1,7 +1,7 @@
 import Foundation
 
-/// A durable follow-up is admitted once. "Steer now" resolves and captures an
-/// unfinished predecessor; it never submits the follow-up a second time.
+/// A durable follow-up is admitted once. Steering captures its active target;
+/// SteeringTransfer fences the queued source before injecting through the API.
 public struct PendingMessage: Identifiable, Codable, Equatable, Sendable {
     public enum Phase: String, Codable, Sendable { case submitting, queued, starting, cancelling, failed }
     public let id: String
@@ -31,7 +31,7 @@ public struct PendingMessage: Identifiable, Codable, Equatable, Sendable {
     public var submission: AgentCommand { AgentCommand(agentID: agentID, input: input, kind: .followUp, requestID: id) }
     public var interruption: AgentCommand? {
         guard phase == .queued, !predecessor.isEmpty, predecessor != id else { return nil }
-        return AgentCommand(agentID: agentID, turnID: predecessor, kind: .stop)
+        return AgentCommand(agentID: agentID, turnID: predecessor, input: input, kind: .steer, requestID: id)
     }
     /// The server lists unfinished turns in queue order. A predecessor captured
     /// when sending may since have completed or been cancelled on another device.
@@ -40,7 +40,7 @@ public struct PendingMessage: Identifiable, Codable, Equatable, Sendable {
         guard activeTurns.contains(id) || (!predecessor.isEmpty && activeTurns.contains(predecessor)) else { return nil }
         let preceding = activeTurns.prefix { $0 != id }
         guard let target = preceding.first, target != id else { return nil }
-        return AgentCommand(agentID: agentID, turnID: target, kind: .stop)
+        return AgentCommand(agentID: agentID, turnID: target, input: input, kind: .steer, requestID: id)
     }
     public mutating func acknowledge(_ receipt: JSON) throws {
         guard receipt["turn_id"].string == id else { throw APIError.invalidResponse }

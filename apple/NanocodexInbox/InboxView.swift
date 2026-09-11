@@ -774,10 +774,10 @@ private struct AgentComposerView: View {
                         ForEach(visiblePending) { message in
                             HStack(alignment: .center, spacing: 8) {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(message.queueTitle)
+                                    Text(model.steeringTransfer(message.id)?.title ?? message.queueTitle)
                                         .font(.system(size: 11)).foregroundStyle(Ink.muted)
                                     Text(ContextPrompt.separate(message.input)?.request ?? message.input).font(.system(size: 14))
-                                        .fixedSize(horizontal: false, vertical: true)
+                                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                                         .accessibilityIdentifier("pending-message")
                                     if let names = model.focusedQueue.attachmentNames[message.id], !names.isEmpty {
                                         Label(names.joined(separator: ", "), systemImage: "photo")
@@ -798,14 +798,17 @@ private struct AgentComposerView: View {
                                             }
                                         }
                                     }
-                                    if let error = message.error { Text(error).font(.caption2).foregroundStyle(Ink.muted) }
+                                    if let error = model.steeringTransfer(message.id)?.error ?? message.error { Text(error).font(.caption2).foregroundStyle(Ink.muted) }
                                 }.frame(maxWidth: .infinity, alignment: .leading)
                                 if message.phase == .failed, message.remoteAdmission != true {
                                     Button { model.retryPending(message.id) } label: { Text("Retry").frame(minHeight: 44) }.accessibilityIdentifier("retry-pending")
                                         .disabled(model.busy.contains(message.agentID))
+                                } else if let transfer = model.steeringTransfer(message.id), transfer.error != nil && transfer.canResume {
+                                    Button("Retry steer") { model.steerNow(message.id) }.accessibilityIdentifier("retry-steering")
+                                        .disabled(!model.connected)
                                 } else if model.steeringTarget(message) != nil {
-                                    Button { model.steerNow(message.id) } label: { Text("Interrupt & run").frame(minHeight: 44) }.accessibilityIdentifier("steer-now")
-                                        .accessibilityHint("Stops the current turn so this queued message can run next")
+                                    Button { model.steerNow(message.id) } label: { Text("Steer now").frame(minHeight: 44) }.accessibilityIdentifier("steer-now")
+                                        .accessibilityHint("Sends this message into the current turn without stopping it")
                                         .disabled(!model.connected)
                                 }
                                 Button { model.cancelPending(message.id) } label: {
@@ -1394,7 +1397,11 @@ private struct ConversationMessageView: View {
     @ObservedObject var model: InboxModel
     let agentID: String
     var body: some View {
-        ConversationMessageContent(row: row, model: model, agentID: agentID).equatable()
+        let steering = model.steeringTransfer(row.turnID ?? row.id)
+        let canWithdraw = steering.map { transfer in
+            model.cards.first(where: { $0.id == agentID })?.activeTurns.contains(transfer.targetTurnID) == true
+        } ?? false
+        ConversationMessageContent(row: row, model: model, agentID: agentID, steering: steering, canWithdraw: canWithdraw).equatable()
     }
 }
 
@@ -1402,8 +1409,10 @@ private struct ConversationMessageContent: View, Equatable {
     let row: TranscriptRow
     let model: InboxModel
     let agentID: String
+    let steering: SteeringTransfer?
+    let canWithdraw: Bool
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.row == rhs.row && lhs.agentID == rhs.agentID
+        lhs.row == rhs.row && lhs.agentID == rhs.agentID && lhs.steering == rhs.steering && lhs.canWithdraw == rhs.canWithdraw
             && lhs.model === rhs.model
     }
     var body: some View {
@@ -1434,6 +1443,12 @@ private struct ConversationMessageContent: View, Equatable {
                     Text(row.text).font(.system(size: row.role == "Status" ? 14 : 17))
                         .lineSpacing(5).textSelection(.enabled)
                         .foregroundStyle(row.role == "Status" ? Ink.muted : Ink.text)
+                }
+                if !row.detail.isEmpty { Text(row.detail).font(.caption).foregroundStyle(Ink.muted) }
+                if let transfer = steering, canWithdraw, (transfer.wasAccepted || transfer.phase == .unconfirmed), transfer.phase != .withdrawn {
+                    Button(transfer.phase == .withdrawing ? "Withdrawing…" : "Withdraw steering") { model.withdrawSteering(transfer.id) }
+                        .font(.caption).accessibilityIdentifier("withdraw-steering")
+                        .disabled(!model.connected || (transfer.phase == .withdrawing && transfer.error == nil))
                 }
                 if let images = row.images {
                     ForEach(Array(images.filter { $0.hasPrefix("data:image/") }.enumerated()), id: \.offset) { _, image in
