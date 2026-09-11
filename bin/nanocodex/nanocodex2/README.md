@@ -171,6 +171,80 @@ The immutable attachment snapshot publishes the guest workspace plus `vm`,
 attachment generation under the existing lease/fencing rules. Ctrl-C drains
 admitted calls, syncs the guest filesystem, and stops the VM.
 
+## Docker hand (no KVM)
+
+Use Docker on glibc Linux or Apple Silicon macOS with a Linux Docker daemon.
+Linux containers do not require `/dev/kvm`; Docker Desktop still needs its own
+Linux VM on macOS. This is an explicit container backend with a shared host
+kernel, not an automatic fallback from failed VM startup.
+
+Build the image for the selected Docker daemon's architecture from the repo root
+(the matching Rust musl target and linker must be installed):
+
+```bash
+pnpm build:hand-docker
+nanocodex2 hand \
+  --docker nanocodex-hand:local \
+  --docker-volume personal-hand-workspace \
+  --machine-id personal-hand \
+  --machine-name "Personal Docker Hand"
+```
+
+The existing account login supplies attachment authority. No account credential,
+Docker socket, or host directory is passed into the container. The bundled image
+contains the Rust guest runtime, shell, Git, Python, Node, and an X11 desktop.
+Images must already exist on the selected Docker daemon; launch never pulls.
+Use a pinned image digest when deploying an image from a registry.
+
+Docker Hands default to **offline**. `--docker-internet` explicitly enables
+ordinary Docker bridge networking, including any destinations that network can
+reach. This mode does not enforce broker-only egress. Account signaling and
+screen publication remain in the host process and work with an offline guest.
+A future broker-only mode must enforce its network boundary, not rely on proxy
+environment variables. `--docker-runtime runsc` selects an installed Docker
+runtime without fallback; gVisor/desktop compatibility must be checked on that
+host. The launcher does not install or configure gVisor.
+
+`--vm-workspace` (default `/app`), `--vm-cpus`, `--vm-memory-mib`, and
+`--vm-shell` apply to either backend. Docker Hands publish `container` instead
+of `vm` in the machine capability list. `--vm` and `--docker` are mutually
+exclusive; Docker images bundle their runtime and do not accept ext4 guest or
+firmware options.
+
+The named volume holds the workspace, including `$HOME` at `/app/.home` by
+default. Reuse the same volume and machine ID to resume files after a restart or
+image replacement. The root image is read-only; customize system packages in
+the Dockerfile and install project dependencies inside the workspace. Custom
+images must provide `/usr/local/bin/nanocodex-vm-guest`, `/bin/sh`, `/bin/sync`,
+and a workspace directory writable by UID/GID 1000. Runtime scratch data under
+`/run` and `/tmp` is temporary. Files on the volume are independent of the
+managed brain's durable application state.
+
+A deterministic container name reserves each workspace volume for one Hand.
+A duplicate launch fails without stopping the current owner. Ctrl-C/SIGTERM
+while attached drains work, syncs the guest, and removes the container; the
+volume is retained. Dropping the last tool capability also schedules bounded
+container cleanup. A killed host process or unreachable Docker daemon can leave
+a stale container. Inspect `docker ps -a --filter volume=personal-hand-workspace`
+and remove the exact stale container after confirming its Hand is stopped;
+then relaunch. The launcher never removes an existing owner's container.
+Back up volumes separately; container cleanup never deletes the named workspace.
+
+The design takes inspiration from [Meta's separation of the agent runtime from
+credential and permission services](https://research.meta.ai/blog/security-and-safety-for-ai-agents-our-approach-with-muse).
+It reuses Nanocodex's existing host-owned attachment and screen authority; it
+is not an implementation of Meta's Sentinel or a claim of VM-equivalent isolation.
+
+Run the Docker contract tests against the image:
+
+```bash
+NANOCODEX_DOCKER_TEST_IMAGE=nanocodex-hand:local \
+  cargo test --locked -p nanocodex-vm --test docker_live -- --ignored
+```
+
+The on-demand `host` pool remains libkrun-only; Docker is available through the
+single `hand` command and the `nanocodex_vm::docker` library API.
+
 ## On-demand VM hosts
 
 `nanocodex2 host` advertises bounded capacity instead of attaching one VM. The

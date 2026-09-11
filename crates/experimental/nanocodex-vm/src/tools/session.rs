@@ -326,6 +326,7 @@ struct VmToolSessionInner {
     child: StdMutex<Option<Child>>,
     egress: StdMutex<Option<EgressLease>>,
     process_config: StdMutex<Option<PrivateVmProcessConfig>>,
+    lifetime_guards: StdMutex<Vec<Arc<dyn std::any::Any + Send + Sync>>>,
 }
 
 #[derive(Default)]
@@ -582,6 +583,7 @@ impl VmToolSession {
                 child: StdMutex::new(Some(child)),
                 egress: StdMutex::new(None),
                 process_config: StdMutex::new(None),
+                lifetime_guards: StdMutex::new(Vec::new()),
             });
             runtime.spawn(write_requests(
                 input,
@@ -605,6 +607,11 @@ impl VmToolSession {
         });
         record_vm_result(&span, started_at, &result);
         result
+    }
+
+    /// Retains an external runtime owner until the last tool capability drops.
+    pub(crate) fn retain<T: std::any::Any + Send + Sync>(&self, guard: Arc<T>) {
+        lock_unpoisoned(&self.handle.inner.lifetime_guards).push(guard);
     }
 
     /// Returns a clone-cheap capability for this session.
@@ -800,7 +807,7 @@ impl VmToolSession {
         result
     }
 
-    async fn terminate(&self) {
+    pub(crate) async fn terminate(&self) {
         let child = begin_termination(&self.handle.inner);
         if let Some(mut child) = child {
             let _ = tokio::time::timeout(self.handle.inner.shutdown_timeout, child.wait()).await;

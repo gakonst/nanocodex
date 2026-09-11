@@ -10,6 +10,11 @@
 mod config;
 mod control;
 mod hand_observability;
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "musl")),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+mod hand_workspace;
 mod host;
 #[allow(dead_code)]
 mod installation;
@@ -87,7 +92,7 @@ enum Command {
     Account(nanocodex_cli_auth::Account),
     /// Attach this machine's workspace to an existing managed agent.
     Attach(Attach),
-    /// Register one retained libkrun VM as a compute hand for the account.
+    /// Register a retained VM or Docker workspace as a compute hand for the account.
     Hand(Hand),
     /// Connect this machine's native workspace to the account over outbound HTTPS.
     NativeHand(native_hand::NativeHand),
@@ -153,8 +158,30 @@ struct Hand {
     observability: HandObservabilityArgs,
 
     /// Writable raw ext4 image or development directory used as the retained VM root.
-    #[arg(long = "vm", visible_alias = "vm-rootfs", value_name = "ROOTFS")]
-    rootfs: PathBuf,
+    #[arg(
+        long = "vm",
+        visible_alias = "vm-rootfs",
+        value_name = "ROOTFS",
+        required_unless_present = "docker",
+        conflicts_with = "docker"
+    )]
+    rootfs: Option<PathBuf>,
+
+    /// Run a container Hand using this local image, without requiring KVM.
+    #[arg(long, value_name = "IMAGE", requires = "docker_volume", conflicts_with_all = ["rootfs", "vm_guest_runtime", "vm_firmware"])]
+    docker: Option<String>,
+
+    /// Persistent named workspace volume; also provides exclusive Hand ownership.
+    #[arg(long, value_name = "VOLUME", requires = "docker")]
+    docker_volume: Option<String>,
+
+    /// Enable ordinary Docker bridge internet access (Docker Hands default to offline).
+    #[arg(long, requires = "docker", conflicts_with = "vm_no_network")]
+    docker_internet: bool,
+
+    /// Explicit Docker OCI runtime; fails if unavailable, with no fallback.
+    #[arg(long, value_name = "RUNTIME", requires = "docker")]
+    docker_runtime: Option<String>,
 
     /// Statically linked Linux guest executable used with a raw ext4 root.
     #[arg(long, value_name = "ELF", env = "NANOCODEX_VM_GUEST_RUNTIME")]
@@ -489,11 +516,12 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
 }
 
 async fn launch_vm_hand(command: &Hand) -> Result<vm_hand::VmHand, ManagedError> {
-    let (root_kind, root_bytes) = match std::fs::metadata(&command.rootfs) {
-        Ok(metadata) if metadata.is_file() => ("file", metadata.len()),
-        Ok(metadata) if metadata.is_dir() => ("directory", 0),
-        Ok(_) => ("other", 0),
-        Err(_) => ("missing", 0),
+    let (root_kind, root_bytes) = match command.rootfs.as_ref().map(std::fs::metadata) {
+        Some(Ok(metadata)) if metadata.is_file() => ("file", metadata.len()),
+        Some(Ok(metadata)) if metadata.is_dir() => ("directory", 0),
+        Some(Ok(_)) => ("other", 0),
+        Some(Err(_)) => ("missing", 0),
+        None => ("docker", 0),
     };
     let span = tracing::info_span!(
         target: "nanocodex2",
@@ -505,7 +533,8 @@ async fn launch_vm_hand(command: &Hand) -> Result<vm_hand::VmHand, ManagedError>
         vm.memory.limit_mib = command.vm_memory_mib,
         vm.root.kind = root_kind,
         vm.root.bytes = root_bytes,
-        network.enabled = !command.vm_no_network,
+        network.enabled = if command.docker.is_some() { command.docker_internet } else { !command.vm_no_network },
+        hand.backend = if command.docker.is_some() { "docker" } else { "libkrun" },
         status = tracing::field::Empty,
         duration_ns = tracing::field::Empty,
     );
@@ -514,7 +543,7 @@ async fn launch_vm_hand(command: &Hand) -> Result<vm_hand::VmHand, ManagedError>
         tracing::info!(
             target: "nanocodex2",
             stage = "vm.launch.starting",
-            "starting VM hand"
+            "starting Hand workspace"
         );
         let result = vm_hand::VmHand::start(command).await;
         span.record(
@@ -528,7 +557,7 @@ async fn launch_vm_hand(command: &Hand) -> Result<vm_hand::VmHand, ManagedError>
                 tracing::info!(
                     target: "nanocodex2",
                     stage = "vm.launch.ready",
-                    "VM guest is ready"
+                    "Hand guest is ready"
                 );
             }
             Err(_) => {
@@ -537,7 +566,7 @@ async fn launch_vm_hand(command: &Hand) -> Result<vm_hand::VmHand, ManagedError>
                 tracing::error!(
                     target: "nanocodex2",
                     stage = "vm.launch.failed",
-                    "VM guest failed to start"
+                    "Hand guest failed to start"
                 );
             }
         }
@@ -574,14 +603,12 @@ async fn serve_vm_hand(client: &ManagedClient, command: Hand) -> Result<(), Mana
     tracing::info!(
         target: "nanocodex2",
         stage = "vm.hand.ready",
-        "VM hand is ready; press Ctrl-C to detach"
+        "Hand is ready; press Ctrl-C to detach"
     );
     let closed = attachment.clone();
     let attachment_result = tokio::select! {
-        signal = tokio::signal::ctrl_c() => {
-            signal.map_err(|error| ManagedError::Configuration(
-                format!("failed to listen for Ctrl-C: {error}")
-            ))?;
+        signal = service::shutdown_signal() => {
+            signal?;
             attachment.clone().detach().await
         }
         result = closed.closed() => result,
@@ -613,7 +640,7 @@ async fn shutdown_vm_hand(hand: vm_hand::VmHand) -> Result<(), ManagedError> {
         tracing::info!(
             target: "nanocodex2",
             stage = "vm.shutdown.starting",
-            "stopping VM guest"
+            "stopping Hand guest"
         );
         let result = hand.shutdown().await;
         span.record(
@@ -626,7 +653,7 @@ async fn shutdown_vm_hand(hand: vm_hand::VmHand) -> Result<(), ManagedError> {
             tracing::info!(
                 target: "nanocodex2",
                 stage = "vm.shutdown.completed",
-                "VM guest stopped"
+                "Hand guest stopped"
             );
         } else {
             span.record("status", "failed");
@@ -634,7 +661,7 @@ async fn shutdown_vm_hand(hand: vm_hand::VmHand) -> Result<(), ManagedError> {
             tracing::error!(
                 target: "nanocodex2",
                 stage = "vm.shutdown.failed",
-                "VM guest failed to stop cleanly"
+                "Hand guest failed to stop cleanly"
             );
         }
         result
@@ -652,10 +679,8 @@ async fn connect_vm_hand(
         .attach(target)
         .metadata(AttachmentMetadata::machine(hand.machine().clone()));
     let connected = tokio::select! {
-        signal = tokio::signal::ctrl_c() => {
-            signal.map_err(|error| ManagedError::Configuration(
-                format!("failed to listen for Ctrl-C: {error}")
-            ))?;
+        signal = service::shutdown_signal() => {
+            signal?;
             Ok(None)
         }
         connected = connector.connect() => connected

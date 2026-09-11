@@ -97,9 +97,9 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   vm-guest:
-    name: static Linux VM guest
+    name: static Linux guest and Docker Hand
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -124,6 +124,21 @@ jobs:
           cargo build --locked --package nanocodex-vm
           --bin nanocodex-vm-guest --no-default-features
           --features guest-runtime --target x86_64-unknown-linux-musl
+
+      - name: Build the Docker Hand image
+        run: |
+          context=$(mktemp -d)
+          trap 'rm -rf "$context"' EXIT
+          cp target/x86_64-unknown-linux-musl/debug/nanocodex-vm-guest "$context/"
+          cp crates/experimental/nanocodex-vm/image/Dockerfile.hand "$context/Dockerfile"
+          docker build --tag nanocodex-hand:ci "$context"
+      - name: Test Docker tools, desktop, persistence, and cleanup without KVM
+        run: |
+          cargo test --locked -p nanocodex-vm --test docker_live -- --ignored --nocapture
+          cargo test --locked -p nanocodex2-bin --test nanocodex2_managed docker_hand_live -- --ignored --nocapture
+        env:
+          NANOCODEX_DOCKER_TEST_IMAGE: nanocodex-hand:ci
+          NANOCODEX_DOCKER_HOST_SENTINEL: must-not-enter-the-container
 
   policy:
     name: dependencies and spelling

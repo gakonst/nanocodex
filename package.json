@@ -9,6 +9,7 @@
     "predev": "portless proxy start --port ${PORTLESS_PORT:-443}",
     "dev": "turbo run dev --filter=nanocodex-web --filter=@nanocodex/connect-playground",
     "build": "turbo run build",
+    "build:hand-docker": "bash scripts/build-hand-docker.sh",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "deploy:egress": "pnpm --filter nanocodex-egress-service run deploy:broker",

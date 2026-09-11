@@ -2,10 +2,11 @@ use std::path::PathBuf;
 
 use super::Hand;
 
-/// Complete single-VM launch recipe shared by every platform backend.
+/// Complete single-Hand launch recipe shared by every supported backend.
 #[derive(Clone, Debug)]
 pub(crate) struct VmHandConfig {
     pub(crate) rootfs: PathBuf,
+    pub(crate) docker: Option<DockerHandConfig>,
     pub(crate) vm_guest_runtime: Option<PathBuf>,
     pub(crate) vm_cache: PathBuf,
     pub(crate) vm_firmware: Option<PathBuf>,
@@ -22,7 +23,13 @@ pub(crate) struct VmHandConfig {
 impl From<&Hand> for VmHandConfig {
     fn from(config: &Hand) -> Self {
         Self {
-            rootfs: config.rootfs.clone(),
+            rootfs: config.rootfs.clone().unwrap_or_default(),
+            docker: config.docker.as_ref().map(|image| DockerHandConfig {
+                image: image.clone(),
+                volume: config.docker_volume.clone().unwrap_or_default(),
+                internet: config.docker_internet,
+                runtime: config.docker_runtime.clone(),
+            }),
             vm_guest_runtime: config.vm_guest_runtime.clone(),
             vm_cache: config.vm_cache.clone(),
             vm_firmware: config.vm_firmware.clone(),
@@ -36,4 +43,12 @@ impl From<&Hand> for VmHandConfig {
             machine_name: config.machine_name.clone(),
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DockerHandConfig {
+    pub(crate) image: String,
+    pub(crate) volume: String,
+    pub(crate) internet: bool,
+    pub(crate) runtime: Option<String>,
 }

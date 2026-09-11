@@ -1655,6 +1655,7 @@ mod supported {
             let locked_template_root = locked_file_path(&template_lock);
             let hand_template = vm_hand::VmHandConfig {
                 rootfs: config.vm_template.clone(),
+                docker: None,
                 vm_guest_runtime: Some(config.vm_guest_runtime.clone()),
                 vm_cache: config.vm_cache.clone(),
                 vm_firmware: config.vm_firmware.clone(),

@@ -1,0 +1,14 @@
+# Build with pnpm build:hand-docker. The context contains the static Linux runtime.
+FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+RUN apk add --no-cache ca-certificates bash curl git python3 nodejs npm \
+        xvfb openbox xterm font-dejavu mesa-dri-gallium \
+    && addgroup -g 1000 nanocodex \
+    && adduser -D -u 1000 -G nanocodex nanocodex \
+    && mkdir -p /app /workspace \
+    && chown 1000:1000 /app /workspace
+COPY --chmod=0755 nanocodex-vm-guest /usr/local/bin/nanocodex-vm-guest
+ENV DISPLAY=:0
+USER 1000:1000
+WORKDIR /app
+ENTRYPOINT ["/usr/local/bin/nanocodex-vm-guest"]
+CMD ["/app"]

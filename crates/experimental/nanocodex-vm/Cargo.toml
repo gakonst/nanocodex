@@ -113,6 +113,11 @@ name = "image_live_build"
 path = "tests/image_live_build.rs"
 required-features = ["host"]
 
+[[test]]
+name = "docker_live"
+path = "tests/docker_live.rs"
+required-features = ["host"]
+
 [lints.rust]
 unsafe_code = "deny"
 
