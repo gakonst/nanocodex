@@ -65,16 +65,30 @@ def check(output):
     assert len(PdfReader("office/report.pdf").pages) >= 1
     Path("graph.dot").write_text("digraph { code -> artifacts }")
     run("dot", "-Tsvg", "graph.dot", "-o", "graph.svg")
+    run("inkscape", "graph.svg", "--export-type=png", "--export-filename=graph.png")
+    Image.open("graph.png").verify()
+    Path("notes.md").write_text("# Toolkit\nOffline document conversion.\n")
+    run("pandoc", "notes.md", "-o", "notes.docx")
+    assert Document("notes.docx").paragraphs[0].text == "Toolkit"
+    Path("page.html").write_text("<html><body><h1>Hand toolkit</h1></body></html>")
+    # The surrounding Hand supplies the process isolation; the browser cannot
+    # create its own user namespace under Docker's no-new-privileges policy.
+    browser = shutil.which("chromium") or shutil.which("google-chrome")
+    run(browser, "--headless", "--no-sandbox", "--disable-dev-shm-usage",
+        "--no-first-run", "--no-default-browser-check",
+        "--screenshot=" + str(output / "browser.png"),
+        (output / "page.html").as_uri())
+    Image.open("browser.png").verify()
     run("ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=blue:s=64x64:d=0.2",
         "-y", "clip.mp4")
-    Path("render.py").write_text("import bpy\n"
+    Path("render.py").write_text("import bpy, os\n"
         "bpy.context.scene.render.engine='CYCLES'\n"
         "bpy.context.scene.cycles.device='CPU'\n"
         "bpy.context.scene.cycles.samples=1\n"
         "bpy.context.scene.render.resolution_x=32\n"
         "bpy.context.scene.render.resolution_y=32\n"
         "bpy.context.scene.render.resolution_percentage=100\n"
-        "bpy.context.scene.render.filepath='blender.png'\n"
+        "bpy.context.scene.render.filepath=os.path.abspath('blender.png')\n"
         "bpy.ops.render.render(write_still=True)\n")
     run("blender", "--background", "--factory-startup", "--threads", "1", "--python-exit-code", "1", "--python", "render.py")
     Image.open("blender.png").verify()
@@ -95,5 +109,5 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         check(Path(sys.argv[1]).resolve())
     else:
-        with tempfile.TemporaryDirectory(prefix="hand-toolkit-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="hand-toolkit-", dir=Path.cwd()) as temporary:
             check(Path(temporary))

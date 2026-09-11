@@ -290,6 +290,8 @@ impl DockerWorkspaceBuilder {
             &self.workspace,
             "--env",
             &format!("HOME={}/.home", self.workspace),
+            "--env",
+            &format!("TMPDIR={}/.tmp", self.workspace),
             "--entrypoint",
             "/bin/sh",
         ]);
@@ -316,7 +318,7 @@ impl DockerWorkspaceBuilder {
         command.args([
             &self.image,
             "-ec",
-            "mkdir -p -- \"$HOME\"; exec /usr/local/bin/nanocodex-vm-guest \"$1\"",
+            "mkdir -p -- \"$HOME\" \"$TMPDIR\"; exec /usr/local/bin/nanocodex-vm-guest \"$1\"",
             "nanocodex",
             &self.workspace,
         ]);

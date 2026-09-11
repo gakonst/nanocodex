@@ -148,7 +148,9 @@ jobs:
         run: >-
           docker run --rm --network none --read-only --user 1000:1000
           --cap-drop ALL --security-opt no-new-privileges --pids-limit 512
-          --tmpfs /tmp:rw,nosuid,nodev,size=2g --env HOME=/tmp
+          --tmpfs /tmp:rw,nosuid,nodev,size=256m --env HOME=/workspace
+          --tmpfs /workspace:rw,exec,nosuid,nodev,uid=1000,gid=1000,size=2g
+          --env TMPDIR=/workspace --workdir /workspace
           --entrypoint nanocodex-check-hand-toolkit nanocodex-hand:ci
       - name: Test Docker tools, desktop, persistence, and cleanup without KVM
         run: |
