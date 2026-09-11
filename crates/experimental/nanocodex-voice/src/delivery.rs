@@ -206,7 +206,7 @@ mod tests {
     #[test]
     fn interruption_restores_unconfirmed_answer_and_rejects_old_completion() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut delivery = SpeechDelivery::new(tx.clone());
+        let mut delivery = SpeechDelivery::new(tx);
         delivery.delegate(1);
         assert_eq!(
             delivery.prepare(1, "answer one".into()).as_deref(),
