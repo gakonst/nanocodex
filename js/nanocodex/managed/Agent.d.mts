@@ -144,6 +144,8 @@ export type Configuration = Readonly<{
   settings?: Readonly<{ model: CreateSettings["model"]; thinking: CreateSettings["thinking"]; reasoning_mode: "standard" | "pro"; fast_mode: boolean }>;
   instructions?: string;
   tools?: readonly string[];
+  /** Omission retains existing delegation. Explicit enablement defaults to six concurrent children. */
+  multi_agent?: Readonly<{ enabled: false }> | Readonly<{ enabled: true; max_concurrent_subagents?: number }>;
   output_schema?: Record<string, unknown>;
   prompt_cache?: "implicit" | "explicit";
   environment?: Environment;

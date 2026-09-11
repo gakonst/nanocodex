@@ -78,7 +78,15 @@ export async function create(options = {}) {
     WebSocketImpl,
     createWebSocket,
   } = resolveResponsesTransport(transport ?? defaultHostManagedTransport());
-  const { tools: hostTools, subagents: configuredSubagents } = resolveTools(tools);
+  const subagentsEnabled = internalRuntime?.subagentsEnabled;
+  if (subagentsEnabled !== undefined && typeof subagentsEnabled !== "boolean") {
+    throw new TypeError("host subagentsEnabled must be a boolean");
+  }
+  const { tools: hostTools, subagents: resolvedSubagents } = resolveTools(tools, {
+    defaultSubagents: subagentsEnabled !== false,
+  });
+  // A host prohibition also overrides an explicit Subagents.create() tool entry.
+  const configuredSubagents = subagentsEnabled === false ? undefined : resolvedSubagents;
   const subagentMaxConcurrency = internalRuntime?.subagentMaxConcurrency;
   if (subagentMaxConcurrency !== undefined
     && (!Number.isSafeInteger(subagentMaxConcurrency) || subagentMaxConcurrency < 1)) {

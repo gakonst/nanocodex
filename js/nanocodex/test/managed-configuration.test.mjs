@@ -13,8 +13,8 @@ test("configuration, template and operational calls use the existing authenticat
     return Response.json({ data: [] });
   } };
   await Agent.definitions.put("reviewer", { tools: [] }, options);
-  const agent = await Agent.create({ ...options, definitionId: "reviewer", environmentTemplateId: "offline", configuration: { instructions: "fixture" } });
-  assert.deepEqual(await requests[1].json(), { definition_id: "reviewer", environment_template_id: "offline", configuration: { instructions: "fixture" } });
+  const agent = await Agent.create({ ...options, definitionId: "reviewer", environmentTemplateId: "offline", configuration: { instructions: "fixture", multi_agent: { enabled: false } } });
+  assert.deepEqual(await requests[1].json(), { definition_id: "reviewer", environment_template_id: "offline", configuration: { instructions: "fixture", multi_agent: { enabled: false } } });
   await agent.configuration(); await agent.environment(); await agent.usage({ after: "7" });
   await agent.artifacts.list({ turnId: "turn/with space" }); await agent.webhook.delete();
   await agent.requiredActions.submit("call:1", { status: "cancelled", message: "cancelled" });

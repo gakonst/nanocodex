@@ -37,7 +37,36 @@ existing settings API; other session configuration is fixed at creation.
 `tools` is an optional exact allowlist of built-in managed tools. Omission retains
 the default catalog; `[]` disables those tools. An explicit allowlist excludes
 dynamic account tool providers and MCP catalogs. Unknown/unavailable names fail
-runtime construction. Existing authorization checks still apply.
+runtime construction. Existing authorization checks still apply. Startup history and
+memory retrieval obey the same allowlist and network restrictions; excluded account
+catalogs are not refreshed. Previously retained bootstrap receipts remain part of
+durable recovery; this does not rewrite existing conversation history. An empty application-tool list does not disable the
+SDK's default subagent orchestration. Set `multi_agent: { enabled: false }` to
+remove delegation, including explicit subagent extensions. Setting
+`multi_agent: { enabled: true, max_concurrent_subagents: 2 }` enables bounded
+delegation through the existing runtime. Explicit enablement without a limit uses
+six concurrent children; omitting `multi_agent` retains legacy defaults. A disabled
+configuration cannot also specify a concurrency limit. Limits must be positive
+32-bit integers, matching the WASM runtime. These settings are immutable
+for a session and can be stored in a named agent definition.
+
+```js
+const single = await Agent.create({
+  ...client,
+  settings: { model: "gpt-5.6-luna", thinking: "low" },
+  configuration: {
+    instructions: "Use only the supplied data and return JSON.",
+    tools: [],
+    multi_agent: { enabled: false },
+    environment: { network: { access: "disabled" } },
+  },
+});
+try {
+  console.log((await single.turn.prompt({ input: "Compute 17 * 19." }).result()).finalMessage);
+} finally {
+  await single.delete();
+}
+```
 
 `output_schema` supplies a strict Responses JSON schema. `prompt_cache` selects
 `implicit` or `explicit`; explicit mode marks the last developer text in the

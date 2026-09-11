@@ -173,6 +173,10 @@ async function checkManaged() {
 void checkManaged;
 
 async function configurationContracts() {
+  await Agent.create({ configuration: { multi_agent: { enabled: false } } });
+  await Agent.definitions.put("delegating", { multi_agent: { enabled: true, max_concurrent_subagents: 2 } });
+  // @ts-expect-error disabled delegation cannot specify a concurrency limit
+  await Agent.create({ configuration: { multi_agent: { enabled: false, max_concurrent_subagents: 2 } } });
   await Agent.definitions.put("reviewer", { instructions: "Review", tools: [], prompt_cache: "explicit" });
   await Agent.environments.put("offline", { network: { access: "disabled" }, files: [{ path: "/brain/skills/demo/SKILL.md", content: "skill" }] });
   const agent = await Agent.create({ definitionId: "reviewer", environmentTemplateId: "offline" });

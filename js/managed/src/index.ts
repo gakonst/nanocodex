@@ -1,6 +1,6 @@
 import { prepareEnvironment } from "./environment-setup";
 import { SessionOperations } from "./session-operations";
-import { parseConfiguration, type AgentConfiguration } from "./agent-configuration";
+import { accountToolsEnabled, configuredBootstrapPlan, parseConfiguration, type AgentConfiguration } from "./agent-configuration";
 import { createHash } from "node:crypto";
 import { initializeTurnInputs, inputChunks, lazyTurnInput, readTurnInput, storeTurnInput } from "./managed-turn-input";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
@@ -4808,7 +4808,7 @@ export class DurableAgentSession extends DurableComputerSession {
         this.#requireRealtimeAuthorization(active, authorization);
       };
       assertActive();
-      const plan = await CloudflareAgent.bootstrapPlan(body.query);
+      const plan = configuredBootstrapPlan(this.#configuration(), await CloudflareAgent.bootstrapPlan(body.query));
       const tools = this.#memoryTools({ id: `voice-prefetch:${body.voice_session_id}`, authorization_json: JSON.stringify(authorization) }, false);
       await this.#startupContext.prefetch(body.voice_session_id, canonicalJson([epoch, authorization]), plan,
         async (name, args, signal) => tools.find((tool) => tool.name === name)!.handler(args, {
@@ -5184,7 +5184,7 @@ export class DurableAgentSession extends DurableComputerSession {
       // immediately before the Rust route can create any model/tool effect.
       this.#assertRealtimeRouteAvailable();
       const epoch = this.#session()?.authorization_epoch;
-      const plan = await CloudflareAgent.bootstrapPlan(input);
+      const plan = configuredBootstrapPlan(this.#configuration(), await CloudflareAgent.bootstrapPlan(input));
       const assertActive = () => {
         this.#assertRealtimeRouteAvailable();
         if (this.#agent !== agent || this.#session()?.authorization_epoch !== epoch
@@ -5576,7 +5576,7 @@ export class DurableAgentSession extends DurableComputerSession {
     if (this.#durabilityExported || this.#durabilityImportState === "pending") {
       throw new ManagedRequestError(409, "durability_transfer_pending", "durability transfer fenced admission");
     }
-    const bootstrapPlan = await CloudflareAgent.bootstrapPlan(promptInputText(input));
+    const bootstrapPlan = configuredBootstrapPlan(this.#configuration(), await CloudflareAgent.bootstrapPlan(promptInputText(input)));
     const archived = await Promise.all([
       this.#managedTurn(id) ? Promise.resolve(undefined) : this.#archivedTurnById(id),
       requestKey === null || this.#managedTurnByRequestKey(requestKey)
@@ -6503,7 +6503,7 @@ export class DurableAgentSession extends DurableComputerSession {
     if (this.#deleting || this.#deleted) throw retryableError("agent is being deleted");
     const session = this.#session();
     let accountMcpRefreshMs = 0;
-    if (session?.runtime_profile === "managed") {
+    if (session?.runtime_profile === "managed" && accountToolsEnabled(this.#configuration())) {
       const refreshStartedAt = performance.now();
       await Promise.all([
         this.#refreshAccountMcpConnections(session),
@@ -6812,7 +6812,7 @@ export class DurableAgentSession extends DurableComputerSession {
     };
     const internalRuntime = Symbol.for("nanocodex.cloudflare.internalRuntime");
     const internalConfiguration = Symbol.for("nanocodex.cloudflare.internalConfiguration");
-    const hostedProviders = multiplayer || restrictedEnvironment || configuration.tools !== undefined ? [] : [
+    const hostedProviders = multiplayer || !accountToolsEnabled(configuration) ? [] : [
       this.#hostedTools.provider(),
       ...(this.#accountHostedTools === undefined ? [] : [this.#accountHostedTools]),
     ];
@@ -7044,7 +7044,7 @@ export class DurableAgentSession extends DurableComputerSession {
         ? undefined
         : await createDefaultManagedTools(
             configuredTools,
-            restrictedEnvironment || configuration.tools !== undefined ? {} : managedMcp,
+            !accountToolsEnabled(configuration) ? {} : managedMcp,
             (serverName) => accountMcpProviders.get(serverName),
           );
       managedToolsMs = performance.now() - phaseStartedAt;
@@ -7097,6 +7097,9 @@ export class DurableAgentSession extends DurableComputerSession {
         ...hostedRuntime,
         // Voice and session control can start while the owned Responses relay warms up.
         waitForPreconnect: false,
+        subagentsEnabled: configuration.multi_agent?.enabled,
+        subagentMaxConcurrency: configuration.multi_agent?.enabled
+          ? configuration.multi_agent.max_concurrent_subagents ?? 6 : undefined,
         responseControls: { outputSchema: configuration.output_schema, promptCache: configuration.prompt_cache },
       } });
       Object.defineProperty(agentOptions, internalConfiguration, { value: this.#settings() });
@@ -8008,7 +8011,7 @@ export class DurableAgentSession extends DurableComputerSession {
     context?: Pick<ToolContext, "sessionId" | "subagent">,
   ): boolean {
     const configuration = this.#configuration();
-    if (configuration.tools !== undefined || (configuration.environment && configuration.environment.network.access !== "enabled")) return false;
+    if (!accountToolsEnabled(configuration)) return false;
     const authorization = context === undefined
       ? this.#activeTurnAuthorization()
       : this.#authorizationForToolContext(context);
@@ -8215,6 +8218,7 @@ export class DurableAgentSession extends DurableComputerSession {
       console.info({
         type: "managed.capacity",
         reason,
+        session_id: session.session_id,
         ...(this.env.DEPLOYMENT_SHA === undefined
           ? {}
           : { deployment_sha: this.env.DEPLOYMENT_SHA }),

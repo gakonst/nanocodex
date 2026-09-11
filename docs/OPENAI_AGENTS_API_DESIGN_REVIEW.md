@@ -104,8 +104,11 @@ the same narrowing rule explicitly rather than treating policy as ordinary JSON.
 [Hosted environments](https://developers.openai.com/api/docs/guides/agents-api/environments/openai-hosted)
 
 They expose delegation enablement and a concurrency limit on session creation.
-Our core already has subagent controls, but the new managed `Configuration` has
-no matching explicit policy. Reuse the existing implementation when exposing it.
+The managed `Configuration.multi_agent` now exposes the same explicit enable/disable
+and concurrency shape through our existing runtime. Explicit enablement defaults
+to six children. One compatibility difference remains: omitting the field preserves
+Nanocodex's legacy enabled default, while omission disables delegation in OpenAI.
+Set the field explicitly when comparing or mapping providers.
 Conversely, their documented subagents cannot use application function tools;
 do not assume all tool capabilities translate across providers.
 [OpenAI delegation](https://developers.openai.com/api/docs/guides/agents-api/multi-agent),
@@ -134,12 +137,13 @@ result: the current API returns `finalMessage: string`.
 2. Add a concise tool-result helper and typed operational event/request views.
    Preserve the broker's existing validation and conflict rules.
 3. Complete required-action webhooks and design durable HTTP-only function
-   ownership. Expose managed delegation limits through existing subagent controls.
+   ownership. Managed delegation controls now reuse the existing subagent runtime.
 4. Add explicit environment variants and policy-preserving template overrides
    when a native setup backend is implemented.
 5. If supporting OpenAI as a hosted backend, define a common capability subset
    with backend-specific extensions. Test input correlation, disconnect recovery,
    tool-result retries and partial usage before advertising interchangeability.
 
-These are design recommendations, not additional APIs implemented in PR #307.
-This review does not change the examples or runtime behavior already in the PR.
+Except for the subsequently implemented managed delegation controls noted above,
+these remain design recommendations rather than additional APIs implemented in
+PR #307. The Cloudflare measurement report tracks the live runtime changes.

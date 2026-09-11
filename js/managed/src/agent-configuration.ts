@@ -27,6 +27,10 @@ export const configurationSchema = z.object({
   }).strict().refine(s => s.model !== "gpt-6-astra" || s.thinking !== "none" && s.reasoning_mode !== "pro").optional(),
   instructions: z.string().max(65_536).optional(),
   tools: z.array(name).max(128).optional(),
+  multi_agent: z.discriminatedUnion("enabled", [
+    z.object({ enabled: z.literal(false) }).strict(),
+    z.object({ enabled: z.literal(true), max_concurrent_subagents: z.number().int().positive().max(0xffff_ffff).optional() }).strict(),
+  ]).optional(),
   output_schema: z.record(z.string(), z.unknown()).optional(),
   prompt_cache: z.enum(["implicit", "explicit"]).optional(),
   environment: environmentSchema.optional(),
@@ -37,6 +41,21 @@ export type NetworkPolicy = z.infer<typeof networkSchema>;
 export function parseConfiguration(value: unknown): AgentConfiguration {
   if (new TextEncoder().encode(JSON.stringify(value ?? {})).byteLength > 1_000_000) throw new TypeError("configuration exceeds 1 MB");
   return configurationSchema.parse(value ?? {});
+}
+/** Account discovery is unnecessary when policy excludes every account provider. */
+export function accountToolsEnabled(configuration: AgentConfiguration): boolean {
+  return configuration.tools === undefined && !restrictedEnvironment(configuration);
+}
+export function restrictedEnvironment(configuration: AgentConfiguration): boolean {
+  const access = configuration.environment?.network.access;
+  return access !== undefined && access !== "enabled";
+}
+/** Startup retrieval obeys the same tool policy as model-invoked retrieval. */
+export function configuredBootstrapPlan(
+  configuration: AgentConfiguration, plan: import("nanocodex/cloudflare").Agent.BootstrapPlan,
+): import("nanocodex/cloudflare").Agent.BootstrapPlan {
+  return { ...plan, calls: restrictedEnvironment(configuration) ? [] : configuration.tools === undefined
+    ? plan.calls : plan.calls.filter(call => configuration.tools!.includes(call.name)) };
 }
 export function networkAllows(policy: NetworkPolicy | undefined, value: string): boolean {
   if (!policy || policy.access === "enabled") return true;

@@ -12,6 +12,14 @@ const inside = (fn: (state: DurableObjectState) => Promise<void>) => runInDurabl
 const req = (path: string, method = "GET", body?: unknown) => new Request(`https://session.internal${path}`, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 
 describe("agent configuration", () => {
+  it("validates explicit delegation without accepting contradictory or unbounded numeric values", () => {
+    expect(parseConfiguration({}).multi_agent).toBeUndefined();
+    expect(parseConfiguration({ multi_agent: { enabled: false } }).multi_agent).toEqual({ enabled: false });
+    expect(parseConfiguration({ multi_agent: { enabled: true, max_concurrent_subagents: 2 } }).multi_agent).toEqual({ enabled: true, max_concurrent_subagents: 2 });
+    for (const multi_agent of [{ enabled: false, max_concurrent_subagents: 2 }, { enabled: "false" },
+      ...[0, -1, 1.5, 0x1_0000_0000, Number.MAX_SAFE_INTEGER + 1].map(max_concurrent_subagents => ({ enabled: true, max_concurrent_subagents }))])
+      expect(() => parseConfiguration({ multi_agent })).toThrow();
+  });
   it("validates workspace and exact-host policies without widening them", () => {
     for (const path of ["/brain/../secret", "/brain//x", "/etc/passwd", "/brain/x/./y", "/brain/x\0y"])
       expect(() => parseConfiguration({ environment: { files: [{ path, content: "x" }] } })).toThrow();
