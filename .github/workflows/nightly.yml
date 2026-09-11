@@ -161,6 +161,15 @@ jobs:
             echo "VM guest has a dynamic program interpreter" >&2
             exit 1
           fi
+          python3 - <<'PY'
+          import json, subprocess, tempfile
+          with tempfile.TemporaryDirectory() as workspace:
+              result = subprocess.run(
+                  ["target/x86_64-unknown-linux-musl/nightly/nanocodex-vm-guest", workspace],
+                  input=b'{"kind":"ready","payload":{"id":1}}\n',
+                  capture_output=True, check=True, timeout=30)
+              assert json.loads(result.stdout) == {"kind": "ready", "payload": {"id": 1, "error": None}}
+          PY
       - name: Stage artifact
         shell: bash
         run: |
