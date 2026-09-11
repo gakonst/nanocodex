@@ -92,3 +92,12 @@ bash hands/remote/image/smoke.sh nanocodex-server-hand:local arm64
 Use the native CI jobs for the combined release. The Cloudflare image's native
 cross-compiler is specific to its AMD64 SDK target and is not the server image
 release path.
+
+## Current toolkit release
+
+The production pin uses `ghcr.io/gakonst/nanocodex-hand@sha256:cf44994c9ca68dd69962cb52cf8e9af572550763780d57483bfcaa05e2ab337b`.
+[Publication run 34641948392](https://github.com/gakonst/nanocodex/actions/runs/34641948392)
+built master commit `b1e10a50f9f89fdae9d1ae1b1468fad4d69fd3f0`, passed the
+AMD64 and ARM64 toolkit, desktop, codec, and baseline CPU checks, and published
+the immutable two-architecture receipt. Anonymous manifest access was verified.
+Existing server Hands pick up this image when explicitly reconnected.
