@@ -1,9 +1,17 @@
 # Build context: crates/experimental/nanocodex-vm/image.
-# The Rust guest runtime supplies capture/input and starts the X11 session.
-FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
-RUN apk add --no-cache ca-certificates xvfb openbox xterm font-dejavu mesa-dri-gallium \
-    && mkdir -p /app /workspace /run/nanocodex-desktop \
-    && chmod 0700 /run/nanocodex-desktop
-ENV DISPLAY=:0
+FROM rust:1.97-alpine3.24 AS rust-toolchain
+RUN rustup component add clippy rustfmt && rustup target add wasm32-unknown-unknown
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+COPY --from=rust-toolchain /usr/local/rustup /opt/rustup
+COPY --from=rust-toolchain /usr/local/cargo /opt/cargo
+COPY toolkit/install-alpine.sh toolkit/python.txt /opt/hand-toolkit/
+RUN sh /opt/hand-toolkit/install-alpine.sh
+COPY toolkit/check.py toolkit/install-paths.sh /opt/hand-toolkit/
+RUN sh /opt/hand-toolkit/install-paths.sh \
+    && ln -s /opt/hand-toolkit/check.py /usr/local/bin/nanocodex-check-hand-toolkit \
+    && chmod 0755 /opt/hand-toolkit/check.py
+ENV RUSTUP_HOME=/opt/rustup \
+    PATH=/opt/hand-python/bin:/opt/cargo/bin:$PATH \
+    DISPLAY=:0
 WORKDIR /app
 CMD ["/bin/sh"]

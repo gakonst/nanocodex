@@ -244,7 +244,7 @@
         {
           "class_name": "Sandbox",
           "image": "./Dockerfile",
-          "instance_type": "standard-1"
+          "instance_type": "standard-3"
         }
       ]
     }
@@ -253,7 +253,8 @@
     {
       "class_name": "Sandbox",
       "image": "./Dockerfile",
-      "instance_type": "standard-1",
+      // The full toolkit occupies about 10 GiB; retain room for builds and artifacts.
+      "instance_type": "standard-3",
       // Preserve active containers across the current >120s build journey during rollouts.
       "rollout_active_grace_period": 300
     }

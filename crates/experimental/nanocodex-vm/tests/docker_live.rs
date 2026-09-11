@@ -134,6 +134,9 @@ async fn tools_isolation_exclusive_ownership_and_persistence() {
             "grep -q 'NoNewPrivs:.*1' /proc/self/status; ",
             "! touch /etc/nanocodex-test; ",
             "test ! -e /sys/class/net/eth0; ",
+            "test \"$TMPDIR\" = /app/.tmp; ",
+            "temporary=$(mktemp); printf '#!/bin/sh\\nexit 0\\n' > \"$temporary\"; ",
+            "chmod 700 \"$temporary\"; \"$temporary\"; rm \"$temporary\"; ",
             "printf isolation-ok"
         )))
         .await

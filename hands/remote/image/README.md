@@ -85,7 +85,7 @@ For a local native build, use the host architecture (`arm64` on Apple Silicon):
 
 ```sh
 docker buildx build --platform linux/arm64 --load \
-  --tag nanocodex-server-hand:local --file hands/remote/image/Dockerfile hands/remote
+  --tag nanocodex-server-hand:local --file hands/remote/image/Dockerfile .
 bash hands/remote/image/smoke.sh nanocodex-server-hand:local arm64
 ```
 

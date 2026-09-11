@@ -11,3 +11,8 @@ for (const name of await readdir(source)) {
   }
 }
 await cp(`${source}/image/labwc`, `${target}/labwc`, { recursive: true });
+
+const toolkit = fileURLToPath(new URL("../../../crates/experimental/nanocodex-vm/image/toolkit/", import.meta.url));
+const toolkitTarget = fileURLToPath(new URL("../.generated/toolkit/", import.meta.url));
+await rm(toolkitTarget, { recursive: true, force: true });
+await cp(toolkit, toolkitTarget, { recursive: true });
