@@ -1,0 +1,18 @@
+{
+  "final_runtime_commit": "a02f85a01579ceff8ed0407c5f2e66d32292ff9c",
+  "scope": "Final delegation-control deployment sources; fixture files are committed with the report. Earlier deployment variants are described in README.",
+  "sha256": {
+    "js/managed/src/agent-configuration.ts": "daaeeff7e34dbb9bb9e4d71d957a90322ba8db94fea987b3dc326d67ab90e942",
+    "js/managed/src/default-mcp.ts": "c111394bb1824a743bc33ca05705b252a8b4bf6fa3b8fca2f7c6899f9c5861a8",
+    "js/managed/src/durable-events.ts": "3d4cac5cbf153ee1b38901e4cd9d29eedf7fed6dc4716736c97b0789841db8b8",
+    "js/managed/src/index.ts": "8ae1f14a31ed7c7110826d0229f0e16bac6286f3817e5a8764400bcf321772b9",
+    "js/nanocodex/browser/InlineAgent.mjs": "5badfdcced64ef435c730ceb9cef773e4e6bcda57d23e101415afea649e5a23d",
+    "js/nanocodex/cloudflare/Agent.mjs": "795d5b85842899a89ecf2adc3af844e46557f39fc2939887ad49a81c2427e99a",
+    "js/managed/benchmark/worker.ts": "17e7ee3c669f94b2fa13eeab58c13ee6be6713cfe398728868d7ff1a17bedff3",
+    "js/managed/benchmark/front.ts": "6cc59a622b0fc9c89e9a2008f8b73196ace3618f1cee01b07a8b16a0edcf3dec",
+    "js/managed/benchmark/managed.json": "868ec202267b8ba6d6aabc4bd8476a4f04e64f8a76392c10224ece3ddb610623",
+    "js/managed/benchmark/egress.json": "f45fd99a389997710d2a6249c113cfe56842a2f0758548892cb18fbb10b01291",
+    "js/managed/benchmark/front.json": "cdf2929fa33232e4eea979b5feb0076fa4f023ec65cf4cc0c5e87437b7d3b02d",
+    "pnpm-lock.yaml": "24fb91b65046555fb22bf1e02bae97162d1c9f850e1de462f4f10bee8e0036aa"
+  }
+}

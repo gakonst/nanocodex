@@ -1,0 +1,15 @@
+{
+  "name": "nanocodex-perf-front-0911",
+  "main": "front.ts",
+  "compatibility_date": "2026-07-29",
+  "workers_dev": true,
+  "services": [
+    {
+      "binding": "NANOCODEX_BACKEND",
+      "service": "nanocodex-perf-managed-0911"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

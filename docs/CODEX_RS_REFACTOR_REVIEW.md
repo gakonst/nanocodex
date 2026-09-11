@@ -70,6 +70,12 @@ The benchmark measures visible text from `assistant.delta.text` or the provider'
 `output_text.delta`. A first protocol event or a model's first output item can be
 metadata or reasoning; neither should be labeled visible TTFT.
 
+The subsequent [deployed Cloudflare study](../output/cloudflare-agents-2026-09-11/README.md)
+extends this to extraction, dependency scheduling, long JSON output and repeated
+sessions. It adds startup phase evidence and identified a stale-owner heartbeat
+problem during a platform instance replacement; the PR now checks durable progress
+before heartbeats so the SDK can reconnect when the old storage connection fails.
+
 Local source references: [execution retention](../crates/nanocodex-agent/src/model/run/continuation.rs),
 [usage schema](../crates/nanocodex-oai-api/src/responses/event.rs),
 [managed attribution](../js/managed/src/index.ts),

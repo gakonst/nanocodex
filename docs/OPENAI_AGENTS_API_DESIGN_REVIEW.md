@@ -18,6 +18,52 @@ OpenAI runs the harness itself. A Responses transport supplies model inference t
 our harness. Substituting one for the other changes orchestration ownership.
 [OpenAI overview](https://developers.openai.com/api/docs/guides/agents-api/overview)
 
+## JavaScript request shapes used in the live comparison
+
+The OpenAI path uses a streamed HTTP request; the Nanocodex path uses the managed
+SDK. These are the corresponding configurations, with delegation explicitly off:
+
+```js
+const instructions = "Use only the supplied data and return JSON.";
+const prompt = "Compute 17 * 19.";
+
+// POST https://api.openai.com/v1/agents/sessions
+// Authorization: Bearer OPENAI_API_KEY
+// OpenAI-Beta: agents=v1
+const openAIRequest = {
+  agent: {
+    model: "gpt-5.6-luna",
+    instructions,
+    reasoning: { effort: "high" },
+    service_tier: "default",
+    tools: [],
+  },
+  environment: { type: "none" },
+  input: prompt,
+  stream: true,
+}; // OpenAI omission disables delegation.
+
+// await Agent.create(nanocodexOptions), then agent.turn.prompt({input: prompt})
+const nanocodexOptions = {
+  baseUrl: process.env.NANOCODEX_MANAGED_URL,
+  apiKey: process.env.NANOCODEX_API_KEY,
+  settings: { model: "gpt-5.6-luna", thinking: "high", fastMode: false },
+  configuration: {
+    instructions,
+    tools: [],
+    multi_agent: { enabled: false },
+    environment: { network: { access: "disabled" } },
+  },
+};
+```
+
+OpenAI's request can create the session and submit input together. Nanocodex
+currently creates the handle, then returns an explicit turn handle on submission.
+The [runnable benchmark](../js/nanocodex/scripts/cloudflare-agents.bench.mjs)
+contains the real `fetch`, SSE consumption, root-turn correlation, usage reads,
+timing and session deletion for both APIs. A complete managed create/run/delete
+example is in [the configuration guide](MANAGED_AGENT_CONFIGURATION.md).
+
 ## Resource and type mapping
 
 | OpenAI concept | Nanocodex equivalent | Mapping |

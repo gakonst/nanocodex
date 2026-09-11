@@ -1,0 +1,51 @@
+{
+  "main": {
+    "ttft_ms": {
+      "pairs": 142,
+      "nanocodex_faster": 100,
+      "median_paired_reduction_percent": 15.778264069034131,
+      "both_correct_pairs": 130,
+      "both_correct_median_reduction_percent": 16.81151278875148
+    },
+    "completion_ms": {
+      "pairs": 143,
+      "nanocodex_faster": 121,
+      "median_paired_reduction_percent": 29.273558505767085,
+      "both_correct_pairs": 131,
+      "both_correct_median_reduction_percent": 30.151872821886073
+    }
+  },
+  "delegation_disabled": {
+    "ttft_ms": {
+      "pairs": 24,
+      "nanocodex_faster": 14,
+      "median_paired_reduction_percent": 4.353100425013295,
+      "both_correct_pairs": 23,
+      "both_correct_median_reduction_percent": 4.378621745011014
+    },
+    "completion_ms": {
+      "pairs": 24,
+      "nanocodex_faster": 17,
+      "median_paired_reduction_percent": 16.110276976059538,
+      "both_correct_pairs": 23,
+      "both_correct_median_reduction_percent": 13.15850457108063
+    }
+  },
+  "startup": {
+    "create_ms": {
+      "n": 24,
+      "before": 1471.5159170000115,
+      "after": 1423.5288329999894
+    },
+    "model_started_ms": {
+      "n": 24,
+      "before": 2175.080792000008,
+      "after": 1878.4370419999595
+    },
+    "completion_ms": {
+      "n": 24,
+      "before": 20843.721187500007,
+      "after": 19357.9255420001
+    }
+  }
+}

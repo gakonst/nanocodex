@@ -1,0 +1,6 @@
+{
+  "name": "nanocodex-perf-managed-0911",
+  "main": "bootstrap.ts",
+  "compatibility_date": "2026-07-29",
+  "workers_dev": true
+}
