@@ -208,11 +208,10 @@ impl Setup {
         ] {
             fs::write(temporary.path().join(name), content)?;
         }
-        let archive = temporary.path().join("setup.tgz");
+        let archive = tempfile::NamedTempFile::new()?;
         let status = Command::new("tar")
             .arg("-czf")
-            .arg(&archive)
-            .arg("--exclude=setup.tgz")
+            .arg(archive.path())
             .arg("-C")
             .arg(temporary.path())
             .arg(".")
@@ -232,7 +231,7 @@ impl Setup {
             .stdin
             .take()
             .expect("piped stdin")
-            .write_all(&fs::read(archive)?)
+            .write_all(&fs::read(archive.path())?)
             .await?;
         if !upload.wait().await?.success() {
             bail!("Could not upload Hand setup");
