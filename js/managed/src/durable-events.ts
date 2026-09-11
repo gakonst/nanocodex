@@ -372,13 +372,14 @@ export class DurableEventLog<Message extends { type: string }> {
   async #catchUp(subscriber: Subscriber): Promise<void> {
     while (!subscriber.closed) {
       const events = await subscriber.page(subscriber.after, REPLAY_PAGE_SIZE);
-      if (events.length === 0) return;
+      if (subscriber.closed || events.length === 0) return;
       for (const event of events) {
         await subscriber.writer.write(encodeEvent(event));
         subscriber.after = event.cursor;
         if (subscriber.closed) return;
       }
-      if (events.length < REPLAY_PAGE_SIZE) return;
+      // Byte limits and archive boundaries can produce short nonterminal
+      // pages. Only an empty page proves that this subscriber is caught up.
     }
   }
 

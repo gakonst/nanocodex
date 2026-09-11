@@ -1471,11 +1471,12 @@ private struct ConversationView: View {
                                                 loading: model.threadLoading, error: model.threadError,
                                                 hasOlder: model.hasOlder, loadingOlder: model.loadingOlder,
                                                 hasNewer: model.hasNewer, loadingNewer: model.loadingNewer))
-            .equatable()
     }
 }
 
-private struct ConversationContentView: View, Equatable {
+// Scroll and reading-position state must invalidate this view independently
+// of transcript revisions. Keep equality boundaries on rendered messages only.
+private struct ConversationContentView: View {
     struct Revision: Equatable {
         var rows: [TranscriptRow]
         var pending: [PendingMessage]
@@ -1488,14 +1489,14 @@ private struct ConversationContentView: View, Equatable {
         var hasNewer: Bool
         var loadingNewer: Bool
     }
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.identity == rhs.identity && lhs.revision == rhs.revision && lhs.model === rhs.model
-    }
     private let verticalPadding: CGFloat = 24
     let model: InboxModel
     let identity: String
     let readingPositions: ConversationReadingPositions
     let revision: Revision
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var followsLatest = true
+    @State private var isDraggingTranscript = false
     @State private var hasInitialPosition = false
     @State private var pendingReadingRestore: ConversationReadingPositions.Position?
     @State private var rowFrames: [String: CGRect] = [:]
@@ -1553,7 +1554,7 @@ private struct ConversationContentView: View, Equatable {
         guard model.focusedConversationIdentity == identity, hasInitialPosition,
               pendingReadingRestore == nil, historyReady, historyContent.isMeasured,
               !historyRequestInFlight else { return }
-        if historyContent.atLatest && !model.hasNewer {
+        if (followsLatest || historyContent.atLatest) && !model.hasNewer {
             readingPositions.values[identity] = .init(atLatest: true)
         } else if let first = rowFrames.filter({ $0.value.maxY > 0 && $0.value.minY < viewport.size.height })
             .sorted(by: {
@@ -1614,7 +1615,7 @@ private struct ConversationContentView: View, Equatable {
                     // stable position even when the last reply fills many screens.
                     if let agentID = model.focused?.id {
                         NanocodexVoiceTranscript(session: model.voice, conversationID: agentID, durableRows: model.rows) {
-                            if historyContent.atLatest { scroll.scrollTo("latest", anchor: .bottom) }
+                            if followsLatest { scroll.scrollTo("latest", anchor: .bottom) }
                         }
                     }
                     if model.hasNewer {
@@ -1625,6 +1626,7 @@ private struct ConversationContentView: View, Equatable {
                     }
                     Color.clear.frame(height: 1).id("latest")
                 }.padding(.horizontal, 20).padding(.vertical, verticalPadding).frame(maxWidth: 780).frame(minHeight: viewport.size.height, alignment: .top).frame(maxWidth: .infinity)
+
             }
             .defaultScrollAnchor(.top)
             .defaultScrollAnchor(readingPositions.values[identity]?.atLatest == false ? .top : .bottom, for: .initialOffset)
@@ -1653,23 +1655,36 @@ private struct ConversationContentView: View, Equatable {
                 }
             }
             .onScrollGeometryChange(for: ConversationContentPosition.self) { geometry in
-                return ConversationContentPosition(
+                ConversationContentPosition(
                     nearTop: geometry.contentOffset.y + geometry.contentInsets.top <= 240,
-                    // containerSize already excludes the bottom safe-area
-                    // inset occupied by the composer and browser toolbar.
                     atLatest: geometry.contentSize.height - geometry.contentOffset.y
                         - geometry.containerSize.height <= verticalPadding + 1,
-                    isMeasured: geometry.containerSize.height > 0)
-            } action: { _, position in
+                    isMeasured: geometry.containerSize.height > 0,
+                    height: geometry.contentSize.height)
+            } action: { previous, position in
                 historyContent = position
+                if previous.height != position.height, followsLatest, !isDraggingTranscript,
+                   pendingReadingRestore == nil, !historyRequestInFlight, !model.hasNewer {
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { scroll.scrollTo("latest", anchor: .bottom) }
+                }
                 updateHistoryPosition(in: viewport)
                 saveReadingPosition(in: viewport)
+            }
+            .onScrollPhaseChange { previous, phase in
+                isDraggingTranscript = phase == .tracking || phase == .interacting || phase == .decelerating
+                if isDraggingTranscript { followsLatest = false }
+                else if phase == .idle, previous == .tracking || previous == .interacting || previous == .decelerating {
+                    followsLatest = historyContent.atLatest && !model.hasNewer
+                }
             }
             .onChange(of: hasInitialPosition) { _, _ in updateHistoryPosition(in: viewport) }
             .onChange(of: model.hasOlder) { _, _ in updateHistoryPosition(in: viewport) }
             .onChange(of: model.threadLoading) { _, _ in updateHistoryPosition(in: viewport) }
             .onChange(of: model.loadingOlder) { _, _ in updateHistoryPosition(in: viewport) }
             .simultaneousGesture(DragGesture(minimumDistance: 1).onChanged { value in
+                followsLatest = false
                 pendingReadingRestore = nil
                 historyDirection = value.translation.height > 0 ? .older : .newer
                 if hasInitialPosition { historyReady = true }
@@ -1678,22 +1693,37 @@ private struct ConversationContentView: View, Equatable {
             .background(Ink.background)
             .accessibilityLabel(revision.title)
             .accessibilityIdentifier("conversation")
-            .overlay(alignment: .bottomTrailing) {
-                if model.hasNewer {
+            .overlay(alignment: .bottom) {
+                if historyContent.isMeasured, !model.threadLoading, model.hasNewer || !historyContent.atLatest {
                     Button {
                         historyDirection = nil
                         historyRestore = nil
+                        pendingReadingRestore = nil
                         Task {
-                            await model.loadNewer(latest: true)
-                            guard model.focusedConversationIdentity == identity else { return }
-                            scroll.scrollTo("latest", anchor: .bottom)
+                            if model.hasNewer { await model.loadNewer(latest: true) }
+                            guard model.focusedConversationIdentity == identity, !model.hasNewer else { return }
+                            followsLatest = true
+                            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                                scroll.scrollTo("latest", anchor: .bottom)
+                            }
                         }
                     } label: {
-                        Label("Latest messages", systemImage: "arrow.down").foregroundStyle(Ink.background)
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(Ink.text)
+                            .frame(width: 36, height: 36)
+                            .background(.regularMaterial, in: Circle())
+                            .overlay(Circle().strokeBorder(Ink.border, lineWidth: 0.5))
+                            .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Circle())
                     }
-                        .buttonStyle(.borderedProminent).tint(Ink.text).padding(12)
-                        .disabled(model.loadingNewer || model.loadingOlder)
-                        .accessibilityIdentifier("latest-messages")
+                    .buttonStyle(.plain)
+                    .padding(.bottom, 8)
+                    .disabled(model.loadingNewer || model.loadingOlder)
+                    .accessibilityLabel("Latest messages")
+                    .accessibilityHint("Scroll to the latest message and follow new responses")
+                    .accessibilityIdentifier("latest-messages")
                 }
             }
             .overlay {
@@ -1721,6 +1751,7 @@ private struct ConversationContentView: View, Equatable {
                     if let saved = readingPositions.values[identity], !saved.atLatest,
                        let id = saved.rowID,
                        ConversationItem.group(model.rows).contains(where: { $0.id == id }) {
+                        followsLatest = false
                         pendingReadingRestore = saved
                         scroll.scrollTo(id, anchor: .top)
                     } else {
@@ -1778,6 +1809,7 @@ private struct ConversationContentPosition: Equatable {
     var nearTop = false
     var atLatest = false
     var isMeasured = false
+    var height: CGFloat = 0
 }
 
 private struct ConversationActivityView: View {
@@ -1791,7 +1823,7 @@ private struct ConversationActivityView: View {
         return item.activity.last?.role == "Thinking" ? "Thinking" : "Working"
     }
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             Button {
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) { expanded.toggle() }
             } label: {
@@ -1801,27 +1833,26 @@ private struct ConversationActivityView: View {
                         else { Image(systemName: failures > 0 ? "exclamationmark.circle" : "checkmark").font(.system(size: 12, weight: .medium)) }
                     }.frame(width: 18, height: 18)
                     Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1)
-                    Spacer(minLength: 4)
                     if failures > 0 { Text("\(failures) issue\(failures == 1 ? "" : "s")").foregroundStyle(Ink.amber).font(.caption) }
                     if !item.activity.isEmpty { Text("\(item.activity.count) step\(item.activity.count == 1 ? "" : "s")").font(.caption).monospacedDigit() }
-                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).rotationEffect(.degrees(expanded ? 90 : 0))
-                }.foregroundStyle(Ink.muted).padding(.horizontal, 13).frame(minHeight: 44).contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityIdentifier("activity-disclosure")
+                    if !item.activity.isEmpty {
+                        Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).rotationEffect(.degrees(expanded ? 90 : 0))
+                    }
+                }.foregroundStyle(Ink.muted).frame(minHeight: 44).contentShape(Rectangle())
+            }.buttonStyle(.plain).disabled(item.activity.isEmpty).accessibilityIdentifier("activity-disclosure")
                 .accessibilityLabel(title).accessibilityValue("\(item.activity.count) step\(item.activity.count == 1 ? "" : "s"), \(failures) issue\(failures == 1 ? "" : "s"), " + (expanded ? "Expanded" : "Collapsed"))
-            if expanded {
+            if expanded, !item.activity.isEmpty {
                 Rectangle().fill(Ink.border).frame(height: 0.5).padding(.horizontal, 13)
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
                         ForEach(item.activity) { row in
                             ConversationActivityStep(row: row, live: item.isRunning && row.running)
                         }
-                        if item.activity.isEmpty { Text("Waiting for the first update…").font(.caption).foregroundStyle(Ink.muted).padding(12) }
                     }.padding(6)
                 }.frame(maxHeight: 300).fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("activity-timeline")
             }
-        }.background(Ink.surface.opacity(0.55), in: RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Ink.border.opacity(0.7), lineWidth: 0.5))
+        }.frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .contain).accessibilityIdentifier("activity-group")
     }
 }

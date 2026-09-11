@@ -154,7 +154,12 @@ to the previous conversation, retaining its draft and reading position.
 The overview replaces the sidebar: search conversations, filter to running agents,
 or select a live preview. The app menu opens Scheduled jobs and Account settings.
 The full conversation scrolls independently; horizontal swipes and upward pulls do not switch
-agents or create conversations. Scheduled jobs and Settings use full-page
+agents or create conversations.
+Streamed responses follow the bottom while you are reading the latest output. Scrolling
+back pauses following and preserves your reading position. A small circular down-arrow
+above the composer returns to the latest messages and resumes following, including
+when newer history must first load. Working activity appears as a compact inline
+indicator; details expand when activity is available. Scheduled jobs and Settings use full-page
 navigation with a Back button. Agent updates refresh automatically without a
 refresh button.
 
