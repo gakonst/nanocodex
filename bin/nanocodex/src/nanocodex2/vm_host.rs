@@ -1931,7 +1931,7 @@ mod supported {
             match next_controlled_operation_event(
                 operation.as_mut(),
                 heartbeat.tick(),
-                tokio::signal::ctrl_c(),
+                super::super::service::shutdown_signal(),
                 connection.next(),
             )
             .await
@@ -1954,7 +1954,7 @@ mod supported {
                     let terminal = match signal {
                         Ok(()) => DeferredControlOutcome::Shutdown,
                         Err(error) => DeferredControlOutcome::Error(ManagedError::Configuration(
-                            format!("failed to listen for Ctrl-C: {error}"),
+                            format!("failed to listen for shutdown: {error}"),
                         )),
                     };
                     return Ok(finish_terminal_operation(
@@ -2189,9 +2189,9 @@ mod supported {
                 command
             } else {
                 tokio::select! {
-                    signal = tokio::signal::ctrl_c() => {
+                    signal = super::super::service::shutdown_signal() => {
                         signal.map_err(|error| ManagedError::Configuration(
-                            format!("failed to listen for Ctrl-C: {error}")
+                            format!("failed to listen for shutdown: {error}")
                         ))?;
                         host.shutdown().await?;
                         return Ok(ConnectionOutcome::Shutdown);
@@ -2322,9 +2322,9 @@ mod supported {
         delay: Duration,
     ) -> Result<bool, ManagedError> {
         tokio::select! {
-            signal = tokio::signal::ctrl_c() => {
+            signal = super::super::service::shutdown_signal() => {
                 signal.map_err(|error| ManagedError::Configuration(
-                    format!("failed to listen for Ctrl-C: {error}")
+                    format!("failed to listen for shutdown: {error}")
                 ))?;
                 host.shutdown().await?;
                 Ok(true)

@@ -192,7 +192,7 @@ pub(crate) async fn serve(client: &ManagedClient, command: NativeHand) -> Result
             None
         }
     };
-    let result = run(target, state, shutdown_signal()).await;
+    let result = run(target, state, super::service::shutdown_signal()).await;
     let stopped = match screen {
         Some(screen) => screen.shutdown().await,
         None => Ok(()),
@@ -239,21 +239,6 @@ async fn run(
             }
         }
     }
-}
-
-pub(crate) async fn shutdown_signal() -> Result<(), ManagedError> {
-    #[cfg(unix)]
-    {
-        let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .map_err(configuration)?;
-        tokio::select! {
-            result = tokio::signal::ctrl_c() => result.map_err(configuration),
-            _ = terminate.recv() => Ok(()),
-        }
-    }
-    #[cfg(not(unix))]
-    tokio::signal::ctrl_c().await.map_err(configuration)
 }
 
 fn configuration(error: impl std::fmt::Display) -> ManagedError {

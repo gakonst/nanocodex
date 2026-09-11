@@ -434,10 +434,15 @@ impl VmWorkspaceBuilder {
 }
 
 fn ext4_bootstrap(workspace: &str, resolver: Option<&str>) -> String {
+    // The root disk survives process/host crashes; runtime sockets, ready
+    // files and X11 locks must belong to this boot, not the previous one.
     let workspace = shell_word(workspace);
     let resolver = resolver_bootstrap(resolver);
     format!(
-        "set -eu; {resolver}mkdir -p -- {workspace} {RUNTIME_MOUNT}; \
+        "set -eu; mkdir -p /run /tmp; \
+         mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run; \
+         mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /tmp; \
+         {resolver}mkdir -p -- {workspace} {RUNTIME_MOUNT}; \
          mount -t ext4 -o ro {RUNTIME_DEVICE} {RUNTIME_MOUNT}; \
          exec {RUNTIME_EXECUTABLE} {workspace}"
     )

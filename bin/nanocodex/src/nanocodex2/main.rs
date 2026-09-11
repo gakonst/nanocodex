@@ -14,11 +14,11 @@ mod host;
 #[allow(dead_code)]
 mod installation;
 mod native_hand;
-mod service;
 #[cfg(target_os = "macos")]
 mod screen_macos;
 mod screen_native;
 mod screen_publisher;
+mod service;
 #[allow(dead_code)]
 mod skill;
 #[allow(dead_code, unused_imports)]

@@ -24,3 +24,21 @@ pub(crate) fn ready() {
         }
     }
 }
+
+pub(crate) async fn shutdown_signal() -> Result<(), nanocodex_managed::ManagedError> {
+    #[cfg(unix)]
+    {
+        let mut terminate = tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::terminate(),
+        )
+        .map_err(|error| nanocodex_managed::ManagedError::Configuration(error.to_string()))?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result.map_err(|error| nanocodex_managed::ManagedError::Configuration(error.to_string())),
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c()
+        .await
+        .map_err(|error| nanocodex_managed::ManagedError::Configuration(error.to_string()))
+}
