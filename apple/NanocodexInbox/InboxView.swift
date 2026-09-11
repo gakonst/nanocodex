@@ -633,7 +633,7 @@ private struct ConversationMiniature: View, Equatable {
 
     var body: some View {
         GeometryReader { viewport in
-            let items = Array(ConversationItem.group(rows, activeTurns: Set(card.activeTurns)).suffix(4))
+            let items = Array(ConversationItem.group(rows, activeTurns: card.activeTurns).suffix(4))
             VStack(alignment: .leading, spacing: 18) {
                 if items.isEmpty {
                     if let error = card.error {
@@ -1586,7 +1586,7 @@ private struct ConversationContentView: View, Equatable {
                         }.padding(.top, 24).accessibilityElement(children: .contain).accessibilityIdentifier("conversation-empty")
                     }
                     if let error = model.threadError { Text(error).font(.subheadline).foregroundStyle(Ink.muted) }
-                    ForEach(ConversationItem.group(model.rows, activeTurns: Set(model.focused?.activeTurns ?? []))) { item in
+                    ForEach(ConversationItem.group(model.rows, activeTurns: model.focused?.activeTurns ?? [])) { item in
                         Group {
                         if let row = item.message {
                         ConversationMessageView(row: row, model: model, agentID: model.focused?.id ?? "")
