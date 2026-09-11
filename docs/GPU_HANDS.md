@@ -97,6 +97,12 @@ Tests use real `nanocodex2` binaries and the managed service:
   preflight, before the host connected or advertised allocation capacity.
 - Without a GPU, the packaged probe exits unsuccessfully rather than
   accepting a software renderer.
+- The rebuilt, developer-signed Mac app created `gpu-smoke-final` through
+  its native Hand's `start_vm` tool using the installed GPU recipe. Startup
+  passed the Rust compute/readback gate; `stop_vm` returned stopped and
+  retained its private disk. A separate command invocation in that test
+  session was blocked by VM tool discovery, so repeated command execution
+  evidence comes from the factory tests above.
 
 The existing Ubuntu box was not used as accelerated capacity: its inspected
 AMD device had no bound graphics driver or render node. No host driver
