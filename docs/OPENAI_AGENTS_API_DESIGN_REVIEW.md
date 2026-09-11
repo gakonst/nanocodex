@@ -47,7 +47,7 @@ const openAIRequest = {
 const nanocodexOptions = {
   baseUrl: process.env.NANOCODEX_MANAGED_URL,
   apiKey: process.env.NANOCODEX_API_KEY,
-  settings: { model: "gpt-5.6-luna", thinking: "high", fastMode: false },
+  settings: { model: "gpt-5.6-luna", thinking: "high", reasoningMode: "standard", fastMode: false },
   configuration: {
     instructions,
     tools: [],
@@ -193,3 +193,11 @@ result: the current API returns `finalMessage: string`.
 Except for the subsequently implemented managed delegation controls noted above,
 these remain design recommendations rather than additional APIs implemented in
 PR #307. The Cloudflare measurement report tracks the live runtime changes.
+
+## Second design exercise: first-turn admission
+
+[Creating a session and admitting its first turn](MANAGED_AGENT_START_DESIGN.md)
+compares four API shapes, specifies crash/retry behavior across Cloudflare owners,
+and defines a performance experiment. Its combined operation remains a proposal.
+This pass implements the smaller prerequisite: optional caller-owned creation
+idempotency keys in the existing SDK, with validation and conflict propagation.

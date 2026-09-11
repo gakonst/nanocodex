@@ -3,6 +3,47 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { Agent } from "../managed/index.mjs";
 const id = "0198d3f0-8844-7000-8000-000000000001";
+test("caller-owned creation keys survive retries and separate SDK invocations", async () => {
+  const requests = [];
+  const options = { baseUrl: "https://managed.example", idempotencyKey: "create:job-42", fetch: async (url, init) => {
+    const request = new Request(url, init);
+    requests.push({ key: request.headers.get("idempotency-key"), body: await request.text() });
+    if (requests.length === 1) throw new Error("lost creation receipt");
+    return Response.json({ agent_id: id });
+  } };
+  const configuration = { tools: [], multi_agent: { enabled: false } };
+  const first = await Agent.create({ ...options, configuration });
+  const recovered = await Agent.create({ ...options, configuration });
+  assert.equal(first.id, recovered.id);
+  assert.equal(requests.length, 3);
+  assert.deepEqual(requests, Array(3).fill({ key: "create:job-42", body: JSON.stringify({ configuration }) }));
+  await Agent.create({ ...options, idempotencyKey: "create:job-43", settings: { model: "gpt-5.6-luna", thinking: "low", reasoningMode: "standard", fastMode: false } });
+  assert.equal(requests[3].key, "create:job-43");
+  assert.equal(JSON.parse(requests[3].body).settings.reasoning_mode, "standard");
+  assert.equal(Object.hasOwn(JSON.parse(requests[3].body), "idempotencyKey"), false);
+  await Agent.create({ ...options, idempotencyKey: "~".repeat(256) });
+  assert.equal(requests[4].body, "");
+  assert.equal(requests[4].key.length, 256);
+  await first.state();
+  assert.equal(requests[5].key, null, "creation keys must not become handle-wide headers");
+});
+test("creation keys reject invalid values before sending a request", async () => {
+  let requests = 0;
+  const options = { baseUrl: "https://managed.example", fetch: async () => { requests += 1; return Response.json({ agent_id: id }); } };
+  for (const idempotencyKey of [null, 42, "", "has space", "line\nbreak", "é", "x".repeat(257)]) {
+    await assert.rejects(Agent.create({ ...options, idempotencyKey }), /invalid managed creation idempotency key/);
+  }
+  assert.equal(requests, 0);
+});
+test("creation conflicts are surfaced without generating a replacement key", async () => {
+  let requests = 0;
+  await assert.rejects(Agent.create({ baseUrl: "https://managed.example", idempotencyKey: "create:job-42", fetch: async (url, init) => {
+    requests += 1;
+    assert.equal(new Request(url, init).headers.get("idempotency-key"), "create:job-42");
+    return Response.json({ error: "agent_initialization_conflict" }, { status: 409 });
+  } }), error => error.status === 409 && error.code === "agent_initialization_conflict");
+  assert.equal(requests, 1);
+});
 test("configuration, template and operational calls use the existing authenticated client", async () => {
   const requests = [];
   const options = { baseUrl: "https://managed.example", fetch: async (url, init) => {

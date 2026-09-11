@@ -166,6 +166,12 @@ export type ArtifactPage = Readonly<{ data: readonly Artifact[]; publications: r
 export type WebhookState = Readonly<{ endpoint: { url: string } | null; deliveries: readonly Readonly<{ id: string; attempt: number; retry_at: number; status: "pending" | "delivered" | "failed" }>[] }>;
 
 export type CreateOptions = Options & Readonly<{
+  /**
+   * Account-scoped creation key: 1–256 printable ASCII characters without spaces.
+   * Persist before calling to retry after restart; omission generates a key per invocation.
+   * Replay requires compatible retained settings/configuration. Use open() once the ID is known.
+   */
+  idempotencyKey?: string | undefined;
   configuration?: Configuration;
   definitionId?: string;
   environmentTemplateId?: string;

@@ -53,7 +53,7 @@ for a session and can be stored in a named agent definition.
 ```js
 const single = await Agent.create({
   ...client,
-  settings: { model: "gpt-5.6-luna", thinking: "low" },
+  settings: { model: "gpt-5.6-luna", thinking: "low", reasoningMode: "standard", fastMode: false },
   configuration: {
     instructions: "Use only the supplied data and return JSON.",
     tools: [],
@@ -74,6 +74,42 @@ stable prefix as a cache boundary. Incremental requests without that prefix make
 no explicit cache write. Provider validation, minimum eligible prefix length,
 cache pricing and expiry still apply. Provider controls are applied to every
 managed Responses socket, including reopened connections and child sessions.
+
+## Recovering session creation
+
+`Agent.create({ idempotencyKey, ...options })` accepts an account-scoped key of
+1–256 printable ASCII characters, excluding spaces. Persist the key and the
+creation options before sending the request. The SDK retains the key through its
+internal retries; another invocation with the same key can recover the same
+retained session after a lost response or application restart. Omission still
+creates a random key per invocation. This key is independent of the first turn's
+idempotency key.
+
+```js
+// job.id and creation options must come from your durable job record.
+const session = await Agent.create({
+  ...client,
+  idempotencyKey: `create:${job.id}`,
+  settings: { model: "gpt-5.6-luna", thinking: "low", reasoningMode: "standard", fastMode: false },
+  configuration: { tools: [], multi_agent: { enabled: false } },
+});
+const turn = session.turn.prompt({
+  input: job.prompt,
+  id: `job-${job.id}:first`, // Use a job ID compatible with the turn ID grammar.
+  idempotencyKey: `first:${job.id}`,
+});
+console.log(await turn.result());
+```
+
+Use distinct keys for distinct jobs. Replaying creation checks retained settings
+and configuration; it is not a general session lookup. Changed settings can cause
+409, and templates are resolved again, so deleted or replaced templates can fail
+replay. Once you have persisted the session ID, resume with `Agent.open(id, client)`
+instead of recreating it. A deleted session is not resurrected by reusing its key.
+There is no claim of exactly-once model execution or external tool side effects.
+
+The [second API design exercise](MANAGED_AGENT_START_DESIGN.md) proposes a future
+combined create-and-prompt operation. That operation is not implemented here.
 
 ## Environment execution and limits
 

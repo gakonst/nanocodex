@@ -33,9 +33,9 @@ const eventEncoder = new TextEncoder();
 
 /** Create a new managed agent owned by the authenticated account. */
 export async function create(options = {}) {
-  const { clientOptions, requestBody } = managedCreateOptions(options);
+  const { clientOptions, requestBody, creationKey } = managedCreateOptions(options);
   const client = managedClient(clientOptions);
-  const idempotencyKey = `managed-create:${globalThis.crypto.randomUUID()}`;
+  const idempotencyKey = creationKey ?? `managed-create:${globalThis.crypto.randomUUID()}`;
   let receipt;
   let failure;
   for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -70,14 +70,17 @@ function managedCreateOptions(options) {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw new TypeError("managed agent options must be an object");
   }
-  const { settings, configuration, definitionId, environmentTemplateId, ...clientOptions } = options;
+  const { settings, configuration, definitionId, environmentTemplateId, idempotencyKey: creationKey, ...clientOptions } = options;
+  if (creationKey !== undefined && (typeof creationKey !== "string" || !IDEMPOTENCY_KEY.test(creationKey))) {
+    throw new TypeError("invalid managed creation idempotency key");
+  }
   const extensions = {
     ...(configuration === undefined ? {} : { configuration }),
     ...(definitionId === undefined ? {} : { definition_id: templateId(definitionId) }),
     ...(environmentTemplateId === undefined ? {} : { environment_template_id: templateId(environmentTemplateId) }),
   };
   if (configuration !== undefined && (!configuration || typeof configuration !== "object" || Array.isArray(configuration))) throw new TypeError("configuration must be an object");
-  if (settings === undefined) return { clientOptions, requestBody: Object.keys(extensions).length ? JSON.stringify(extensions) : undefined };
+  if (settings === undefined) return { clientOptions, creationKey, requestBody: Object.keys(extensions).length ? JSON.stringify(extensions) : undefined };
   const keys = settings && typeof settings === "object" && !Array.isArray(settings)
     ? Object.keys(settings)
     : [];
@@ -98,6 +101,7 @@ function managedCreateOptions(options) {
   }
   return {
     clientOptions,
+    creationKey,
     requestBody: JSON.stringify({
       ...extensions,
       settings: {

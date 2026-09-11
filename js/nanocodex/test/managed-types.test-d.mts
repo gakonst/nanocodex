@@ -31,6 +31,9 @@ async function checkManaged() {
   // @ts-expect-error thread terminology was replaced by sessions.
   Agent.readThread;
   const created: ManagedAgent = await Agent.create();
+  await Agent.create({ idempotencyKey: "create:job-42" });
+  // @ts-expect-error creation keys must be strings.
+  await Agent.create({ idempotencyKey: 42 });
   await created.events.page({ after: "0", limit: 128 });
   await created.events.page({ before: "99" });
   const optionalCursor: string | undefined = Math.random() > 0.5 ? "1" : undefined;
