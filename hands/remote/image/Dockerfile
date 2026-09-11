@@ -49,6 +49,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && python3 -m venv --system-site-packages /opt/hand-python \
     && /opt/hand-python/bin/pip install --no-cache-dir -r /opt/hand-toolkit/python.txt \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd \
+    && sh /opt/hand-toolkit/install-paths.sh \
     && chmod 0755 /opt/hand-toolkit/check.py \
     && ln -s /opt/hand-toolkit/check.py /usr/local/bin/nanocodex-check-hand-toolkit \
     && useradd --create-home --uid 1000 --shell /bin/bash desktop \

@@ -225,7 +225,7 @@ def main(stage, config):
             if not member.isfile():
                 raise RuntimeError("Invalid firmware archive")
             atomic(ROOT / "firmware" / "libkrunfw.so.5", archive.extractfile(member).read())
-        template_key = hashlib.sha256(b"".join((stage / name).read_bytes() for name in ["Dockerfile", "Dockerfile.ext4", "populate-ext4.sh", "build-root.sh", "toolkit/install-alpine.sh", "toolkit/python.txt", "toolkit/check.py"])).hexdigest()[:16]
+        template_key = hashlib.sha256(b"".join((stage / name).read_bytes() for name in ["Dockerfile", "Dockerfile.ext4", "populate-ext4.sh", "build-root.sh", "toolkit/install-alpine.sh", "toolkit/python.txt", "toolkit/check.py", "toolkit/install-paths.sh"])).hexdigest()[:16]
         template = ROOT / "images" / f"desktop-{template_key}.ext4"
         if not template.exists():
             print("Preparing retained VM desktop template…", flush=True)

@@ -31,6 +31,6 @@ jobs:
           DOCKERFILE: ${{ matrix.dockerfile }}
         run: docker build -t nanocodex-vm:toolkit -f "crates/experimental/nanocodex-vm/image/$DOCKERFILE" crates/experimental/nanocodex-vm/image
       - name: Exercise offline toolkit
-        run: docker run --rm --network none --entrypoint nanocodex-check-hand-toolkit nanocodex-vm:toolkit
+        run: docker run --rm --network none --entrypoint env nanocodex-vm:toolkit -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/root sh -lc nanocodex-check-hand-toolkit
       - name: Package and validate the 16 GiB ext4 template
         run: bash crates/experimental/nanocodex-vm/image/build-root.sh nanocodex-vm:toolkit "$RUNNER_TEMP/desktop.ext4"

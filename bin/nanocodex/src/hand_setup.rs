@@ -197,6 +197,12 @@ impl Setup {
                 ),
             ),
             (
+                "toolkit/install-paths.sh",
+                include_str!(
+                    "../../../crates/experimental/nanocodex-vm/image/toolkit/install-paths.sh"
+                ),
+            ),
+            (
                 "toolkit/python.txt",
                 include_str!("../../../crates/experimental/nanocodex-vm/image/toolkit/python.txt"),
             ),

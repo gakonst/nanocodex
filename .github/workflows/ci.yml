@@ -151,7 +151,7 @@ jobs:
           --tmpfs /tmp:rw,nosuid,nodev,size=256m --env HOME=/workspace
           --tmpfs /workspace:rw,exec,nosuid,nodev,uid=1000,gid=1000,size=2g
           --env TMPDIR=/workspace --workdir /workspace
-          --entrypoint nanocodex-check-hand-toolkit nanocodex-hand:ci
+          --entrypoint sh nanocodex-hand:ci -lc nanocodex-check-hand-toolkit
       - name: Test Docker tools, desktop, persistence, and cleanup without KVM
         run: |
           cargo test --locked -p nanocodex-vm --test docker_live -- --ignored --nocapture

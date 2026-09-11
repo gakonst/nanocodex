@@ -47,6 +47,8 @@ DOCX, XLSX, PPTX, and PDF files; converts DOCX to PDF; plots data; and renders a
 short video and a Blender CPU image. With no argument it uses temporary output.
 CI also runs it as UID 1000 with a read-only root and no network or capabilities.
 Python libraries live in `/opt/hand-python`; `python3` resolves to that environment.
+Toolchain launchers in `/usr/local/bin` preserve this setup after VM boot and in
+login shells, where OCI environment variables are unavailable or reset.
 Use a project venv for additional dependencies. Toolkit installation and smoke
 inputs are bundled by SSH setup and included in the template cache identity.
 
