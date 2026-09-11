@@ -47,3 +47,5 @@ daa = "daa"
 # `iz` appears inside the exact retained benchmark flag
 # `flag{gc0d3_iz_ch4LLenGiNg}`.
 iz = "iz"
+# Mesa's OpenGL-over-Vulkan driver is named Zink.
+Zink = "Zink"

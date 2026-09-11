@@ -6242,6 +6242,7 @@ dependencies = [
  "fs2",
  "futures-util",
  "image",
+ "kvm-ioctls",
  "nanocodex",
  "nanocodex-agent",
  "nanocodex-cli-auth",

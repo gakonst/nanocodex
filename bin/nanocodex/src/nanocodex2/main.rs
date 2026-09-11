@@ -152,80 +152,156 @@ struct AgentReference {
     managed_origin: Option<String>,
 }
 
-#[derive(Args)]
-struct Hand {
-    #[command(flatten)]
-    observability: HandObservabilityArgs,
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum HandNetwork {
+    Off,
+    Internet,
+}
 
-    /// Writable raw ext4 image or development directory used as the retained VM root.
+#[derive(Args)]
+#[command(
+    group(clap::ArgGroup::new("backend").required(true).args(["rootfs", "docker"])),
+    after_help = "Choose exactly one backend; startup never falls back to another backend.\n\nExamples:\n  nanocodex2 hand --docker nanocodex-hand:local --volume my-workspace\n  nanocodex2 hand --vm root.ext4 --guest-runtime /path/to/nanocodex-vm-guest\n\nUse --network internet to give a Docker Hand internet access."
+)]
+struct Hand {
+    /// VM with a persistent ext4 root (Linux KVM or Apple Silicon Hypervisor.framework).
     #[arg(
         long = "vm",
-        visible_alias = "vm-rootfs",
+        alias = "vm-rootfs",
         value_name = "ROOTFS",
-        required_unless_present = "docker",
-        conflicts_with = "docker"
+        help_heading = "Backend"
     )]
     rootfs: Option<PathBuf>,
 
-    /// Run a container Hand using this local image, without requiring KVM.
-    #[arg(long, value_name = "IMAGE", requires = "docker_volume", conflicts_with_all = ["rootfs", "vm_guest_runtime", "vm_firmware"])]
+    /// Container using an existing Linux Docker image; no KVM required.
+    #[arg(long, value_name = "IMAGE", requires = "docker_volume", conflicts_with_all = ["vm_guest_runtime", "vm_firmware", "vm_gpu"], help_heading = "Backend")]
     docker: Option<String>,
 
-    /// Persistent named workspace volume; also provides exclusive Hand ownership.
-    #[arg(long, value_name = "VOLUME", requires = "docker")]
+    /// Persistent named Docker workspace volume (required with --docker).
+    #[arg(
+        long = "volume",
+        alias = "docker-volume",
+        value_name = "VOLUME",
+        requires = "docker",
+        help_heading = "Workspace"
+    )]
     docker_volume: Option<String>,
 
-    /// Enable ordinary Docker bridge internet access (Docker Hands default to offline).
-    #[arg(long, requires = "docker", conflicts_with = "vm_no_network")]
+    /// Guest network access [default: off for Docker, internet for VM].
+    #[arg(long, value_enum, conflicts_with_all = ["docker_internet", "vm_no_network"], help_heading = "Workspace")]
+    network: Option<HandNetwork>,
+
+    #[arg(
+        long,
+        hide = true,
+        requires = "docker",
+        conflicts_with = "vm_no_network"
+    )]
     docker_internet: bool,
 
-    /// Explicit Docker OCI runtime; fails if unavailable, with no fallback.
-    #[arg(long, value_name = "RUNTIME", requires = "docker")]
-    docker_runtime: Option<String>,
-
-    /// Statically linked Linux guest executable used with a raw ext4 root.
-    #[arg(long, value_name = "ELF", env = "NANOCODEX_VM_GUEST_RUNTIME")]
-    vm_guest_runtime: Option<PathBuf>,
-
-    /// Cache for the prepared read-only guest runtime disk.
-    #[arg(long, value_name = "PATH", default_value = ".cache/vm")]
-    vm_cache: PathBuf,
-
-    /// Directory containing the platform libkrun firmware library.
-    #[arg(long, value_name = "PATH", env = "NANOCODEX_KRUNFW_DIR")]
-    vm_firmware: Option<PathBuf>,
-
-    /// Absolute working directory inside the VM.
-    #[arg(long, value_name = "PATH", default_value = "/app")]
-    vm_workspace: String,
-
-    /// Number of virtual CPUs assigned to the hand.
-    #[arg(long, value_name = "COUNT", default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..))]
-    vm_cpus: u8,
-
-    /// Guest memory in mebibytes.
-    #[arg(long, value_name = "MIB", default_value_t = 1_024, value_parser = clap::value_parser!(u32).range(1..))]
-    vm_memory_mib: u32,
-
-    /// Expose shared host Vulkan through virtio-gpu Venus.
-    #[arg(long)]
-    vm_gpu: bool,
-
-    /// Shell name described to the managed brain.
-    #[arg(long, value_name = "SHELL", default_value = "sh")]
-    vm_shell: String,
-
-    /// Disable guest internet socket proxying.
-    #[arg(long)]
+    #[arg(long, hide = true, requires = "rootfs")]
     vm_no_network: bool,
 
-    /// Stable account-local machine identifier.
-    #[arg(long, default_value = "vm")]
-    machine_id: String,
+    /// Absolute workspace directory inside the Hand.
+    #[arg(
+        long = "workspace",
+        alias = "vm-workspace",
+        value_name = "PATH",
+        default_value = "/app",
+        help_heading = "Workspace"
+    )]
+    vm_workspace: String,
 
-    /// Human-readable name shown in accountInfo().machines.
-    #[arg(long, default_value = "Nanocodex VM")]
-    machine_name: String,
+    /// CPU limit.
+    #[arg(long = "cpus", alias = "vm-cpus", value_name = "COUNT", default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..), help_heading = "Resources")]
+    vm_cpus: u8,
+
+    /// Memory limit in MiB.
+    #[arg(long = "memory", alias = "vm-memory-mib", value_name = "MIB", default_value_t = 1_024, value_parser = clap::value_parser!(u32).range(1..), help_heading = "Resources")]
+    vm_memory_mib: u32,
+
+    /// Share the host GPU with a VM; requires a GPU-enabled build and Vulkan renderer.
+    #[arg(
+        long = "gpu",
+        alias = "vm-gpu",
+        requires = "rootfs",
+        help_heading = "Resources"
+    )]
+    vm_gpu: bool,
+
+    /// Stable account-local identifier [default: docker or vm, matching the backend].
+    #[arg(long, help_heading = "Identity")]
+    machine_id: Option<String>,
+
+    /// Display name [default: Nanocodex Docker Hand or Nanocodex VM].
+    #[arg(long, help_heading = "Identity")]
+    machine_name: Option<String>,
+
+    /// Static Linux guest executable for an ext4 VM (or NANOCODEX_VM_GUEST_RUNTIME).
+    #[arg(
+        long = "guest-runtime",
+        alias = "vm-guest-runtime",
+        value_name = "ELF",
+        requires = "rootfs",
+        help_heading = "VM setup"
+    )]
+    vm_guest_runtime: Option<PathBuf>,
+
+    /// Installed Docker OCI runtime, e.g. runsc; fails if unavailable.
+    #[arg(
+        long = "runtime",
+        alias = "docker-runtime",
+        value_name = "RUNTIME",
+        requires = "docker",
+        help_heading = "Advanced"
+    )]
+    docker_runtime: Option<String>,
+
+    /// Prepared VM guest disk cache.
+    #[arg(
+        long = "cache",
+        alias = "vm-cache",
+        value_name = "PATH",
+        default_value = ".cache/vm",
+        requires = "rootfs",
+        help_heading = "Advanced"
+    )]
+    vm_cache: PathBuf,
+
+    /// libkrun firmware directory (or NANOCODEX_KRUNFW_DIR).
+    #[arg(
+        long = "firmware",
+        alias = "vm-firmware",
+        value_name = "PATH",
+        requires = "rootfs",
+        help_heading = "Advanced"
+    )]
+    vm_firmware: Option<PathBuf>,
+
+    /// Shell described to the managed brain.
+    #[arg(
+        long = "shell",
+        alias = "vm-shell",
+        value_name = "SHELL",
+        default_value = "sh",
+        help_heading = "Advanced"
+    )]
+    vm_shell: String,
+
+    #[command(flatten, next_help_heading = "Logging")]
+    observability: HandObservabilityArgs,
+}
+
+impl Hand {
+    fn machine_id(&self) -> &str {
+        self.machine_id
+            .as_deref()
+            .unwrap_or(if self.docker.is_some() {
+                "docker"
+            } else {
+                "vm"
+            })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -444,6 +520,25 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         }
         #[cfg(target_os = "linux")]
         Some(Command::HandDesktop(command)) => return screen_native::serve_desktop(command).await,
+        Some(Command::Hand(command)) => {
+            let _observability = command
+                .observability
+                .install()
+                .map_err(|error| ManagedError::Configuration(error.to_string()))?;
+            tracing::info!(target: "nanocodex2", stage = "hand.preflight",
+                machine.id = command.machine_id(),
+                hand.backend = if command.docker.is_some() { "docker" } else { "vm" },
+                vm.cpu.count = command.vm_cpus,
+                vm.memory.limit_mib = command.vm_memory_mib,
+                vm.root.kind = command.rootfs.as_ref().map_or("container", |root| if root.exists() { "existing" } else { "missing" }),
+                "checking Hand backend support");
+            if let Err(error) = vm_hand::VmHand::preflight(&command).await {
+                tracing::error!(target: "nanocodex2", stage = "hand.preflight.failed", "Hand backend preflight failed");
+                return Err(error);
+            }
+            let client = client_from_environment(None)?;
+            return serve_vm_hand(&client, command).await;
+        }
         Some(Command::Host(command)) => {
             let _observability = command
                 .observability
@@ -465,13 +560,7 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         Some(Command::Attach(command)) => {
             attach_tui(&client, command.agent.map(|agent| agent.agent_id)).await
         }
-        Some(Command::Hand(command)) => {
-            let _observability = command
-                .observability
-                .install()
-                .map_err(|error| ManagedError::Configuration(error.to_string()))?;
-            serve_vm_hand(&client, command).await
-        }
+        Some(Command::Hand(_)) => unreachable!("handled before managed client setup"),
         Some(Command::NativeHand(command)) => native_hand::serve(&client, command).await,
         Some(Command::HandScreen(command)) => screen_native::serve(&client, command).await,
         #[cfg(target_os = "linux")]
@@ -528,12 +617,12 @@ async fn launch_vm_hand(command: &Hand) -> Result<vm_hand::VmHand, ManagedError>
         "vm.launch",
         otel.kind = "internal",
         otel.status_code = tracing::field::Empty,
-        machine.id = command.machine_id.as_str(),
+        machine.id = command.machine_id(),
         vm.cpu.count = command.vm_cpus,
         vm.memory.limit_mib = command.vm_memory_mib,
         vm.root.kind = root_kind,
         vm.root.bytes = root_bytes,
-        network.enabled = if command.docker.is_some() { command.docker_internet } else { !command.vm_no_network },
+        network.enabled = command.network.map_or(if command.docker.is_some() { command.docker_internet } else { !command.vm_no_network }, |network| network == HandNetwork::Internet),
         hand.backend = if command.docker.is_some() { "docker" } else { "libkrun" },
         status = tracing::field::Empty,
         duration_ns = tracing::field::Empty,

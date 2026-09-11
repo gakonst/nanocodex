@@ -185,10 +185,12 @@ Build the image for the selected Docker daemon's architecture from the repo root
 pnpm build:hand-docker
 nanocodex2 hand \
   --docker nanocodex-hand:local \
-  --docker-volume personal-hand-workspace \
+  --volume personal-hand-workspace \
   --machine-id personal-hand \
   --machine-name "Personal Docker Hand"
 ```
+
+Startup checks backend support before account login or attachment. Missing Docker, a stopped or inaccessible daemon, non-Linux containers, missing images, mismatched image architecture, and unavailable OCI runtimes produce actionable errors.
 
 The existing account login supplies attachment authority. No account credential,
 Docker socket, or host directory is passed into the container. The bundled image
@@ -196,17 +198,17 @@ contains the Rust guest runtime, shell, Git, Python, Node, and an X11 desktop.
 Images must already exist on the selected Docker daemon; launch never pulls.
 Use a pinned image digest when deploying an image from a registry.
 
-Docker Hands default to **offline**. `--docker-internet` explicitly enables
+Docker Hands default to **offline**. `--network internet` explicitly enables
 ordinary Docker bridge networking, including any destinations that network can
 reach. This mode does not enforce broker-only egress. Account signaling and
 screen publication remain in the host process and work with an offline guest.
 A future broker-only mode must enforce its network boundary, not rely on proxy
-environment variables. `--docker-runtime runsc` selects an installed Docker
+environment variables. `--runtime runsc` selects an installed Docker
 runtime without fallback; gVisor/desktop compatibility must be checked on that
 host. The launcher does not install or configure gVisor.
 
-`--vm-workspace` (default `/app`), `--vm-cpus`, `--vm-memory-mib`, and
-`--vm-shell` apply to either backend. Docker Hands publish `container` instead
+`--workspace` (default `/app`), `--cpus`, `--memory`, and
+`--shell` apply to either backend. Docker Hands publish `container` instead
 of `vm` in the machine capability list. `--vm` and `--docker` are mutually
 exclusive; Docker images bundle their runtime and do not accept ext4 guest or
 firmware options.
@@ -241,6 +243,18 @@ Run the Docker contract tests against the image:
 NANOCODEX_DOCKER_TEST_IMAGE=nanocodex-hand:local \
   cargo test --locked -p nanocodex-vm --test docker_live -- --ignored
 ```
+
+The original `--docker-volume`, `--docker-runtime`, `--docker-internet`, and
+`--vm-*` flag spellings remain accepted. New commands should use the shorter
+names above. `--network off` explicitly disables networking for either backend;
+VM networking remains enabled by default for compatibility. VM-only settings
+such as `--gpu` and `--guest-runtime` cannot be combined with `--docker`.
+VM-specific environment defaults are ignored when selecting Docker.
+
+On Linux, `--vm` checks access to `/dev/kvm`, the KVM API, and VM creation
+before account setup. If KVM is unavailable, the error explains how to enable
+it and shows `hand --docker IMAGE --volume NAME` as the explicit alternative.
+No backend is selected automatically.
 
 The on-demand `host` pool remains libkrun-only; Docker is available through the
 single `hand` command and the `nanocodex_vm::docker` library API.

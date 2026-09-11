@@ -43,13 +43,13 @@ async fn hand_help_exposes_the_vm_and_machine_contract() {
     for expected in [
         "--vm <ROOTFS>",
         "--docker <IMAGE>",
-        "--docker-volume <VOLUME>",
-        "--docker-internet",
-        "--docker-runtime <RUNTIME>",
-        "--vm-guest-runtime <ELF>",
-        "--vm-workspace <PATH>",
-        "--vm-cpus <COUNT>",
-        "--vm-memory-mib <MIB>",
+        "--volume <VOLUME>",
+        "--network <NETWORK>",
+        "--runtime <RUNTIME>",
+        "--guest-runtime <ELF>",
+        "--workspace <PATH>",
+        "--cpus <COUNT>",
+        "--memory <MIB>",
         "--machine-id <MACHINE_ID>",
         "--machine-name <MACHINE_NAME>",
         "--log-filter <LOG_FILTER>",
@@ -69,7 +69,18 @@ async fn hand_requires_an_explicit_backend_and_rejects_mixed_options() {
     for args in [
         vec!["hand"],
         vec!["hand", "--docker", "image"],
-        vec!["hand", "--docker-volume", "work"],
+        vec!["hand", "--volume", "work"],
+        vec!["hand", "--docker", "image", "--volume", "work", "--gpu"],
+        vec![
+            "hand",
+            "--docker",
+            "image",
+            "--volume",
+            "work",
+            "--network",
+            "bogus",
+        ],
+        vec!["hand", "--vm", "root", "--runtime", "runsc"],
         vec![
             "hand",
             "--vm",
@@ -204,7 +215,7 @@ async fn hand_json_tracing_exposes_resources_without_paths_or_credentials() {
         .collect::<Vec<_>>();
     assert!(!traces.is_empty(), "{stderr}");
     let encoded = serde_json::to_string(&traces).unwrap();
-    assert!(encoded.contains("vm.launch"), "{encoded}");
+    assert!(encoded.contains("hand.preflight"), "{encoded}");
     assert!(encoded.contains("failed"), "{encoded}");
     for expected in ["trace-hand", "24", "98304", "missing"] {
         assert!(
@@ -1958,8 +1969,10 @@ mod docker_hand_live {
                 "hand",
                 "--docker",
                 &image,
-                "--docker-volume",
+                "--volume",
                 &volume.0,
+                "--network",
+                "off",
                 "--machine-id",
                 "docker-cli-test",
             ])
@@ -2024,5 +2037,64 @@ mod docker_hand_live {
             "SIGTERM deleted the workspace volume"
         );
         server.abort();
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn docker_preflight_errors_are_actionable_before_account_login() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let docker = dir.path().join("docker");
+    for (script, extra, expected) in [
+        (None, vec![], "Install the Docker CLI"),
+        (Some("exit 1"), vec![], "start a Linux Docker daemon"),
+        (
+            Some("echo '{\"OSType\":\"windows\"}'"),
+            vec![],
+            "switch Docker to Linux containers",
+        ),
+        (
+            Some(
+                "echo '{\"OSType\":\"linux\",\"Architecture\":\"x86_64\",\"Runtimes\":{\"runc\":{}}}'",
+            ),
+            vec!["--runtime", "runsc"],
+            "not configured on this daemon",
+        ),
+        (
+            Some(
+                "if [ \"$1\" = info ]; then echo '{\"OSType\":\"linux\",\"Architecture\":\"x86_64\"}'; else exit 1; fi",
+            ),
+            vec![],
+            "pnpm build:hand-docker",
+        ),
+        (
+            Some(
+                "if [ \"$1\" = info ]; then echo '{\"OSType\":\"linux\",\"Architecture\":\"x86_64\"}'; else echo linux/arm64; fi",
+            ),
+            vec![],
+            "rebuild the image",
+        ),
+    ] {
+        if let Some(script) = script {
+            std::fs::write(&docker, format!("#!/bin/sh\n{script}\n")).unwrap();
+            std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .args(["hand", "--docker", "image", "--volume", "work"])
+            .args(extra)
+            .env_clear()
+            .env("PATH", dir.path())
+            .env("NANOCODEX_HOME", dir.path())
+            // VM environment defaults must not invalidate Docker selection.
+            .env("NANOCODEX_VM_GUEST_RUNTIME", "/missing/guest")
+            .env("NANOCODEX_KRUNFW_DIR", "/missing/firmware")
+            .current_dir(dir.path())
+            .output()
+            .await
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{stderr}");
     }
 }

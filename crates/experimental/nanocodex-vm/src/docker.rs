@@ -323,20 +323,52 @@ impl DockerWorkspaceBuilder {
         command
     }
 
+    /// Checks options, the Docker daemon, the selected runtime, and the local image.
+    /// Does not create containers or volumes.
+    ///
+    /// # Errors
+    /// Reports unavailable Docker, non-Linux daemons/images, missing runtimes/images,
+    /// and images built for a different daemon architecture.
+    pub async fn preflight(&self) -> Result<(), DockerWorkspaceError> {
+        self.validate()?;
+        let info = run(docker().args(["info", "--format", "{{json .}}"]), "info")
+            .await.map_err(|error| DockerWorkspaceError::Configuration(format!(
+                "Docker backend is unavailable: {error}. Install the Docker CLI and start a Linux Docker daemon; verify access with `docker info`"
+            )))?;
+        let info: serde_json::Value = serde_json::from_str(&info).map_err(|error| {
+            DockerWorkspaceError::Configuration(format!(
+                "invalid Docker daemon information: {error}"
+            ))
+        })?;
+        validate_daemon(&info, self.runtime.as_deref())?;
+        let image = run(docker().args(["image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", &self.image]), "image inspect")
+            .await.map_err(|error| DockerWorkspaceError::Configuration(format!(
+                "Docker image {:?} is unavailable locally: {error}. Build the bundled image with `pnpm build:hand-docker`, or explicitly pull your Hand image before starting; startup never pulls images",
+                self.image
+            )))?;
+        let architecture = match info["Architecture"].as_str().unwrap_or_default() {
+            "x86_64" | "amd64" => "amd64",
+            "aarch64" | "arm64" => "arm64",
+            other => other,
+        };
+        if image.trim() != format!("linux/{architecture}") {
+            return Err(DockerWorkspaceError::Configuration(format!(
+                "Docker image {:?} is {}, but this daemon requires linux/{architecture}; rebuild the image for the selected Docker daemon",
+                self.image,
+                image.trim()
+            )));
+        }
+        Ok(())
+    }
+
     /// Creates a container, attaches its stdio, and waits for typed guest readiness.
     ///
     /// # Errors
     /// Fails on invalid options, unavailable Docker/image/runtime, an occupied
     /// workspace lease, or a guest which does not become ready within 30 seconds.
-    /// The image must be for a Linux Docker daemon. No KVM device is needed.
+    /// No KVM device is needed. Startup never changes the selected backend.
     pub async fn launch(self) -> Result<DockerWorkspace, DockerWorkspaceError> {
-        self.validate()?;
-        let info = run(docker().args(["info", "--format", "{{.OSType}}"]), "info").await?;
-        if info.trim() != "linux" {
-            return Err(DockerWorkspaceError::Configuration(
-                "a Linux Docker daemon is required".into(),
-            ));
-        }
+        self.preflight().await?;
         let container = Arc::new(ContainerLease {
             name: format!(
                 "nanocodex-hand-{}",
@@ -405,6 +437,27 @@ impl DockerWorkspaceBuilder {
             shell: self.shell,
         })
     }
+}
+
+fn validate_daemon(
+    info: &serde_json::Value,
+    runtime: Option<&str>,
+) -> Result<(), DockerWorkspaceError> {
+    if info["OSType"] != "linux" {
+        return Err(DockerWorkspaceError::Configuration(
+            "Docker Hands require a Linux Docker daemon; switch Docker to Linux containers or select a Linux Docker context".into()
+        ));
+    }
+    if let Some(runtime) = runtime
+        && !info["Runtimes"]
+            .as_object()
+            .is_some_and(|runtimes| runtimes.contains_key(runtime))
+    {
+        return Err(DockerWorkspaceError::Configuration(format!(
+            "Docker runtime {runtime:?} is not configured on this daemon; install/configure it or omit --runtime to use the daemon default. No fallback was attempted"
+        )));
+    }
+    Ok(())
 }
 
 fn docker() -> Command {
