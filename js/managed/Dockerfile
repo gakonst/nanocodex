@@ -132,7 +132,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         poppler-utils qpdf ghostscript tesseract-ocr tesseract-ocr-eng graphviz \
         fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/* \
-    && python3 -m venv /opt/hand-python \
+    && uv venv --python /usr/bin/python3 --seed /opt/hand-python \
     && /opt/hand-python/bin/pip install --no-cache-dir \
         numpy==2.2.6 scipy==1.15.3 pandas==2.3.3 matplotlib==3.10.6 \
         sympy==1.14.0 Pillow==11.3.0 lxml==6.0.2 openpyxl==3.1.5 reportlab==4.4.4 \
