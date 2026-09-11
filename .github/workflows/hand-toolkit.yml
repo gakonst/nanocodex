@@ -1,0 +1,36 @@
+name: VM toolkit images
+on:
+  pull_request:
+    paths:
+      - 'crates/experimental/nanocodex-vm/image/**'
+      - '.github/workflows/hand-toolkit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vm-toolkit-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  image:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            dockerfile: Dockerfile
+          - runner: ubuntu-24.04-arm
+            dockerfile: Dockerfile.gpu
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Build VM toolkit
+        env:
+          DOCKERFILE: ${{ matrix.dockerfile }}
+        run: docker build -t nanocodex-vm:toolkit -f "crates/experimental/nanocodex-vm/image/$DOCKERFILE" crates/experimental/nanocodex-vm/image
+      - name: Exercise offline toolkit
+        run: docker run --rm --network none --entrypoint nanocodex-check-hand-toolkit nanocodex-vm:toolkit
+      - name: Package and validate the 16 GiB ext4 template
+        run: bash crates/experimental/nanocodex-vm/image/build-root.sh nanocodex-vm:toolkit "$RUNNER_TEMP/desktop.ext4"

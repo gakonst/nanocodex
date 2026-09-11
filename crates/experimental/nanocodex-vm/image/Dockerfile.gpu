@@ -1,5 +1,7 @@
 # Apple Silicon Venus driver. Build context is this image directory.
 # Keep the hardware driver separate from the portable software desktop image.
+FROM rust:1.97-alpine3.24 AS rust-toolchain
+RUN rustup component add clippy rustfmt && rustup target add wasm32-unknown-unknown
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS build
 RUN apk add --no-cache build-base meson samurai python3 py3-mako py3-yaml \
     py3-packaging py3-setuptools bison flex libdrm-dev vulkan-headers zlib-dev \
@@ -55,10 +57,16 @@ RUN mkdir -p /driver/usr/local/bin \
 RUN mkdir -p /driver/usr/share/licenses/nanocodex-gpu-gl \
     && cp docs/license.rst /driver/usr/share/licenses/nanocodex-gpu-gl/
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
-RUN apk add --no-cache ca-certificates xvfb openbox xterm font-dejavu \
-      mesa-dri-gallium mesa-vulkan-virtio vulkan-tools vulkan-loader libxxf86vm \
-    && mkdir -p /app /workspace /run/nanocodex-desktop \
-    && chmod 0700 /run/nanocodex-desktop
+COPY --from=rust-toolchain /usr/local/rustup /opt/rustup
+COPY --from=rust-toolchain /usr/local/cargo /opt/cargo
+COPY toolkit /opt/hand-toolkit
+RUN sh /opt/hand-toolkit/install-alpine.sh \
+    && ln -s /opt/hand-toolkit/check.py /usr/local/bin/nanocodex-check-hand-toolkit \
+    && chmod 0755 /opt/hand-toolkit/check.py
+ENV RUSTUP_HOME=/opt/rustup \
+    PATH=/opt/hand-python/bin:/opt/cargo/bin:$PATH \
+    DISPLAY=:0
+RUN apk add --no-cache mesa-vulkan-virtio vulkan-tools vulkan-loader libxxf86vm
 COPY --from=venus /driver/usr/ /usr/
 COPY --from=zink /driver/ /
 COPY --chmod=755 gpu/gl /usr/local/bin/nanocodex-gpu-gl

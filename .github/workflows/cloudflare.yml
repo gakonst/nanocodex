@@ -71,7 +71,8 @@ jobs:
             if git diff --quiet "$BASE_SHA" "$GITHUB_SHA" -- \
               js/managed/Dockerfile js/managed/wrangler.jsonc js/managed/.dockerignore \
               js/managed/scripts/prepare-hand-image.mjs js/managed/scripts/bundle-hand-desktop.sh \
-              hands/remote; then
+              hands/remote crates/experimental/nanocodex-vm/image/toolkit \
+              js/managed/scripts/check-dev-stack.sh; then
               rollout=none
             fi
           fi
@@ -171,7 +172,8 @@ jobs:
             if git diff --quiet "$BASE_SHA" "$GITHUB_SHA" -- \
               js/managed/Dockerfile js/managed/wrangler.jsonc js/managed/.dockerignore \
               js/managed/scripts/prepare-hand-image.mjs js/managed/scripts/bundle-hand-desktop.sh \
-              hands/remote; then
+              hands/remote crates/experimental/nanocodex-vm/image/toolkit \
+              js/managed/scripts/check-dev-stack.sh; then
               rollout=none
             fi
           fi

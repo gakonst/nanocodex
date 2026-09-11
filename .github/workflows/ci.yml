@@ -97,8 +97,18 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   vm-guest:
-    name: static Linux guest and Docker Hand
-    runs-on: ubuntu-latest
+    name: static Linux guest and Docker Hand (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -109,7 +119,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: stable
-          targets: x86_64-unknown-linux-musl
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
           cache-on-failure: true
@@ -121,17 +131,25 @@ jobs:
       - name: Build the actual static guest artifact
         run: >-
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
           cargo build --locked --package nanocodex-vm
           --bin nanocodex-vm-guest --no-default-features
-          --features guest-runtime --target x86_64-unknown-linux-musl
+          --features guest-runtime --target ${{ matrix.target }}
 
       - name: Build the Docker Hand image
         run: |
           context=$(mktemp -d)
           trap 'rm -rf "$context"' EXIT
-          cp target/x86_64-unknown-linux-musl/debug/nanocodex-vm-guest "$context/"
+          cp target/${{ matrix.target }}/debug/nanocodex-vm-guest "$context/"
           cp crates/experimental/nanocodex-vm/image/Dockerfile.hand "$context/Dockerfile"
+          cp -R crates/experimental/nanocodex-vm/image/toolkit "$context/toolkit"
           docker build --tag nanocodex-hand:ci "$context"
+      - name: Exercise offline toolkit with a read-only root and unprivileged user
+        run: >-
+          docker run --rm --network none --read-only --user 1000:1000
+          --cap-drop ALL --security-opt no-new-privileges --pids-limit 512
+          --tmpfs /tmp:rw,nosuid,nodev,size=2g --env HOME=/tmp
+          --entrypoint nanocodex-check-hand-toolkit nanocodex-hand:ci
       - name: Test Docker tools, desktop, persistence, and cleanup without KVM
         run: |
           cargo test --locked -p nanocodex-vm --test docker_live -- --ignored --nocapture

@@ -1,6 +1,11 @@
 name: Linux Hand image
 
 on:
+  pull_request:
+    paths:
+      - 'hands/remote/image/Dockerfile'
+      - 'crates/experimental/nanocodex-vm/image/toolkit/**'
+      - '.github/workflows/hand-image.yml'
   workflow_dispatch:
     inputs:
       publish:
@@ -50,7 +55,11 @@ jobs:
             --tag "$IMAGE:$IMAGE_TAG-$ARCH" \
             --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            --file hands/remote/image/Dockerfile hands/remote
+            --file hands/remote/image/Dockerfile .
+      - name: Exercise offline creative and development tools
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: docker run --rm --network none --entrypoint nanocodex-check-hand-toolkit "$IMAGE:$IMAGE_TAG-$ARCH"
       - name: Exercise the desktop and both video encoders
         env:
           ARCH: ${{ matrix.arch }}

@@ -7,6 +7,7 @@ on:
       - 'js/managed/scripts/prepare-hand-image.mjs'
       - 'js/managed/scripts/bundle-hand-desktop.sh'
       - 'hands/remote/**'
+      - 'crates/experimental/nanocodex-vm/image/toolkit/**'
       - '.github/workflows/sandbox-image.yml'
   workflow_dispatch:
 permissions:
@@ -41,3 +42,5 @@ jobs:
           fi
       - name: Verify tools in the final image
         run: docker run --rm --network none --entrypoint sh nanocodex-sandbox:dev /usr/local/bin/nanocodex-check-dev-stack
+      - name: Verify offline document, science, and rendering workflows
+        run: docker run --rm --network none --entrypoint nanocodex-check-hand-toolkit nanocodex-sandbox:dev

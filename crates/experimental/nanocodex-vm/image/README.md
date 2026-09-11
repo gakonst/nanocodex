@@ -1,42 +1,60 @@
-# Rust VM desktop image
+# Hand toolkit images
 
-This Alpine 3.21 template supplies Xvfb, Openbox, xterm, DejaVu fonts, and
-Mesa's Gallium software renderer. The renderer gives the private X11 desktop
-a modern OpenGL core profile even when the VM host does not expose a GPU
-device, so applications such as Blender can open directly in the published
-desktop. Rendering is CPU-backed unless a future VM transport exposes an
-accelerated DRM device.
-The separately built `nanocodex-vm-guest` starts the X11 session and implements
-capture and input directly through Rust `x11rb`. The image contains no Go
-`nanocodex-remote`, Waymote, grim, Go compiler, or Zig compiler. It does not
-use the legacy desktop image in `hands/remote/image`.
+The portable VM, Docker Hand, and Apple Silicon GPU VM images include the same
+Alpine 3.24 toolkit. Cloudflare and the standalone Linux Hand use their existing
+glibc bases with equivalent development, document, science, and creative tools.
+The specialized browser image and account relay remain separate services.
 
-Build on a Docker host (Apple Silicon VMs require `linux/arm64`):
+| Work | Installed tools |
+| --- | --- |
+| Repositories | Git, Git LFS, GitHub CLI, ripgrep, fd, jq, SSH, rsync, tmux |
+| Development | Rust 1.97, rustfmt, Clippy, WASM target, Go, Node, npm, pnpm, uv, C/C++, CMake |
+| Documents | LibreOffice, Pandoc, python-docx, python-pptx, openpyxl |
+| PDF and OCR | Poppler, qpdf, Ghostscript, Tesseract English, pypdf, ReportLab |
+| Data | NumPy, SciPy, pandas, Matplotlib, SymPy, Pillow, lxml |
+| Creative | Blender, FFmpeg, ImageMagick, Inkscape, Graphviz |
+| Browser and fonts | Chromium/Chrome, DejaVu, Noto, CJK, emoji |
+
+Cloudflare also retains Swift 6.3.3 and wasm-bindgen CLI. Alpine uses musl; it does
+not include a Swift host compiler or Apple SDKs. Use a native Mac Hand for Xcode.
+The GPU image retains its patched Mesa Venus driver. Portable VM and Docker
+images support CPU rendering; installing Blender does not grant GPU access.
+
+Build a Docker Hand with `pnpm build:hand-docker`. Build a portable VM template:
 
 ```sh
-docker build --platform linux/arm64 -t nanocodex-vm-x11:alpine3.21 \
-  crates/experimental/nanocodex-vm/image
-crates/experimental/nanocodex-vm/image/build-root.sh \
-  nanocodex-vm-x11:alpine3.21 /absolute/path/desktop-x11.ext4 2048
+docker build -t nanocodex-vm:toolkit crates/experimental/nanocodex-vm/image
+bash crates/experimental/nanocodex-vm/image/build-root.sh \
+  nanocodex-vm:toolkit /absolute/path/desktop.ext4
 ```
 
-The build uses an isolated Linux filesystem packager, with no privileged
-mounts. It preserves numeric ownership, validates required and forbidden
-files, runs read-only `e2fsck`, and compares executable bytes extracted from
-the ext4 image. The immutable output has SHA-256, source image identity,
-package inventory, executable checksums, and filesystem-check sidecars.
-The base Alpine digest is pinned; APK repository updates mean rebuilds can
-have different packages and checksums. The Rust runtime remains on its
-separate runtime disk and must match the host build.
+The default ext4 capacity is 16 GiB. Existing images and retained workspaces are
+not replaced; create a new Hand from the rebuilt template. Allow additional host
+disk space for image layers, build caches, and per-Hand writable files. For
+creative tasks, start with `--memory 4096 --cpus 2` and increase for the workload.
+Network policy is unchanged: Docker Hands default to `--network off`.
 
-Point the host's template configuration at the new image only after a fresh
-VM validates capture and input. Existing VMs retain their private root disk;
-changing the template does not upgrade their installed packages.
+Run `nanocodex-check-hand-toolkit /workspace/toolkit-check` inside a Hand to retain
+its output. It runs offline and compiles C, Rust, Go, and Node programs; creates
+DOCX, XLSX, PPTX, and PDF files; converts DOCX to PDF; plots data; and renders a
+short video and a Blender CPU image. With no argument it uses temporary output.
+CI also runs it as UID 1000 with a read-only root and no network or capabilities.
+Python libraries live in `/opt/hand-python`; `python3` resolves to that environment.
+Use a project venv for additional dependencies. Toolkit installation and smoke
+inputs are bundled by SSH setup and included in the template cache identity.
 
-To add desktop and software OpenGL infrastructure to an existing Alpine VM, run
-`upgrade-alpine.sh` as root through its connected Hand. It requires 400 MiB
-free and adds only the display packages and their dependencies. It never
-replaces a disk, edits workspace files, launches a display, or restarts the
-VM. Retain existing files and let the host owner stage the matching Rust
-guest runtime and restart the VM after the package upgrade so the new Xvfb
-process can load Gallium's software driver.
+The VM's separate `nanocodex-vm-guest` runtime starts Xvfb and implements capture
+and input through Rust `x11rb`. These images do not contain the legacy Go desktop
+runtime, Waymote, or grim. Go is available as a development tool.
+
+The filesystem packager uses no privileged mounts. It preserves numeric ownership,
+checks required executables and forbidden legacy runtimes, runs read-only `e2fsck`,
+and compares executable bytes extracted from ext4. Output includes SHA-256, source
+image identity, APK inventory, executable checksums, and filesystem-check sidecars.
+The Alpine digest is pinned; repository package updates can change rebuild output.
+The guest runtime remains a separate disk and must match the host build.
+
+`upgrade-alpine.sh` remains a limited desktop/OpenGL repair for existing Alpine
+VMs. It requires 400 MiB free and installs display packages only; it does not
+install this full toolkit. It leaves workspace files intact and never restarts a
+VM. Stage the matching guest runtime and restart separately to load a new driver.

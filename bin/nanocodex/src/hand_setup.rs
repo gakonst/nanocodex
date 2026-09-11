@@ -188,7 +188,22 @@ impl Setup {
             temporary.path().join("install.py"),
             include_str!("hand_setup/install.py"),
         )?;
+        fs::create_dir(temporary.path().join("toolkit"))?;
         for (name, content) in [
+            (
+                "toolkit/install-alpine.sh",
+                include_str!(
+                    "../../../crates/experimental/nanocodex-vm/image/toolkit/install-alpine.sh"
+                ),
+            ),
+            (
+                "toolkit/python.txt",
+                include_str!("../../../crates/experimental/nanocodex-vm/image/toolkit/python.txt"),
+            ),
+            (
+                "toolkit/check.py",
+                include_str!("../../../crates/experimental/nanocodex-vm/image/toolkit/check.py"),
+            ),
             (
                 "Dockerfile",
                 include_str!("../../../crates/experimental/nanocodex-vm/image/Dockerfile"),

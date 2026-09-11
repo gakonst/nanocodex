@@ -1,13 +1,20 @@
-# Build with pnpm build:hand-docker. The context contains the static Linux runtime.
-FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
-RUN apk add --no-cache ca-certificates bash curl git python3 nodejs npm \
-        xvfb openbox xterm font-dejavu mesa-dri-gallium \
-    && addgroup -g 1000 nanocodex \
+# Build with pnpm build:hand-docker.
+FROM rust:1.97-alpine3.24 AS rust-toolchain
+RUN rustup component add clippy rustfmt && rustup target add wasm32-unknown-unknown
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+COPY --from=rust-toolchain /usr/local/rustup /opt/rustup
+COPY --from=rust-toolchain /usr/local/cargo /opt/cargo
+COPY toolkit /opt/hand-toolkit
+RUN sh /opt/hand-toolkit/install-alpine.sh \
+    && ln -s /opt/hand-toolkit/check.py /usr/local/bin/nanocodex-check-hand-toolkit \
+    && chmod 0755 /opt/hand-toolkit/check.py
+ENV RUSTUP_HOME=/opt/rustup \
+    PATH=/opt/hand-python/bin:/opt/cargo/bin:$PATH \
+    DISPLAY=:0
+RUN addgroup -g 1000 nanocodex \
     && adduser -D -u 1000 -G nanocodex nanocodex \
-    && mkdir -p /app /workspace \
     && chown 1000:1000 /app /workspace
 COPY --chmod=0755 nanocodex-vm-guest /usr/local/bin/nanocodex-vm-guest
-ENV DISPLAY=:0
 USER 1000:1000
 WORKDIR /app
 ENTRYPOINT ["/usr/local/bin/nanocodex-vm-guest"]

@@ -2,7 +2,7 @@
 set -euo pipefail
 image=${1:?Usage: build-root.sh IMAGE OUTPUT.ext4 [SIZE_MIB]}
 output=${2:?Usage: build-root.sh IMAGE OUTPUT.ext4 [SIZE_MIB]}
-size_mib=${3:-2048}
+size_mib=${3:-16384}
 case "$size_mib" in ''|*[!0-9]*) echo 'Expected disk size in MiB' >&2; exit 2 ;; esac
 test "$size_mib" -ge 512
 # Refuse replacement of existing images and evidence, including dangling symlinks.

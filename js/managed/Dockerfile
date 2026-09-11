@@ -125,6 +125,22 @@ RUN ln -s /usr/bin/fdfind /usr/local/bin/fd \
     && pnpm --version \
     && uv --version
 
+# Creative, document, OCR, and scientific tools are available without a download.
+COPY .generated/toolkit /opt/hand-toolkit
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        blender ffmpeg imagemagick inkscape libreoffice pandoc \
+        poppler-utils qpdf ghostscript tesseract-ocr tesseract-ocr-eng graphviz \
+        fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/hand-python \
+    && /opt/hand-python/bin/pip install --no-cache-dir \
+        numpy==2.2.6 scipy==1.15.3 pandas==2.3.3 matplotlib==3.10.6 \
+        sympy==1.14.0 Pillow==11.3.0 lxml==6.0.2 openpyxl==3.1.5 reportlab==4.4.4 \
+        -r /opt/hand-toolkit/python.txt \
+    && chmod 0755 /opt/hand-toolkit/check.py \
+    && ln -s /opt/hand-toolkit/check.py /usr/local/bin/nanocodex-check-hand-toolkit
+ENV PATH=/opt/hand-python/bin:${PATH}
+
 COPY scripts/check-dev-stack.sh /usr/local/bin/nanocodex-check-dev-stack
 RUN sh /usr/local/bin/nanocodex-check-dev-stack
 
