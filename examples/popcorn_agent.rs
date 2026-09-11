@@ -4,11 +4,14 @@
 //! reached over CDP. The LiveView URL is printed so a human can watch the
 //! session or take over when the agent gets stuck.
 //!
+//! Sessions are rented through Popcorn's hosted MCP server, so no
+//! Reclaim-issued credentials are needed. Run it, complete the OAuth login in
+//! your browser when the authorization URL prints, and buy credits at
+//! <https://popcorn.reclaimprotocol.org> if prompted. The login is persisted,
+//! so later runs start straight away.
+//!
 //! ```sh
 //! export OPENAI_API_KEY=...
-//! export POPCORN_CONTROL_PLANE_URL=https://...
-//! export POPCORN_CLIENT_ID=...
-//! export POPCORN_CLIENT_SECRET=...
 //! cargo run -p nanocodex-examples --bin popcorn-agent -- \
 //!   "Open https://example.com, inspect the page, and report its main heading."
 //! ```
@@ -23,6 +26,14 @@
 //!   "Open the site and stop at the login form." \
 //!   -- "Open the first post in the feed and summarise it."
 //! ```
+//!
+//! Dedicated deployments with their own Popcorn client credentials can set
+//! `POPCORN_CONTROL_PLANE_URL`, `POPCORN_CLIENT_ID`, and
+//! `POPCORN_CLIENT_SECRET` to use a credentialed control plane instead.
+//!
+//! An agent that would rather not use the native browser tool can skip this
+//! module entirely and register the Popcorn MCP server as an ordinary
+//! Nanocodex MCP server.
 
 use eyre::{Result, WrapErr};
 use nanocodex::agent::events::{AgentEvent, AgentEventKind, AssistantMessage};

@@ -4,10 +4,11 @@ use nanocodex_browser::{
 };
 
 #[tokio::test]
-#[ignore = "requires POPCORN_* credentials for a reachable control plane"]
+#[ignore = "rents a real Popcorn session: needs MCP credits or POPCORN_* control-plane credentials"]
 async fn popcorn_session_drives_a_real_page_and_releases() {
-    let config = PopcornConfig::from_env()
-        .expect("set POPCORN_CONTROL_PLANE_URL, POPCORN_CLIENT_ID, and POPCORN_CLIENT_SECRET");
+    // Defaults to the hosted MCP server; the POPCORN_CONTROL_PLANE_URL,
+    // POPCORN_CLIENT_ID, and POPCORN_CLIENT_SECRET trio selects a control plane.
+    let config = PopcornConfig::from_env().expect("read the Popcorn configuration");
     let popcorn = PopcornBrowser::spawn(config).await.expect("rent session");
     eprintln!("popcorn session: {}", popcorn.session().session_id);
 
