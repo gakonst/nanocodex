@@ -1,7 +1,7 @@
-mod package;
-mod process;
 mod client;
 mod message_reader;
+mod package;
+mod process;
 mod protocol;
 mod session;
 

@@ -122,7 +122,7 @@ pub(super) fn queued_execution_operation(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn queued_prompt(
+pub(super) const fn queued_prompt(
     key: TurnKey,
     prompt: Prompt,
     execution_operation: Option<ExecutionOperation>,

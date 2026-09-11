@@ -14,7 +14,7 @@ categories.workspace = true
 description = "Experimental desktop GPT Realtime voice sessions for Nanocodex agents"
 
 [dependencies]
-nanocodex-voice-native = { path = "../../../third_party/codex-voice/realtime-webrtc" }
+nanocodex-voice-native = { version = "0.5.0", path = "../../../third_party/codex-voice/realtime-webrtc" }
 futures-util.workspace = true
 nanocodex = { workspace = true, features = ["realtime"] }
 nanocodex-voice-protocol.workspace = true

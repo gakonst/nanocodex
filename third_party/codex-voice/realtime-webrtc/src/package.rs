@@ -13,12 +13,16 @@ pub struct VoicePackage {
 
 pub(crate) fn discover() -> Option<VoicePackage> {
     if let Some(root) = std::env::var_os("NANOCODEX_VOICE_PACKAGE") {
-        return Some(VoicePackage { package_dir: PathBuf::from(root).canonicalize().ok()? });
+        return Some(VoicePackage {
+            package_dir: PathBuf::from(root).canonicalize().ok()?,
+        });
     }
     let executable = std::env::current_exe().ok()?.canonicalize().ok()?;
     executable.ancestors().skip(1).take(3).find_map(|root| {
-        root.join("nanocodex-resources/voice").is_dir().then(|| VoicePackage {
-            package_dir: root.to_path_buf(),
-        })
+        root.join("nanocodex-resources/voice")
+            .is_dir()
+            .then(|| VoicePackage {
+                package_dir: root.to_path_buf(),
+            })
     })
 }
