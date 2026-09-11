@@ -34,10 +34,12 @@ jobs:
         include:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            init-target: x86_64-unknown-linux-musl
             artifact: nanocodex-x86_64-unknown-linux-gnu
             companion: nanocodex2-x86_64-unknown-linux-gnu
           - os: macos-14
             target: aarch64-apple-darwin
+            init-target: aarch64-unknown-linux-musl
             artifact: nanocodex-aarch64-apple-darwin
             companion: nanocodex2-aarch64-apple-darwin
     steps:
@@ -51,7 +53,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: stable
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.target }},${{ matrix.init-target }}
+      - name: Install Linux init linker
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      - name: Install macOS init linker
+        if: runner.os == 'macOS'
+        run: brew install lld
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
           cache-on-failure: true
@@ -63,6 +71,9 @@ jobs:
         env:
           TAG_NAME: ${{ inputs.pr && format('pr-{0}', inputs.pr) || 'nightly' }}
         run: |
+          # libkrun's build script does not track installed Rust targets. Drop
+          # cached init blobs that may have used its dynamic-link fallback.
+          cargo clean --package krun-init-blob --profile nightly --target ${{ matrix.target }}
           VERGEN_GIT_SHA="$BUILD_SHA" \
             cargo build --locked --profile nightly \
               --package nanocodex-bin --bin nanocodex --features tempo \
@@ -71,6 +82,9 @@ jobs:
             cargo build --locked --profile nightly \
               --package nanocodex2-bin --bin nanocodex2 \
               --target ${{ matrix.target }}
+      - name: Verify embedded VM init
+        shell: bash
+        run: python3 scripts/check-vm-init.py "target/${{ matrix.target }}/nightly/build"
       - name: Sign macOS VM hand host
         if: matrix.target == 'aarch64-apple-darwin'
         shell: bash
