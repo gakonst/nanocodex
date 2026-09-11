@@ -1,0 +1,34 @@
+| Model | Tier | Path | OK/n | First text p50 (s) | Completion p50 (s) | Completion min–max (s) | Input / output tokens p50 | Estimated model cost p50 (USD) |
+| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- |
+| gpt-5.6-luna | default | responses_http | 3/3 | 1.471 | 1.683 | 1.058–2.023 | 36 / 5 | 0.0000132 |
+| gpt-5.6-luna | default | responses_ws | 3/3 | 1.119 | 1.147 | 1.066–4.313 | 36 / 5 | 0.0000132 |
+| gpt-5.6-luna | default | nanocodex_node | 3/3 | 1.965 | 2.061 | 1.811–2.401 | 6018 / 5 | 0.0015103 |
+| gpt-5.6-luna | default | openai_agents | 3/3 | 9.372 | 9.384 | 9.335–14.002 | 6077 / 5 | 0.0012214–0.0015253 |
+| gpt-5.6-luna | fast | responses_http | 3/3 | 0.779 | 0.896 | 0.885–1.731 | 36 / 5 | 0.0000264 |
+| gpt-5.6-luna | fast | responses_ws | 3/3 | 0.622 | 0.663 | 0.626–0.767 | 36 / 5 | 0.0000264 |
+| gpt-5.6-luna | fast | nanocodex_node | 3/3 | 3.837 | 3.875 | 1.900–4.454 | 6018 / 5 | 0.0030207 |
+| gpt-5.6-luna | fast | openai_agents | 3/3 | 9.535 | 10.237 | 8.637–10.553 | 6077 / 5 | 0.0024428–0.0030505 |
+| gpt-5.6-terra | default | responses_http | 3/3 | 1.417 | 1.593 | 1.065–4.511 | 36 / 5 | 0.0001320 |
+| gpt-5.6-terra | default | responses_ws | 3/3 | 0.933 | 1.033 | 0.937–1.111 | 36 / 5 | 0.0001320 |
+| gpt-5.6-terra | default | nanocodex_node | 3/3 | 3.031 | 3.109 | 2.311–3.119 | 6018 / 5 | 0.0151035 |
+| gpt-5.6-terra | default | openai_agents | 3/3 | 8.625 | 9.899 | 8.203–10.014 | 6077 / 5 | 0.0122140–0.0152525 |
+| gpt-5.6-terra | fast | responses_http | 3/3 | 1.069 | 1.124 | 0.946–1.611 | 36 / 5 | 0.0002640 |
+| gpt-5.6-terra | fast | responses_ws | 3/3 | 0.829 | 0.901 | 0.862–1.272 | 36 / 5 | 0.0002640 |
+| gpt-5.6-terra | fast | nanocodex_node | 3/3 | 2.170 | 2.347 | 1.771–2.988 | 6018 / 5 | 0.0302070 |
+| gpt-5.6-terra | fast | openai_agents | 3/3 | 10.013 | 11.461 | 10.129–12.326 | 6077 / 5 | 0.0244280–0.0305050 |
+| gpt-5.6-sol | default | responses_http | 3/3 | 1.363 | 1.391 | 1.287–4.251 | 36 / 5 | 0.0002440 |
+| gpt-5.6-sol | default | responses_ws | 3/3 | 3.068 | 3.140 | 1.048–5.660 | 36 / 5 | 0.0002440 |
+| gpt-5.6-sol | default | nanocodex_node | 3/3 | 4.765 | 4.828 | 3.508–9.862 | 6018 / 5 | 0.0301870 |
+| gpt-5.6-sol | default | openai_agents | 3/3 | 9.676 | 12.786 | 10.210–27.164 | 6077 / 5 | 0.0244080–0.0304850 |
+| gpt-5.6-sol | fast | responses_http | 3/3 | 0.817 | 0.977 | 0.844–1.061 | 36 / 5 | 0.0004880 |
+| gpt-5.6-sol | fast | responses_ws | 3/3 | 0.801 | 0.878 | 0.696–1.434 | 36 / 5 | 0.0004880 |
+| gpt-5.6-sol | fast | nanocodex_node | 3/3 | 2.010 | 2.605 | 1.928–2.829 | 6018 / 5 | 0.0603740 |
+| gpt-5.6-sol | fast | openai_agents | 3/3 | 8.566 | 10.424 | 9.832–11.692 | 6077 / 5 | 0.0488160–0.0609700 |
+| gpt-6-astra | default | responses_http | 3/3 | 2.640 | 2.767 | 1.383–3.187 | 36 / 5 | 0.0006100 |
+| gpt-6-astra | default | responses_ws | 3/3 | 1.559 | 1.621 | 1.206–1.914 | 36 / 5 | 0.0006100 |
+| gpt-6-astra | default | nanocodex_node | 3/3 | 3.303 | 3.483 | 2.833–5.337 | 6570 / 5 | 0.0823675 |
+| gpt-6-astra | default | openai_agents | 3/3 | 10.278 | 12.174 | 10.643–12.443 | 7116 / 5 | 0.0714100–0.0892000 |
+| gpt-6-astra | fast | responses_http | 3/3 | 1.422 | 1.605 | 1.397–2.023 | 36 / 5 | 0.0012200 |
+| gpt-6-astra | fast | responses_ws | 3/3 | 1.094 | 1.135 | 0.893–1.579 | 36 / 5 | 0.0012200 |
+| gpt-6-astra | fast | nanocodex_node | 3/3 | 3.063 | 3.242 | 3.122–29.234 | 6570 / 5 | 0.1647350 |
+| gpt-6-astra | fast | openai_agents | 3/3 | 10.408 | 11.648 | 9.841–11.971 | 7116 / 5 | 0.1428200–0.1784000 |
