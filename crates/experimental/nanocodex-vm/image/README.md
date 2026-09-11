@@ -32,6 +32,13 @@ The default ext4 capacity is 16 GiB. Existing images and retained workspaces are
 not replaced; create a new Hand from the rebuilt template. Allow additional host
 disk space for image layers, build caches, and per-Hand writable files. For
 creative tasks, start with `--memory 4096 --cpus 2` and increase for the workload.
+Cloudflare uses `standard-3` (2 vCPU, 8 GiB RAM, 16 GB disk) because its full
+filesystem occupies about 10 GiB. CI reserves at least 4 GB for workspace data.
+This increases compute capacity and running cost compared with `standard-1`.
+See [Cloudflare instance limits](https://developers.cloudflare.com/containers/platform/limits/).
+Docker sets `TMPDIR` to the retained workspace's `.tmp` directory so compilers can
+execute temporary programs while `/tmp` remains a restricted tmpfs. Temporary
+files count against workspace storage and can be removed when their jobs finish.
 Network policy is unchanged: Docker Hands default to `--network off`.
 
 Run `nanocodex-check-hand-toolkit /workspace/toolkit-check` inside a Hand to retain
