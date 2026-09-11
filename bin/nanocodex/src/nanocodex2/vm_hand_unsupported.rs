@@ -41,6 +41,10 @@ pub(crate) fn run_config(_path: &Path) -> Result<(), ManagedError> {
     Err(unsupported())
 }
 
+pub(crate) fn clone_image(_source: &Path, _destination: &Path) -> Result<(), ManagedError> {
+    Err(unsupported())
+}
+
 fn unsupported() -> ManagedError {
     ManagedError::Configuration(
         "VM hands require glibc Linux with /dev/kvm or Apple Silicon macOS".to_owned(),

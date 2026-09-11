@@ -126,6 +126,12 @@ enum Command {
     /// Private synchronous entrypoint used by the VM hand's VMM child.
     #[command(name = "__vm-run-config", hide = true)]
     VmRunConfig(VmRunConfig),
+    /// Create a private VM disk through the shared Rust image lifecycle.
+    #[command(name = "__vm-clone-image", hide = true)]
+    VmCloneImage {
+        source: PathBuf,
+        destination: PathBuf,
+    },
 }
 
 #[derive(Args)]
@@ -403,6 +409,12 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         }
         Some(Command::Account(command)) => return command.run().await.map_err(auth_error),
         Some(Command::VmRunConfig(command)) => return vm_hand::run_config(&command.config),
+        Some(Command::VmCloneImage {
+            source,
+            destination,
+        }) => {
+            return vm_hand::clone_image(&source, &destination);
+        }
         #[cfg(target_os = "linux")]
         Some(Command::HandDesktop(command)) => return screen_native::serve_desktop(command).await,
         Some(Command::Host(command)) => {
@@ -471,6 +483,7 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
             write_json(&client.cancel(&command.agent_id, &command.turn_id).await?)
         }
         Some(Command::VmRunConfig(_)) => unreachable!("handled before managed client setup"),
+        Some(Command::VmCloneImage { .. }) => unreachable!("handled before managed client setup"),
         None => new_tui(&client).await,
     }
 }

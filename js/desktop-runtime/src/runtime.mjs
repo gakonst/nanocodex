@@ -570,12 +570,10 @@ export class DesktopRuntime extends EventEmitter {
       const privateRoot = join(this.#dataDirectory, "hands", scope, config.id, "root.ext4");
       if (config.rootfs !== privateRoot) {
         await mkdir(dirname(privateRoot), { recursive: true, mode: 0o700 });
-        try { await copyFile(config.rootfs, privateRoot, constants.COPYFILE_FICLONE | constants.COPYFILE_EXCL); }
-        catch (error) {
-          if (error.code === "EEXIST") throw new Error("This VM already has a workspace. Create a new VM to use another image.");
-          throw error;
-        }
-        await chmod(privateRoot, 0o600);
+        // Node's FICLONE silently expands sparse disks on macOS. Rust owns
+        // cloning, private permissions and atomic no-replace publication.
+        const copied = await nativeCommand(config.binary, ["__vm-clone-image", config.rootfs, privateRoot], 0);
+        if (copied.code !== 0) throw new Error(copied.output.trim() || "Could not create the private VM disk.");
         config.rootfs = privateRoot;
       }
       this.#sameAccount(generation);
@@ -993,12 +991,12 @@ async function signedForVm(binary) {
   return (await nativeCommand("/usr/bin/codesign", ["--verify", "--strict", binary])).code === 0;
 }
 
-async function nativeCommand(command, args) {
+async function nativeCommand(command, args, timeoutMs = 10_000) {
   const environment = Object.fromEntries(["PATH", "HOME", "TMPDIR", "LANG", "SYSTEMROOT"].filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
   const child = spawn(command, args, { env: environment, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   for (const stream of [child.stdout, child.stderr]) stream.on("data", chunk => { output = (output + chunk).slice(-32_768); });
-  const timeout = setTimeout(() => child.kill("SIGKILL"), 10_000);
+  const timeout = timeoutMs ? setTimeout(() => child.kill("SIGKILL"), timeoutMs) : undefined;
   try {
     return await new Promise((resolve, reject) => {
       child.once("error", reject);

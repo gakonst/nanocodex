@@ -415,6 +415,12 @@ fn prepare_guest_runtime(config: &VmHandConfig) -> Result<GuestRuntimeDisk, Mana
     })
 }
 
+pub(crate) fn clone_image(source: &Path, destination: &Path) -> Result<(), ManagedError> {
+    nanocodex_vm::image::reflink_or_sparse_copy(source, destination)
+        .map(|_| ())
+        .map_err(|error| configuration(format!("failed to create private VM disk: {error}")))
+}
+
 pub(crate) fn run_config(path: &Path) -> Result<(), ManagedError> {
     let config = VmProcessConfig::read(path)
         .map_err(|error| configuration(format!("failed to read VM launch record: {error}")))?;
