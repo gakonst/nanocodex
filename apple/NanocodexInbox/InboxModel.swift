@@ -224,9 +224,32 @@ final class InboxModel: ObservableObject {
     var attentionCount: Int { cards.filter { $0.isInInbox(seen: seenCursor($0.id), deferred: deferred[$0.id]) && $0.needsAttention(seen: seenCursor($0.id)) }.count }
     var runningCount: Int { cards.filter(\.isRunning).count }
     var controllableTurns: [String] {
-        guard let card = focused else { return [] }
-        let queued = Set(pending.filter { $0.agentID == card.id }.map(\.id))
-        return card.activeTurns.filter { !queued.contains($0) }
+        guard let head = focused?.activeTurns.first else { return [] }
+        return pending.contains { $0.agentID == focused?.id && $0.id == head } ? [] : [head]
+    }
+    func queuePresentation(agentID: String, rows: [TranscriptRow]) -> MessageQueuePresentation {
+        let history = agentID == focused?.id ? events : tabHistories[agentID]?.events ?? []
+        let cancelled = Set(history.filter { $0.type == "turn_cancelled" }.map(\.turnID))
+        let started = Set(history.filter { event in
+            event.type == "event" && ["run.started", "assistant.delta", "assistant.message", "reasoning.summary.delta", "tool.call", "tool.result"].contains(event.data["event"]["type"].string)
+        }.map(\.turnID))
+        return MessageQueuePresentation(agentID: agentID, rows: rows, pending: pending,
+            activeTurns: cards.first { $0.id == agentID }?.activeTurns ?? [],
+            cancelledTurns: cancelled,
+            executingTurns: isDemo ? Set((cards.first { $0.id == agentID }?.activeTurns ?? []).prefix(1)) : started)
+    }
+    var focusedQueue: MessageQueuePresentation {
+        queuePresentation(agentID: focused?.id ?? "", rows: rows)
+    }
+    private func retainQueuedMessage(_ id: String) {
+        guard !pending.contains(where: { $0.id == id }),
+              var message = focusedQueue.messages.first(where: { $0.id == id }) else { return }
+        // The queue snapshot proves admission even when its history row has not
+        // loaded. Retain that watermark so reconnect can settle missing events.
+        if let cursor = cards.first(where: { $0.id == message.agentID })?.stateCursor {
+            message.acceptedCursor = max(message.acceptedCursor ?? .zero, cursor)
+        }
+        pending.append(message)
     }
     var focusedTurn: String { controllableTurns.contains(selectedTurn) ? selectedTurn : controllableTurns.first ?? "" }
     var stopTarget: String { focusedTurn.isEmpty ? focusedPending.first?.id ?? "" : focusedTurn }
@@ -234,7 +257,10 @@ final class InboxModel: ObservableObject {
         cancellations.first { $0.agentID == agentID && $0.turnID == turnID }
     }
     func steeringTarget(_ message: PendingMessage) -> AgentCommand? {
-        guard focusedPending.first?.id == message.id,
+        guard focusedQueue.messages.first(where: { candidate in
+                  let stop = cancellation(agentID: candidate.agentID, turnID: candidate.id)
+                  return !(candidate.phase == .cancelling && stop?.acknowledged == true && stop?.error == nil)
+              })?.id == message.id,
               let card = cards.first(where: { $0.id == message.agentID }) else { return nil }
         let available = card.activeTurns.filter { turnID in
             !cancellations.contains { $0.agentID == card.id && $0.turnID == turnID && $0.acknowledged && $0.error == nil }
@@ -1588,7 +1614,7 @@ final class InboxModel: ObservableObject {
         }
         catch { self.error = error.localizedDescription; return false }
         let attachments = focusedAttachments
-        let predecessor = focusedPending.last?.id ?? focusedTurn
+        let predecessor = focusedQueue.messages.last?.id ?? focusedTurn
         let message = PendingMessage(agentID: card.id, input: input, predecessor: predecessor, contextIDs: captured.map(\.id), attachments: attachments.isEmpty ? nil : attachments)
         attachmentDrafts[card.id] = nil; attachmentErrors[card.id] = nil
         pending.append(message); drafts[card.id] = ""; selectedContext[card.id] = nil; excludedContext[card.id] = nil; busy.insert(card.id); notice = nil; persist()
@@ -1599,6 +1625,7 @@ final class InboxModel: ObservableObject {
     }
     func retryPending(_ id: String) {
         guard let index = pending.firstIndex(where: { $0.id == id }), pending[index].phase == .failed,
+              pending[index].remoteAdmission != true,
               !busy.contains(pending[index].agentID) else { return }
         pending[index].phase = .submitting; pending[index].error = nil
         let message = pending[index], epoch = generation
@@ -1709,6 +1736,7 @@ final class InboxModel: ObservableObject {
     }
 
     private func submit(_ message: PendingMessage, epoch: UUID) async {
+        guard message.remoteAdmission != true else { return }
         defer {
             let agentID = resolvedAgentID(message.agentID)
             if generation == epoch, !pending.contains(where: { $0.agentID == agentID && $0.id != message.id && $0.phase == .submitting }) {
@@ -1766,6 +1794,8 @@ final class InboxModel: ObservableObject {
         }
     }
     func steerNow(_ id: String) {
+        guard connected else { return }
+        retainQueuedMessage(id)
         guard let message = pending.first(where: { $0.id == id }),
               let command = steeringTarget(message),
               let index = pending.firstIndex(where: { $0.id == id }) else { return }
@@ -1774,6 +1804,8 @@ final class InboxModel: ObservableObject {
         requestCancellation(agentID: message.agentID, turnID: command.turnID)
     }
     func cancelPending(_ id: String) {
+        guard connected else { return }
+        retainQueuedMessage(id)
         guard let index = pending.firstIndex(where: { $0.id == id }) else { return }
         // Nothing can reach the service before creation resolves.
         if pendingCreations.contains(pending[index].agentID) {
@@ -1986,7 +2018,16 @@ final class InboxModel: ObservableObject {
         // Cancelling a queued item must not start its successor while an older
         // turn is still running. Rebase the successor onto that older turn.
         let wasQueued = pending.contains { $0.agentID == agentID && $0.id == turnID }
-        if wasQueued { removeCancelledPending(turnID) }
+        if wasQueued {
+            var history = demoRows[agentID] ?? DemoContent.rows(agentID)
+            for index in history.indices where history[index].role == "You" && (history[index].turnID ?? history[index].id) == turnID {
+                history[index].role = "Status"
+                history[index].text = "Cancelled request: " + history[index].text
+            }
+            demoRows[agentID] = history
+            if focused?.id == agentID { rows = history }
+            removeCancelledPending(turnID)
+        }
         if let next = pending.first(where: { $0.agentID == agentID && $0.predecessor == turnID && $0.phase != .failed && $0.phase != .submitting }) {
             pending.removeAll { $0.id == next.id }
             var history = demoRows[agentID] ?? DemoContent.rows(agentID)
@@ -1999,7 +2040,8 @@ final class InboxModel: ObservableObject {
     }
     func stop(agentID: String, turnID: String) {
         guard !turnID.isEmpty else { return }
-        if pending.contains(where: { $0.agentID == agentID && $0.id == turnID }) { cancelPending(turnID) }
+        if pending.contains(where: { $0.agentID == agentID && $0.id == turnID })
+            || (agentID == focused?.id && focusedQueue.messages.contains(where: { $0.id == turnID })) { cancelPending(turnID) }
         else { requestCancellation(agentID: agentID, turnID: turnID) }
     }
     func retry() async { if let id = focused?.id, let command = retries[id], command.kind == .followUp { await perform(command) } }

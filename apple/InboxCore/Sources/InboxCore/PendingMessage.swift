@@ -13,24 +13,20 @@ public struct PendingMessage: Identifiable, Codable, Equatable, Sendable {
     public var error: String?
     public var attachments: [MessageAttachment]?
     public var contextIDs: [String]?
+    /// A server-owned admission reconstructed for display/control, never resubmission.
+    public var remoteAdmission: Bool?
     public init(agentID: String, input: String, predecessor: String, id: String = UUID().uuidString, contextIDs: [String]? = nil, attachments: [MessageAttachment]? = nil) {
         self.id = id; self.agentID = agentID; self.input = input; self.predecessor = predecessor
         self.contextIDs = contextIDs; self.attachments = attachments
     }
-    /// Admission stores a message durably; it does not mean execution began.
-    /// Resolve from local delivery state and the server queue for other devices.
-    public static func deliveryLabel(turnID: String, pending: PendingMessage?, activeTurns: [String]) -> String? {
-        if let pending {
-            switch pending.phase {
-            case .submitting: return "Sending…"
-            case .queued: return "Queued · not started"
-            case .starting: return "Queued · stopping current turn…"
-            case .cancelling: return "Cancelling…"
-            case .failed: return "Delivery unconfirmed"
-            }
+    public var queueTitle: String {
+        switch phase {
+        case .submitting: return "Sending…"
+        case .queued: return predecessor.isEmpty ? (remoteAdmission == true ? "Waiting for execution update" : "Waiting to start") : "Queued · runs after current turn"
+        case .starting: return "Stopping current turn…"
+        case .cancelling: return "Cancelling…"
+        case .failed: return "Delivery unconfirmed"
         }
-        if let index = activeTurns.firstIndex(of: turnID), index > 0 { return "Queued · not started" }
-        return nil
     }
     public var submission: AgentCommand { AgentCommand(agentID: agentID, input: input, kind: .followUp, requestID: id) }
     public var interruption: AgentCommand? {
