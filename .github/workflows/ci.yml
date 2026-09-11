@@ -139,6 +139,18 @@ jobs:
         env:
           NANOCODEX_DOCKER_TEST_IMAGE: nanocodex-hand:ci
           NANOCODEX_DOCKER_HOST_SENTINEL: must-not-enter-the-container
+      - name: Verify missing KVM is explained before account setup
+        run: |
+          sudo unshare --mount --propagation private sh -eu -c '
+            if test -e /dev/kvm; then mount --bind /dev/null /dev/kvm; fi
+            if target/debug/nanocodex2 hand --vm /nonexistent-root.ext4 > /tmp/hand-kvm-error 2>&1; then
+              cat /tmp/hand-kvm-error
+              exit 1
+            fi
+            cat /tmp/hand-kvm-error
+            grep -F "VM backend is unavailable" /tmp/hand-kvm-error
+            grep -F "hand --docker IMAGE --volume NAME" /tmp/hand-kvm-error
+          '
 
   policy:
     name: dependencies and spelling
