@@ -1,6 +1,40 @@
 import { env, runInDurableObject } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { DurableEventLog } from "../src/durable-events";
+
+it("checks durable progress before heartbeats and closes a stale owner's stream", async () => {
+  const namespace = (env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace }).NANOCODEX_MEMORY;
+  await runInDurableObject(namespace.getByName(crypto.randomUUID()), async (_instance, ctx) => {
+    const log = new DurableEventLog<{ type: string }>(ctx.storage);
+    let heartbeat: () => void = () => { throw new Error("heartbeat not installed"); };
+    const interval = vi.spyOn(globalThis, "setInterval").mockImplementation((callback) => {
+      heartbeat = callback as () => void;
+      return 0 as unknown as ReturnType<typeof setInterval>;
+    });
+    let stale = false;
+    const page = async (after: string, limit: number) => {
+      if (stale) throw new Error("Durable Object instance is no longer active");
+      return log.page(after, limit);
+    };
+    const reader = log.streamWithPage("0", log.latestCursor(), page).body!.getReader();
+    try {
+      await reader.read(); // Initial retry/cursor frame.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      log.append({ type: "missed_publication" });
+      heartbeat();
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain("id: 1\n");
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain(": keepalive");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      stale = true;
+      heartbeat();
+      expect((await reader.read()).done).toBe(true);
+    } finally {
+      await reader.cancel();
+      interval.mockRestore();
+      log.clear();
+    }
+  });
+});
 
 it("releases event stream slots when readers disconnect repeatedly", async () => {
   const namespace = (env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace }).NANOCODEX_MEMORY;

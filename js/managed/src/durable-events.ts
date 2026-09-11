@@ -325,6 +325,11 @@ export class DurableEventLog<Message extends { type: string }> {
     );
     this.#wake(subscriber);
     subscriber.keepalive = setInterval(() => {
+      // A replaced DO instance may still write comments after its storage has
+      // disconnected. Recheck the durable cursor before advertising liveness:
+      // failed reads close the stream so clients reconnect to the active owner.
+      // This also catches committed events whose publication wakeup was lost.
+      this.#wake(subscriber);
       this.#enqueueComment(subscriber, sseEncoder.encode(": keepalive\n\n"));
     }, KEEPALIVE_MS);
     const close = () => this.#close(subscriber);
