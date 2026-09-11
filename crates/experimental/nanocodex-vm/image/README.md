@@ -41,8 +41,15 @@ execute temporary programs while `/tmp` remains a restricted tmpfs. Temporary
 files count against workspace storage and can be removed when their jobs finish.
 Network policy is unchanged: Docker Hands default to `--network off`.
 
-Run `nanocodex-check-hand-toolkit /workspace/toolkit-check` inside a Hand to retain
-its output. It runs offline and compiles C, Rust, Go, and Node programs; creates
+Run `nanocodex-check-hand-toolkit /workspace/toolkit-check` inside a native Hand to
+retain its output. On Cloudflare, `/workspace` is backed by R2/FUSE: run
+`nanocodex-check-hand-toolkit /tmp/toolkit-check`, then copy the desired artifacts
+to `/workspace` for persistence. Keep LibreOffice profiles and compiler caches on
+local scratch; the live check exceeded its LibreOffice timeout with the profile
+on R2, while the unchanged toolkit passed in `/tmp`. Scratch files disappear when
+the container is replaced.
+
+The check runs offline and compiles C, Rust, Go, and Node programs; creates
 DOCX, XLSX, PPTX, and PDF files; converts DOCX to PDF; plots data; and renders a
 short video and a Blender CPU image. With no argument it uses temporary output.
 CI also runs it as UID 1000 with a read-only root and no network or capabilities.
