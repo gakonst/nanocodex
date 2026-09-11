@@ -36,16 +36,20 @@ async fn hand_help_exposes_the_vm_and_machine_contract() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
-        stdout.contains("Usage: nanocodex2 hand [OPTIONS] --vm <ROOTFS>"),
+        stdout.contains("Usage: nanocodex2 hand [OPTIONS]"),
         "{stdout}"
     );
     assert!(!stdout.contains("AGENT_ID"), "{stdout}");
     for expected in [
         "--vm <ROOTFS>",
-        "--vm-guest-runtime <ELF>",
-        "--vm-workspace <PATH>",
-        "--vm-cpus <COUNT>",
-        "--vm-memory-mib <MIB>",
+        "--docker <IMAGE>",
+        "--volume <VOLUME>",
+        "--network <NETWORK>",
+        "--runtime <RUNTIME>",
+        "--guest-runtime <ELF>",
+        "--workspace <PATH>",
+        "--cpus <COUNT>",
+        "--memory <MIB>",
         "--machine-id <MACHINE_ID>",
         "--machine-name <MACHINE_NAME>",
         "--log-filter <LOG_FILTER>",
@@ -56,6 +60,68 @@ async fn hand_help_exposes_the_vm_and_machine_contract() {
         assert!(
             stdout.contains(expected),
             "missing {expected:?} in:\n{stdout}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn hand_requires_an_explicit_backend_and_rejects_mixed_options() {
+    for args in [
+        vec!["hand"],
+        vec!["hand", "--docker", "image"],
+        vec!["hand", "--volume", "work"],
+        vec!["hand", "--docker", "image", "--volume", "work", "--gpu"],
+        vec![
+            "hand",
+            "--docker",
+            "image",
+            "--volume",
+            "work",
+            "--network",
+            "bogus",
+        ],
+        vec!["hand", "--vm", "root", "--runtime", "runsc"],
+        vec![
+            "hand",
+            "--vm",
+            "root.ext4",
+            "--docker",
+            "image",
+            "--docker-volume",
+            "work",
+        ],
+        vec!["hand", "--vm", "root.ext4", "--docker-internet"],
+        vec![
+            "hand",
+            "--docker",
+            "image",
+            "--docker-volume",
+            "work",
+            "--vm-firmware",
+            "/tmp/fw",
+        ],
+        vec![
+            "hand",
+            "--docker",
+            "image",
+            "--docker-volume",
+            "work",
+            "--docker-internet",
+            "--vm-no-network",
+        ],
+    ] {
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .args(&args)
+            .env_remove("NANOCODEX_VM_GUEST_RUNTIME")
+            .env_remove("NANOCODEX_KRUNFW_DIR")
+            .output()
+            .await
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }
@@ -149,7 +215,7 @@ async fn hand_json_tracing_exposes_resources_without_paths_or_credentials() {
         .collect::<Vec<_>>();
     assert!(!traces.is_empty(), "{stderr}");
     let encoded = serde_json::to_string(&traces).unwrap();
-    assert!(encoded.contains("vm.launch"), "{encoded}");
+    assert!(encoded.contains("hand.preflight"), "{encoded}");
     assert!(encoded.contains("failed"), "{encoded}");
     for expected in ["trace-hand", "24", "98304", "missing"] {
         assert!(
@@ -1752,4 +1818,283 @@ async fn headless_settings_and_cron_use_the_managed_contract() {
         json!({"cron": "0 9 * * *", "timezone": "Europe/Athens", "input": "Summarize progress", "enabled": true, "session_mode": "new"})
     );
     assert_eq!(requests[5].0, "DELETE");
+}
+
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "musl")),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+mod docker_hand_live {
+    use super::*;
+    use axum::extract::ws::WebSocket;
+    use serde_json::{Value, json};
+    use tokio::sync::mpsc;
+
+    #[derive(Clone)]
+    struct Service {
+        authorization: String,
+        ready: mpsc::UnboundedSender<&'static str>,
+    }
+
+    async fn receive(socket: &mut WebSocket) -> Value {
+        loop {
+            let Some(Ok(Message::Text(text))) = socket.recv().await else {
+                panic!("Hand socket closed early")
+            };
+            let message: Value = serde_json::from_str(&text).unwrap();
+            if message["type"] != "ping" {
+                return message;
+            }
+            send(socket, json!({"type":"pong","nonce":message["nonce"]})).await;
+        }
+    }
+    async fn send(socket: &mut WebSocket, message: Value) {
+        socket
+            .send(Message::Text(message.to_string().into()))
+            .await
+            .unwrap();
+    }
+    async fn tools(
+        State(state): State<Service>,
+        headers: HeaderMap,
+        upgrade: WebSocketUpgrade,
+    ) -> Response<Body> {
+        assert_eq!(headers["authorization"], state.authorization);
+        upgrade.on_upgrade(move |mut socket| async move {
+            let catalog = receive(&mut socket).await;
+            assert_eq!(catalog["type"], "catalog");
+            let machine = &catalog["machines"][0];
+            assert_eq!(machine["id"], "docker-cli-test");
+            assert_eq!(machine["workspace"], "/app");
+            let capabilities = machine["capabilities"].as_array().unwrap();
+            assert!(capabilities.iter().any(|v| v == "container"));
+            assert!(!capabilities.iter().any(|v| v == "vm" || v == "network"));
+            send(&mut socket, json!({"type":"ready"})).await;
+            send(&mut socket, json!({
+                "type":"call", "session_id":"docker-cli-agent", "call_id":"docker-cli-command",
+                "model":"test", "name":"exec_command",
+                "input":{"cmd":"test -z \"${NC_API_KEY-}${NANOCODEX_API_KEY-}\" && test ! -e /dev/kvm && printf 'docker-cli-proof\\n' > /app/proof && cat /app/proof", "login":false},
+                "output_token_budget":1024, "output_byte_budget":131072,
+                "deadline_at":9_000_000_000_000_u64,
+            })).await;
+            let result = receive(&mut socket).await;
+            assert_eq!(result["type"], "result");
+            assert_eq!(result["outcome"]["status"], "completed");
+            assert_eq!(result["outcome"]["output"]["success"], true, "{result}");
+            assert!(result["outcome"]["output"]["output"].as_str().unwrap().contains("docker-cli-proof"), "{result}");
+            send(&mut socket, json!({"type":"ack","call_id":"docker-cli-command"})).await;
+            state.ready.send("tools").unwrap();
+            assert_eq!(receive(&mut socket).await["type"], "drain");
+            send(&mut socket, json!({"type":"draining"})).await;
+        })
+    }
+    async fn screen(
+        State(state): State<Service>,
+        headers: HeaderMap,
+        upgrade: WebSocketUpgrade,
+    ) -> Response<Body> {
+        assert_eq!(headers["authorization"], state.authorization);
+        upgrade.on_upgrade(move |mut socket| async move {
+            send(
+                &mut socket,
+                json!({"type":"ready","connection_id":"docker-screen"}),
+            )
+            .await;
+            let catalog = receive(&mut socket).await;
+            assert_eq!(catalog["type"], "catalog");
+            assert_eq!(catalog["machine_id"], "docker-cli-test");
+            send(
+                &mut socket,
+                json!({"type":"published","generation":"docker-screen-generation"}),
+            )
+            .await;
+            send(
+                &mut socket,
+                json!({"type":"viewer","viewer_id":"test-viewer","surface_id":"desktop"}),
+            )
+            .await;
+            send(
+                &mut socket,
+                json!({"type":"frame_request","viewer_id":"test-viewer"}),
+            )
+            .await;
+            let frame = receive(&mut socket).await;
+            assert_eq!(frame["type"], "frame");
+            assert!(frame["jpeg"].as_str().unwrap().starts_with("/9j/"));
+            state.ready.send("screen").unwrap();
+            while socket.recv().await.is_some() {}
+        })
+    }
+
+    struct WorkspaceVolume(String);
+    impl Drop for WorkspaceVolume {
+        fn drop(&mut self) {
+            let output = std::process::Command::new("docker")
+                .args(["ps", "-aq", "--filter", &format!("volume={}", self.0)])
+                .output()
+                .unwrap();
+            for id in String::from_utf8_lossy(&output.stdout).lines() {
+                let _ = std::process::Command::new("docker")
+                    .args(["rm", "-f", id])
+                    .output();
+            }
+            let _ = std::process::Command::new("docker")
+                .args(["volume", "rm", &self.0])
+                .output();
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the built Docker Hand image and a Linux Docker daemon"]
+    async fn docker_hand_publishes_tools_and_screen_then_drains_on_sigterm() {
+        let image =
+            std::env::var("NANOCODEX_DOCKER_TEST_IMAGE").expect("set NANOCODEX_DOCKER_TEST_IMAGE");
+        let volume = WorkspaceVolume(format!("nanocodex-cli-test-{}", uuid::Uuid::new_v4()));
+        let key = format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43));
+        let (ready, mut events) = mpsc::unbounded_channel();
+        let service = Service {
+            authorization: format!("Bearer {key}"),
+            ready,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new()
+            .route("/v1/account/tool-host", get(tools))
+            .route("/v1/account/hands/host", get(screen))
+            .with_state(service);
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let config = tempfile::tempdir().unwrap();
+        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .args([
+                "hand",
+                "--docker",
+                &image,
+                "--volume",
+                &volume.0,
+                "--network",
+                "off",
+                "--machine-id",
+                "docker-cli-test",
+            ])
+            .env("NC_API_KEY", &key)
+            .env("NANOCODEX_MANAGED_URL", origin)
+            .env("NANOCODEX_HOME", config.path())
+            .env_remove("NANOCODEX_API_KEY")
+            .env_remove("NANOCODEX_VM_GUEST_RUNTIME")
+            .env_remove("NANOCODEX_KRUNFW_DIR")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let ready = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            let first = events.recv().await.unwrap();
+            let second = events.recv().await.unwrap();
+            assert_ne!(first, second);
+        })
+        .await;
+        if ready.is_err() {
+            let _ = child.start_kill();
+            let output = child.wait_with_output().await.unwrap();
+            panic!(
+                "Docker Hand did not publish: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(i32::try_from(child.id().unwrap()).unwrap()),
+            nix::sys::signal::Signal::SIGTERM,
+        )
+        .unwrap();
+        let output =
+            tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output())
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(&key));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(&key));
+        let containers = tokio::process::Command::new("docker")
+            .args(["ps", "-aq", "--filter", &format!("volume={}", volume.0)])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            containers.stdout.is_empty(),
+            "SIGTERM left a container behind"
+        );
+        let volume_exists = tokio::process::Command::new("docker")
+            .args(["volume", "inspect", &volume.0])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            volume_exists.status.success(),
+            "SIGTERM deleted the workspace volume"
+        );
+        server.abort();
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn docker_preflight_errors_are_actionable_before_account_login() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let docker = dir.path().join("docker");
+    for (script, extra, expected) in [
+        (None, vec![], "Install the Docker CLI"),
+        (Some("exit 1"), vec![], "start a Linux Docker daemon"),
+        (
+            Some("echo '{\"OSType\":\"windows\"}'"),
+            vec![],
+            "switch Docker to Linux containers",
+        ),
+        (
+            Some(
+                "echo '{\"OSType\":\"linux\",\"Architecture\":\"x86_64\",\"Runtimes\":{\"runc\":{}}}'",
+            ),
+            vec!["--runtime", "runsc"],
+            "not configured on this daemon",
+        ),
+        (
+            Some(
+                "if [ \"$1\" = info ]; then echo '{\"OSType\":\"linux\",\"Architecture\":\"x86_64\"}'; else exit 1; fi",
+            ),
+            vec![],
+            "pnpm build:hand-docker",
+        ),
+        (
+            Some(
+                "if [ \"$1\" = info ]; then echo '{\"OSType\":\"linux\",\"Architecture\":\"x86_64\"}'; else echo linux/arm64; fi",
+            ),
+            vec![],
+            "rebuild the image",
+        ),
+    ] {
+        if let Some(script) = script {
+            std::fs::write(&docker, format!("#!/bin/sh\n{script}\n")).unwrap();
+            std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .args(["hand", "--docker", "image", "--volume", "work"])
+            .args(extra)
+            .env_clear()
+            .env("PATH", dir.path())
+            .env("NANOCODEX_HOME", dir.path())
+            // VM environment defaults must not invalidate Docker selection.
+            .env("NANOCODEX_VM_GUEST_RUNTIME", "/missing/guest")
+            .env("NANOCODEX_KRUNFW_DIR", "/missing/firmware")
+            .current_dir(dir.path())
+            .output()
+            .await
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{stderr}");
+    }
 }

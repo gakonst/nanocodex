@@ -11,14 +11,15 @@ use nanocodex_tools::{
     attachment::{AttachmentMachine, AttachmentTarget},
 };
 use nanocodex_vm::{
-    VmWorkspace, VmWorkspaceError,
+    VmWorkspace,
+    docker::DockerWorkspace,
     host::{Capabilities, Gpu, KrunFeature, VmProcessConfig},
     tools::{GuestRuntimeDisk, VmCommand, VmCommandOutput, VmToolSessionError},
 };
 use tokio::time::sleep;
 
-use super::Hand;
 pub(crate) use super::vm_hand_config::VmHandConfig;
+use super::{Hand, hand_workspace::HandWorkspace};
 
 const DEFAULT_KRUNFW_DIRECTORY: &str = ".cache/libkrunfw/libkrunfw";
 const FIRMWARE_LIBRARY: &str = if cfg!(target_os = "macos") {
@@ -45,7 +46,7 @@ impl Drop for VmDesktop {
 }
 
 pub(crate) struct VmHand {
-    workspace: VmWorkspace,
+    workspace: HandWorkspace,
     tools: Tools,
     machine: AttachmentMachine,
     _root_lock: Option<File>,
@@ -53,6 +54,35 @@ pub(crate) struct VmHand {
 }
 
 impl VmHand {
+    pub(crate) async fn preflight(config: &Hand) -> Result<(), ManagedError> {
+        let config = VmHandConfig::from(config);
+        validate_common_config(&config)?;
+        attachment_machine(&config)?;
+        if let Some(docker) = &config.docker {
+            let mut builder = DockerWorkspace::builder(&docker.image, &docker.volume)
+                .guest_workspace(&config.vm_workspace)
+                .cpus(config.vm_cpus)
+                .memory_mib(config.vm_memory_mib);
+            if let Some(runtime) = &docker.runtime {
+                builder = builder.runtime(runtime);
+            }
+            builder
+                .preflight()
+                .await
+                .map_err(|error| configuration(error.to_string()))?;
+        } else {
+            let root = config.rootfs.metadata().map_err(|error| configuration(format!(
+                "VM root {} is unavailable: {error}; --vm must point to an existing writable ext4 image or development root directory", config.rootfs.display()
+            )))?;
+            if root.is_file() && config.vm_guest_runtime.is_none() {
+                return Err(configuration(
+                    "an ext4 VM requires --guest-runtime ELF or NANOCODEX_VM_GUEST_RUNTIME; build the guest with `just build-vm-guest`",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) async fn start(config: &Hand) -> Result<Self, ManagedError> {
         Self::start_config(&VmHandConfig::from(config)).await
     }
@@ -60,61 +90,82 @@ impl VmHand {
     pub(crate) async fn start_config(config: &VmHandConfig) -> Result<Self, ManagedError> {
         validate_common_config(config)?;
         let machine = attachment_machine(config)?;
-        let rootfs = config.rootfs.canonicalize().map_err(|error| {
-            configuration(format!(
-                "failed to resolve VM rootfs {}: {error}",
-                config.rootfs.display()
-            ))
-        })?;
-        let ext4 = rootfs.is_file();
-        if !ext4 && !rootfs.is_dir() {
-            return Err(configuration(format!(
-                "VM rootfs is neither a raw ext4 image nor a directory: {}",
-                rootfs.display()
-            )));
-        }
-        let root_lock = ext4.then(|| lock_writable_rootfs(&rootfs)).transpose()?;
-        let executable = std::env::current_exe()
-            .map_err(|error| configuration(format!("failed to resolve VMM executable: {error}")))?;
-        let mut builder = VmWorkspace::builder(&rootfs, executable)
-            .vmm_argument("__vm-run-config")
-            .vmm_argument("--config")
-            .guest_workspace(&config.vm_workspace)
-            .shell(&config.vm_shell)
-            .cpus(config.vm_cpus)
-            .memory_mib(config.vm_memory_mib)
-            .gpu(if config.vm_gpu {
-                Gpu::Vulkan
-            } else {
-                Gpu::Disabled
-            });
-        if ext4 {
-            let runtime = prepare_guest_runtime(config)?;
-            builder = builder.guest_runtime_disk(runtime.path().to_path_buf());
-        } else if config.vm_guest_runtime.is_some() {
-            return Err(configuration(
-                "--vm-guest-runtime is only used with raw ext4 roots; directory roots must contain /usr/local/bin/nanocodex-vm-guest",
-            ));
-        }
-        if config.vm_no_network {
-            builder = builder.offline();
-        }
-        if let Some(firmware) = firmware_directory(config) {
-            builder = builder.firmware_directory(firmware);
-        }
-        let workspace = builder.launch().await.map_err(|error| {
-            configuration(format!(
-                "failed to start VM hand and reach guest readiness: {error}"
-            ))
-        })?;
+        let (workspace, root_lock) = if let Some(docker) = &config.docker {
+            let mut builder = DockerWorkspace::builder(&docker.image, &docker.volume)
+                .guest_workspace(&config.vm_workspace)
+                .shell(&config.vm_shell)
+                .cpus(config.vm_cpus)
+                .memory_mib(config.vm_memory_mib);
+            if docker.internet {
+                builder = builder.internet();
+            }
+            if let Some(runtime) = &docker.runtime {
+                builder = builder.runtime(runtime);
+            }
+            let workspace = builder
+                .launch()
+                .await
+                .map_err(|error| configuration(error.to_string()))?;
+            (HandWorkspace::Docker(workspace), None)
+        } else {
+            let rootfs = config.rootfs.canonicalize().map_err(|error| {
+                configuration(format!(
+                    "failed to resolve VM rootfs {}: {error}",
+                    config.rootfs.display()
+                ))
+            })?;
+            let ext4 = rootfs.is_file();
+            if !ext4 && !rootfs.is_dir() {
+                return Err(configuration(format!(
+                    "VM rootfs is neither a raw ext4 image nor a directory: {}",
+                    rootfs.display()
+                )));
+            }
+            let root_lock = ext4.then(|| lock_writable_rootfs(&rootfs)).transpose()?;
+            let executable = std::env::current_exe().map_err(|error| {
+                configuration(format!("failed to resolve VMM executable: {error}"))
+            })?;
+            let mut builder = VmWorkspace::builder(&rootfs, executable)
+                .vmm_argument("__vm-run-config")
+                .vmm_argument("--config")
+                .guest_workspace(&config.vm_workspace)
+                .shell(&config.vm_shell)
+                .cpus(config.vm_cpus)
+                .memory_mib(config.vm_memory_mib)
+                .gpu(if config.vm_gpu {
+                    Gpu::Vulkan
+                } else {
+                    Gpu::Disabled
+                });
+            if ext4 {
+                let runtime = prepare_guest_runtime(config)?;
+                builder = builder.guest_runtime_disk(runtime.path().to_path_buf());
+            } else if config.vm_guest_runtime.is_some() {
+                return Err(configuration(
+                    "--vm-guest-runtime is only used with raw ext4 roots; directory roots must contain /usr/local/bin/nanocodex-vm-guest",
+                ));
+            }
+            if config.vm_no_network {
+                builder = builder.offline();
+            }
+            if let Some(firmware) = firmware_directory(config) {
+                builder = builder.firmware_directory(firmware);
+            }
+            let workspace = builder.launch().await.map_err(|error| {
+                configuration(format!(
+                    "failed to start VM hand and reach guest readiness: {error}"
+                ))
+            })?;
+            (HandWorkspace::Vm(workspace), root_lock)
+        };
         let tools = match workspace.attachment_tools_builder().build() {
             Ok(tools) => tools,
             Err(error) => {
-                let message = format!("failed to prepare VM hand tools: {error}");
+                let message = format!("failed to prepare Hand tools: {error}");
                 return match workspace.shutdown().await {
                     Ok(()) => Err(configuration(message)),
                     Err(shutdown) => Err(configuration(format!(
-                        "{message}; VM shutdown also failed: {shutdown}"
+                        "{message}; Hand shutdown also failed: {shutdown}"
                     ))),
                 };
             }
@@ -314,10 +365,9 @@ impl VmHand {
         loop {
             match self.workspace.shutdown().await {
                 Ok(()) => return Ok(()),
-                Err(VmWorkspaceError::Session(
-                    VmToolSessionError::ActiveCapabilities(_)
-                    | VmToolSessionError::ActiveRequests(_),
-                )) if started_at.elapsed() < CAPABILITY_DRAIN_TIMEOUT => {
+                Err(error)
+                    if error.is_busy() && started_at.elapsed() < CAPABILITY_DRAIN_TIMEOUT =>
+                {
                     sleep(CAPABILITY_DRAIN_INTERVAL).await;
                 }
                 Err(error) => {
@@ -331,23 +381,36 @@ impl VmHand {
 }
 
 fn validate_common_config(config: &VmHandConfig) -> Result<(), ManagedError> {
+    if config.docker.is_some() && config.vm_gpu {
+        return Err(configuration(
+            "--gpu is supported only with --vm; Docker Hands use software rendering",
+        ));
+    }
     if config.vm_gpu
         && !Capabilities::detect()
             .map_err(|error| configuration(error.to_string()))?
             .has(KrunFeature::Gpu)
     {
         return Err(configuration(
-            "--vm-gpu requires a host built with nanocodex-vm/gpu and a Vulkan renderer",
+            "--gpu requires a host built with nanocodex-vm/gpu and a Vulkan renderer",
         ));
     }
     if !Path::new(&config.vm_workspace).is_absolute() {
         return Err(configuration(format!(
-            "--vm-workspace must be an absolute guest path, got {:?}",
+            "--workspace must be an absolute guest path, got {:?}",
             config.vm_workspace
         )));
     }
     #[cfg(target_os = "linux")]
-    preflight_kvm_device(Path::new("/dev/kvm"))?;
+    if config.docker.is_none() {
+        preflight_kvm_device(Path::new("/dev/kvm"))?;
+        let kvm = kvm_ioctls::Kvm::new().map_err(|error| unavailable_kvm(error.to_string()))?;
+        if kvm.get_api_version() != 12 {
+            return Err(unavailable_kvm("unsupported KVM API version".into()));
+        }
+        kvm.create_vm()
+            .map_err(|error| unavailable_kvm(error.to_string()))?;
+    }
     Ok(())
 }
 
@@ -355,15 +418,17 @@ fn validate_common_config(config: &VmHandConfig) -> Result<(), ManagedError> {
 // Hand can run ordinary processes inside a container without being able to host
 // VMs; it needs a passed-through, accessible KVM character device as well.
 #[cfg(any(target_os = "linux", test))]
+fn unavailable_kvm(detail: String) -> ManagedError {
+    configuration(format!(
+        "VM backend is unavailable: Linux VM hosting requires working KVM at /dev/kvm: {detail}. Enable hardware/nested virtualization and grant this user read/write access to /dev/kvm. Alternatively, use `hand --docker IMAGE --volume NAME` with a Linux Docker daemon. No fallback was attempted"
+    ))
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn preflight_kvm_device(path: &Path) -> Result<(), ManagedError> {
     use std::os::unix::fs::FileTypeExt as _;
 
-    let unavailable = |detail: String| {
-        configuration(format!(
-            "Linux VM hosting requires a readable and writable KVM character device at {}: {detail}. Enable hardware virtualization and grant this user access to /dev/kvm; containers and nested VMs must expose /dev/kvm from a host that supports nested virtualization",
-            path.display()
-        ))
-    };
+    let unavailable = |detail: String| unavailable_kvm(format!("{}: {detail}", path.display()));
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -385,11 +450,20 @@ fn attachment_machine(config: &VmHandConfig) -> Result<AttachmentMachine, Manage
         "process".to_owned(),
         "pty".to_owned(),
         "shell".to_owned(),
-        "vm".to_owned(),
+        if config.docker.is_some() {
+            "container"
+        } else {
+            "vm"
+        }
+        .to_owned(),
         format!("cpu:{}", config.vm_cpus),
         format!("memory-mib:{}", config.vm_memory_mib),
     ];
-    if !config.vm_no_network {
+    if config
+        .docker
+        .as_ref()
+        .map_or(!config.vm_no_network, |docker| docker.internet)
+    {
         capabilities.push("network".to_owned());
     }
     capabilities.sort_unstable();
@@ -483,6 +557,49 @@ fn configuration(message: impl Into<String>) -> ManagedError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn docker_hand_skips_kvm_and_advertises_container_isolation() {
+        let config = VmHandConfig {
+            rootfs: PathBuf::new(),
+            docker: Some(super::super::vm_hand_config::DockerHandConfig {
+                image: "image".into(),
+                volume: "workspace".into(),
+                internet: false,
+                runtime: None,
+            }),
+            vm_guest_runtime: None,
+            vm_cache: PathBuf::new(),
+            vm_firmware: None,
+            vm_workspace: "/app".into(),
+            vm_cpus: 2,
+            vm_memory_mib: 1024,
+            vm_gpu: false,
+            vm_shell: "sh".into(),
+            vm_no_network: false,
+            machine_id: "docker-hand".into(),
+            machine_name: "Docker Hand".into(),
+        };
+        validate_common_config(&config).unwrap();
+        let machine = serde_json::to_value(attachment_machine(&config).unwrap()).unwrap();
+        let capabilities = machine["capabilities"].as_array().unwrap();
+        assert!(capabilities.iter().any(|value| value == "container"));
+        assert!(
+            !capabilities
+                .iter()
+                .any(|value| value == "vm" || value == "network")
+        );
+        let mut internet = config;
+        internet.docker.as_mut().unwrap().internet = true;
+        let machine = serde_json::to_value(attachment_machine(&internet).unwrap()).unwrap();
+        assert!(
+            machine["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "network")
+        );
+    }
 
     #[test]
     fn installed_guest_assets_resolve_firmware_without_a_working_directory() {

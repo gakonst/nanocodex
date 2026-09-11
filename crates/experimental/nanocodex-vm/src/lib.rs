@@ -113,6 +113,16 @@ pub mod tools;
 ))]
 mod workspace;
 
+/// Docker workspaces for Linux daemons without a KVM requirement.
+#[cfg(all(
+    feature = "host",
+    any(
+        all(target_os = "linux", not(target_env = "musl")),
+        all(target_os = "macos", target_arch = "aarch64")
+    )
+))]
+pub mod docker;
+
 /// Low-level host-side VM configuration and lifecycle components.
 ///
 /// Most applications should start with [`crate::VmWorkspaceBuilder`]. This
