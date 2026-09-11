@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use crate::{
     command::GuestCommand,
-    config::{BlockDevice, Network, RootFilesystem, SharedDirectory, VmConfig},
+    config::{BlockDevice, Gpu, Network, RootFilesystem, SharedDirectory, VmConfig},
 };
 
 const ROOT_TAG: &std::ffi::CStr = c"/dev/root";
@@ -168,6 +168,12 @@ impl KrunVm {
 
         let root = resolve_root(config.root_filesystem())?;
 
+        if config.gpu_value() == Gpu::Vulkan && krun::krun_has_feature(2) != 1 {
+            return Err(VmError::InvalidConfig(
+                "Vulkan GPU requested but this host was built without GPU support",
+            ));
+        }
+
         let context = positive_context(krun::krun_create_ctx(), "create context")?;
         let vm = Self {
             context: Some(context),
@@ -243,6 +249,16 @@ impl KrunVm {
         )?;
 
         attach_network(context, config.network_value())?;
+        if config.gpu_value() == Gpu::Vulkan {
+            // Venus requires host-visible resources and asynchronous fences.
+            // Disable the legacy VirGL OpenGL context on this Vulkan transport.
+            const VENUS_FLAGS: u32 = (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8);
+            // SAFETY: context is owned and has not entered the VMM loop.
+            check(
+                unsafe { krun::krun_set_gpu_options(context, VENUS_FLAGS) },
+                "configure Vulkan GPU",
+            )?;
+        }
         check(
             krun::krun_split_irqchip(context, false),
             "configure interrupt controller",

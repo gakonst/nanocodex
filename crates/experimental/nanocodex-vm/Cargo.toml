@@ -15,6 +15,7 @@ description = "VM lifecycle, images, and retained workspace tools for Nanocodex"
 
 [features]
 default = ["host"]
+gpu = ["host", "krun/gpu"]
 host = [
     "dep:arcbox-ext4",
     "dep:async-trait",

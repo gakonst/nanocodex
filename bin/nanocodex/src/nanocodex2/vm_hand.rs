@@ -12,7 +12,7 @@ use nanocodex_tools::{
 };
 use nanocodex_vm::{
     VmWorkspace, VmWorkspaceError,
-    host::VmProcessConfig,
+    host::{Capabilities, Gpu, KrunFeature, VmProcessConfig},
     tools::{GuestRuntimeDisk, VmCommand, VmCommandOutput, VmToolSessionError},
 };
 use tokio::time::sleep;
@@ -82,7 +82,12 @@ impl VmHand {
             .guest_workspace(&config.vm_workspace)
             .shell(&config.vm_shell)
             .cpus(config.vm_cpus)
-            .memory_mib(config.vm_memory_mib);
+            .memory_mib(config.vm_memory_mib)
+            .gpu(if config.vm_gpu {
+                Gpu::Vulkan
+            } else {
+                Gpu::Disabled
+            });
         if ext4 {
             let runtime = prepare_guest_runtime(config)?;
             builder = builder.guest_runtime_disk(runtime.path().to_path_buf());
@@ -326,6 +331,15 @@ impl VmHand {
 }
 
 fn validate_common_config(config: &VmHandConfig) -> Result<(), ManagedError> {
+    if config.vm_gpu
+        && !Capabilities::detect()
+            .map_err(|error| configuration(error.to_string()))?
+            .has(KrunFeature::Gpu)
+    {
+        return Err(configuration(
+            "--vm-gpu requires a host built with nanocodex-vm/gpu and a Vulkan renderer",
+        ));
+    }
     if !Path::new(&config.vm_workspace).is_absolute() {
         return Err(configuration(format!(
             "--vm-workspace must be an absolute guest path, got {:?}",

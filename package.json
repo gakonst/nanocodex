@@ -21,7 +21,8 @@
     "deploy:account": "turbo run build --filter=nanocodex-web && pnpm --filter nanocodex-web run deploy",
     "build:voice-core": "bash apple/NanocodexVoice/scripts/build-core.sh",
     "build:macos": "pnpm build:voice-core && pnpm --filter @nanocodex/desktop-runtime run build && xcodebuild -project macos/Nanocodex.xcodeproj -scheme Nanocodex -configuration Release -derivedDataPath macos/build build",
-    "build:voice-native": "python3 scripts/build-voice-native.py"
+    "build:voice-native": "python3 scripts/build-voice-native.py",
+    "build:macos:gpu-hand": "bash scripts/build-macos-gpu-hand.sh"
   },
   "devDependencies": {
     "portless": "0.15.6",

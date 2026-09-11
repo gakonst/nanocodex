@@ -24,9 +24,10 @@ test("remote Hand calls create, reuse, stop and restart a retained private VM", 
   const path = await mkdtemp(join(tmpdir(), "nanocodex-vm-tools-"));
   const rootfs = join(path, "template.ext4"), guestRuntime = join(path, "guest"), binary = join(path, "helper");
   await writeFile(rootfs, "immutable-template"); await writeFile(guestRuntime, "guest");
-  await writeFile(binary, `#!${process.execPath}\nif(process.argv.includes('__hand-screen')) console.error('Hand screen is ready'); else console.log(JSON.stringify({fields:{stage:'vm.hand.ready'}})); setInterval(() => {},1000);\n`, { mode: 0o700 });
-  await writeFile(join(path, "vm.json"), JSON.stringify({ rootfs, guestRuntime, binary }));
+  await writeFile(binary, `#!${process.execPath}\nif(process.argv.includes('__hand-screen')) console.error('Hand screen is ready'); else { if(!process.argv.includes('--vm-gpu')) process.exit(7); console.log(JSON.stringify({fields:{stage:'vm.hand.ready'}})); } setInterval(() => {},1000);\n`, { mode: 0o700 });
+  await writeFile(join(path, "vm.json"), JSON.stringify({ rootfs, guestRuntime, binary, gpu: true }));
   const defaults = await desktopDefaults({ NANOCODEX_DESKTOP_DATA: path });
+  assert.equal(defaults.gpu, true);
   const server = createServer((_req, response) => { response.setHeader("content-type", "application/json"); response.end('{"data":[]}'); });
   const sockets = new WebSocketServer({ server });
   const results = new Map(); let socket, catalog;

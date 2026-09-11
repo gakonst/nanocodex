@@ -197,6 +197,7 @@ struct Hand: Codable, Identifiable, Equatable, Sendable {
     var cpus: Int?
     var memoryMiB: Int?
     var network: Bool?
+    var gpu: Bool?
     var status: String?
     var error: String?
     var calls: Int?

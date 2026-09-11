@@ -110,14 +110,16 @@ mod tests {
     use std::{ffi::OsString, os::unix::fs::PermissionsExt};
 
     use super::*;
-    use crate::config::Network;
+    use crate::config::{Gpu, Network};
 
     #[test]
     fn private_config_round_trips_without_argv_delivery() {
         let command = GuestCommand::new("/bin/true")
             .env("HTTPS_PROXY", "http://lease:credential@host.internal:8080");
         let private = VmProcessConfig::new(
-            VmConfig::ext4("/tmp/rootfs.ext4").network(Network::Disabled),
+            VmConfig::ext4("/tmp/rootfs.ext4")
+                .network(Network::Disabled)
+                .gpu(Gpu::Vulkan),
             command,
         )
         .write_private()
@@ -126,6 +128,7 @@ mod tests {
         assert_eq!(permissions & 0o077, 0);
 
         let decoded = VmProcessConfig::read(private.path()).unwrap();
+        assert_eq!(decoded.vm.gpu_value(), Gpu::Vulkan);
         assert_eq!(
             decoded
                 .command

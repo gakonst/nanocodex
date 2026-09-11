@@ -60,6 +60,10 @@ export function validateHand(value) {
     if (!Number.isInteger(value.cpus) || value.cpus < 1 || value.cpus > 255) throw new Error("VM CPUs must be between 1 and 255.");
     if (!Number.isInteger(value.memoryMiB) || value.memoryMiB < 128 || value.memoryMiB > 1_048_576) throw new Error("Choose valid VM memory in MiB.");
     Object.assign(config, { cpus: value.cpus, memoryMiB: value.memoryMiB, network: value.network !== false });
+    if (value.gpu !== undefined) {
+      if (typeof value.gpu !== "boolean") throw new Error("GPU access must be enabled or disabled.");
+      config.gpu = value.gpu;
+    }
     if (typeof value.vmHost === "string" && /^[a-z0-9][a-z0-9._-]{0,62}$/.test(value.vmHost)) config.vmHost = value.vmHost;
     if (typeof value.vmName === "string" && /^[a-z0-9][a-z0-9-]{0,39}$/.test(value.vmName)) config.vmName = value.vmName;
     if (typeof value.firmware === "string" && isAbsolute(value.firmware)) config.firmware = value.firmware;
@@ -842,6 +846,7 @@ export class DesktopRuntime extends EventEmitter {
     resource.abort.signal.throwIfAborted();
     const args = ["hand", "--vm", hand.rootfs, "--vm-guest-runtime", hand.guestRuntime, "--vm-cache", cache, "--vm-workspace", hand.workspace, "--vm-cpus", String(hand.cpus), "--vm-memory-mib", String(hand.memoryMiB), "--machine-id", hand.id, "--machine-name", hand.name, "--log-format", "json"];
     if (!hand.network) args.push("--vm-no-network");
+    if (hand.gpu) args.push("--vm-gpu");
     if (hand.firmware) args.push("--vm-firmware", hand.firmware);
     const env = Object.fromEntries(["PATH", "HOME", "TMPDIR", "LANG", "NANOCODEX_KRUNFW_DIR"].filter(key => process.env[key]).map(key => [key, process.env[key]]));
     Object.assign(env, { NANOCODEX_API_KEY: this.#options.apiKey, NANOCODEX_MANAGED_URL: this.#options.baseUrl });

@@ -129,7 +129,7 @@ pub mod host {
     pub use crate::{
         capabilities::{Capabilities, KrunFeature},
         command::GuestCommand,
-        config::{BlockDevice, Network, RootFilesystem, SharedDirectory, VmConfig},
+        config::{BlockDevice, Gpu, Network, RootFilesystem, SharedDirectory, VmConfig},
         egress::{
             EgressError, EgressFile, EgressLease, EgressMount, GUEST_EGRESS_ROOT,
             MAX_EGRESS_FILE_BYTES,

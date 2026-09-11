@@ -174,6 +174,10 @@ struct Hand {
     #[arg(long, value_name = "MIB", default_value_t = 1_024, value_parser = clap::value_parser!(u32).range(1..))]
     vm_memory_mib: u32,
 
+    /// Expose shared host Vulkan through virtio-gpu Venus.
+    #[arg(long)]
+    vm_gpu: bool,
+
     /// Shell name described to the managed brain.
     #[arg(long, value_name = "SHELL", default_value = "sh")]
     vm_shell: String,
@@ -254,6 +258,10 @@ struct Host {
     /// Guest memory in mebibytes assigned to each VM.
     #[arg(long, value_name = "MIB", default_value_t = 1_024, value_parser = clap::value_parser!(u32).range(128..=262_144))]
     vm_memory_mib: u32,
+
+    /// Expose shared host Vulkan through virtio-gpu Venus.
+    #[arg(long)]
+    vm_gpu: bool,
 
     /// Shell name described to the managed brain.
     #[arg(long, value_name = "SHELL", default_value = "sh")]

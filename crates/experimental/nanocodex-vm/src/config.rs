@@ -2,6 +2,16 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// Graphics transport exposed to one VM.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum Gpu {
+    /// No virtual GPU; applications may use software rendering.
+    #[default]
+    Disabled,
+    /// Shared host Vulkan through virtio-gpu Venus. Requires a GPU-enabled host.
+    Vulkan,
+}
+
 /// Root filesystem exposed to one guest.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum RootFilesystem {
@@ -148,6 +158,7 @@ pub struct VmConfig {
     root: RootFilesystem,
     cpus: u8,
     memory_mib: u32,
+    gpu: Gpu,
     network: Network,
     block_devices: Vec<BlockDevice>,
     shared_directories: Vec<SharedDirectory>,
@@ -161,6 +172,7 @@ impl VmConfig {
             root: RootFilesystem::Directory(root.into()),
             cpus: 2,
             memory_mib: 1_024,
+            gpu: Gpu::Disabled,
             network: Network::Internet,
             block_devices: Vec::new(),
             shared_directories: Vec::new(),
@@ -173,6 +185,7 @@ impl VmConfig {
             root: RootFilesystem::Ext4(root.into()),
             cpus: 2,
             memory_mib: 1_024,
+            gpu: Gpu::Disabled,
             network: Network::Internet,
             block_devices: Vec::new(),
             shared_directories: Vec::new(),
@@ -197,6 +210,7 @@ impl VmConfig {
             },
             cpus: 2,
             memory_mib: 1_024,
+            gpu: Gpu::Disabled,
             network: Network::Internet,
             block_devices: Vec::new(),
             shared_directories: Vec::new(),
@@ -215,6 +229,19 @@ impl VmConfig {
     pub const fn memory_mib(mut self, memory_mib: u32) -> Self {
         self.memory_mib = memory_mib;
         self
+    }
+
+    /// Selects the graphics transport; Vulkan requests require GPU support.
+    #[must_use]
+    pub const fn gpu(mut self, gpu: Gpu) -> Self {
+        self.gpu = gpu;
+        self
+    }
+
+    /// Returns the requested graphics transport.
+    #[must_use]
+    pub const fn gpu_value(&self) -> Gpu {
+        self.gpu
     }
 
     /// Selects the guest network mode.

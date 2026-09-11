@@ -1,0 +1,38 @@
+# Apple Silicon Venus driver. Build context is this image directory.
+# Keep the hardware driver separate from the portable software desktop image.
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS build
+RUN apk add --no-cache build-base meson samurai python3 py3-mako py3-yaml \
+    py3-packaging py3-setuptools bison flex libdrm-dev vulkan-headers zlib-dev \
+    expat-dev libx11-dev libxrandr-dev libxshmfence-dev libxcb-dev \
+    wayland-dev wayland-protocols linux-headers pkgconf curl xz
+WORKDIR /build
+FROM build AS venus
+RUN curl --fail --location --output mesa.tar.xz https://archive.mesa3d.org/mesa-26.1.6.tar.xz \
+    && echo '6746b73f5b87e8ff3723eee586b4b5f033dbe6d13cd0309d743b7fa484c350268859ec8ff21aadcbca7a04070cdaa7828146dd28dde4b1935bb879891d687f0b  mesa.tar.xz' | sha512sum -c - \
+    && tar -xf mesa.tar.xz
+COPY gpu/venus-16k.patch /build/venus-16k.patch
+WORKDIR /build/mesa-26.1.6
+# libkrunfw 6.12 uses 4K guest pages; Apple Hypervisor requires 16K mappings.
+# Downstream maintainer patch, with a local copy instead of casting away const.
+RUN patch -p1 -F0 < /build/venus-16k.patch \
+    && meson setup build --prefix=/usr -Dbuildtype=release \
+       -Dgallium-drivers= -Dvulkan-drivers=virtio -Dplatforms=x11 \
+       -Dglx=disabled -Degl=disabled -Dgbm=disabled \
+       -Dgles1=disabled -Dgles2=disabled -Dopengl=false \
+       -Dllvm=disabled -Dbuild-tests=false \
+    && meson compile -C build -j2 \
+    && DESTDIR=/driver meson install -C build
+RUN apk add --no-cache vulkan-loader-dev glslang
+COPY gpu/check.c gpu/check.comp /build/
+RUN glslangValidator -V /build/check.comp -o /build/check.spv \
+    && python3 -c 'import struct; b=open("/build/check.spv","rb").read(); open("/build/check_spv.h","w").write("#include <stdint.h>\nstatic const uint32_t check_spv[]={"+",".join(hex(n) for n in struct.unpack("<%dI"%(len(b)//4),b))+"};\n")' \
+    && mkdir -p /driver/usr/local/bin && cc -O2 -Wall -Wextra -Werror /build/check.c -lvulkan -o /driver/usr/local/bin/nanocodex-gpu-check
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+RUN apk add --no-cache ca-certificates xvfb openbox xterm font-dejavu \
+      mesa-dri-gallium mesa-vulkan-virtio vulkan-tools vulkan-loader \
+    && mkdir -p /app /workspace /run/nanocodex-desktop \
+    && chmod 0700 /run/nanocodex-desktop
+COPY --from=venus /driver/usr/ /usr/
+ENV DISPLAY=:0
+WORKDIR /app
+CMD ["/bin/sh"]

@@ -20,6 +20,7 @@ export async function desktopDefaults(environment = process.env) {
   try { recipe = JSON.parse(await readFile(join(directory, "vm.json"), "utf8")); }
   catch (error) { if (error.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error; }
   if (!recipe || typeof recipe !== "object" || Array.isArray(recipe)) recipe = {};
+  if (typeof recipe.gpu === "boolean") defaults.gpu = recipe.gpu;
   const candidates = {
     binary: [environment.NANOCODEX_HAND_BINARY, recipe.binary, environment.NANOCODEX_ENV_FILE && join(dirname(environment.NANOCODEX_ENV_FILE), "target", "debug", "nanocodex2")],
     rootfs: [environment.NANOCODEX_VM_ROOTFS, recipe.rootfs],

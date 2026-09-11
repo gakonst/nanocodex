@@ -12,7 +12,7 @@ use std::{
 
 use crate::{
     command::GuestCommand,
-    config::VmConfig,
+    config::{Gpu, VmConfig},
     egress::EgressLease,
     process::{PrivateVmProcessConfig, VmProcessConfig, VmProcessError},
 };
@@ -228,6 +228,10 @@ pub enum VmToolSessionError {
     /// The guest returned an application-level tool error.
     #[error("guest tool execution failed: {0}")]
     Guest(String),
+
+    /// The requested GPU failed its guest driver and command submission check.
+    #[error("GPU readiness failed; use a prepared GPU guest image: {0}")]
+    GpuReadiness(String),
 
     /// A trusted host-control command exceeded its deadline.
     #[error("guest command exceeded {timeout:?}")]
@@ -459,10 +463,26 @@ impl VmToolSession {
         startup_timeout: Duration,
         shutdown_timeout: Duration,
     ) -> Result<Self, VmToolSessionError> {
+        let gpu = vm.gpu_value();
         let (vm, guest) = egress.configure(vm, &guest);
         let session = Self::spawn_vm_with_shutdown_timeout(command, vm, guest, shutdown_timeout)?;
         let startup = async {
             session.ready().await?;
+            if gpu == Gpu::Vulkan {
+                let output = session
+                    .command(
+                        VmCommand::new("/usr/local/bin/nanocodex-gpu-check")
+                            .timeout(Duration::from_secs(20))
+                            .max_output_bytes(4096),
+                    )
+                    .await
+                    .map_err(|error| VmToolSessionError::GpuReadiness(error.to_string()))?;
+                if output.exit_code != 0 {
+                    return Err(VmToolSessionError::GpuReadiness(
+                        String::from_utf8_lossy(&output.stderr).into_owned(),
+                    ));
+                }
+            }
             session.provision_egress(egress).await
         };
         match tokio::time::timeout(startup_timeout, startup).await {
