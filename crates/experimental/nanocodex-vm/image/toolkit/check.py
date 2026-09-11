@@ -16,7 +16,7 @@ def check(output):
     output.mkdir(parents=True, exist_ok=True)
     os.chdir(output)
     # All caches stay writable with the Docker Hand's read-only root filesystem.
-    os.environ.update(MPLCONFIGDIR=str(output / "matplotlib-cache"),
+    os.environ.update(PWD=str(output), MPLCONFIGDIR=str(output / "matplotlib-cache"),
                       GOCACHE=str(output / "go-cache"),
                       XDG_CACHE_HOME=str(output / "cache"))
     for command in ("git", "gh", "rg", "fd", "jq", "cc", "cmake", "node", "pnpm",
@@ -81,16 +81,16 @@ def check(output):
     Image.open("browser.png").verify()
     run("ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=blue:s=64x64:d=0.2",
         "-y", "clip.mp4")
-    Path("render.py").write_text("import bpy, os\n"
+    Path("render.py").write_text("import bpy\n"
         "bpy.context.scene.render.engine='CYCLES'\n"
         "bpy.context.scene.cycles.device='CPU'\n"
         "bpy.context.scene.cycles.samples=1\n"
         "bpy.context.scene.render.resolution_x=32\n"
         "bpy.context.scene.render.resolution_y=32\n"
         "bpy.context.scene.render.resolution_percentage=100\n"
-        "bpy.context.scene.render.filepath=os.path.abspath('blender.png')\n"
+        f"bpy.context.scene.render.filepath={str(output / 'blender.png')!r}\n"
         "bpy.ops.render.render(write_still=True)\n")
-    run("blender", "--background", "--factory-startup", "--threads", "1", "--python-exit-code", "1", "--python", "render.py")
+    run("blender", "--background", "--factory-startup", "--threads", "1", "--python-exit-code", "1", "--python", str(output / "render.py"))
     Image.open("blender.png").verify()
     Path("hello.c").write_text('int main(void) { return 0; }\n')
     run("cc", "hello.c", "-o", "hello-c")

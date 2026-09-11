@@ -143,7 +143,7 @@ RUN sh /opt/hand-toolkit/install-paths.sh \
     && ln -s /opt/hand-toolkit/check.py /usr/local/bin/nanocodex-check-hand-toolkit
 ENV PATH=/opt/hand-python/bin:${PATH}
 
-COPY scripts/check-dev-stack.sh /usr/local/bin/nanocodex-check-dev-stack
+COPY --chmod=0755 scripts/check-dev-stack.sh /usr/local/bin/nanocodex-check-dev-stack
 RUN sh /usr/local/bin/nanocodex-check-dev-stack
 
 COPY --from=hand /out/nanocodex-remote /usr/local/bin/nanocodex-remote
