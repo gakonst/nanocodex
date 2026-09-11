@@ -1370,7 +1370,12 @@ private struct ConversationMessageView: View {
     let agentID: String
     var pending: PendingMessage? = nil
     var body: some View {
-        ConversationMessageContent(row: row, model: model, agentID: agentID, pending: pending,
+        let turnID = row.turnID ?? row.id
+        let delivery = row.role == "You" ? PendingMessage.deliveryLabel(
+            turnID: turnID,
+            pending: pending ?? model.pending.first { $0.agentID == agentID && $0.id == turnID },
+            activeTurns: model.cards.first { $0.id == agentID }?.activeTurns ?? []) : nil
+        ConversationMessageContent(row: row, model: model, agentID: agentID, pending: pending, deliveryLabel: delivery,
                                    attachmentURLs: (pending?.attachments ?? []).map { model.attachmentURL($0) },
                                    movieURLs: (pending?.attachments ?? []).map { model.attachmentMovieURL($0) }).equatable()
     }
@@ -1381,10 +1386,11 @@ private struct ConversationMessageContent: View, Equatable {
     let model: InboxModel
     let agentID: String
     let pending: PendingMessage?
+    let deliveryLabel: String?
     let attachmentURLs: [URL?]
     let movieURLs: [URL?]
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.row == rhs.row && lhs.agentID == rhs.agentID && lhs.pending == rhs.pending
+        lhs.row == rhs.row && lhs.agentID == rhs.agentID && lhs.pending == rhs.pending && lhs.deliveryLabel == rhs.deliveryLabel
             && lhs.attachmentURLs == rhs.attachmentURLs && lhs.movieURLs == rhs.movieURLs
             && lhs.model === rhs.model
     }
@@ -1436,13 +1442,21 @@ private struct ConversationMessageContent: View, Equatable {
                                 .frame(maxWidth: 240).frame(height: 180).accessibilityIdentifier("message-image")
                         }
                     }
-                    Text(pending.phase == .cancelling ? "Cancelling…" : "Sending…").font(.caption).foregroundStyle(Ink.muted)
+                }
+                if let deliveryLabel {
+                    Text(deliveryLabel).font(.caption.weight(.medium)).foregroundStyle(Ink.muted)
+                        .accessibilityIdentifier("message-delivery-status")
                 }
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel(row.role == "You" ? "Your message" : row.role == "Agent" ? "Assistant message" : row.role)
             .padding(row.role == "You" ? 16 : 0)
             .background(row.role == "You" ? Ink.surface : Color.clear, in: RoundedRectangle(cornerRadius: 24))
+            .overlay {
+                if deliveryLabel != nil {
+                    RoundedRectangle(cornerRadius: 24).strokeBorder(Ink.border, style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                }
+            }
             if row.role != "You" { Spacer(minLength: 0) }
         }.frame(maxWidth: .infinity, alignment: row.role == "You" ? .trailing : .leading)
     }

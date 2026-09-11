@@ -17,6 +17,21 @@ public struct PendingMessage: Identifiable, Codable, Equatable, Sendable {
         self.id = id; self.agentID = agentID; self.input = input; self.predecessor = predecessor
         self.contextIDs = contextIDs; self.attachments = attachments
     }
+    /// Admission stores a message durably; it does not mean execution began.
+    /// Resolve from local delivery state and the server queue for other devices.
+    public static func deliveryLabel(turnID: String, pending: PendingMessage?, activeTurns: [String]) -> String? {
+        if let pending {
+            switch pending.phase {
+            case .submitting: return "Sending…"
+            case .queued: return "Queued · not started"
+            case .starting: return "Queued · stopping current turn…"
+            case .cancelling: return "Cancelling…"
+            case .failed: return "Delivery unconfirmed"
+            }
+        }
+        if let index = activeTurns.firstIndex(of: turnID), index > 0 { return "Queued · not started" }
+        return nil
+    }
     public var submission: AgentCommand { AgentCommand(agentID: agentID, input: input, kind: .followUp, requestID: id) }
     public var interruption: AgentCommand? {
         guard phase == .queued, !predecessor.isEmpty, predecessor != id else { return nil }

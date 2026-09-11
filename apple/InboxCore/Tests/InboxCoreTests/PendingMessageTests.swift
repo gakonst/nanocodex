@@ -2,6 +2,25 @@ import XCTest
 @testable import InboxCore
 
 final class PendingMessageTests: XCTestCase {
+    func testTranscriptDeliveryLabelDistinguishesAdmissionFromExecution() {
+        var pending = PendingMessage(agentID: "a", input: "Correction", predecessor: "running", id: "queued")
+        func label(_ message: PendingMessage?) -> String? {
+            PendingMessage.deliveryLabel(turnID: "queued", pending: message, activeTurns: ["running", "queued"])
+        }
+        XCTAssertEqual(label(pending), "Sending…")
+        pending.phase = .queued
+        XCTAssertEqual(label(pending), "Queued · not started")
+        pending.phase = .starting
+        XCTAssertEqual(label(pending), "Queued · stopping current turn…")
+        pending.phase = .cancelling
+        XCTAssertEqual(label(pending), "Cancelling…")
+        pending.phase = .failed
+        XCTAssertEqual(label(pending), "Delivery unconfirmed")
+        XCTAssertEqual(label(nil), "Queued · not started", "Restored and other-device queues need the same label")
+        XCTAssertNil(PendingMessage.deliveryLabel(turnID: "queued", pending: nil, activeTurns: ["queued"]))
+        XCTAssertNil(PendingMessage.deliveryLabel(turnID: "queued", pending: nil, activeTurns: []))
+    }
+
     func testAttachmentReferencesSurviveRetryWithoutEmbeddingImageBytes() throws {
         let attachment = try MessageAttachment(name: "Image.jpg", byteCount: 4096)
         let message = PendingMessage(agentID: "a", input: "Describe this", predecessor: "previous", id: "same-turn", attachments: [attachment])
