@@ -30,3 +30,6 @@ for binary in /usr/bin/Xvfb /usr/bin/openbox /usr/bin/xterm; do
   rm /checked-binary
 done
 sha256sum /out/desktop.ext4 > /out/desktop.sha256
+# Docker preserves root ownership on Linux bind mounts. Publish artifacts to the
+# invoking user while retaining the original numeric ownership inside ext4.
+chown "${OUTPUT_UID:?}:${OUTPUT_GID:?}" /out/*
