@@ -374,6 +374,8 @@ fn start_x(
                 "-nolisten",
                 "local",
                 "-noreset",
+                "+extension",
+                "GLX",
                 "-auth",
             ])
             .arg(runtime.path.join("Xauthority"))
