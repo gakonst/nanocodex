@@ -27,12 +27,41 @@ COPY gpu/check.c gpu/check.comp /build/
 RUN glslangValidator -V /build/check.comp -o /build/check.spv \
     && python3 -c 'import struct; b=open("/build/check.spv","rb").read(); open("/build/check_spv.h","w").write("#include <stdint.h>\nstatic const uint32_t check_spv[]={"+",".join(hex(n) for n in struct.unpack("<%dI"%(len(b)//4),b))+"};\n")' \
     && mkdir -p /driver/usr/local/bin && cc -O2 -Wall -Wextra -Werror /build/check.c -lvulkan -o /driver/usr/local/bin/nanocodex-gpu-check
+RUN mkdir -p /driver/usr/share/licenses/nanocodex-venus \
+    && cp docs/license.rst /driver/usr/share/licenses/nanocodex-venus/
+FROM build AS zink
+# Later Zink releases require nullDescriptor, absent from MoltenVK. Do not
+# pretend the feature exists. This isolated GL driver leaves system GL intact.
+RUN curl --fail --location --output mesa.tar.xz https://archive.mesa3d.org/mesa-25.1.9.tar.xz \
+    && echo '412df33a1bb3c785ed698555a3972118a37c458e7accf6ae53f4bb87b3db454a  mesa.tar.xz' | sha256sum -c - \
+    && tar -xf mesa.tar.xz
+COPY gpu/zink-xvfb.patch /build/zink-xvfb.patch
+WORKDIR /build/mesa-25.1.9
+RUN apk add --no-cache libxxf86vm-dev libxfixes-dev xorgproto \
+    && patch -p1 -F0 < /build/zink-xvfb.patch \
+    && meson setup build --prefix=/opt/nanocodex-gpu-gl --libdir=lib -Dbuildtype=release \
+       -Dgallium-drivers=zink -Dvulkan-drivers= -Dplatforms=x11 \
+       -Dglx=dri -Dglvnd=disabled -Degl=disabled -Dgbm=disabled \
+       -Dgles1=disabled -Dgles2=disabled \
+       -Dllvm=disabled -Dbuild-tests=false \
+    && meson compile -C build -j2 \
+    && DESTDIR=/driver meson install -C build
+COPY gpu/gl-check.c /build/gl-check.c
+RUN mkdir -p /driver/usr/local/bin \
+    && cc -O2 -Wall -Wextra -Werror /build/gl-check.c \
+       -I/driver/opt/nanocodex-gpu-gl/include -L/driver/opt/nanocodex-gpu-gl/lib \
+       -Wl,-rpath-link,/driver/opt/nanocodex-gpu-gl/lib -lGL -lX11 \
+       -o /driver/usr/local/bin/nanocodex-gpu-gl-check
+RUN mkdir -p /driver/usr/share/licenses/nanocodex-gpu-gl \
+    && cp docs/license.rst /driver/usr/share/licenses/nanocodex-gpu-gl/
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 RUN apk add --no-cache ca-certificates xvfb openbox xterm font-dejavu \
-      mesa-dri-gallium mesa-vulkan-virtio vulkan-tools vulkan-loader \
+      mesa-dri-gallium mesa-vulkan-virtio vulkan-tools vulkan-loader libxxf86vm \
     && mkdir -p /app /workspace /run/nanocodex-desktop \
     && chmod 0700 /run/nanocodex-desktop
 COPY --from=venus /driver/usr/ /usr/
+COPY --from=zink /driver/ /
+COPY --chmod=755 gpu/gl /usr/local/bin/nanocodex-gpu-gl
 ENV DISPLAY=:0
 WORKDIR /app
 CMD ["/bin/sh"]

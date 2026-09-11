@@ -9,7 +9,7 @@ firmware=${2:?Supply the libkrunfw directory}
 repo=$(cd "$(dirname "$0")/.." && pwd)
 cd "$repo"
 virgl=$(brew --prefix virglrenderer)
-molten=$(brew --prefix molten-vk)
+molten=$(bash scripts/build-macos-moltenvk.sh "${CARGO_TARGET_DIR:-$repo/target}/native-gpu")
 epoxy=$(brew --prefix libepoxy)
 [[ -f "$virgl/lib/libvirglrenderer.1.dylib" ]] || { echo 'Install slp/krun/virglrenderer first' >&2; exit 1; }
 mkdir -p "$output/lib" "$output/licenses" "$output/firmware"
@@ -22,10 +22,11 @@ cargo build --locked --profile nightly -p nanocodex-vm --bin nanocodex-vm-guest 
 cp "${CARGO_TARGET_DIR:-target}/aarch64-unknown-linux-musl/nightly/nanocodex-vm-guest" "$output/nanocodex-vm-guest"
 cp "$firmware/libkrunfw.5.dylib" "$output/firmware/"
 cp "$virgl/lib/libvirglrenderer.1.dylib" "$output/lib/"
-cp "$molten/lib/libMoltenVK.dylib" "$output/lib/"
+cp "$molten/libMoltenVK.dylib" "$output/lib/"
 cp "$epoxy/lib/libepoxy.0.dylib" "$output/lib/"
 cp "$virgl/COPYING" "$output/licenses/virglrenderer.txt"
-cp "$molten/LICENSE" "$output/licenses/MoltenVK.txt"
+cp "$molten/MoltenVK.LICENSE" "$output/licenses/MoltenVK.txt"
+cp "$molten/SPIRV-Cross.LICENSE" "$output/licenses/SPIRV-Cross.txt"
 cp "$epoxy/COPYING" "$output/licenses/libepoxy.txt"
 # Rewrite only these explicit bundled dependencies; system frameworks remain system-owned.
 for file in "$output/nanocodex2" "$output"/lib/*.dylib; do
