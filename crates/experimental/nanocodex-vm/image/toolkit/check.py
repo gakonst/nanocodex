@@ -85,6 +85,8 @@ def check(output):
         "bpy.context.scene.render.engine='CYCLES'\n"
         "bpy.context.scene.cycles.device='CPU'\n"
         "bpy.context.scene.cycles.samples=1\n"
+        # Debian's Blender omits OpenImageDenoise; CPU rendering still works.
+        "bpy.context.scene.cycles.use_denoising=False\n"
         "bpy.context.scene.render.resolution_x=32\n"
         "bpy.context.scene.render.resolution_y=32\n"
         "bpy.context.scene.render.resolution_percentage=100\n"
