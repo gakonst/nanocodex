@@ -128,6 +128,42 @@ keys are separate from `nanocodex auth` (ChatGPT provider credentials) and
 [CLI account sign-in guide](bin/nanocodex/nanocodex2/README.md#account-sign-in)
 for environment overrides, storage, and key revocation.
 
+### Linux Hands and VM factories
+
+From a host already signed in to your Nanocodex account:
+
+```sh
+nanocodex hand add ubuntu@your-server
+# SSH configuration aliases and --port work too.
+```
+
+Or install and authenticate directly on the Linux device:
+
+```sh
+curl -fsSL https://nanocodex.paradigm.xyz | bash
+nanocodex update --nightly
+nanocodex account login # existing SMS OTP flow
+nanocodex hand setup
+```
+
+Both commands install the same native Hand, private desktop, and account-scoped
+VM factory. Setup currently supports x86-64 Debian/Ubuntu with systemd and
+sudo. On-device setup can prompt for your administrator password; SSH enrollment
+uses your existing SSH keys/configuration and requires passwordless sudo.
+KVM is required for a factory. Use `--native-only` for a native Hand on a host
+without KVM. The default factory selector is `linux-<hostname>`; override it
+with `--factory-name`. The default pool has four VMs, each with two vCPUs,
+4 GiB RAM, and a retained 16 GiB root disk. `--max-vms`, `--vm-cpus`, and
+`--vm-memory-mib` configure physical capacity.
+
+The installer verifies release checksums, keeps credentials out of command
+arguments, and waits for remote registration and the native desktop catalog.
+`nanocodex-hand.service` and `nanocodex-factory.service` start at boot and
+reconnect independently of SSH. Re-running setup reuses identities and private
+VM roots under `/srv/nanocodex`; it never replaces a retained workspace. A setup
+already enrolled to another account or origin is rejected. `--artifacts DIR`
+accepts matching locally built Linux host/guest executables for development.
+
 ## Rust: start here
 
 Build one agent, submit ordered prompts through its cheap handle, and await a

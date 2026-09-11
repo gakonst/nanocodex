@@ -78,6 +78,8 @@ jobs:
         with:
           cache-on-failure: true
       - run: cargo fmt --all -- --check
+      - name: Check Linux Hand installation boundaries
+        run: python3 bin/nanocodex/src/hand_setup/test_install.py
       - name: Clippy workspace targets
         run: |
           cargo clippy --workspace --all-targets --all-features --exclude nanocodex-bin -- -D warnings -A clippy::missing_const_for_fn

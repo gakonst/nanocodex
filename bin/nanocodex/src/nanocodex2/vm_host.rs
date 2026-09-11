@@ -2178,6 +2178,7 @@ mod supported {
             });
         }
 
+        super::super::service::ready();
         let first_heartbeat = tokio::time::Instant::now() + Duration::from_secs(20);
         let mut heartbeat = tokio::time::interval_at(first_heartbeat, Duration::from_secs(20));
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

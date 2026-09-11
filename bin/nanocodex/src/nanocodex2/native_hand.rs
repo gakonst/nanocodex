@@ -229,9 +229,12 @@ async fn run(
             Some(event) = events.recv() => match event {
                 AttachmentEvent::Connecting => tracing::info!(target: "nanocodex2",
                     stage = "native.hand.connecting", "Connecting native Hand"),
-                AttachmentEvent::CatalogPublished { .. } => tracing::info!(target: "nanocodex2",
+                AttachmentEvent::CatalogPublished { .. } => {
+                    super::service::ready();
+                    tracing::info!(target: "nanocodex2",
                     stage = "native.hand.ready", machine_id = state.machine.id(),
-                    "Native Hand is ready; press Ctrl-C to detach"),
+                    "Native Hand is ready; press Ctrl-C to detach");
+                },
                 _ => {}
             }
         }
