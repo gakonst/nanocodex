@@ -31,6 +31,8 @@ async fn main() -> Result<()> {
     let voice_result: Result<()> = loop {
         tokio::select! {
             event = voice_events.recv() => match event {
+                Some(VoiceEvent::AudioLevels { .. } | VoiceEvent::TranscriptDelta { .. }) => {},
+                Some(VoiceEvent::UndeliveredAnswer { text }) => println!("{text}"),
                 Some(VoiceEvent::Connecting) => eprintln!("connecting..."),
                 Some(VoiceEvent::Started { voice }) => {
                     eprintln!("listening with {voice}");

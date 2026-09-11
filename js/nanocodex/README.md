@@ -165,6 +165,19 @@ Snapshots update each speaker's transcript row as speech arrives, using a stable
 carry the current partial text; `transcript` events retain completed-turn semantics.
 Internal Realtime envelopes are projected into spoken text before publication.
 Transcript updates continue while a delegation waits for durable admission.
+Snapshots retain the latest 200 rows across stop/start. Subscribe to events if
+an application needs its own longer transcript history.
+
+Both local and managed browser Agents use the shared Rust/WASM client-managed
+handoff policy. Only a completed final answer from the current spoken request
+is submitted for speech. Commentary stays private; superseded, oversized, or
+unconfirmed answers remain visible as `recovered` transcript rows and
+`answer.recovered` events. Workspace and conversation history are not injected
+into call startup. Browser media uses WebRTC echo cancellation, noise suppression,
+and gain control; the native audio helper is used by native clients.
+
+`start()` resolves after the media peer and backend session are ready. A media
+connection timeout gets one retry after the first call has been closed.
 
 The one-operation-at-a-time action surface is the canonical imperative API:
 
@@ -174,6 +187,13 @@ import { Actions } from "nanocodex/browser";
 const voice = Actions.voice.create(agent);
 
 await Actions.voice.start(voice); // defaults to Codex's `cove` voice
+Actions.voice.setMuted(voice, true); // also works while connecting
+Actions.voice.toggleMuted(voice);
+const { microphoneLevel, speakerLevel } = Actions.voice.getSnapshot(voice);
+
+// Fence old speech before submitting typed input. The shared terminal does this.
+await Actions.voice.noteTypedInput(voice);
+await agent.turn.prompt("Check the tests.");
 await Actions.voice.stop(voice);
 await Actions.voice.destroy(voice);
 ```
@@ -181,11 +201,11 @@ await Actions.voice.destroy(voice);
 Subscription voice preferences use the same Rust policy in browsers and native
 apps. `start` and `create` accept `voice`, `instructions`, `pace` (`slow`,
 `natural`, `fast`), `updates` (`auto`, `results`, `silent`), and optional
-`acknowledgements`. Pace and style are speaking instructions. Update preferences
-also select how coding-agent commentary and results reach the voice model.
-Advanced consumers can set `handoffMode` to `thinking`, `commentary`, or
-`bem_tags`; an explicit `updates` preference takes precedence. Apply changed
-settings by stopping and starting a call. The shared terminal provides a saved
+`acknowledgements`. Pace and style are speaking instructions.
+`updates: "silent"` retains coding results as text without automatic speech.
+`handoffMode` remains accepted for compatibility; browser client-managed
+handoffs deliver completed finals and do not stream intermediate commentary.
+Apply changed settings by stopping and starting a call. The shared terminal provides a saved
 Voice settings panel with an Apply and reconnect action.
 
 During an active call, `Actions.voice.speak(voice, text)` queues explicit speech,

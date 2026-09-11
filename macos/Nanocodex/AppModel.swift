@@ -596,6 +596,7 @@ final class AppModel: ObservableObject {
         guard let tab = tab(tabID), canSend(tab.id) else { return }
         let input = (text ?? tab.draft).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return }
+        if let id = tab.threadId { voice.noteTypedInput(conversationID: id) }
         let message = PendingMessage(tabID: tab.id, agentID: tab.threadId, text: input,
                                      predecessor: pendingMessages(tab.id).last?.id ?? controllableTurns(tab.id).first ?? "",
                                      target: targetOverride ?? tab.target, folder: targetOverride == nil ? tab.folder : "", settings: settingsForTab(tab.id))
@@ -625,7 +626,7 @@ final class AppModel: ObservableObject {
         let boundary = (snapshots[agentID]?.cursor ?? snapshots[agentID]?.events.last?.cursor).flatMap { Cursor(rawValue: $0) }
         voice.transcriptFeed.begin(conversationID: agentID, durableRows: voiceTranscriptRows(tabID), after: boundary)
         Task { await observe(agentID) }
-        return VoiceConfiguration(baseURL: url, apiKey: credential.apiKey, agentID: agentID, conversationTitle: title(requested))
+        return VoiceConfiguration(baseURL: url, apiKey: credential.apiKey, agentID: agentID, conversationTitle: title(requested), eventCursor: boundary?.rawValue)
     }
     func retryPending(_ id: String) async {
         guard let message = pending.first(where: { $0.id == id }), message.phase == .failed,
@@ -684,6 +685,7 @@ final class AppModel: ObservableObject {
             }
             guard current(epoch) else { return }
             submitting = true
+            voice.noteTypedInput(conversationID: agentID)
             let accepted = try await runtime.request("queuePrompt", [.object(["agentId": .string(agentID), "input": .string(message.prompt ?? message.text), "requestId": .string(requestID)])])
             guard current(epoch) else { return }
             guard accepted["turn_id"].string == requestID else { throw RuntimeFailure(message: "The message acknowledgement did not match.") }
@@ -733,6 +735,7 @@ final class AppModel: ObservableObject {
         do {
             try await saveQueue()
             guard current(epoch) else { return }
+            voice.noteTypedInput(conversationID: agentID)
             let receipt = try await runtime.request("cancel", [.object(["agentId": .string(agentID), "turnId": .string(turnID)])])
             guard current(epoch) else { return }
             if phase == .cancelling, ["completed", "cancelled", "failed"].contains(receipt["state"].string) {
@@ -746,6 +749,7 @@ final class AppModel: ObservableObject {
     func cancel(tabID: String? = nil) async {
         guard current(generation), let id = tab(tabID)?.threadId, let turn = controllableTurns(tabID).first else { return }
         let epoch = generation
+        voice.noteTypedInput(conversationID: id)
         do { try await runtime.request("cancel", [.object(["agentId": .string(id), "turnId": .string(turn)])]) }
         catch { if current(epoch) { self.error = error.localizedDescription } }
     }
@@ -875,7 +879,7 @@ final class AppModel: ObservableObject {
         catch { self.error = error.localizedDescription }
     }
     private func resetAccount() {
-        voice.stop(); voice.transcriptFeed.clear(); preparingVoiceTabID = nil
+        voice.stop(); voice.clearHistory(); preparingVoiceTabID = nil
         accountHandDiscovery?.cancel(); accountHandDiscovery = nil
         defaultHandConnection?.cancel(); defaultHandConnection = nil
         resetRemoteSharing(); showingScreens = false

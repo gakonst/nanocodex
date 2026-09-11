@@ -121,6 +121,7 @@ impl ManagedVoiceProtocol {
                     json!({ "id": delegation.id, "formatted_input": format_delegation(&delegation) })) }),
                 );
             }
+            "typed_input" => self.note_typed_input(),
             "agent" => self.agent_event(&command["event"].to_string()),
             "managed" => self.managed_event(&command["envelope"]),
             "context" => self

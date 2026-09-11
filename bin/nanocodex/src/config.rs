@@ -116,6 +116,14 @@ pub(crate) struct EvalAgentArgs {
     reason = "independent CLI feature toggles are not one state machine"
 )]
 pub(crate) struct AgentArgs {
+    /// Voice microphone shortcut, or none to use /voice mute only.
+    #[arg(long, env = "NANOCODEX_VOICE_MUTE_KEY", default_value = "ctrl+x", value_parser = crate::tui::voice::validate_key)]
+    pub(crate) voice_mute_key: String,
+
+    /// Animate live voice captions; set false for reduced motion.
+    #[arg(long, env = "NANOCODEX_VOICE_ANIMATIONS", default_value_t = true, action = clap::ArgAction::Set)]
+    pub(crate) voice_animations: bool,
+
     #[command(flatten)]
     auth: AuthArgs,
 

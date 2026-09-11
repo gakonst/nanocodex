@@ -1,4 +1,5 @@
 [workspace]
+exclude = ["third_party/codex-voice"]
 members = [
     "bin/nanocodex",
     "bin/nanocodex/nanocodex2",

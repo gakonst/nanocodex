@@ -641,3 +641,28 @@ older-history pagination and retained-prefix changes rebuild the projection.
 Inactive tabs share a 24 MiB serialized-payload budget (at most eight tabs),
 in addition to the focused reading window. iOS memory warnings
 release inactive tab caches without removing service history or drafts.
+
+### Native voice delivery and latency
+
+The Mac, iPhone, and iPad apps share `NanocodexVoice` and the rebuilt
+`NanocodexVoiceCore.xcframework`. Its C ABI selects the same client-managed Rust
+handoff policy as the browser/WASM SDK: completed finals only, input-generation
+fencing, caption-confirmed delivery, and text recovery for unconfirmed or
+superseded answers. Typed sends, steering, and cancellation fence speech in the
+owning conversation. Recovered results remain visible after stopping and settle
+when durable history contains them; account changes clear retained text.
+
+Media negotiation, durable admission, and event subscription run concurrently.
+The apps pass their known conversation cursor, avoiding a state GET before event
+subscription. Microphone activation waits for the secure peer, data channel, and
+backend readiness; provider handoffs queue until admission and event consumption
+are ready. Startup sends no workspace/history context. Completed speech frames go
+directly to the ordered RTC data channel without a Swift task or flush delay.
+A media connection timeout gets one fresh call after cleanup and preserves mute.
+
+iOS configures WebRTC voice processing before creating audio tracks, requesting
+48 kHz and 10 ms device buffers. Actual device rates/buffers remain OS-controlled;
+WebRTC retains its adaptive jitter buffering and echo/noise/gain processing.
+Timing diagnostics and the opt-in receive-only voice integration test report
+startup and request-to-first-observed-audio time. These checks do not measure
+microphone-to-audible-response latency or establish identical latency to Codex.

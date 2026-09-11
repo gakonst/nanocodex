@@ -6,6 +6,7 @@ use crate::{AudioConfig, AudioError};
 pub(crate) struct VoiceAudio;
 
 impl VoiceAudio {
+    pub(crate) fn set_muted(&mut self, _muted: bool) {}
     pub(crate) const fn open(
         _policy: AudioConfig,
     ) -> Result<(Self, mpsc::Receiver<RealtimeAudio>), AudioError> {

@@ -25,7 +25,7 @@ use nanocodex_voice_protocol::{
     realtime_delegation as protocol_realtime_delegation,
     realtime_tail_delegation as protocol_realtime_tail_delegation,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 pub use nanocodex_voice_protocol::{
     REALTIME_END_INSTRUCTIONS, REALTIME_START_INSTRUCTIONS, VoiceHandoffMode, VoicePace,
@@ -38,6 +38,8 @@ mod audio;
 #[allow(clippy::missing_const_for_fn)]
 #[path = "audio_unsupported.rs"]
 mod audio;
+mod delivery;
+mod media;
 mod startup_context;
 
 pub use nanocodex::oai::realtime::{
@@ -47,7 +49,7 @@ pub use nanocodex::oai::realtime::{
     RealtimeVersion, RealtimeVoice,
 };
 
-use audio::VoiceAudio;
+use media::VoiceMedia;
 
 const CODEX_BACKEND_PROMPT: &str =
     nanocodex_voice_protocol::CHATGPT_REALTIME_BACKEND_PROMPT_TEMPLATE;
@@ -129,6 +131,19 @@ pub enum VoiceEvent {
         /// The complete transcript text.
         text: String,
     },
+    /// Current microphone/speaker peaks, sampled at 100 ms intervals.
+    AudioLevels {
+        microphone: u16,
+        speaker: u16,
+        muted: bool,
+    },
+    /// A live, bounded caption; completed captions arrive as `Transcript`.
+    TranscriptDelta {
+        speaker: VoiceSpeaker,
+        delta: String,
+    },
+    /// A final answer that could not be delivered as speech.
+    UndeliveredAnswer { text: String },
     /// The voice lifecycle failed and stopped.
     Failed {
         /// The terminal typed failure.
@@ -141,17 +156,40 @@ pub enum VoiceEvent {
 /// Receiver for one independent desktop voice event stream.
 pub struct VoiceEvents {
     receiver: mpsc::UnboundedReceiver<VoiceEvent>,
+    levels: watch::Receiver<Option<(u16, u16, bool)>>,
 }
 
 impl VoiceEvents {
     /// Waits for the next lifecycle or transcript update.
     pub async fn recv(&mut self) -> Option<VoiceEvent> {
-        self.receiver.recv().await
+        loop {
+            tokio::select! {
+                biased;
+                event = self.receiver.recv() => return event,
+                result = self.levels.changed(), if self.levels.has_changed().is_ok() => {
+                    if result.is_ok() && let Some((microphone, speaker, muted)) = *self.levels.borrow_and_update() {
+                        return Some(VoiceEvent::AudioLevels { microphone, speaker, muted });
+                    }
+                }
+            }
+        }
     }
 
     /// Attempts to receive an already-buffered update.
     pub fn try_recv(&mut self) -> Option<VoiceEvent> {
-        self.receiver.try_recv().ok()
+        self.receiver.try_recv().ok().or_else(|| {
+            if self.levels.has_changed().unwrap_or(false) {
+                self.levels
+                    .borrow_and_update()
+                    .map(|(microphone, speaker, muted)| VoiceEvent::AudioLevels {
+                        microphone,
+                        speaker,
+                        muted,
+                    })
+            } else {
+                None
+            }
+        })
     }
 }
 
@@ -162,6 +200,7 @@ pub struct VoiceSession {
     agent_events: mpsc::UnboundedSender<AgentEvent>,
     commands: mpsc::Sender<VoiceCommand>,
     agent_control: VoiceAgentControl,
+    media_controls: Arc<media::MediaControls>,
     task: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -264,6 +303,29 @@ impl VoiceSession {
             .await
             .map_err(|_| RealtimeError::Closed)?;
         completed.await.map_err(|_| RealtimeError::Closed)?
+    }
+
+    /// Toggles microphone capture; the helper invalidates buffered capture on each transition.
+    ///
+    /// # Errors
+    /// Returns an error if the lifecycle or helper control queue has closed.
+    pub async fn toggle_muted(&self) -> Result<(), RealtimeError> {
+        self.commands
+            .send(VoiceCommand::SetMuted(self.media_controls.toggle()?))
+            .await
+            .map_err(|_| RealtimeError::Closed)
+    }
+
+    /// Invalidates pending speech when a typed prompt takes ownership of the conversation.
+    ///
+    /// # Errors
+    /// Returns an error if the lifecycle control queue has closed.
+    pub async fn note_typed_input(&self) -> Result<(), RealtimeError> {
+        self.media_controls.suppress();
+        self.commands
+            .send(VoiceCommand::TypedInput)
+            .await
+            .map_err(|_| RealtimeError::Closed)
     }
 
     /// Mirrors one session-wide event from work started outside this lifecycle.
@@ -393,12 +455,14 @@ pub struct VoiceSessionBuilder {
     flush_transcript_tail_on_session_end: bool,
     audio: AudioConfig,
     agent_control: VoiceAgentControl,
+    media_controls: Arc<media::MediaControls>,
 }
 
 impl VoiceSessionBuilder {
     /// Creates a voice lifecycle over an existing OpenAI recipe and agent.
     #[must_use]
     pub fn new(openai: OpenAi, agent: Nanocodex) -> Self {
+        let desktop_handoffs = openai.auth_mode() == OpenAiAuthMode::ChatGpt;
         Self {
             openai,
             agent,
@@ -411,17 +475,18 @@ impl VoiceSessionBuilder {
             transport: None,
             session_mode: RealtimeSessionMode::Conversational,
             output_modality: RealtimeOutputModality::Audio,
-            client_managed_handoffs: false,
+            client_managed_handoffs: desktop_handoffs,
             delegation_ack_filler: None,
             codex_responses_as_items: false,
             codex_response_item_prefix: None,
             codex_response_handoff_mode: RealtimeResponseHandoffMode::Thinking,
             codex_response_handoff_channel_prefixes: BTreeMap::new(),
             initial_items: Vec::new(),
-            include_startup_context: true,
+            include_startup_context: !desktop_handoffs,
             flush_transcript_tail_on_session_end: true,
             audio: AudioConfig::default(),
             agent_control: VoiceAgentControl::default(),
+            media_controls: Arc::default(),
         }
     }
 
@@ -613,17 +678,20 @@ impl VoiceSessionBuilder {
     /// [`VoiceEvent::Failed`].
     pub fn spawn(self) -> Result<(VoiceSession, VoiceEvents), VoiceError> {
         let (events, receiver) = mpsc::unbounded_channel();
+        let (level_updates, levels) = watch::channel(None);
         let (agent_events, observed_agent_events) = mpsc::unbounded_channel();
         let (commands, voice_commands) = mpsc::channel(VOICE_COMMAND_CAPACITY);
         let (stop, stopped) = oneshot::channel();
         let (finished, completion) = oneshot::channel();
         let agent_control = self.agent_control.clone();
+        let media_controls = self.media_controls.clone();
         let task = std::thread::Builder::new()
             .name("nanocodex-voice".to_owned())
             .spawn(move || {
                 run_thread(
                     self,
                     events,
+                    level_updates,
                     observed_agent_events,
                     voice_commands,
                     stopped,
@@ -638,9 +706,10 @@ impl VoiceSessionBuilder {
                 agent_events,
                 commands,
                 agent_control,
+                media_controls,
                 task: Some(task),
             },
-            VoiceEvents { receiver },
+            VoiceEvents { receiver, levels },
         ))
     }
 }
@@ -701,6 +770,9 @@ pub enum VoiceFailure {
     /// Default-device capture or playback failed.
     #[error(transparent)]
     Audio(#[from] AudioError),
+    /// The isolated native helper failed.
+    #[error("{0}")]
+    Native(String),
     /// The default microphone stream ended unexpectedly.
     #[error("microphone stream stopped")]
     MicrophoneStopped,
@@ -736,6 +808,7 @@ pub enum AudioError {
 fn run_thread(
     builder: VoiceSessionBuilder,
     events: mpsc::UnboundedSender<VoiceEvent>,
+    level_updates: watch::Sender<Option<(u16, u16, bool)>>,
     observed_agent_events: mpsc::UnboundedReceiver<AgentEvent>,
     voice_commands: mpsc::Receiver<VoiceCommand>,
     stopped: oneshot::Receiver<()>,
@@ -758,13 +831,16 @@ fn run_thread(
             return;
         }
     };
+    let started = std::time::Instant::now();
     let result = runtime.block_on(run_voice(
         builder,
         &events,
+        level_updates,
         observed_agent_events,
         voice_commands,
         stopped,
     ));
+    tracing::info!(target: "nanocodex_voice", duration_ms = started.elapsed().as_millis() as u64, succeeded = result.is_ok(), "voice session ended");
     let completion = result.as_ref().map_err(ToString::to_string).copied();
     let terminal = match result {
         Ok(()) => VoiceEvent::Stopped,
@@ -777,6 +853,7 @@ fn run_thread(
 async fn run_voice(
     mut builder: VoiceSessionBuilder,
     events: &mpsc::UnboundedSender<VoiceEvent>,
+    level_updates: watch::Sender<Option<(u16, u16, bool)>>,
     observed_agent_events: mpsc::UnboundedReceiver<AgentEvent>,
     voice_commands: mpsc::Receiver<VoiceCommand>,
     stopped: oneshot::Receiver<()>,
@@ -797,6 +874,7 @@ async fn run_voice(
     let result = run_active_voice(
         builder,
         events,
+        level_updates,
         observed_agent_events,
         voice_commands,
         stopped,
@@ -816,6 +894,7 @@ async fn run_voice(
 async fn run_active_voice(
     builder: VoiceSessionBuilder,
     events: &mpsc::UnboundedSender<VoiceEvent>,
+    level_updates: watch::Sender<Option<(u16, u16, bool)>>,
     mut observed_agent_events: mpsc::UnboundedReceiver<AgentEvent>,
     mut voice_commands: mpsc::Receiver<VoiceCommand>,
     mut stopped: oneshot::Receiver<()>,
@@ -830,10 +909,13 @@ async fn run_active_voice(
             RealtimeVersion::V1 | RealtimeVersion::V3 => CHATGPT_REALTIME_VOICE,
             RealtimeVersion::V2 => PLATFORM_REALTIME_VOICE,
         });
+    let native = builder.openai.auth_mode() == OpenAiAuthMode::ChatGpt
+        && builder.transport != Some(RealtimeTransport::WebSocket);
     let mut realtime = builder
         .openai
         .realtime(builder.instructions)
         .voice(voice)
+        .version(builder.version.unwrap_or(default_version))
         .initial_items(builder.initial_items)
         .session_mode(builder.session_mode)
         .output_modality(builder.output_modality)
@@ -850,7 +932,7 @@ async fn run_active_voice(
     if let Some(version) = builder.version {
         realtime = realtime.version(version);
     }
-    if let Some(transport) = builder.transport {
+    if !native && let Some(transport) = builder.transport {
         realtime = realtime.transport(transport);
     }
     if let Some(prefix) = builder.codex_response_item_prefix {
@@ -862,12 +944,18 @@ async fn run_active_voice(
     if let Some(attestation) = builder.attestation_header {
         realtime = realtime.attestation_header(attestation);
     }
-    let connect = realtime.connect();
-    let (session, mut realtime_events) = tokio::select! {
+    let startup_started = std::time::Instant::now();
+    let connect = VoiceMedia::connect(realtime, native, builder.audio, builder.media_controls);
+    let media::Connected {
+        session,
+        events: mut realtime_events,
+        mut audio,
+        mut microphone,
+    } = tokio::select! {
         result = connect => result?,
         _ = &mut stopped => return Ok(()),
     };
-    let (mut audio, mut microphone) = VoiceAudio::open(builder.audio)?;
+
     let (bridge_tx, mut bridge_rx) = mpsc::unbounded_channel();
     let mut agent_bridge = AgentBridge {
         agent: builder.agent.clone(),
@@ -876,22 +964,51 @@ async fn run_active_voice(
         next_generation: 0,
         external_output: HandoffStream::default(),
         external_error: None,
+        external_final: None,
         observing_external_turn: false,
         control: builder.agent_control,
+        delivery: delivery::SpeechDelivery::new(events.clone()),
     };
     let mut external_flush = tokio::time::interval(HANDOFF_STREAM_FLUSH_INTERVAL);
     external_flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     external_flush.tick().await;
-    send_event(events, VoiceEvent::Started { voice });
-
+    let mut muted = false;
+    let mut meter = tokio::time::interval(Duration::from_millis(100));
+    meter.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut backend_ready = false;
     let mut transport_closed = false;
-    let result = loop {
+    let result: Result<(), VoiceFailure> = async { loop {
         tokio::select! {
+            biased;
             _ = &mut stopped => break Ok(()),
-            frame = microphone.recv() => {
+            command = voice_commands.recv() => {
+                let Some(command) = command else {
+                    continue;
+                };
+                match command {
+                    VoiceCommand::SetMuted(value) => {
+                        muted = value;
+                        audio.mute(muted)?;
+                        if let Some(receiver) = &mut microphone { while receiver.try_recv().is_ok() {} }
+                        level_updates.send_replace(Some((0, 0, muted)));
+                    }
+                    VoiceCommand::TypedInput => {
+                        agent_bridge.delivery.invalidate();
+                        audio.interrupt();
+                    }
+                    VoiceCommand::AppendText { role, text, result } => {
+                        drop(result.send(session.send_text(role, text).await));
+                    }
+                    VoiceCommand::AppendSpeech { text, result } => {
+                        drop(result.send(session.append_speech(text).await));
+                    }
+                }
+            }
+            frame = async { match &mut microphone { Some(receiver) => receiver.recv().await, None => std::future::pending().await } } => {
                 let Some(frame) = frame else {
                     break Err(VoiceFailure::MicrophoneStopped);
                 };
+                if muted { continue; }
                 if let Err(error) = session.send_audio(frame).await {
                     break Err(error.into());
                 }
@@ -901,6 +1018,11 @@ async fn run_active_voice(
                     transport_closed = true;
                     break Ok(());
                 };
+                if matches!(event, RealtimeEvent::SessionReady { .. }) && !backend_ready {
+                    backend_ready = true;
+                    tracing::info!(target: "nanocodex_voice", startup_ms = startup_started.elapsed().as_millis() as u64, native, "voice session ready");
+                    send_event(events, VoiceEvent::Started { voice });
+                }
                 if let Err(error) = handle_realtime_event(
                     event,
                     &session,
@@ -933,6 +1055,7 @@ async fn run_active_voice(
                         generation,
                         call_id,
                         output,
+                        succeeded,
                     } => {
                         let completed = match agent_bridge.active.take() {
                             Some(active) if active.generation == generation => {
@@ -948,6 +1071,11 @@ async fn run_active_voice(
                             drop(call_id);
                             continue;
                         };
+                        if session.client_managed_handoffs() {
+                            if !succeeded { agent_bridge.delivery.invalidate(); }
+                            agent_bridge.delivery.complete(&session, generation, output).await?;
+                            continue;
+                        }
                         if !session.client_managed_handoffs()
                             && !streamed_output
                             && !output.trim().is_empty()
@@ -966,34 +1094,34 @@ async fn run_active_voice(
                 };
                 handle_observed_agent_event(event, &session, &mut agent_bridge).await?;
             }
-            command = voice_commands.recv() => {
-                let Some(command) = command else {
-                    continue;
-                };
-                match command {
-                    VoiceCommand::AppendText { role, text, result } => {
-                        drop(result.send(session.send_text(role, text).await));
-                    }
-                    VoiceCommand::AppendSpeech { text, result } => {
-                        drop(result.send(session.append_speech(text).await));
-                    }
-                }
+            _ = meter.tick() => {
+                let (microphone, speaker) = audio.levels()?;
+                level_updates.send_replace(Some((if muted { 0 } else { microphone }, speaker, muted)));
             }
-            _ = external_flush.tick(), if agent_bridge.has_external_stream_output() => {
+            _ = external_flush.tick(), if !session.client_managed_handoffs() && agent_bridge.has_external_stream_output() => {
                 flush_observed_agent_output(&session, &mut agent_bridge).await?;
             }
         }
-    };
-    if !transport_closed {
-        let tail = session.close_with_transcript_tail().await?;
-        if builder.flush_transcript_tail_on_session_end {
-            route_transcript_tail(&agent_bridge.agent, &tail).await?;
-        }
     }
-    result
+    }.await;
+    agent_bridge.delivery.invalidate();
+    drop(audio);
+    let cleanup: Result<(), VoiceFailure> = async {
+        if !transport_closed {
+            let tail = session.close_with_transcript_tail().await?;
+            if builder.flush_transcript_tail_on_session_end {
+                route_transcript_tail(&agent_bridge.agent, &tail).await?;
+            }
+        }
+        Ok(())
+    }
+    .await;
+    result.and(cleanup)
 }
 
 enum VoiceCommand {
+    SetMuted(bool),
+    TypedInput,
     AppendText {
         role: RealtimeInputTextRole,
         text: String,
@@ -1015,6 +1143,7 @@ enum AgentBridgeUpdate {
         generation: u64,
         call_id: String,
         output: String,
+        succeeded: bool,
     },
 }
 
@@ -1032,8 +1161,10 @@ struct AgentBridge {
     next_generation: u64,
     external_output: HandoffStream,
     external_error: Option<String>,
+    external_final: Option<String>,
     observing_external_turn: bool,
     control: VoiceAgentControl,
+    delivery: delivery::SpeechDelivery,
 }
 
 impl AgentBridge {
@@ -1046,30 +1177,71 @@ impl AgentBridge {
 async fn handle_realtime_event(
     event: RealtimeEvent,
     session: &RealtimeSession,
-    audio: &mut VoiceAudio,
+    audio: &mut VoiceMedia,
     events: &mpsc::UnboundedSender<VoiceEvent>,
     agent_bridge: &mut AgentBridge,
     flush_transcript_tail_on_session_end: bool,
 ) -> Result<(), VoiceFailure> {
     match event {
         RealtimeEvent::SessionReady { .. }
-        | RealtimeEvent::InputTranscriptDelta(_)
-        | RealtimeEvent::OutputTranscriptDelta(_)
         | RealtimeEvent::ResponseStarted
         | RealtimeEvent::ResponseDone => {}
+        RealtimeEvent::InputTranscriptDelta(delta) => {
+            if agent_bridge.delivery.input_started() {
+                audio.interrupt();
+            }
+            send_event(
+                events,
+                VoiceEvent::TranscriptDelta {
+                    speaker: VoiceSpeaker::User,
+                    delta,
+                },
+            );
+        }
+        RealtimeEvent::OutputTranscriptDelta(delta) => {
+            agent_bridge.delivery.output_started(&delta);
+            if agent_bridge.delivery.caption_owns_output() && !delta.trim().is_empty() {
+                audio.resume();
+            }
+            send_event(
+                events,
+                VoiceEvent::TranscriptDelta {
+                    speaker: VoiceSpeaker::Assistant,
+                    delta,
+                },
+            );
+        }
         RealtimeEvent::TranscriptTail(tail) => {
             if flush_transcript_tail_on_session_end {
                 route_transcript_tail(&agent_bridge.agent, &tail).await?;
             }
         }
-        RealtimeEvent::SpeechStarted => audio.interrupt(),
+        RealtimeEvent::SpeechStarted => {
+            if agent_bridge.delivery.input_started() {
+                audio.interrupt();
+            }
+        }
         RealtimeEvent::InputTranscriptDone(text) => {
+            if agent_bridge.delivery.input_done(&text) {
+                audio.interrupt();
+            }
             send_transcript(events, VoiceSpeaker::User, text);
         }
         RealtimeEvent::OutputTranscriptDone(text) => {
+            if agent_bridge.delivery.caption_owns_output() {
+                agent_bridge.delivery.captioned(&text);
+                if !text.trim().is_empty() {
+                    audio.resume();
+                }
+            }
+            agent_bridge.delivery.finish_caption();
             send_transcript(events, VoiceSpeaker::Assistant, text);
         }
-        RealtimeEvent::Audio(frame) => audio.play(&frame),
+        RealtimeEvent::Audio(frame) => {
+            if agent_bridge.delivery.accepts_caption() {
+                audio.play(&frame);
+            }
+        }
         RealtimeEvent::AgentRequest {
             call_id,
             prompt,
@@ -1086,8 +1258,10 @@ async fn handle_realtime_event(
                 .await
             {
                 Ok(PromptRoute::Started(turn)) => {
-                    let generation = agent_bridge.control.install(turn.control());
-                    agent_bridge.next_generation = agent_bridge.next_generation.max(generation);
+                    let control_generation = agent_bridge.control.install(turn.control());
+                    agent_bridge.next_generation = agent_bridge.next_generation.saturating_add(1);
+                    let generation = agent_bridge.next_generation;
+                    agent_bridge.delivery.delegate(generation);
                     agent_bridge.active = Some(ActiveAgentRequest {
                         generation,
                         call_id: call_id.clone(),
@@ -1095,9 +1269,11 @@ async fn handle_realtime_event(
                         external: false,
                     });
                     let agent_control = agent_bridge.control.clone();
+                    let session_client_managed = session.client_managed_handoffs();
                     drop(tokio::spawn(async move {
                         let mut turn = turn;
                         let mut output = HandoffStream::default();
+                        let mut final_message = None;
                         let mut flush = tokio::time::interval(HANDOFF_STREAM_FLUSH_INTERVAL);
                         flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                         flush.tick().await;
@@ -1107,7 +1283,12 @@ async fn handle_realtime_event(
                                     let Some(event) = event else {
                                         break;
                                     };
-                                    match event.data() {
+                                    let data = event.data();
+                                    if let Ok(AgentEventData::Assistant(AssistantEvent::Message(message))) = &data
+                                        && speakable_message(&message.text, message.phase) {
+                                        final_message = Some(message.text.clone());
+                                    }
+                                    match data {
                                         Ok(AgentEventData::Assistant(AssistantEvent::Delta(delta)))
                                             if streams_agent_output =>
                                         {
@@ -1166,15 +1347,26 @@ async fn handle_realtime_event(
                                 phase: output.phase,
                             }));
                         }
-                        let output = match turn.result().await {
-                            Ok(result) => result.final_message().to_owned(),
-                            Err(error) => format!("The coding agent failed: {error}"),
+                        let (output, succeeded) = match turn.result().await {
+                            Ok(result) => (
+                                if session_client_managed {
+                                    final_message.unwrap_or_default()
+                                } else {
+                                    result.final_message().to_owned()
+                                },
+                                true,
+                            ),
+                            Err(_) => (
+                                "The coding agent could not complete the request.".to_owned(),
+                                false,
+                            ),
                         };
-                        agent_control.clear(generation);
+                        agent_control.clear(control_generation);
                         drop(updates.send(AgentBridgeUpdate::Completed {
                             generation,
                             call_id,
                             output,
+                            succeeded,
                         }));
                     }));
                 }
@@ -1182,6 +1374,7 @@ async fn handle_realtime_event(
                     if agent_bridge.active.is_none() {
                         agent_bridge.next_generation =
                             agent_bridge.next_generation.saturating_add(1);
+                        agent_bridge.delivery.delegate(agent_bridge.next_generation);
                         agent_bridge.active = Some(ActiveAgentRequest {
                             generation: agent_bridge.next_generation,
                             call_id: call_id.clone(),
@@ -1190,6 +1383,10 @@ async fn handle_realtime_event(
                         });
                         agent_bridge.external_output = HandoffStream::default();
                         agent_bridge.external_error = None;
+                        agent_bridge.external_final = None;
+                    }
+                    if let Some(active) = &agent_bridge.active {
+                        agent_bridge.delivery.delegate(active.generation);
                     }
                     if session.steer_agent_request(&call_id).await?
                         == RealtimeAgentSteer::ReplacedDelegation
@@ -1199,6 +1396,14 @@ async fn handle_realtime_event(
                     }
                 }
                 Err(error) => {
+                    if session.client_managed_handoffs() {
+                        send_event(
+                            events,
+                            VoiceEvent::UndeliveredAnswer {
+                                text: format!("The coding agent rejected the request: {error}"),
+                            },
+                        );
+                    }
                     if !session.client_managed_handoffs() {
                         session
                             .append_agent_output(
@@ -1221,12 +1426,50 @@ async fn handle_realtime_event(
     Ok(())
 }
 
+fn speakable_message(text: &str, phase: Option<MessagePhase>) -> bool {
+    !matches!(phase, Some(MessagePhase::Commentary))
+        && (matches!(phase, Some(MessagePhase::FinalAnswer))
+            || !(text.trim_start().starts_with("[ANALYSIS]")
+                || text.trim_start().starts_with("[COMMENTARY]")))
+        && !text.trim().is_empty()
+}
+
 async fn handle_observed_agent_event(
     event: AgentEvent,
     session: &RealtimeSession,
     agent_bridge: &mut AgentBridge,
 ) -> Result<(), VoiceFailure> {
     if session.client_managed_handoffs() {
+        if !agent_bridge
+            .active
+            .as_ref()
+            .is_some_and(|active| active.external)
+        {
+            return Ok(());
+        }
+        match event.data() {
+            Ok(AgentEventData::Assistant(AssistantEvent::Message(message))) => {
+                if speakable_message(&message.text, message.phase) {
+                    agent_bridge.external_final = Some(message.text);
+                }
+            }
+            Ok(AgentEventData::Run(RunEvent::Completed(_))) => {
+                if let Some(active) = agent_bridge.active.take()
+                    && let Some(output) = agent_bridge.external_final.take()
+                {
+                    agent_bridge
+                        .delivery
+                        .complete(session, active.generation, output)
+                        .await?;
+                }
+            }
+            Ok(AgentEventData::Run(RunEvent::Failed(_))) => {
+                agent_bridge.active = None;
+                agent_bridge.external_final = None;
+                agent_bridge.delivery.invalidate();
+            }
+            _ => {}
+        }
         return Ok(());
     }
     match event.data() {
@@ -1564,6 +1807,45 @@ mod tests {
         codex_voice_instructions, realtime_output_byte_limit, truncate_realtime_output,
     };
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn meters_coalesce_without_delaying_terminal_events() {
+        let (events, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (updates, levels) = tokio::sync::watch::channel(None);
+        let mut stream = super::VoiceEvents { receiver, levels };
+        for peak in 0..1000 {
+            updates.send_replace(Some((peak, 0, false)));
+        }
+        assert!(matches!(
+            stream.recv().await,
+            Some(super::VoiceEvent::AudioLevels {
+                microphone: 999,
+                ..
+            })
+        ));
+        updates.send_replace(Some((1000, 0, false)));
+        events.send(super::VoiceEvent::Stopped).unwrap();
+        assert!(matches!(
+            stream.recv().await,
+            Some(super::VoiceEvent::Stopped)
+        ));
+    }
+
+    #[test]
+    fn private_agent_messages_are_not_speech_candidates() {
+        use nanocodex::oai::responses::MessagePhase;
+        assert!(!super::speakable_message(
+            "progress",
+            Some(MessagePhase::Commentary)
+        ));
+        assert!(!super::speakable_message(" [ANALYSIS] private", None));
+        assert!(!super::speakable_message("[COMMENTARY] private", None));
+        assert!(super::speakable_message(
+            "[ANALYSIS] quoted",
+            Some(MessagePhase::FinalAnswer)
+        ));
+        assert!(super::speakable_message("answer", None));
+    }
 
     #[test]
     fn desktop_audio_policy_is_explicit_and_stable() {

@@ -42,7 +42,7 @@ test("Rust speech waits for a provider handoff before reading memory or admittin
   } finally { voice.free(); }
 });
 
-test("managed Rust queues late startup context once while SDP is already in flight", async () => {
+test("managed Rust omits startup context even when admission arrives after SDP", async () => {
   const wasm = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
   const module = await WebAssembly.compile(wasm);
   let admit;
@@ -65,15 +65,9 @@ test("managed Rust queues late startup context once while SDP is already in flig
     admit();
     await starting;
     const context = JSON.parse(voice.sidebandOpened());
-    assert.match(context.frames.join(""), /current project is Juniper/);
-    const texts = context.frames.map((frame) => JSON.parse(frame).content[0].text);
-    assert.ok(texts.join("").length > 8192, "late admission preserves the full startup budget");
-    assert.ok(texts.every((text) => new TextEncoder().encode(text).length <= 500));
-    assert.equal(context.playback_enabled, true, "background context does not block conversational playback");
-    assert.ok(context.frames.every((frame) => JSON.parse(frame).type === "session.context.append"));
-    assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, context.frames, "lost control acknowledgements replay context");
-    voice.framesSent(context.frames.length);
-    assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, []);
+    assert.deepEqual(context.frames, []);
+    assert.equal(context.playback_enabled, true);
+
   } finally {
     admit();
     voice.free();
@@ -125,7 +119,7 @@ test("managed browser voice gives a UUIDv8 durable Agent a distinct UUIDv7 realt
   assert.equal(call.realtime_session_id, call.session_id);
   assert.equal(call.thread_id, call.session_id);
   assert.equal(provider.session.model, "gpt-live-1-codex");
-  assert.match(provider.session.instructions, /continue the durable chat/);
+  assert.doesNotMatch(provider.session.instructions, /continue the durable chat/);
   const sideband = new URL(voice.sidebandUrl("rtc_managed"), "https://managed.example");
   assert.equal(sideband.searchParams.get("managed_agent_id"), AGENT_ID);
   assert.equal(sideband.searchParams.get("realtime_session_id"), call.session_id);
@@ -159,7 +153,7 @@ test("managed browser voice gives a UUIDv8 durable Agent a distinct UUIDv7 realt
     },
   });
   const reply = JSON.parse(await voice.realtimeMessage(delegation));
-  assert.match(reply.frames.join(""), /December 22/);
+  assert.deepEqual(reply.frames, [], "an in-progress coding turn cannot speak its final early");
   assert.doesNotMatch(requests[1].body.input, /voice_bootstrap/);
   assert.match(requests[1].body.input, /When is Elena's birthday/);
   await voice.realtimeMessage(delegation);
@@ -210,10 +204,8 @@ test("durable failure before a replacement receipt completes only that handoff",
       voice.framesSent(output.frames.length);
       if (!priorStillActive) voice.agentEvent({ turnId: "prior", event: { type: "run.completed" } });
       const failed = JSON.parse(await voice.realtimeMessage(handoff("next-handoff")));
-      assert.equal(failed.frames.length, 1);
-      const frame = JSON.parse(failed.frames[0]);
-      assert.equal(frame.delegation_item_id, "next-handoff");
-      assert.equal(frame.content[0].text, "I couldn't complete that request. Please try again.");
+      assert.deepEqual(failed.frames, []);
+      assert.ok(failed.undelivered_answers.includes("The coding agent could not complete the request."));
       assert.equal(voice.agentEvent({ turnId: "next", event: { type: "turn_failed" } }), undefined);
       assert.equal(await voice.cancel(), false, "terminal failure releases only the completed active turn");
       await voice.stop();
@@ -268,4 +260,52 @@ test("Voice.create refuses an ordinary managed Agent hosted on another browser o
     if (descriptor) Object.defineProperty(globalThis, "location", descriptor);
     else delete globalThis.location;
   }
+});
+
+
+test("real WASM speaks only completed voice finals and recovers superseded or unconfirmed output", async () => {
+  const module = await WebAssembly.compile(await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url)));
+  let turn = 0;
+  const agent = Agent.open(AGENT_ID, { baseUrl: "https://managed.example", fetch: async (input) => {
+    if (new URL(input).pathname.endsWith("/delegate")) return Response.json({ route: "started", turn_id: `turn-${++turn}` });
+    return Response.json({ context: { workspace: "/brain", history: [] } });
+  } });
+  const voice = await createManagedBrowserVoice(agent, "cove", { module });
+  const realtime = async (event) => JSON.parse(await voice.realtimeMessage(JSON.stringify(event)));
+  const event = (type, payload) => JSON.parse(voice.agentEvent({ turnId: `turn-${turn}`, event: { type, payload } }));
+  const delegate = async (id) => {
+    await realtime({ type: "turn.done", turn: { role: "user", transcript: `Question ${id}` } });
+    await realtime({ type: "delegation.created", item: { type: "delegation", target: "client", id,
+      content: [{ type: "input_text", text: `Question ${id}` }] } });
+  };
+  try {
+    await voice.start();
+    await delegate("one");
+    assert.deepEqual(event("assistant.message", { text: "private progress", phase: "commentary" }).frames, []);
+    assert.deepEqual(event("assistant.message", { text: "First answer", phase: "final_answer" }).frames, []);
+    const final = event("run.completed");
+    assert.equal(JSON.parse(final.frames[0]).channel, "speakable");
+    voice.framesSent(1);
+    const typed = JSON.parse(voice.noteTypedInput());
+    assert.equal(typed.playback_enabled, false);
+    assert.deepEqual(typed.undelivered_answers, ["First answer"]);
+    assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, []);
+    assert.equal(JSON.parse(voice.sidebandOpened()).playback_enabled, false);
+
+    await delegate("two");
+    event("assistant.message", { text: "Stale answer", phase: "final_answer" });
+    voice.noteTypedInput();
+    const stale = event("run.completed");
+    assert.deepEqual(stale.frames, []);
+    assert.deepEqual(stale.undelivered_answers, ["Stale answer"]);
+
+    await delegate("three");
+    event("assistant.message", { text: "Spoken answer", phase: "final_answer" });
+    event("run.completed");
+    voice.framesSent(1);
+    await realtime({ type: "output_transcript.added", item: { text: "Spoken answer" } });
+    await realtime({ type: "turn.done", turn: { role: "assistant", transcript: "Spoken answer" } });
+    const stopped = JSON.parse(await voice.stop());
+    assert.deepEqual(stopped.undelivered_answers ?? [], []);
+  } finally { voice.free(); }
 });

@@ -15,6 +15,9 @@ export const defaultVoice = "cove";
 
 const IDLE_SNAPSHOT = Object.freeze({
   error: undefined,
+  muted: false,
+  microphoneLevel: 0,
+  speakerLevel: 0,
   status: "idle",
   statusText: undefined,
   transcripts: Object.freeze([]),
@@ -51,6 +54,9 @@ export function create(agent, options = {}) {
   function publish(next) {
     snapshot = Object.freeze({
       error: next.error,
+      muted: next.muted ?? snapshot.muted,
+      microphoneLevel: next.microphoneLevel ?? snapshot.microphoneLevel,
+      speakerLevel: next.speakerLevel ?? snapshot.speakerLevel,
       status: next.status,
       statusText: next.statusText,
       transcripts: next.transcripts ?? snapshot.transcripts,
@@ -81,7 +87,7 @@ export function create(agent, options = {}) {
     releaseEvents = watcher.onEvent((event) => active.observe({ type: "event", target, event }));
   }
 
-  async function start(parameters = {}) {
+  async function start(parameters = {}, attempt = 0) {
     if (destroyed) throw new Error("voice resource is destroyed");
     const selectedVoice = parameters.voice ?? options.voice ?? defaultVoice;
     if (!voices.includes(selectedVoice)) throw new TypeError(`unsupported ChatGPT voice: ${selectedVoice}`);
@@ -95,6 +101,7 @@ export function create(agent, options = {}) {
     const current = ++generation;
     publish({
       error: undefined,
+      muted: attempt > 0 && snapshot.muted, microphoneLevel: 0, speakerLevel: 0,
       status: "connecting",
       statusText: undefined,
       transcripts: snapshot.transcripts,
@@ -106,7 +113,7 @@ export function create(agent, options = {}) {
       ? createManagedBrowserVoice(agent, selectedVoice)
       : createBrowserVoice(agent, selectedVoice));
     const transport = managedTransport;
-    const transcriptRows = new Map();
+    let transcriptSequence = 0;
     const next = new BrowserVoiceSession({
       core,
       sessionId,
@@ -125,21 +132,30 @@ export function create(agent, options = {}) {
       },
       onTranscript(speaker, text, metadata = {}) {
         if (session !== next || generation !== current) return;
-        const key = metadata.id === undefined ? undefined : `${speaker}:${metadata.id}`;
-        const index = key === undefined ? undefined : transcriptRows.get(key);
-        if (!text.trim() && index === undefined) return;
-        const entry = Object.freeze({ speaker, text, ...(key === undefined ? {} : {
-          id: `${current}:${key}`, isPartial: metadata.is_partial === true,
-        }) });
+        const id = `${current}:${speaker}:${metadata.id ?? `entry-${++transcriptSequence}`}`;
+        const index = snapshot.transcripts.findIndex((entry) => entry.id === id);
+        if (!text.trim() && index < 0) return;
+        const entry = Object.freeze({ speaker, text, id, isPartial: metadata.is_partial === true });
         const transcripts = [...snapshot.transcripts];
-        if (index === undefined) {
-          if (key !== undefined) transcriptRows.set(key, transcripts.length);
-          transcripts.push(entry);
-        } else {
-          transcripts[index] = entry;
-        }
-        publish({ ...snapshot, transcripts: Object.freeze(transcripts) });
+        if (index < 0) transcripts.push(entry); else transcripts[index] = entry;
+        publish({ ...snapshot, transcripts: Object.freeze(transcripts.slice(-200)) });
         emit(Object.freeze({ type: metadata.is_partial ? "transcript.delta" : "transcript", ...entry }));
+      },
+      onLevels({ microphone, speaker, muted }) {
+        if (session === next && generation === current) publish({ ...snapshot, muted, microphoneLevel: microphone, speakerLevel: speaker });
+      },
+      onUndeliveredAnswer(text) {
+        if (destroyed || !text.trim()) return;
+        const transcripts = [...snapshot.transcripts];
+        const normalized = text.trim().replace(/\s+/g, " ");
+        const index = transcripts.findLastIndex((entry) => entry.speaker === "assistant"
+          && !entry.recovered && entry.id?.startsWith(`${current}:`)
+          && entry.text.trim().replace(/\s+/g, " ") === normalized);
+        const id = index < 0 ? `${current}:recovered:${++transcriptSequence}` : transcripts[index].id;
+        const entry = Object.freeze({ speaker: "assistant", text, id, isPartial: false, recovered: true });
+        if (index < 0) transcripts.push(entry); else transcripts[index] = entry;
+        publish({ ...snapshot, transcripts: Object.freeze(transcripts.slice(-200)) });
+        emit(Object.freeze({ type: "answer.recovered", ...entry }));
       },
       onTerminated(message) {
         if (session !== next || destroyed || generation !== current) return;
@@ -152,11 +168,12 @@ export function create(agent, options = {}) {
         stopPromise = closing;
         if (activeResources.get(agent) === resource) activeResources.delete(agent);
         const error = new Error(message);
-        publish({ ...snapshot, error, status: "error", statusText: message });
+        publish({ ...snapshot, error, microphoneLevel: 0, speakerLevel: 0, status: "error", statusText: message });
         emit(Object.freeze({ type: "error", error }));
       },
     });
     session = next;
+    next.setMuted(snapshot.muted);
     observeAgentEvents(next);
     startPromise = next.start().then(() => {
       if (destroyed || session !== next || generation !== current) return;
@@ -168,6 +185,7 @@ export function create(agent, options = {}) {
       cleanupWatcher();
       await next.close().catch(() => next.abort());
       if (destroyed || generation !== current) return;
+      if (attempt === 0 && cause?.code === "peer_connection_timeout") return start(parameters, 1);
       const error = cause instanceof Error ? cause : new Error(String(cause));
       publish({ ...snapshot, error, status: "error", statusText: error.message });
       emit(Object.freeze({ type: "error", error }));
@@ -186,18 +204,18 @@ export function create(agent, options = {}) {
     cleanupWatcher();
     if (activeResources.get(agent) === resource) activeResources.delete(agent);
     if (!active) {
-      if (snapshot.status !== "idle") publish(IDLE_SNAPSHOT);
+      if (snapshot.status !== "idle") publish({ ...IDLE_SNAPSHOT, transcripts: snapshot.transcripts });
       return;
     }
     if (!destroyed) {
-      publish(IDLE_SNAPSHOT);
+      publish({ ...IDLE_SNAPSHOT, transcripts: Object.freeze(snapshot.transcripts.map((entry) => Object.freeze({ ...entry, isPartial: false }))) });
       emit(Object.freeze({ type: "stopped" }));
     }
     stopPromise = active.close().catch((cause) => {
       active.abort();
       if (!destroyed) {
         const error = cause instanceof Error ? cause : new Error(String(cause));
-        publish({ ...IDLE_SNAPSHOT, error, status: "error", statusText: error.message });
+        publish({ ...IDLE_SNAPSHOT, transcripts: snapshot.transcripts, error, status: "error", statusText: error.message });
         emit(Object.freeze({ type: "error", error }));
       }
       throw cause;
@@ -234,6 +252,13 @@ export function create(agent, options = {}) {
       return session.cancel();
     },
     destroy,
+    setMuted(muted) {
+      if (typeof muted !== "boolean") throw new TypeError("voice muted must be a boolean");
+      if (!session) throw new Error("voice is not active");
+      session.setMuted(muted);
+    },
+    toggleMuted() { resource.setMuted(!snapshot.muted); },
+    noteTypedInput: () => session?.noteTypedInput() ?? Promise.resolve(),
     speak: (text) => command("appendSpeech", text),
     appendText: (text, { role = "user" } = {}) => command("appendText", role, text),
     appendContext: (text) => command("appendContext", text),

@@ -23,7 +23,7 @@ const IDLE_AGENT_SNAPSHOT = Object.freeze({
   status: "idle",
 });
 const IDLE_VOICE_SNAPSHOT = Object.freeze({
-  error: undefined,
+  error: undefined, muted: false, microphoneLevel: 0, speakerLevel: 0,
   status: "idle",
   statusText: undefined,
   transcripts: Object.freeze([]),
@@ -149,6 +149,9 @@ export function useVoice(agent, parameters = {}) {
     isConnecting: snapshot.status === "connecting",
     isError: snapshot.status === "error",
     isIdle: snapshot.status === "idle",
+    setMuted: resource?.setMuted ?? (() => {}),
+    toggleMuted: resource?.toggleMuted ?? (() => {}),
+    noteTypedInput: resource?.noteTypedInput ?? (async () => {}),
     cancel: resource?.cancel ?? (async () => false),
     speak: resource?.speak ?? unavailable,
     appendText: resource?.appendText ?? unavailable,

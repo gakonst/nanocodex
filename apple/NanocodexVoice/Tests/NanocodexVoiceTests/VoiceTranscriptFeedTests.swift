@@ -12,6 +12,21 @@ final class VoiceTranscriptFeedTests: XCTestCase {
     private func spoken(_ text: String) -> JSON {
         .object(["type": .string("turn.done"), "turn": .object(["role": .string("user"), "transcript": .string(text)])])
     }
+    @MainActor func testRecoveredFinalSettlesAgainstDurableAgentHistoryAndAccountResetClearsIt() {
+        let voice = VoiceSession(), agent = "conversation"
+        voice.transcriptFeed.begin(conversationID: agent, durableRows: [], after: Cursor(rawValue: "10")!)
+        voice.startTranscriptPreview(agentID: agent)
+        var row = TranscriptRow(id: "coding-final", role: "Agent", text: "Build passed")
+        row.cursor = Cursor(rawValue: "11")
+        voice.transcriptFeed.reconcile(conversationID: agent, durableRows: [row])
+        var recovered = ManagedVoiceEffects(); recovered.undeliveredAnswers = ["Build passed"]
+        voice.applyEffectsForTesting(recovered)
+        XCTAssertEqual(voice.transcriptFeed.conversations[agent]?.count, 0)
+        voice.stop(); voice.clearHistory()
+        XCTAssertTrue(voice.transcripts.isEmpty)
+        XCTAssertTrue(voice.transcriptFeed.conversations.isEmpty)
+    }
+
     @MainActor func testHistoricalAndPaginatedSpeechCannotAcknowledgeNewCall() throws {
         let voice = VoiceSession(), agent = "conversation"
         let old = try durable("Again", cursor: "10")

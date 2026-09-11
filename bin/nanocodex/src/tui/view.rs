@@ -26,6 +26,7 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut App) {
         layout.composer,
         &layout.composer_layout,
     ));
+    super::voice::render(frame, &app.voice, layout.voice);
     render_footer(frame, app, layout.footer);
     app.render_mouse_selection(frame.buffer_mut(), selectable_areas.as_slice());
     render_model_picker(frame, app);
@@ -35,6 +36,7 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut App) {
 pub(super) fn render_animation(frame: &mut Frame<'_>, app: &mut App) {
     let layout = view_layout(frame.area(), app);
     render_composer(frame, app, layout.composer, &layout.composer_layout);
+    super::voice::render(frame, &app.voice, layout.voice);
     render_footer(frame, app, layout.footer);
     render_model_picker(frame, app);
     render_reasoning_picker(frame, app);
@@ -88,6 +90,7 @@ struct ViewLayout {
     transcript: Rect,
     pending: Rect,
     composer: Rect,
+    voice: Rect,
     footer: Rect,
     composer_layout: ComposerLayout,
 }
@@ -116,12 +119,14 @@ fn view_layout(area: Rect, app: &mut App) -> ViewLayout {
         header_area,
         transcript_area,
         pending_area,
+        voice_area,
         composer_area,
         footer_area,
     ] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(4),
         Constraint::Length(pending_height),
+        Constraint::Length(if app.voice.visible() { 3 } else { 0 }),
         Constraint::Length(composer_height),
         Constraint::Length(1),
     ])
@@ -131,6 +136,7 @@ fn view_layout(area: Rect, app: &mut App) -> ViewLayout {
         header: header_area,
         transcript: transcript_area,
         pending: pending_area,
+        voice: voice_area,
         composer: composer_area,
         footer: footer_area,
         composer_layout,

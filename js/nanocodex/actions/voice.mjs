@@ -48,3 +48,7 @@ export function appendText(voice, text, options) {
 export function appendContext(voice, text) {
   return voice.appendContext(text);
 }
+
+export function setMuted(voice, muted) { return voice.setMuted(muted); }
+export function toggleMuted(voice) { return voice.toggleMuted(); }
+export function noteTypedInput(voice) { return voice.noteTypedInput(); }

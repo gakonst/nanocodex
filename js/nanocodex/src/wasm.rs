@@ -25,7 +25,7 @@ use nanocodex::{
         SubscriptionCommit, SubscriptionFuture, SubscriptionHostError, SubscriptionHttpRequest,
         SubscriptionHttpResponse, SubscriptionStoreValue,
     },
-    oai::responses::{ContentItem, MessageRole, ResponseItem},
+    oai::responses::ResponseItem,
     tools::{
         ToolContext, ToolDefinition, ToolInput, ToolOutput,
         contract::ToolOutputWire,
@@ -49,10 +49,9 @@ use nanocodex_subagents::{
 };
 use nanocodex_voice_protocol::{
     BrowserVoiceEffects, BrowserVoiceProtocol, REALTIME_END_INSTRUCTIONS,
-    REALTIME_START_INSTRUCTIONS, TranscriptEntry, VoiceHistoryEntry, build_browser_startup_context,
-    build_chatgpt_realtime_call_with_settings, decode_chatgpt_realtime_call,
-    preferred_physical_input, realtime_delegation, realtime_message_requires_agent_admission,
-    realtime_tail_delegation, valid_realtime_call_id,
+    REALTIME_START_INSTRUCTIONS, TranscriptEntry, build_chatgpt_realtime_call_with_settings,
+    decode_chatgpt_realtime_call, preferred_physical_input, realtime_delegation,
+    realtime_message_requires_agent_admission, realtime_tail_delegation, valid_realtime_call_id,
 };
 
 mod transport;
@@ -250,8 +249,10 @@ struct WasmAgentSessionContext<'a> {
 
 #[derive(Deserialize)]
 struct WasmOwnedAgentSessionContext {
-    workspace: String,
-    history: Vec<ResponseItem>,
+    #[serde(rename = "workspace")]
+    _workspace: String,
+    #[serde(rename = "history")]
+    _history: Vec<ResponseItem>,
 }
 
 #[derive(Deserialize)]
@@ -1972,6 +1973,15 @@ pub struct WasmBrowserVoice {
 
 #[wasm_bindgen(js_class = BrowserVoice)]
 impl WasmBrowserVoice {
+    /// Fences speech before the embedding submits typed input.
+    ///
+    /// # Errors
+    /// Rejects only when effects cannot be serialized.
+    #[wasm_bindgen(js_name = noteTypedInput)]
+    pub fn note_typed_input(&self) -> Result<String, JsValue> {
+        encode_voice_effects(&self.protocol.borrow_mut().note_typed_input())
+    }
+
     /// Sets subscription voice preferences before starting a call.
     ///
     /// # Errors
@@ -2042,7 +2052,7 @@ impl WasmBrowserVoice {
         )
     }
 
-    /// Begins Codex's Realtime lifecycle and builds bounded browser startup context in Rust.
+    /// Begins Codex's Realtime lifecycle without injecting startup context.
     ///
     /// # Errors
     ///
@@ -2051,18 +2061,10 @@ impl WasmBrowserVoice {
         if self.started.get() {
             return Ok(());
         }
-        let context = self
-            .agent
+        self.agent
             .append_developer_message(REALTIME_START_INSTRUCTIONS)
             .await
             .map_err(js_error)?;
-        let tree = browser_workspace_tree(context.workspace(), self.agent.session_id()).await;
-        let history = browser_voice_history(context.history());
-        self.startup_context.replace(build_browser_startup_context(
-            &history,
-            context.workspace(),
-            &tree,
-        ));
         self.started.set(true);
         Ok(())
     }
@@ -2224,7 +2226,7 @@ impl WasmBrowserVoice {
     /// Rejects when the Agent driver stops.
     pub async fn stop(&self) -> Result<String, JsValue> {
         if !self.started.get() {
-            return encode_voice_effects(&self.protocol.borrow().close_effects());
+            return encode_voice_effects(&self.protocol.borrow_mut().close_effects());
         }
         let tail = self.protocol.borrow_mut().take_transcript_tail();
         let routed = if let Some(input) = realtime_tail_delegation(&tail) {
@@ -2243,7 +2245,7 @@ impl WasmBrowserVoice {
             (Err(error), _) | (Ok(()), Err(error)) => return Err(js_error(error)),
             (Ok(()), Ok(())) => {}
         }
-        encode_voice_effects(&self.protocol.borrow().close_effects())
+        encode_voice_effects(&self.protocol.borrow_mut().close_effects())
     }
 
     /// Cancels only the active coding turn, never merely the voice transport.
@@ -2284,9 +2286,11 @@ impl WasmBrowserVoice {
 
 impl WasmBrowserVoice {
     fn new(agent: RustNanocodex, voice: &str) -> Result<Self, String> {
+        let mut protocol = BrowserVoiceProtocol::new(voice)?;
+        protocol.enable_client_managed_handoffs();
         Ok(Self {
             agent,
-            protocol: RefCell::new(BrowserVoiceProtocol::new(voice)?),
+            protocol: RefCell::new(protocol),
             active_turn: Rc::new(RefCell::new(None)),
             next_turn: Rc::new(Cell::new(0)),
             startup_context: RefCell::new(None),
@@ -2346,6 +2350,15 @@ pub struct WasmManagedBrowserVoice {
 
 #[wasm_bindgen(js_class = ManagedBrowserVoice)]
 impl WasmManagedBrowserVoice {
+    /// Fences speech before the embedding submits typed input.
+    ///
+    /// # Errors
+    /// Rejects only when effects cannot be serialized.
+    #[wasm_bindgen(js_name = noteTypedInput)]
+    pub fn note_typed_input(&self) -> Result<String, JsValue> {
+        encode_voice_effects(&self.protocol.borrow_mut().note_typed_input())
+    }
+
     /// Sets subscription voice preferences before starting a call.
     ///
     /// # Errors
@@ -2423,10 +2436,11 @@ impl WasmManagedBrowserVoice {
     /// Rejects voices outside Codex's ChatGPT V3 catalog.
     #[wasm_bindgen(constructor)]
     pub fn new(voice: &str) -> Result<Self, JsValue> {
+        let mut protocol =
+            nanocodex_voice_protocol::ManagedVoiceProtocol::new(voice).map_err(js_error)?;
+        protocol.enable_client_managed_handoffs();
         Ok(Self {
-            protocol: RefCell::new(
-                nanocodex_voice_protocol::ManagedVoiceProtocol::new(voice).map_err(js_error)?,
-            ),
+            protocol: RefCell::new(protocol),
             startup_context: RefCell::new(None),
             started: Cell::new(false),
             call_prepared: Cell::new(false),
@@ -2442,21 +2456,8 @@ impl WasmManagedBrowserVoice {
         if self.started.get() {
             return Ok(());
         }
-        let context = serde_json::from_str::<WasmOwnedAgentSessionContext>(context_json)
+        let _context = serde_json::from_str::<WasmOwnedAgentSessionContext>(context_json)
             .map_err(|error| js_error(format!("invalid AgentSessionContext: {error}")))?;
-        let history = browser_voice_history(&context.history);
-        self.startup_context.replace(build_browser_startup_context(
-            &history,
-            &context.workspace,
-            &[],
-        ));
-        if self.call_prepared.get()
-            && let Some(context) = self.startup_context.borrow().as_deref()
-        {
-            // Admission and the SDP request may finish in either order. Retain
-            // late context in the same acknowledged queue as all control frames.
-            let _ = self.protocol.borrow_mut().startup_context(context);
-        }
         self.started.set(true);
         Ok(())
     }
@@ -2612,7 +2613,7 @@ impl WasmManagedBrowserVoice {
         let delegation = realtime_tail_delegation(&tail);
         self.started.set(false);
         self.startup_context.replace(None);
-        encode_managed_voice_update(self.protocol.borrow().close_effects(), delegation, None)
+        encode_managed_voice_update(self.protocol.borrow_mut().close_effects(), delegation, None)
     }
 
     /// Selects Codex's preferred physical input from browser device labels.
@@ -2657,129 +2658,6 @@ fn encode_managed_voice_update(
         prefetch,
     })
     .map_err(js_error)
-}
-
-#[derive(Deserialize)]
-struct WasmWorkspaceEntry {
-    kind: String,
-    path: String,
-}
-
-async fn browser_workspace_tree(_workspace: &str, session_id: &str) -> Vec<String> {
-    const TREE_ENTRIES: usize = 20;
-    let roots = browser_workspace_entries(".", session_id).await;
-    // The second level consists of independent host requests. Bound fan-out to
-    // the same twenty entries as the rendered tree, and retain sorted order.
-    let children =
-        futures_util::future::join_all(roots.iter().take(TREE_ENTRIES).map(|entry| async {
-            if entry.kind == "directory" {
-                browser_workspace_entries(&entry.path, session_id).await
-            } else {
-                Vec::new()
-            }
-        }))
-        .await;
-    let mut output = Vec::new();
-    for (entry, children) in roots.iter().take(TREE_ENTRIES).zip(children) {
-        render_workspace_entry(&mut output, entry, 0);
-        for child in children.iter().take(TREE_ENTRIES) {
-            render_workspace_entry(&mut output, child, 1);
-        }
-        if children.len() > TREE_ENTRIES {
-            output.push(format!(
-                "  - ... {} more entries",
-                children.len() - TREE_ENTRIES
-            ));
-        }
-    }
-    if roots.len() > TREE_ENTRIES {
-        output.push(format!("- ... {} more entries", roots.len() - TREE_ENTRIES));
-    }
-    output
-}
-
-async fn browser_workspace_entries(path: &str, session_id: &str) -> Vec<WasmWorkspaceEntry> {
-    let Ok(promise) = host_list_workspace(path, session_id) else {
-        return Vec::new();
-    };
-    let Ok(value) = JsFuture::from(promise).await else {
-        return Vec::new();
-    };
-    let Some(encoded) = value.as_string() else {
-        return Vec::new();
-    };
-    let Ok(mut entries) = serde_json::from_str::<Vec<WasmWorkspaceEntry>>(&encoded) else {
-        return Vec::new();
-    };
-    entries.retain(|entry| !noisy_workspace_entry(&entry.path));
-    entries.sort_by(|left, right| {
-        (left.kind == "file")
-            .cmp(&(right.kind == "file"))
-            .then_with(|| left.path.cmp(&right.path))
-    });
-    entries
-}
-
-fn render_workspace_entry(output: &mut Vec<String>, entry: &WasmWorkspaceEntry, depth: usize) {
-    let name = entry
-        .path
-        .rsplit('/')
-        .find(|part| !part.is_empty())
-        .unwrap_or(&entry.path);
-    output.push(format!(
-        "{}- {}{}",
-        "  ".repeat(depth),
-        name,
-        if entry.kind == "directory" { "/" } else { "" }
-    ));
-}
-
-fn noisy_workspace_entry(path: &str) -> bool {
-    let name = path
-        .rsplit('/')
-        .find(|part| !part.is_empty())
-        .unwrap_or(path);
-    name.starts_with('.')
-        || [
-            ".git",
-            ".next",
-            ".pytest_cache",
-            ".ruff_cache",
-            "__pycache__",
-            "build",
-            "dist",
-            "node_modules",
-            "out",
-            "target",
-        ]
-        .contains(&name)
-}
-
-fn browser_voice_history(history: &[ResponseItem]) -> Vec<VoiceHistoryEntry> {
-    history
-        .iter()
-        .filter_map(|item| {
-            let ResponseItem::Message { role, content, .. } = item else {
-                return None;
-            };
-            let role = match role {
-                MessageRole::User => "user",
-                MessageRole::Assistant => "assistant",
-                MessageRole::Developer => "developer",
-            };
-            let text = content
-                .iter()
-                .filter_map(|part| match part {
-                    ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
-                        Some(text.as_ref())
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            Some(VoiceHistoryEntry::new(role, text))
-        })
-        .collect()
 }
 
 fn encode_voice_effects(effects: &BrowserVoiceEffects) -> Result<String, JsValue> {

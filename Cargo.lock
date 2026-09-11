@@ -6099,6 +6099,7 @@ dependencies = [
  "cpal",
  "futures-util",
  "nanocodex",
+ "nanocodex-voice-native",
  "nanocodex-voice-protocol",
  "serde_json",
  "tempfile",
@@ -6114,6 +6115,17 @@ version = "0.5.0"
 dependencies = [
  "nanocodex-voice-protocol",
  "serde_json",
+]
+
+[[package]]
+name = "nanocodex-voice-native"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

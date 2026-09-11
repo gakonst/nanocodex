@@ -1,0 +1,22 @@
+[workspace]
+members = ["voice-host", "realtime-webrtc", "process-hardening"]
+resolver = "2"
+
+[workspace.package]
+version = "0.5.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+anyhow = "1"
+codex-process-hardening = { path = "process-hardening" }
+codex-realtime-webrtc = { package = "nanocodex-voice-native", path = "realtime-webrtc" }
+futures = "0.3"
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = "1"
+pretty_assertions = "1"
+tempfile = "3"
+ctor = "0.6"
+libc = "0.2"

@@ -33,6 +33,33 @@ jobs:
           cache-on-failure: true
       - run: cargo test --workspace --locked
 
+  voice-native:
+    name: native voice and relocated runtime
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: "1.97"
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          workspaces: third_party/codex-voice
+      - name: Install native SDK
+        run: brew install gstreamer
+      - name: Test native media and process lifecycle
+        run: cargo test --locked --manifest-path third_party/codex-voice/Cargo.toml -p nanocodex-voice-host -p nanocodex-voice-native
+      - name: Stage private runtime
+        run: python3 scripts/build-voice-native.py
+      - name: Test relocated helper
+        run: cargo test --locked --manifest-path third_party/codex-voice/Cargo.toml -p nanocodex-voice-native --test packaged -- --ignored
+        env:
+          NANOCODEX_TEST_VOICE_RUNTIME: ${{ github.workspace }}/target/debug/nanocodex-resources/voice
+
   quality:
     name: rustfmt, clippy, and docs
     runs-on: ubuntu-latest

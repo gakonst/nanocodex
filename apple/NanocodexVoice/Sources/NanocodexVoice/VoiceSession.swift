@@ -10,10 +10,11 @@ public struct VoiceConfiguration: Sendable {
     let apiKey: String
     let agentID: String
     let conversationTitle: String?
+    let eventCursor: String?
     public var voice: String
-    public init(baseURL: URL, apiKey: String, agentID: String, conversationTitle: String? = nil, voice: String = "cove") {
+    public init(baseURL: URL, apiKey: String, agentID: String, conversationTitle: String? = nil, voice: String = "cove", eventCursor: String? = nil) {
         self.baseURL = baseURL; self.apiKey = apiKey; self.agentID = agentID; self.conversationTitle = conversationTitle
-        self.voice = voice
+        self.voice = voice; self.eventCursor = eventCursor
     }
 }
 
@@ -21,6 +22,11 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     public let id: UUID
     public let speaker: String
     public let text: String
+    public let isPartial: Bool
+    public let recovered: Bool
+    public init(id: UUID, speaker: String, text: String, isPartial: Bool = false, recovered: Bool = false) {
+        self.id = id; self.speaker = speaker; self.text = text; self.isPartial = isPartial; self.recovered = recovered
+    }
 }
 
 /// Spoken rows change at transcript frequency, independently of the audio meter.
@@ -41,7 +47,7 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         awaiting[conversationID] = []
     }
     public func reconcile(conversationID: String, durableRows: [TranscriptRow]) {
-        let spoken = durableRows.filter { $0.id.contains(":voice:") }
+        let spoken = durableRows.filter { $0.id.contains(":voice:") || $0.role == "Agent" }
         guard let boundary = startedAfter[conversationID] else {
             durableIDs[conversationID, default: []].formUnion(spoken.map(\.id))
             return
@@ -68,7 +74,7 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         var current = conversations[conversationID] ?? []
         var remaining: [TranscriptRow] = []
         for row in awaiting[conversationID] ?? [] {
-            if let index = current.firstIndex(where: { ($0.speaker == "user" ? "You" : "Agent") == row.role && $0.text == row.text }) {
+            if let index = current.firstIndex(where: { (row.id.contains(":voice:") || $0.recovered) && ($0.speaker == "user" ? "You" : "Agent") == row.role && $0.text == row.text }) {
                 acknowledged.insert(current.remove(at: index).id)
             } else { remaining.append(row) }
         }
@@ -124,15 +130,15 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     private var recovery: Task<Void, Never>?
     private var flushTask: Task<Void, Never>?
     private var prefetchTask: Task<Void, Never>?
-    private var writer: Task<Void, Never>?
     private var routing: Task<Void, Never>?
     private var delegationQueue: [ManagedVoiceDelegation] = []
-    private var frameQueue: [ManagedVoiceEffects] = []
     private var peerConnected = false
     private var controlConnected = false
     private var conversationReady = false
     private var agentEventsReady = false
-    private var startupContextFrames: [JSON] = []
+    private var backendReady = false
+    private var inputGeneration: UInt64 = 0
+    private var mediaDeadline: Task<Void, Never>?
     private var startedTurnID: String?
     private var activeTurnID: String?
     private var routePending = false
@@ -163,8 +169,8 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     deinit {
         observers.forEach(NotificationCenter.default.removeObserver)
         peer?.close()
-        startup?.cancel(); startupDeadline?.cancel(); negotiation?.cancel(); eventPreparation?.cancel(); admission?.cancel()
-        incoming?.cancel(); agentEvents?.cancel(); meter?.cancel(); recovery?.cancel(); flushTask?.cancel(); prefetchTask?.cancel(); writer?.cancel(); routing?.cancel()
+        startup?.cancel(); startupDeadline?.cancel(); mediaDeadline?.cancel(); negotiation?.cancel(); eventPreparation?.cancel(); admission?.cancel()
+        incoming?.cancel(); agentEvents?.cancel(); meter?.cancel(); recovery?.cancel(); flushTask?.cancel(); prefetchTask?.cancel(); routing?.cancel()
     }
 
     public func speak(_ text: String) throws {
@@ -198,11 +204,12 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     }
 
     private func begin(configuration: @escaping @MainActor () async throws -> VoiceConfiguration, captureMicrophone: Bool,
-                       timeout: Duration = .seconds(45), transportOverride: ManagedVoiceTransport? = nil) {
+                       timeout: Duration = .seconds(45), transportOverride: ManagedVoiceTransport? = nil,
+                       attempt: Int = 0, initialMuted: Bool = false) {
         stop()
         let token = UUID(); generation = token
         voiceTiming("tap")
-        phase = .connecting; errorMessage = nil; transcripts = []; isMuted = false
+        phase = .connecting; errorMessage = nil; transcripts = []; isMuted = initialMuted
         #if DEBUG
         receivedRealtimeTypesForTesting = []
         #endif
@@ -214,16 +221,18 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
             voiceTiming("startup.timeout")
             self.fail(ManagedError(code: "voice_startup_timeout", message: "Voice is taking too long to connect. Please try again."))
         }
+        let priorCleanup = cleanup
         startup = Task { [weak self] in
             guard let self else { return }
             do {
+                if attempt > 0, let priorCleanup { try await self.waitForCleanup([priorCleanup]); try self.check(token) }
                 let prepared = try await configuration()
                 voiceTiming("configuration.ready")
                 try self.check(token)
                 self.conversationID = prepared.agentID
                 self.conversationTitle = prepared.conversationTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
                 try await self.connect(prepared, captureMicrophone: captureMicrophone,
-                                       token: token, transportOverride: transportOverride)
+                                       token: token, transportOverride: transportOverride, attempt: attempt)
             } catch is CancellationError {
                 if self.generation == token { self.stop() }
             } catch { if self.generation == token { self.fail(error) } }
@@ -235,7 +244,7 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     }
 
     private func connect(_ configuration: VoiceConfiguration, captureMicrophone: Bool, token: UUID,
-                         transportOverride: ManagedVoiceTransport?) async throws {
+                         transportOverride: ManagedVoiceTransport?, attempt: Int) async throws {
         if captureMicrophone {
             guard await VoicePeer.requestMicrophone() else { throw VoiceFailure.microphone }
         }
@@ -269,13 +278,22 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
                 try await audio.answer(call.sdp)
                 try self.check(token)
                 voiceTiming("peer.answer.applied")
+                self.mediaDeadline = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(15)) } catch { return }
+                    guard let self, self.generation == token, self.phase == .connecting, !self.peerConnected else { return }
+                    if attempt == 0, transportOverride == nil {
+                        voiceTiming("peer.timeout.retry")
+                        self.begin(configuration: { configuration }, captureMicrophone: captureMicrophone,
+                                   attempt: 1, initialMuted: self.isMuted)
+                    } else { self.fail(VoiceFailure.mediaTimeout) }
+                }
                 self.startMeter(audio, token: token)
             } catch { self.startupFailed(error, token: token) }
         }
         eventPreparation = Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.prepareAgentEvents(voiceTransport, token: token)
+                try await self.prepareAgentEvents(voiceTransport, after: configuration.eventCursor ?? "latest", token: token)
                 try self.check(token)
                 self.agentEventsReady = true
                 voiceTiming("events.ready")
@@ -307,10 +325,9 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         try await waitForCleanup(priorCleanups)
         try check(token)
         voiceTiming("lifecycle.start.begin")
-        let context = try await transport.start(sessionID: sessionID, operationID: UUID().uuidString.lowercased())
+        _ = try await transport.start(sessionID: sessionID, operationID: UUID().uuidString.lowercased())
         try check(token)
         voiceTiming("lifecycle.start.end")
-        startupContextFrames = ManagedVoiceProtocol.startupContextFrames(context)
     }
 
     private func waitForCleanup(_ prior: [Task<Void, Never>]) async throws {
@@ -336,7 +353,7 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
                 let stats = await audio.statistics()
                 guard let self, self.generation == token else { return }
                 self.inputLevel = self.isMuted ? 0 : min(1, max(0, stats.inputLevel))
-                self.outputLevel = min(1, max(0, stats.outputLevel))
+                self.outputLevel = stats.playbackEnabled ? min(1, max(0, stats.outputLevel)) : 0
                 self.audioBytesSent = stats.bytesSent; self.audioBytesReceived = stats.bytesReceived
                 if voiceTimingEnabled {
                     let outputActive = stats.playbackEnabled && stats.outputLevel > 0.001
@@ -365,7 +382,8 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         case .connected:
             voiceTiming("peer.connected")
             recovery?.cancel(); recovery = nil
-            peerConnected = true; becomeActiveIfReady()
+            peerConnected = true; mediaDeadline?.cancel(); mediaDeadline = nil
+            becomeActiveIfReady()
         case .controlReady:
             controlConnected = true
             if let effects = protocolState?.sidebandOpened() { apply(effects, token: token) }
@@ -384,17 +402,15 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     }
 
     private func becomeActiveIfReady() {
-        guard peerConnected && controlConnected && conversationReady && agentEventsReady else { return }
-        do {
-            if !startupContextFrames.isEmpty {
-                for frame in startupContextFrames { try peer?.send(frame) }
-                startupContextFrames = []
-                voiceTiming("context.sent")
-            }
-            peer?.activateMicrophone(); phase = .active; isReconnecting = false
-            startupDeadline?.cancel(); startupDeadline = nil
-            voiceTiming("voice.ready")
-        } catch { fail(error) }
+        guard isEngaged, peerConnected && controlConnected && backendReady else { return }
+        // Capture can begin while durable admission catches up. Handoffs remain
+        // queued until admission and the resumable agent event stream are ready.
+        peer?.activateMicrophone()
+        guard conversationReady && agentEventsReady else { return }
+        phase = .active; isReconnecting = false
+        startupDeadline?.cancel(); startupDeadline = nil
+        voiceTiming("voice.ready")
+        startRouting(token: generation)
     }
 
     private func startRealtimeEvents(_ audio: VoicePeer, token: UUID) {
@@ -451,7 +467,7 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     /// Keep durable admissions ordered without making incoming speech and
     /// transcript deltas wait for their network round trip.
     private func startRouting(token: UUID) {
-        guard routing == nil, let transport, let sessionID else { return }
+        guard conversationReady && agentEventsReady, routing == nil, let transport, let sessionID else { return }
         routing = Task { [weak self] in
             guard let self else { return }
             do {
@@ -482,8 +498,8 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         for event in buffered { observe(event, token: token) }
     }
 
-    private func prepareAgentEvents(_ transport: ManagedVoiceTransport, token: UUID) async throws {
-        let events = try await transport.events()
+    private func prepareAgentEvents(_ transport: ManagedVoiceTransport, after cursor: String, token: UUID) async throws {
+        let events = try await transport.events(after: cursor)
         try check(token)
         // Consume immediately even during negotiation; unrelated active turns
         // must not fill the bounded stream while voice is still connecting.
@@ -538,7 +554,13 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
 
     private func apply(_ effects: ManagedVoiceEffects, token: UUID) {
         guard token == generation else { return }
-        if effects.playbackEnabled == false { peer?.setPlaybackEnabled(false) }
+        recover(effects.undeliveredAnswers)
+        if let next = effects.inputGeneration {
+            guard next >= inputGeneration else { return }
+            inputGeneration = next
+        }
+        if effects.ready { backendReady = true; becomeActiveIfReady() }
+        if effects.playbackEnabled == false { peer?.setPlaybackEnabled(false); outputLevel = 0 }
         let visibleTranscripts = effects.transcripts.flatMap { transcript in
             RealtimeTranscript.project(transcript.text, isPartial: !transcript.isFinal)?.map {
                 ManagedVoiceTranscript(speaker: $0.speaker, text: $0.text, isFinal: transcript.isFinal)
@@ -548,9 +570,9 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
             let text = String(transcript.text.prefix(8_192))
             if let partialID = partialTranscriptIDs[transcript.speaker],
                let index = transcripts.firstIndex(where: { $0.id == partialID }) {
-                transcripts[index] = .init(id: partialID, speaker: transcript.speaker, text: text)
+                transcripts[index] = .init(id: partialID, speaker: transcript.speaker, text: text, isPartial: !transcript.isFinal)
             } else {
-                transcripts.append(.init(id: UUID(), speaker: transcript.speaker, text: text))
+                transcripts.append(.init(id: UUID(), speaker: transcript.speaker, text: text, isPartial: !transcript.isFinal))
                 partialTranscriptIDs[transcript.speaker] = transcripts.last?.id
             }
             if transcript.isFinal { partialTranscriptIDs.removeValue(forKey: transcript.speaker) }
@@ -568,37 +590,36 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
                 if let next = self.protocolState?.flush() { self.apply(next, token: token) }
             }
         }
-        if !effects.frames.isEmpty && controlConnected {
-            guard frameQueue.count < 128 else { fail(VoiceFailure.connection); return }
-            frameQueue.append(effects)
-            startWriter(token: token)
-        } else if effects.frames.isEmpty && effects.playbackEnabled == true {
-            peer?.setPlaybackEnabled(true)
+        // RTCDataChannel.sendData is synchronous and ordered. Submit the current
+        // effect now, without a MainActor task hop or a second speech queue.
+        if controlConnected, let peer {
+            do {
+                for frame in effects.frames {
+                    try peer.send(frame)
+                    if effects.acknowledgeFrames { protocolState?.framesSent(1) }
+                }
+                if effects.playbackEnabled == true { peer.setPlaybackEnabled(true) }
+            } catch { fail(error) }
         }
     }
 
-    private func startWriter(token: UUID) {
-        guard writer == nil, let peer else { return }
-        writer = Task { [weak self] in
-            guard let self else { return }
-            do {
-                while !self.frameQueue.isEmpty {
-                    try self.check(token)
-                    let effects = self.frameQueue.removeFirst()
-                    for frame in effects.frames {
-                        try peer.send(frame)
-                        try self.check(token)
-                        if effects.acknowledgeFrames { self.protocolState?.framesSent(1) }
-                    }
-                    if effects.playbackEnabled == true { peer.setPlaybackEnabled(true) }
-                }
-                self.writer = nil
-            } catch is CancellationError {} catch {
-                guard !Task.isCancelled, self.generation == token else { return }
-                self.writer = nil; self.frameQueue = []
-                self.fail(error)
-            }
+    private func recover(_ answers: [String]) {
+        for text in answers where !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let normalized = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            if let index = transcripts.lastIndex(where: { $0.speaker == "assistant" && !$0.recovered
+                && $0.text.split(whereSeparator: \.isWhitespace).joined(separator: " ") == normalized }) {
+                transcripts[index] = .init(id: transcripts[index].id, speaker: "assistant", text: text, recovered: true)
+            } else { transcripts.append(.init(id: UUID(), speaker: "assistant", text: text, recovered: true)) }
         }
+        if transcripts.count > 80 { transcripts.removeFirst(transcripts.count - 80) }
+        if !answers.isEmpty, let conversationID { transcriptFeed.update(transcripts, conversationID: conversationID) }
+    }
+
+    /// Call at the text input boundary, before admitting or steering coding work.
+    public func noteTypedInput(conversationID: String? = nil) {
+        guard isEngaged, conversationID == nil || conversationID == self.conversationID else { return }
+        peer?.setPlaybackEnabled(false); outputLevel = 0
+        if let effects = protocolState?.noteTypedInput() { apply(effects, token: generation) }
     }
 
     public func toggleMute() {
@@ -609,6 +630,7 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
 
     public func cancelTurn() {
         guard let transport, let turnID = startedTurnID else { return }
+        noteTypedInput()
         let token = generation
         Task {
             do {
@@ -619,12 +641,16 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     }
 
     public func stop() {
-        generation = UUID()
-        // Audio ends immediately. Durable transcript/lifecycle cleanup remains
-        // scoped to this exact session, even if a new account starts meanwhile.
+        // End audio ownership before recovery or durable cleanup does any work.
         peer?.close(); peer = nil
+        if let effects = protocolState?.closeEffects() { recover(effects.undeliveredAnswers) }
+        transcripts = transcripts.map { .init(id: $0.id, speaker: $0.speaker, text: $0.text, recovered: $0.recovered) }
+        if let conversationID { transcriptFeed.update(transcripts, conversationID: conversationID) }
+        generation = UUID()
+        // Durable cleanup stays scoped to this exact call across replacement.
         startup?.cancel(); startup = nil
         startupDeadline?.cancel(); startupDeadline = nil
+        mediaDeadline?.cancel(); mediaDeadline = nil
         negotiation?.cancel(); negotiation = nil
         eventPreparation?.cancel(); eventPreparation = nil
         let oldAdmission = admission
@@ -635,7 +661,6 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         recovery?.cancel(); recovery = nil
         flushTask?.cancel(); flushTask = nil
         prefetchTask?.cancel(); prefetchTask = nil
-        writer?.cancel(); writer = nil
         let oldRouting = routing
         let pendingDelegations = delegationQueue.compactMap { delegation in
             delegationOperations[delegation.id].map { (delegation.formattedInput, $0) }
@@ -646,12 +671,12 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         let oldTransport = transport, oldSessionID = sessionID
         let tail = protocolState?.takeTranscriptTail()
         transport = nil; protocolState = nil; sessionID = nil
-        peerConnected = false; controlConnected = false; conversationReady = false; agentEventsReady = false; startupContextFrames = []; isReconnecting = false
+        peerConnected = false; controlConnected = false; conversationReady = false; agentEventsReady = false; backendReady = false; inputGeneration = 0; isReconnecting = false
         activeTurnID = nil; startedTurnID = nil; isWorking = false; isMuted = false
         inputLevel = 0; outputLevel = 0; audioBytesSent = 0; audioBytesReceived = 0
-        transcripts = []; partialTranscriptIDs = [:]; errorMessage = nil
+        partialTranscriptIDs = [:]; errorMessage = nil
         conversationID = nil; conversationTitle = nil
-        routePending = false; bufferedEvents = []; frameQueue = []; delegationOperations = [:]
+        routePending = false; bufferedEvents = []; delegationOperations = [:]
         if phase != .idle { phase = .ended }
         if let oldTransport, let oldSessionID {
             let cleanupID = UUID()
@@ -683,12 +708,18 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     /// existing background lease. It never keeps the microphone running.
     public func finishStopping() async { await cleanup?.value }
 
+    /// Drop retained UI text when the owning account is removed or replaced.
+    public func clearHistory() {
+        transcripts = []; partialTranscriptIDs = [:]; transcriptFeed.clear()
+    }
+
     #if DEBUG
     /// Explicit demo-only UI fixtures use the real transcript reducer without
     /// opening a microphone, peer connection, or managed conversation.
     public func startTranscriptPreview(agentID: String, conversationTitle: String = "Voice preview", connecting: Bool = false) {
         stop()
         protocolState = try? ManagedVoiceProtocol()
+        transcripts = []
         conversationID = agentID; self.conversationTitle = conversationTitle
         phase = connecting ? .connecting : .active
     }
@@ -705,7 +736,14 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     func prepareRoutingForTesting(transport: ManagedVoiceTransport, agentID: String) {
         startTranscriptPreview(agentID: agentID)
         self.transport = transport; sessionID = ManagedVoiceProtocol.sessionID()
+        conversationReady = true; agentEventsReady = true
     }
+    func prepareReadinessForTesting(agentID: String) {
+        startTranscriptPreview(agentID: agentID, connecting: true)
+        conversationReady = true; agentEventsReady = true
+    }
+    func receivePeerSignalForTesting(_ signal: VoicePeerSignal) { receive(signal, token: generation) }
+    func applyEffectsForTesting(_ effects: ManagedVoiceEffects) { apply(effects, token: generation) }
     func receiveManagedEventForTesting(_ event: AgentEvent) throws { try receiveAgentEvent(event, token: generation) }
     func finishRoutingForTesting() async { await routing?.value }
     func receiveRealtimeForTesting(_ event: JSON) throws { try realtime(event, token: generation) }
@@ -718,6 +756,9 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     func startPreparingForTesting(timeout: Duration, transport: ManagedVoiceTransport? = nil,
                                   configuration: @escaping @MainActor () async throws -> VoiceConfiguration) {
         begin(configuration: configuration, captureMicrophone: false, timeout: timeout, transportOverride: transport)
+    }
+    func retryPreparingForTesting(configuration: @escaping @MainActor () async throws -> VoiceConfiguration) {
+        begin(configuration: configuration, captureMicrophone: false, attempt: 1, initialMuted: isMuted)
     }
     var hasNativePeerForTesting: Bool { peer != nil }
     private(set) var receivedRealtimeTypesForTesting: Set<String> = []

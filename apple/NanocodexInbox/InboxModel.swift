@@ -639,7 +639,7 @@ final class InboxModel: ObservableObject {
         #endif
         do { try ContextStore.shared().activate(nil) } catch { contextError = error.localizedDescription }
         contextItems = []; contextRoutes = [:]; contextEnabled = false; selectedContext = [:]; excludedContext = [:]; showContext = false; automaticContext = [:]
-        voice.stop(); voice.transcriptFeed.clear(); accountCredential = nil; unlistedAgents = []; unavailableAgents = []; historyCursors = [:]
+        voice.stop(); voice.clearHistory(); accountCredential = nil; unlistedAgents = []; unavailableAgents = []; historyCursors = [:]
         remoteService?.close(); remoteService = nil
         connectionAttempt = UUID(); generation = UUID(); observation = UUID(); polling?.cancel(); streaming?.cancel(); client?.close(); client = nil
         focusedState?.cancel(); focusedState = nil; focusedHistoryLoaded = false
@@ -1567,8 +1567,9 @@ final class InboxModel: ObservableObject {
         try Task.checkCancellation()
         guard let card = cards.first(where: { $0.id == agentID }),
               let credential = accountCredential, let url = URL(string: credential.origin) else { throw APIError.invalidResponse }
-        voice.transcriptFeed.begin(conversationID: agentID, durableRows: focused?.id == agentID ? rows : [], after: max(cursor, card.latestCursor))
-        return VoiceConfiguration(baseURL: url, apiKey: credential.apiKey, agentID: agentID, conversationTitle: card.title)
+        let voiceCursor = focused?.id == agentID ? max(cursor, card.latestCursor) : card.latestCursor
+        voice.transcriptFeed.begin(conversationID: agentID, durableRows: focused?.id == agentID ? rows : [], after: voiceCursor)
+        return VoiceConfiguration(baseURL: url, apiKey: credential.apiKey, agentID: agentID, conversationTitle: card.title, eventCursor: voiceCursor.rawValue)
     }
     // Reserve identity and the busy slot synchronously at the tap, before a swipe
     // or another tap can change focus. The server owns the queued follow-up.
@@ -1578,6 +1579,7 @@ final class InboxModel: ObservableObject {
         guard !request.isEmpty || !focusedAttachments.isEmpty else { return false }
         refreshContext()
         if let contextError, contextEnabled || !(selectedContext[card.id] ?? []).isEmpty { error = contextError; return false }
+        voice.noteTypedInput(conversationID: card.id)
         let captured = contextForAgent(card.id)
         let input: String
         do {
@@ -1941,6 +1943,7 @@ final class InboxModel: ObservableObject {
         }
     }
     private func execute(_ command: AgentCommand) async throws -> JSON {
+        voice.noteTypedInput(conversationID: command.agentID)
         if isDemo {
             let delayKey = command.kind == .stop ? "NANOCODEX_DEMO_CANCEL_DELAY_MS" : "NANOCODEX_DEMO_DELAY_MS"
             let delay = Int(ProcessInfo.processInfo.environment[delayKey] ?? ProcessInfo.processInfo.environment["NANOCODEX_DEMO_DELAY_MS"] ?? "200") ?? 200

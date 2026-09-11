@@ -1,6 +1,7 @@
 //! Shared, transport-neutral Codex Realtime adapter policy.
 
 mod browser;
+mod browser_delivery;
 mod managed;
 mod settings;
 mod transcript;
