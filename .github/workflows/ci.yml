@@ -143,7 +143,7 @@ jobs:
           cp target/${{ matrix.target }}/debug/nanocodex-vm-guest "$context/"
           cp crates/experimental/nanocodex-vm/image/Dockerfile.hand "$context/Dockerfile"
           cp -R crates/experimental/nanocodex-vm/image/toolkit "$context/toolkit"
-          docker build --tag nanocodex-hand:ci "$context"
+          docker build --tag nanocodex-hand:ci --build-context computer-source=crates/experimental/nanocodex-computer/runtime "$context"
       - name: Exercise offline toolkit with a read-only root and unprivileged user
         run: >-
           docker run --rm --network none --read-only --user 1000:1000
@@ -261,6 +261,15 @@ jobs:
           pnpm exec turbo run build --filter nanocodex-connect-protocol
           pnpm --filter nanocodex-managed-service run prepare:code-evaluator
           pnpm --filter nanocodex-managed-service exec vitest run test/account-info.test.ts test/default-mcp.test.ts test/startup-context.test.ts
+      - name: Test computer adapters and native Linux input
+        run: |
+          sudo apt-get update && sudo apt-get install --yes libpulse-dev libxkbcommon-dev xvfb python3-tk
+          pnpm test:computer
+          pnpm --filter nanocodex-computer typecheck
+          pnpm --filter nanocodex-managed-service exec vitest run test/namespace-tools.test.ts
+          NANOCODEX_COMPUTER="$PWD/crates/experimental/nanocodex-computer/runtime/target/debug/nanocodex-computer" python3 crates/experimental/nanocodex-computer/tests/linux/live.py
+          browser=$(command -v google-chrome)
+          NANOCODEX_TEST_BROWSER="$browser" node --test js/nanocodex-computer/test/browser.test.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nanocodex-web-wasm

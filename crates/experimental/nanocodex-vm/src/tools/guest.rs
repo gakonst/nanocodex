@@ -46,6 +46,7 @@ const MEMORY_SAMPLE_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Default)]
 struct GuestMemoryMonitor {
+    computer: super::guest_computer::GuestComputer,
     total_kib: AtomicU64,
     minimum_available_kib: AtomicU64,
     initial_oom_kills: AtomicU64,
@@ -228,6 +229,7 @@ where
         ),
     );
     let memory = Arc::new(GuestMemoryMonitor {
+        computer: super::guest_computer::GuestComputer::new(workspace.to_path_buf()),
         minimum_available_kib: AtomicU64::new(u64::MAX),
         ..GuestMemoryMonitor::default()
     });
@@ -310,6 +312,7 @@ where
 
     runtime.control().cancel().await;
     memory_task.abort();
+    memory.computer.shutdown().await;
     if let Some(request) = result? {
         let response = SessionResponse::Shutdown(sync(request).await);
         write_response(&mut output, &response, max_frame_bytes).await?;
@@ -366,9 +369,33 @@ async fn execute_request(
                 &[],
                 request.context.output_token_budget,
             );
-            let execution = runtime
-                .execute_tool(request.tool.name(), request.input.into(), context)
-                .await;
+            let execution = match request.tool {
+                super::protocol::GuestTool::Computer(kind) => {
+                    use nanocodex_tools::Tool as _;
+                    let computer = match memory.computer.tools().await {
+                        Ok(computer) => computer,
+                        Err(error) => {
+                            return SessionResponse::Tool(ToolResponse::failed(
+                                request.id,
+                                error.to_string(),
+                            ));
+                        }
+                    };
+                    let tool = match kind {
+                        super::protocol::ComputerToolKind::Cua => computer.js(),
+                        super::protocol::ComputerToolKind::CuaReset => computer.reset(),
+                    };
+                    match tool.execute(request.input.into(), context).await {
+                        Ok(output) => output,
+                        Err(error) => nanocodex_tools::ToolOutput::error(error.to_string()),
+                    }
+                }
+                super::protocol::GuestTool::Standard(tool) => {
+                    runtime
+                        .execute_tool(tool.name(), request.input.into(), context)
+                        .await
+                }
+            };
             SessionResponse::Tool(match execution.into_wire() {
                 Ok(execution) => ToolResponse::completed(request.id, execution),
                 Err(error) => ToolResponse::failed(request.id, error.to_string()),
@@ -1356,7 +1383,7 @@ mod tests {
         let command = format!("printf %s $$ > '{}'; exec sleep 30", pid_file.display());
         let start = SessionRequest::Tool(ToolRequest {
             id: 0,
-            tool: StandardTool::ExecCommand,
+            tool: StandardTool::ExecCommand.into(),
             input: WireToolInput::from(ToolInput::Function(
                 to_raw_value(&json!({
                     "cmd": command,
@@ -1472,7 +1499,7 @@ mod tests {
         );
         let start = SessionRequest::Tool(ToolRequest {
             id: 0,
-            tool: StandardTool::ExecCommand,
+            tool: StandardTool::ExecCommand.into(),
             input: WireToolInput::from(ToolInput::Function(
                 to_raw_value(&json!({
                     "cmd": command,
@@ -1588,7 +1615,7 @@ mod tests {
         });
         let oversized = SessionRequest::Tool(ToolRequest {
             id: 0,
-            tool: StandardTool::ExecCommand,
+            tool: StandardTool::ExecCommand.into(),
             input: WireToolInput::from(ToolInput::Function(
                 to_raw_value(&json!({
                     "cmd": "/usr/bin/yes x | /usr/bin/head -c 4096",
@@ -1668,7 +1695,7 @@ mod tests {
         });
         let view_image = SessionRequest::Tool(ToolRequest {
             id: 0,
-            tool: StandardTool::ViewImage,
+            tool: StandardTool::ViewImage.into(),
             input: WireToolInput::from(ToolInput::Function(
                 to_raw_value(&json!({
                     "path": image,

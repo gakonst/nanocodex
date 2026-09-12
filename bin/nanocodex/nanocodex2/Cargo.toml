@@ -12,6 +12,7 @@ repository.workspace = true
 description = "Small managed-agent client with local workspace tools"
 
 [dependencies]
+nanocodex-computer.workspace = true
 arboard.workspace = true
 base64.workspace = true
 chrono.workspace = true

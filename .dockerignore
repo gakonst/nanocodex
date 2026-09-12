@@ -19,6 +19,8 @@ py/bindings/python/nanocodex/*.pyd
 jobs
 reverse-me
 target
+crates/experimental/nanocodex-computer/runtime/target
+crates/experimental/nanocodex-computer/runtime/artifacts
 trials
 js/account/public/data
 **/__pycache__

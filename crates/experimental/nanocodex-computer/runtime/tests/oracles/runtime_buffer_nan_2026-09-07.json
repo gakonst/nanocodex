@@ -1,0 +1,198 @@
+{
+  "provenance": {
+    "binary": "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl",
+    "sha256": "0d6f59d5aff9db38d3bf1cad78f3b2d71daaedaefddbc00c65fa3241ce83ad7c",
+    "captured": "2026-09-06T22:50:30.365792+00:00",
+    "scope": "Pure numeric NaN payload/coercion cases; no external actions"
+  },
+  "groups": [
+    {
+      "name": "nan-payloads",
+      "cases": [
+        "writeFloatLE/undefined",
+        "writeFloatLE/NaN",
+        "writeFloatLE/-NaN",
+        "writeFloatLE/Number('invalid')",
+        "writeFloatLE/({valueOf(){return undefined}})",
+        "writeFloatLE/({valueOf(){return NaN}})",
+        "writeFloatLE/({valueOf(){return -NaN}})",
+        "writeFloatLE/new DataView(Uint8Array.from([1,0,0,0,0,0,248,127]).buffer).getFloat64(0,true)",
+        "writeFloatLE/new DataView(Uint8Array.from([1,0,192,127]).buffer).getFloat32(0,true)",
+        "writeFloatBE/undefined",
+        "writeFloatBE/NaN",
+        "writeFloatBE/-NaN",
+        "writeFloatBE/Number('invalid')",
+        "writeFloatBE/({valueOf(){return undefined}})",
+        "writeFloatBE/({valueOf(){return NaN}})",
+        "writeFloatBE/({valueOf(){return -NaN}})",
+        "writeFloatBE/new DataView(Uint8Array.from([1,0,0,0,0,0,248,127]).buffer).getFloat64(0,true)",
+        "writeFloatBE/new DataView(Uint8Array.from([1,0,192,127]).buffer).getFloat32(0,true)",
+        "writeDoubleLE/undefined",
+        "writeDoubleLE/NaN",
+        "writeDoubleLE/-NaN",
+        "writeDoubleLE/Number('invalid')",
+        "writeDoubleLE/({valueOf(){return undefined}})",
+        "writeDoubleLE/({valueOf(){return NaN}})",
+        "writeDoubleLE/({valueOf(){return -NaN}})",
+        "writeDoubleLE/new DataView(Uint8Array.from([1,0,0,0,0,0,248,127]).buffer).getFloat64(0,true)",
+        "writeDoubleLE/new DataView(Uint8Array.from([1,0,192,127]).buffer).getFloat32(0,true)",
+        "writeDoubleBE/undefined",
+        "writeDoubleBE/NaN",
+        "writeDoubleBE/-NaN",
+        "writeDoubleBE/Number('invalid')",
+        "writeDoubleBE/({valueOf(){return undefined}})",
+        "writeDoubleBE/({valueOf(){return NaN}})",
+        "writeDoubleBE/({valueOf(){return -NaN}})",
+        "writeDoubleBE/new DataView(Uint8Array.from([1,0,0,0,0,0,248,127]).buffer).getFloat64(0,true)",
+        "writeDoubleBE/new DataView(Uint8Array.from([1,0,192,127]).buffer).getFloat32(0,true)"
+      ],
+      "code": "const {Buffer}=await import('node:buffer');nodeRepl.write(JSON.stringify([(()=>{const b=Buffer.alloc(12,0x11);return [b.writeFloatLE(undefined,1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeFloatLE(NaN,1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeFloatLE(-NaN,1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeFloatLE(Number('invalid'),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeFloatLE(({valueOf(){return undefined}}),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeFloatLE(({valueOf(){return NaN}}),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeFloatLE(({valueOf(){return -NaN}}),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeFloatLE(new DataView(Uint8Array.from([1,0,0,0,0,0,248,127]).buffer).getFloat64(0,true),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeFloatLE(new DataView(Uint8Array.from([1,0,192,127]).buffer).getFloat32(0,true),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeFloatBE(undefined,1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeFloatBE(NaN,1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeFloatBE(-NaN,1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeFloatBE(Number('invalid'),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeFloatBE(({valueOf(){return undefined}}),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeFloatBE(({valueOf(){return NaN}}),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeFloatBE(({valueOf(){return -NaN}}),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeFloatBE(new DataView(Uint8Array.from([1,0,0,0,0,0,248,127]).buffer).getFloat64(0,true),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeFloatBE(new DataView(Uint8Array.from([1,0,192,127]).buffer).getFloat32(0,true),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeDoubleLE(undefined,1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeDoubleLE(NaN,1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeDoubleLE(-NaN,1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeDoubleLE(Number('invalid'),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeDoubleLE(({valueOf(){return undefined}}),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeDoubleLE(({valueOf(){return NaN}}),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeDoubleLE(({valueOf(){return -NaN}}),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeDoubleLE(new DataView(Uint8Array.from([1,0,0,0,0,0,248,127]).buffer).getFloat64(0,true),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeDoubleLE(new DataView(Uint8Array.from([1,0,192,127]).buffer).getFloat32(0,true),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeDoubleBE(undefined,1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeDoubleBE(NaN,1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeDoubleBE(-NaN,1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeDoubleBE(Number('invalid'),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeDoubleBE(({valueOf(){return undefined}}),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeDoubleBE(({valueOf(){return NaN}}),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeDoubleBE(({valueOf(){return -NaN}}),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeDoubleBE(new DataView(Uint8Array.from([1,0,0,0,0,0,248,127]).buffer).getFloat64(0,true),1),b.toString('hex')];})(),(()=>{const b=Buffer.alloc(12,0x11);return [b.writeDoubleBE(new DataView(Uint8Array.from([1,0,192,127]).buffer).getFloat32(0,true),1),b.toString('hex')];})()]));",
+      "expected": [
+        [
+          5,
+          "110000c07f11111111111111"
+        ],
+        [
+          5,
+          "110000c07f11111111111111"
+        ],
+        [
+          5,
+          "110000c0ff11111111111111"
+        ],
+        [
+          5,
+          "110000c07f11111111111111"
+        ],
+        [
+          5,
+          "110000c07f11111111111111"
+        ],
+        [
+          5,
+          "110000c07f11111111111111"
+        ],
+        [
+          5,
+          "110000c0ff11111111111111"
+        ],
+        [
+          5,
+          "110000c07f11111111111111"
+        ],
+        [
+          5,
+          "110100c07f11111111111111"
+        ],
+        [
+          5,
+          "117fc0000011111111111111"
+        ],
+        [
+          5,
+          "117fc0000011111111111111"
+        ],
+        [
+          5,
+          "11ffc0000011111111111111"
+        ],
+        [
+          5,
+          "117fc0000011111111111111"
+        ],
+        [
+          5,
+          "117fc0000011111111111111"
+        ],
+        [
+          5,
+          "117fc0000011111111111111"
+        ],
+        [
+          5,
+          "11ffc0000011111111111111"
+        ],
+        [
+          5,
+          "117fc0000011111111111111"
+        ],
+        [
+          5,
+          "117fc0000111111111111111"
+        ],
+        [
+          9,
+          "11000000000000f87f111111"
+        ],
+        [
+          9,
+          "11000000000000f87f111111"
+        ],
+        [
+          9,
+          "11000000000000f8ff111111"
+        ],
+        [
+          9,
+          "11000000000000f87f111111"
+        ],
+        [
+          9,
+          "11000000000000f87f111111"
+        ],
+        [
+          9,
+          "11000000000000f87f111111"
+        ],
+        [
+          9,
+          "11000000000000f8ff111111"
+        ],
+        [
+          9,
+          "11010000000000f87f111111"
+        ],
+        [
+          9,
+          "11000000200000f87f111111"
+        ],
+        [
+          9,
+          "117ff8000000000000111111"
+        ],
+        [
+          9,
+          "117ff8000000000000111111"
+        ],
+        [
+          9,
+          "11fff8000000000000111111"
+        ],
+        [
+          9,
+          "117ff8000000000000111111"
+        ],
+        [
+          9,
+          "117ff8000000000000111111"
+        ],
+        [
+          9,
+          "117ff8000000000000111111"
+        ],
+        [
+          9,
+          "11fff8000000000000111111"
+        ],
+        [
+          9,
+          "117ff8000000000001111111"
+        ],
+        [
+          9,
+          "117ff8000020000000111111"
+        ]
+      ]
+    }
+  ]
+}

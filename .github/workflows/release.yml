@@ -149,6 +149,12 @@ jobs:
           cargo build --locked --release \
             --package nanocodex2-bin --bin nanocodex2 \
             --target ${{ matrix.target }}
+      - name: Install Linux computer dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes pkg-config libpulse-dev libxkbcommon-dev
+      - name: Build computer companion
+        shell: bash
+        run: cargo build --locked --release --manifest-path crates/experimental/nanocodex-computer/runtime/Cargo.toml --target ${{ matrix.target }} --bin nanocodex-computer
       - name: Sign macOS VM hand host
         if: matrix.target == 'aarch64-apple-darwin'
         shell: bash
@@ -163,10 +169,12 @@ jobs:
           mkdir dist
           cp "target/${{ matrix.target }}/release/nanocodex" "dist/${{ matrix.artifact }}"
           cp "target/${{ matrix.target }}/release/nanocodex2" "dist/${{ matrix.companion }}"
+          cp "crates/experimental/nanocodex-computer/runtime/target/${{ matrix.target }}/release/nanocodex-computer" "dist/nanocodex-computer-${{ matrix.target }}"
           gzip -n -9 -c "dist/${{ matrix.artifact }}" \
             > "dist/${{ matrix.artifact }}.gz"
           gzip -n -9 -c "dist/${{ matrix.companion }}" \
             > "dist/${{ matrix.companion }}.gz"
+          gzip -n -9 -c "dist/nanocodex-computer-${{ matrix.target }}" > "dist/nanocodex-computer-${{ matrix.target }}.gz"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact }}

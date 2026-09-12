@@ -1,0 +1,4157 @@
+{
+  "schema": 1,
+  "observations": 179,
+  "groups": {
+    "preference": 11,
+    "model": 17,
+    "command-gate": 108,
+    "advertisement-filter": 12,
+    "iab-advertisement": 14,
+    "typed-capability": 5,
+    "preference-cache": 12
+  },
+  "rows": [
+    {
+      "id": 1,
+      "group": "preference",
+      "input": {
+        "value": "absent"
+      },
+      "observed": {
+        "result": true,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      },
+      "expected": {
+        "result": true,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "group": "preference",
+      "input": {
+        "value": "null"
+      },
+      "observed": {
+        "result": true,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      },
+      "expected": {
+        "result": true,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      }
+    },
+    {
+      "id": 3,
+      "group": "preference",
+      "input": {
+        "value": "true"
+      },
+      "observed": {
+        "result": true,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      },
+      "expected": {
+        "result": true,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "group": "preference",
+      "input": {
+        "value": "false"
+      },
+      "observed": {
+        "result": false,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      },
+      "expected": {
+        "result": false,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "group": "preference",
+      "input": {
+        "value": "zero"
+      },
+      "observed": {
+        "result": false,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      },
+      "expected": {
+        "result": false,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "group": "preference",
+      "input": {
+        "value": "one"
+      },
+      "observed": {
+        "result": false,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      },
+      "expected": {
+        "result": false,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "group": "preference",
+      "input": {
+        "value": "empty-string"
+      },
+      "observed": {
+        "result": false,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      },
+      "expected": {
+        "result": false,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      }
+    },
+    {
+      "id": 8,
+      "group": "preference",
+      "input": {
+        "value": "true-string"
+      },
+      "observed": {
+        "result": false,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      },
+      "expected": {
+        "result": false,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "group": "preference",
+      "input": {
+        "value": "array"
+      },
+      "observed": {
+        "result": false,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      },
+      "expected": {
+        "result": false,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      }
+    },
+    {
+      "id": 10,
+      "group": "preference",
+      "input": {
+        "value": "object"
+      },
+      "observed": {
+        "result": false,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      },
+      "expected": {
+        "result": false,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "group": "preference",
+      "input": {
+        "value": "read-error"
+      },
+      "observed": {
+        "result": false,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      },
+      "expected": {
+        "result": false,
+        "trace": [
+          "preference:get:webmcp_enabled"
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "group": "model",
+      "input": {
+        "metadata": "absent"
+      },
+      "observed": {
+        "model": null
+      },
+      "expected": {
+        "model": null
+      }
+    },
+    {
+      "id": 13,
+      "group": "model",
+      "input": {
+        "metadata": "null"
+      },
+      "observed": {
+        "model": null
+      },
+      "expected": {
+        "model": null
+      }
+    },
+    {
+      "id": 14,
+      "group": "model",
+      "input": {
+        "metadata": "array"
+      },
+      "observed": {
+        "model": null
+      },
+      "expected": {
+        "model": null
+      }
+    },
+    {
+      "id": 15,
+      "group": "model",
+      "input": {
+        "metadata": "number"
+      },
+      "observed": {
+        "model": null
+      },
+      "expected": {
+        "model": null
+      }
+    },
+    {
+      "id": 16,
+      "group": "model",
+      "input": {
+        "metadata": "invalid-json"
+      },
+      "observed": {
+        "model": null
+      },
+      "expected": {
+        "model": null
+      }
+    },
+    {
+      "id": 17,
+      "group": "model",
+      "input": {
+        "metadata": "json-null"
+      },
+      "observed": {
+        "model": null
+      },
+      "expected": {
+        "model": null
+      }
+    },
+    {
+      "id": 18,
+      "group": "model",
+      "input": {
+        "metadata": "json-array"
+      },
+      "observed": {
+        "model": null
+      },
+      "expected": {
+        "model": null
+      }
+    },
+    {
+      "id": 19,
+      "group": "model",
+      "input": {
+        "metadata": "json-number"
+      },
+      "observed": {
+        "model": null
+      },
+      "expected": {
+        "model": null
+      }
+    },
+    {
+      "id": 20,
+      "group": "model",
+      "input": {
+        "metadata": "empty-object"
+      },
+      "observed": {
+        "model": null
+      },
+      "expected": {
+        "model": null
+      }
+    },
+    {
+      "id": 21,
+      "group": "model",
+      "input": {
+        "metadata": "model-number"
+      },
+      "observed": {
+        "model": null
+      },
+      "expected": {
+        "model": null
+      }
+    },
+    {
+      "id": 22,
+      "group": "model",
+      "input": {
+        "metadata": "compatible"
+      },
+      "observed": {
+        "model": "gpt-6-astra"
+      },
+      "expected": {
+        "model": "gpt-6-astra"
+      }
+    },
+    {
+      "id": 23,
+      "group": "model",
+      "input": {
+        "metadata": "luna"
+      },
+      "observed": {
+        "model": "gpt-6-luna"
+      },
+      "expected": {
+        "model": "gpt-6-luna"
+      }
+    },
+    {
+      "id": 24,
+      "group": "model",
+      "input": {
+        "metadata": "embedded-luna"
+      },
+      "observed": {
+        "model": "prefix-luna-suffix"
+      },
+      "expected": {
+        "model": "prefix-luna-suffix"
+      }
+    },
+    {
+      "id": 25,
+      "group": "model",
+      "input": {
+        "metadata": "bare-luna"
+      },
+      "observed": {
+        "model": "luna"
+      },
+      "expected": {
+        "model": "luna"
+      }
+    },
+    {
+      "id": 26,
+      "group": "model",
+      "input": {
+        "metadata": "leading-spaces"
+      },
+      "observed": {
+        "model": "  gpt-6-luna "
+      },
+      "expected": {
+        "model": "  gpt-6-luna "
+      }
+    },
+    {
+      "id": 27,
+      "group": "model",
+      "input": {
+        "metadata": "unicode"
+      },
+      "observed": {
+        "model": "i̇ς-luna"
+      },
+      "expected": {
+        "model": "i̇ς-luna"
+      }
+    },
+    {
+      "id": 28,
+      "group": "model",
+      "input": {
+        "metadata": "json-string"
+      },
+      "observed": {
+        "model": "gpt-6-luna"
+      },
+      "expected": {
+        "model": "gpt-6-luna"
+      }
+    },
+    {
+      "id": 29,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "true",
+        "advertisement": "absent",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 30,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "true",
+        "advertisement": "absent",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 31,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "true",
+        "advertisement": "no-tab",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 32,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "true",
+        "advertisement": "no-tab",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 33,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "true",
+        "advertisement": "empty",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 34,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "true",
+        "advertisement": "empty",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 35,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "true",
+        "advertisement": "cdp",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 36,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "true",
+        "advertisement": "cdp",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 37,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "true",
+        "advertisement": "webmcp",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "ok": true
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities"
+        ]
+      },
+      "expected": {
+        "result": {
+          "ok": true
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities"
+        ]
+      }
+    },
+    {
+      "id": 38,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "true",
+        "advertisement": "webmcp",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "ok": true
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities"
+        ]
+      },
+      "expected": {
+        "result": {
+          "ok": true
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities"
+        ]
+      }
+    },
+    {
+      "id": 39,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "true",
+        "advertisement": "duplicate",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "ok": true
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities"
+        ]
+      },
+      "expected": {
+        "result": {
+          "ok": true
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities"
+        ]
+      }
+    },
+    {
+      "id": 40,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "true",
+        "advertisement": "duplicate",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "ok": true
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities"
+        ]
+      },
+      "expected": {
+        "result": {
+          "ok": true
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities"
+        ]
+      }
+    },
+    {
+      "id": 41,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "false",
+        "advertisement": "absent",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 42,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "false",
+        "advertisement": "absent",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 43,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "false",
+        "advertisement": "no-tab",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 44,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "false",
+        "advertisement": "no-tab",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 45,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "false",
+        "advertisement": "empty",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 46,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "false",
+        "advertisement": "empty",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 47,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "false",
+        "advertisement": "cdp",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 48,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "false",
+        "advertisement": "cdp",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 49,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "false",
+        "advertisement": "webmcp",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 50,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "false",
+        "advertisement": "webmcp",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 51,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "false",
+        "advertisement": "duplicate",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 52,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "false",
+        "advertisement": "duplicate",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 53,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "read-error",
+        "advertisement": "absent",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 54,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "read-error",
+        "advertisement": "absent",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 55,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "read-error",
+        "advertisement": "no-tab",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 56,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "read-error",
+        "advertisement": "no-tab",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 57,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "read-error",
+        "advertisement": "empty",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 58,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "read-error",
+        "advertisement": "empty",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 59,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "read-error",
+        "advertisement": "cdp",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 60,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "read-error",
+        "advertisement": "cdp",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 61,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "read-error",
+        "advertisement": "webmcp",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 62,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "read-error",
+        "advertisement": "webmcp",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 63,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "read-error",
+        "advertisement": "duplicate",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 64,
+      "group": "command-gate",
+      "input": {
+        "model": "absent",
+        "preference": "read-error",
+        "advertisement": "duplicate",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 65,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "true",
+        "advertisement": "absent",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 66,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "true",
+        "advertisement": "absent",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 67,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "true",
+        "advertisement": "no-tab",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 68,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "true",
+        "advertisement": "no-tab",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 69,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "true",
+        "advertisement": "empty",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 70,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "true",
+        "advertisement": "empty",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 71,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "true",
+        "advertisement": "cdp",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 72,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "true",
+        "advertisement": "cdp",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 73,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "true",
+        "advertisement": "webmcp",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "ok": true
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities"
+        ]
+      },
+      "expected": {
+        "result": {
+          "ok": true
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities"
+        ]
+      }
+    },
+    {
+      "id": 74,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "true",
+        "advertisement": "webmcp",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "ok": true
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities"
+        ]
+      },
+      "expected": {
+        "result": {
+          "ok": true
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities"
+        ]
+      }
+    },
+    {
+      "id": 75,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "true",
+        "advertisement": "duplicate",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "ok": true
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities"
+        ]
+      },
+      "expected": {
+        "result": {
+          "ok": true
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities"
+        ]
+      }
+    },
+    {
+      "id": 76,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "true",
+        "advertisement": "duplicate",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "ok": true
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities"
+        ]
+      },
+      "expected": {
+        "result": {
+          "ok": true
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "capabilities"
+        ]
+      }
+    },
+    {
+      "id": 77,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "false",
+        "advertisement": "absent",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 78,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "false",
+        "advertisement": "absent",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 79,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "false",
+        "advertisement": "no-tab",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 80,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "false",
+        "advertisement": "no-tab",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 81,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "false",
+        "advertisement": "empty",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 82,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "false",
+        "advertisement": "empty",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 83,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "false",
+        "advertisement": "cdp",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 84,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "false",
+        "advertisement": "cdp",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 85,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "false",
+        "advertisement": "webmcp",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 86,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "false",
+        "advertisement": "webmcp",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 87,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "false",
+        "advertisement": "duplicate",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 88,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "false",
+        "advertisement": "duplicate",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 89,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "read-error",
+        "advertisement": "absent",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 90,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "read-error",
+        "advertisement": "absent",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 91,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "read-error",
+        "advertisement": "no-tab",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 92,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "read-error",
+        "advertisement": "no-tab",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 93,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "read-error",
+        "advertisement": "empty",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 94,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "read-error",
+        "advertisement": "empty",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 95,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "read-error",
+        "advertisement": "cdp",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 96,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "read-error",
+        "advertisement": "cdp",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 97,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "read-error",
+        "advertisement": "webmcp",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 98,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "read-error",
+        "advertisement": "webmcp",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 99,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "read-error",
+        "advertisement": "duplicate",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_list_tools\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 100,
+      "group": "command-gate",
+      "input": {
+        "model": "compatible",
+        "preference": "read-error",
+        "advertisement": "duplicate",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      },
+      "expected": {
+        "result": {
+          "error": "Owned fixture provider does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": [
+          "preference:get:webmcp_enabled",
+          "provider-name"
+        ]
+      }
+    },
+    {
+      "id": 101,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "true",
+        "advertisement": "absent",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 102,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "true",
+        "advertisement": "absent",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 103,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "true",
+        "advertisement": "no-tab",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 104,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "true",
+        "advertisement": "no-tab",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 105,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "true",
+        "advertisement": "empty",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 106,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "true",
+        "advertisement": "empty",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 107,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "true",
+        "advertisement": "cdp",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 108,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "true",
+        "advertisement": "cdp",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 109,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "true",
+        "advertisement": "webmcp",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 110,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "true",
+        "advertisement": "webmcp",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 111,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "true",
+        "advertisement": "duplicate",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 112,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "true",
+        "advertisement": "duplicate",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 113,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "false",
+        "advertisement": "absent",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 114,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "false",
+        "advertisement": "absent",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 115,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "false",
+        "advertisement": "no-tab",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 116,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "false",
+        "advertisement": "no-tab",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 117,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "false",
+        "advertisement": "empty",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 118,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "false",
+        "advertisement": "empty",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 119,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "false",
+        "advertisement": "cdp",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 120,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "false",
+        "advertisement": "cdp",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 121,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "false",
+        "advertisement": "webmcp",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 122,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "false",
+        "advertisement": "webmcp",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 123,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "false",
+        "advertisement": "duplicate",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 124,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "false",
+        "advertisement": "duplicate",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 125,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "read-error",
+        "advertisement": "absent",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 126,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "read-error",
+        "advertisement": "absent",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 127,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "read-error",
+        "advertisement": "no-tab",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 128,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "read-error",
+        "advertisement": "no-tab",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 129,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "read-error",
+        "advertisement": "empty",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 130,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "read-error",
+        "advertisement": "empty",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 131,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "read-error",
+        "advertisement": "cdp",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 132,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "read-error",
+        "advertisement": "cdp",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 133,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "read-error",
+        "advertisement": "webmcp",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 134,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "read-error",
+        "advertisement": "webmcp",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 135,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "read-error",
+        "advertisement": "duplicate",
+        "command": "webmcp_list_tools"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_list_tools\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 136,
+      "group": "command-gate",
+      "input": {
+        "model": "incompatible",
+        "preference": "read-error",
+        "advertisement": "duplicate",
+        "command": "webmcp_invoke_tool"
+      },
+      "observed": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      },
+      "expected": {
+        "result": {
+          "error": "gpt-6-luna does not support command \"webmcp_invoke_tool\"."
+        },
+        "trace": []
+      }
+    },
+    {
+      "id": 137,
+      "group": "advertisement-filter",
+      "input": {
+        "advertisement": "absent",
+        "enabled": false
+      },
+      "observed": {
+        "same": true,
+        "unchanged": true,
+        "ids": null
+      },
+      "expected": {
+        "same": true,
+        "unchanged": true,
+        "ids": null
+      }
+    },
+    {
+      "id": 138,
+      "group": "advertisement-filter",
+      "input": {
+        "advertisement": "absent",
+        "enabled": true
+      },
+      "observed": {
+        "same": true,
+        "unchanged": true,
+        "ids": null
+      },
+      "expected": {
+        "same": true,
+        "unchanged": true,
+        "ids": null
+      }
+    },
+    {
+      "id": 139,
+      "group": "advertisement-filter",
+      "input": {
+        "advertisement": "no-tab",
+        "enabled": false
+      },
+      "observed": {
+        "same": true,
+        "unchanged": true,
+        "ids": null
+      },
+      "expected": {
+        "same": true,
+        "unchanged": true,
+        "ids": null
+      }
+    },
+    {
+      "id": 140,
+      "group": "advertisement-filter",
+      "input": {
+        "advertisement": "no-tab",
+        "enabled": true
+      },
+      "observed": {
+        "same": true,
+        "unchanged": true,
+        "ids": null
+      },
+      "expected": {
+        "same": true,
+        "unchanged": true,
+        "ids": null
+      }
+    },
+    {
+      "id": 141,
+      "group": "advertisement-filter",
+      "input": {
+        "advertisement": "empty",
+        "enabled": false
+      },
+      "observed": {
+        "same": true,
+        "unchanged": true,
+        "ids": []
+      },
+      "expected": {
+        "same": true,
+        "unchanged": true,
+        "ids": []
+      }
+    },
+    {
+      "id": 142,
+      "group": "advertisement-filter",
+      "input": {
+        "advertisement": "empty",
+        "enabled": true
+      },
+      "observed": {
+        "same": true,
+        "unchanged": true,
+        "ids": []
+      },
+      "expected": {
+        "same": true,
+        "unchanged": true,
+        "ids": []
+      }
+    },
+    {
+      "id": 143,
+      "group": "advertisement-filter",
+      "input": {
+        "advertisement": "cdp",
+        "enabled": false
+      },
+      "observed": {
+        "same": true,
+        "unchanged": true,
+        "ids": [
+          "cdp"
+        ]
+      },
+      "expected": {
+        "same": true,
+        "unchanged": true,
+        "ids": [
+          "cdp"
+        ]
+      }
+    },
+    {
+      "id": 144,
+      "group": "advertisement-filter",
+      "input": {
+        "advertisement": "cdp",
+        "enabled": true
+      },
+      "observed": {
+        "same": true,
+        "unchanged": true,
+        "ids": [
+          "cdp"
+        ]
+      },
+      "expected": {
+        "same": true,
+        "unchanged": true,
+        "ids": [
+          "cdp"
+        ]
+      }
+    },
+    {
+      "id": 145,
+      "group": "advertisement-filter",
+      "input": {
+        "advertisement": "webmcp",
+        "enabled": false
+      },
+      "observed": {
+        "same": false,
+        "unchanged": true,
+        "ids": []
+      },
+      "expected": {
+        "same": false,
+        "unchanged": true,
+        "ids": []
+      }
+    },
+    {
+      "id": 146,
+      "group": "advertisement-filter",
+      "input": {
+        "advertisement": "webmcp",
+        "enabled": true
+      },
+      "observed": {
+        "same": true,
+        "unchanged": true,
+        "ids": [
+          "webmcp"
+        ]
+      },
+      "expected": {
+        "same": true,
+        "unchanged": true,
+        "ids": [
+          "webmcp"
+        ]
+      }
+    },
+    {
+      "id": 147,
+      "group": "advertisement-filter",
+      "input": {
+        "advertisement": "duplicate",
+        "enabled": false
+      },
+      "observed": {
+        "same": false,
+        "unchanged": true,
+        "ids": []
+      },
+      "expected": {
+        "same": false,
+        "unchanged": true,
+        "ids": []
+      }
+    },
+    {
+      "id": 148,
+      "group": "advertisement-filter",
+      "input": {
+        "advertisement": "duplicate",
+        "enabled": true
+      },
+      "observed": {
+        "same": true,
+        "unchanged": true,
+        "ids": [
+          "webmcp",
+          "webmcp"
+        ]
+      },
+      "expected": {
+        "same": true,
+        "unchanged": true,
+        "ids": [
+          "webmcp",
+          "webmcp"
+        ]
+      }
+    },
+    {
+      "id": 149,
+      "group": "iab-advertisement",
+      "input": {
+        "flavor": null,
+        "flag": false
+      },
+      "observed": {
+        "ids": []
+      },
+      "expected": {
+        "ids": []
+      }
+    },
+    {
+      "id": 150,
+      "group": "iab-advertisement",
+      "input": {
+        "flavor": null,
+        "flag": true
+      },
+      "observed": {
+        "ids": []
+      },
+      "expected": {
+        "ids": []
+      }
+    },
+    {
+      "id": 151,
+      "group": "iab-advertisement",
+      "input": {
+        "flavor": "dev",
+        "flag": false
+      },
+      "observed": {
+        "ids": [
+          "webmcp"
+        ]
+      },
+      "expected": {
+        "ids": [
+          "webmcp"
+        ]
+      }
+    },
+    {
+      "id": 152,
+      "group": "iab-advertisement",
+      "input": {
+        "flavor": "dev",
+        "flag": true
+      },
+      "observed": {
+        "ids": [
+          "webmcp"
+        ]
+      },
+      "expected": {
+        "ids": [
+          "webmcp"
+        ]
+      }
+    },
+    {
+      "id": 153,
+      "group": "iab-advertisement",
+      "input": {
+        "flavor": "agent",
+        "flag": false
+      },
+      "observed": {
+        "ids": [
+          "webmcp"
+        ]
+      },
+      "expected": {
+        "ids": [
+          "webmcp"
+        ]
+      }
+    },
+    {
+      "id": 154,
+      "group": "iab-advertisement",
+      "input": {
+        "flavor": "agent",
+        "flag": true
+      },
+      "observed": {
+        "ids": [
+          "webmcp"
+        ]
+      },
+      "expected": {
+        "ids": [
+          "webmcp"
+        ]
+      }
+    },
+    {
+      "id": 155,
+      "group": "iab-advertisement",
+      "input": {
+        "flavor": "nightly",
+        "flag": false
+      },
+      "observed": {
+        "ids": [
+          "webmcp"
+        ]
+      },
+      "expected": {
+        "ids": [
+          "webmcp"
+        ]
+      }
+    },
+    {
+      "id": 156,
+      "group": "iab-advertisement",
+      "input": {
+        "flavor": "nightly",
+        "flag": true
+      },
+      "observed": {
+        "ids": [
+          "webmcp"
+        ]
+      },
+      "expected": {
+        "ids": [
+          "webmcp"
+        ]
+      }
+    },
+    {
+      "id": 157,
+      "group": "iab-advertisement",
+      "input": {
+        "flavor": "internal-alpha",
+        "flag": false
+      },
+      "observed": {
+        "ids": [
+          "webmcp"
+        ]
+      },
+      "expected": {
+        "ids": [
+          "webmcp"
+        ]
+      }
+    },
+    {
+      "id": 158,
+      "group": "iab-advertisement",
+      "input": {
+        "flavor": "internal-alpha",
+        "flag": true
+      },
+      "observed": {
+        "ids": [
+          "webmcp"
+        ]
+      },
+      "expected": {
+        "ids": [
+          "webmcp"
+        ]
+      }
+    },
+    {
+      "id": 159,
+      "group": "iab-advertisement",
+      "input": {
+        "flavor": "public-beta",
+        "flag": false
+      },
+      "observed": {
+        "ids": []
+      },
+      "expected": {
+        "ids": []
+      }
+    },
+    {
+      "id": 160,
+      "group": "iab-advertisement",
+      "input": {
+        "flavor": "public-beta",
+        "flag": true
+      },
+      "observed": {
+        "ids": [
+          "webmcp"
+        ]
+      },
+      "expected": {
+        "ids": [
+          "webmcp"
+        ]
+      }
+    },
+    {
+      "id": 161,
+      "group": "iab-advertisement",
+      "input": {
+        "flavor": "prod",
+        "flag": false
+      },
+      "observed": {
+        "ids": []
+      },
+      "expected": {
+        "ids": []
+      }
+    },
+    {
+      "id": 162,
+      "group": "iab-advertisement",
+      "input": {
+        "flavor": "prod",
+        "flag": true
+      },
+      "observed": {
+        "ids": [
+          "webmcp"
+        ]
+      },
+      "expected": {
+        "ids": [
+          "webmcp"
+        ]
+      }
+    },
+    {
+      "id": 163,
+      "group": "typed-capability",
+      "input": {
+        "name": "absent"
+      },
+      "observed": {
+        "ids": [],
+        "result": {
+          "error": "Capability is not available: webmcp"
+        }
+      },
+      "expected": {
+        "ids": [],
+        "result": {
+          "error": "Capability is not available: webmcp"
+        }
+      }
+    },
+    {
+      "id": 164,
+      "group": "typed-capability",
+      "input": {
+        "name": "empty"
+      },
+      "observed": {
+        "ids": [],
+        "result": {
+          "error": "Capability is not available: webmcp"
+        }
+      },
+      "expected": {
+        "ids": [],
+        "result": {
+          "error": "Capability is not available: webmcp"
+        }
+      }
+    },
+    {
+      "id": 165,
+      "group": "typed-capability",
+      "input": {
+        "name": "unknown"
+      },
+      "observed": {
+        "ids": [],
+        "result": {
+          "error": "Capability is not available: webmcp"
+        }
+      },
+      "expected": {
+        "ids": [],
+        "result": {
+          "error": "Capability is not available: webmcp"
+        }
+      }
+    },
+    {
+      "id": 166,
+      "group": "typed-capability",
+      "input": {
+        "name": "advertised"
+      },
+      "observed": {
+        "ids": [
+          "cdp",
+          "webmcp"
+        ],
+        "result": {
+          "info": {
+            "id": "webmcp"
+          }
+        }
+      },
+      "expected": {
+        "ids": [
+          "cdp",
+          "webmcp"
+        ],
+        "result": {
+          "info": {
+            "id": "webmcp"
+          }
+        }
+      }
+    },
+    {
+      "id": 167,
+      "group": "typed-capability",
+      "input": {
+        "name": "duplicate"
+      },
+      "observed": {
+        "ids": [
+          "webmcp"
+        ],
+        "result": {
+          "info": {
+            "id": "webmcp",
+            "description": "last"
+          }
+        }
+      },
+      "expected": {
+        "ids": [
+          "webmcp"
+        ],
+        "result": {
+          "info": {
+            "id": "webmcp",
+            "description": "last"
+          }
+        }
+      }
+    },
+    {
+      "id": 168,
+      "group": "preference-cache",
+      "input": {
+        "scenario": "first-then-before-expiry",
+        "step": 1,
+        "times": [
+          100
+        ]
+      },
+      "observed": {
+        "value": {
+          "webmcp_enabled": false
+        },
+        "reads": 1,
+        "expires": 300100
+      },
+      "expected": {
+        "value": {
+          "webmcp_enabled": false
+        },
+        "reads": 1,
+        "expires": 300100
+      }
+    },
+    {
+      "id": 169,
+      "group": "preference-cache",
+      "input": {
+        "scenario": "first-then-before-expiry",
+        "step": 2,
+        "times": [
+          300099
+        ]
+      },
+      "observed": {
+        "value": {
+          "webmcp_enabled": false
+        },
+        "reads": 1,
+        "expires": 300100
+      },
+      "expected": {
+        "value": {
+          "webmcp_enabled": false
+        },
+        "reads": 1,
+        "expires": 300100
+      }
+    },
+    {
+      "id": 170,
+      "group": "preference-cache",
+      "input": {
+        "scenario": "exact-expiry-reloads",
+        "step": 1,
+        "times": [
+          100
+        ]
+      },
+      "observed": {
+        "value": {
+          "webmcp_enabled": false
+        },
+        "reads": 1,
+        "expires": 300100
+      },
+      "expected": {
+        "value": {
+          "webmcp_enabled": false
+        },
+        "reads": 1,
+        "expires": 300100
+      }
+    },
+    {
+      "id": 171,
+      "group": "preference-cache",
+      "input": {
+        "scenario": "exact-expiry-reloads",
+        "step": 2,
+        "times": [
+          300100,
+          301000
+        ]
+      },
+      "observed": {
+        "value": {
+          "webmcp_enabled": true
+        },
+        "reads": 2,
+        "expires": 601000
+      },
+      "expected": {
+        "value": {
+          "webmcp_enabled": true
+        },
+        "reads": 2,
+        "expires": 601000
+      }
+    },
+    {
+      "id": 172,
+      "group": "preference-cache",
+      "input": {
+        "scenario": "rollback-retains-cache",
+        "step": 1,
+        "times": [
+          100
+        ]
+      },
+      "observed": {
+        "value": {
+          "webmcp_enabled": false
+        },
+        "reads": 1,
+        "expires": 300100
+      },
+      "expected": {
+        "value": {
+          "webmcp_enabled": false
+        },
+        "reads": 1,
+        "expires": 300100
+      }
+    },
+    {
+      "id": 173,
+      "group": "preference-cache",
+      "input": {
+        "scenario": "rollback-retains-cache",
+        "step": 2,
+        "times": [
+          -10000
+        ]
+      },
+      "observed": {
+        "value": {
+          "webmcp_enabled": false
+        },
+        "reads": 1,
+        "expires": 300100
+      },
+      "expected": {
+        "value": {
+          "webmcp_enabled": false
+        },
+        "reads": 1,
+        "expires": 300100
+      }
+    },
+    {
+      "id": 174,
+      "group": "preference-cache",
+      "input": {
+        "scenario": "expired-read-error-keeps-old-entry",
+        "step": 1,
+        "times": [
+          100
+        ]
+      },
+      "observed": {
+        "value": {
+          "webmcp_enabled": false
+        },
+        "reads": 1,
+        "expires": 300100
+      },
+      "expected": {
+        "value": {
+          "webmcp_enabled": false
+        },
+        "reads": 1,
+        "expires": 300100
+      }
+    },
+    {
+      "id": 175,
+      "group": "preference-cache",
+      "input": {
+        "scenario": "expired-read-error-keeps-old-entry",
+        "step": 2,
+        "times": [
+          300100
+        ]
+      },
+      "observed": {
+        "error": "fixture read failure",
+        "reads": 2,
+        "expires": 300100
+      },
+      "expected": {
+        "error": "fixture read failure",
+        "reads": 2,
+        "expires": 300100
+      }
+    },
+    {
+      "id": 176,
+      "group": "preference-cache",
+      "input": {
+        "scenario": "non-object-settings",
+        "step": 1,
+        "times": [
+          100
+        ]
+      },
+      "observed": {
+        "value": {},
+        "reads": 1,
+        "expires": 300100
+      },
+      "expected": {
+        "value": {},
+        "reads": 1,
+        "expires": 300100
+      }
+    },
+    {
+      "id": 177,
+      "group": "preference-cache",
+      "input": {
+        "scenario": "read-error-before-first-clock",
+        "step": 1,
+        "times": []
+      },
+      "observed": {
+        "error": "fixture read failure",
+        "reads": 1,
+        "expires": null
+      },
+      "expected": {
+        "error": "fixture read failure",
+        "reads": 1,
+        "expires": null
+      }
+    },
+    {
+      "id": 178,
+      "group": "preference-cache",
+      "input": {
+        "scenario": "forced-refresh-bypasses-clock-read",
+        "step": 1,
+        "times": [
+          100
+        ]
+      },
+      "observed": {
+        "value": {
+          "webmcp_enabled": false
+        },
+        "reads": 1,
+        "expires": 300100
+      },
+      "expected": {
+        "value": {
+          "webmcp_enabled": false
+        },
+        "reads": 1,
+        "expires": 300100
+      }
+    },
+    {
+      "id": 179,
+      "group": "preference-cache",
+      "input": {
+        "scenario": "forced-refresh-bypasses-clock-read",
+        "step": 2,
+        "times": [
+          700
+        ]
+      },
+      "observed": {
+        "value": {
+          "webmcp_enabled": true
+        },
+        "reads": 2,
+        "expires": 300700
+      },
+      "expected": {
+        "value": {
+          "webmcp_enabled": true
+        },
+        "reads": 2,
+        "expires": 300700
+      }
+    }
+  ]
+}

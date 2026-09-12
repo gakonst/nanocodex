@@ -34,6 +34,8 @@ export const HOSTED_MACHINE_TOOL_NAMES = Object.freeze([
   "exec_command",
   "write_stdin",
   "preview",
+  "mcp__cua_repl__js",
+  "mcp__cua_repl__js_reset",
 ] as const);
 const MACHINE_TOOL_NAMES: ReadonlySet<string> = new Set(HOSTED_MACHINE_TOOL_NAMES);
 const encoder = new TextEncoder();

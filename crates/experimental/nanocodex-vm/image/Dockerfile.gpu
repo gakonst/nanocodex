@@ -2,6 +2,13 @@
 # Keep the hardware driver separate from the portable software desktop image.
 FROM rust:1.97-alpine3.24 AS rust-toolchain
 RUN rustup component add clippy rustfmt && rustup target add wasm32-unknown-unknown
+FROM rust-toolchain AS computer-build
+RUN apk add --no-cache build-base pkgconf pulseaudio-dev libxkbcommon-dev
+WORKDIR /src/computer
+COPY --from=computer-source /Cargo.toml /Cargo.lock ./
+COPY --from=computer-source /src ./src
+COPY --from=computer-source /vendor ./vendor
+RUN RUSTFLAGS="-C target-feature=-crt-static" cargo build --locked --release --bin nanocodex-computer
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS build
 RUN apk add --no-cache build-base meson samurai python3 py3-mako py3-yaml \
     py3-packaging py3-setuptools bison flex libdrm-dev vulkan-headers zlib-dev \
@@ -57,6 +64,7 @@ RUN mkdir -p /driver/usr/local/bin \
 RUN mkdir -p /driver/usr/share/licenses/nanocodex-gpu-gl \
     && cp docs/license.rst /driver/usr/share/licenses/nanocodex-gpu-gl/
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+COPY --from=computer-build /src/computer/target/release/nanocodex-computer /usr/local/bin/nanocodex-computer
 COPY --from=rust-toolchain /usr/local/rustup /opt/rustup
 COPY --from=rust-toolchain /usr/local/cargo /opt/cargo
 COPY toolkit/install-alpine.sh toolkit/python.txt /opt/hand-toolkit/

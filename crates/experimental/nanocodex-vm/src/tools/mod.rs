@@ -71,9 +71,27 @@ serve_guest("/workspace").await?;
 )]
 #![deny(missing_docs, rustdoc::broken_intra_doc_links)]
 
+#[cfg(all(
+    feature = "host",
+    any(
+        all(target_os = "linux", not(target_env = "musl")),
+        all(target_os = "macos", target_arch = "aarch64")
+    )
+))]
+mod computer;
 #[cfg(any(feature = "guest-runtime", test))]
 mod guest;
+#[cfg(any(feature = "guest-runtime", test))]
+mod guest_computer;
 mod protocol;
+#[cfg(all(
+    feature = "host",
+    any(
+        all(target_os = "linux", not(target_env = "musl")),
+        all(target_os = "macos", target_arch = "aarch64")
+    )
+))]
+use computer::ComputerProxy;
 #[cfg(all(
     feature = "host",
     any(
@@ -159,6 +177,14 @@ pub use session::{
     )
 ))]
 pub trait VmToolClient: Send + Sync {
+    /// Execute CUA in the guest owning this capability, never on the VMM host.
+    async fn computer(
+        &self,
+        _request: Option<nanocodex_computer::ComputerRequest>,
+        _context: ToolContext<'_>,
+    ) -> ToolResult {
+        Err("This VM transport does not support CUA".into())
+    }
     /// Executes one standard tool through the client-owned VM capability.
     async fn execute(
         &self,
@@ -189,6 +215,10 @@ pub struct VmTools {
     )
 ))]
 impl VmTools {
+    /// Computer tools backed by this exact guest attachment.
+    pub fn computer_tools(&self) -> nanocodex_computer::ComputerTools {
+        nanocodex_computer::ComputerTools::new(ComputerProxy(self.client.clone()))
+    }
     /// Creates a VM tool family over one clone-cheap execution capability.
     #[must_use]
     pub fn new(client: impl VmToolClient + 'static) -> Self {
@@ -246,10 +276,14 @@ impl VmTools {
             .without_defaults()
             .tool(self.exec_command_tool())
             .tool(self.write_stdin_tool())
+            .tool(self.computer_tools().js())
+            .tool(self.computer_tools().reset())
     }
 
     fn workspace_tools(&self, builder: ToolsBuilder) -> ToolsBuilder {
         builder
+            .tool(self.computer_tools().js())
+            .tool(self.computer_tools().reset())
             .tool(self.exec_command_tool())
             .tool(self.write_stdin_tool())
             .tool(self.apply_patch_tool())

@@ -1,0 +1,64 @@
+{
+  "sourceManifest": "evidence/runtime-public-bridge/20260907T004935767909Z-before/manifest.json",
+  "sourceManifestSha256": "3748549b9d0254ec0a5b7e467633fb6ec7a4720315cd621cab1d795f27c2b23c",
+  "code": "nodeRepl.write(JSON.stringify({keys:Reflect.ownKeys(nodeRepl),global:Object.fromEntries(Object.entries(Object.getOwnPropertyDescriptor(globalThis,'nodeRepl')).filter(([k])=>k!=='value')),frozen:Object.isFrozen(nodeRepl),members:Object.fromEntries(Reflect.ownKeys(nodeRepl).map(k=>[k,Object.fromEntries(Object.entries(Object.getOwnPropertyDescriptor(nodeRepl,k)).filter(([key])=>!['value','get','set'].includes(key)))]))}))",
+  "expected": {
+    "keys": [
+      "cwd",
+      "env",
+      "homeDir",
+      "tmpDir",
+      "requestMeta",
+      "write",
+      "emitImage",
+      "rpc"
+    ],
+    "global": {
+      "writable": false,
+      "enumerable": false,
+      "configurable": false
+    },
+    "frozen": true,
+    "members": {
+      "cwd": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false
+      },
+      "env": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false
+      },
+      "homeDir": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false
+      },
+      "tmpDir": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false
+      },
+      "requestMeta": {
+        "enumerable": true,
+        "configurable": false
+      },
+      "write": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false
+      },
+      "emitImage": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false
+      },
+      "rpc": {
+        "writable": false,
+        "enumerable": true,
+        "configurable": false
+      }
+    }
+  }
+}

@@ -1,0 +1,369 @@
+{
+  "provenance": {
+    "binary": "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl",
+    "sha256": "0d6f59d5aff9db38d3bf1cad78f3b2d71daaedaefddbc00c65fa3241ce83ad7c",
+    "scope": "No banner, trusted services or UI. Synthetic values and builtin module metadata only."
+  },
+  "initialized": {
+    "protocolVersion": "2025-03-26",
+    "capabilities": {
+      "tools": {
+        "listChanged": true
+      }
+    },
+    "serverInfo": {
+      "name": "rmcp",
+      "version": "1.5.0"
+    },
+    "instructions": "UI automation through a persistent JavaScript session using the initialized CUA API."
+  },
+  "tools": {
+    "tools": [
+      {
+        "name": "js",
+        "description": "Control native apps or browsers on the user’s computer by reading or operating UI. Prefer purpose-built skills, connectors, APIs, or CLIs when available.\n\nOn your first call, or after a reset, execute exactly one of the API calls shown below, optionally assigning its result to a variable. Do not add other API calls, waits, or snapshots to that invocation.\nThe tool result will include documentation and, when creating or selecting a tab or selecting an app, its initial UI state. Selecting a browser does not open a tab. Read that result before continuing.\nUse only APIs described in the tool instructions or returned documentation.\n\nWhen you need an inventory of available apps, browsers, and tabs, get a snapshot of all enabled surfaces. Otherwise, use the relevant entry point below:\n\n```javascript\nawait cua.getState();\n```\n\n\nUse the first matching browser control option from the user's request:\n\nFor a tab @-mention (`mention=tab-v1`):\nCall `cua.getState()` and find the tab whose `providerTabId`/`title`/`url` all match the mention’s decoded `tabId`/`title`/`url`. Then call `cua.getTab(tabId, { browser: browserId })`, using the id fields from that tab and its browser.\n\nKnown tab ID (`tabId` or `providerTabId`) and browser (name or browser @-mention):\n```javascript\nlet tab = await cua.getTab(tabId, { browser: browserId });\n```\n\nKnown URL and in-app browser (`@Browser`):\n```javascript\nlet tab = await cua.createBrowserTab(\"iab\", url, { visible: boolean });\n```\n\nKnown URL and other named browser: pass its name directly; do not call `getBrowser` first.\n```javascript\nlet tab = await cua.createBrowserTab(browserName, url, browserOptions);\n```\n\nKnown URL, only when the user has not specified a browser by name or @-mention:\n```javascript\nlet browser = await cua.getBrowser({ url });\n```\n\nBrowser IDs and options:\n- `\"iab\"` (in-app browser): in `createBrowserTab`, use `visible: true` to show the browser; `false` to keep it hidden.\n- `\"chrome\"` (@Chrome), `\"edge\"` (@Edge): pass a short, emoji-prefixed `sessionName` (e.g. `\"🔎 Task\"`) to `createBrowserTab` when starting a task.\n\n\nIf the user specifies an app to use, get the app by name, bundle ID, or path:\n\n```javascript\nlet app = await cua.getApp(\"Example App\");\n```\n\n\nTo add other content to the tool result, use `nodeRepl.write(value)` for text or other values and `await nodeRepl.emitImage(image)` for images. The APIs listed above already display their documentation or UI state; do not wrap their results in `write` or `emitImage`.\n",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "description": "JavaScript to execute using the initialized CUA runtime.",
+              "type": "string"
+            },
+            "timeout_ms": {
+              "description": "Optional execution timeout in milliseconds. Defaults to 30000 (30 seconds) when omitted.",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "title": {
+              "description": "Short user-facing description of what the code does.",
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "code"
+          ],
+          "type": "object"
+        }
+      },
+      {
+        "name": "js_add_node_module_dir",
+        "description": "Add an absolute `node_modules` directory for package imports. The directory remains available after `js_reset`.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "description": "Absolute path to a node_modules directory to add to Node package resolution.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "js_reset",
+        "description": "Reset the persistent CUA JavaScript session. All JavaScript bindings are discarded. The next cua_repl.js call initializes a fresh runtime for the enabled surfaces. This does not close browser tabs or native apps, or erase their state.\n",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "turn_ended",
+        "description": "Notify trusted libraries that a Codex turn ended. Repeated notifications for the same session and turn are ignored.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "hook_event_name": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "session_id": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "turn_id": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "hook_event_name",
+            "session_id",
+            "turn_id"
+          ],
+          "type": "object"
+        },
+        "annotations": {
+          "idempotentHint": true
+        },
+        "_meta": {
+          "ui": {
+            "visibility": []
+          }
+        }
+      }
+    ]
+  },
+  "cells": [
+    {
+      "code": "42",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": ""
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "code": "nodeRepl.write({a:1});nodeRepl.write('x','tag');nodeRepl.write('y','tag');42",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "xy"
+          },
+          {
+            "type": "text",
+            "text": "{ a: 1 }"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "code": "nodeRepl.write('default');nodeRepl.write('named-output','output');nodeRepl.write('named-image','image');console.log(' line');",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "named-output"
+          },
+          {
+            "type": "text",
+            "text": "named-image"
+          },
+          {
+            "type": "text",
+            "text": "default line"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "code": "console.log('line');nodeRepl.write('raw\\n');",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "line\nraw\n"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "code": "throw new TypeError('synthetic failure')",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "synthetic failure"
+          }
+        ],
+        "isError": true,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "code": "let persistent=41;nodeRepl.write(persistent)",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "41"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "code": "persistent+=1;nodeRepl.write(persistent)",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "42"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "code": "let persistent=99;nodeRepl.write(persistent)",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "99"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "code": "const fixed=7;nodeRepl.write(fixed)",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "7"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "code": "try{fixed=8}catch(error){nodeRepl.write(error.message)};nodeRepl.write(fixed)",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "Warning: fixed was declared with const; use let for reassignable variables.\n8"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "code": "let survived=5;throw new Error('after declaration')",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "after declaration"
+          }
+        ],
+        "isError": true,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "code": "nodeRepl.write(survived)",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "5"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "code": "nodeRepl.write(typeof (await import('node:fs/promises')).readFile)",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "function"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "code": "nodeRepl.write(typeof (await import('node:path')).join)",
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "function"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    }
+  ],
+  "reset": {
+    "content": [
+      {
+        "type": "text",
+        "text": "js kernel reset"
+      }
+    ],
+    "isError": false
+  },
+  "after_reset": {
+    "content": [
+      {
+        "type": "text",
+        "text": "undefined"
+      }
+    ],
+    "isError": false,
+    "_meta": {
+      "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+    }
+  }
+}

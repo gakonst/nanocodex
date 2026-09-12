@@ -1,0 +1,50 @@
+{
+  "provenance": {
+    "node": "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node",
+    "nodeVersion": "v24.19.0",
+    "nodeSha256": "a2f397892a25f0c0e2b6e764395be935d30c974c2c85e814acacb1bed6d2f42a",
+    "scope": "owned temporary file handles, hardlinks, symlinks and path-local errors; no application or browser actions"
+  },
+  "filesystem": {
+    "code": "\nconst fs=await import('node:fs/promises');const path=await import('node:path');\nconst file=path.join(root,'source');await fs.writeFile(file,'abcdef',{mode:'600'});\nconst handle=await fs.open(file,'r+');const first=Buffer.alloc(2);await handle.read(first,0,2,null);\nawait handle.appendFile('XY');const appended=await fs.readFile(file,'utf8');\nconst positional=Buffer.alloc(1);await handle.read(positional,0,1,0);const next=Buffer.alloc(1);await handle.read(next,0,1,null);\nawait handle.close();await handle.close();let closed;try{await handle.readFile()}catch(error){closed=error.code;}\nawait fs.copyFile(file,file);const selfCopy=await fs.readFile(file,'utf8');\nconst hard=path.join(root,'hard'),symbolic=path.join(root,'symbolic');await fs.link(file,hard);await fs.symlink('source',symbolic);\nawait fs.copyFile(file,hard);const hardCopy=await fs.readFile(hard,'utf8');\nconst links={hard:(await fs.stat(file)).nlink,symlink:(await fs.lstat(symbolic)).isSymbolicLink(),target:await fs.readlink(symbolic),real:await fs.realpath(symbolic)===await fs.realpath(file)};\nconst dir=path.join(root,'empty');await fs.mkdir(dir);let rmDirectory;try{await fs.rm(dir)}catch(error){rmDirectory=error.code;}await fs.rmdir(dir);\nconst result={first:first.toString(),appended,positional:positional.toString(),next:next.toString(),closed,selfCopy,hardCopy,links,rmDirectory,mode:(await fs.stat(file)).mode&511};\nfor(const entry of await fs.readdir(root))await fs.unlink(path.join(root,entry));\nresult;\n",
+    "result": {
+      "first": "ab",
+      "appended": "abXYef",
+      "positional": "a",
+      "next": "e",
+      "closed": "EBADF",
+      "selfCopy": "abXYef",
+      "hardCopy": "abXYef",
+      "links": {
+        "hard": 2,
+        "symlink": true,
+        "target": "source",
+        "real": true
+      },
+      "rmDirectory": "ERR_FS_EISDIR",
+      "mode": 384
+    }
+  },
+  "buffers": [
+    {
+      "size": 0,
+      "output": "<Buffer >"
+    },
+    {
+      "size": 3,
+      "output": "<Buffer 00 00 00>"
+    },
+    {
+      "size": 50,
+      "output": "<Buffer 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00>"
+    },
+    {
+      "size": 51,
+      "output": "<Buffer 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ... 1 more byte>"
+    },
+    {
+      "size": 52,
+      "output": "<Buffer 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ... 2 more bytes>"
+    }
+  ]
+}

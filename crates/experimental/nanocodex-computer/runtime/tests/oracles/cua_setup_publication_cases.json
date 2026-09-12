@@ -1,0 +1,296 @@
+{
+  "schema": 1,
+  "scope": "Nine observed full-original inert first-setup publication/assignment cases; native engine-specific nonextensible Error.message remains outside comparison",
+  "source_observations_sha256": "25540594c96abb2a42da3f2a888a400195aa384daeb73d02acccebd053683197",
+  "cases": [
+    {
+      "id": "ordinary",
+      "expected": {
+        "initial": [
+          "initialize"
+        ],
+        "events": [],
+        "syncThrow": false,
+        "fulfilled": true,
+        "resultUndefined": true,
+        "error": null,
+        "keys": [
+          "browsers",
+          "computer",
+          "createBrowserTab",
+          "getApp",
+          "getBrowser",
+          "getState",
+          "getTab",
+          "initialize",
+          "listApps",
+          "listBrowsers",
+          "listTabs"
+        ],
+        "agent": {
+          "type": "object",
+          "browserType": "object"
+        }
+      }
+    },
+    {
+      "id": "agent-observing-setter",
+      "expected": {
+        "initial": [
+          "initialize"
+        ],
+        "events": [
+          {
+            "at": "agent-set",
+            "keys": [
+              "initialize"
+            ],
+            "browserType": "object"
+          }
+        ],
+        "syncThrow": false,
+        "fulfilled": true,
+        "resultUndefined": true,
+        "error": null,
+        "keys": [
+          "browsers",
+          "computer",
+          "createBrowserTab",
+          "getApp",
+          "getBrowser",
+          "getState",
+          "getTab",
+          "initialize",
+          "listApps",
+          "listBrowsers",
+          "listTabs"
+        ],
+        "agent": {
+          "type": "object",
+          "browserType": "object"
+        }
+      }
+    },
+    {
+      "id": "agent-throwing-setter",
+      "expected": {
+        "initial": [
+          "initialize"
+        ],
+        "events": [
+          {
+            "at": "agent-set",
+            "keys": [
+              "initialize"
+            ]
+          }
+        ],
+        "syncThrow": false,
+        "fulfilled": false,
+        "resultUndefined": true,
+        "error": {
+          "name": "Error",
+          "message": "owned agent setter"
+        },
+        "keys": [
+          "initialize"
+        ],
+        "agent": {
+          "type": "undefined",
+          "browserType": "undefined"
+        }
+      }
+    },
+    {
+      "id": "agent-readonly-data",
+      "expected": {
+        "initial": [
+          "initialize"
+        ],
+        "events": [],
+        "syncThrow": false,
+        "fulfilled": true,
+        "resultUndefined": true,
+        "error": null,
+        "keys": [
+          "browsers",
+          "computer",
+          "createBrowserTab",
+          "getApp",
+          "getBrowser",
+          "getState",
+          "getTab",
+          "initialize",
+          "listApps",
+          "listBrowsers",
+          "listTabs"
+        ],
+        "agent": {
+          "type": "string",
+          "browserType": "undefined"
+        }
+      }
+    },
+    {
+      "id": "agent-accessor-without-setter",
+      "expected": {
+        "initial": [
+          "initialize"
+        ],
+        "events": [],
+        "syncThrow": false,
+        "fulfilled": true,
+        "resultUndefined": true,
+        "error": null,
+        "keys": [
+          "browsers",
+          "computer",
+          "createBrowserTab",
+          "getApp",
+          "getBrowser",
+          "getState",
+          "getTab",
+          "initialize",
+          "listApps",
+          "listBrowsers",
+          "listTabs"
+        ],
+        "agent": {
+          "type": "string",
+          "browserType": "undefined"
+        }
+      }
+    },
+    {
+      "id": "disabled-browser-agent-throwing-setter",
+      "expected": {
+        "initial": [
+          "initialize"
+        ],
+        "events": [],
+        "syncThrow": false,
+        "fulfilled": true,
+        "resultUndefined": true,
+        "error": null,
+        "keys": [
+          "computer",
+          "getApp",
+          "getState",
+          "initialize",
+          "listApps"
+        ],
+        "agent": {
+          "type": "undefined",
+          "browserType": "undefined"
+        }
+      }
+    },
+    {
+      "id": "facade-nonextensible",
+      "expected": {
+        "initial": [
+          "initialize"
+        ],
+        "events": [],
+        "syncThrow": false,
+        "fulfilled": false,
+        "resultUndefined": true,
+        "error": {
+          "name": "TypeError",
+          "message": "Cannot add property getState, object is not extensible"
+        },
+        "keys": [
+          "initialize"
+        ],
+        "agent": {
+          "type": "object",
+          "browserType": "object"
+        }
+      }
+    },
+    {
+      "id": "facade-getState-throwing-setter",
+      "expected": {
+        "initial": [
+          "getState",
+          "initialize"
+        ],
+        "events": [
+          {
+            "at": "cua-getState-set",
+            "keys": [
+              "getState",
+              "initialize"
+            ],
+            "agent": {
+              "type": "object",
+              "browserType": "object"
+            },
+            "valueType": "function"
+          }
+        ],
+        "syncThrow": false,
+        "fulfilled": false,
+        "resultUndefined": true,
+        "error": {
+          "name": "Error",
+          "message": "owned facade setter"
+        },
+        "keys": [
+          "getState",
+          "initialize"
+        ],
+        "agent": {
+          "type": "object",
+          "browserType": "object"
+        }
+      }
+    },
+    {
+      "id": "facade-getBrowser-observing-setter",
+      "expected": {
+        "initial": [
+          "getBrowser",
+          "initialize"
+        ],
+        "events": [
+          {
+            "at": "cua-getBrowser-set",
+            "keys": [
+              "browsers",
+              "getBrowser",
+              "getState",
+              "initialize"
+            ],
+            "agent": {
+              "type": "object",
+              "browserType": "object"
+            },
+            "valueType": "function"
+          }
+        ],
+        "syncThrow": false,
+        "fulfilled": true,
+        "resultUndefined": true,
+        "error": null,
+        "keys": [
+          "browsers",
+          "computer",
+          "createBrowserTab",
+          "getApp",
+          "getBrowser",
+          "getState",
+          "getTab",
+          "initialize",
+          "listApps",
+          "listBrowsers",
+          "listTabs"
+        ],
+        "agent": {
+          "type": "object",
+          "browserType": "object"
+        }
+      }
+    }
+  ]
+}

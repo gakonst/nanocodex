@@ -2,9 +2,9 @@ name: Apple apps
 on:
   push:
     branches: [master]
-    paths: ['Cargo.toml', 'Cargo.lock', 'crates/experimental/nanocodex-voice-protocol/**', 'crates/experimental/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml']
+    paths: ['Cargo.toml', 'Cargo.lock', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/experimental/nanocodex-voice-protocol/**', 'crates/experimental/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml']
   pull_request:
-    paths: ['Cargo.toml', 'Cargo.lock', 'crates/experimental/nanocodex-voice-protocol/**', 'crates/experimental/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml']
+    paths: ['Cargo.toml', 'Cargo.lock', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/experimental/nanocodex-voice-protocol/**', 'crates/experimental/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml']
 permissions:
   contents: read
 concurrency:
@@ -46,6 +46,8 @@ jobs:
         run: swift test --package-path apple/NanocodexRemote
       - name: Build shared desktop runtime and dependencies
         run: pnpm exec turbo run build --filter=@nanocodex/desktop-runtime
+      - name: Build native computer companion
+        run: pnpm build:computer
       - name: Prepare bundled Mac runtime
         run: |
           curl --fail --location https://nodejs.org/dist/v24.19.0/node-v24.19.0-darwin-arm64.tar.gz --output "$RUNNER_TEMP/nanocodex-node.tar.gz"

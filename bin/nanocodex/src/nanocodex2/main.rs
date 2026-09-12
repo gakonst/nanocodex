@@ -924,9 +924,14 @@ async fn open_workspace_agent_with_settings(
     let attachment_metadata = config
         .attachment_metadata()
         .map_err(|error| ManagedError::Configuration(error.to_string()))?;
-    let tools = Tools::builder()
+    let mut tools = Tools::builder()
         .without_defaults()
-        .add(WorkspaceTools::new(&workspace))
+        .add(WorkspaceTools::new(&workspace));
+    if let Some(config) = nanocodex_computer::ComputerConfig::discover() {
+        let computer = nanocodex_computer::ComputerTools::local(config);
+        tools = tools.add(computer.js()).add(computer.reset());
+    }
+    let tools = tools
         .build()
         .map_err(|error| ManagedError::Configuration(error.to_string()))?;
     let backend = match (agent_id, state) {

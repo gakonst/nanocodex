@@ -15,6 +15,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
+    "nanocodex-computer": "workspace:*",
     "nanocodex": "workspace:*",
     "nanocodex-tools": "workspace:*",
     "ws": "8.21.3"

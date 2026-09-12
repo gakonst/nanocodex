@@ -1,0 +1,70 @@
+[
+  {
+    "mode": "model",
+    "name": "bootstrap-troubleshooting"
+  },
+  {
+    "mode": "included",
+    "name": "browser-safety-training"
+  },
+  {
+    "mode": "included",
+    "name": "visibility",
+    "when": {
+      "requiredBrowserCapabilities": [
+        "visibility"
+      ]
+    }
+  },
+  {
+    "description": "read when a selected browser fails while interacting with a page",
+    "mode": "lookup",
+    "name": "browser-troubleshooting"
+  },
+  {
+    "description": "read before uploading files through a webpage",
+    "mode": "lookup",
+    "name": "file-uploads",
+    "when": {
+      "requiredApiMembers": [
+        "PlaywrightAPI.waitForEvent",
+        "PlaywrightFileChooser.setFiles"
+      ]
+    }
+  },
+  {
+    "mode": "model",
+    "name": "capabilities/browser/management"
+  },
+  {
+    "mode": "model",
+    "name": "capabilities/browser/visibility"
+  },
+  {
+    "mode": "model",
+    "name": "capabilities/browser/viewport"
+  },
+  {
+    "mode": "model",
+    "name": "capabilities/tab/cdp",
+    "requiredFor": [
+      "tab_cdp_call",
+      "tab_cdp_events"
+    ]
+  },
+  {
+    "mode": "model",
+    "name": "capabilities/tab/botDetection"
+  },
+  {
+    "mode": "model",
+    "name": "capabilities/tab/browserAuth",
+    "requiredFor": [
+      "tab_browser_auth_handoff"
+    ]
+  },
+  {
+    "mode": "model",
+    "name": "capabilities/tab/pageAssets"
+  }
+]

@@ -1,0 +1,34 @@
+{
+  "provenance": {
+    "binary": "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl",
+    "sha256": "0d6f59d5aff9db38d3bf1cad78f3b2d71daaedaefddbc00c65fa3241ce83ad7c",
+    "scope": "Pure synthetic Buffer and URL operations, no filesystem/provider/UI access",
+    "captured": "2026-09-06T21:50:12.262992+00:00"
+  },
+  "groups": [
+    {
+      "name": "url-0",
+      "cases": [
+        "unicode_authority_https://xn--maana-pta.com@xn--maana-pta.com/path",
+        "unicode_authority_https://user:xn--maana-pta.com@xn--maana-pta.com/path",
+        "unicode_authority_https://xn--maana-pta.com%40user@xn--maana-pta.com/path",
+        "unicode_authority_https://user@xn--maana-pta.com/path?host=xn--maana-pta.com"
+      ],
+      "code": "const {Buffer}=await import('node:buffer');const url=await import('node:url');const urlAlias=await import('url');\nconst normalize=value=>typeof value==='bigint'?{bigint:String(value)}:typeof value==='number'&&(!Number.isFinite(value)||Object.is(value,-0))?{number:String(value),negativeZero:Object.is(value,-0)}:Buffer.isBuffer(value)?{buffer:value.toString('hex')}:value;\nconst failure=error=>({name:error.name,code:error.code??null,message:error.message});\nnodeRepl.write(JSON.stringify([(()=>{try{return {value:normalize(url.format(new URL(\"https://xn--maana-pta.com@xn--maana-pta.com/path\"),{unicode:true}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.format(new URL(\"https://user:xn--maana-pta.com@xn--maana-pta.com/path\"),{unicode:true}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.format(new URL(\"https://xn--maana-pta.com%40user@xn--maana-pta.com/path\"),{unicode:true}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.format(new URL(\"https://user@xn--maana-pta.com/path?host=xn--maana-pta.com\"),{unicode:true}))}}catch(error){return {error:failure(error)}}})()]));",
+      "expected": [
+        {
+          "value": "https://xn--maana-pta.com@mañana.com/path"
+        },
+        {
+          "value": "https://user:xn--maana-pta.com@mañana.com/path"
+        },
+        {
+          "value": "https://xn--maana-pta.com%40user@mañana.com/path"
+        },
+        {
+          "value": "https://user@mañana.com/path?host=xn--maana-pta.com"
+        }
+      ]
+    }
+  ]
+}

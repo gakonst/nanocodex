@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "nanocodex-computer": "workspace:*",
     "@cloudflare/codemode": "0.5.1",
     "@cloudflare/computer": "0.2.1",
     "@cloudflare/sandbox": "0.12.4",

@@ -18,6 +18,9 @@ export LIBRARY_PATH="$virgl/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
 export PKG_CONFIG_PATH="$virgl/lib/pkgconfig:$epoxy/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 cargo build --locked --profile nightly -p nanocodex2-bin --bin nanocodex2 --features nanocodex-vm/gpu
 cp "${CARGO_TARGET_DIR:-target}/nightly/nanocodex2" "$output/nanocodex2"
+cargo build --locked --release --manifest-path crates/experimental/nanocodex-computer/runtime/Cargo.toml --bin nanocodex-computer
+cp "${CARGO_TARGET_DIR:-crates/experimental/nanocodex-computer/runtime/target}/release/nanocodex-computer" "$output/nanocodex-computer"
+codesign --force --sign - "$output/nanocodex-computer"
 cargo build --locked --profile nightly -p nanocodex-vm --bin nanocodex-vm-guest --no-default-features --features guest-runtime --target aarch64-unknown-linux-musl
 cp "${CARGO_TARGET_DIR:-target}/aarch64-unknown-linux-musl/nightly/nanocodex-vm-guest" "$output/nanocodex-vm-guest"
 cp "$firmware/libkrunfw.5.dylib" "$output/firmware/"

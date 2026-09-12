@@ -1,0 +1,1288 @@
+{
+  "sourceSha256": "3032666de451e423db76b5f9b0456e370d4f57416bbf53d0c746be636359ba02",
+  "binding": {
+    "kind": "var",
+    "value_kind": "ClassExpression",
+    "start_utf8": 677395,
+    "end_utf8": 701072,
+    "sha256": "b1e32a2bf95b00ebd1c32a238d13ff665dda2b96ef3b24bfd4383359cf718d5f",
+    "methods": [
+      {
+        "name": "constructor",
+        "kind": "constructor",
+        "static": false,
+        "async": false,
+        "start_utf8": 677415,
+        "end_utf8": 678216,
+        "sha256": "5cf9c9204e143a8e86c6d64b83a36d0dc66a2710369218c7c1b6f83551004379"
+      },
+      {
+        "name": "api",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678216,
+        "end_utf8": 678220,
+        "sha256": "8ab32f50c085e76bb4e5f1b9ec0cd8a64f93c8727b888a6f689aadae2ec49482"
+      },
+      {
+        "name": "platform",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678220,
+        "end_utf8": 678229,
+        "sha256": "eb128c916fd62c317fb415f02105f76fbade04432138a8eb36b218dc905139f7"
+      },
+      {
+        "name": "performanceSpan",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678229,
+        "end_utf8": 678245,
+        "sha256": "2ef714f1a0f97355328dd73bf9d01d7c7c7c9dfb23a905f8ffc4111c0cea14bf"
+      },
+      {
+        "name": "fileChoosersById",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678245,
+        "end_utf8": 678270,
+        "sha256": "56296f12bc8dc692d33605558eeaf17d815be7f362f71a20c9fd1d8d480ac81d"
+      },
+      {
+        "name": "attachedTabIds",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678270,
+        "end_utf8": 678293,
+        "sha256": "25e741f6c82deb89dc6756307cc14a0a4562f3ffc554f3d939729d1b809643f0"
+      },
+      {
+        "name": "tabAttachmentPromises",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678293,
+        "end_utf8": 678323,
+        "sha256": "622e5cb16db5bb14b230caf1a785bbb017f4590c3b70a02e310984fdae45db86"
+      },
+      {
+        "name": "initializingTabIds",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678323,
+        "end_utf8": 678350,
+        "sha256": "d2c0743be8312d8534ef7be3410c22df9294a6320c0a6934bdb741b5c6499392"
+      },
+      {
+        "name": "tabAttachHandlers",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678350,
+        "end_utf8": 678376,
+        "sha256": "dc96a8339340cca4f39f1458154ed5f604fa8c3f48aa36b97865a4e436339425"
+      },
+      {
+        "name": "tabCleanupHandlers",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678376,
+        "end_utf8": 678403,
+        "sha256": "10791d4bbe2a38f5b27777a0d21decf8971d8295fc9dbc2d5001102f80713170"
+      },
+      {
+        "name": "frameSessionsByTabId",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678403,
+        "end_utf8": 678432,
+        "sha256": "4491304510f25d9876ca05752e82c65897548abcfc4321c383ab854779b1ad2f"
+      },
+      {
+        "name": "frameSessionsBySessionId",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678432,
+        "end_utf8": 678465,
+        "sha256": "ac9bdc097228c49c8f3503b9545738070461d21b74876a7eb49ebee7d75a0ca2"
+      },
+      {
+        "name": "initializedFrameSessions",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678465,
+        "end_utf8": 678502,
+        "sha256": "b4f8bcb3204067275c9695b15d5ebf8d24cf04693e5488d5829a9db44f05c039"
+      },
+      {
+        "name": "frameSessionInitializationPromises",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678502,
+        "end_utf8": 678549,
+        "sha256": "fdd5b70c2289648be7a6e4f3814dfd087899580794b27add4a020310346da37c"
+      },
+      {
+        "name": "attachedFrameTargetIdsByTabId",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678549,
+        "end_utf8": 678587,
+        "sha256": "87da57dc8ce8b7c830bb45913cd961dda3d87e566eeaae39700a2104d5478660"
+      },
+      {
+        "name": "oopifAutoAttachTabIds",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678587,
+        "end_utf8": 678617,
+        "sha256": "99c4ae2360be054912ed26178fd4249fbc4460f977be9b119ccd52bddbaeea92"
+      },
+      {
+        "name": "rawCdpEventsByTabId",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678617,
+        "end_utf8": 678645,
+        "sha256": "b587ad191db01795ce10d7ae4a85717d3bab9088817cecb8746917118809f919"
+      },
+      {
+        "name": "rawCdpEventEvictedThroughSequenceByTabId",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678645,
+        "end_utf8": 678694,
+        "sha256": "dff6e066677bf0bdbb28928fe071307e7cda8835cd6930e8df5afc44295d0db9"
+      },
+      {
+        "name": "rawCdpEventSequenceByTabId",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678694,
+        "end_utf8": 678729,
+        "sha256": "19d3a89dd18060022e048dfa20da0aaacd8cb0e50087cc0722a207472456edde"
+      },
+      {
+        "name": "activeInternalScreencastsByTabId",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678729,
+        "end_utf8": 678770,
+        "sha256": "e60d77ab7088c57e04de10c2a6001cfb4469291511fec416a79a7a6509d090fb"
+      },
+      {
+        "name": "screencastQueuesByTabId",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678770,
+        "end_utf8": 678802,
+        "sha256": "28751e7ea478e5ee881c75cf23637a1c7317b7ed51d1683056218ad04f95e352"
+      },
+      {
+        "name": "rawScreencastTabIds",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678802,
+        "end_utf8": 678830,
+        "sha256": "f7ce8441704a0e6d1d735e9bdca7c386ff44ff8e78e96e2d92fe4747b147a65f"
+      },
+      {
+        "name": "retiredInternalScreencastSessionsByTabId",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678830,
+        "end_utf8": 678879,
+        "sha256": "ed56f6831e77ad70f5ebf7c0699226ff594af5353440e66be7a65aba215e88b4"
+      },
+      {
+        "name": "mainFrameIdsByTabId",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678879,
+        "end_utf8": 678907,
+        "sha256": "3038f562d5a26ee9ad0e430592b64ab2d79a2a32b4ca112df216f9066fafa340"
+      },
+      {
+        "name": "topLevelSecurityOriginsByTabId",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678907,
+        "end_utf8": 678946,
+        "sha256": "9d7c112bb961c675343d90ec479fd6067b85d4f1f5779356a198cea735657f9a"
+      },
+      {
+        "name": "jsDialogsByTabId",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678946,
+        "end_utf8": 678971,
+        "sha256": "4beb0fbae3e89aa0930dda2d1b7c75c2bc4f8ce75de58b9e8127cf9885983b36"
+      },
+      {
+        "name": "jsDialogSequence",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678971,
+        "end_utf8": 678990,
+        "sha256": "880b6dd769ce9b2e3c1a1a2ebaf357823796a8dbd5bd75211ee3ab80814b4e1d"
+      },
+      {
+        "name": "topLevelUrlsByTabId",
+        "kind": "PropertyDefinition",
+        "static": false,
+        "async": false,
+        "start_utf8": 678990,
+        "end_utf8": 679018,
+        "sha256": "0e37c35eff84c1c9537a42da5192fdf535bf8f1fa15e67d184d20198af6f4b2b"
+      },
+      {
+        "name": "call",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 679018,
+        "end_utf8": 679177,
+        "sha256": "d26d384f2ed19edefafa2d319581093a31290b44b0fea5bc1e3d26860071813f"
+      },
+      {
+        "name": "callTarget",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 679177,
+        "end_utf8": 679250,
+        "sha256": "d2529ce58e80716b5042bef421f4ab94fe2f68b97a2835489003bddf00136b13"
+      },
+      {
+        "name": "callRawCdp",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 679250,
+        "end_utf8": 679779,
+        "sha256": "8d33ab50372a6cd694e419b1433d300207f6d5cd61fcb12ffc8ccf812bed4e09"
+      },
+      {
+        "name": "isTabAttached",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 679779,
+        "end_utf8": 679838,
+        "sha256": "8897430dc54d19a0059f9f533cfb0e743cdc8e69076e46f386a8be30337742f6"
+      },
+      {
+        "name": "currentTopLevelUrl",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 679838,
+        "end_utf8": 679937,
+        "sha256": "472e30e24309a0d7398af3f9ea33fb9896140009e1c86dbd88f8ba4eb9e269ab"
+      },
+      {
+        "name": "readRawCdpEvents",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 679937,
+        "end_utf8": 680710,
+        "sha256": "98d8c34656c8841b2f626ca341a393bab302e52e0862d70ad8c8dbe045ec4b08"
+      },
+      {
+        "name": "executeTargetCdp",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 680710,
+        "end_utf8": 682337,
+        "sha256": "35929d7dc4a80e6ed469d115c7c492ada5687ff7571b5c7fee3ee64789af6904"
+      },
+      {
+        "name": "enableOopifAutoAttach",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 682337,
+        "end_utf8": 682703,
+        "sha256": "bab2a8192cabc1bd06fab8f6c36939f1f4519e811679ee93e7ef11f0b5a7b24b"
+      },
+      {
+        "name": "targetForFrame",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 682703,
+        "end_utf8": 682825,
+        "sha256": "15f3a4daa7bc661d0b9dc8ef7cceb38e4a424f8480b174a217d8f94436a02f0d"
+      },
+      {
+        "name": "targetIdForFrame",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 682825,
+        "end_utf8": 682951,
+        "sha256": "11205f9dde7a55c19ead92d586992a880649bb9b88c2dca0f23f03ba1901b821"
+      },
+      {
+        "name": "targetForFrameOrAttach",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 682951,
+        "end_utf8": 683896,
+        "sha256": "2c272a81d38f246ff0a68e41bd16e55b769c6fafc1f04513c6257809489e0cc2"
+      },
+      {
+        "name": "attachDebuggerFrameTarget",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 683896,
+        "end_utf8": 684696,
+        "sha256": "fe88d02a21164d25d5cf9e33520b0d75febe61428e689810cd8a3f8d9ebc2a81"
+      },
+      {
+        "name": "evaluateJavascript",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 684696,
+        "end_utf8": 685033,
+        "sha256": "c55c0ae6ffc14c96cb89ea7b800eb17cba84df93adcbb8fffb38038c8e0fafb4"
+      },
+      {
+        "name": "readDocumentState",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 685033,
+        "end_utf8": 685600,
+        "sha256": "eb920467d5b54eeb78a07c5aa57a8f5ef0998bd946e210c0d0175e205aaba53a"
+      },
+      {
+        "name": "waitForPageLoadEvent",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 685600,
+        "end_utf8": 686055,
+        "sha256": "9be9f13bcaea23e52433edd3e37fef639297474fe7ae957d6e7cf9bff8974c97"
+      },
+      {
+        "name": "waitForEvent",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 686055,
+        "end_utf8": 686715,
+        "sha256": "06b2383179b54c78ff404745f2a330b8abbc38d5b970877a619d3e8eed4bcd25"
+      },
+      {
+        "name": "withInternalScreencast",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 686715,
+        "end_utf8": 687231,
+        "sha256": "ed9a322caa7d040a405ca51c375b56aa17f76e51ccaa628558b7cbd93bc1945e"
+      },
+      {
+        "name": "detachAllTabs",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 687231,
+        "end_utf8": 687358,
+        "sha256": "86355cdeda1dd43c64571243901b7205a38266a888664ead1d7bf4743349e8b1"
+      },
+      {
+        "name": "getJsDialog",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 687358,
+        "end_utf8": 687541,
+        "sha256": "0998cb53831c2dc7e4edc14cbc80694aafe19b60c9febb645e34285ed178d6d7"
+      },
+      {
+        "name": "activeJsDialog",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 687541,
+        "end_utf8": 687841,
+        "sha256": "7cdb8f95fe7bfbbc65d27f21acd8d3c34ef3fa1918101b370c955983b1239466"
+      },
+      {
+        "name": "updateJsDialogPrompt",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 687841,
+        "end_utf8": 687987,
+        "sha256": "419a2f782ebaf8016fbf62f1df45e3faff48c7d1439338cfb9d4c1a01656b550"
+      },
+      {
+        "name": "deleteJsDialog",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 687987,
+        "end_utf8": 688251,
+        "sha256": "96a59b6b7f4a6ab1313806fbce462fb5d600f546a1df211bf94d555a8599fdc4"
+      },
+      {
+        "name": "closeTab",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 688251,
+        "end_utf8": 688769,
+        "sha256": "d8d052e8114a5ba30eaaabf9a53b4708f254877a5f8d8c37a591602b68b2d090"
+      },
+      {
+        "name": "detachTab",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 688769,
+        "end_utf8": 689095,
+        "sha256": "47f0a12b644340229249984484d617d722f228eb0684aef2440efc3884694454"
+      },
+      {
+        "name": "addTabCleanupHandler",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 689095,
+        "end_utf8": 689197,
+        "sha256": "43b5c1acb615cc4f648fd408a52c3f936b1bde640423a02353c30a1ed64bf681"
+      },
+      {
+        "name": "addTabAttachHandler",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 689197,
+        "end_utf8": 689296,
+        "sha256": "4225b86a6de9ada1aa06f3c636d54be44b8e532ebdbd3b9038d052df9d45789c"
+      },
+      {
+        "name": "runTabAttachHandlers",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 689296,
+        "end_utf8": 689497,
+        "sha256": "dcf95161af5524ae42ca7d332cdd58fc466a44908361e34ce16a16882fb90315"
+      },
+      {
+        "name": "runTabCleanupHandlers",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 689497,
+        "end_utf8": 689602,
+        "sha256": "87d35b686d10615caf12a4090e1964c8c7c151987eaf9e869b82ebe0b37579a7"
+      },
+      {
+        "name": "deleteFileChoosersForTab",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 689602,
+        "end_utf8": 689712,
+        "sha256": "d73824994fed60dcfdfc16ce4b39692e948310672fdd6df57565eea6077303a3"
+      },
+      {
+        "name": "ensureAttachedTab",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 689712,
+        "end_utf8": 690480,
+        "sha256": "0457dd6e081e9b6c9c2d37ffc0cbb3ee736217ab8e6b76034b19008c8162f2c5"
+      },
+      {
+        "name": "enableFocusEmulation",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 690480,
+        "end_utf8": 690676,
+        "sha256": "5ea37ed1af103de735a1479de82e3691a065f5e2f854924f78f2deee65c44c4d"
+      },
+      {
+        "name": "enableOopifAutoAttachForTarget",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 690676,
+        "end_utf8": 691101,
+        "sha256": "5b3e5361ca85edc3abb577456035003aebd5da7f230ac08dfd26f4baf3fbde9c"
+      },
+      {
+        "name": "recordRawCdpEvent",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 691101,
+        "end_utf8": 691609,
+        "sha256": "43f33ef62b6e42f4148c5a8059366dca72dbd493fb377484d19f02e2a347d4e9"
+      },
+      {
+        "name": "withScreencastLock",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 691609,
+        "end_utf8": 691909,
+        "sha256": "da29a8e595e3f824dd8ff1df8005d6f529cab1726c69b849e9a3042691f011f7"
+      },
+      {
+        "name": "isInternalScreencastEvent",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 691909,
+        "end_utf8": 692251,
+        "sha256": "864a2e5bd9811106118db13fdfe9c10e195f4fcd5b4823c809a56eb7496653de"
+      },
+      {
+        "name": "isCurrentInternalScreencastEvent",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 692251,
+        "end_utf8": 692512,
+        "sha256": "c0a33ea0d55d1b6b371c541769a5db597dc24488471d18a2c93c0e67c0ae455e"
+      },
+      {
+        "name": "activeRetiredInternalScreencastSessions",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 692512,
+        "end_utf8": 692758,
+        "sha256": "47b283878772ceb30b1fa6ab12ceddc8f531d5c4e1bad3f81106e9c7d9b9d445"
+      },
+      {
+        "name": "retireInternalScreencast",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 692758,
+        "end_utf8": 693068,
+        "sha256": "2b2a72a078d3a9a2c1f32ab9e21008797b57518e7c94abc97354166ef45430d9"
+      },
+      {
+        "name": "attachedTabIdForCdpEvent",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 693068,
+        "end_utf8": 693361,
+        "sha256": "36c117447422f926ec6706db89f3b0a229b8392fba0fcad3eb480da442047b39"
+      },
+      {
+        "name": "rawCdpEventsResult",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 693361,
+        "end_utf8": 693755,
+        "sha256": "561817cc699ac48f112490a206ac9fdbeb26061ba9b2d2ed32a7697c5a054788"
+      },
+      {
+        "name": "rawCdpEventSequenceForTab",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 693755,
+        "end_utf8": 693833,
+        "sha256": "be1b1afbc46fce2ff6a485abe4711b6cf98134830f35ef8da58cac07523d6a2e"
+      },
+      {
+        "name": "nextRawCdpEventSequence",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 693833,
+        "end_utf8": 693952,
+        "sha256": "2fdb01f0c7158053bb979582bdbad44bba644102e363e11aef5676920684b4a2"
+      },
+      {
+        "name": "rawCdpTarget",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 693952,
+        "end_utf8": 694477,
+        "sha256": "86feefd86c5eff219681984c745445a3e9b3dfcde6549d4010adcf6ad538b223"
+      },
+      {
+        "name": "matchesRawCdpEventTarget",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 694477,
+        "end_utf8": 694650,
+        "sha256": "cbc232ab7982f6f4f2e6931c4e5daae9d9c499eed63626a38d4b8f872a52edd7"
+      },
+      {
+        "name": "discardRawCdpEventsForTab",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 694650,
+        "end_utf8": 694880,
+        "sha256": "16292d5f228aa6edac601d784d704735a19cd1dbdabfa6ba3416404491ea8621"
+      },
+      {
+        "name": "forgetAttachedTab",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 694880,
+        "end_utf8": 695487,
+        "sha256": "f01feaefabd576d1c0132893a9c82b22c39dac3a2b165b6ee4f27343114a2866"
+      },
+      {
+        "name": "handleTargetEvent",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 695487,
+        "end_utf8": 696238,
+        "sha256": "40d81b016c2bacbbd3e236ba188adf3143bed42866fc706ed37f0a7789b4668b"
+      },
+      {
+        "name": "handleAttachedToTarget",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 696238,
+        "end_utf8": 696661,
+        "sha256": "98d3780cf48ffeb500f08584bc46483805ef6e9317b884e95371726913b575e6"
+      },
+      {
+        "name": "handleDetachedFromTarget",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 696661,
+        "end_utf8": 696785,
+        "sha256": "8408c0890124670473d85a9477c21b4d5385e464e697b9030fc0b40b9ad5e8b2"
+      },
+      {
+        "name": "handleFrameNavigated",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 696785,
+        "end_utf8": 697042,
+        "sha256": "e40a05c520821bb99c5eaf4f894e4a35b2ef79686336c439128e071bce43ddaa"
+      },
+      {
+        "name": "handleFrameDetached",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 697042,
+        "end_utf8": 697213,
+        "sha256": "076ea0a4ed04da05e43b39698a87cd37bd98a5f3fc1ce4ba5eb524586e0f4b22"
+      },
+      {
+        "name": "initializeAttachedFrameSession",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 697213,
+        "end_utf8": 697753,
+        "sha256": "6942543bbf35afb4c9a93c722e818f57be6aa3cccd0fff8181d2a7271a4e1c9e"
+      },
+      {
+        "name": "tryInitializeAttachedFrameSession",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 697753,
+        "end_utf8": 697865,
+        "sha256": "5b15810889039bc2117ec18fd45392b3b0addb213654f784179a86e6f4600ad0"
+      },
+      {
+        "name": "runAttachedFrameSessionInitialization",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 697865,
+        "end_utf8": 698366,
+        "sha256": "df6a3cde8bab2ea382c53d2b90d21f9c2647560d141b086b50cebc0c7201346f"
+      },
+      {
+        "name": "setFrameSessionForFrame",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 698366,
+        "end_utf8": 698579,
+        "sha256": "b97a05e2469b20640d20f3d0f5cd49335a0691e66e448c6be2540883784cfddc"
+      },
+      {
+        "name": "setFrameSessionTargetId",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 698579,
+        "end_utf8": 698778,
+        "sha256": "dc7b1570be563f37ec1deab2afdd7dc5330540605e9c800b3d7f6383e774350e"
+      },
+      {
+        "name": "deleteFrameSession",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 698778,
+        "end_utf8": 699082,
+        "sha256": "227b2affb198f9cff868589933ba58935a965a393ed9044745b9d5c699d57b29"
+      },
+      {
+        "name": "deleteFrameSessionsForTab",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 699082,
+        "end_utf8": 699273,
+        "sha256": "6f5e29cf82b4fa7b13930a106438f9705cdfe2dbe7bac51a51f9e5a463e02a49"
+      },
+      {
+        "name": "rememberAttachedFrameTarget",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 699273,
+        "end_utf8": 699416,
+        "sha256": "651b532af053ac014c8a782f2270961b137bc1a3b058fb50c4c82af31b87da6a"
+      },
+      {
+        "name": "detachAttachedFrameTargets",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 699416,
+        "end_utf8": 699680,
+        "sha256": "61f7b9839cc94acdc646728daf3b54a959d6f15d7698f01cc3a6df6da43fcbf2"
+      },
+      {
+        "name": "handleJavaScriptDialogEvent",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 699680,
+        "end_utf8": 699928,
+        "sha256": "a8e1d1e5417096deb73938230bf4f19d4ba7d3a1662a920e87ff1f5de5597bbd"
+      },
+      {
+        "name": "rememberJsDialog",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 699928,
+        "end_utf8": 700300,
+        "sha256": "9ed4fdf22475023cf68e99433f6e05d90d67167bde7c5c45caf521da15d89f2a"
+      },
+      {
+        "name": "allowBeforeUnload",
+        "kind": "method",
+        "static": false,
+        "async": true,
+        "start_utf8": 700300,
+        "end_utf8": 700563,
+        "sha256": "0c3b97528435a39c82e22b1a2fd31691a66232f46d1065bd663937141966f514"
+      },
+      {
+        "name": "deleteJsDialogForTarget",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 700563,
+        "end_utf8": 700739,
+        "sha256": "c775e38c886ea3e03d8624f5d03d44d65a8d153cfaa3a3283bdac6d3f826f148"
+      },
+      {
+        "name": "throwIfJsDialogBlocksMethod",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 700739,
+        "end_utf8": 700992,
+        "sha256": "15bd77291b33030e7a282cd3756f37db4f308c657009e0bb27b8b66bedd3760f"
+      },
+      {
+        "name": "nextJsDialogId",
+        "kind": "method",
+        "static": false,
+        "async": false,
+        "start_utf8": 700992,
+        "end_utf8": 701071,
+        "sha256": "c595064ab68ed0a9dd8fa2ef0c1b9634e832491bfa0359c96187fba5ecc49a18"
+      }
+    ]
+  },
+  "caller": {
+    "kind": "var",
+    "value_kind": "CallExpression",
+    "start_utf8": 763426,
+    "end_utf8": 763885,
+    "sha256": "253d107646d4fda5f59c8df1cc22de8b38113ed9776e48a222b850aee8ca2290"
+  },
+  "results": [
+    {
+      "name": "immediate default excludes attachment event",
+      "waiting": {
+        "done": true,
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      },
+      "result": {
+        "cursor": 1,
+        "events": [],
+        "hasMore": false,
+        "truncated": false
+      },
+      "timerCalls": [],
+      "clears": [],
+      "baseline": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      },
+      "final": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      }
+    },
+    {
+      "name": "timeout zero captures before attachment",
+      "waiting": {
+        "done": true,
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      },
+      "result": {
+        "cursor": 1,
+        "events": [
+          {
+            "method": "Owned.match",
+            "params": {
+              "tab": 1
+            },
+            "sequence": 1,
+            "source": {
+              "sessionId": "owned-root"
+            }
+          }
+        ],
+        "hasMore": false,
+        "truncated": false
+      },
+      "timerCalls": [],
+      "clears": [],
+      "baseline": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      },
+      "final": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      }
+    },
+    {
+      "name": "explicit cursor includes attachment event",
+      "waiting": {
+        "done": true,
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      },
+      "result": {
+        "cursor": 1,
+        "events": [
+          {
+            "method": "Owned.match",
+            "params": {
+              "tab": 1
+            },
+            "sequence": 1,
+            "source": {
+              "sessionId": "owned-root"
+            }
+          }
+        ],
+        "hasMore": false,
+        "truncated": false
+      },
+      "timerCalls": [],
+      "clears": [],
+      "baseline": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      },
+      "final": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      }
+    },
+    {
+      "name": "selected event completes and removes listeners",
+      "waiting": {
+        "done": false,
+        "event": 2,
+        "detach": 1,
+        "timers": 1
+      },
+      "result": {
+        "cursor": 2,
+        "events": [
+          {
+            "method": "Owned.match",
+            "params": {
+              "tab": 1
+            },
+            "sequence": 2,
+            "source": {
+              "sessionId": "owned-root"
+            }
+          }
+        ],
+        "hasMore": false,
+        "truncated": false
+      },
+      "timerCalls": [
+        {
+          "id": 1,
+          "delay": 50
+        }
+      ],
+      "clears": [
+        1
+      ],
+      "baseline": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      },
+      "final": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      }
+    },
+    {
+      "name": "timeout returns current nonmatching cursor",
+      "waiting": {
+        "done": false,
+        "event": 2,
+        "detach": 1,
+        "timers": 1
+      },
+      "result": {
+        "cursor": 1,
+        "events": [],
+        "hasMore": false,
+        "truncated": false
+      },
+      "timerCalls": [
+        {
+          "id": 2,
+          "delay": 50
+        }
+      ],
+      "clears": [
+        2
+      ],
+      "baseline": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      },
+      "final": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      }
+    },
+    {
+      "name": "discard truncation wakes empty event selection",
+      "waiting": {
+        "done": false,
+        "event": 2,
+        "detach": 1,
+        "timers": 1
+      },
+      "result": {
+        "cursor": 1,
+        "events": [],
+        "hasMore": false,
+        "truncated": true
+      },
+      "timerCalls": [
+        {
+          "id": 3,
+          "delay": 50
+        }
+      ],
+      "clears": [
+        3
+      ],
+      "baseline": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      },
+      "final": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      }
+    },
+    {
+      "name": "matching detach resolves even future cursor",
+      "waiting": {
+        "done": false,
+        "event": 2,
+        "detach": 1,
+        "timers": 1
+      },
+      "result": {
+        "cursor": 1,
+        "events": [],
+        "hasMore": false,
+        "truncated": false
+      },
+      "timerCalls": [
+        {
+          "id": 4,
+          "delay": 50
+        }
+      ],
+      "clears": [
+        4
+      ],
+      "baseline": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      },
+      "final": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      }
+    },
+    {
+      "name": "zero limit hasMore still waits for timer",
+      "waiting": {
+        "done": false,
+        "event": 2,
+        "detach": 1,
+        "timers": 1
+      },
+      "result": {
+        "cursor": 2,
+        "events": [],
+        "hasMore": true,
+        "truncated": false
+      },
+      "timerCalls": [
+        {
+          "id": 5,
+          "delay": 50
+        }
+      ],
+      "clears": [
+        5
+      ],
+      "baseline": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      },
+      "final": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      }
+    },
+    {
+      "name": "registration gap is closed by immediate listener check",
+      "waiting": {
+        "done": true,
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      },
+      "result": {
+        "cursor": 1,
+        "events": [
+          {
+            "method": "Owned.match",
+            "params": {
+              "tab": 1
+            },
+            "sequence": 1,
+            "source": {
+              "sessionId": "owned-root"
+            }
+          }
+        ],
+        "hasMore": false,
+        "truncated": false
+      },
+      "timerCalls": [
+        {
+          "id": 6,
+          "delay": 50
+        }
+      ],
+      "clears": [
+        6
+      ],
+      "baseline": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      },
+      "final": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      }
+    },
+    {
+      "name": "attachment failure allocates no listener or timer",
+      "waiting": {
+        "done": true,
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      },
+      "error": "Error: Owned attachment failed",
+      "timerCalls": [],
+      "clears": [],
+      "baseline": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      },
+      "final": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      }
+    },
+    {
+      "name": "huge admitted timeout forwarded unchanged",
+      "waiting": {
+        "done": false,
+        "event": 2,
+        "detach": 1,
+        "timers": 1
+      },
+      "result": {
+        "cursor": 0,
+        "events": [],
+        "hasMore": false,
+        "truncated": false
+      },
+      "timerCalls": [
+        {
+          "id": 7,
+          "delay": 1e+100
+        }
+      ],
+      "clears": [
+        7
+      ],
+      "baseline": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      },
+      "final": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      }
+    },
+    {
+      "name": "helper does not observe AbortSignal",
+      "waiting": {
+        "done": false,
+        "event": 2,
+        "detach": 1,
+        "timers": 1
+      },
+      "result": {
+        "cursor": 0,
+        "events": [],
+        "hasMore": false,
+        "truncated": false
+      },
+      "timerCalls": [
+        {
+          "id": 8,
+          "delay": 50
+        }
+      ],
+      "clears": [
+        8
+      ],
+      "baseline": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      },
+      "final": {
+        "event": 1,
+        "detach": 0,
+        "timers": 0
+      }
+    }
+  ],
+  "signalReads": 0,
+  "scope": "Actual source-pinned readRawCdpEvents and record/query/listener methods with inert owned attachment and deterministic timer delivery; no browser, route probing or claim about the original host global timer overflow domain."
+}

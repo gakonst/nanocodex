@@ -58,6 +58,13 @@ fi
 release_url="https://github.com/$repository/releases/download/$release_tag"
 curl --fail --silent --show-error --location "$release_url/SHA256SUMS" --output "$temporary_dir/SHA256SUMS"
 
+# Older releases predate the experimental companion. New bundles install it
+# under the same verified version directory as both CLIs.
+if awk -v asset="nanocodex-computer-$target" '$2 == asset || $2 == asset ".gz" || $2 == "*" asset || $2 == "*" asset ".gz" { found = 1 } END { exit !found }' "$temporary_dir/SHA256SUMS"; then
+  binaries+=("nanocodex-computer-$target")
+  installed_names+=("nanocodex-computer")
+fi
+
 if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
   echo "nanocodex: sha256sum or shasum is required to verify the download" >&2
   exit 1
@@ -119,7 +126,7 @@ done
 version_dir="$versions_dir/$version"
 mkdir -p "$bin_dir" "$versions_dir" "$updater_dir"
 if [[ -e "$version_dir" || -L "$version_dir" ]]; then
-  for index in 0 1; do
+  for index in "${!installed_names[@]}"; do
     installed_name="${installed_names[$index]}"
     if [[ ! -f "$version_dir/$installed_name" ]] || \
       [[ "$(sha256_file "$version_dir/$installed_name")" != "${binary_checksums[$index]}" ]]; then
@@ -130,7 +137,7 @@ if [[ -e "$version_dir" || -L "$version_dir" ]]; then
 else
   staged_version_dir="$temporary_dir/version"
   mkdir "$staged_version_dir"
-  for index in 0 1; do
+  for index in "${!installed_names[@]}"; do
     installed_name="${installed_names[$index]}"
     install -m 755 "${binary_paths[$index]}" "$staged_version_dir/$installed_name"
     printf '%s\n' "${binary_checksums[$index]}" > "$staged_version_dir/$installed_name.sha256"
@@ -175,6 +182,9 @@ export NANOCODEX_DIR="$install_root"
 exec "$install_root/current/nanocodex2" "$@"
 EOF
 install -m 755 "$temporary_dir/nanocodex2-launcher" "$bin_dir/nanocodex2"
+if [[ -f "$version_dir/nanocodex-computer" ]]; then
+  ln -sfn ../current/nanocodex-computer "$bin_dir/nanocodex-computer"
+fi
 
 shell_quote() {
   local quoted

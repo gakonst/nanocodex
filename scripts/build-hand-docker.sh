@@ -19,4 +19,5 @@ trap 'rm -rf "$context"' EXIT
 cp "${CARGO_TARGET_DIR:-target}/$target/release/nanocodex-vm-guest" "$context/"
 cp crates/experimental/nanocodex-vm/image/Dockerfile.hand "$context/Dockerfile"
 cp -R crates/experimental/nanocodex-vm/image/toolkit "$context/toolkit"
-docker build --platform "$platform" --tag "$image" "$context"
+docker build --platform "$platform" --tag "$image" \
+  --build-context computer-source=crates/experimental/nanocodex-computer/runtime "$context"

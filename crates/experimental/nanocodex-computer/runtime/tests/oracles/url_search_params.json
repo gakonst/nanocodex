@@ -1,0 +1,1042 @@
+{
+  "recorded_at": "2026-09-06T21:23:51.201728+00:00",
+  "scope": "Pure synthetic URLSearchParams and URL cells in original installed kernel; no banner, trusted services, UI, filesystem or network operations.",
+  "binary": "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl",
+  "binary_sha256": "0d6f59d5aff9db38d3bf1cad78f3b2d71daaedaefddbc00c65fa3241ce83ad7c",
+  "cases": [
+    {
+      "name": "constructors",
+      "code": "nodeRepl.write(JSON.stringify((()=>{return [undefined,null,\"\",\"?a=1&&b&=z&x=a=b\",\"a=1&a=2&empty\",\"a+b=c+d\",42,true].map(value=>{const p=new URLSearchParams(value);return {pairs:[...p],text:p.toString(),size:p.size}});})()))",
+      "expected": [
+        {
+          "pairs": [],
+          "text": "",
+          "size": 0
+        },
+        {
+          "pairs": [
+            [
+              "null",
+              ""
+            ]
+          ],
+          "text": "null=",
+          "size": 1
+        },
+        {
+          "pairs": [],
+          "text": "",
+          "size": 0
+        },
+        {
+          "pairs": [
+            [
+              "a",
+              "1"
+            ],
+            [
+              "b",
+              ""
+            ],
+            [
+              "",
+              "z"
+            ],
+            [
+              "x",
+              "a=b"
+            ]
+          ],
+          "text": "a=1&b=&=z&x=a%3Db",
+          "size": 4
+        },
+        {
+          "pairs": [
+            [
+              "a",
+              "1"
+            ],
+            [
+              "a",
+              "2"
+            ],
+            [
+              "empty",
+              ""
+            ]
+          ],
+          "text": "a=1&a=2&empty=",
+          "size": 3
+        },
+        {
+          "pairs": [
+            [
+              "a b",
+              "c d"
+            ]
+          ],
+          "text": "a+b=c+d",
+          "size": 1
+        },
+        {
+          "pairs": [
+            [
+              "42",
+              ""
+            ]
+          ],
+          "text": "42=",
+          "size": 1
+        },
+        {
+          "pairs": [
+            [
+              "true",
+              ""
+            ]
+          ],
+          "text": "true=",
+          "size": 1
+        }
+      ],
+      "original_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[{\"pairs\":[],\"text\":\"\",\"size\":0},{\"pairs\":[[\"null\",\"\"]],\"text\":\"null=\",\"size\":1},{\"pairs\":[],\"text\":\"\",\"size\":0},{\"pairs\":[[\"a\",\"1\"],[\"b\",\"\"],[\"\",\"z\"],[\"x\",\"a=b\"]],\"text\":\"a=1&b=&=z&x=a%3Db\",\"size\":4},{\"pairs\":[[\"a\",\"1\"],[\"a\",\"2\"],[\"empty\",\"\"]],\"text\":\"a=1&a=2&empty=\",\"size\":3},{\"pairs\":[[\"a b\",\"c d\"]],\"text\":\"a+b=c+d\",\"size\":1},{\"pairs\":[[\"42\",\"\"]],\"text\":\"42=\",\"size\":1},{\"pairs\":[[\"true\",\"\"]],\"text\":\"true=\",\"size\":1}]"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "sequences_records",
+      "code": "nodeRepl.write(JSON.stringify((()=>{const proto={inherited:\"skip\"};const r=Object.assign(Object.create(proto),{\"2\":\"two\",\"1\":\"one\",x:\"a b\"});Object.defineProperty(r,\"hidden\",{value:\"skip\"});return [new URLSearchParams([[\"a\",1],[\"a\",2]]),new URLSearchParams(new Map([[\"u\",\"\u03b2\ud83e\uddea\"]])),new URLSearchParams(r),new URLSearchParams(new URLSearchParams(\"x=1&x=2\"))].map(p=>[...p]);})()))",
+      "expected": [
+        [
+          [
+            "a",
+            "1"
+          ],
+          [
+            "a",
+            "2"
+          ]
+        ],
+        [
+          [
+            "u",
+            "\u03b2\ud83e\uddea"
+          ]
+        ],
+        [
+          [
+            "1",
+            "one"
+          ],
+          [
+            "2",
+            "two"
+          ],
+          [
+            "x",
+            "a b"
+          ]
+        ],
+        [
+          [
+            "x",
+            "1"
+          ],
+          [
+            "x",
+            "2"
+          ]
+        ]
+      ],
+      "original_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[[[\"a\",\"1\"],[\"a\",\"2\"]],[[\"u\",\"\u03b2\ud83e\uddea\"]],[[\"1\",\"one\"],[\"2\",\"two\"],[\"x\",\"a b\"]],[[\"x\",\"1\"],[\"x\",\"2\"]]]"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "mutations",
+      "code": "nodeRepl.write(JSON.stringify((()=>{const p=new URLSearchParams(\"a=1&b=2&a=3&c=4\");const result=[];p.set(\"a\",\"five\");result.push([...p]);p.append(\"a\",\"six\");result.push([p.get(\"missing\"),p.getAll(\"a\"),p.has(\"a\",\"six\"),p.has(\"a\",undefined)]);p.delete(\"a\",\"five\");result.push([...p]);p.delete(\"a\",undefined);result.push([...p]);p.set(\"new\",null);result.push([p.toString(),p.size]);return result;})()))",
+      "expected": [
+        [
+          [
+            "a",
+            "five"
+          ],
+          [
+            "b",
+            "2"
+          ],
+          [
+            "c",
+            "4"
+          ]
+        ],
+        [
+          null,
+          [
+            "five",
+            "six"
+          ],
+          true,
+          true
+        ],
+        [
+          [
+            "b",
+            "2"
+          ],
+          [
+            "c",
+            "4"
+          ],
+          [
+            "a",
+            "six"
+          ]
+        ],
+        [
+          [
+            "b",
+            "2"
+          ],
+          [
+            "c",
+            "4"
+          ]
+        ],
+        [
+          "b=2&c=4&new=null",
+          3
+        ]
+      ],
+      "original_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[[[\"a\",\"five\"],[\"b\",\"2\"],[\"c\",\"4\"]],[null,[\"five\",\"six\"],true,true],[[\"b\",\"2\"],[\"c\",\"4\"],[\"a\",\"six\"]],[[\"b\",\"2\"],[\"c\",\"4\"]],[\"b=2&c=4&new=null\",3]]"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "sort_utf16",
+      "code": "nodeRepl.write(JSON.stringify((()=>{const p=new URLSearchParams([[\"z\",\"0\"],[\"\u03b2\",\"1\"],[\"a\",\"2\"],[\"a\",\"3\"],[\"\ud83e\uddea\",\"4\"],[\"\ue000\",\"5\"],[\"\",\"6\"]]);p.sort();return [[...p],p.toString()];})()))",
+      "expected": [
+        [
+          [
+            "",
+            "6"
+          ],
+          [
+            "a",
+            "2"
+          ],
+          [
+            "a",
+            "3"
+          ],
+          [
+            "z",
+            "0"
+          ],
+          [
+            "\u03b2",
+            "1"
+          ],
+          [
+            "\ud83e\uddea",
+            "4"
+          ],
+          [
+            "\ue000",
+            "5"
+          ]
+        ],
+        "=6&a=2&a=3&z=0&%CE%B2=1&%F0%9F%A7%AA=4&%EE%80%80=5"
+      ],
+      "original_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[[[\"\",\"6\"],[\"a\",\"2\"],[\"a\",\"3\"],[\"z\",\"0\"],[\"\u03b2\",\"1\"],[\"\ud83e\uddea\",\"4\"],[\"\ue000\",\"5\"]],\"=6&a=2&a=3&z=0&%CE%B2=1&%F0%9F%A7%AA=4&%EE%80%80=5\"]"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "malformed_percent_and_utf8",
+      "code": "nodeRepl.write(JSON.stringify((()=>{return [\"x=%\",\"x=%G1\",\"x=%FF\",\"x=%C0%AF\",\"x=%E2%82\",\"x=%E2%28%A1\",\"x=%ED%A0%80\",\"x=%F4%90%80%80\",\"x=%00\",\"x=%EF%BB%BF\",\"x=\u00e9+%2B\",\"%=a&&&b=%\"].map(value=>{const p=new URLSearchParams(value);return [[...p],p.toString()]});})()))",
+      "expected": [
+        [
+          [
+            [
+              "x",
+              "%"
+            ]
+          ],
+          "x=%25"
+        ],
+        [
+          [
+            [
+              "x",
+              "%G1"
+            ]
+          ],
+          "x=%25G1"
+        ],
+        [
+          [
+            [
+              "x",
+              "\ufffd"
+            ]
+          ],
+          "x=%EF%BF%BD"
+        ],
+        [
+          [
+            [
+              "x",
+              "\ufffd\ufffd"
+            ]
+          ],
+          "x=%EF%BF%BD%EF%BF%BD"
+        ],
+        [
+          [
+            [
+              "x",
+              "\ufffd"
+            ]
+          ],
+          "x=%EF%BF%BD"
+        ],
+        [
+          [
+            [
+              "x",
+              "\ufffd(\ufffd"
+            ]
+          ],
+          "x=%EF%BF%BD%28%EF%BF%BD"
+        ],
+        [
+          [
+            [
+              "x",
+              "\ufffd\ufffd\ufffd"
+            ]
+          ],
+          "x=%EF%BF%BD%EF%BF%BD%EF%BF%BD"
+        ],
+        [
+          [
+            [
+              "x",
+              "\ufffd\ufffd\ufffd\ufffd"
+            ]
+          ],
+          "x=%EF%BF%BD%EF%BF%BD%EF%BF%BD%EF%BF%BD"
+        ],
+        [
+          [
+            [
+              "x",
+              "\u0000"
+            ]
+          ],
+          "x=%00"
+        ],
+        [
+          [
+            [
+              "x",
+              "\ufeff"
+            ]
+          ],
+          "x=%EF%BB%BF"
+        ],
+        [
+          [
+            [
+              "x",
+              "\u00e9 +"
+            ]
+          ],
+          "x=%C3%A9+%2B"
+        ],
+        [
+          [
+            [
+              "%",
+              "a"
+            ],
+            [
+              "b",
+              "%"
+            ]
+          ],
+          "%25=a&b=%25"
+        ]
+      ],
+      "original_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[[[[\"x\",\"%\"]],\"x=%25\"],[[[\"x\",\"%G1\"]],\"x=%25G1\"],[[[\"x\",\"\ufffd\"]],\"x=%EF%BF%BD\"],[[[\"x\",\"\ufffd\ufffd\"]],\"x=%EF%BF%BD%EF%BF%BD\"],[[[\"x\",\"\ufffd\"]],\"x=%EF%BF%BD\"],[[[\"x\",\"\ufffd(\ufffd\"]],\"x=%EF%BF%BD%28%EF%BF%BD\"],[[[\"x\",\"\ufffd\ufffd\ufffd\"]],\"x=%EF%BF%BD%EF%BF%BD%EF%BF%BD\"],[[[\"x\",\"\ufffd\ufffd\ufffd\ufffd\"]],\"x=%EF%BF%BD%EF%BF%BD%EF%BF%BD%EF%BF%BD\"],[[[\"x\",\"\\u0000\"]],\"x=%00\"],[[[\"x\",\"\ufeff\"]],\"x=%EF%BB%BF\"],[[[\"x\",\"\u00e9 +\"]],\"x=%C3%A9+%2B\"],[[[\"%\",\"a\"],[\"b\",\"%\"]],\"%25=a&b=%25\"]]"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "usv_coercions",
+      "code": "nodeRepl.write(JSON.stringify((()=>{const p=new URLSearchParams([[\"\\ud800\",\"\\udc00\"],[\"normal\",{toString(){return \"\u03b2\ud83e\uddea\"}}]]);p.append(\"\\ud800\",\"x\");p.set(\"empty\",undefined);return [[...p],p.toString(),p.getAll(\"\\ud800\")];})()))",
+      "expected": [
+        [
+          [
+            "\ufffd",
+            "\ufffd"
+          ],
+          [
+            "normal",
+            "\u03b2\ud83e\uddea"
+          ],
+          [
+            "\ufffd",
+            "x"
+          ],
+          [
+            "empty",
+            "undefined"
+          ]
+        ],
+        "%EF%BF%BD=%EF%BF%BD&normal=%CE%B2%F0%9F%A7%AA&%EF%BF%BD=x&empty=undefined",
+        [
+          "\ufffd",
+          "x"
+        ]
+      ],
+      "original_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[[[\"\ufffd\",\"\ufffd\"],[\"normal\",\"\u03b2\ud83e\uddea\"],[\"\ufffd\",\"x\"],[\"empty\",\"undefined\"]],\"%EF%BF%BD=%EF%BF%BD&normal=%CE%B2%F0%9F%A7%AA&%EF%BF%BD=x&empty=undefined\",[\"\ufffd\",\"x\"]]"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "url_live_view",
+      "code": "nodeRepl.write(JSON.stringify((()=>{const u=new URL(\"https://fixture.invalid/path?a=b%20~#frag\"),p=u.searchParams,results=[p===u.searchParams,[...p]];p.sort();results.push(u.href);p.append(\"unicode\",\"\u03b2\ud83e\uddea\");results.push(u.href);u.search=\"?z=last&z=two\";results.push([...p]);u.href=\"https://other.invalid/?fresh=1\";results.push([...p]);p.delete(\"fresh\");results.push(u.href);return results;})()))",
+      "expected": [
+        true,
+        [
+          [
+            "a",
+            "b ~"
+          ]
+        ],
+        "https://fixture.invalid/path?a=b+%7E#frag",
+        "https://fixture.invalid/path?a=b+%7E&unicode=%CE%B2%F0%9F%A7%AA#frag",
+        [
+          [
+            "z",
+            "last"
+          ],
+          [
+            "z",
+            "two"
+          ]
+        ],
+        [
+          [
+            "fresh",
+            "1"
+          ]
+        ],
+        "https://other.invalid/"
+      ],
+      "original_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[true,[[\"a\",\"b ~\"]],\"https://fixture.invalid/path?a=b+%7E#frag\",\"https://fixture.invalid/path?a=b+%7E&unicode=%CE%B2%F0%9F%A7%AA#frag\",[[\"z\",\"last\"],[\"z\",\"two\"]],[[\"fresh\",\"1\"]],\"https://other.invalid/\"]"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "iterator_and_foreach",
+      "code": "nodeRepl.write(JSON.stringify((()=>{const p=new URLSearchParams(\"a=1&b=2\"),it=p.entries(),out=[it.next()];p.append(\"c\",\"3\");out.push(it.next());p.delete(\"a\");out.push(it.next());p.append(\"d\",\"4\");out.push(it.next());out.push([...p.keys()],[...p.values()]);const q=new URLSearchParams(\"a=1&b=2\"),seen=[],receiver={marker:\"owned\"};q.forEach(function(value,key,parent){seen.push([this.marker,value,key,parent===q]);if(key===\"a\")q.append(\"c\",\"3\")},receiver);return [out,seen,Object.prototype.toString.call(p),Object.prototype.toString.call(it),Object.keys(p)];})()))",
+      "expected": [
+        [
+          {
+            "value": [
+              "a",
+              "1"
+            ],
+            "done": false
+          },
+          {
+            "value": [
+              "b",
+              "2"
+            ],
+            "done": false
+          },
+          {
+            "done": true
+          },
+          {
+            "value": [
+              "d",
+              "4"
+            ],
+            "done": false
+          },
+          [
+            "b",
+            "c",
+            "d"
+          ],
+          [
+            "2",
+            "3",
+            "4"
+          ]
+        ],
+        [
+          [
+            "owned",
+            "1",
+            "a",
+            true
+          ],
+          [
+            "owned",
+            "2",
+            "b",
+            true
+          ],
+          [
+            "owned",
+            "3",
+            "c",
+            true
+          ]
+        ],
+        "[object URLSearchParams]",
+        "[object URLSearchParams Iterator]",
+        []
+      ],
+      "original_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[[{\"value\":[\"a\",\"1\"],\"done\":false},{\"value\":[\"b\",\"2\"],\"done\":false},{\"done\":true},{\"value\":[\"d\",\"4\"],\"done\":false},[\"b\",\"c\",\"d\"],[\"2\",\"3\",\"4\"]],[[\"owned\",\"1\",\"a\",true],[\"owned\",\"2\",\"b\",true],[\"owned\",\"3\",\"c\",true]],\"[object URLSearchParams]\",\"[object URLSearchParams Iterator]\",[]]"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "prototype_shapes",
+      "code": "nodeRepl.write(JSON.stringify((()=>{return [\"append\",\"delete\",\"get\",\"getAll\",\"has\",\"set\",\"sort\",\"entries\",\"keys\",\"values\",\"forEach\",\"toString\"].map(name=>[name,URLSearchParams.prototype[name].length,Object.getOwnPropertyDescriptor(URLSearchParams.prototype,name).enumerable]).concat([[\"constructor\",URLSearchParams.length],[\"iteratorIdentity\",URLSearchParams.prototype[Symbol.iterator]===URLSearchParams.prototype.entries]]);})()))",
+      "expected": [
+        [
+          "append",
+          2,
+          true
+        ],
+        [
+          "delete",
+          1,
+          true
+        ],
+        [
+          "get",
+          1,
+          true
+        ],
+        [
+          "getAll",
+          1,
+          true
+        ],
+        [
+          "has",
+          1,
+          true
+        ],
+        [
+          "set",
+          2,
+          true
+        ],
+        [
+          "sort",
+          0,
+          true
+        ],
+        [
+          "entries",
+          0,
+          true
+        ],
+        [
+          "keys",
+          0,
+          true
+        ],
+        [
+          "values",
+          0,
+          true
+        ],
+        [
+          "forEach",
+          1,
+          true
+        ],
+        [
+          "toString",
+          0,
+          true
+        ],
+        [
+          "constructor",
+          0
+        ],
+        [
+          "iteratorIdentity",
+          true
+        ]
+      ],
+      "original_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[[\"append\",2,true],[\"delete\",1,true],[\"get\",1,true],[\"getAll\",1,true],[\"has\",1,true],[\"set\",2,true],[\"sort\",0,true],[\"entries\",0,true],[\"keys\",0,true],[\"values\",0,true],[\"forEach\",1,true],[\"toString\",0,true],[\"constructor\",0],[\"iteratorIdentity\",true]]"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "argument_errors",
+      "code": "nodeRepl.write(JSON.stringify((()=>{const p=new URLSearchParams();const actions=[()=>p.get(),()=>p.getAll(),()=>p.has(),()=>p.delete(),()=>p.append(),()=>p.append(\"a\"),()=>p.set(\"a\"),()=>p.forEach(),()=>p.forEach(1),()=>p.get(Symbol()),()=>new URLSearchParams(Symbol()),()=>new URLSearchParams([[\"a\"]]),()=>new URLSearchParams([[\"a\",\"b\",\"c\"]]),()=>new URLSearchParams([\"ab\"]),()=>new URLSearchParams({[Symbol.iterator]:1}),()=>new URLSearchParams({[Symbol()]:1}),()=>URLSearchParams.prototype.get.call({},\"x\")];return actions.map(f=>{try{return {value:f()}}catch(error){return {name:error.name,message:error.message,code:error.code}}});})()))",
+      "expected": [
+        {
+          "name": "TypeError",
+          "message": "The \"name\" argument must be specified",
+          "code": "ERR_MISSING_ARGS"
+        },
+        {
+          "name": "TypeError",
+          "message": "The \"name\" argument must be specified",
+          "code": "ERR_MISSING_ARGS"
+        },
+        {
+          "name": "TypeError",
+          "message": "The \"name\" argument must be specified",
+          "code": "ERR_MISSING_ARGS"
+        },
+        {
+          "name": "TypeError",
+          "message": "The \"name\" argument must be specified",
+          "code": "ERR_MISSING_ARGS"
+        },
+        {
+          "name": "TypeError",
+          "message": "The \"name\" and \"value\" arguments must be specified",
+          "code": "ERR_MISSING_ARGS"
+        },
+        {
+          "name": "TypeError",
+          "message": "The \"name\" and \"value\" arguments must be specified",
+          "code": "ERR_MISSING_ARGS"
+        },
+        {
+          "name": "TypeError",
+          "message": "The \"name\" and \"value\" arguments must be specified",
+          "code": "ERR_MISSING_ARGS"
+        },
+        {
+          "name": "TypeError",
+          "message": "The \"callback\" argument must be of type function. Received undefined",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        {
+          "name": "TypeError",
+          "message": "The \"callback\" argument must be of type function. Received type number (1)",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        {
+          "name": "TypeError",
+          "message": "Cannot convert a Symbol value to a string"
+        },
+        {
+          "name": "TypeError",
+          "message": "Cannot convert a Symbol value to a string"
+        },
+        {
+          "name": "TypeError",
+          "message": "Each query pair must be an iterable [name, value] tuple",
+          "code": "ERR_INVALID_TUPLE"
+        },
+        {
+          "name": "TypeError",
+          "message": "Each query pair must be an iterable [name, value] tuple",
+          "code": "ERR_INVALID_TUPLE"
+        },
+        {
+          "name": "TypeError",
+          "message": "Each query pair must be an iterable [name, value] tuple",
+          "code": "ERR_INVALID_TUPLE"
+        },
+        {
+          "name": "TypeError",
+          "message": "Query pairs must be iterable",
+          "code": "ERR_ARG_NOT_ITERABLE"
+        },
+        {
+          "name": "TypeError",
+          "message": "Cannot convert a Symbol value to a string"
+        },
+        {
+          "name": "TypeError",
+          "message": "Value of \"this\" must be of type URLSearchParams",
+          "code": "ERR_INVALID_THIS"
+        }
+      ],
+      "original_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[{\"name\":\"TypeError\",\"message\":\"The \\\"name\\\" argument must be specified\",\"code\":\"ERR_MISSING_ARGS\"},{\"name\":\"TypeError\",\"message\":\"The \\\"name\\\" argument must be specified\",\"code\":\"ERR_MISSING_ARGS\"},{\"name\":\"TypeError\",\"message\":\"The \\\"name\\\" argument must be specified\",\"code\":\"ERR_MISSING_ARGS\"},{\"name\":\"TypeError\",\"message\":\"The \\\"name\\\" argument must be specified\",\"code\":\"ERR_MISSING_ARGS\"},{\"name\":\"TypeError\",\"message\":\"The \\\"name\\\" and \\\"value\\\" arguments must be specified\",\"code\":\"ERR_MISSING_ARGS\"},{\"name\":\"TypeError\",\"message\":\"The \\\"name\\\" and \\\"value\\\" arguments must be specified\",\"code\":\"ERR_MISSING_ARGS\"},{\"name\":\"TypeError\",\"message\":\"The \\\"name\\\" and \\\"value\\\" arguments must be specified\",\"code\":\"ERR_MISSING_ARGS\"},{\"name\":\"TypeError\",\"message\":\"The \\\"callback\\\" argument must be of type function. Received undefined\",\"code\":\"ERR_INVALID_ARG_TYPE\"},{\"name\":\"TypeError\",\"message\":\"The \\\"callback\\\" argument must be of type function. Received type number (1)\",\"code\":\"ERR_INVALID_ARG_TYPE\"},{\"name\":\"TypeError\",\"message\":\"Cannot convert a Symbol value to a string\"},{\"name\":\"TypeError\",\"message\":\"Cannot convert a Symbol value to a string\"},{\"name\":\"TypeError\",\"message\":\"Each query pair must be an iterable [name, value] tuple\",\"code\":\"ERR_INVALID_TUPLE\"},{\"name\":\"TypeError\",\"message\":\"Each query pair must be an iterable [name, value] tuple\",\"code\":\"ERR_INVALID_TUPLE\"},{\"name\":\"TypeError\",\"message\":\"Each query pair must be an iterable [name, value] tuple\",\"code\":\"ERR_INVALID_TUPLE\"},{\"name\":\"TypeError\",\"message\":\"Query pairs must be iterable\",\"code\":\"ERR_ARG_NOT_ITERABLE\"},{\"name\":\"TypeError\",\"message\":\"Cannot convert a Symbol value to a string\"},{\"name\":\"TypeError\",\"message\":\"Value of \\\"this\\\" must be of type URLSearchParams\",\"code\":\"ERR_INVALID_THIS\"}]"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "coercion_updates_live_url",
+      "code": "nodeRepl.write(JSON.stringify((()=>{const results=[];for(const method of [\"append\",\"set\",\"delete\",\"get\",\"getAll\",\"has\"]){const u=new URL(\"https://fixture.invalid/?old=1\"),p=u.searchParams;const key={toString(){u.search=\"?fresh=2&fresh=3\";return \"fresh\"}};results.push([method,p[method](key,\"4\"),[...p],u.href])}return results;})()))",
+      "expected": [
+        [
+          "append",
+          null,
+          [
+            [
+              "fresh",
+              "2"
+            ],
+            [
+              "fresh",
+              "3"
+            ],
+            [
+              "fresh",
+              "4"
+            ]
+          ],
+          "https://fixture.invalid/?fresh=2&fresh=3&fresh=4"
+        ],
+        [
+          "set",
+          null,
+          [
+            [
+              "fresh",
+              "2"
+            ],
+            [
+              "fresh",
+              "3"
+            ]
+          ],
+          "https://fixture.invalid/?fresh=2&fresh=3"
+        ],
+        [
+          "delete",
+          null,
+          [
+            [
+              "fresh",
+              "2"
+            ],
+            [
+              "fresh",
+              "3"
+            ]
+          ],
+          "https://fixture.invalid/?fresh=2&fresh=3"
+        ],
+        [
+          "get",
+          null,
+          [
+            [
+              "fresh",
+              "2"
+            ],
+            [
+              "fresh",
+              "3"
+            ]
+          ],
+          "https://fixture.invalid/?fresh=2&fresh=3"
+        ],
+        [
+          "getAll",
+          [],
+          [
+            [
+              "fresh",
+              "2"
+            ],
+            [
+              "fresh",
+              "3"
+            ]
+          ],
+          "https://fixture.invalid/?fresh=2&fresh=3"
+        ],
+        [
+          "has",
+          false,
+          [
+            [
+              "fresh",
+              "2"
+            ],
+            [
+              "fresh",
+              "3"
+            ]
+          ],
+          "https://fixture.invalid/?fresh=2&fresh=3"
+        ]
+      ],
+      "original_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[[\"append\",null,[[\"fresh\",\"2\"],[\"fresh\",\"3\"],[\"fresh\",\"4\"]],\"https://fixture.invalid/?fresh=2&fresh=3&fresh=4\"],[\"set\",null,[[\"fresh\",\"2\"],[\"fresh\",\"3\"]],\"https://fixture.invalid/?fresh=2&fresh=3\"],[\"delete\",null,[[\"fresh\",\"2\"],[\"fresh\",\"3\"]],\"https://fixture.invalid/?fresh=2&fresh=3\"],[\"get\",null,[[\"fresh\",\"2\"],[\"fresh\",\"3\"]],\"https://fixture.invalid/?fresh=2&fresh=3\"],[\"getAll\",[],[[\"fresh\",\"2\"],[\"fresh\",\"3\"]],\"https://fixture.invalid/?fresh=2&fresh=3\"],[\"has\",false,[[\"fresh\",\"2\"],[\"fresh\",\"3\"]],\"https://fixture.invalid/?fresh=2&fresh=3\"]]"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "url_iterator_replacement",
+      "code": "nodeRepl.write(JSON.stringify((()=>{const u=new URL(\"https://fixture.invalid/?a=1&b=2\"),p=u.searchParams,it=p.entries(),out=[it.next()];u.search=\"?x=3&y=4&z=5\";out.push(it.next(),it.next(),it.next());p.append(\"end\",\"6\");out.push(it.next());return out;})()))",
+      "expected": [
+        {
+          "value": [
+            "a",
+            "1"
+          ],
+          "done": false
+        },
+        {
+          "value": [
+            "y",
+            "4"
+          ],
+          "done": false
+        },
+        {
+          "value": [
+            "z",
+            "5"
+          ],
+          "done": false
+        },
+        {
+          "done": true
+        },
+        {
+          "value": [
+            "end",
+            "6"
+          ],
+          "done": false
+        }
+      ],
+      "original_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[{\"value\":[\"a\",\"1\"],\"done\":false},{\"value\":[\"y\",\"4\"],\"done\":false},{\"value\":[\"z\",\"5\"],\"done\":false},{\"done\":true},{\"value\":[\"end\",\"6\"],\"done\":false}]"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "empty_and_opaque_urls",
+      "code": "nodeRepl.write(JSON.stringify((()=>{return [\"https://fixture.invalid/?#x\",\"mailto:owned@fixture.invalid?x=a%20b\",\"data:text/plain,owned?x=1\"].map(value=>{const u=new URL(value),p=u.searchParams;p.sort();const first=u.href;p.delete(\"x\");return [first,u.href,[...p]]});})()))",
+      "expected": [
+        [
+          "https://fixture.invalid/#x",
+          "https://fixture.invalid/#x",
+          []
+        ],
+        [
+          "mailto:owned@fixture.invalid?x=a+b",
+          "mailto:owned@fixture.invalid",
+          []
+        ],
+        [
+          "data:text/plain,owned?x=1",
+          "data:text/plain,owned",
+          []
+        ]
+      ],
+      "original_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[[\"https://fixture.invalid/#x\",\"https://fixture.invalid/#x\",[]],[\"mailto:owned@fixture.invalid?x=a+b\",\"mailto:owned@fixture.invalid\",[]],[\"data:text/plain,owned?x=1\",\"data:text/plain,owned\",[]]]"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "foreach_ignores_public_iterator_override",
+      "code": "nodeRepl.write(JSON.stringify((()=>{const p=new URLSearchParams(\"a=1\"),seen=[];p[Symbol.iterator]=function*(){yield [\"fake\",\"2\"]};p.forEach((v,k)=>seen.push([k,v]));return seen;})()))",
+      "expected": [
+        [
+          "a",
+          "1"
+        ]
+      ],
+      "original_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[[\"a\",\"1\"]]"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "url_view_requires_branded_receiver",
+      "code": "nodeRepl.write(JSON.stringify((()=>{try{return [...Object.getOwnPropertyDescriptor(URL.prototype,\"searchParams\").get.call({search:\"?x=1\"})]}catch(error){return {name:error.name,message:error.message,code:error.code}}})()))",
+      "expected": {
+        "name": "TypeError",
+        "message": "Cannot read private member #searchParams from an object whose class did not declare it"
+      },
+      "original_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"name\":\"TypeError\",\"message\":\"Cannot read private member #searchParams from an object whose class did not declare it\"}"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "url_view_ignores_shadow_search_property",
+      "code": "nodeRepl.write(JSON.stringify((()=>{const u=new URL(\"https://fixture.invalid/?a=1\");Object.defineProperty(u,\"search\",{value:\"?fake=2\",writable:true});const p=u.searchParams,before=[...p];p.append(\"real\",\"3\");return [before,[...p],u.search,u.href];})()))",
+      "expected": [
+        [
+          [
+            "a",
+            "1"
+          ]
+        ],
+        [
+          [
+            "a",
+            "1"
+          ],
+          [
+            "real",
+            "3"
+          ]
+        ],
+        "?fake=2",
+        "https://fixture.invalid/?a=1&real=3"
+      ],
+      "original_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "[[[\"a\",\"1\"]],[[\"a\",\"1\"],[\"real\",\"3\"]],\"?fake=2\",\"https://fixture.invalid/?a=1&real=3\"]"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    }
+  ]
+}
