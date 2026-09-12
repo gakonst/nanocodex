@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ToolMap } from "nanocodex";
+import { CUA_JS_NAME, CUA_RESET_NAME, CUA_PARAMETERS, CUA_RESET_PARAMETERS } from "nanocodex-computer/contract";
 // @ts-expect-error The runtime subpath is intentionally JavaScript-only.
 import { ToolRouter, toolMapSource } from "nanocodex-tools/runtime/tool-router";
 
@@ -22,6 +23,44 @@ const context = (overrides: Partial<{
 });
 
 describe("cwd-root namespace execution", () => {
+  it("routes CUA to the explicitly selected Hand and pins its admitted connection", async () => {
+    const original = vi.fn(async () => ({ content: [{ type: "text", text: "original" }] }));
+    const replacement = vi.fn(async () => ({ content: [{ type: "text", text: "replacement" }] }));
+    let current = original;
+    const runtime = createNamespaceExecutionRuntime(
+      () => [{ id: "vm", root: "/vm", workspace: "/workspace" }],
+      (_id, name) => name === CUA_JS_NAME || name === CUA_RESET_NAME ? { handler: current } : undefined,
+    );
+    runtime.capture(context());
+    current = replacement;
+    expect(runtime.tools[CUA_JS_NAME]!.parameters).toEqual(CUA_PARAMETERS);
+    expect(runtime.tools[CUA_RESET_NAME]!.parameters).toEqual(CUA_RESET_PARAMETERS);
+    await runtime.tools.select_computer!.handler({ workdir: "/vm" }, context());
+    await runtime.tools[CUA_JS_NAME]!.handler({ code: "await cua.getState();" }, context({ parentCallId: "next-cell" }));
+    expect(original).toHaveBeenCalledWith({ code: "await cua.getState();" }, expect.objectContaining({ sessionId: "root-session" }));
+    expect(replacement).not.toHaveBeenCalled();
+    await runtime.tools[CUA_RESET_NAME]!.handler({}, context({ parentCallId: "reset-cell" }));
+    expect(original).toHaveBeenLastCalledWith({}, expect.anything());
+    await expect(runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/vm", code: "1" }, context())).rejects.toThrow("Unknown CUA argument");
+    await expect(runtime.tools.select_computer!.handler({ workdir: "/brain" }, context())).rejects.toThrow("no CUA runtime");
+    await runtime.tools[CUA_JS_NAME]!.releaseSession?.("root-session");
+    await runtime.tools[CUA_JS_NAME]!.handler({ code: "1" }, context({ parentCallId: "new-session-cell" }));
+    expect(replacement).toHaveBeenCalledTimes(1);
+  });
+  it("requires a selection for multiple computers and isolates conversations", async () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const runtime = createNamespaceExecutionRuntime(
+      () => [{ id: "one", workspace: "/workspace" }, { id: "two", workspace: "/workspace" }],
+      (id, name) => name === CUA_JS_NAME || name === CUA_RESET_NAME ? { handler: id === "one" ? first : second } : undefined,
+    );
+    await expect(runtime.tools[CUA_JS_NAME]!.handler({ code: "1" }, context())).rejects.toThrow("Multiple computers");
+    await runtime.tools.select_computer!.handler({ workdir: "/two" }, context());
+    await runtime.tools[CUA_JS_NAME]!.handler({ code: "1" }, context());
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(first).not.toHaveBeenCalled();
+    await expect(runtime.tools[CUA_JS_NAME]!.handler({ code: "1" }, context({ sessionId: "other" }))).rejects.toThrow("Multiple computers");
+  });
   it("starts with no executable hand and fails closed at the brain cwd", async () => {
     const tools = createRuntimeNamespaceExecutionTools(() => []);
 

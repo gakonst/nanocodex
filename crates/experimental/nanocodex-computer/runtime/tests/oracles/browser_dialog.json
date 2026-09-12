@@ -1,0 +1,4170 @@
+{
+  "source": "sources/browser-desktop/scripts/browser-service.mjs",
+  "sourceSha256": "3032666de451e423db76b5f9b0456e370d4f57416bbf53d0c746be636359ba02",
+  "bindings": [
+    {
+      "name": "Zp",
+      "kind": "var",
+      "value_kind": "ClassExpression",
+      "start_utf8": 677395,
+      "end_utf8": 701072,
+      "sha256": "b1e32a2bf95b00ebd1c32a238d13ff665dda2b96ef3b24bfd4383359cf718d5f"
+    },
+    {
+      "name": "Xp",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 702049,
+      "end_utf8": 702152,
+      "sha256": "1ccdf333344363d0775a58fc90732bb583dd2a2446068d7755a015eee9788bfe"
+    },
+    {
+      "name": "Sk",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 702310,
+      "end_utf8": 702368,
+      "sha256": "79c98e4595b50b8c76f65e1dbf5d0554da00adb6cf4741c3806b850cba2bd646"
+    },
+    {
+      "name": "C7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703805,
+      "end_utf8": 703888,
+      "sha256": "cc5e0a55ea8c37b22f374e2e611778b42fe30a8b75cc1c4bc91eaf48cee6b728"
+    },
+    {
+      "name": "T7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703888,
+      "end_utf8": 703993,
+      "sha256": "1bcee8002c0c2844d04c9373b9f7f87ab653e09bc64fc4951aa1bd9d9a42045e"
+    }
+  ],
+  "helperBindings": [
+    {
+      "name": "YG",
+      "kind": "var",
+      "value_kind": "Literal",
+      "start_utf8": 767989,
+      "end_utf8": 767995,
+      "sha256": "4824147ab27c39b584835cc962c4e1104c032fce07eb90bbab47f083119454a5"
+    },
+    {
+      "name": "U1",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 768720,
+      "end_utf8": 769133,
+      "sha256": "62e4aac90add9e2216f78b181bcd8562a67ff6e21e05925b3bf6a74b481b9138"
+    },
+    {
+      "name": "QG",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 769133,
+      "end_utf8": 769303,
+      "sha256": "12e76b74c0fc5b17a79718db64b1235b69c846c705f9438d7a9121c4c672ff46"
+    }
+  ],
+  "scope": "Original shared-CDP dialog equality and session/frame/tab removal methods plus original service helper close/ACK/error races with explicit microtask checkpoints; inert owned dispatch, attached tabs and known child sessions. Finite partitions; no complete renderer/platform claim.",
+  "cases": [
+    {
+      "name": "close/null/null",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": null
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "close/null/child-a",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": "child-a"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "close/null/child-b",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": "child-b"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "close/null/unknown",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": "unknown"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeSession/null/child-a",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeSession",
+          "session": "child-a"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeSession/null/child-b",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeSession",
+          "session": "child-b"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeSession/null/child-other",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeSession",
+          "session": "child-other"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeSession/null/unknown",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeSession",
+          "session": "unknown"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeFrame/null/1/frame-a",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeFrame",
+          "tab": "1",
+          "frame": "frame-a"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeFrame/null/1/frame-b",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeFrame",
+          "tab": "1",
+          "frame": "frame-b"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeFrame/null/1/unknown",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeFrame",
+          "tab": "1",
+          "frame": "unknown"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeFrame/null/2/frame-a",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeFrame",
+          "tab": "2",
+          "frame": "frame-a"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeFrame/null/2/frame-other",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeFrame",
+          "tab": "2",
+          "frame": "frame-other"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "foreign tab close/null",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "tab": "2",
+          "session": "child-other"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "target-only close/null",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "target": "ignored-target"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "tab removal/null",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "open",
+          "session": "child-other",
+          "tab": "2",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeTab"
+        },
+        {
+          "op": "removeTab",
+          "tab": "2"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-other"
+          }
+        ],
+        [
+          null,
+          {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-other"
+          }
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "stale completion/null/null",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": null
+        },
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "confirm"
+        },
+        {
+          "op": "delete",
+          "id": "1"
+        },
+        {
+          "op": "delete",
+          "id": "2"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": null
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "stale completion/null/child-a",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": null
+        },
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "confirm"
+        },
+        {
+          "op": "delete",
+          "id": "1"
+        },
+        {
+          "op": "delete",
+          "id": "2"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "stale completion/null/child-b",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": null
+        },
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "confirm"
+        },
+        {
+          "op": "delete",
+          "id": "1"
+        },
+        {
+          "op": "delete",
+          "id": "2"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "close/child-a/null",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": null
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "close/child-a/child-a",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": "child-a"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "close/child-a/child-b",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": "child-b"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "close/child-a/unknown",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": "unknown"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeSession/child-a/child-a",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeSession",
+          "session": "child-a"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeSession/child-a/child-b",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeSession",
+          "session": "child-b"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeSession/child-a/child-other",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeSession",
+          "session": "child-other"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeSession/child-a/unknown",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeSession",
+          "session": "unknown"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeFrame/child-a/1/frame-a",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeFrame",
+          "tab": "1",
+          "frame": "frame-a"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeFrame/child-a/1/frame-b",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeFrame",
+          "tab": "1",
+          "frame": "frame-b"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeFrame/child-a/1/unknown",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeFrame",
+          "tab": "1",
+          "frame": "unknown"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeFrame/child-a/2/frame-a",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeFrame",
+          "tab": "2",
+          "frame": "frame-a"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeFrame/child-a/2/frame-other",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeFrame",
+          "tab": "2",
+          "frame": "frame-other"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "foreign tab close/child-a",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "tab": "2",
+          "session": "child-other"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "target-only close/child-a",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "target": "ignored-target"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "tab removal/child-a",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "open",
+          "session": "child-other",
+          "tab": "2",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeTab"
+        },
+        {
+          "op": "removeTab",
+          "tab": "2"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-other"
+          }
+        ],
+        [
+          null,
+          {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-other"
+          }
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "stale completion/child-a/null",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": "child-a"
+        },
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "confirm"
+        },
+        {
+          "op": "delete",
+          "id": "1"
+        },
+        {
+          "op": "delete",
+          "id": "2"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": null
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "stale completion/child-a/child-a",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": "child-a"
+        },
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "confirm"
+        },
+        {
+          "op": "delete",
+          "id": "1"
+        },
+        {
+          "op": "delete",
+          "id": "2"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "stale completion/child-a/child-b",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": "child-a"
+        },
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "confirm"
+        },
+        {
+          "op": "delete",
+          "id": "1"
+        },
+        {
+          "op": "delete",
+          "id": "2"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "close/child-b/null",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": null
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "close/child-b/child-a",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": "child-a"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "close/child-b/child-b",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": "child-b"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "close/child-b/unknown",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": "unknown"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeSession/child-b/child-a",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeSession",
+          "session": "child-a"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeSession/child-b/child-b",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeSession",
+          "session": "child-b"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeSession/child-b/child-other",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeSession",
+          "session": "child-other"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeSession/child-b/unknown",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeSession",
+          "session": "unknown"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeFrame/child-b/1/frame-a",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeFrame",
+          "tab": "1",
+          "frame": "frame-a"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeFrame/child-b/1/frame-b",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeFrame",
+          "tab": "1",
+          "frame": "frame-b"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeFrame/child-b/1/unknown",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeFrame",
+          "tab": "1",
+          "frame": "unknown"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeFrame/child-b/2/frame-a",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeFrame",
+          "tab": "2",
+          "frame": "frame-a"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "removeFrame/child-b/2/frame-other",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeFrame",
+          "tab": "2",
+          "frame": "frame-other"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "foreign tab close/child-b",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "tab": "2",
+          "session": "child-other"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "target-only close/child-b",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "target": "ignored-target"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ]
+      ]
+    },
+    {
+      "name": "tab removal/child-b",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "open",
+          "session": "child-other",
+          "tab": "2",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeTab"
+        },
+        {
+          "op": "removeTab",
+          "tab": "2"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-other"
+          }
+        ],
+        [
+          null,
+          {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-other"
+          }
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "stale completion/child-b/null",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": "child-b"
+        },
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "confirm"
+        },
+        {
+          "op": "delete",
+          "id": "1"
+        },
+        {
+          "op": "delete",
+          "id": "2"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": null
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "stale completion/child-b/child-a",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": "child-b"
+        },
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "confirm"
+        },
+        {
+          "op": "delete",
+          "id": "1"
+        },
+        {
+          "op": "delete",
+          "id": "2"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "stale completion/child-b/child-b",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "close",
+          "session": "child-b"
+        },
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "confirm"
+        },
+        {
+          "op": "delete",
+          "id": "1"
+        },
+        {
+          "op": "delete",
+          "id": "2"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "empty state and repeated deletion",
+      "actions": [
+        {
+          "op": "close"
+        },
+        {
+          "op": "delete",
+          "id": "missing"
+        },
+        {
+          "op": "removeSession",
+          "session": "child-a"
+        },
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "delete",
+          "id": 1
+        },
+        {
+          "op": "delete",
+          "id": "unknown"
+        },
+        {
+          "op": "delete",
+          "id": "1"
+        },
+        {
+          "op": "delete",
+          "id": "1"
+        }
+      ],
+      "rows": [
+        [
+          null,
+          null
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "opening overwrites and unsupported type preserves identity",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "not-a-dialog"
+        },
+        {
+          "op": "delete",
+          "id": "1"
+        },
+        {
+          "op": "delete",
+          "id": "2"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "same owner delayed close clears current dialog",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "open",
+          "session": "child-a",
+          "tab": "1",
+          "kind": "confirm"
+        },
+        {
+          "op": "close",
+          "session": "child-a"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "confirm",
+            "session": "child-a"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "target-only opening is stored as plain tab",
+      "actions": [
+        {
+          "op": "open",
+          "target": "ignored-target",
+          "kind": "alert"
+        },
+        {
+          "op": "close",
+          "session": "child-a"
+        },
+        {
+          "op": "close",
+          "target": "different-target"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "alert",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "alert",
+            "session": null
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "per-tab identity sequence and stale actions remain independent",
+      "actions": [
+        {
+          "op": "open",
+          "session": null,
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "open",
+          "session": "child-other",
+          "tab": "2",
+          "kind": "prompt"
+        },
+        {
+          "op": "delete",
+          "tab": "2",
+          "id": "1"
+        },
+        {
+          "op": "delete",
+          "id": "2"
+        },
+        {
+          "op": "removeTab",
+          "tab": "2"
+        },
+        {
+          "op": "delete",
+          "id": "1"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-other"
+          }
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-other"
+          }
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-other"
+          }
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "ancestor removal retains descendant record until matching close",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-nested",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeSession",
+          "session": "child-a"
+        },
+        {
+          "op": "delete",
+          "id": "stale"
+        },
+        {
+          "op": "close",
+          "session": "child-nested"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-nested"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-nested"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-nested"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "ancestor frame removal retains descendant until explicit session removal",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-nested",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeFrame",
+          "frame": "frame-a"
+        },
+        {
+          "op": "removeSession",
+          "session": "child-nested"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-nested"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-nested"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    },
+    {
+      "name": "orphan replacement preserves newer identity",
+      "actions": [
+        {
+          "op": "open",
+          "session": "child-nested",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "removeSession",
+          "session": "child-a"
+        },
+        {
+          "op": "open",
+          "session": "child-b",
+          "tab": "1",
+          "kind": "prompt"
+        },
+        {
+          "op": "delete",
+          "id": "1"
+        },
+        {
+          "op": "delete",
+          "id": "2"
+        }
+      ],
+      "rows": [
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-nested"
+          },
+          null
+        ],
+        [
+          {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-nested"
+          },
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          null
+        ],
+        [
+          null,
+          null
+        ]
+      ]
+    }
+  ],
+  "handlerCases": [
+    {
+      "name": "ack then close/null",
+      "owner": null,
+      "phases": [
+        [
+          {
+            "op": "ack"
+          }
+        ],
+        [
+          {
+            "op": "close",
+            "session": null
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "pending",
+          "error": null,
+          "dialog": {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          "listeners": 2
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "close then ack/null",
+      "owner": null,
+      "phases": [
+        [
+          {
+            "op": "close",
+            "session": null
+          }
+        ],
+        [
+          {
+            "op": "ack"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "close then late error/null",
+      "owner": null,
+      "phases": [
+        [
+          {
+            "op": "close",
+            "session": null
+          }
+        ],
+        [
+          {
+            "op": "error"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "error then close/null",
+      "owner": null,
+      "phases": [
+        [
+          {
+            "op": "error"
+          }
+        ],
+        [
+          {
+            "op": "close",
+            "session": null
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "rejected",
+          "error": "owned handler rejection",
+          "dialog": {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          "listeners": 1
+        },
+        {
+          "settlement": "rejected",
+          "error": "owned handler rejection",
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "foreign close ack matching close/null",
+      "owner": null,
+      "phases": [
+        [
+          {
+            "op": "close",
+            "session": "child-a"
+          }
+        ],
+        [
+          {
+            "op": "ack"
+          }
+        ],
+        [
+          {
+            "op": "close",
+            "session": null
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "pending",
+          "error": null,
+          "dialog": {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          "listeners": 2
+        },
+        {
+          "settlement": "pending",
+          "error": null,
+          "dialog": {
+            "id": "1",
+            "type": "prompt",
+            "session": null
+          },
+          "listeners": 2
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "close replacement then ack/null",
+      "owner": null,
+      "phases": [
+        [
+          {
+            "op": "close",
+            "session": null
+          },
+          {
+            "op": "open",
+            "session": null,
+            "tab": "1",
+            "kind": "prompt"
+          }
+        ],
+        [
+          {
+            "op": "ack"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": {
+            "id": "2",
+            "type": "prompt",
+            "session": null
+          },
+          "listeners": 1
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": {
+            "id": "2",
+            "type": "prompt",
+            "session": null
+          },
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "foreign replacement old close/null",
+      "owner": null,
+      "phases": [
+        [
+          {
+            "op": "open",
+            "session": "child-a",
+            "tab": "1",
+            "kind": "prompt"
+          }
+        ],
+        [
+          {
+            "op": "close",
+            "session": null
+          }
+        ],
+        [
+          {
+            "op": "ack"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "pending",
+          "error": null,
+          "dialog": {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          "listeners": 2
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          "listeners": 1
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "same owner replacement old close/null",
+      "owner": null,
+      "phases": [
+        [
+          {
+            "op": "open",
+            "session": null,
+            "tab": "1",
+            "kind": "prompt"
+          }
+        ],
+        [
+          {
+            "op": "close",
+            "session": null
+          }
+        ],
+        [
+          {
+            "op": "ack"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "pending",
+          "error": null,
+          "dialog": {
+            "id": "2",
+            "type": "prompt",
+            "session": null
+          },
+          "listeners": 2
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "ack then close/child-a",
+      "owner": "child-a",
+      "phases": [
+        [
+          {
+            "op": "ack"
+          }
+        ],
+        [
+          {
+            "op": "close",
+            "session": "child-a"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "pending",
+          "error": null,
+          "dialog": {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          "listeners": 2
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1,
+            "sessionId": "child-a"
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "close then ack/child-a",
+      "owner": "child-a",
+      "phases": [
+        [
+          {
+            "op": "close",
+            "session": "child-a"
+          }
+        ],
+        [
+          {
+            "op": "ack"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1,
+            "sessionId": "child-a"
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "close then late error/child-a",
+      "owner": "child-a",
+      "phases": [
+        [
+          {
+            "op": "close",
+            "session": "child-a"
+          }
+        ],
+        [
+          {
+            "op": "error"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1,
+            "sessionId": "child-a"
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "error then close/child-a",
+      "owner": "child-a",
+      "phases": [
+        [
+          {
+            "op": "error"
+          }
+        ],
+        [
+          {
+            "op": "close",
+            "session": "child-a"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "rejected",
+          "error": "owned handler rejection",
+          "dialog": {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          "listeners": 1
+        },
+        {
+          "settlement": "rejected",
+          "error": "owned handler rejection",
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1,
+            "sessionId": "child-a"
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "foreign close ack matching close/child-a",
+      "owner": "child-a",
+      "phases": [
+        [
+          {
+            "op": "close",
+            "session": "child-b"
+          }
+        ],
+        [
+          {
+            "op": "ack"
+          }
+        ],
+        [
+          {
+            "op": "close",
+            "session": "child-a"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "pending",
+          "error": null,
+          "dialog": {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          "listeners": 2
+        },
+        {
+          "settlement": "pending",
+          "error": null,
+          "dialog": {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          "listeners": 2
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1,
+            "sessionId": "child-a"
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "close replacement then ack/child-a",
+      "owner": "child-a",
+      "phases": [
+        [
+          {
+            "op": "close",
+            "session": "child-a"
+          },
+          {
+            "op": "open",
+            "session": "child-a",
+            "tab": "1",
+            "kind": "prompt"
+          }
+        ],
+        [
+          {
+            "op": "ack"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          "listeners": 1
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1,
+            "sessionId": "child-a"
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "foreign replacement old close/child-a",
+      "owner": "child-a",
+      "phases": [
+        [
+          {
+            "op": "open",
+            "session": "child-b",
+            "tab": "1",
+            "kind": "prompt"
+          }
+        ],
+        [
+          {
+            "op": "close",
+            "session": "child-a"
+          }
+        ],
+        [
+          {
+            "op": "ack"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "pending",
+          "error": null,
+          "dialog": {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          "listeners": 2
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          "listeners": 1
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1,
+            "sessionId": "child-a"
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "same owner replacement old close/child-a",
+      "owner": "child-a",
+      "phases": [
+        [
+          {
+            "op": "open",
+            "session": "child-a",
+            "tab": "1",
+            "kind": "prompt"
+          }
+        ],
+        [
+          {
+            "op": "close",
+            "session": "child-a"
+          }
+        ],
+        [
+          {
+            "op": "ack"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "pending",
+          "error": null,
+          "dialog": {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          "listeners": 2
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1,
+            "sessionId": "child-a"
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "session removed then close/child-a",
+      "owner": "child-a",
+      "phases": [
+        [
+          {
+            "op": "removeSession",
+            "session": "child-a"
+          }
+        ],
+        [
+          {
+            "op": "close",
+            "session": "child-a"
+          }
+        ],
+        [
+          {
+            "op": "ack"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "pending",
+          "error": null,
+          "dialog": null,
+          "listeners": 2
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1,
+            "sessionId": "child-a"
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "ack then close/child-b",
+      "owner": "child-b",
+      "phases": [
+        [
+          {
+            "op": "ack"
+          }
+        ],
+        [
+          {
+            "op": "close",
+            "session": "child-b"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "pending",
+          "error": null,
+          "dialog": {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          "listeners": 2
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1,
+            "sessionId": "child-b"
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "close then ack/child-b",
+      "owner": "child-b",
+      "phases": [
+        [
+          {
+            "op": "close",
+            "session": "child-b"
+          }
+        ],
+        [
+          {
+            "op": "ack"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1,
+            "sessionId": "child-b"
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "close then late error/child-b",
+      "owner": "child-b",
+      "phases": [
+        [
+          {
+            "op": "close",
+            "session": "child-b"
+          }
+        ],
+        [
+          {
+            "op": "error"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1,
+            "sessionId": "child-b"
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "error then close/child-b",
+      "owner": "child-b",
+      "phases": [
+        [
+          {
+            "op": "error"
+          }
+        ],
+        [
+          {
+            "op": "close",
+            "session": "child-b"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "rejected",
+          "error": "owned handler rejection",
+          "dialog": {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          "listeners": 1
+        },
+        {
+          "settlement": "rejected",
+          "error": "owned handler rejection",
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1,
+            "sessionId": "child-b"
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "foreign close ack matching close/child-b",
+      "owner": "child-b",
+      "phases": [
+        [
+          {
+            "op": "close",
+            "session": "child-a"
+          }
+        ],
+        [
+          {
+            "op": "ack"
+          }
+        ],
+        [
+          {
+            "op": "close",
+            "session": "child-b"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "pending",
+          "error": null,
+          "dialog": {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          "listeners": 2
+        },
+        {
+          "settlement": "pending",
+          "error": null,
+          "dialog": {
+            "id": "1",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          "listeners": 2
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1,
+            "sessionId": "child-b"
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "close replacement then ack/child-b",
+      "owner": "child-b",
+      "phases": [
+        [
+          {
+            "op": "close",
+            "session": "child-b"
+          },
+          {
+            "op": "open",
+            "session": "child-b",
+            "tab": "1",
+            "kind": "prompt"
+          }
+        ],
+        [
+          {
+            "op": "ack"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          "listeners": 1
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1,
+            "sessionId": "child-b"
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "foreign replacement old close/child-b",
+      "owner": "child-b",
+      "phases": [
+        [
+          {
+            "op": "open",
+            "session": "child-a",
+            "tab": "1",
+            "kind": "prompt"
+          }
+        ],
+        [
+          {
+            "op": "close",
+            "session": "child-b"
+          }
+        ],
+        [
+          {
+            "op": "ack"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "pending",
+          "error": null,
+          "dialog": {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          "listeners": 2
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          "listeners": 1
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-a"
+          },
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1,
+            "sessionId": "child-b"
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "same owner replacement old close/child-b",
+      "owner": "child-b",
+      "phases": [
+        [
+          {
+            "op": "open",
+            "session": "child-b",
+            "tab": "1",
+            "kind": "prompt"
+          }
+        ],
+        [
+          {
+            "op": "close",
+            "session": "child-b"
+          }
+        ],
+        [
+          {
+            "op": "ack"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "pending",
+          "error": null,
+          "dialog": {
+            "id": "2",
+            "type": "prompt",
+            "session": "child-b"
+          },
+          "listeners": 2
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1,
+            "sessionId": "child-b"
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    },
+    {
+      "name": "session removed then close/child-b",
+      "owner": "child-b",
+      "phases": [
+        [
+          {
+            "op": "removeSession",
+            "session": "child-b"
+          }
+        ],
+        [
+          {
+            "op": "close",
+            "session": "child-b"
+          }
+        ],
+        [
+          {
+            "op": "ack"
+          }
+        ]
+      ],
+      "rows": [
+        {
+          "settlement": "pending",
+          "error": null,
+          "dialog": null,
+          "listeners": 2
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        },
+        {
+          "settlement": "fulfilled",
+          "error": null,
+          "dialog": null,
+          "listeners": 1
+        }
+      ],
+      "calls": [
+        [
+          {
+            "tabId": 1,
+            "sessionId": "child-b"
+          },
+          "Page.handleJavaScriptDialog",
+          {
+            "accept": true
+          }
+        ]
+      ]
+    }
+  ]
+}

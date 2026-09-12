@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'crates/experimental/nanocodex-vm/image/**'
+      - 'crates/experimental/nanocodex-computer/runtime/**'
       - '.github/workflows/hand-toolkit.yml'
   workflow_dispatch:
 permissions:
@@ -29,7 +30,7 @@ jobs:
       - name: Build VM toolkit
         env:
           DOCKERFILE: ${{ matrix.dockerfile }}
-        run: docker build -t nanocodex-vm:toolkit -f "crates/experimental/nanocodex-vm/image/$DOCKERFILE" crates/experimental/nanocodex-vm/image
+        run: docker build -t nanocodex-vm:toolkit --build-context computer-source=crates/experimental/nanocodex-computer/runtime -f "crates/experimental/nanocodex-vm/image/$DOCKERFILE" crates/experimental/nanocodex-vm/image
       - name: Exercise offline toolkit
         run: docker run --rm --network none --entrypoint env nanocodex-vm:toolkit -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/root sh -lc nanocodex-check-hand-toolkit
       - name: Package and validate the 16 GiB ext4 template

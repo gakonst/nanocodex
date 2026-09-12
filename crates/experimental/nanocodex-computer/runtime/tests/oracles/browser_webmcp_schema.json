@@ -1,0 +1,2113 @@
+{
+  "scope": "Inert pinned actual fC parser and mr/Gm.getSessionParams only; no browser/service/provider execution; not a completion claim.",
+  "source_sha256": "3032666de451e423db76b5f9b0456e370d4f57416bbf53d0c746be636359ba02",
+  "binding_manifest_sha256": "fb13f25bf657548baa125ec0302e129107973da6f3c05961f481787b64d77c84",
+  "spans": [
+    {
+      "name": "fC",
+      "kind": "var",
+      "value_kind": "CallExpression",
+      "start_utf8": 494664,
+      "end_utf8": 494906,
+      "sha256": "5db55d71586df066251f62bfd7088feed027164ef969d898129e1b29bbc27c6b"
+    },
+    {
+      "name": "mr",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 561571,
+      "end_utf8": 561723,
+      "sha256": "955c518da2538b6604d3b363c1964d5ab390820e5ba41456db64182eef65db55"
+    },
+    {
+      "name": "getSessionParams",
+      "kind": "method",
+      "static": false,
+      "async": false,
+      "start_utf8": 1157229,
+      "end_utf8": 1157663,
+      "sha256": "904b4f7618952a9963fccc3ac8a4cc91a37e923716305db4ab12b45a5b4b9fa5"
+    }
+  ],
+  "schema": [
+    {
+      "field": "browser_id",
+      "label": "absent",
+      "payload": {
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "browser_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "browser_id",
+      "label": "null",
+      "payload": {
+        "browser_id": null,
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "browser_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "browser_id",
+      "label": "false",
+      "payload": {
+        "browser_id": false,
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "browser_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "browser_id",
+      "label": "zero",
+      "payload": {
+        "browser_id": 0,
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "browser_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "browser_id",
+      "label": "positive",
+      "payload": {
+        "browser_id": 1,
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "browser_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "browser_id",
+      "label": "fraction",
+      "payload": {
+        "browser_id": 1.5,
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "browser_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "browser_id",
+      "label": "empty",
+      "payload": {
+        "browser_id": "",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": null
+        }
+      }
+    },
+    {
+      "field": "browser_id",
+      "label": "text",
+      "payload": {
+        "browser_id": "text",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "text",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": null
+        }
+      }
+    },
+    {
+      "field": "browser_id",
+      "label": "object",
+      "payload": {
+        "browser_id": {},
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "browser_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "browser_id",
+      "label": "array",
+      "payload": {
+        "browser_id": [],
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "browser_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "browser_id",
+      "label": "large",
+      "payload": {
+        "browser_id": 1e+100,
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "browser_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tab_id",
+      "label": "absent",
+      "payload": {
+        "browser_id": "owned",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tab_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tab_id",
+      "label": "null",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": null,
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tab_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tab_id",
+      "label": "false",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": false,
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tab_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tab_id",
+      "label": "zero",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": 0,
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tab_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tab_id",
+      "label": "positive",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": 1,
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tab_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tab_id",
+      "label": "fraction",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": 1.5,
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tab_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tab_id",
+      "label": "empty",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": null
+        }
+      }
+    },
+    {
+      "field": "tab_id",
+      "label": "text",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "text",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "text",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": null
+        }
+      }
+    },
+    {
+      "field": "tab_id",
+      "label": "object",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": {},
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tab_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tab_id",
+      "label": "array",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": [],
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tab_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tab_id",
+      "label": "large",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": 1e+100,
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tab_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_name",
+      "label": "absent",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_name"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_name",
+      "label": "null",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": null,
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_name"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_name",
+      "label": "false",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": false,
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_name"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_name",
+      "label": "zero",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": 0,
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_name"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_name",
+      "label": "positive",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": 1,
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_name"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_name",
+      "label": "fraction",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": 1.5,
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_name"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_name",
+      "label": "empty",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "",
+          "registration_id": "r1",
+          "input": null
+        }
+      }
+    },
+    {
+      "field": "tool_name",
+      "label": "text",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "text",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "text",
+          "registration_id": "r1",
+          "input": null
+        }
+      }
+    },
+    {
+      "field": "tool_name",
+      "label": "object",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": {},
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_name"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_name",
+      "label": "array",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": [],
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_name"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_name",
+      "label": "large",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": 1e+100,
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_name"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "registration_id",
+      "label": "absent",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "registration_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "registration_id",
+      "label": "null",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": null,
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "registration_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "registration_id",
+      "label": "false",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": false,
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "registration_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "registration_id",
+      "label": "zero",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": 0,
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "registration_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "registration_id",
+      "label": "positive",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": 1,
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "registration_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "registration_id",
+      "label": "fraction",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": 1.5,
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "registration_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "registration_id",
+      "label": "empty",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "",
+        "input": null
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "",
+          "input": null
+        }
+      }
+    },
+    {
+      "field": "registration_id",
+      "label": "text",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "text",
+        "input": null
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "text",
+          "input": null
+        }
+      }
+    },
+    {
+      "field": "registration_id",
+      "label": "object",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": {},
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "registration_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "registration_id",
+      "label": "array",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": [],
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "registration_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "registration_id",
+      "label": "large",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": 1e+100,
+        "input": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "registration_id"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "input",
+      "label": "absent",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1"
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "r1"
+        }
+      }
+    },
+    {
+      "field": "input",
+      "label": "null",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": null
+        }
+      }
+    },
+    {
+      "field": "input",
+      "label": "false",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": false
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": false
+        }
+      }
+    },
+    {
+      "field": "input",
+      "label": "zero",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": 0
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": 0
+        }
+      }
+    },
+    {
+      "field": "input",
+      "label": "positive",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": 1
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": 1
+        }
+      }
+    },
+    {
+      "field": "input",
+      "label": "fraction",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": 1.5
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": 1.5
+        }
+      }
+    },
+    {
+      "field": "input",
+      "label": "empty",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": ""
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": ""
+        }
+      }
+    },
+    {
+      "field": "input",
+      "label": "text",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": "text"
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": "text"
+        }
+      }
+    },
+    {
+      "field": "input",
+      "label": "object",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": {}
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": {}
+        }
+      }
+    },
+    {
+      "field": "input",
+      "label": "array",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": []
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": []
+        }
+      }
+    },
+    {
+      "field": "input",
+      "label": "large",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": 1e+100
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": 1e+100
+        }
+      }
+    },
+    {
+      "field": "tool_title",
+      "label": "absent",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": null
+        }
+      }
+    },
+    {
+      "field": "tool_title",
+      "label": "null",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_title": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_title"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_title",
+      "label": "false",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_title": false
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_title"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_title",
+      "label": "zero",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_title": 0
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_title"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_title",
+      "label": "positive",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_title": 1
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_title"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_title",
+      "label": "fraction",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_title": 1.5
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_title"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_title",
+      "label": "empty",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_title": ""
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "tool_title": "",
+          "registration_id": "r1",
+          "input": null
+        }
+      }
+    },
+    {
+      "field": "tool_title",
+      "label": "text",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_title": "text"
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "tool_title": "text",
+          "registration_id": "r1",
+          "input": null
+        }
+      }
+    },
+    {
+      "field": "tool_title",
+      "label": "object",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_title": {}
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_title"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_title",
+      "label": "array",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_title": []
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_title"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_title",
+      "label": "large",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_title": 1e+100
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_title"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_description",
+      "label": "absent",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": null
+        }
+      }
+    },
+    {
+      "field": "tool_description",
+      "label": "null",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_description": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_description"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_description",
+      "label": "false",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_description": false
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_description"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_description",
+      "label": "zero",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_description": 0
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_description"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_description",
+      "label": "positive",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_description": 1
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_description"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_description",
+      "label": "fraction",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_description": 1.5
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_description"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_description",
+      "label": "empty",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_description": ""
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "tool_description": "",
+          "registration_id": "r1",
+          "input": null
+        }
+      }
+    },
+    {
+      "field": "tool_description",
+      "label": "text",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_description": "text"
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "tool_description": "text",
+          "registration_id": "r1",
+          "input": null
+        }
+      }
+    },
+    {
+      "field": "tool_description",
+      "label": "object",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_description": {}
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_description"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_description",
+      "label": "array",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_description": []
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_description"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "tool_description",
+      "label": "large",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "tool_description": 1e+100
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "tool_description"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "timeout_ms",
+      "label": "absent",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": null
+        }
+      }
+    },
+    {
+      "field": "timeout_ms",
+      "label": "null",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "timeout_ms": null
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "timeout_ms"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "timeout_ms",
+      "label": "false",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "timeout_ms": false
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "timeout_ms"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "timeout_ms",
+      "label": "zero",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "timeout_ms": 0
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "timeout_ms"
+            ],
+            "code": "too_small"
+          }
+        ]
+      }
+    },
+    {
+      "field": "timeout_ms",
+      "label": "positive",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "timeout_ms": 1
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": null,
+          "timeout_ms": 1
+        }
+      }
+    },
+    {
+      "field": "timeout_ms",
+      "label": "fraction",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "timeout_ms": 1.5
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "timeout_ms"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "timeout_ms",
+      "label": "empty",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "timeout_ms": ""
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "timeout_ms"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "timeout_ms",
+      "label": "text",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "timeout_ms": "text"
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "timeout_ms"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "timeout_ms",
+      "label": "object",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "timeout_ms": {}
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "timeout_ms"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "timeout_ms",
+      "label": "array",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "timeout_ms": []
+      },
+      "observed": {
+        "accepted": false,
+        "issues": [
+          {
+            "path": [
+              "timeout_ms"
+            ],
+            "code": "invalid_type"
+          }
+        ]
+      }
+    },
+    {
+      "field": "timeout_ms",
+      "label": "large",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "timeout_ms": 1e+100
+      },
+      "observed": {
+        "accepted": true,
+        "parsed": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "registration_id": "r1",
+          "input": null,
+          "timeout_ms": 1e+100
+        }
+      }
+    },
+    {
+      "field": "extra-aliases",
+      "payload": {
+        "browser_id": "owned",
+        "tab_id": "1",
+        "tool_name": "echo",
+        "registration_id": "r1",
+        "input": null,
+        "browser": "foreign",
+        "tab": "other",
+        "name": "other",
+        "registrationId": "other",
+        "arguments": {
+          "unexpected": true
+        },
+        "timeoutMs": 0,
+        "tool_title": "caller",
+        "extra": "drop"
+      },
+      "observed": {
+        "success": true,
+        "data": {
+          "browser_id": "owned",
+          "tab_id": "1",
+          "tool_name": "echo",
+          "tool_title": "caller",
+          "registration_id": "r1",
+          "input": null
+        }
+      }
+    }
+  ],
+  "session": [
+    {
+      "metadata": null,
+      "observed": {
+        "error": "Missing required browser session_id"
+      }
+    },
+    {
+      "metadata": {
+        "session_id": "a"
+      },
+      "observed": {
+        "error": "Missing required browser turn_id"
+      }
+    },
+    {
+      "metadata": {
+        "session_id": "a",
+        "turn_id": "t1"
+      },
+      "observed": {
+        "value": {
+          "session_id": "a",
+          "turn_id": "t1",
+          "session_context": "live"
+        }
+      }
+    },
+    {
+      "metadata": {
+        "session_id": "a",
+        "turn_id": "t2"
+      },
+      "observed": {
+        "value": {
+          "session_id": "a",
+          "turn_id": "t2",
+          "session_context": "live"
+        }
+      }
+    },
+    {
+      "metadata": {
+        "session_id": "a",
+        "turn_id": "t3",
+        "thread_source": "subagent",
+        "thread_id": "sub"
+      },
+      "observed": {
+        "value": {
+          "session_id": "sub",
+          "turn_id": "t3",
+          "session_context": "live"
+        }
+      }
+    },
+    {
+      "metadata": {
+        "session_id": "a",
+        "turn_id": "t4",
+        "thread_source": "subagent"
+      },
+      "observed": {
+        "value": {
+          "session_id": "a",
+          "turn_id": "t4",
+          "session_context": "live"
+        }
+      }
+    },
+    {
+      "metadata": null,
+      "observed": {
+        "value": {
+          "session_id": "a",
+          "turn_id": "t4",
+          "session_context": "cached"
+        }
+      }
+    },
+    {
+      "metadata": {},
+      "observed": {
+        "error": "Missing required browser session_id"
+      }
+    },
+    {
+      "metadata": {
+        "session_id": "",
+        "turn_id": ""
+      },
+      "observed": {
+        "value": {
+          "session_id": "",
+          "turn_id": "",
+          "session_context": "live"
+        }
+      }
+    },
+    {
+      "metadata": null,
+      "observed": {
+        "value": {
+          "session_id": "",
+          "turn_id": "",
+          "session_context": "cached"
+        }
+      }
+    }
+  ]
+}

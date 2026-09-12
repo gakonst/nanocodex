@@ -14,6 +14,20 @@
       "dependsOn": ["nanocodex-connect-protocol#build"],
       "outputs": []
     },
+    "nanocodex-computer#build:runtime": {
+      "cache": false,
+      "outputs": []
+    },
+    "nanocodex-computer#test:runtime": {
+      "cache": false,
+      "outputs": []
+    },
+    "nanocodex-computer#test": {
+      "dependsOn": ["^build", "test:runtime"],
+      "cache": false,
+      "passThroughEnv": ["NANOCODEX_TEST_NATIVE_APP", "NANOCODEX_TEST_BROWSER"],
+      "outputs": []
+    },
     "nanocodex-web#build": {
       "cache": false,
       "dependsOn": ["^build"],

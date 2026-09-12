@@ -49,6 +49,7 @@ guest-runtime = [
 ]
 
 [dependencies]
+nanocodex-computer.workspace = true
 base64.workspace = true
 filetime.workspace = true
 futures-util = { workspace = true, optional = true }

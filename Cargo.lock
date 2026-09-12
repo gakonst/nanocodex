@@ -5719,6 +5719,7 @@ dependencies = [
  "nanocodex",
  "nanocodex-browser",
  "nanocodex-cli-auth",
+ "nanocodex-computer",
  "nanocodex-durability",
  "nanocodex-egress",
  "nanocodex-eval",
@@ -5812,6 +5813,18 @@ dependencies = [
  "tokio-util",
  "url",
  "zeroize",
+]
+
+[[package]]
+name = "nanocodex-computer"
+version = "0.5.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "nanocodex-oai-api",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -6145,6 +6158,7 @@ dependencies = [
  "image",
  "landlock",
  "libkrun",
+ "nanocodex-computer",
  "nanocodex-tools",
  "nix 0.31.3",
  "oci-client",
@@ -6246,6 +6260,7 @@ dependencies = [
  "nanocodex",
  "nanocodex-agent",
  "nanocodex-cli-auth",
+ "nanocodex-computer",
  "nanocodex-hand",
  "nanocodex-managed",
  "nanocodex-observability",

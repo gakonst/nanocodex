@@ -1,0 +1,9 @@
+# Vendored native Promise reaction hooks
+
+Upstream is crates.io `rquickjs-sys` 0.12.2, copied from the Cargo-verified local package. `SKYRE-UPSTREAM.json` records every original file hash before modification; `SKYRE-reaction-hooks.patch` is the complete C change. Original MIT notices are retained in `LICENSE` and `quickjs/LICENSE`; no private vendor code is included.
+
+Upstream calls `JS_PROMISE_HOOK_BEFORE/AFTER` for thenable resolution, but omits ordinary Promise reactions (including native async-await continuations). As a result, Rust cannot restore registration-time task identity through the public hook alone. An original-kernel/MCP comparison retains the observable prior failure in `evidence/runtime-background-timers/20260907T012353707305Z-reaction-before`.
+
+When a host Promise hook exists, `perform_promise_then` creates one internal native Promise token per reaction pair. Creation bypasses user constructors/species and invokes the existing Init hook under the registration context. The token is never returned to JavaScript. Both fulfillment and rejection records retain it, trace it during GC, and release it on every record cleanup path. Enqueued jobs retain it as their sixth argument. A reaction brackets its handler and capability resolution with Before/After; even uncatchable errors balance the hook, unless the host deliberately replaces the hook during execution. With no host hook, no extra Promise is allocated. Thenable resolution keeps upstream behavior.
+
+The Rust hook stores context in a private WeakMap. This preserves native Promise identity and async-await semantics without replacing Promise.prototype or exposing a context setter. Additional tokens are ordinary engine allocations governed by the existing heap budget. The source snapshot, platform replay and benchmark input enumerators include this whole directory; Cargo.lock alone does not pin a local path package.

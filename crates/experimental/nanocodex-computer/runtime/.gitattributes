@@ -1,0 +1,2 @@
+# Keep vendored upstream sources and patch context byte-for-byte.
+vendor/** -whitespace linguist-vendored

@@ -5,7 +5,7 @@ apk add --no-cache \
     ripgrep fd jq yq less vim tmux tree rsync zip unzip tar xz zstd \
     build-base clang cmake ninja pkgconf openssl-dev linux-headers \
     go nodejs npm pnpm uv python3 python3-dev py3-pip sqlite \
-    xvfb openbox xterm mesa-dri-gallium chromium \
+    xvfb openbox xterm mesa-dri-gallium chromium libpulse libxkbcommon \
     blender ffmpeg imagemagick inkscape libreoffice pandoc-cli \
     poppler-utils qpdf ghostscript tesseract-ocr tesseract-ocr-data-eng graphviz \
     font-dejavu font-noto font-noto-cjk font-noto-emoji \

@@ -1,0 +1,1167 @@
+{
+  "provenance": {
+    "binary": "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl",
+    "sha256": "0d6f59d5aff9db38d3bf1cad78f3b2d71daaedaefddbc00c65fa3241ce83ad7c",
+    "scope": "Pure synthetic Buffer and URL operations, no filesystem/provider/UI access",
+    "captured": "2026-09-06T21:47:15.198335+00:00"
+  },
+  "groups": [
+    {
+      "name": "numeric-0",
+      "cases": [
+        "writeUInt8(({valueOf(){return 17}}),1)/16/b",
+        "writeUInt8(({valueOf(){return 1n}}),1)/16/b",
+        "writeUInt8(({[Symbol.toPrimitive](){return 2n}}),1)/16/b",
+        "writeUInt8(({valueOf(){throw new Error('owned coercion')}}),1)/16/b",
+        "writeUInt8(({valueOf(){return Symbol('x')}}),1)/16/b",
+        "writeUInt32LE(({valueOf(){return 17}}),1)/16/b",
+        "writeUInt32LE(({valueOf(){return 1n}}),1)/16/b",
+        "writeUInt32LE(({[Symbol.toPrimitive](){return 2n}}),1)/16/b",
+        "writeUInt32LE(({valueOf(){throw new Error('owned coercion')}}),1)/16/b",
+        "writeUInt32LE(({valueOf(){return Symbol('x')}}),1)/16/b",
+        "writeFloatBE(({valueOf(){return 17}}),1)/16/b",
+        "writeFloatBE(({valueOf(){return 1n}}),1)/16/b",
+        "writeFloatBE(({[Symbol.toPrimitive](){return 2n}}),1)/16/b",
+        "writeFloatBE(({valueOf(){throw new Error('owned coercion')}}),1)/16/b",
+        "writeFloatBE(({valueOf(){return Symbol('x')}}),1)/16/b",
+        "writeDoubleLE(({valueOf(){return 17}}),1)/16/b",
+        "writeDoubleLE(({valueOf(){return 1n}}),1)/16/b",
+        "writeDoubleLE(({[Symbol.toPrimitive](){return 2n}}),1)/16/b",
+        "writeDoubleLE(({valueOf(){throw new Error('owned coercion')}}),1)/16/b",
+        "writeDoubleLE(({valueOf(){return Symbol('x')}}),1)/16/b",
+        "writeBigInt64LE(({valueOf(){return 17}}),1)/16/b",
+        "writeBigInt64LE(({valueOf(){return 1n}}),1)/16/b",
+        "writeBigInt64LE(({[Symbol.toPrimitive](){return 2n}}),1)/16/b",
+        "writeBigInt64LE(({valueOf(){throw new Error('owned coercion')}}),1)/16/b",
+        "writeBigInt64LE(({valueOf(){return Symbol('x')}}),1)/16/b",
+        "writeBigUInt64BE(({valueOf(){return 17}}),1)/16/b",
+        "writeBigUInt64BE(({valueOf(){return 1n}}),1)/16/b",
+        "writeBigUInt64BE(({[Symbol.toPrimitive](){return 2n}}),1)/16/b",
+        "writeBigUInt64BE(({valueOf(){throw new Error('owned coercion')}}),1)/16/b",
+        "writeBigUInt64BE(({valueOf(){return Symbol('x')}}),1)/16/b",
+        "readUInt8(0)/16/null",
+        "readUInt8(0)/16/undefined",
+        "readUInt32LE(0)/16/null",
+        "readUInt32LE(0)/16/undefined",
+        "readFloatLE(0)/16/null",
+        "readFloatLE(0)/16/undefined",
+        "readBigUInt64LE(0)/16/null",
+        "readBigUInt64LE(0)/16/undefined",
+        "writeUInt8(1,0)/16/null",
+        "writeUInt8(1,0)/16/undefined",
+        "writeUInt32BE(1,0)/16/null",
+        "writeUInt32BE(1,0)/16/undefined",
+        "writeDoubleLE(1,0)/16/null",
+        "writeDoubleLE(1,0)/16/undefined",
+        "writeBigInt64LE(1n,0)/16/null",
+        "writeBigInt64LE(1n,0)/16/undefined",
+        "readUint8(0,3)/16/b",
+        "readUint16LE(0,3)/16/b",
+        "readUint32BE(0,3)/16/b",
+        "readUintLE(0,3)/16/b",
+        "readBigUint64LE(0,3)/16/b",
+        "writeUint8(1,0,3)/16/b",
+        "writeUint16LE(1,0,3)/16/b",
+        "writeUint32BE(1,0,3)/16/b",
+        "writeUintLE(1,0,3)/16/b",
+        "writeBigUint64BE(1n,0)/16/b",
+        "numeric method metadata",
+        "BigUInt64LE repeatedcoercion false",
+        "BigUInt64LE repeatedcoercion true",
+        "BigInt64LE repeatedcoercion false",
+        "BigInt64LE repeatedcoercion true",
+        "BigUInt64BE repeatedcoercion false",
+        "BigUInt64BE repeatedcoercion true",
+        "BigInt64BE repeatedcoercion false",
+        "BigInt64BE repeatedcoercion true"
+      ],
+      "code": "const {Buffer}=await import('node:buffer');const url=await import('node:url');const urlAlias=await import('url');\nconst normalize=value=>typeof value==='bigint'?{bigint:String(value)}:typeof value==='number'&&(!Number.isFinite(value)||Object.is(value,-0))?{number:String(value),negativeZero:Object.is(value,-0)}:Buffer.isBuffer(value)?{buffer:value.toString('hex')}:value;\nconst failure=error=>({name:error.name,code:error.code??null,message:error.message});\nnodeRepl.write(JSON.stringify([(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeUInt8\"].call(b,({valueOf(){return 17}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeUInt8\"].call(b,({valueOf(){return 1n}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeUInt8\"].call(b,({[Symbol.toPrimitive](){return 2n}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeUInt8\"].call(b,({valueOf(){throw new Error('owned coercion')}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeUInt8\"].call(b,({valueOf(){return Symbol('x')}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeUInt32LE\"].call(b,({valueOf(){return 17}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeUInt32LE\"].call(b,({valueOf(){return 1n}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeUInt32LE\"].call(b,({[Symbol.toPrimitive](){return 2n}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeUInt32LE\"].call(b,({valueOf(){throw new Error('owned coercion')}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeUInt32LE\"].call(b,({valueOf(){return Symbol('x')}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeFloatBE\"].call(b,({valueOf(){return 17}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeFloatBE\"].call(b,({valueOf(){return 1n}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeFloatBE\"].call(b,({[Symbol.toPrimitive](){return 2n}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeFloatBE\"].call(b,({valueOf(){throw new Error('owned coercion')}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeFloatBE\"].call(b,({valueOf(){return Symbol('x')}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeDoubleLE\"].call(b,({valueOf(){return 17}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeDoubleLE\"].call(b,({valueOf(){return 1n}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeDoubleLE\"].call(b,({[Symbol.toPrimitive](){return 2n}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeDoubleLE\"].call(b,({valueOf(){throw new Error('owned coercion')}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeDoubleLE\"].call(b,({valueOf(){return Symbol('x')}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeBigInt64LE\"].call(b,({valueOf(){return 17}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeBigInt64LE\"].call(b,({valueOf(){return 1n}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeBigInt64LE\"].call(b,({[Symbol.toPrimitive](){return 2n}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeBigInt64LE\"].call(b,({valueOf(){throw new Error('owned coercion')}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeBigInt64LE\"].call(b,({valueOf(){return Symbol('x')}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeBigUInt64BE\"].call(b,({valueOf(){return 17}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeBigUInt64BE\"].call(b,({valueOf(){return 1n}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeBigUInt64BE\"].call(b,({[Symbol.toPrimitive](){return 2n}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeBigUInt64BE\"].call(b,({valueOf(){throw new Error('owned coercion')}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeBigUInt64BE\"].call(b,({valueOf(){return Symbol('x')}}),1)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"readUInt8\"].call(null,0)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"readUInt8\"].call(undefined,0)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"readUInt32LE\"].call(null,0)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"readUInt32LE\"].call(undefined,0)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"readFloatLE\"].call(null,0)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"readFloatLE\"].call(undefined,0)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"readBigUInt64LE\"].call(null,0)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"readBigUInt64LE\"].call(undefined,0)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeUInt8\"].call(null,1,0)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeUInt8\"].call(undefined,1,0)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeUInt32BE\"].call(null,1,0)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeUInt32BE\"].call(undefined,1,0)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeDoubleLE\"].call(null,1,0)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeDoubleLE\"].call(undefined,1,0)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeBigInt64LE\"].call(null,1n,0)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeBigInt64LE\"].call(undefined,1n,0)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"readUint8\"].call(b,0,3)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"readUint16LE\"].call(b,0,3)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"readUint32BE\"].call(b,0,3)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"readUintLE\"].call(b,0,3)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"readBigUint64LE\"].call(b,0,3)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeUint8\"].call(b,1,0,3)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeUint16LE\"].call(b,1,0,3)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeUint32BE\"].call(b,1,0,3)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeUintLE\"].call(b,1,0,3)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),(()=>{const b=Buffer.from(Array.from({length:16},(_,i)=>(i*31+17)&255));try{return {value:normalize(Buffer.prototype[\"writeBigUint64BE\"].call(b,1n,0)),bytes:b.toString('hex')}}catch(error){return {error:failure(error),bytes:b.toString('hex')}}})(),({value:Object.getOwnPropertyNames(Buffer.prototype).filter(name=>/^(read|write)(U?Int|Uint|Float|Double|Big)/.test(name)).sort().map(name=>[name,Buffer.prototype[name].name,Buffer.prototype[name].length,Object.getOwnPropertyDescriptor(Buffer.prototype,name).enumerable])}),(()=>{let calls=0;const b=Buffer.alloc(8);const value={valueOf(){calls++;if(false&&calls===4)throw new Error('fourth conversion');return BigInt(calls)*0x100000001n}};let result;try{result={value:b.writeBigUInt64LE(value)}}catch(error){result={error:failure(error)}}return {...result,calls,bytes:b.toString('hex')}})(),(()=>{let calls=0;const b=Buffer.alloc(8);const value={valueOf(){calls++;if(true&&calls===4)throw new Error('fourth conversion');return BigInt(calls)*0x100000001n}};let result;try{result={value:b.writeBigUInt64LE(value)}}catch(error){result={error:failure(error)}}return {...result,calls,bytes:b.toString('hex')}})(),(()=>{let calls=0;const b=Buffer.alloc(8);const value={valueOf(){calls++;if(false&&calls===4)throw new Error('fourth conversion');return BigInt(calls)*0x100000001n}};let result;try{result={value:b.writeBigInt64LE(value)}}catch(error){result={error:failure(error)}}return {...result,calls,bytes:b.toString('hex')}})(),(()=>{let calls=0;const b=Buffer.alloc(8);const value={valueOf(){calls++;if(true&&calls===4)throw new Error('fourth conversion');return BigInt(calls)*0x100000001n}};let result;try{result={value:b.writeBigInt64LE(value)}}catch(error){result={error:failure(error)}}return {...result,calls,bytes:b.toString('hex')}})(),(()=>{let calls=0;const b=Buffer.alloc(8);const value={valueOf(){calls++;if(false&&calls===4)throw new Error('fourth conversion');return BigInt(calls)*0x100000001n}};let result;try{result={value:b.writeBigUInt64BE(value)}}catch(error){result={error:failure(error)}}return {...result,calls,bytes:b.toString('hex')}})(),(()=>{let calls=0;const b=Buffer.alloc(8);const value={valueOf(){calls++;if(true&&calls===4)throw new Error('fourth conversion');return BigInt(calls)*0x100000001n}};let result;try{result={value:b.writeBigUInt64BE(value)}}catch(error){result={error:failure(error)}}return {...result,calls,bytes:b.toString('hex')}})(),(()=>{let calls=0;const b=Buffer.alloc(8);const value={valueOf(){calls++;if(false&&calls===4)throw new Error('fourth conversion');return BigInt(calls)*0x100000001n}};let result;try{result={value:b.writeBigInt64BE(value)}}catch(error){result={error:failure(error)}}return {...result,calls,bytes:b.toString('hex')}})(),(()=>{let calls=0;const b=Buffer.alloc(8);const value={valueOf(){calls++;if(true&&calls===4)throw new Error('fourth conversion');return BigInt(calls)*0x100000001n}};let result;try{result={value:b.writeBigInt64BE(value)}}catch(error){result={error:failure(error)}}return {...result,calls,bytes:b.toString('hex')}})()]));",
+      "expected": [
+        {
+          "value": 2,
+          "bytes": "11114f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot convert a BigInt value to a number"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot convert a BigInt value to a number"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "Error",
+            "code": null,
+            "message": "owned coercion"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot convert a Symbol value to a number"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "value": 5,
+          "bytes": "1111000000accbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot convert a BigInt value to a number"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot convert a BigInt value to a number"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "Error",
+            "code": null,
+            "message": "owned coercion"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot convert a Symbol value to a number"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "value": 5,
+          "bytes": "1141880000accbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot convert a BigInt value to a number"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot convert a BigInt value to a number"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "Error",
+            "code": null,
+            "message": "owned coercion"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot convert a Symbol value to a number"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "value": 9,
+          "bytes": "11000000000000314028476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot convert a BigInt value to a number"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot convert a BigInt value to a number"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "Error",
+            "code": null,
+            "message": "owned coercion"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot convert a Symbol value to a number"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot mix BigInt and other types, use explicit conversions"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "value": 9,
+          "bytes": "11010000000000000028476685a4c3e2"
+        },
+        {
+          "value": 9,
+          "bytes": "11020000000000000028476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "Error",
+            "code": null,
+            "message": "owned coercion"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot convert a Symbol value to a number"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot mix BigInt and other types, use explicit conversions"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "value": 9,
+          "bytes": "11000000000000000128476685a4c3e2"
+        },
+        {
+          "value": 9,
+          "bytes": "11000000000000000228476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "Error",
+            "code": null,
+            "message": "owned coercion"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot convert a Symbol value to a number"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot read properties of null (reading '0')"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot read properties of undefined (reading '0')"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot read properties of null (reading '0')"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot read properties of undefined (reading '0')"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot read properties of null (reading '0')"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot read properties of undefined (reading '0')"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot read properties of null (reading '0')"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot read properties of undefined (reading '0')"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot read properties of null (reading '0')"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot read properties of undefined (reading '0')"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot read properties of null (reading '0')"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot read properties of undefined (reading '0')"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot read properties of null (reading '0')"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot read properties of undefined (reading '0')"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot read properties of null (reading '0')"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": null,
+            "message": "Cannot read properties of undefined (reading '0')"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "value": 17,
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "value": 12305,
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "value": 288378734,
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "value": 5189649,
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "value": {
+            "bigint": "16918806148588449809"
+          },
+          "bytes": "11304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "value": 1,
+          "bytes": "01304f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "value": 2,
+          "bytes": "01004f6e8daccbea0928476685a4c3e2"
+        },
+        {
+          "value": 4,
+          "bytes": "000000018daccbea0928476685a4c3e2"
+        },
+        {
+          "value": 3,
+          "bytes": "0100006e8daccbea0928476685a4c3e2"
+        },
+        {
+          "value": 8,
+          "bytes": "00000000000000010928476685a4c3e2"
+        },
+        {
+          "value": [
+            [
+              "readBigInt64BE",
+              "readBigInt64BE",
+              0,
+              true
+            ],
+            [
+              "readBigInt64LE",
+              "readBigInt64LE",
+              0,
+              true
+            ],
+            [
+              "readBigUInt64BE",
+              "readBigUInt64BE",
+              0,
+              true
+            ],
+            [
+              "readBigUInt64LE",
+              "readBigUInt64LE",
+              0,
+              true
+            ],
+            [
+              "readBigUint64BE",
+              "readBigUInt64BE",
+              0,
+              true
+            ],
+            [
+              "readBigUint64LE",
+              "readBigUInt64LE",
+              0,
+              true
+            ],
+            [
+              "readDoubleBE",
+              "readDoubleBackwards",
+              0,
+              true
+            ],
+            [
+              "readDoubleLE",
+              "readDoubleForwards",
+              0,
+              true
+            ],
+            [
+              "readFloatBE",
+              "readFloatBackwards",
+              0,
+              true
+            ],
+            [
+              "readFloatLE",
+              "readFloatForwards",
+              0,
+              true
+            ],
+            [
+              "readInt16BE",
+              "",
+              1,
+              true
+            ],
+            [
+              "readInt16LE",
+              "",
+              1,
+              true
+            ],
+            [
+              "readInt32BE",
+              "",
+              1,
+              true
+            ],
+            [
+              "readInt32LE",
+              "",
+              1,
+              true
+            ],
+            [
+              "readInt8",
+              "",
+              1,
+              true
+            ],
+            [
+              "readIntBE",
+              "readIntBE",
+              2,
+              true
+            ],
+            [
+              "readIntLE",
+              "readIntLE",
+              2,
+              true
+            ],
+            [
+              "readUInt16BE",
+              "",
+              1,
+              true
+            ],
+            [
+              "readUInt16LE",
+              "",
+              1,
+              true
+            ],
+            [
+              "readUInt32BE",
+              "",
+              1,
+              true
+            ],
+            [
+              "readUInt32LE",
+              "",
+              1,
+              true
+            ],
+            [
+              "readUInt8",
+              "",
+              1,
+              true
+            ],
+            [
+              "readUIntBE",
+              "readUIntBE",
+              2,
+              true
+            ],
+            [
+              "readUIntLE",
+              "readUIntLE",
+              2,
+              true
+            ],
+            [
+              "readUint16BE",
+              "",
+              1,
+              true
+            ],
+            [
+              "readUint16LE",
+              "",
+              1,
+              true
+            ],
+            [
+              "readUint32BE",
+              "",
+              1,
+              true
+            ],
+            [
+              "readUint32LE",
+              "",
+              1,
+              true
+            ],
+            [
+              "readUint8",
+              "",
+              1,
+              true
+            ],
+            [
+              "readUintBE",
+              "readUIntBE",
+              2,
+              true
+            ],
+            [
+              "readUintLE",
+              "readUIntLE",
+              2,
+              true
+            ],
+            [
+              "writeBigInt64BE",
+              "writeBigInt64BE",
+              1,
+              true
+            ],
+            [
+              "writeBigInt64LE",
+              "writeBigInt64LE",
+              1,
+              true
+            ],
+            [
+              "writeBigUInt64BE",
+              "writeBigUInt64BE",
+              1,
+              true
+            ],
+            [
+              "writeBigUInt64LE",
+              "writeBigUInt64LE",
+              1,
+              true
+            ],
+            [
+              "writeBigUint64BE",
+              "writeBigUInt64BE",
+              1,
+              true
+            ],
+            [
+              "writeBigUint64LE",
+              "writeBigUInt64LE",
+              1,
+              true
+            ],
+            [
+              "writeDoubleBE",
+              "writeDoubleBackwards",
+              1,
+              true
+            ],
+            [
+              "writeDoubleLE",
+              "writeDoubleForwards",
+              1,
+              true
+            ],
+            [
+              "writeFloatBE",
+              "writeFloatBackwards",
+              1,
+              true
+            ],
+            [
+              "writeFloatLE",
+              "writeFloatForwards",
+              1,
+              true
+            ],
+            [
+              "writeInt16BE",
+              "writeInt16BE",
+              1,
+              true
+            ],
+            [
+              "writeInt16LE",
+              "writeInt16LE",
+              1,
+              true
+            ],
+            [
+              "writeInt32BE",
+              "writeInt32BE",
+              1,
+              true
+            ],
+            [
+              "writeInt32LE",
+              "writeInt32LE",
+              1,
+              true
+            ],
+            [
+              "writeInt8",
+              "writeInt8",
+              1,
+              true
+            ],
+            [
+              "writeIntBE",
+              "writeIntBE",
+              3,
+              true
+            ],
+            [
+              "writeIntLE",
+              "writeIntLE",
+              3,
+              true
+            ],
+            [
+              "writeUInt16BE",
+              "writeUInt16BE",
+              1,
+              true
+            ],
+            [
+              "writeUInt16LE",
+              "writeUInt16LE",
+              1,
+              true
+            ],
+            [
+              "writeUInt32BE",
+              "writeUInt32BE",
+              1,
+              true
+            ],
+            [
+              "writeUInt32LE",
+              "writeUInt32LE",
+              1,
+              true
+            ],
+            [
+              "writeUInt8",
+              "writeUInt8",
+              1,
+              true
+            ],
+            [
+              "writeUIntBE",
+              "writeUIntBE",
+              3,
+              true
+            ],
+            [
+              "writeUIntLE",
+              "writeUIntLE",
+              3,
+              true
+            ],
+            [
+              "writeUint16BE",
+              "writeUInt16BE",
+              1,
+              true
+            ],
+            [
+              "writeUint16LE",
+              "writeUInt16LE",
+              1,
+              true
+            ],
+            [
+              "writeUint32BE",
+              "writeUInt32BE",
+              1,
+              true
+            ],
+            [
+              "writeUint32LE",
+              "writeUInt32LE",
+              1,
+              true
+            ],
+            [
+              "writeUint8",
+              "writeUInt8",
+              1,
+              true
+            ],
+            [
+              "writeUintBE",
+              "writeUIntBE",
+              3,
+              true
+            ],
+            [
+              "writeUintLE",
+              "writeUIntLE",
+              3,
+              true
+            ]
+          ]
+        },
+        {
+          "value": 8,
+          "calls": 4,
+          "bytes": "0300000004000000"
+        },
+        {
+          "error": {
+            "name": "Error",
+            "code": null,
+            "message": "fourth conversion"
+          },
+          "calls": 4,
+          "bytes": "0300000000000000"
+        },
+        {
+          "value": 8,
+          "calls": 4,
+          "bytes": "0300000004000000"
+        },
+        {
+          "error": {
+            "name": "Error",
+            "code": null,
+            "message": "fourth conversion"
+          },
+          "calls": 4,
+          "bytes": "0300000000000000"
+        },
+        {
+          "value": 8,
+          "calls": 4,
+          "bytes": "0000000400000003"
+        },
+        {
+          "error": {
+            "name": "Error",
+            "code": null,
+            "message": "fourth conversion"
+          },
+          "calls": 4,
+          "bytes": "0000000000000003"
+        },
+        {
+          "value": 8,
+          "calls": 4,
+          "bytes": "0000000400000003"
+        },
+        {
+          "error": {
+            "name": "Error",
+            "code": null,
+            "message": "fourth conversion"
+          },
+          "calls": 4,
+          "bytes": "0000000000000003"
+        }
+      ]
+    },
+    {
+      "name": "url-0",
+      "cases": [
+        "domainToASCII'a@b'",
+        "domainToASCII'a:443'",
+        "domainToASCII'a?b'",
+        "domainToASCII'a#b'",
+        "domainToASCII'a\\b'",
+        "domainToASCII'http://foo'",
+        "domainToASCII'  a'",
+        "domainToASCII'a\\n'",
+        "domainToASCII'[::1]:80'",
+        "domainToASCII({toString(){return 'mañana.com'}})",
+        "domainToUnicode'a@b'",
+        "domainToUnicode'a:443'",
+        "domainToUnicode'a?b'",
+        "domainToUnicode'a#b'",
+        "domainToUnicode'a\\b'",
+        "domainToUnicode'http://foo'",
+        "domainToUnicode'  a'",
+        "domainToUnicode'a\\n'",
+        "domainToUnicode'[::1]:80'",
+        "domainToUnicode({toString(){return 'mañana.com'}})",
+        "fileURLToPath'file:///tmp/%2F%00%FF'false",
+        "fileURLToPathBuffer'file:///tmp/%2F%00%FF'false",
+        "fileURLToPath'file:///tmp/%2F%00%FF'true",
+        "fileURLToPathBuffer'file:///tmp/%2F%00%FF'true",
+        "fileURLToPath'file:///C:/a%2Fb%5Cc'false",
+        "fileURLToPathBuffer'file:///C:/a%2Fb%5Cc'false",
+        "fileURLToPath'file:///C:/a%2Fb%5Cc'true",
+        "fileURLToPathBuffer'file:///C:/a%2Fb%5Cc'true",
+        "fileURLToPath'file:///tmp/%xy'false",
+        "fileURLToPathBuffer'file:///tmp/%xy'false",
+        "fileURLToPath'file:///tmp/%xy'true",
+        "fileURLToPathBuffer'file:///tmp/%xy'true",
+        "fileURLToPath'file:///C:/%F0%9F%A7%AA'false",
+        "fileURLToPathBuffer'file:///C:/%F0%9F%A7%AA'false",
+        "fileURLToPath'file:///C:/%F0%9F%A7%AA'true",
+        "fileURLToPathBuffer'file:///C:/%F0%9F%A7%AA'true",
+        "fileURLToPath'file://[::1]/share/a'false",
+        "fileURLToPathBuffer'file://[::1]/share/a'false",
+        "fileURLToPath'file://[::1]/share/a'true",
+        "fileURLToPathBuffer'file://[::1]/share/a'true",
+        "format_extended'https://example.com'",
+        "format_extended'http://example.com:80/a/../b'",
+        "format_extended'mailto:ü@example.com'",
+        "format_extended'HTTP://EXAMPLE.COM/a'",
+        "format_extended'/a b?c d'",
+        "format_extended'//example.com/a b'",
+        "format_extended'https://user:pass@example.com/a#x y'",
+        "format_extended'file:///a/../b'",
+        "format_extended{protocol:'file:',pathname:'/tmp/a'}",
+        "format_extended{protocol:'http:',hostname:'[::1]',pathname:'/'}",
+        "format_options{auth:null,search:null,fragment:null}",
+        "format_options{unicode:false}",
+        "format_options{auth:\"\",search:\"\",fragment:\"\"}"
+      ],
+      "code": "const {Buffer}=await import('node:buffer');const url=await import('node:url');const urlAlias=await import('url');\nconst normalize=value=>typeof value==='bigint'?{bigint:String(value)}:typeof value==='number'&&(!Number.isFinite(value)||Object.is(value,-0))?{number:String(value),negativeZero:Object.is(value,-0)}:Buffer.isBuffer(value)?{buffer:value.toString('hex')}:value;\nconst failure=error=>({name:error.name,code:error.code??null,message:error.message});\nnodeRepl.write(JSON.stringify([(()=>{try{return {value:normalize(url.domainToASCII('a@b'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToASCII('a:443'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToASCII('a?b'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToASCII('a#b'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToASCII('a\\b'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToASCII('http://foo'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToASCII('  a'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToASCII('a\\n'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToASCII('[::1]:80'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToASCII(({toString(){return 'mañana.com'}})))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToUnicode('a@b'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToUnicode('a:443'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToUnicode('a?b'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToUnicode('a#b'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToUnicode('a\\b'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToUnicode('http://foo'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToUnicode('  a'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToUnicode('a\\n'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToUnicode('[::1]:80'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.domainToUnicode(({toString(){return 'mañana.com'}})))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPath('file:///tmp/%2F%00%FF',{windows:false}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPathBuffer('file:///tmp/%2F%00%FF',{windows:false}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPath('file:///tmp/%2F%00%FF',{windows:true}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPathBuffer('file:///tmp/%2F%00%FF',{windows:true}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPath('file:///C:/a%2Fb%5Cc',{windows:false}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPathBuffer('file:///C:/a%2Fb%5Cc',{windows:false}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPath('file:///C:/a%2Fb%5Cc',{windows:true}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPathBuffer('file:///C:/a%2Fb%5Cc',{windows:true}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPath('file:///tmp/%xy',{windows:false}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPathBuffer('file:///tmp/%xy',{windows:false}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPath('file:///tmp/%xy',{windows:true}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPathBuffer('file:///tmp/%xy',{windows:true}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPath('file:///C:/%F0%9F%A7%AA',{windows:false}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPathBuffer('file:///C:/%F0%9F%A7%AA',{windows:false}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPath('file:///C:/%F0%9F%A7%AA',{windows:true}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPathBuffer('file:///C:/%F0%9F%A7%AA',{windows:true}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPath('file://[::1]/share/a',{windows:false}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPathBuffer('file://[::1]/share/a',{windows:false}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPath('file://[::1]/share/a',{windows:true}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.fileURLToPathBuffer('file://[::1]/share/a',{windows:true}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.format('https://example.com'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.format('http://example.com:80/a/../b'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.format('mailto:ü@example.com'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.format('HTTP://EXAMPLE.COM/a'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.format('/a b?c d'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.format('//example.com/a b'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.format('https://user:pass@example.com/a#x y'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.format('file:///a/../b'))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.format({protocol:'file:',pathname:'/tmp/a'}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.format({protocol:'http:',hostname:'[::1]',pathname:'/'}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.format(new URL(\"https://a:b@xn--maana-pta.com/a?q#h\"),{auth:null,search:null,fragment:null}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.format(new URL(\"https://a:b@xn--maana-pta.com/a?q#h\"),{unicode:false}))}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize(url.format(new URL(\"https://a:b@xn--maana-pta.com/a?q#h\"),{auth:\"\",search:\"\",fragment:\"\"}))}}catch(error){return {error:failure(error)}}})()]));",
+      "expected": [
+        {
+          "value": ""
+        },
+        {
+          "value": ""
+        },
+        {
+          "value": "a"
+        },
+        {
+          "value": "a"
+        },
+        {
+          "value": ""
+        },
+        {
+          "value": ""
+        },
+        {
+          "value": ""
+        },
+        {
+          "value": "a"
+        },
+        {
+          "value": ""
+        },
+        {
+          "value": "xn--maana-pta.com"
+        },
+        {
+          "value": ""
+        },
+        {
+          "value": ""
+        },
+        {
+          "value": "a"
+        },
+        {
+          "value": "a"
+        },
+        {
+          "value": ""
+        },
+        {
+          "value": ""
+        },
+        {
+          "value": ""
+        },
+        {
+          "value": "a"
+        },
+        {
+          "value": ""
+        },
+        {
+          "value": "mañana.com"
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": "ERR_INVALID_FILE_URL_PATH",
+            "message": "File URL path must not include encoded / characters"
+          }
+        },
+        {
+          "value": {
+            "buffer": "2f746d702f2f00ff"
+          }
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": "ERR_INVALID_FILE_URL_PATH",
+            "message": "File URL path must not include encoded \\ or / characters"
+          }
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": "ERR_INVALID_FILE_URL_PATH",
+            "message": "File URL path must be absolute"
+          }
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": "ERR_INVALID_FILE_URL_PATH",
+            "message": "File URL path must not include encoded / characters"
+          }
+        },
+        {
+          "value": {
+            "buffer": "2f433a2f612f625c63"
+          }
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": "ERR_INVALID_FILE_URL_PATH",
+            "message": "File URL path must not include encoded \\ or / characters"
+          }
+        },
+        {
+          "value": {
+            "buffer": "433a5c612f625c63"
+          }
+        },
+        {
+          "error": {
+            "name": "URIError",
+            "code": null,
+            "message": "URI malformed"
+          }
+        },
+        {
+          "value": {
+            "buffer": "2f746d702f257879"
+          }
+        },
+        {
+          "error": {
+            "name": "URIError",
+            "code": null,
+            "message": "URI malformed"
+          }
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": "ERR_INVALID_FILE_URL_PATH",
+            "message": "File URL path must be absolute"
+          }
+        },
+        {
+          "value": "/C:/🧪"
+        },
+        {
+          "value": {
+            "buffer": "2f433a2ff09fa7aa"
+          }
+        },
+        {
+          "value": "C:\\🧪"
+        },
+        {
+          "value": {
+            "buffer": "433a5cf09fa7aa"
+          }
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": "ERR_INVALID_FILE_URL_HOST",
+            "message": "File URL host must be \"localhost\" or empty on darwin"
+          }
+        },
+        {
+          "error": {
+            "name": "TypeError",
+            "code": "ERR_INVALID_FILE_URL_HOST",
+            "message": "File URL host must be \"localhost\" or empty on darwin"
+          }
+        },
+        {
+          "value": "\\\\[::1]\\share\\a"
+        },
+        {
+          "value": {
+            "buffer": "5c5c5b3a3a315d5c73686172655c61"
+          }
+        },
+        {
+          "value": "https://example.com/"
+        },
+        {
+          "value": "http://example.com:80/a/../b"
+        },
+        {
+          "value": "mailto:%C3%BC@example.com"
+        },
+        {
+          "value": "http://example.com/a"
+        },
+        {
+          "value": "/a%20b?c%20d"
+        },
+        {
+          "value": "//example.com/a%20b"
+        },
+        {
+          "value": "https://user:pass@example.com/a#x%20y"
+        },
+        {
+          "value": "file:///a/../b"
+        },
+        {
+          "value": "file:///tmp/a"
+        },
+        {
+          "value": "http://[::1]/"
+        },
+        {
+          "value": "https://a:b@xn--maana-pta.com/a?q#h"
+        },
+        {
+          "value": "https://a:b@xn--maana-pta.com/a?q#h"
+        },
+        {
+          "value": "https://xn--maana-pta.com/a"
+        }
+      ]
+    }
+  ]
+}

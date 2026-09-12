@@ -1,4 +1,5 @@
 import type { ToolMap } from "nanocodex";
+import { CUA_JS_NAME, CUA_RESET_NAME, CUA_DESCRIPTION, CUA_PARAMETERS, CUA_RESET_DESCRIPTION, CUA_RESET_PARAMETERS, validateInput } from "nanocodex-computer/contract";
 import {
   createNamespaceManifest,
   createNamespaceScope,
@@ -42,6 +43,8 @@ type MountedHand = Readonly<{
   exec?: RoutedTool;
   writeStdin?: RoutedTool;
   preview?: RoutedTool;
+  cua?: RoutedTool;
+  cuaReset?: RoutedTool;
 }>;
 
 type CellBinding = Readonly<{
@@ -78,6 +81,7 @@ export function createNamespaceExecutionRuntime(
   }) satisfies MountedHand;
   const cells = new Map<string, CellBinding>();
   const sessions = new Map<number, ProcessBinding>();
+  const computers = new Map<string, MountedHand>();
 
   const cell = (context: ToolContext): CellBinding => {
     // Direct tools have an empty parentCallId. Pin those to their own call,
@@ -91,6 +95,7 @@ export function createNamespaceExecutionRuntime(
   };
 
   const releaseSession = (ownerSessionId: string): void => {
+    computers.delete(ownerSessionId);
     const cellPrefix = `${ownerSessionId}\u0000`;
     for (const key of cells.keys()) {
       if (key.startsWith(cellPrefix)) cells.delete(key);
@@ -102,9 +107,55 @@ export function createNamespaceExecutionRuntime(
   const dispose = (): void => {
     cells.clear();
     sessions.clear();
+    computers.clear();
+  };
+
+  const computer = (context: ToolContext): MountedHand => {
+    const retained = computers.get(context.sessionId);
+    if (retained) return retained;
+    const available = [...cell(context).hands.values()].filter(hand => hand.cua && hand.cuaReset);
+    if (available.length !== 1) {
+      throw new Error(available.length === 0
+        ? "No computer is attached to this conversation"
+        : "Multiple computers are attached. Call select_computer with an explicit Hand workdir first.");
+    }
+    const selected = available[0]!;
+    computers.set(context.sessionId, selected);
+    return selected;
   };
 
   const tools: ToolMap = {
+    select_computer: {
+      description: "Select the mounted Hand for subsequent cua_repl.js and cua_repl.js_reset calls in this conversation. Use a workdir returned by mount or accountInfo. One available computer is selected automatically; multiple computers require an explicit selection. The selected connection remains pinned until you select again. /brain has no desktop.",
+      parameters: { type: "object", properties: { workdir: { type: "string", description: "Mounted Hand root selecting the computer." } }, required: ["workdir"], additionalProperties: false },
+      handler: async (input, context) => {
+        const value = record(input);
+        const workdir = optionalString(value.workdir, "workdir");
+        if (!workdir || Object.keys(value).some(key => key !== "workdir")) throw new Error("select_computer requires only an explicit Hand workdir");
+        const binding = cell(context);
+        const route = routeNamespaceCwd(binding.scope, workdir, "namespace.discover");
+        const hand = binding.hands.get(route.mount.mountId);
+        if (!hand?.cua || !hand.cuaReset) throw new Error(`namespace mount ${route.mount.root} has no CUA runtime`);
+        computers.set(context.sessionId, hand);
+        return { workdir: hand.root, machine_id: hand.machineId };
+      }, releaseSession, dispose,
+    },
+    [CUA_JS_NAME]: {
+      description: `${CUA_DESCRIPTION} When multiple Hands are attached, choose one with select_computer first.`,
+      parameters: CUA_PARAMETERS,
+      handler: async (input, context) => {
+        validateInput(input);
+        return computer(context).cua!.handler(input, context);
+      }, releaseSession, dispose,
+    },
+    [CUA_RESET_NAME]: {
+      description: CUA_RESET_DESCRIPTION,
+      parameters: CUA_RESET_PARAMETERS,
+      handler: async (input, context) => {
+        validateInput(input, true);
+        return computer(context).cuaReset!.handler(input, context);
+      }, releaseSession, dispose,
+    },
     exec_command: {
       description: "Run a command in durable /brain using bounded Just Bash by default. Use an explicit hand workdir returned by mount or accountInfo only for native binaries, builds, or process sessions. No execution hand is attached by default.",
       parameters: EXEC_COMMAND_PARAMETERS,
@@ -254,6 +305,8 @@ function createCellBinding(
       exec: resolveMachineTool(machine.id, "exec_command", context),
       writeStdin: resolveMachineTool(machine.id, "write_stdin", context),
       preview: resolveMachineTool(machine.id, "preview", context),
+      cua: resolveMachineTool(machine.id, CUA_JS_NAME, context),
+      cuaReset: resolveMachineTool(machine.id, CUA_RESET_NAME, context),
     }));
   }
   const manifest = createNamespaceManifest({

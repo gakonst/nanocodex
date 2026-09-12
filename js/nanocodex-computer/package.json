@@ -1,0 +1,21 @@
+{
+  "name": "nanocodex-computer",
+  "version": "0.1.0",
+  "description": "Experimental persistent CUA tools for Nanocodex",
+  "type": "module",
+  "exports": {
+    ".": { "types": "./index.d.mts", "import": "./index.mjs" },
+    "./contract": { "types": "./contract.d.mts", "import": "./contract.mjs" }
+  },
+  "files": ["index.mjs", "index.d.mts", "contract.mjs", "contract.d.mts", "README.md"],
+  "scripts": {
+    "build:runtime": "cargo build --locked --manifest-path ../../crates/experimental/nanocodex-computer/runtime/Cargo.toml --release --bin nanocodex-computer",
+    "test:runtime": "cargo build --locked --manifest-path ../../crates/experimental/nanocodex-computer/runtime/Cargo.toml --bin nanocodex-computer && cargo test --locked -p nanocodex-computer -- --include-ignored && cargo test --locked --manifest-path ../../crates/experimental/nanocodex-computer/runtime/Cargo.toml -- --test-threads=4",
+    "test": "node --test test/*.test.mjs",
+    "typecheck": "tsc --noEmit --module nodenext --moduleResolution nodenext index.d.mts contract.d.mts"
+  },
+  "dependencies": { "nanocodex-tools": "workspace:*" },
+  "devDependencies": { "typescript": "5.9.3", "@types/node": "^24.0.0" },
+  "engines": { "node": ">=22.13.0" },
+  "license": "MIT OR Apache-2.0"
+}

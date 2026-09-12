@@ -12,6 +12,8 @@ const WORKFLOW: &str = "nightly.yml";
 
 pub(super) struct Artifact {
     pub(super) contents: Vec<u8>,
+    pub(super) companion: Option<Vec<u8>>,
+    pub(super) computer: Option<Vec<u8>>,
     pub(super) head_sha: String,
     pub(super) run_url: String,
 }
@@ -133,9 +135,61 @@ pub(super) async fn download(number: u64, asset_name: &str) -> Result<Artifact> 
 
     Ok(Artifact {
         contents,
+        companion: optional_binary(
+            directory.path(),
+            &checksum_manifest,
+            &asset_name.replacen("nanocodex-", "nanocodex2-", 1),
+        )?,
+        computer: optional_binary(
+            directory.path(),
+            &checksum_manifest,
+            &asset_name.replacen("nanocodex-", "nanocodex-computer-", 1),
+        )?,
         head_sha: pull_request.head_ref_oid,
         run_url: run.url,
     })
+}
+
+fn optional_binary(directory: &Path, manifest: &[u8], name: &str) -> Result<Option<Vec<u8>>> {
+    let path = directory.join(name);
+    let expected = checksum_for(manifest, name);
+    if !path.try_exists()? && expected.is_err() {
+        return Ok(None);
+    }
+    require_file(&path)?;
+    let expected = expected?;
+    let contents = fs::read(path)?;
+    if hex::encode(Sha256::digest(&contents)) != expected {
+        bail!("checksum mismatch for {name}");
+    }
+    Ok(Some(contents))
+}
+
+#[cfg(test)]
+mod companion_tests {
+    use super::*;
+    #[test]
+    fn optional_companions_require_their_own_checksum_and_advertised_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let name = "nanocodex-computer-test";
+        assert!(
+            optional_binary(directory.path(), b"", name)
+                .unwrap()
+                .is_none()
+        );
+        let manifest = format!("{}  {name}\n", hex::encode(Sha256::digest(b"computer")));
+        assert!(optional_binary(directory.path(), manifest.as_bytes(), name).is_err());
+        fs::write(directory.path().join(name), b"computer").unwrap();
+        assert!(optional_binary(directory.path(), b"", name).is_err());
+        assert_eq!(
+            optional_binary(directory.path(), manifest.as_bytes(), name)
+                .unwrap()
+                .as_deref(),
+            Some(b"computer".as_slice())
+        );
+        fs::write(directory.path().join(name), b"modified").unwrap();
+        assert!(optional_binary(directory.path(), manifest.as_bytes(), name).is_err());
+    }
 }
 
 async fn download_run_artifact(run_id: u64, asset_name: &str, directory: &TempDir) -> Result<()> {

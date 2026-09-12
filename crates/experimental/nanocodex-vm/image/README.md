@@ -23,7 +23,7 @@ images support CPU rendering; installing Blender does not grant GPU access.
 Build a Docker Hand with `pnpm build:hand-docker`. Build a portable VM template:
 
 ```sh
-docker build -t nanocodex-vm:toolkit crates/experimental/nanocodex-vm/image
+docker build -t nanocodex-vm:toolkit --build-context computer-source=crates/experimental/nanocodex-computer/runtime crates/experimental/nanocodex-vm/image
 bash crates/experimental/nanocodex-vm/image/build-root.sh \
   nanocodex-vm:toolkit /absolute/path/desktop.ext4
 ```

@@ -44,6 +44,7 @@ struct Identity {
 
 struct NativeState {
     machine: AttachmentMachine,
+    directory: PathBuf,
     _lock: NativeStateLock,
 }
 
@@ -147,6 +148,7 @@ impl NativeState {
         .map_err(configuration)?;
         Ok(Self {
             machine,
+            directory: directory.to_path_buf(),
             _lock: lock,
         })
     }
@@ -207,11 +209,17 @@ async fn run(
 ) -> Result<(), ManagedError> {
     // WorkspaceTools uses the existing sanitized subprocess environment. Do not
     // forward the account credential or ambient sensitive variables to programs.
-    let tools = Tools::builder()
+    let mut tools = Tools::builder()
         .without_defaults()
-        .add(WorkspaceTools::new(state.machine.workspace()))
-        .build()
-        .map_err(configuration)?;
+        .add(WorkspaceTools::new(state.machine.workspace()));
+    if let Some(mut config) = nanocodex_computer::ComputerConfig::discover() {
+        if cfg!(target_os = "linux") {
+            config.desktop_runtime = Some(state.directory.join("desktop"));
+        }
+        let computer = nanocodex_computer::ComputerTools::local(config);
+        tools = tools.add(computer.js()).add(computer.reset());
+    }
+    let tools = tools.build().map_err(configuration)?;
     let (attachment, mut events) = tools
         .attach(target)
         .metadata(AttachmentMetadata::machine(state.machine.clone()))

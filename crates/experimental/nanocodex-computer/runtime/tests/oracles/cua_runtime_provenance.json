@@ -1,0 +1,13 @@
+{
+  "kind": "Installed interface resource copies; independently implemented runtime",
+  "source_root": "/Users/georgios/.codex/plugins/cache/openai-bundled/unified-computer-use/26.901.51231/resources",
+  "files": {
+    "js-tool-description.md": "43cc1857cdae559e3ecf2ab4062c3a6f391a8ede8222b036a3eb8d3a4b2d1f18",
+    "browser-description.md": "02b04e29cb29f499b8f1f7ed983e72b72ee8f1f1ac68e2df6b968787d8cefb06",
+    "computer-description.md": "e8318bd16b9792b517d300802583961317d7e0cb3a3a4ed776a681ed20f16f7d",
+    "js-output-description.md": "d70145e293be39e68910e9d64dec6ebc9fc89d3f9bb71ef68e8690756039c359",
+    "js-reset.md": "acc0866ae73c7050a5817faebbe241cf9c3315ddc5865790a9eba6ba077158c0"
+  },
+  "installed_node_repl": "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl",
+  "installed_node_repl_sha256": "0d6f59d5aff9db38d3bf1cad78f3b2d71daaedaefddbc00c65fa3241ce83ad7c"
+}

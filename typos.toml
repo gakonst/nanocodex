@@ -3,6 +3,10 @@ extend-exclude = [
     ".nanocodex/",
     "crates/experimental/nanocodex-browser/assets/axe.js",
     "crates/experimental/nanocodex-browser/assets/react_diagnostics.js",
+    # Preserve upstream sources and captured protocol/encoding fixture bytes.
+    "crates/experimental/nanocodex-computer/runtime/vendor/",
+    "crates/experimental/nanocodex-computer/runtime/tests/oracles/",
+    "crates/experimental/nanocodex-computer/runtime/src/runtime_icu_data/",
     "js/account/public/data/",
     "js/account/src/data/harness-repository.json",
     "js/account/worker-configuration.d.ts",
@@ -15,7 +19,8 @@ extend-ignore-re = ['\b[0-9A-F]{24}\b']
 
 [default]
 # Exact executable name used by the remote-screen hand.
-extend-ignore-re = ['\bwaymote-streamd\b']
+# Chromium's Page.createIsolatedWorld parameter has this exact wire spelling.
+extend-ignore-re = ['\bwaymote-streamd\b', '\bgrantUniveralAccess\b']
 
 [default.extend-words]
 # Mesa's OpenGL-over-Vulkan driver.

@@ -74,13 +74,16 @@ chmod +x "$mock_bin/uname" "$mock_bin/curl"
 binary_names=(
   "nanocodex-x86_64-unknown-linux-gnu"
   "nanocodex2-x86_64-unknown-linux-gnu"
+  "nanocodex-computer-x86_64-unknown-linux-gnu"
 )
 binary_sources=(
   "$temporary_root/${binary_names[0]}"
   "$temporary_root/${binary_names[1]}"
+  "$temporary_root/${binary_names[2]}"
 )
 printf '%s\n' '#!/bin/sh' 'printf "%s\n" "nanocodex 1.2.3"' > "${binary_sources[0]}"
 printf '%s\n' '#!/bin/sh' 'printf "%s\n" "nanocodex2 1.2.3"' > "${binary_sources[1]}"
+printf '%s\n' '#!/bin/sh' 'printf "%s\n" "nanocodex-computer 0.1.0"' > "${binary_sources[2]}"
 chmod +x "${binary_sources[@]}"
 
 run_case() {
@@ -93,7 +96,7 @@ run_case() {
 
   mkdir -p "$fixture" "$case_root/home"
   : > "$fixture/SHA256SUMS"
-  for index in 0 1; do
+  for index in "${!binary_names[@]}"; do
     if [[ "$format" == gzip ]]; then
       asset="${binary_names[$index]}.gz"
       gzip -n -9 -c "${binary_sources[$index]}" > "$fixture/$asset"
@@ -117,6 +120,7 @@ run_case() {
   grep -Fq 'Installed nanocodex2 1.2.3' <<<"$output"
   [[ "$("$install_root/bin/nanocodex" --version)" == 'nanocodex 1.2.3' ]]
   [[ "$("$install_root/bin/nanocodex2" --version)" == 'nanocodex2 1.2.3' ]]
+  [[ "$("$install_root/bin/nanocodex-computer" --version)" == 'nanocodex-computer 0.1.0' ]]
   [[ -f "$install_root/updater/nanocodex.sha256" ]]
   [[ -f "$install_root/versions/1.2.3/nanocodex.sha256" ]]
   [[ -f "$install_root/versions/1.2.3/nanocodex2.sha256" ]]
@@ -134,7 +138,7 @@ run_rejected_case() {
 
   mkdir -p "$fixture" "$case_root/home"
   : > "$fixture/SHA256SUMS"
-  for index in 0 1; do
+  for index in "${!binary_names[@]}"; do
     asset="${binary_names[$index]}"
     cp "${binary_sources[$index]}" "$fixture/$asset"
     digest="$(sha256_file "$fixture/$asset")"
@@ -143,7 +147,8 @@ run_rejected_case() {
       continue
     fi
     if [[ "$failure" == invalid-main-checksum && "$index" == 0 ]] || \
-      [[ "$failure" == invalid-companion-checksum && "$index" == 1 ]]; then
+      [[ "$failure" == invalid-companion-checksum && "$index" == 1 ]] || \
+      [[ "$failure" == invalid-computer-checksum && "$index" == 2 ]]; then
       digest=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     fi
     printf '%s  %s\n' "$digest" "$asset" >> "$fixture/SHA256SUMS"
@@ -163,6 +168,7 @@ run_rejected_case() {
   [[ ! -e "$install_root/current" ]]
   [[ ! -e "$install_root/bin/nanocodex" ]]
   [[ ! -e "$install_root/bin/nanocodex2" ]]
+  [[ ! -e "$install_root/bin/nanocodex-computer" ]]
   case "$failure" in
     missing-main-checksum)
       grep -Fq 'contains neither nanocodex-x86_64-unknown-linux-gnu.gz nor nanocodex-x86_64-unknown-linux-gnu' <<<"$output"
@@ -176,6 +182,9 @@ run_rejected_case() {
     invalid-companion-checksum)
       grep -Fq 'checksum mismatch for nanocodex2-x86_64-unknown-linux-gnu' <<<"$output"
       ;;
+    invalid-computer-checksum)
+      grep -Fq 'checksum mismatch for nanocodex-computer-x86_64-unknown-linux-gnu' <<<"$output"
+      ;;
   esac
 }
 
@@ -185,5 +194,6 @@ run_rejected_case missing-main-checksum
 run_rejected_case missing-companion-checksum
 run_rejected_case invalid-main-checksum
 run_rejected_case invalid-companion-checksum
+run_rejected_case invalid-computer-checksum
 
-echo "installer atomically activates verified raw and gzip bundles for both binaries"
+echo "installer atomically activates verified raw and gzip bundles including the computer companion"

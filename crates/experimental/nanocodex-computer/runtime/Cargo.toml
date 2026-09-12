@@ -1,0 +1,88 @@
+[package]
+name = "nanocodex-computer-runtime"
+version = "0.1.0"
+edition = "2024"
+description = "Independent Rust computer-use runtime built from documented contracts"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/gakonst/nanocodex"
+publish = false
+autotests = false
+
+[lib]
+name = "skyre"
+
+[[bin]]
+name = "nanocodex-computer"
+path = "src/main.rs"
+
+# Keep the runtime's audited QuickJS patch isolated from the agent's JS engine.
+[workspace]
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[features]
+default = []
+v8 = ["dep:v8"]
+v8-default = ["v8"]
+
+[dependencies]
+v8 = { version = "=150.4.0", optional = true }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+clap = { version = "4.6.6", features = ["derive"] }
+base64 = "0.22.1"
+encoding_rs = "0.8"
+regex = "=1.13.1"
+libloading = "0.8"
+rquickjs = { version = "0.12.2", features = ["loader"] }
+oxc_allocator = "0.148.0"
+oxc_ast = "0.148.0"
+oxc_parser = "0.148.0"
+oxc_semantic = "0.148.0"
+oxc_span = "0.148.0"
+tungstenite = "0.29.0"
+url = "2.5.8"
+unicode-segmentation = "1.13.3"
+libc = "0.2.189"
+pulldown-cmark = "0.13.4"
+scraper = "0.27.0"
+cssparser = "0.37.0"
+selectors = "0.38.0"
+html5ever = "0.39.0"
+sha2 = { version = "0.10", default-features = false }
+getrandom = { version = "0.3", default-features = false }
+rqrr = { version = "0.11.0", default-features = false }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+zeroize = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libpulse-sys = "1.23.0"
+x11rb = { version = "0.13.2", features = ["image", "xtest", "xfixes", "res", "xkb"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+accessibility-sys = "0.2.0"
+core-foundation = "0.10.1"
+core-graphics = { version = "0.25.0", features = ["highsierra", "elcapitan"] }
+foreign-types = "0.5.0"
+objc2 = "0.6.4"
+objc2-foundation = "0.3.2"
+objc2-app-kit = "0.3.2"
+objc2-screen-capture-kit = "0.3.2"
+objc2-core-graphics = "0.3.2"
+block2 = "0.6.2"
+objc2-core-media = "0.3.2"
+objc2-core-audio-types = "0.3.2"
+
+[target."cfg(windows)".dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Variant", "Win32_UI_Accessibility", "Foundation", "Graphics_Capture", "Graphics_DirectX", "Graphics_DirectX_Direct3D11", "Win32_System_WinRT", "Win32_System_WinRT_Graphics_Capture", "Win32_System_WinRT_Direct3D11", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Dwm", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging", "Win32_Media_Audio", "Win32_System_Com_StructuredStorage", "Win32_System_Threading", "Win32_Security"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi", "Win32_System_Threading"] }
+
+[dev-dependencies]
+qrcode = { version = "0.14.1", default-features = false }
+tempfile = "3"
+
+[patch.crates-io]
+rquickjs-sys = { path = "vendor/rquickjs-sys" }

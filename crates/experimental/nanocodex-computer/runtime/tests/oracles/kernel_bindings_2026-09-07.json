@@ -1,0 +1,451 @@
+{
+  "provenance": {
+    "binary": "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl",
+    "sha256": "0d6f59d5aff9db38d3bf1cad78f3b2d71daaedaefddbc00c65fa3241ce83ad7c",
+    "scope": "Synthetic ECMAScript bindings; no provider/UI calls"
+  },
+  "scenarios": [
+    {
+      "name": "redeclaration_closure",
+      "cells": [
+        {
+          "code": "let x=1;const old=()=>x;",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": ""
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "code": "let x=2;nodeRepl.write([x,old()]);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "[ 2, 1 ]"
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "code": "x=3;nodeRepl.write([x,old()]);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "[ 3, 1 ]"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "const_reassignment",
+      "cells": [
+        {
+          "code": "const stable=1;",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": ""
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "code": "stable+=2;nodeRepl.write(stable);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "Warning: stable was declared with const; use let for reassignable variables.\n3"
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "code": "const stable=9;nodeRepl.write(stable);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "Warning: stable was declared with const; use let for reassignable variables.\n9"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "within_cell_const",
+      "cells": [
+        {
+          "code": "const same=1;try{same=2}catch(error){nodeRepl.write(error.name)}nodeRepl.write(same);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "TypeError1"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "shadowed_writes",
+      "cells": [
+        {
+          "code": "const n=1;",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": ""
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "code": "{let n=3;n++}((n)=>n++)(7);try{throw 8}catch(n){n++}nodeRepl.write(n);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "Warning: n was declared with const; use let for reassignable variables.\n1"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "nested_prior_write",
+      "cells": [
+        {
+          "code": "const n=1;",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": ""
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "code": "function update(){n++};nodeRepl.write(n);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "Warning: n was declared with const; use let for reassignable variables.\n1"
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "code": "update();nodeRepl.write(n);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "1"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "partial_destructure",
+      "cells": [
+        {
+          "code": "let {a=1,b=(()=>{throw new Error('partial')})()}={};",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "partial"
+              }
+            ],
+            "isError": true
+          }
+        },
+        {
+          "code": "nodeRepl.write([typeof a,a,typeof b]);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "[ 'number', 1, 'undefined' ]"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "partial_var",
+      "cells": [
+        {
+          "code": "var a=1,b=(()=>{throw new Error('partial')})();",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "partial"
+              }
+            ],
+            "isError": true
+          }
+        },
+        {
+          "code": "nodeRepl.write([typeof a,a,typeof b]);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "[ 'number', 1, 'undefined' ]"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "failed_redeclaration",
+      "cells": [
+        {
+          "code": "let x=4;",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": ""
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "code": "let x=(()=>{throw new Error('replace')})();",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "replace"
+              }
+            ],
+            "isError": true
+          }
+        },
+        {
+          "code": "nodeRepl.write(x);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "4"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "unreached_hoisted",
+      "cells": [
+        {
+          "code": "throw new Error('before');var ghost=1;function phantom(){}",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "before"
+              }
+            ],
+            "isError": true
+          }
+        },
+        {
+          "code": "nodeRepl.write([typeof ghost,typeof phantom]);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "[ 'undefined', 'undefined' ]"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "future_var_write",
+      "cells": [
+        {
+          "code": "future=7;throw new Error('after assignment');var future;",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "after assignment"
+              }
+            ],
+            "isError": true
+          }
+        },
+        {
+          "code": "nodeRepl.write(future);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "7"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "future_var_logical",
+      "cells": [
+        {
+          "code": "future ||= 7;throw new Error('after logical');var future;",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "after logical"
+              }
+            ],
+            "isError": true
+          }
+        },
+        {
+          "code": "nodeRepl.write(future);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "7"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "loop_scope",
+      "cells": [
+        {
+          "code": "for(var i=0;i<2;i++){};for(let j=0;j<2;j++){}",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": ""
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "code": "nodeRepl.write([i,typeof j]);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "[ 2, 'undefined' ]"
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "code": "for(var k of [4,5]){};nodeRepl.write(k);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "5"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "strings_regex_template",
+      "cells": [
+        {
+          "code": "const text='let n=2;';const pattern=/const n=/;let n=1;",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": ""
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "code": "let n=2;nodeRepl.write([text,pattern.test('const n='),`n=${n}`]);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "[ 'let n=2;', true, 'n=2' ]"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "module_scope",
+      "cells": [
+        {
+          "code": "nodeRepl.write([this===undefined,typeof arguments]);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "[ true, 'undefined' ]"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    }
+  ]
+}

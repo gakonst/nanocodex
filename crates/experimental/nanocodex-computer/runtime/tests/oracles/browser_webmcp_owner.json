@@ -1,0 +1,1755 @@
+{
+  "kind": "source-pinned-original-webmcp-owner-helper-corpus",
+  "scope": "Inert original Cu/Su/ok/Hp helpers only; no provider calls, service startup, Engine admission or completion claim.",
+  "source": "/private/tmp/skyre-webmcp-owner-work/snapshots/2026-09-06/sources/browser-desktop/scripts/browser-service.mjs",
+  "source_sha256": "3032666de451e423db76b5f9b0456e370d4f57416bbf53d0c746be636359ba02",
+  "binding_manifest_sha256": "fb13f25bf657548baa125ec0302e129107973da6f3c05961f481787b64d77c84",
+  "bindings": [
+    {
+      "name": "Cu",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 670415,
+      "end_utf8": 670607,
+      "sha256": "dcd5d9410382d0d247f5f3581ef593d90b281ceda12a970261af4a3164c1006a"
+    },
+    {
+      "name": "Hp",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 670342,
+      "end_utf8": 670415,
+      "sha256": "ab17c1bd4241b4680caa4c628dbee5ff3fe5d2d7626eee2c9c28564f3213ad91"
+    },
+    {
+      "name": "Su",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 670109,
+      "end_utf8": 670314,
+      "sha256": "865981c2b64f8c5993b8928fdf52e50858667e16c5e012205592b2d472b342d4"
+    },
+    {
+      "name": "ok",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 670681,
+      "end_utf8": 671090,
+      "sha256": "88e0fbc1746c94df7d63a58df78784572d3854abf87267e68e1664dfb5965b83"
+    },
+    {
+      "name": "pn",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 542417,
+      "end_utf8": 542704,
+      "sha256": "d06ed927fb4b52d32745d501d00d2ec055cfbae7ea3cdf35fac558ee233f2cb2"
+    },
+    {
+      "name": "zp",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 670607,
+      "end_utf8": 670681,
+      "sha256": "b2254bdce81d95184039c483d8b871d1ed2f20d5a2d4b3d1d001475cfc252129"
+    },
+    {
+      "name": "gs",
+      "kind": "var",
+      "value_kind": "Literal",
+      "start_utf8": 668426,
+      "end_utf8": 668623,
+      "sha256": "3e40ba0ffb3146b27915d95ec554941e609fbf542b93f2ce59d78285dec57609"
+    },
+    {
+      "name": "xu",
+      "kind": "var",
+      "value_kind": "NewExpression",
+      "start_utf8": 668624,
+      "end_utf8": 668638,
+      "sha256": "5c9453a0357cc4779d74b6f4f66e1949a99b5bbe76fe045cec64ecd7eed04b38"
+    }
+  ],
+  "cases": [
+    {
+      "name": "missing fetched snapshot",
+      "observations": [
+        {
+          "operation": [
+            "lookup",
+            "echo"
+          ],
+          "observed": {
+            "result": null,
+            "document": null,
+            "disabled": false,
+            "sessions": [],
+            "listeners": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "current descriptors and exact lookup",
+      "observations": [
+        {
+          "operation": [
+            "fetch",
+            [
+              {
+                "name": "echo",
+                "registration_id": "r1",
+                "input_schema": {
+                  "type": "object"
+                },
+                "description": "owned descriptor"
+              }
+            ]
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "lookup",
+            "echo"
+          ],
+          "observed": {
+            "result": {
+              "name": "echo",
+              "registration_id": "r1",
+              "input_schema": {
+                "type": "object"
+              },
+              "description": "owned descriptor"
+            },
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "lookup",
+            " echo "
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "lookup",
+            "missing"
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "native session snapshots remain independent",
+      "observations": [
+        {
+          "operation": [
+            "fetch",
+            [
+              {
+                "name": "echo",
+                "registration_id": "r1",
+                "input_schema": {
+                  "type": "object"
+                },
+                "description": "owned descriptor"
+              }
+            ]
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "session",
+            "b"
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "lookup",
+            "echo"
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "fetch",
+            [
+              {
+                "name": "echo",
+                "registration_id": "r2",
+                "input_schema": {
+                  "type": "object"
+                },
+                "description": "owned descriptor"
+              }
+            ]
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              },
+              {
+                "id": "b",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r2",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "session",
+            "a"
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              },
+              {
+                "id": "b",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r2",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "lookup",
+            "echo"
+          ],
+          "observed": {
+            "result": {
+              "name": "echo",
+              "registration_id": "r1",
+              "input_schema": {
+                "type": "object"
+              },
+              "description": "owned descriptor"
+            },
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              },
+              {
+                "id": "b",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r2",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "session",
+            "b"
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              },
+              {
+                "id": "b",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r2",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "lookup",
+            "echo"
+          ],
+          "observed": {
+            "result": {
+              "name": "echo",
+              "registration_id": "r2",
+              "input_schema": {
+                "type": "object"
+              },
+              "description": "owned descriptor"
+            },
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              },
+              {
+                "id": "b",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r2",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "root document replacement invalidates fetched snapshot",
+      "observations": [
+        {
+          "operation": [
+            "fetch",
+            [
+              {
+                "name": "echo",
+                "registration_id": "r1",
+                "input_schema": {
+                  "type": "object"
+                },
+                "description": "owned descriptor"
+              }
+            ]
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "event",
+            "root"
+          ],
+          "observed": {
+            "result": null,
+            "document": 1,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "lookup",
+            "echo"
+          ],
+          "observed": {
+            "result": null,
+            "document": 1,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "fetch",
+            [
+              {
+                "name": "echo",
+                "registration_id": "r2",
+                "input_schema": {
+                  "type": "object"
+                },
+                "description": "owned descriptor"
+              }
+            ]
+          ],
+          "observed": {
+            "result": "[{\"name\":\"echo\",\"description\":\"owned descriptor\",\"inputSchema\":{\"type\":\"object\"}}]",
+            "document": 1,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 1,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r2",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "lookup",
+            "echo"
+          ],
+          "observed": {
+            "result": {
+              "name": "echo",
+              "registration_id": "r2",
+              "input_schema": {
+                "type": "object"
+              },
+              "description": "owned descriptor"
+            },
+            "document": 1,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 1,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r2",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "child session navigation preserves parent snapshot",
+      "observations": [
+        {
+          "operation": [
+            "fetch",
+            [
+              {
+                "name": "echo",
+                "registration_id": "r1",
+                "input_schema": {
+                  "type": "object"
+                },
+                "description": "owned descriptor"
+              }
+            ]
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "event",
+            "child-session"
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "lookup",
+            "echo"
+          ],
+          "observed": {
+            "result": {
+              "name": "echo",
+              "registration_id": "r1",
+              "input_schema": {
+                "type": "object"
+              },
+              "description": "owned descriptor"
+            },
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "child frame navigation preserves parent snapshot",
+      "observations": [
+        {
+          "operation": [
+            "fetch",
+            [
+              {
+                "name": "echo",
+                "registration_id": "r1",
+                "input_schema": {
+                  "type": "object"
+                },
+                "description": "owned descriptor"
+              }
+            ]
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "event",
+            "child-frame"
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "lookup",
+            "echo"
+          ],
+          "observed": {
+            "result": {
+              "name": "echo",
+              "registration_id": "r1",
+              "input_schema": {
+                "type": "object"
+              },
+              "description": "owned descriptor"
+            },
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "other tab navigation preserves current snapshot",
+      "observations": [
+        {
+          "operation": [
+            "fetch",
+            [
+              {
+                "name": "echo",
+                "registration_id": "r1",
+                "input_schema": {
+                  "type": "object"
+                },
+                "description": "owned descriptor"
+              }
+            ]
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "event",
+            "other-tab"
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "lookup",
+            "echo"
+          ],
+          "observed": {
+            "result": {
+              "name": "echo",
+              "registration_id": "r1",
+              "input_schema": {
+                "type": "object"
+              },
+              "description": "owned descriptor"
+            },
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "other events preserve current snapshot",
+      "observations": [
+        {
+          "operation": [
+            "fetch",
+            [
+              {
+                "name": "echo",
+                "registration_id": "r1",
+                "input_schema": {
+                  "type": "object"
+                },
+                "description": "owned descriptor"
+              }
+            ]
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "event",
+            "same-document"
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "lookup",
+            "echo"
+          ],
+          "observed": {
+            "result": {
+              "name": "echo",
+              "registration_id": "r1",
+              "input_schema": {
+                "type": "object"
+              },
+              "description": "owned descriptor"
+            },
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "disabled state rejects until root navigation",
+      "observations": [
+        {
+          "operation": [
+            "fetch",
+            [
+              {
+                "name": "echo",
+                "registration_id": "r1",
+                "input_schema": {
+                  "type": "object"
+                },
+                "description": "owned descriptor"
+              }
+            ]
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "disable"
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": true,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "lookup",
+            "echo"
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": true,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "enabled"
+          ],
+          "observed": {
+            "result": {
+              "error": "WebMCP is disabled for this page because the site’s WebMCP configuration exceeds supported limits. After correcting the configuration, reset NodeREPL and refresh the browser tab to retry."
+            },
+            "document": 0,
+            "disabled": true,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "fetch",
+            [
+              {
+                "name": "echo",
+                "registration_id": "r2",
+                "input_schema": {
+                  "type": "object"
+                },
+                "description": "owned descriptor"
+              }
+            ]
+          ],
+          "observed": {
+            "result": "[{\"name\":\"echo\",\"description\":\"owned descriptor\",\"inputSchema\":{\"type\":\"object\"}}]",
+            "document": 0,
+            "disabled": true,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": []
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "event",
+            "root"
+          ],
+          "observed": {
+            "result": null,
+            "document": 1,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": []
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "enabled"
+          ],
+          "observed": {
+            "result": {
+              "allowed": true
+            },
+            "document": 1,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": []
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "lookup",
+            "echo"
+          ],
+          "observed": {
+            "result": null,
+            "document": 1,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": []
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "fetch",
+            [
+              {
+                "name": "echo",
+                "registration_id": "r3",
+                "input_schema": {
+                  "type": "object"
+                },
+                "description": "owned descriptor"
+              }
+            ]
+          ],
+          "observed": {
+            "result": "[]",
+            "document": 1,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 1,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r3",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "lookup",
+            "echo"
+          ],
+          "observed": {
+            "result": {
+              "name": "echo",
+              "registration_id": "r3",
+              "input_schema": {
+                "type": "object"
+              },
+              "description": "owned descriptor"
+            },
+            "document": 1,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 1,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r3",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "structured clone separates caller descriptors",
+      "observations": [
+        {
+          "operation": [
+            "fetch",
+            [
+              {
+                "name": "echo",
+                "registration_id": "r1",
+                "input_schema": {
+                  "type": "object"
+                },
+                "description": "owned descriptor"
+              }
+            ]
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "mutate-input"
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "lookup",
+            "echo"
+          ],
+          "observed": {
+            "result": {
+              "name": "echo",
+              "registration_id": "r1",
+              "input_schema": {
+                "type": "object"
+              },
+              "description": "owned descriptor"
+            },
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "duplicate names retain first match",
+      "observations": [
+        {
+          "operation": [
+            "fetch",
+            [
+              {
+                "name": "echo",
+                "registration_id": "first",
+                "input_schema": {
+                  "type": "object"
+                },
+                "description": "owned descriptor"
+              },
+              {
+                "name": "echo",
+                "registration_id": "second",
+                "input_schema": {
+                  "type": "object"
+                },
+                "description": "owned descriptor"
+              }
+            ]
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "first",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  },
+                  {
+                    "name": "echo",
+                    "registration_id": "second",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "lookup",
+            "echo"
+          ],
+          "observed": {
+            "result": {
+              "name": "echo",
+              "registration_id": "first",
+              "input_schema": {
+                "type": "object"
+              },
+              "description": "owned descriptor"
+            },
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "first",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  },
+                  {
+                    "name": "echo",
+                    "registration_id": "second",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "refresh returns previous descriptor projection",
+      "observations": [
+        {
+          "operation": [
+            "fetch",
+            [
+              {
+                "name": "echo",
+                "registration_id": "r1",
+                "input_schema": {
+                  "type": "object"
+                },
+                "description": "owned descriptor"
+              }
+            ]
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r1",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "fetch",
+            [
+              {
+                "name": "echo",
+                "registration_id": "r2",
+                "input_schema": {
+                  "type": "object"
+                },
+                "description": "owned descriptor",
+                "pageUrl": "https://owned.invalid/new"
+              }
+            ]
+          ],
+          "observed": {
+            "result": "[{\"name\":\"echo\",\"description\":\"owned descriptor\",\"inputSchema\":{\"type\":\"object\"}}]",
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": [
+                  {
+                    "name": "echo",
+                    "registration_id": "r2",
+                    "input_schema": {
+                      "type": "object"
+                    },
+                    "description": "owned descriptor",
+                    "pageUrl": "https://owned.invalid/new"
+                  }
+                ]
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "fetch",
+            []
+          ],
+          "observed": {
+            "result": "[{\"name\":\"echo\",\"description\":\"owned descriptor\",\"inputSchema\":{\"type\":\"object\"}}]",
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": []
+              }
+            ],
+            "listeners": 1
+          }
+        },
+        {
+          "operation": [
+            "lookup",
+            "echo"
+          ],
+          "observed": {
+            "result": null,
+            "document": 0,
+            "disabled": false,
+            "sessions": [
+              {
+                "id": "a",
+                "document": 0,
+                "tools": []
+              }
+            ],
+            "listeners": 1
+          }
+        }
+      ]
+    }
+  ]
+}

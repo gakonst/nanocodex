@@ -54,6 +54,10 @@ pub(crate) async fn linux_hand_artifacts() -> Result<serde_json::Value> {
     for (name, asset_name) in [
         ("nanocodex2", NANOCODEX2_LINUX_ASSET),
         ("nanocodex-vm-guest", VM_GUEST_ASSET),
+        (
+            "nanocodex-computer",
+            "nanocodex-computer-x86_64-unknown-linux-gnu",
+        ),
     ] {
         let (asset, compressed) = find_preferred_asset(&release, asset_name)?;
         artifacts.push(
@@ -198,12 +202,17 @@ impl Update {
         let key = latest
             .as_ref()
             .map_or_else(|| nightly_key(&release), |version| Ok(version.to_string()))?;
+        let computer = find_preferred_asset(
+            &release,
+            &computer_asset_name_for(std::env::consts::OS, std::env::consts::ARCH)?,
+        )
+        .ok();
         let cached = if self.nightly {
             store.is_cached_bundle(&key, vm_guest_binary_asset_name().is_some())?
         } else {
             store.is_cached_bundle(&key, false)?
         };
-        if !self.force && cached {
+        if !self.force && cached && (computer.is_none() || store.is_cached_computer(&key)?) {
             store.activate(&key)?;
             if self.nightly {
                 store.promote_manager(&key)?;
@@ -226,6 +235,13 @@ impl Update {
             download_verified(&client, companion, &checksum_manifest, true).await?;
         let companion_contents =
             unpack_release_asset(companion_archive, &companion.name, companion_compressed)?;
+        let computer_contents = match computer {
+            Some((asset, compressed)) => {
+                let archive = download_verified(&client, asset, &checksum_manifest, true).await?;
+                Some(unpack_release_asset(archive, &asset.name, compressed)?)
+            }
+            None => None,
+        };
         let guest_contents = if self.nightly {
             if let Some(guest_name) = vm_guest_binary_asset_name() {
                 let (guest, compressed) = find_preferred_asset(&release, guest_name)?;
@@ -247,6 +263,7 @@ impl Update {
             &contents,
             &companion_contents,
             guest_contents.as_deref(),
+            computer_contents.as_deref(),
         )?;
         store.activate(&key)?;
         if self.nightly {
@@ -344,7 +361,19 @@ async fn install_pr_binary(number: u64, store: &VersionStore, previous: &str) ->
     let asset_name = binary_asset_name()?;
     let artifact = pr::download(number, asset_name).await?;
     let key = format!("pr-{number}-{}", artifact.head_sha);
-    store.install(&key, &artifact.contents)?;
+    if let Some(companion) = &artifact.companion {
+        store.install_bundle(
+            &key,
+            &artifact.contents,
+            companion,
+            None,
+            artifact.computer.as_deref(),
+        )?;
+    } else if artifact.computer.is_some() {
+        bail!("PR artifact includes CUA without its nanocodex2 companion");
+    } else {
+        store.install(&key, &artifact.contents)?;
+    }
     store.activate(&key)?;
     println!(
         "installed and activated nanocodex PR #{number} at {} ({}, previously {previous})",
@@ -539,6 +568,9 @@ fn nightly_key_for(release: &Release, os: &str, arch: &str) -> Result<String> {
         let (guest, _) = find_preferred_asset(release, guest_name)?;
         key.push_str(&format!("-{}", guest.id));
     }
+    if let Ok((computer, _)) = find_preferred_asset(release, &computer_asset_name_for(os, arch)?) {
+        key.push_str(&format!("-c{}", computer.id));
+    }
     Ok(key)
 }
 
@@ -643,6 +675,10 @@ fn binary_asset_name() -> Result<&'static str> {
 
 fn nanocodex2_binary_asset_name() -> Result<&'static str> {
     nanocodex2_binary_asset_name_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn computer_asset_name_for(os: &str, arch: &str) -> Result<String> {
+    Ok(binary_asset_name_for(os, arch)?.replacen("nanocodex-", "nanocodex-computer-", 1))
 }
 
 fn nanocodex2_binary_asset_name_for(os: &str, arch: &str) -> Result<&'static str> {

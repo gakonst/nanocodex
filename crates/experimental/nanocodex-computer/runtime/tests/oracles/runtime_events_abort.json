@@ -1,0 +1,635 @@
+{
+  "scope": "Nineteen actual inert installed-kernel owned AbortSignal observations; generic EventTarget constructor and broader warning/GC/intrinsic behavior remain partial.",
+  "kernel_sha256": "0d6f59d5aff9db38d3bf1cad78f3b2d71daaedaefddbc00c65fa3241ce83ad7c",
+  "node_sha256": "a2f397892a25f0c0e2b6e764395be935d30c974c2c85e814acacb1bed6d2f42a",
+  "cases": [
+    {
+      "name": "globals-and-inherited-owner",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const descriptor=(object,key)=>{const d=Object.getOwnPropertyDescriptor(object,key);return d?{valueType:typeof d.value,writable:d.writable??null,enumerable:d.enumerable,configurable:d.configurable,get:typeof d.get,set:typeof d.set}:null};const inherited=Object.getPrototypeOf(AbortSignal);return {globals:['Event','EventTarget','AbortController','AbortSignal'].map(key=>({key,type:typeof globalThis[key],descriptor:descriptor(globalThis,key)})),inherited:{type:typeof inherited,name:inherited.name,length:inherited.length,prototypeMatches:Object.getPrototypeOf(AbortSignal.prototype)===inherited.prototype,constructorMatches:inherited.prototype.constructor===inherited,prototypeNames:Object.getOwnPropertyNames(inherited.prototype)},signalKeys:Object.getOwnPropertyNames(new AbortController().signal)};})()));",
+      "expected": {
+        "globals": [
+          {
+            "descriptor": null,
+            "key": "Event",
+            "type": "undefined"
+          },
+          {
+            "descriptor": null,
+            "key": "EventTarget",
+            "type": "undefined"
+          },
+          {
+            "descriptor": {
+              "configurable": true,
+              "enumerable": true,
+              "get": "undefined",
+              "set": "undefined",
+              "valueType": "function",
+              "writable": true
+            },
+            "key": "AbortController",
+            "type": "function"
+          },
+          {
+            "descriptor": {
+              "configurable": true,
+              "enumerable": true,
+              "get": "undefined",
+              "set": "undefined",
+              "valueType": "function",
+              "writable": true
+            },
+            "key": "AbortSignal",
+            "type": "function"
+          }
+        ],
+        "inherited": {
+          "constructorMatches": true,
+          "length": 0,
+          "name": "EventTarget",
+          "prototypeMatches": true,
+          "prototypeNames": [
+            "constructor",
+            "addEventListener",
+            "removeEventListener",
+            "dispatchEvent"
+          ],
+          "type": "function"
+        },
+        "signalKeys": []
+      }
+    },
+    {
+      "name": "actual-kernel-import-helper-identity",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const h=await import('node:events'),a=await import('events'),s=new AbortController().signal;return {aliases:h===a,helpers:['listenerCount','getEventListeners','getMaxListeners','setMaxListeners'].map(name=>({name,type:typeof h[name],staticSame:h[name]===h.EventEmitter[name],functionName:h[name].name,length:h[name].length})),signal:{listenerCount:h.listenerCount(s,'abort'),listeners:h.getEventListeners(s,'abort').length,max:h.getMaxListeners(s)},globalEventTarget:typeof EventTarget};})()));",
+      "expected": {
+        "aliases": true,
+        "globalEventTarget": "undefined",
+        "helpers": [
+          {
+            "functionName": "listenerCount",
+            "length": 2,
+            "name": "listenerCount",
+            "staticSame": true,
+            "type": "function"
+          },
+          {
+            "functionName": "getEventListeners",
+            "length": 2,
+            "name": "getEventListeners",
+            "staticSame": true,
+            "type": "function"
+          },
+          {
+            "functionName": "getMaxListeners",
+            "length": 1,
+            "name": "getMaxListeners",
+            "staticSame": true,
+            "type": "function"
+          },
+          {
+            "functionName": "",
+            "length": 0,
+            "name": "setMaxListeners",
+            "staticSame": true,
+            "type": "function"
+          }
+        ],
+        "signal": {
+          "listenerCount": 0,
+          "listeners": 0,
+          "max": 0
+        }
+      }
+    },
+    {
+      "name": "owned-abort-listeners-snapshots-and-dispatch",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const h=await import('node:events'),c=new AbortController(),s=c.signal,rows=[];function f(e){rows.push(['f',this===s,e.type,e.target===s])}function once(e){rows.push(['once',e.type])}const object={handleEvent(e){rows.push(['object',this===object,e.type])}};function on(e){rows.push(['onabort',e.type])}function label(x){return x===f?'f':x===once?'once':x===object?'object':x===on?'onabort':{type:typeof x,name:x?.name??null}}s.addEventListener('abort',f);s.addEventListener('abort',f);s.addEventListener('abort',f,true);s.addEventListener('abort',once,{once:true});s.addEventListener('abort',object);s.onabort=on;const captured=h.getEventListeners(s,'abort'),before={count:h.listenerCount(s,'abort'),list:captured.map(label)};captured.length=0;const copied=h.listenerCount(s,'abort');const reason={owned:1};c.abort(reason);c.abort('again');const after={count:h.listenerCount(s,'abort'),list:h.getEventListeners(s,'abort').map(label),reason:s.reason===reason,rows};s.removeEventListener('abort',f);const oneCapture=h.listenerCount(s,'abort');s.removeEventListener('abort',f,true);s.removeEventListener('abort',object);s.onabort=null;return {before,copied,after,oneCapture,removed:{count:h.listenerCount(s,'abort'),list:h.getEventListeners(s,'abort').map(label)}};})()));",
+      "expected": {
+        "after": {
+          "count": 4,
+          "list": [
+            "f",
+            "f",
+            "object",
+            {
+              "name": "eventHandler",
+              "type": "function"
+            }
+          ],
+          "reason": true,
+          "rows": [
+            [
+              "f",
+              true,
+              "abort",
+              true
+            ],
+            [
+              "f",
+              true,
+              "abort",
+              true
+            ],
+            [
+              "once",
+              "abort"
+            ],
+            [
+              "object",
+              true,
+              "abort"
+            ],
+            [
+              "onabort",
+              "abort"
+            ]
+          ]
+        },
+        "before": {
+          "count": 5,
+          "list": [
+            "f",
+            "f",
+            "once",
+            "object",
+            {
+              "name": "eventHandler",
+              "type": "function"
+            }
+          ]
+        },
+        "copied": 5,
+        "oneCapture": 3,
+        "removed": {
+          "count": 1,
+          "list": [
+            "f",
+            {
+              "name": "eventHandler",
+              "type": "function"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "owned-listener-limits-and-validation",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const h=await import('node:events'),c=new AbortController(),s=c.signal,e=new h.EventEmitter();const originalDefault=h.EventEmitter.defaultMaxListeners;const rows=[['initial',h.getMaxListeners(s),h.getMaxListeners(e)]];rows.push(['setBothUndefined',h.setMaxListeners(3,s,e)===undefined]);rows.push(['afterBoth',h.getMaxListeners(s),h.getMaxListeners(e)]);h.setMaxListeners(0,s);rows.push(['zero',h.getMaxListeners(s)]);try{h.setMaxListeners(-1,s)}catch(error){rows.push(['invalid',error.name,error.code,h.getMaxListeners(s)])}h.setMaxListeners(7);rows.push(['globalDefault',h.EventEmitter.defaultMaxListeners,h.getMaxListeners(new h.EventEmitter()),h.getMaxListeners(new AbortController().signal),h.getMaxListeners(s)]);h.setMaxListeners(originalDefault);return rows;})()));",
+      "expected": [
+        [
+          "initial",
+          0,
+          10
+        ],
+        [
+          "setBothUndefined",
+          true
+        ],
+        [
+          "afterBoth",
+          3,
+          3
+        ],
+        [
+          "zero",
+          0
+        ],
+        [
+          "invalid",
+          "RangeError",
+          "ERR_OUT_OF_RANGE",
+          0
+        ],
+        [
+          "globalDefault",
+          7,
+          7,
+          0,
+          0
+        ]
+      ]
+    },
+    {
+      "name": "onabort-handler-visibility-and-position",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const h=await import('node:events'),c=new AbortController(),s=c.signal,rows=[];function first(){rows.push('first')}function middle(){rows.push('middle')}function last(){rows.push('last')}const ids=list=>list.map(x=>x===first?'first':x===middle?'middle':x===last?'last':{type:typeof x,name:x?.name??null});s.onabort=first;s.addEventListener('abort',middle);const a=ids(h.getEventListeners(s,'abort'));s.onabort=null;const b=ids(h.getEventListeners(s,'abort'));s.onabort=last;const d=ids(h.getEventListeners(s,'abort'));c.abort('owned');return {a,b,d,count:h.listenerCount(s,'abort'),rows};})()));",
+      "expected": {
+        "a": [
+          {
+            "name": "eventHandler",
+            "type": "function"
+          },
+          "middle"
+        ],
+        "b": [
+          {
+            "name": "eventHandler",
+            "type": "function"
+          },
+          "middle"
+        ],
+        "count": 2,
+        "d": [
+          {
+            "name": "eventHandler",
+            "type": "function"
+          },
+          "middle"
+        ],
+        "rows": [
+          "last",
+          "middle"
+        ]
+      }
+    },
+    {
+      "name": "static-and-composite-owned-signals",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const h=await import('node:events'),a=new AbortController(),b=new AbortController(),out=AbortSignal.any([a.signal,b.signal]),prior=AbortSignal.abort('prior'),empty=AbortSignal.any([]),rows=[];out.addEventListener('abort',()=>rows.push(out.reason),{once:true});const snapshot=()=>[a.signal,b.signal,out,prior,empty].map(s=>({aborted:s.aborted,count:h.listenerCount(s,'abort'),listeners:h.getEventListeners(s,'abort').length,max:h.getMaxListeners(s)}));const before=snapshot();b.abort('owned');return {before,after:snapshot(),rows,outReason:out.reason};})()));",
+      "expected": {
+        "after": [
+          {
+            "aborted": false,
+            "count": 0,
+            "listeners": 0,
+            "max": 0
+          },
+          {
+            "aborted": true,
+            "count": 0,
+            "listeners": 0,
+            "max": 0
+          },
+          {
+            "aborted": true,
+            "count": 0,
+            "listeners": 0,
+            "max": 0
+          },
+          {
+            "aborted": true,
+            "count": 0,
+            "listeners": 0,
+            "max": 0
+          },
+          {
+            "aborted": false,
+            "count": 0,
+            "listeners": 0,
+            "max": 0
+          }
+        ],
+        "before": [
+          {
+            "aborted": false,
+            "count": 0,
+            "listeners": 0,
+            "max": 0
+          },
+          {
+            "aborted": false,
+            "count": 0,
+            "listeners": 0,
+            "max": 0
+          },
+          {
+            "aborted": false,
+            "count": 1,
+            "listeners": 1,
+            "max": 0
+          },
+          {
+            "aborted": true,
+            "count": 0,
+            "listeners": 0,
+            "max": 0
+          },
+          {
+            "aborted": false,
+            "count": 0,
+            "listeners": 0,
+            "max": 0
+          }
+        ],
+        "outReason": "owned",
+        "rows": [
+          "owned"
+        ]
+      }
+    },
+    {
+      "name": "helper-key-lookup-does-not-coerce",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const h=await import('node:events'),s=new AbortController().signal,seen=[];function f(){}for(const key of ['1','null','undefined','true','owned'])s.addEventListener(key,f);const object={toString(){seen.push('toString');return 'owned'}};const keys=['1',1,1n,null,undefined,true,'true','owned',object,Symbol('owned')];return {rows:keys.map(key=>({kind:typeof key,label:typeof key==='symbol'?String(key):typeof key==='object'&&key!==null?'object':String(key),count:h.listenerCount(s,key),list:h.getEventListeners(s,key).map(fn=>fn===f)})),seen};})()));",
+      "expected": {
+        "rows": [
+          {
+            "count": 1,
+            "kind": "string",
+            "label": "1",
+            "list": [
+              true
+            ]
+          },
+          {
+            "count": 0,
+            "kind": "number",
+            "label": "1",
+            "list": []
+          },
+          {
+            "count": 0,
+            "kind": "bigint",
+            "label": "1",
+            "list": []
+          },
+          {
+            "count": 0,
+            "kind": "object",
+            "label": "null",
+            "list": []
+          },
+          {
+            "count": 0,
+            "kind": "undefined",
+            "label": "undefined",
+            "list": []
+          },
+          {
+            "count": 0,
+            "kind": "boolean",
+            "label": "true",
+            "list": []
+          },
+          {
+            "count": 1,
+            "kind": "string",
+            "label": "true",
+            "list": [
+              true
+            ]
+          },
+          {
+            "count": 1,
+            "kind": "string",
+            "label": "owned",
+            "list": [
+              true
+            ]
+          },
+          {
+            "count": 0,
+            "kind": "object",
+            "label": "object",
+            "list": []
+          },
+          {
+            "count": 0,
+            "kind": "symbol",
+            "label": "Symbol(owned)",
+            "list": []
+          }
+        ],
+        "seen": []
+      }
+    },
+    {
+      "name": "add-and-remove-ordinary-key-coercion",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const h=await import('node:events'),s=new AbortController().signal,seen=[];function f(){}const key={toString(){seen.push('key');return 'owned'}};s.addEventListener(key,f);const afterAdd=h.listenerCount(s,'owned');s.removeEventListener(key,f);return {afterAdd,afterRemove:h.listenerCount(s,'owned'),seen};})()));",
+      "expected": {
+        "afterAdd": 1,
+        "afterRemove": 0,
+        "seen": [
+          "key",
+          "key"
+        ]
+      }
+    },
+    {
+      "name": "onabort-initial-null",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const h=await import('node:events'),c=new AbortController(),s=c.signal,rows=[];s.onabort=null;const first={count:h.listenerCount(s,'abort'),list:h.getEventListeners(s,'abort').map(f=>[typeof f,f.name]),getter:s.onabort??null};s.onabort=()=>rows.push('yes');const second=h.listenerCount(s,'abort');c.abort();return {first,second,rows};})()));",
+      "expected": {
+        "first": {
+          "count": 1,
+          "getter": null,
+          "list": [
+            [
+              "function",
+              "eventHandler"
+            ]
+          ]
+        },
+        "rows": [
+          "yes"
+        ],
+        "second": 2
+      }
+    },
+    {
+      "name": "onabort-initial-undefined",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const h=await import('node:events'),c=new AbortController(),s=c.signal,rows=[];s.onabort=undefined;const first={count:h.listenerCount(s,'abort'),list:h.getEventListeners(s,'abort').map(f=>[typeof f,f.name]),getter:s.onabort??null};s.onabort=()=>rows.push('yes');const second=h.listenerCount(s,'abort');c.abort();return {first,second,rows};})()));",
+      "expected": {
+        "first": {
+          "count": 1,
+          "getter": null,
+          "list": [
+            [
+              "function",
+              "eventHandler"
+            ]
+          ]
+        },
+        "rows": [
+          "yes"
+        ],
+        "second": 2
+      }
+    },
+    {
+      "name": "onabort-initial-number",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const h=await import('node:events'),c=new AbortController(),s=c.signal,rows=[];s.onabort=7;const first={count:h.listenerCount(s,'abort'),list:h.getEventListeners(s,'abort').map(f=>[typeof f,f.name]),getter:s.onabort??null};s.onabort=()=>rows.push('yes');const second=h.listenerCount(s,'abort');c.abort();return {first,second,rows};})()));",
+      "expected": {
+        "first": {
+          "count": 1,
+          "getter": 7,
+          "list": [
+            [
+              "function",
+              "eventHandler"
+            ]
+          ]
+        },
+        "rows": [
+          "yes"
+        ],
+        "second": 2
+      }
+    },
+    {
+      "name": "onabort-external-wrapper-removal-and-readd",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const h=await import('node:events'),c=new AbortController(),s=c.signal,rows=[];s.onabort=()=>rows.push('old');const wrapper=h.getEventListeners(s,'abort')[0];s.removeEventListener('abort',wrapper);const removed=[h.listenerCount(s,'abort'),h.getEventListeners(s,'abort').length];s.onabort=()=>rows.push('new');const readded=[h.listenerCount(s,'abort'),h.getEventListeners(s,'abort').length,h.getEventListeners(s,'abort')[0]===wrapper];c.abort();return {removed,readded,rows};})()));",
+      "expected": {
+        "readded": [
+          1,
+          1,
+          true
+        ],
+        "removed": [
+          0,
+          0
+        ],
+        "rows": [
+          "new"
+        ]
+      }
+    },
+    {
+      "name": "promise-timeout-listener-abort-cleanup",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const h=await import('node:events'),t=await import('node:timers/promises'),c=new AbortController(),s=c.signal,rows=[];const pending=t.setTimeout(1000,'done',{signal:s});const snapshot=()=>({count:h.listenerCount(s,'abort'),list:h.getEventListeners(s,'abort').map(f=>({name:f.name,length:f.length}))});const before=snapshot();c.abort('owned');const immediate=snapshot();try{await pending}catch(error){rows.push([error.name,error.code,error.cause])}return {before,immediate,after:snapshot(),rows};})()));",
+      "expected": {
+        "after": {
+          "count": 0,
+          "list": []
+        },
+        "before": {
+          "count": 1,
+          "list": [
+            {
+              "length": 0,
+              "name": "bound cancelListenerHandler"
+            }
+          ]
+        },
+        "immediate": {
+          "count": 1,
+          "list": [
+            {
+              "length": 0,
+              "name": "bound cancelListenerHandler"
+            }
+          ]
+        },
+        "rows": [
+          [
+            "AbortError",
+            "ABORT_ERR",
+            "owned"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "promise-immediate-listener-abort-cleanup",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const h=await import('node:events'),t=await import('node:timers/promises'),c=new AbortController(),s=c.signal,rows=[];const pending=t.setImmediate('done',{signal:s});const snapshot=()=>({count:h.listenerCount(s,'abort'),list:h.getEventListeners(s,'abort').map(f=>({name:f.name,length:f.length}))});const before=snapshot();c.abort('owned');const immediate=snapshot();try{await pending}catch(error){rows.push([error.name,error.code,error.cause])}return {before,immediate,after:snapshot(),rows};})()));",
+      "expected": {
+        "after": {
+          "count": 0,
+          "list": []
+        },
+        "before": {
+          "count": 1,
+          "list": [
+            {
+              "length": 0,
+              "name": "bound cancelListenerHandler"
+            }
+          ]
+        },
+        "immediate": {
+          "count": 1,
+          "list": [
+            {
+              "length": 0,
+              "name": "bound cancelListenerHandler"
+            }
+          ]
+        },
+        "rows": [
+          [
+            "AbortError",
+            "ABORT_ERR",
+            "owned"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "promise-interval-listener-return-cleanup",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const h=await import('node:events'),t=await import('node:timers/promises'),c=new AbortController(),s=c.signal;const iterator=t.setInterval(1,'done',{signal:s});const initial=h.listenerCount(s,'abort');const pending=iterator.next();const active={count:h.listenerCount(s,'abort'),list:h.getEventListeners(s,'abort').map(f=>({name:f.name,length:f.length}))};const first=await pending;await iterator.return();return {initial,active,first,after:h.listenerCount(s,'abort')};})()));",
+      "expected": {
+        "active": {
+          "count": 1,
+          "list": [
+            {
+              "length": 0,
+              "name": "onCancel"
+            }
+          ]
+        },
+        "after": 0,
+        "first": {
+          "done": false,
+          "value": "done"
+        },
+        "initial": 0
+      }
+    },
+    {
+      "name": "promise-listener-stop-immediate-propagation",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const h=await import('node:events'),t=await import('node:timers/promises'),c=new AbortController(),s=c.signal,rows=[];s.addEventListener('abort',e=>{rows.push('stop');e.stopImmediatePropagation()});const pending=t.setTimeout(1000,0,{signal:s});s.addEventListener('abort',()=>rows.push('skipped'));const before=h.listenerCount(s,'abort');c.abort('owned');try{await pending}catch(error){rows.push(error.code)}return {before,after:h.listenerCount(s,'abort'),rows};})()));",
+      "expected": {
+        "after": 2,
+        "before": 3,
+        "rows": [
+          "stop",
+          "ABORT_ERR"
+        ]
+      }
+    },
+    {
+      "name": "signal-read-hooks-precede-owned-listener-fallback",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const h=await import('node:events'),s=new AbortController().signal,seen=[];function count(type){seen.push(['call-count',this===s,type]);return 9}function list(type){seen.push(['call-list',this===s,type]);return ['owned override']}Object.defineProperty(s,'listenerCount',{get(){seen.push('get-count');return count}});Object.defineProperty(s,'listeners',{get(){seen.push('get-list');return list}});return {count:h.listenerCount(s,'abort'),list:h.getEventListeners(s,'abort'),seen};})()));",
+      "expected": {
+        "count": 9,
+        "list": [
+          "owned override"
+        ],
+        "seen": [
+          "get-count",
+          "get-count",
+          [
+            "call-count",
+            true,
+            "abort"
+          ],
+          "get-list",
+          "get-list",
+          [
+            "call-list",
+            true,
+            "abort"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "signal-get-maximum-hook-shape-precedes-owned-maximum",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const h=await import('node:events'),s=new AbortController().signal,seen=[];h.setMaxListeners(3,s);Object.defineProperty(s,'getMaxListeners',{get(){seen.push('shape');return ()=>{throw Error('must not invoke')}}});Object.defineProperty(s,'_maxListeners',{get(){seen.push('stored');return 8}});return {value:h.getMaxListeners(s),seen};})()));",
+      "expected": {
+        "seen": [
+          "shape",
+          "stored",
+          "stored"
+        ],
+        "value": 8
+      }
+    },
+    {
+      "name": "owned-signal-maximum-set-skips-instance-hook",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const h=await import('node:events'),s=new AbortController().signal,seen=[];Object.defineProperty(s,'setMaxListeners',{get(){seen.push('unexpected-hook');throw Error('must not read')}});const result=h.setMaxListeners(6,s);return {undefinedResult:result===undefined,max:h.getMaxListeners(s),seen};})()));",
+      "expected": {
+        "max": 6,
+        "seen": [],
+        "undefinedResult": true
+      }
+    }
+  ]
+}

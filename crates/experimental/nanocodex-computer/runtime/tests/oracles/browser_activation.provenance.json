@@ -1,0 +1,10 @@
+{
+  "kind": "unchanged inert original-helper observation document",
+  "original_artifact": "/private/tmp/skyre-webmcp-activation-work/attempt-003/stdout.json",
+  "sha256": "ba2485c68167689b479d29535de01c461a68bc43f3a4992c32f4b48eb02dbfd2",
+  "original_manifest": "/private/tmp/skyre-webmcp-activation-work/manifest.json",
+  "manifest_sha256": "b370b42c73b9e3c87cd456f079ac39e0e13c60137565f015acb521833dd715ae",
+  "executed_inputs": "/private/tmp/skyre-webmcp-activation-work/oracle-inputs.json",
+  "script": "/private/tmp/skyre-webmcp-activation-work/tools/observe.cjs",
+  "scope": "Preference/model/common-gate/cache partitions only. No provider execution or advertisement inferred; other rows are retained but not claimed by these tests."
+}

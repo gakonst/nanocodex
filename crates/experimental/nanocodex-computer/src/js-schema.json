@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "code": { "type": "string", "description": "JavaScript to execute using the initialized CUA runtime." },
+    "title": { "type": "string", "description": "Short user-facing description of what the code does.", "minLength": 1, "maxLength": 80 },
+    "timeout_ms": { "type": "integer", "description": "Optional execution timeout in milliseconds. Defaults to 30000 (30 seconds) when omitted.", "minimum": 1 }
+  },
+  "required": ["code"],
+  "additionalProperties": false
+}

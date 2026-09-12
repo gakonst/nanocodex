@@ -1,0 +1,18 @@
+{
+  "browser": {
+    "visibility": {
+      "id": "visibility",
+      "description": "Use to show or hide the browser to the user, and to determine the browser's current visibility. Keep browser work in the background unless the user asks to see it or live viewing is useful. When the browser should be visible, call set(true)."
+    },
+    "viewport": {
+      "id": "viewport",
+      "description": "Controls an explicit browser viewport override for responsive or device-size testing. Use it when a task calls for specific dimensions or breakpoint validation; otherwise leave it unset so the browser uses its normal viewport. Reset temporary overrides before finishing unless the user asked to keep them."
+    }
+  },
+  "tab": {
+    "cdp": {
+      "id": "cdp",
+      "description": "Send raw Chrome DevTools Protocol commands and read debugger events through a supported tab for developer use cases."
+    }
+  }
+}

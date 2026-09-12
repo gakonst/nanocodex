@@ -1,0 +1,142 @@
+--- upstream/quickjs.c
++++ skyre/quickjs.c
+@@ -54235,6 +54235,8 @@
+     struct list_head link; /* not used in promise_reaction_job */
+     JSValue resolving_funcs[2];
+     JSValue handler;
++    /* Host-only identity token for registration-time async context. */
++    JSValue hook_promise;
+ } JSPromiseReactionData;
+ 
+ JSPromiseStateEnum JS_PromiseState(JSContext *ctx, JSValueConst promise)
+@@ -54274,6 +54276,7 @@
+     JS_FreeValueRT(rt, rd->resolving_funcs[0]);
+     JS_FreeValueRT(rt, rd->resolving_funcs[1]);
+     JS_FreeValueRT(rt, rd->handler);
++    JS_FreeValueRT(rt, rd->hook_promise);
+     js_free_rt(rt, rd);
+ }
+ 
+@@ -54294,8 +54297,14 @@
+     JSValue res, res2;
+     JSValueConst arg;
+     bool is_reject;
++    JSPromiseHook *hook = ctx->rt->promise_hook;
++    void *hook_opaque = ctx->rt->promise_hook_opaque;
++    bool have_hook;
+ 
+-    assert(argc == 5);
++    assert(argc == 6);
++    have_hook = hook && !JS_IsUndefined(argv[5]);
++    if (have_hook)
++        hook(ctx, JS_PROMISE_HOOK_BEFORE, argv[5], JS_UNDEFINED, hook_opaque);
+     handler = argv[2];
+     is_reject = JS_ToBool(ctx, argv[3]);
+     arg = argv[4];
+@@ -54313,8 +54322,10 @@
+     }
+     is_reject = JS_IsException(res);
+     if (is_reject) {
+-        if (unlikely(JS_IsUncatchableError(ctx->rt->current_exception)))
+-            return JS_EXCEPTION;
++        if (unlikely(JS_IsUncatchableError(ctx->rt->current_exception))) {
++            res2 = JS_EXCEPTION;
++            goto done;
++        }
+         res = JS_GetException(ctx);
+     }
+     func = argv[is_reject];
+@@ -54328,6 +54339,10 @@
+     }
+     JS_FreeValue(ctx, res);
+ 
++ done:
++    if (have_hook && ctx->rt->promise_hook == hook &&
++        ctx->rt->promise_hook_opaque == hook_opaque)
++        hook(ctx, JS_PROMISE_HOOK_AFTER, argv[5], JS_UNDEFINED, hook_opaque);
+     return res2;
+ }
+ 
+@@ -54351,7 +54366,7 @@
+     JSPromiseData *s = JS_GetOpaque(promise, JS_CLASS_PROMISE);
+     struct list_head *el, *el1;
+     JSPromiseReactionData *rd;
+-    JSValueConst args[5];
++    JSValueConst args[6];
+ 
+     if (!s || s->promise_state != JS_PROMISE_PENDING)
+         return; /* should never happen */
+@@ -54382,7 +54397,8 @@
+         args[2] = rd->handler;
+         args[3] = js_bool(is_reject);
+         args[4] = value;
+-        JS_EnqueueJob(ctx, promise_reaction_job, 5, args);
++        args[5] = rd->hook_promise;
++        JS_EnqueueJob(ctx, promise_reaction_job, 6, args);
+         list_del(&rd->link);
+         promise_reaction_data_free(ctx->rt, rd);
+     }
+@@ -54590,6 +54606,7 @@
+             JS_MarkValue(rt, rd->resolving_funcs[0], mark_func);
+             JS_MarkValue(rt, rd->resolving_funcs[1], mark_func);
+             JS_MarkValue(rt, rd->handler, mark_func);
++            JS_MarkValue(rt, rd->hook_promise, mark_func);
+         }
+     }
+     JS_MarkValue(rt, s->promise_result, mark_func);
+@@ -55137,7 +55154,20 @@
+     JSPromiseData *s = JS_GetOpaque(promise, JS_CLASS_PROMISE);
+     JSPromiseReactionData *rd_array[2], *rd;
+     int i, j;
++    JSValue hook_promise = JS_UNDEFINED;
+ 
++    /* Await reactions omit result capabilities. Give every hook-enabled
++       reaction pair a private native Promise to capture registration context.
++       This never calls the mutable JS Promise constructor or its species. */
++    if (ctx->rt->promise_hook) {
++        JSValue hook_resolvers[2];
++        hook_promise = JS_NewPromiseCapability(ctx, hook_resolvers);
++        if (JS_IsException(hook_promise))
++            return -1;
++        JS_FreeValue(ctx, hook_resolvers[0]);
++        JS_FreeValue(ctx, hook_resolvers[1]);
++    }
++
+     rd_array[0] = NULL;
+     rd_array[1] = NULL;
+     for(i = 0; i < 2; i++) {
+@@ -55146,8 +55176,10 @@
+         if (!rd) {
+             if (i == 1)
+                 promise_reaction_data_free(ctx->rt, rd_array[0]);
++            JS_FreeValue(ctx, hook_promise);
+             return -1;
+         }
++        rd->hook_promise = js_dup(hook_promise);
+         for(j = 0; j < 2; j++)
+             rd->resolving_funcs[j] = js_dup(cap_resolving_funcs[j]);
+         handler = resolve_reject[i];
+@@ -55157,11 +55189,12 @@
+         rd_array[i] = rd;
+     }
+ 
++    JS_FreeValue(ctx, hook_promise);
+     if (s->promise_state == JS_PROMISE_PENDING) {
+         for(i = 0; i < 2; i++)
+             list_add_tail(&rd_array[i]->link, &s->promise_reactions[i]);
+     } else {
+-        JSValueConst args[5];
++        JSValueConst args[6];
+         if (s->promise_state == JS_PROMISE_REJECTED && !s->is_handled) {
+             JSRuntime *rt = ctx->rt;
+             if (rt->host_promise_rejection_tracker)
+@@ -55175,7 +55208,8 @@
+         args[2] = rd->handler;
+         args[3] = js_bool(i);
+         args[4] = s->promise_result;
+-        JS_EnqueueJob(ctx, promise_reaction_job, 5, args);
++        args[5] = rd->hook_promise;
++        JS_EnqueueJob(ctx, promise_reaction_job, 6, args);
+         for(i = 0; i < 2; i++)
+             promise_reaction_data_free(ctx->rt, rd_array[i]);
+     }

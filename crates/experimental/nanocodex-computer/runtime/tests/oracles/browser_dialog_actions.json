@@ -1,0 +1,5974 @@
+{
+  "source_sha256": "3032666de451e423db76b5f9b0456e370d4f57416bbf53d0c746be636359ba02",
+  "bindings": [
+    {
+      "name": "Pn",
+      "kind": "var",
+      "value_kind": "ClassExpression",
+      "start_utf8": 676890,
+      "end_utf8": 677280,
+      "sha256": "81f2dfc85aaba731bb9a316851b2ba2d72fe69eab9c8fb8f0b959d0a9f29cddc"
+    },
+    {
+      "name": "p7",
+      "kind": "var",
+      "value_kind": "Literal",
+      "start_utf8": 677285,
+      "end_utf8": 677312,
+      "sha256": "695a435dc41f64ad4a3f6ac6a8ab48c93fdff4e1befe1f791a3987d4e3c88fb8"
+    },
+    {
+      "name": "vk",
+      "kind": "var",
+      "value_kind": "Literal",
+      "start_utf8": 677313,
+      "end_utf8": 677319,
+      "sha256": "4db29d5c5863ff69c1c85e27ff5d3234659bf8fcfb917dfdf6bc7cc79ef6608d"
+    },
+    {
+      "name": "m7",
+      "kind": "var",
+      "value_kind": "Literal",
+      "start_utf8": 677320,
+      "end_utf8": 677326,
+      "sha256": "f1219bc49f8657e8c361ac9408f420ac432e807903457dd71c375412eb57e096"
+    },
+    {
+      "name": "f7",
+      "kind": "var",
+      "value_kind": "Literal",
+      "start_utf8": 677327,
+      "end_utf8": 677332,
+      "sha256": "8650df9b78c7e1d6e30d7caec76c5c2378b1042462f242c14d7dc591a3a1a3dc"
+    },
+    {
+      "name": "yr",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 677333,
+      "end_utf8": 677391,
+      "sha256": "6cbe6fefde5e8cc2e747e8722fb535b5acc697ba9c7efc0a11ce8b714f9d2161"
+    },
+    {
+      "name": "Zp",
+      "kind": "var",
+      "value_kind": "ClassExpression",
+      "start_utf8": 677395,
+      "end_utf8": 701072,
+      "sha256": "b1e32a2bf95b00ebd1c32a238d13ff665dda2b96ef3b24bfd4383359cf718d5f"
+    },
+    {
+      "name": "zy",
+      "kind": "var",
+      "value_kind": "Literal",
+      "start_utf8": 701073,
+      "end_utf8": 701137,
+      "sha256": "d865e83369881ef032782df8e6c6be218aac50eabe6edb59d6fedceb17ebf3e3"
+    },
+    {
+      "name": "Kp",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 701138,
+      "end_utf8": 701252,
+      "sha256": "3e461b52eef378b11ae2b4f1cff331681a42dbb1054605a2fbbdcbddba2342cc"
+    },
+    {
+      "name": "lt",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 701252,
+      "end_utf8": 701335,
+      "sha256": "25d80f6fbae20efbe705337763f40372c2b7a8e0faa802b0b421cc4cd60b9e91"
+    },
+    {
+      "name": "bs",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 701335,
+      "end_utf8": 701384,
+      "sha256": "e33121543122432a0a967d96f7b527ffe01aad9ae8934f87205cf1f7fa4804b5"
+    },
+    {
+      "name": "Jp",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 701384,
+      "end_utf8": 701522,
+      "sha256": "e6a41fa1ac8d3cd722cadbdc6d17e084af8406c8fe551687c1fb75e0fb3735bb"
+    },
+    {
+      "name": "xk",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 701522,
+      "end_utf8": 701574,
+      "sha256": "2639925baaccc43f4a7f7ff2ba4173a4d84cb26abe697eb5b9e1f789ae54d87e"
+    },
+    {
+      "name": "Yp",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 701574,
+      "end_utf8": 701846,
+      "sha256": "5b2eb6121d925f708a8e476bc8517dfa74990c1e7147768857df23c58cd2136a"
+    },
+    {
+      "name": "h7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 701846,
+      "end_utf8": 702049,
+      "sha256": "e329db86840c1f42f7de713583ee18f168e986e96a78d28a1ae4e46e895ce9b8"
+    },
+    {
+      "name": "Xp",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 702049,
+      "end_utf8": 702152,
+      "sha256": "1ccdf333344363d0775a58fc90732bb583dd2a2446068d7755a015eee9788bfe"
+    },
+    {
+      "name": "g7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 702152,
+      "end_utf8": 702220,
+      "sha256": "2c4bbdfc3041e2236d1a39e96f2c953d058406998c2fc7983dafe2237055eaa1"
+    },
+    {
+      "name": "b7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 702220,
+      "end_utf8": 702310,
+      "sha256": "3b3788522f7465001028574a75d9a7d2c35a2668fda304e362518da37affd1e8"
+    },
+    {
+      "name": "Sk",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 702310,
+      "end_utf8": 702368,
+      "sha256": "79c98e4595b50b8c76f65e1dbf5d0554da00adb6cf4741c3806b850cba2bd646"
+    },
+    {
+      "name": "Ck",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 702368,
+      "end_utf8": 702411,
+      "sha256": "6cc762ac472294c02aa01677ed799e0c7aa134c36c0e2d361d45c03308d495a3"
+    },
+    {
+      "name": "y7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 702411,
+      "end_utf8": 702676,
+      "sha256": "bd482e2c244e5cc0a223d3313a9b6ab1915e1b2f610cffb36cb4957550939042"
+    },
+    {
+      "name": "w7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 702676,
+      "end_utf8": 702768,
+      "sha256": "d3862691a87d252b66a7d58b42c1c6f093517e6975690bed67ec7cd0c95d9a1d"
+    },
+    {
+      "name": "_7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 702768,
+      "end_utf8": 702935,
+      "sha256": "8af962f4ed19954bc2f151c67cee034b6426135950897e1213508987fea6fa3b"
+    },
+    {
+      "name": "Ik",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 702935,
+      "end_utf8": 703034,
+      "sha256": "97791d393cb4f7afea7ac6b309f0a8ecc71bf909fa1c52416f891379fb668932"
+    },
+    {
+      "name": "Vy",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703034,
+      "end_utf8": 703070,
+      "sha256": "f11a73ffe3417a018a8638600964d49e6f67c9dfa595e55e74507f787c0b9897"
+    },
+    {
+      "name": "Bo",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703070,
+      "end_utf8": 703134,
+      "sha256": "ddf6fe9c947daeb0ef43c582bade225d262f1f8d0cef5db344f6736766d8755c"
+    },
+    {
+      "name": "Tk",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703134,
+      "end_utf8": 703210,
+      "sha256": "4261612472f8ee49556e23af0d5b43fdfe5656591710d0598b4ddfa5d540aa19"
+    },
+    {
+      "name": "Kt",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703210,
+      "end_utf8": 703257,
+      "sha256": "7fd7b7b8768ba6cc127e8f4b0b57eabbf0e6be29e9a83fa8f34a34844bb44413"
+    },
+    {
+      "name": "Ek",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703257,
+      "end_utf8": 703372,
+      "sha256": "8e0342c0ec330279a5d6c9daf468f80adb3c3f29c1f68e2129c47c5e89dff53e"
+    },
+    {
+      "name": "Ak",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703372,
+      "end_utf8": 703425,
+      "sha256": "0dcafb9bc6dd38c0f3d8fe4912d9d41b64d8f61e0bd7504534679fed2551b02f"
+    },
+    {
+      "name": "v7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703425,
+      "end_utf8": 703517,
+      "sha256": "70c47b55b54b9dcc8d15f1f095e90e432966993608e81b2c0eea9c1d519261df"
+    },
+    {
+      "name": "x7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703517,
+      "end_utf8": 703622,
+      "sha256": "55ede8f9a3b0e9b6003c4096c802803011eece8bdb4cfd36a20bb527f0885411"
+    },
+    {
+      "name": "Pk",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703622,
+      "end_utf8": 703751,
+      "sha256": "a6bda364de1adea96c4eb997d24fb3994ea86c06e90727654dcbbd3522c93e7d"
+    },
+    {
+      "name": "S7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703751,
+      "end_utf8": 703805,
+      "sha256": "2c57c1d67f0292b5ed4cf7ac3d00de20f9955097c4be132281573ed6be223cc4"
+    },
+    {
+      "name": "C7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703805,
+      "end_utf8": 703888,
+      "sha256": "cc5e0a55ea8c37b22f374e2e611778b42fe30a8b75cc1c4bc91eaf48cee6b728"
+    },
+    {
+      "name": "T7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703888,
+      "end_utf8": 703993,
+      "sha256": "1bcee8002c0c2844d04c9373b9f7f87ab653e09bc64fc4951aa1bd9d9a42045e"
+    },
+    {
+      "name": "E7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703993,
+      "end_utf8": 704053,
+      "sha256": "240280cd7b02316492db4e475f7dbf09429e349baa4b6d1f6e16522ffbc73d68"
+    },
+    {
+      "name": "A7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 704053,
+      "end_utf8": 704167,
+      "sha256": "8815080d9ffa98af24405f576945ac9ad5b6ea7428d670b79c7da11cf54a107f"
+    },
+    {
+      "name": "P7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 704167,
+      "end_utf8": 704332,
+      "sha256": "df57423f6984001a20db82829f0a3a621b32f4e9c1aa749c2a085468f9f48194"
+    },
+    {
+      "name": "In",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 704332,
+      "end_utf8": 704492,
+      "sha256": "d48c699418569f034988fdd61c99244321e7e9aa833230d5cbf7a42c618de87e"
+    },
+    {
+      "name": "I7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 704492,
+      "end_utf8": 704749,
+      "sha256": "8f1b27975db1f9bd9a2fc7ea2c773afba7120be6a3e735c100c387c011ec5b7f"
+    },
+    {
+      "name": "R7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 704749,
+      "end_utf8": 704886,
+      "sha256": "5ecc83a7f9899d10b5d2cebea212a09dd30c2931533a5849dc0b44b01cb7d946"
+    },
+    {
+      "name": "k7",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 704886,
+      "end_utf8": 704981,
+      "sha256": "a2a94e480854b5ae5d1d65cb0c9c27ef39f3edf742814a9b1a874f4ef7784527"
+    },
+    {
+      "name": "ht",
+      "kind": "var",
+      "value_kind": "ClassExpression",
+      "start_utf8": 241818,
+      "end_utf8": 242036,
+      "sha256": "642eca669f844ad69ea01f4e8bff28244d1f70556ad95e751546aa38ceb5dc6a"
+    },
+    {
+      "name": "yU",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 242037,
+      "end_utf8": 242378,
+      "sha256": "2a1c63ecebb74e6938949de37eddb9e85c0cf3e89bc57ed31f752c251ddc10d8"
+    },
+    {
+      "name": "Ov",
+      "kind": "var",
+      "value_kind": "ObjectExpression",
+      "start_utf8": 239735,
+      "end_utf8": 241817,
+      "sha256": "e2f1a8368a89ded80fe5efb6ea7cbca0633b67ae3de61d6b1f56ba0cf257cb00"
+    },
+    {
+      "name": "Xn",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 242430,
+      "end_utf8": 242849,
+      "sha256": "1241144477df3e2d5708a2c84406513cd4b61a2731b0ee9348e052ba8e69141d"
+    },
+    {
+      "name": "M",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 254894,
+      "end_utf8": 254987,
+      "sha256": "1714e08626806637bfc4b2f8ad40ec054c6107c42a0479aaf66000c6365d7953"
+    },
+    {
+      "name": "um",
+      "kind": "var",
+      "value_kind": "CallExpression",
+      "start_utf8": 767996,
+      "end_utf8": 768619,
+      "sha256": "26feeda79ec833072e855c2c922981eabc8a230defc0007f468d4a4bdea671d5"
+    },
+    {
+      "name": "ZG",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 768620,
+      "end_utf8": 768720,
+      "sha256": "b56cba1cea5d79370464d0c3575261cf89bc20295c0d7a476b592d462dea0e8e"
+    }
+  ],
+  "schema_binding": {
+    "name": "NC",
+    "kind": "var",
+    "value_kind": "CallExpression",
+    "start_utf8": 498106,
+    "end_utf8": 498251,
+    "sha256": "bc87a029ed8fdd47b155f870f5ab319506c26e332a247c2844e40e04234043dc"
+  },
+  "scope": "Zp opening/getter and um identity/type/action lowering; schema declaration retained; U1 scheduling separate",
+  "opening_cases": [
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "alert"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "alert",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "alert"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "alert",
+          "message": null,
+          "defaultPrompt": null,
+          "url": null
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "alert",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "alert"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "alert",
+          "message": "",
+          "defaultPrompt": "",
+          "url": ""
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "alert",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "alert"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "alert",
+          "message": "Owned \u03b4ialog",
+          "defaultPrompt": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d",
+          "url": "http://127.0.0.1/owned"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "Owned \u03b4ialog",
+            "promptText": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d",
+            "type": "alert",
+            "url": "http://127.0.0.1/owned"
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "alert"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "alert",
+          "message": 0,
+          "defaultPrompt": false,
+          "url": {
+            "owned": true
+          },
+          "irrelevant": "omit"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": 0,
+            "promptText": false,
+            "type": "alert",
+            "url": {
+              "owned": true
+            }
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "alert"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "confirm"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "confirm",
+          "message": null,
+          "defaultPrompt": null,
+          "url": null
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "confirm",
+          "message": "",
+          "defaultPrompt": "",
+          "url": ""
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "confirm",
+          "message": "Owned \u03b4ialog",
+          "defaultPrompt": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d",
+          "url": "http://127.0.0.1/owned"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "Owned \u03b4ialog",
+            "promptText": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d",
+            "type": "confirm",
+            "url": "http://127.0.0.1/owned"
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "confirm",
+          "message": 0,
+          "defaultPrompt": false,
+          "url": {
+            "owned": true
+          },
+          "irrelevant": "omit"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": 0,
+            "promptText": false,
+            "type": "confirm",
+            "url": {
+              "owned": true
+            }
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "prompt"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "prompt",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "prompt"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "prompt",
+          "message": null,
+          "defaultPrompt": null,
+          "url": null
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "prompt",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "prompt"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "prompt",
+          "message": "",
+          "defaultPrompt": "",
+          "url": ""
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "prompt",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "prompt"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "prompt",
+          "message": "Owned \u03b4ialog",
+          "defaultPrompt": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d",
+          "url": "http://127.0.0.1/owned"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "Owned \u03b4ialog",
+            "promptText": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d",
+            "type": "prompt",
+            "url": "http://127.0.0.1/owned"
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "prompt"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "prompt",
+          "message": 0,
+          "defaultPrompt": false,
+          "url": {
+            "owned": true
+          },
+          "irrelevant": "omit"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": 0,
+            "promptText": false,
+            "type": "prompt",
+            "url": {
+              "owned": true
+            }
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "prompt"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "beforeunload"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "beforeunload",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "beforeunload"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "beforeunload",
+          "message": null,
+          "defaultPrompt": null,
+          "url": null
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "beforeunload",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "beforeunload"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "beforeunload",
+          "message": "",
+          "defaultPrompt": "",
+          "url": ""
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "beforeunload",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "beforeunload"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "beforeunload",
+          "message": "Owned \u03b4ialog",
+          "defaultPrompt": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d",
+          "url": "http://127.0.0.1/owned"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "Owned \u03b4ialog",
+            "promptText": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d",
+            "type": "beforeunload",
+            "url": "http://127.0.0.1/owned"
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "beforeunload"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "beforeunload",
+          "message": 0,
+          "defaultPrompt": false,
+          "url": {
+            "owned": true
+          },
+          "irrelevant": "omit"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": 0,
+            "promptText": false,
+            "type": "beforeunload",
+            "url": {
+              "owned": true
+            }
+          },
+          "session": null,
+          "public": {
+            "id": "2",
+            "type": "beforeunload"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "unsupported"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "unsupported",
+          "message": null,
+          "defaultPrompt": null,
+          "url": null
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "unsupported",
+          "message": "",
+          "defaultPrompt": "",
+          "url": ""
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "unsupported",
+          "message": "Owned \u03b4ialog",
+          "defaultPrompt": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d",
+          "url": "http://127.0.0.1/owned"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": null,
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "unsupported",
+          "message": 0,
+          "defaultPrompt": false,
+          "url": {
+            "owned": true
+          },
+          "irrelevant": "omit"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": null,
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "alert"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "alert",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "alert"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "alert",
+          "message": null,
+          "defaultPrompt": null,
+          "url": null
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "alert",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "alert"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "alert",
+          "message": "",
+          "defaultPrompt": "",
+          "url": ""
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "alert",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "alert"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "alert",
+          "message": "Owned \u03b4ialog",
+          "defaultPrompt": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d",
+          "url": "http://127.0.0.1/owned"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "Owned \u03b4ialog",
+            "promptText": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d",
+            "type": "alert",
+            "url": "http://127.0.0.1/owned"
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "alert"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "alert",
+          "message": 0,
+          "defaultPrompt": false,
+          "url": {
+            "owned": true
+          },
+          "irrelevant": "omit"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": 0,
+            "promptText": false,
+            "type": "alert",
+            "url": {
+              "owned": true
+            }
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "alert"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "confirm"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "confirm",
+          "message": null,
+          "defaultPrompt": null,
+          "url": null
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "confirm",
+          "message": "",
+          "defaultPrompt": "",
+          "url": ""
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "confirm",
+          "message": "Owned \u03b4ialog",
+          "defaultPrompt": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d",
+          "url": "http://127.0.0.1/owned"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "Owned \u03b4ialog",
+            "promptText": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d",
+            "type": "confirm",
+            "url": "http://127.0.0.1/owned"
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "confirm",
+          "message": 0,
+          "defaultPrompt": false,
+          "url": {
+            "owned": true
+          },
+          "irrelevant": "omit"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": 0,
+            "promptText": false,
+            "type": "confirm",
+            "url": {
+              "owned": true
+            }
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "prompt"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "prompt",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "prompt"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "prompt",
+          "message": null,
+          "defaultPrompt": null,
+          "url": null
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "prompt",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "prompt"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "prompt",
+          "message": "",
+          "defaultPrompt": "",
+          "url": ""
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "prompt",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "prompt"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "prompt",
+          "message": "Owned \u03b4ialog",
+          "defaultPrompt": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d",
+          "url": "http://127.0.0.1/owned"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "Owned \u03b4ialog",
+            "promptText": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d",
+            "type": "prompt",
+            "url": "http://127.0.0.1/owned"
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "prompt"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "prompt",
+          "message": 0,
+          "defaultPrompt": false,
+          "url": {
+            "owned": true
+          },
+          "irrelevant": "omit"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": 0,
+            "promptText": false,
+            "type": "prompt",
+            "url": {
+              "owned": true
+            }
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "prompt"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "beforeunload"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "beforeunload",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "beforeunload"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "beforeunload",
+          "message": null,
+          "defaultPrompt": null,
+          "url": null
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "beforeunload",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "beforeunload"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "beforeunload",
+          "message": "",
+          "defaultPrompt": "",
+          "url": ""
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "",
+            "promptText": "",
+            "type": "beforeunload",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "beforeunload"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "beforeunload",
+          "message": "Owned \u03b4ialog",
+          "defaultPrompt": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d",
+          "url": "http://127.0.0.1/owned"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": "Owned \u03b4ialog",
+            "promptText": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d",
+            "type": "beforeunload",
+            "url": "http://127.0.0.1/owned"
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "beforeunload"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "beforeunload",
+          "message": 0,
+          "defaultPrompt": false,
+          "url": {
+            "owned": true
+          },
+          "irrelevant": "omit"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "2",
+            "message": 0,
+            "promptText": false,
+            "type": "beforeunload",
+            "url": {
+              "owned": true
+            }
+          },
+          "session": "child",
+          "public": {
+            "id": "2",
+            "type": "beforeunload"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "unsupported"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "unsupported",
+          "message": null,
+          "defaultPrompt": null,
+          "url": null
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "unsupported",
+          "message": "",
+          "defaultPrompt": "",
+          "url": ""
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "unsupported",
+          "message": "Owned \u03b4ialog",
+          "defaultPrompt": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d",
+          "url": "http://127.0.0.1/owned"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        }
+      ]
+    },
+    {
+      "session": "child",
+      "events": [
+        {
+          "type": "confirm",
+          "message": "previous"
+        },
+        {
+          "type": "unsupported",
+          "message": 0,
+          "defaultPrompt": false,
+          "url": {
+            "owned": true
+          },
+          "irrelevant": "omit"
+        }
+      ],
+      "rows": [
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        },
+        {
+          "value": {
+            "id": "1",
+            "message": "previous",
+            "promptText": "",
+            "type": "confirm",
+            "url": ""
+          },
+          "session": "child",
+          "public": {
+            "id": "1",
+            "type": "confirm"
+          }
+        }
+      ]
+    }
+  ],
+  "action_cases": [
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept"
+      },
+      "outcome": {
+        "error": "Dialog type alert does not support accept()"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "Dialog type alert does not support accept()"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "Dialog type alert does not support accept()"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "Dialog type alert does not support accept()"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "Dialog type alert does not support accept()"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss"
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": true
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss",
+        "prompt_text": null
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": true
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": true
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": true
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": true
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid"
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "alert",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "alert"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept"
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": true
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept",
+        "prompt_text": null
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": true
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "Confirm dialogs do not accept prompt text"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "Confirm dialogs do not accept prompt text"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "Confirm dialogs do not accept prompt text"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss"
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": false
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss",
+        "prompt_text": null
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": false
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": false
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": false
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": false
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid"
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "confirm",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "confirm"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept"
+      },
+      "outcome": {
+        "error": "Prompt dialogs require prompt text"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "Prompt dialogs require prompt text"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "Prompt dialogs require prompt text"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": true,
+            "promptText": ""
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": true,
+            "promptText": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss"
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": false
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss",
+        "prompt_text": null
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": false
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": false
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": false
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": false
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid"
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "prompt",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "prompt"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept"
+      },
+      "outcome": {
+        "error": "Dialog type beforeunload does not support accept()"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "Dialog type beforeunload does not support accept()"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "Dialog type beforeunload does not support accept()"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "Dialog type beforeunload does not support accept()"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "accept",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "Dialog type beforeunload does not support accept()"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "accept",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "accept",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss"
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": false
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss",
+        "prompt_text": null
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": false
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": false
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": false
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "dismiss",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "result": {}
+      },
+      "calls": [
+        {
+          "tab": 1,
+          "id": "1",
+          "target": {
+            "tabId": 1
+          },
+          "params": {
+            "accept": false
+          }
+        }
+      ],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "dismiss",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "dismiss",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid"
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid",
+        "prompt_text": null
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid",
+        "prompt_text": 0
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid",
+        "prompt_text": ""
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "1",
+        "action": "invalid",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "Unsupported dialog action: invalid"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "old",
+        "action": "invalid",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "JavaScript dialog is no longer active"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    },
+    {
+      "type": "beforeunload",
+      "args": {
+        "tab_id": "1",
+        "dialog_id": "",
+        "action": "invalid",
+        "prompt_text": "\u03ba\u03b1\u03bb\u03b7\u03bc\u03ad\u03c1\u03b1 \ud83c\udf0d"
+      },
+      "outcome": {
+        "error": "handleJsDialog requires a dialog_id"
+      },
+      "calls": [],
+      "remaining": {
+        "id": "1",
+        "type": "beforeunload"
+      }
+    }
+  ]
+}

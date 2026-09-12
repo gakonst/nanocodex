@@ -1,0 +1,14 @@
+{
+  "source_audit": "/private/tmp/skyre-generic-eventtarget-source-f4mjqk7j/original-audit",
+  "source_audit_manifest_sha256": "24b528de46032be259f88b521fc768a5bd760da8a301a66b765a7647b3ce17fb",
+  "source_oracle_sha256": "7b5bbd8e9ac25d12223f2dc08ef0a4eca0d2659923fd2f19385eec31536aed86",
+  "copy_sha256": "7b5bbd8e9ac25d12223f2dc08ef0a4eca0d2659923fd2f19385eec31536aed86",
+  "scope": "Actual inert installed-kernel observations, exact copied oracle; no original provider or native conformance execution in this proposal",
+  "original_command": "reference/attempt-001/command.json",
+  "original_case_definitions": "reference/cases.json",
+  "original_raw_request_stream": "reference/attempt-001/stdin.raw",
+  "original_raw_response_stream": "reference/attempt-001/stdout.raw",
+  "original_external_roots": "external-evidence-roots.json",
+  "case_count": 17,
+  "claims_added": 0
+}
