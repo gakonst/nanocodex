@@ -1,0 +1,69 @@
+{
+  "started_at": "2026-09-11T11:00:48.623623+00:00",
+  "actions": [
+    [
+      "delete",
+      "nanocodex-perf-front-0911",
+      "--force",
+      "--config",
+      "benchmark/front.json"
+    ],
+    [
+      "containers",
+      "delete",
+      "a03faa41-aea9-4760-b221-468a5a597b66",
+      "--config",
+      "benchmark/managed.json"
+    ],
+    [
+      "deploy",
+      "--config",
+      "/tmp/nanocodex-perf-cleanup-egress.json",
+      "--containers-rollout",
+      "none"
+    ],
+    [
+      "deploy",
+      "--config",
+      "/tmp/nanocodex-perf-cleanup-managed.json",
+      "--containers-rollout",
+      "none"
+    ],
+    [
+      "delete",
+      "nanocodex-perf-managed-0911",
+      "--force",
+      "--config",
+      "benchmark/managed.json"
+    ],
+    [
+      "delete",
+      "nanocodex-perf-egress-0911",
+      "--force",
+      "--config",
+      "benchmark/egress.json"
+    ],
+    [
+      "r2",
+      "bucket",
+      "delete",
+      "nanocodex-perf-0911",
+      "--config",
+      "benchmark/managed.json"
+    ]
+  ],
+  "remaining_fixture_namespaces": [],
+  "finished_at": "2026-09-11T11:02:04.541852+00:00",
+  "resource_audit": {
+    "original_namespace_ids_checked": 15,
+    "remaining_namespace_ids": [],
+    "remaining_services": [],
+    "remaining_buckets": [],
+    "remaining_container_applications": []
+  },
+  "private_cleanup": {
+    "completed_at": "2026-09-11T11:05:57.981692+00:00",
+    "temporary_files_removed": 10,
+    "original_provider_credentials_and_wrangler_login_preserved": true
+  }
+}

@@ -4,6 +4,7 @@ import type { AgentSessionContext, PromptInput } from "nanocodex";
 import type { DurableAgentSession } from "../src/index";
 import { ManagedStartupContext, type StartupEnvironment } from "../src/startup-context";
 
+import { accountToolsEnabled, configuredBootstrapPlan, parseConfiguration } from "../src/agent-configuration";
 import { Agent } from "nanocodex/cloudflare";
 import { promptInputText } from "nanocodex-tools/session";
 import { X_API } from "nanocodex-tools/x";
@@ -52,6 +53,33 @@ const contextText = (state: DurableObjectState) => state.storage.sql.exec<{ cont
 ).one().content;
 
 describe("managed first-prompt bootstrap boundary", () => {
+  it("does not retrieve history or account context excluded by agent configuration", async () => {
+    const original = await plan(firstPrompt);
+    expect(original.calls.length).toBeGreaterThan(0);
+    expect(accountToolsEnabled({})).toBe(true);
+    expect(configuredBootstrapPlan({}, original).calls).toEqual(original.calls);
+    expect(configuredBootstrapPlan({ tools: ["memory"] }, original).calls.map(call => call.name)).toEqual(["memory"]);
+    for (const config of [{ tools: [] }, { tools: ["exec_command"] },
+      { environment: { network: { access: "disabled" } } },
+      { environment: { network: { access: "restricted", allowed_domains: ["example.com"] } } }]) {
+      const parsed = parseConfiguration(config);
+      expect(accountToolsEnabled(parsed)).toBe(false);
+      await withStartup(async (startup, state) => {
+        const filtered = configuredBootstrapPlan(parsed, original);
+        const execute = vi.fn(async () => ({}));
+        const environment = vi.fn(async () => undefined);
+        await startup.prefetch("voice", "auth", filtered, execute, assertActive);
+        startup.reserve("first", filtered);
+        await startup.prepare("first", execute, environment, assertActive);
+        const runtime = developerSession();
+        await startup.inject("first", runtime, assertActive);
+        expect(execute).not.toHaveBeenCalled();
+        expect(environment).not.toHaveBeenCalled();
+        expect(runtime.appendDeveloperMessage).not.toHaveBeenCalled();
+        expect(state.storage.sql.exec("SELECT * FROM managed_prompt_startup_tools").toArray()).toEqual([]);
+      });
+    }
+  });
   it("adopts in-flight exact-query reads only after admission, including their citation projection", async () => {
     await withStartup(async (startup, state) => {
       const search = await plan(firstPrompt);

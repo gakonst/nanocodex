@@ -1,3 +1,4 @@
+import { responseControlsSocket } from "../runtime/response-controls.mjs";
 import * as HostAgent from "../host/Agent.mjs";
 import {
   CLOUDFLARE_SESSION_RESERVATION,
@@ -319,7 +320,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
       try {
         const opened = await endpoint.createWebSocket(url, id, request);
         if (request.authorization === "preconnect") startup.resolve();
-        return opened;
+        return { ...opened, socket: responseControlsSocket(opened.socket, internalRuntime?.responseControls) };
       } catch (error) {
         if (request.authorization === "preconnect") startup.reject(error);
         throw error;
@@ -350,6 +351,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
       codeEvaluator: internalRuntime?.codeEvaluator,
       [Symbol.for("nanocodex.browser.internalRuntime")]: {
         toolProviders: internalRuntime?.toolProviders,
+        subagentsEnabled: internalRuntime?.subagentsEnabled,
         subagentMaxConcurrency: internalRuntime?.subagentMaxConcurrency,
         subagentSessions,
         [CLOUDFLARE_SESSION_RESERVATION]: sessionReservation,

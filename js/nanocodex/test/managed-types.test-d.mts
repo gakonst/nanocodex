@@ -31,6 +31,9 @@ async function checkManaged() {
   // @ts-expect-error thread terminology was replaced by sessions.
   Agent.readThread;
   const created: ManagedAgent = await Agent.create();
+  await Agent.create({ idempotencyKey: "create:job-42" });
+  // @ts-expect-error creation keys must be strings.
+  await Agent.create({ idempotencyKey: 42 });
   await created.events.page({ after: "0", limit: 128 });
   await created.events.page({ before: "99" });
   const optionalCursor: string | undefined = Math.random() > 0.5 ? "1" : undefined;
@@ -171,3 +174,21 @@ async function checkManaged() {
 }
 
 void checkManaged;
+
+async function configurationContracts() {
+  await Agent.create({ configuration: { multi_agent: { enabled: false } } });
+  await Agent.definitions.put("delegating", { multi_agent: { enabled: true, max_concurrent_subagents: 2 } });
+  // @ts-expect-error disabled delegation cannot specify a concurrency limit
+  await Agent.create({ configuration: { multi_agent: { enabled: false, max_concurrent_subagents: 2 } } });
+  await Agent.definitions.put("reviewer", { instructions: "Review", tools: [], prompt_cache: "explicit" });
+  await Agent.environments.put("offline", { network: { access: "disabled" }, files: [{ path: "/brain/skills/demo/SKILL.md", content: "skill" }] });
+  const agent = await Agent.create({ definitionId: "reviewer", environmentTemplateId: "offline" });
+  await agent.usage({ after: "0" });
+  await agent.configuration(); await agent.environment();
+  await agent.webhook.create("https://example.com/hook"); await agent.webhook.get(); await agent.webhook.delete();
+  await agent.artifacts.list({ turnId: "turn" }); await agent.artifacts.download("id");
+  await agent.requiredActions.list();
+  // @ts-expect-error unsupported network wildcard mode
+  await Agent.environments.put("bad", { network: { access: "wildcard" } });
+}
+void configurationContracts;

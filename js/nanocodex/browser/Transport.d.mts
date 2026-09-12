@@ -72,3 +72,9 @@ export type ManagedIdentity =
 export function managed(options: ManagedClientOptions & Readonly<{
   agent: ManagedIdentity;
 }>): ManagedTransport;
+
+/** Caller-owned Responses socket pooling. Lanes accept response.create; closing one releases only its local subscriber. */
+export function multiplex(socket: WebSocket): Readonly<{
+  lane(streamId: string): WebSocket;
+  close(code?: number, reason?: string): void;
+}>;

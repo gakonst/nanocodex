@@ -133,7 +133,48 @@ export type CreateSettings = Readonly<{
 
 export type SettingsPatch = Readonly<Partial<CreateSettings>>;
 
+export type NetworkPolicy = Readonly<{ access: "enabled" | "disabled" }> | Readonly<{ access: "restricted"; allowed_domains: readonly string[] }>;
+export type Environment = Readonly<{
+  files?: readonly Readonly<{ path: string; content: string }>[];
+  skills?: readonly Readonly<{ name: string; instructions: string }>[];
+  setup_commands?: readonly string[];
+  network?: NetworkPolicy;
+}>;
+export type Configuration = Readonly<{
+  settings?: Readonly<{ model: CreateSettings["model"]; thinking: CreateSettings["thinking"]; reasoning_mode: "standard" | "pro"; fast_mode: boolean }>;
+  instructions?: string;
+  tools?: readonly string[];
+  /** Omission retains existing delegation. Explicit enablement defaults to six concurrent children. */
+  multi_agent?: Readonly<{ enabled: false }> | Readonly<{ enabled: true; max_concurrent_subagents?: number }>;
+  output_schema?: Record<string, unknown>;
+  prompt_cache?: "implicit" | "explicit";
+  environment?: Environment;
+}>;
+export type Template<T> = Readonly<{ id: string; created_at: number; configuration: T }>;
+export type TemplateCatalog<T> = Readonly<{
+  list(options?: Options): Promise<{ data: Template<T>[] }>;
+  get(id: string, options?: Options): Promise<Template<T>>;
+  put(id: string, configuration: T, options?: Options): Promise<Template<T>>;
+  delete(id: string, options?: Options): Promise<void>;
+}>;
+export const definitions: TemplateCatalog<Configuration>;
+export const environments: TemplateCatalog<Environment>;
+export type EnvironmentState = Readonly<{ state: "uninitialized" | "running" | "ready" | "failed"; step: number; error: string | null }>;
+export type UsagePage = Readonly<{ data: readonly Readonly<{ cursor: string; turn_id: string; created_at: number; type: string; usage: TurnUsage | null }>[]; has_more: boolean }>;
+export type Artifact = Readonly<{ id: string; turn_id: string; path: string; digest: string; size: number; created_at: number }>;
+export type ArtifactPage = Readonly<{ data: readonly Artifact[]; publications: readonly Readonly<{ turn_id: string; state: "ready" | "failed"; error: string | null }>[] }>;
+export type WebhookState = Readonly<{ endpoint: { url: string } | null; deliveries: readonly Readonly<{ id: string; attempt: number; retry_at: number; status: "pending" | "delivered" | "failed" }>[] }>;
+
 export type CreateOptions = Options & Readonly<{
+  /**
+   * Account-scoped creation key: 1–256 printable ASCII characters without spaces.
+   * Persist before calling to retry after restart; omission generates a key per invocation.
+   * Replay requires compatible retained settings/configuration. Use open() once the ID is known.
+   */
+  idempotencyKey?: string | undefined;
+  configuration?: Configuration;
+  definitionId?: string;
+  environmentTemplateId?: string;
   /** Complete immutable starting policy. GPT-6 Astra requires at least low reasoning. */
   settings?: CreateSettings | undefined;
 }>;
@@ -336,6 +377,18 @@ export type CronTrigger = Readonly<{
 }>;
 
 export type Agent = Readonly<{
+  requiredActions: Readonly<{
+    list(): Promise<{ data: readonly Readonly<{ call_id: string; session_id: string; source_call_id: string; name: string; input: unknown; deadline_at: number }>[] }>;
+    submit(callId: string, outcome: import("nanocodex-tools/hosted").HostedToolCallOutcome): Promise<void>;
+  }>;
+
+  configuration(): Promise<Configuration>;
+  environment(): Promise<EnvironmentState>;
+  usage(options?: { after?: string }): Promise<UsagePage>;
+  requests(options?: { after?: string; agentId?: string }): Promise<{ data: readonly Readonly<{ id: string; cursor: string; agent_id: string; turn_id: string | null; type: string; created_at: number; payload: Record<string, unknown> }>[]; has_more: boolean }>;
+  webhook: Readonly<{ get(): Promise<WebhookState>; create(url: string): Promise<{ url: string; secret: string }>; delete(): Promise<void> }>;
+  artifacts: Readonly<{ list(options?: { turnId?: string }): Promise<ArtifactPage>; download(id: string): Promise<ArrayBuffer> }>;
+
   type: "managed";
   id: string;
   /** Account-owned list metadata, present on handles returned by `list()`. */
@@ -386,3 +439,6 @@ export function memory(operation: MemoryDeleteOperation, options?: Options): Pro
 export function memory(operation: MemoryOperation, options?: Options): Promise<MemoryResult>;
 export function getOrganization(options?: Options): Promise<Organization>;
 export function updateOrganization(request: OrganizationUpdate, options?: Options): Promise<Organization>;
+
+/** Verifies HMAC and a five-minute timestamp window. Persist the returned ID to deduplicate deliveries. Consumes the request body. */
+export function verifyWebhook(request: Request, secret: string): Promise<Readonly<{ id: string; type: string; agent_id: string; turn_id: string | null; cursor: string; created_at: number }>>;

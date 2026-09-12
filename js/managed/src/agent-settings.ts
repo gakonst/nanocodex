@@ -1,3 +1,4 @@
+import { parseConfiguration, type AgentConfiguration } from "./agent-configuration";
 export const AGENT_MODELS = [
   "gpt-5.6-sol",
   "gpt-5.6-terra",
@@ -27,6 +28,9 @@ export type ManagedAgentSettingsPatch = Partial<ManagedAgentSettings>;
 
 export type ManagedAgentCreateBody = Readonly<{
   durability?: unknown;
+  configuration?: AgentConfiguration;
+  definition_id?: string;
+  environment_template_id?: string;
   settings: ManagedAgentSettings;
   settingsProvided: boolean;
 }>;
@@ -150,10 +154,13 @@ export function parseAgentCreateBody(encoded: string): ManagedAgentCreateBody {
   const body = value as Record<string, unknown>;
   const keys = Object.keys(body);
   if (keys.length === 0
-    || keys.some((key) => key !== "durability" && key !== "settings")
+    || keys.some((key) => !["durability", "settings", "configuration", "definition_id", "environment_template_id"].includes(key))
     || (Object.hasOwn(body, "durability") && body.durability === undefined)
     || (Object.hasOwn(body, "settings") && body.settings === undefined)) {
     throw new TypeError("agent creation body contains unsupported or missing fields");
+  }
+  for (const key of ["definition_id", "environment_template_id"]) {
+    if (body[key] !== undefined && (typeof body[key] !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(body[key] as string))) throw new TypeError("invalid template ID");
   }
   const settingsProvided = Object.hasOwn(body, "settings");
   return {
@@ -161,6 +168,9 @@ export function parseAgentCreateBody(encoded: string): ManagedAgentCreateBody {
     settings: settingsProvided
       ? parseCompleteAgentSettings(body.settings)
       : DEFAULT_AGENT_SETTINGS,
+    ...(body.configuration === undefined ? {} : { configuration: parseConfiguration(body.configuration) }),
+    ...(body.definition_id === undefined ? {} : { definition_id: body.definition_id as string }),
+    ...(body.environment_template_id === undefined ? {} : { environment_template_id: body.environment_template_id as string }),
     settingsProvided,
   };
 }

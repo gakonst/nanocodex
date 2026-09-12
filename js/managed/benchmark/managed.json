@@ -1,0 +1,205 @@
+{
+  "name": "nanocodex-perf-managed-0911",
+  "main": "worker.ts",
+  "compatibility_date": "2026-07-29",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "global_fetch_strictly_public",
+    "enable_request_signal"
+  ],
+  "alias": {
+    "node-rsa": "../../nanocodex/tools/browser/unsupportedNodeRsa.mjs"
+  },
+  "workers_dev": true,
+  "minify": true,
+  "upload_source_maps": true,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": true,
+      "persist": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    }
+  },
+  "services": [
+    {
+      "binding": "NANOCODEX",
+      "service": "nanocodex-perf-egress-0911"
+    }
+  ],
+  "worker_loaders": [
+    {
+      "binding": "LOADER"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "NANOCODEX_HISTORY",
+      "bucket_name": "nanocodex-perf-0911"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES",
+      "bucket_name": "nanocodex-perf-0911"
+    },
+    {
+      "binding": "NANOCODEX_BRAIN",
+      "bucket_name": "nanocodex-perf-0911"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES_0",
+      "bucket_name": "nanocodex-perf-0911"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES_1",
+      "bucket_name": "nanocodex-perf-0911"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES_2",
+      "bucket_name": "nanocodex-perf-0911"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES_3",
+      "bucket_name": "nanocodex-perf-0911"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES_4",
+      "bucket_name": "nanocodex-perf-0911"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES_5",
+      "bucket_name": "nanocodex-perf-0911"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES_6",
+      "bucket_name": "nanocodex-perf-0911"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES_7",
+      "bucket_name": "nanocodex-perf-0911"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES_8",
+      "bucket_name": "nanocodex-perf-0911"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES_9",
+      "bucket_name": "nanocodex-perf-0911"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES_10",
+      "bucket_name": "nanocodex-perf-0911"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES_11",
+      "bucket_name": "nanocodex-perf-0911"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES_12",
+      "bucket_name": "nanocodex-perf-0911"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES_13",
+      "bucket_name": "nanocodex-perf-0911"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES_14",
+      "bucket_name": "nanocodex-perf-0911"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES_15",
+      "bucket_name": "nanocodex-perf-0911"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "NANOCODEX_SESSIONS",
+        "class_name": "DurableAgentSession"
+      },
+      {
+        "name": "NANOCODEX_ACCOUNT_TOOLS",
+        "class_name": "AccountHostedTools"
+      },
+      {
+        "name": "NANOCODEX_VM_HOST_POOLS",
+        "class_name": "VmHostPool"
+      },
+      {
+        "name": "NANOCODEX_ROOMS",
+        "class_name": "MultiplayerRoom"
+      },
+      {
+        "name": "NANOCODEX_MULTIPLAYER_QUOTA",
+        "class_name": "MultiplayerQuota"
+      },
+      {
+        "name": "NANOCODEX_AUTH",
+        "class_name": "NonceStorage"
+      },
+      {
+        "name": "NANOCODEX_USERS",
+        "class_name": "UserAccount"
+      },
+      {
+        "name": "NANOCODEX_API_KEYS",
+        "class_name": "ApiKeyRecord"
+      },
+      {
+        "name": "NANOCODEX_MEMORY",
+        "class_name": "MemoryScope"
+      },
+      {
+        "name": "NANOCODEX_ORGANIZATIONS",
+        "class_name": "Organization"
+      },
+      {
+        "name": "NANOCODEX_SANDBOXES",
+        "class_name": "Sandbox"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "DurableAgentSession",
+        "AccountHostedTools",
+        "VmHostPool",
+        "MultiplayerRoom",
+        "MultiplayerQuota",
+        "NonceStorage",
+        "UserAccount",
+        "ApiKeyRecord",
+        "MemoryScope",
+        "Organization"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "Sandbox"
+      ]
+    }
+  ],
+  "vars": {
+    "AGENT_IDLE_TIMEOUT_MS": "30000",
+    "MANAGED_AGENT_DIRECT_CREDENTIALS": "true",
+    "BENCHMARK_USER": "81382dad-0a01-4eab-8bbf-091100000001"
+  },
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "registry.cloudflare.com/16ce0442a940f01beefdb15a196a43ea/nanocodex-durable-agent-sandbox@sha256:41927b3c3f7dc3fd9a868cba14bf4dac460d9ebdf812d5c99a1926ad03edfa34",
+      "instance_type": "standard-1",
+      "max_instances": 2
+    }
+  ],
+  "browser": {
+    "binding": "BROWSER"
+  }
+}
