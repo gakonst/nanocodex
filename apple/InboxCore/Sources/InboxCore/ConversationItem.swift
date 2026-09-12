@@ -9,7 +9,11 @@ public struct ConversationItem: Identifiable, Equatable {
     public var activity: [TranscriptRow] = []
     public var isRunning = false
 
-    public static func group(_ rows: [TranscriptRow], activeTurns: Set<String> = []) -> [ConversationItem] {
+    public static func group(_ rows: [TranscriptRow], activeTurns: [String] = []) -> [ConversationItem] {
+        // The service returns unfinished turns in admission order, including
+        // queued follow-ups. Only the head can be executing. Keeping that order
+        // also handles messages queued by another device or restored from history.
+        let executingTurn = activeTurns.first
         var result: [ConversationItem] = [], indices: [String: Int] = [:]
         var lastIsActivity: [String: Bool] = [:], fallback = "history"
         var order: [String] = [], turns: [String: [TranscriptRow]] = [:]
@@ -31,14 +35,14 @@ public struct ConversationItem: Identifiable, Equatable {
                 }
             } else {
                 result.append(.init(id: row.id, message: row))
-                if row.role == "You", activeTurns.contains(turn), indices[turn] == nil {
+                if row.role == "You", executingTurn == turn, indices[turn] == nil {
                     indices[turn] = result.count
                     result.append(.init(id: "activity-" + turn))
                 }
             }
         }
         for (turn, index) in indices {
-            result[index].isRunning = activeTurns.contains(turn) && lastIsActivity[turn] == true
+            result[index].isRunning = executingTurn == turn && lastIsActivity[turn] == true
         }
         return result.filter { $0.message != nil || !$0.activity.isEmpty || $0.isRunning }
     }

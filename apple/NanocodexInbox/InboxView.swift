@@ -580,7 +580,8 @@ private struct ConversationOverviewCard: View {
                     .accessibilityIdentifier("overview-close:" + card.id)
                 }
             }.padding(.leading, 12)
-            ConversationMiniature(model: model, card: card, rows: model.overviewRows(for: card.id)).equatable()
+            let queue = model.queuePresentation(agentID: card.id, rows: model.overviewRows(for: card.id))
+            ConversationMiniature(model: model, card: card, rows: queue.rows, pendingCount: queue.messages.count).equatable()
                     .frame(height: 230)
                     .frame(maxWidth: .infinity)
                     .background(Ink.background)
@@ -624,18 +625,19 @@ private struct ConversationMiniature: View, Equatable {
     let model: InboxModel
     let card: AgentCard
     let rows: [TranscriptRow]
+    let pendingCount: Int
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.card.id == rhs.card.id && lhs.card.activeTurns == rhs.card.activeTurns
             && lhs.card.error == rhs.card.error && lhs.card.checked == rhs.card.checked
-            && lhs.card.turnCount == rhs.card.turnCount && lhs.rows == rhs.rows
+            && lhs.card.turnCount == rhs.card.turnCount && lhs.rows == rhs.rows && lhs.pendingCount == rhs.pendingCount
     }
     private let scale: CGFloat = 0.48
 
     var body: some View {
         GeometryReader { viewport in
-            let items = Array(ConversationItem.group(rows, activeTurns: Set(card.activeTurns)).suffix(4))
+            let items = Array(ConversationItem.group(rows, activeTurns: card.activeTurns).suffix(4))
             VStack(alignment: .leading, spacing: 18) {
-                if items.isEmpty {
+                if items.isEmpty && pendingCount == 0 {
                     if let error = card.error {
                         Text(error).font(.system(size: 17)).foregroundStyle(Ink.muted)
                     } else if card.checked, card.turnCount == 0, card.previewRows.isEmpty {
@@ -660,6 +662,10 @@ private struct ConversationMiniature: View, Equatable {
                             InboxGeneratedOutputView(rows: item.activity).equatable()
                         }
                     }
+                }
+                if pendingCount > 0 {
+                    Label("\(pendingCount) pending message\(pendingCount == 1 ? "" : "s")", systemImage: "clock")
+                        .font(.system(size: 14)).foregroundStyle(Ink.muted)
                 }
             }
             .padding(20)
@@ -719,6 +725,7 @@ private struct AgentComposerView: View {
     @State private var photoTarget: InboxModel.AttachmentTarget?
     @State private var fileTarget: InboxModel.AttachmentTarget?
     @State private var pickerError: String?
+    @State private var queueContentHeight: CGFloat = 64
     #if os(iOS)
     @State private var showCamera = false
     @State private var cameraTarget: InboxModel.AttachmentTarget?
@@ -726,7 +733,7 @@ private struct AgentComposerView: View {
     #endif
 
     private var visiblePending: [PendingMessage] {
-        model.focusedPending.filter { !$0.predecessor.isEmpty || $0.phase == .failed }
+        model.focusedQueue.messages
     }
     private var sendShowsStop: Bool {
         model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -738,8 +745,7 @@ private struct AgentComposerView: View {
     }
     private var pendingHeight: CGFloat {
         let messages = visiblePending
-        if messages.count > 1 { return messages.contains { $0.attachments?.isEmpty == false } ? 136 : 104 }
-        return messages.first?.error == nil && (messages.first?.attachments?.isEmpty ?? true) ? 48 : 82
+        return messages.count > 1 ? 240 : 180
     }
 
     var body: some View {
@@ -768,31 +774,53 @@ private struct AgentComposerView: View {
                         ForEach(visiblePending) { message in
                             HStack(alignment: .center, spacing: 8) {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(message.phase == .submitting ? "Sending…" : message.phase == .starting ? "Stopping current turn…" : message.phase == .cancelling ? "Cancelling…" : message.phase == .failed ? "Not confirmed" : "Queued")
+                                    Text(model.steeringTransfer(message.id)?.title ?? message.queueTitle)
                                         .font(.system(size: 11)).foregroundStyle(Ink.muted)
-                                    Text(ContextPrompt.separate(message.input)?.request ?? message.input).font(.system(size: 13)).lineLimit(1)
+                                    Text(ContextPrompt.separate(message.input)?.request ?? message.input).font(.system(size: 14))
+                                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                                         .accessibilityIdentifier("pending-message")
-                                    if let attachments = message.attachments, !attachments.isEmpty {
-                                        Label(attachments.map(\.name).joined(separator: ", "), systemImage: "photo")
+                                    if let names = model.focusedQueue.attachmentNames[message.id], !names.isEmpty {
+                                        Label(names.joined(separator: ", "), systemImage: "photo")
                                             .font(.caption2).lineLimit(1).accessibilityIdentifier("pending-attachments")
                                     }
-                                    if let error = message.error { Text(error).font(.caption2).foregroundStyle(Ink.muted) }
+                                    if let attachments = message.attachments, !attachments.isEmpty {
+                                        ScrollView(.horizontal) {
+                                            HStack {
+                                                ForEach(attachments) { attachment in
+                                                    if attachment.isVideo {
+                                                        AttachmentMovieThumbnail(attachment: attachment, poster: model.attachmentURL(attachment), movie: model.attachmentMovieURL(attachment))
+                                                            .frame(width: 64, height: 64)
+                                                    } else if let url = model.attachmentURL(attachment) {
+                                                        AttachmentImageView(source: .file(url), contentMode: .fit)
+                                                            .frame(width: 64, height: 64).accessibilityIdentifier("message-image")
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if let error = model.steeringTransfer(message.id)?.error ?? message.error { Text(error).font(.caption2).foregroundStyle(Ink.muted) }
                                 }.frame(maxWidth: .infinity, alignment: .leading)
-                                if message.phase == .failed {
+                                if message.phase == .failed, message.remoteAdmission != true {
                                     Button { model.retryPending(message.id) } label: { Text("Retry").frame(minHeight: 44) }.accessibilityIdentifier("retry-pending")
                                         .disabled(model.busy.contains(message.agentID))
+                                } else if let transfer = model.steeringTransfer(message.id), transfer.error != nil && transfer.canResume {
+                                    Button("Retry steer") { model.steerNow(message.id) }.accessibilityIdentifier("retry-steering")
+                                        .disabled(!model.connected)
                                 } else if model.steeringTarget(message) != nil {
                                     Button { model.steerNow(message.id) } label: { Text("Steer now").frame(minHeight: 44) }.accessibilityIdentifier("steer-now")
+                                        .accessibilityHint("Sends this message into the current turn without stopping it")
+                                        .disabled(!model.connected)
                                 }
                                 Button { model.cancelPending(message.id) } label: {
                                     Image(systemName: "xmark").frame(width: 44, height: 44).contentShape(Rectangle())
                                 }.accessibilityLabel("Cancel queued message")
-                                    .disabled(model.cancellation(agentID: message.agentID, turnID: message.id).map { $0.error == nil } ?? false)
+                                    .disabled(!model.connected || (model.cancellation(agentID: message.agentID, turnID: message.id).map { $0.error == nil } ?? false))
                             }.font(.system(size: 13, weight: .medium)).buttonStyle(.plain)
-                                .padding(.leading, 16)
+                                .padding(.horizontal, 16).padding(.vertical, 8)
                         }
                     }
-                }.frame(maxHeight: pendingHeight)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { queueContentHeight = $0 }
+                }.frame(height: min(queueContentHeight, pendingHeight))
                     .padding(.top, 4)
                     .accessibilityIdentifier("pending-messages")
                 Rectangle().fill(Ink.border).frame(height: 0.5).padding(.horizontal, 16)
@@ -1368,11 +1396,12 @@ private struct ConversationMessageView: View {
     let row: TranscriptRow
     @ObservedObject var model: InboxModel
     let agentID: String
-    var pending: PendingMessage? = nil
     var body: some View {
-        ConversationMessageContent(row: row, model: model, agentID: agentID, pending: pending,
-                                   attachmentURLs: (pending?.attachments ?? []).map { model.attachmentURL($0) },
-                                   movieURLs: (pending?.attachments ?? []).map { model.attachmentMovieURL($0) }).equatable()
+        let steering = model.steeringTransfer(row.turnID ?? row.id)
+        let canWithdraw = steering.map { transfer in
+            model.cards.first(where: { $0.id == agentID })?.activeTurns.contains(transfer.targetTurnID) == true
+        } ?? false
+        ConversationMessageContent(row: row, model: model, agentID: agentID, steering: steering, canWithdraw: canWithdraw).equatable()
     }
 }
 
@@ -1380,12 +1409,10 @@ private struct ConversationMessageContent: View, Equatable {
     let row: TranscriptRow
     let model: InboxModel
     let agentID: String
-    let pending: PendingMessage?
-    let attachmentURLs: [URL?]
-    let movieURLs: [URL?]
+    let steering: SteeringTransfer?
+    let canWithdraw: Bool
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.row == rhs.row && lhs.agentID == rhs.agentID && lhs.pending == rhs.pending
-            && lhs.attachmentURLs == rhs.attachmentURLs && lhs.movieURLs == rhs.movieURLs
+        lhs.row == rhs.row && lhs.agentID == rhs.agentID && lhs.steering == rhs.steering && lhs.canWithdraw == rhs.canWithdraw
             && lhs.model === rhs.model
     }
     var body: some View {
@@ -1417,6 +1444,12 @@ private struct ConversationMessageContent: View, Equatable {
                         .lineSpacing(5).textSelection(.enabled)
                         .foregroundStyle(row.role == "Status" ? Ink.muted : Ink.text)
                 }
+                if !row.detail.isEmpty { Text(row.detail).font(.caption).foregroundStyle(Ink.muted) }
+                if let transfer = steering, canWithdraw, (transfer.wasAccepted || transfer.phase == .unconfirmed), transfer.phase != .withdrawn {
+                    Button(transfer.phase == .withdrawing ? "Withdrawing…" : "Withdraw steering") { model.withdrawSteering(transfer.id) }
+                        .font(.caption).accessibilityIdentifier("withdraw-steering")
+                        .disabled(!model.connected || (transfer.phase == .withdrawing && transfer.error == nil))
+                }
                 if let images = row.images {
                     ForEach(Array(images.filter { $0.hasPrefix("data:image/") }.enumerated()), id: \.offset) { _, image in
                         AttachmentImageView(source: .inline(image), contentMode: .fit)
@@ -1426,18 +1459,6 @@ private struct ConversationMessageContent: View, Equatable {
                 }
                 ForEach(row.imageFiles ?? []) { OriginalImageAttachmentView(attachment: $0, model: model, agentID: agentID) }
                 ForEach(row.videos ?? []) { VideoAttachmentView(video: $0, model: model, agentID: agentID) }
-                if let pending {
-                    ForEach(pending.attachments ?? []) { attachment in
-                        if attachment.isVideo {
-                            AttachmentMovieThumbnail(attachment: attachment, poster: model.attachmentURL(attachment), movie: model.attachmentMovieURL(attachment))
-                                .frame(width: 200, height: 130)
-                        } else if let url = model.attachmentURL(attachment) {
-                            AttachmentImageView(source: .file(url), contentMode: .fit)
-                                .frame(maxWidth: 240).frame(height: 180).accessibilityIdentifier("message-image")
-                        }
-                    }
-                    Text(pending.phase == .cancelling ? "Cancelling…" : "Sending…").font(.caption).foregroundStyle(Ink.muted)
-                }
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel(row.role == "You" ? "Your message" : row.role == "Agent" ? "Assistant message" : row.role)
@@ -1465,7 +1486,7 @@ private struct ConversationView: View {
     var body: some View {
         ConversationContentView(model: model,
                                 identity: identity, readingPositions: readingPositions,
-                                revision: .init(rows: model.rows, pending: model.focusedPending,
+                                revision: .init(rows: model.focusedQueue.rows, pending: model.focusedQueue.messages,
                                                 title: model.focused?.title ?? "Conversation",
                                                 activeTurns: model.focused?.activeTurns ?? [],
                                                 loading: model.threadLoading, error: model.threadError,
@@ -1506,12 +1527,6 @@ private struct ConversationContentView: View, Equatable {
     @State private var historyDirection: HistoryDirection?
     @State private var historyRequestInFlight = false
     @State private var historyRequestFirstID: String?
-    private var pendingSubmissions: [PendingMessage] {
-        model.focusedPending.filter { message in
-            message.predecessor.isEmpty && message.phase != .failed
-                && !model.rows.contains { $0.role == "You" && ($0.id == message.id || $0.turnID == message.id) }
-        }
-    }
     private func rememberHistoryPosition(in viewport: GeometryProxy) {
         model.protectHistoryRows(Set(rowFrames.filter { $0.value.maxY > 0 && $0.value.minY < viewport.size.height }.keys))
         guard let first = rowFrames.filter({ $0.value.maxY > 0 && $0.value.minY < viewport.size.height })
@@ -1573,7 +1588,7 @@ private struct ConversationContentView: View, Equatable {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                 LazyVStack(alignment: .leading, spacing: 18) {
-                    if model.rows.isEmpty, pendingSubmissions.isEmpty, !model.threadLoading, model.threadError == nil {
+                    if model.rows.isEmpty, model.focusedQueue.messages.isEmpty, !model.threadLoading, model.threadError == nil {
                         VStack(alignment: .leading, spacing: 8) {
                             if model.hasOlder {
                                 Text("Earlier messages").font(.title2.weight(.medium))
@@ -1586,7 +1601,7 @@ private struct ConversationContentView: View, Equatable {
                         }.padding(.top, 24).accessibilityElement(children: .contain).accessibilityIdentifier("conversation-empty")
                     }
                     if let error = model.threadError { Text(error).font(.subheadline).foregroundStyle(Ink.muted) }
-                    ForEach(ConversationItem.group(model.rows, activeTurns: Set(model.focused?.activeTurns ?? []))) { item in
+                    ForEach(ConversationItem.group(model.focusedQueue.rows, activeTurns: model.focused?.activeTurns ?? [])) { item in
                         Group {
                         if let row = item.message {
                         ConversationMessageView(row: row, model: model, agentID: model.focused?.id ?? "")
@@ -1602,12 +1617,6 @@ private struct ConversationContentView: View, Equatable {
                             })
                             .accessibilityElement(children: .contain)
                             .accessibilityIdentifier((item.message?.role == "You" ? "message-user-" : item.message?.role == "Agent" ? "message-assistant-" : "message-") + item.id)
-                    }
-                    ForEach(pendingSubmissions) { message in
-                        ConversationMessageView(row: .init(id: message.id, role: "You", text: message.input),
-                                                model: model, agentID: message.agentID, pending: message)
-                            .accessibilityElement(children: .contain)
-                            .accessibilityIdentifier("message-user-pending-" + message.id)
                     }
                 }.scrollTargetLayout()
                     // Keep the bottom target outside the lazy rows so it has a

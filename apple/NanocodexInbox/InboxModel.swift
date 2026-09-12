@@ -85,6 +85,8 @@ final class InboxModel: ObservableObject {
     @Published var pending: [PendingMessage] = [] { didSet { scheduleAgentNotifications() } }
     @Published private(set) var cancellations: [PendingTurnCancellation] = []
     private let cancellationTasks = TurnCancellationTasks()
+    private let steeringTasks = TurnCancellationTasks()
+    @Published var steeringTransfers: [SteeringTransfer] = []
     @Published private(set) var attachmentDrafts: [String: [MessageAttachment]] = [:]
     private var attachmentURLs: [String: URL] = [:]
     private var attachmentMovieURLs: [String: URL] = [:]
@@ -224,9 +226,45 @@ final class InboxModel: ObservableObject {
     var attentionCount: Int { cards.filter { $0.isInInbox(seen: seenCursor($0.id), deferred: deferred[$0.id]) && $0.needsAttention(seen: seenCursor($0.id)) }.count }
     var runningCount: Int { cards.filter(\.isRunning).count }
     var controllableTurns: [String] {
-        guard let card = focused else { return [] }
-        let queued = Set(pending.filter { $0.agentID == card.id }.map(\.id))
-        return card.activeTurns.filter { !queued.contains($0) }
+        guard let head = focused?.activeTurns.first else { return [] }
+        return pending.contains { $0.agentID == focused?.id && $0.id == head } ? [] : [head]
+    }
+    func queuePresentation(agentID: String, rows: [TranscriptRow]) -> MessageQueuePresentation {
+        let history = agentID == focused?.id ? events : tabHistories[agentID]?.events ?? []
+        let cancelled = Set(history.filter { $0.type == "turn_cancelled" }.map(\.turnID))
+        let started = Set(history.filter { event in
+            event.type == "event" && ["run.started", "assistant.delta", "assistant.message", "reasoning.summary.delta", "tool.call", "tool.result"].contains(event.data["event"]["type"].string)
+        }.map(\.turnID))
+        let transfers = steeringTransfers.filter { $0.agentID == agentID }
+        let transferred = Set(transfers.map(\.sourceTurnID))
+        let displayed = rows.compactMap { row -> TranscriptRow? in
+            guard let transfer = transfers.first(where: { $0.sourceTurnID == (row.turnID ?? row.id) }) else { return row }
+            guard transfer.wasAccepted || transfer.phase == .withdrawn
+                || (transfer.phase == .unconfirmed && !pending.contains(where: { $0.id == transfer.id })) else { return nil }
+            guard row.role == "You" else { return nil }
+            var row = row
+            if transfer.phase == .withdrawn { row.role = "Status"; row.text = "Steering withdrawn: " + row.text }
+            else if !transfer.wasAccepted { row.role = "Status"; row.text = "Steering delivery unconfirmed: " + row.text; row.detail = transfer.error ?? "" }
+            else { row.detail = transfer.error ?? (transfer.phase == .withdrawing ? transfer.title : "Steering sent to the active turn") }
+            return row
+        }
+        let active = (cards.first { $0.id == agentID }?.activeTurns ?? []).filter { !transferred.contains($0) }
+        return MessageQueuePresentation(agentID: agentID, rows: displayed, pending: pending,
+            activeTurns: active, cancelledTurns: cancelled.subtracting(transferred),
+            executingTurns: (isDemo ? Set(active.prefix(1)) : started).subtracting(transferred))
+    }
+    var focusedQueue: MessageQueuePresentation {
+        queuePresentation(agentID: focused?.id ?? "", rows: rows)
+    }
+    private func retainQueuedMessage(_ id: String) {
+        guard !pending.contains(where: { $0.id == id }),
+              var message = focusedQueue.messages.first(where: { $0.id == id }) else { return }
+        // The queue snapshot proves admission even when its history row has not
+        // loaded. Retain that watermark so reconnect can settle missing events.
+        if let cursor = cards.first(where: { $0.id == message.agentID })?.stateCursor {
+            message.acceptedCursor = max(message.acceptedCursor ?? .zero, cursor)
+        }
+        pending.append(message)
     }
     var focusedTurn: String { controllableTurns.contains(selectedTurn) ? selectedTurn : controllableTurns.first ?? "" }
     var stopTarget: String { focusedTurn.isEmpty ? focusedPending.first?.id ?? "" : focusedTurn }
@@ -234,7 +272,10 @@ final class InboxModel: ObservableObject {
         cancellations.first { $0.agentID == agentID && $0.turnID == turnID }
     }
     func steeringTarget(_ message: PendingMessage) -> AgentCommand? {
-        guard focusedPending.first?.id == message.id,
+        guard focusedQueue.messages.first(where: { candidate in
+                  let stop = cancellation(agentID: candidate.agentID, turnID: candidate.id)
+                  return !(candidate.phase == .cancelling && stop?.acknowledged == true && stop?.error == nil)
+              })?.id == message.id,
               let card = cards.first(where: { $0.id == message.agentID }) else { return nil }
         let available = card.activeTurns.filter { turnID in
             !cancellations.contains { $0.agentID == card.id && $0.turnID == turnID && $0.acknowledged && $0.error == nil }
@@ -628,7 +669,7 @@ final class InboxModel: ObservableObject {
         scheduledJobs = []; scheduledJobAgents = [:]; schedulesLoading = false; schedulesLoaded = false; schedulesError = nil
         for task in creationTasks.values { task.cancel() }
         creationTasks = [:]; pendingCreations = []; creationErrors = [:]; createdAgentIDs = [:]
-        cancellationTasks.cancelAll(); cancellations = []
+        cancellationTasks.cancelAll(); cancellations = []; steeringTasks.cancelAll(); steeringTransfers = []
         deviceHand?.close(); deviceHand = nil; deviceHandConnected = false
         endHandBackgroundTime()
         #if os(iOS)
@@ -680,6 +721,7 @@ final class InboxModel: ObservableObject {
         guard connected, !isDemo, isActive else { return }
         for id in pendingCreations where creationErrors[id] == nil { prepareAgent(id) }
         resumeCancellations(restart: true)
+        resumeSteering()
         updateDeviceHand()
         let previousPolling = polling
         previousPolling?.cancel()
@@ -1588,7 +1630,7 @@ final class InboxModel: ObservableObject {
         }
         catch { self.error = error.localizedDescription; return false }
         let attachments = focusedAttachments
-        let predecessor = focusedPending.last?.id ?? focusedTurn
+        let predecessor = focusedQueue.messages.last?.id ?? focusedTurn
         let message = PendingMessage(agentID: card.id, input: input, predecessor: predecessor, contextIDs: captured.map(\.id), attachments: attachments.isEmpty ? nil : attachments)
         attachmentDrafts[card.id] = nil; attachmentErrors[card.id] = nil
         pending.append(message); drafts[card.id] = ""; selectedContext[card.id] = nil; excludedContext[card.id] = nil; busy.insert(card.id); notice = nil; persist()
@@ -1599,6 +1641,7 @@ final class InboxModel: ObservableObject {
     }
     func retryPending(_ id: String) {
         guard let index = pending.firstIndex(where: { $0.id == id }), pending[index].phase == .failed,
+              pending[index].remoteAdmission != true,
               !busy.contains(pending[index].agentID) else { return }
         pending[index].phase = .submitting; pending[index].error = nil
         let message = pending[index], epoch = generation
@@ -1709,6 +1752,7 @@ final class InboxModel: ObservableObject {
     }
 
     private func submit(_ message: PendingMessage, epoch: UUID) async {
+        guard message.remoteAdmission != true else { return }
         defer {
             let agentID = resolvedAgentID(message.agentID)
             if generation == epoch, !pending.contains(where: { $0.agentID == agentID && $0.id != message.id && $0.phase == .submitting }) {
@@ -1765,15 +1809,130 @@ final class InboxModel: ObservableObject {
             }
         }
     }
+    func steeringTransfer(_ id: String) -> SteeringTransfer? { steeringTransfers.first { $0.id == id } }
     func steerNow(_ id: String) {
+        guard connected else { return }
+        if let index = steeringTransfers.firstIndex(where: { $0.id == id }) {
+            guard steeringTransfers[index].canResume else { return }
+            steeringTransfers[index].error = nil
+            persist(); startSteering(id)
+            return
+        }
+        retainQueuedMessage(id)
         guard let message = pending.first(where: { $0.id == id }),
               let command = steeringTarget(message),
               let index = pending.firstIndex(where: { $0.id == id }) else { return }
         pending[index].predecessor = command.turnID
         pending[index].phase = .starting; pending[index].error = nil
-        requestCancellation(agentID: message.agentID, turnID: command.turnID)
+        steeringTransfers.append(.init(agentID: message.agentID, sourceTurnID: id, targetTurnID: command.turnID))
+        persist(); startSteering(id)
+    }
+    private func resumeSteering() {
+        for transfer in steeringTransfers where transfer.canResume && transfer.error == nil { startSteering(transfer.id) }
+    }
+    func withdrawSteering(_ id: String) {
+        guard connected, let index = steeringTransfers.firstIndex(where: { $0.id == id }), steeringTransfers[index].phase != .withdrawn else { return }
+        steeringTransfers[index].withdrawRequested = true
+        steeringTransfers[index].error = nil
+        persist(); startSteering(id)
+    }
+    private func changeSteering(_ id: String, _ update: (inout SteeringTransfer) -> Void) {
+        guard let index = steeringTransfers.firstIndex(where: { $0.id == id }) else { return }
+        update(&steeringTransfers[index]); persist()
+    }
+    private func completeSteering(_ id: String) {
+        if let message = pending.first(where: { $0.id == id }) {
+            rebaseSuccessors(of: message)
+            pending.removeAll { $0.id == id }
+            releaseAttachments(message.attachments ?? [])
+        }
+        persist()
+    }
+    private func startSteering(_ id: String) {
+        let epoch = generation
+        steeringTasks.start(id) { [self] in
+            guard let initial = steeringTransfer(id), generation == epoch else { return }
+            prepareHandForBackground()
+            do {
+                var input: JSON = .null
+                if [.preparing, .removingQueued, .ready].contains(initial.phase) {
+                    // Re-read the exact admitted payload, including remote image/video
+                    // references. A transcript excerpt is never steering input.
+                    let source: JSON
+                    if isDemo { source = .object(["turn_id": .string(id), "input": .string(pending.first { $0.id == id }?.input ?? ""), "state": .string("accepted")]) }
+                    else {
+                        guard let client else { throw APIError.invalidCredential }
+                        source = try await client.turn(agentID: initial.agentID, turnID: id)
+                    }
+                    guard generation == epoch, !Task.isCancelled else { return }
+                    guard source["turn_id"].string == id, source["input"] != .null else { throw APIError.invalidResponse }
+                    input = source["input"]
+                    if initial.phase != .ready {
+                        guard ["accepted", "cancelling", "cancelled"].contains(source["state"].string) else { throw APIError.http(409) }
+                        changeSteering(id) { $0.phase = .removingQueued }
+                        await preferences.flush()
+                        guard generation == epoch, !Task.isCancelled else { return }
+                        let receipt = try await execute(initial.sourceCancellation)
+                        guard generation == epoch, !Task.isCancelled else { return }
+                        guard initial.sourceIsFenced(receipt) else { throw APIError.invalidResponse }
+                        // This is a durable fence for the queued follow-up. Its
+                        // terminal event can wait behind the still-running target.
+                        changeSteering(id) { $0.phase = .ready }
+                        handTasks.endObservation(id: id, outcome: .paused)
+                    }
+                    if steeringTransfer(id)?.withdrawRequested == true {
+                        changeSteering(id) { $0.phase = .withdrawn }
+                        completeSteering(id); return
+                    }
+                    changeSteering(id) { $0.phase = .sending }
+                    await preferences.flush()
+                    guard generation == epoch, !Task.isCancelled else { return }
+                    let receipt = try await execute(initial.command(input: input))
+                    guard generation == epoch, !Task.isCancelled else { return }
+                    guard initial.isAccepted(receipt) else { throw APIError.invalidResponse }
+                    changeSteering(id) { $0.phase = .accepted; $0.wasAccepted = true; $0.error = nil }
+                    completeSteering(id)
+                }
+                guard let current = steeringTransfer(id), current.withdrawRequested else { return }
+                changeSteering(id) { $0.phase = .withdrawing }
+                await preferences.flush()
+                guard generation == epoch, !Task.isCancelled else { return }
+                let receipt = try await execute(current.withdrawal)
+                guard generation == epoch, !Task.isCancelled else { return }
+                guard let withdrawn = current.withdrawalResult(receipt) else { throw APIError.invalidResponse }
+                if withdrawn {
+                    changeSteering(id) { $0.phase = .withdrawn; $0.error = nil }
+                    completeSteering(id)
+                } else {
+                    changeSteering(id) {
+                        $0.phase = $0.wasAccepted ? .accepted : .unconfirmed
+                        $0.error = "Steering could not be withdrawn; it may already be in use."
+                        $0.withdrawRequested = false
+                    }
+                    // The API cannot prove delivery after an uncertain send.
+                    // Keep that fact in history rather than claiming cancellation.
+                    if !current.wasAccepted { completeSteering(id) }
+                }
+            } catch {
+                guard generation == epoch, !Task.isCancelled else { return }
+                changeSteering(id) { transfer in
+                    if transfer.phase == .sending {
+                        if let api = error as? APIError, [.http(401), .http(403), .http(404), .http(409)].contains(api) {
+                            transfer.phase = .ready
+                            transfer.error = "Steering was rejected by the target turn. The message is retained; no replacement turn was started."
+                        } else {
+                            transfer.phase = .unconfirmed
+                            transfer.error = "Steering delivery is unconfirmed. It may already be in use; it will not be sent again automatically."
+                        }
+                    } else { transfer.error = "Steering could not be confirmed. Retry keeps the same message and target." }
+                }
+            }
+        }
     }
     func cancelPending(_ id: String) {
+        guard connected else { return }
+        if steeringTransfer(id) != nil { withdrawSteering(id); return }
+        retainQueuedMessage(id)
         guard let index = pending.firstIndex(where: { $0.id == id }) else { return }
         // Nothing can reach the service before creation resolves.
         if pendingCreations.contains(pending[index].agentID) {
@@ -1911,10 +2070,10 @@ final class InboxModel: ObservableObject {
             if let intent = cancellation(agentID: id, turnID: event.turnID) { finishCancellation(intent, event: event) }
         }
         for event in events where event.type == "turn_cancelled" {
-            if pending.contains(where: { $0.agentID == id && $0.id == event.turnID }) { removeCancelledPending(event.turnID) }
+            if steeringTransfer(event.turnID) == nil, pending.contains(where: { $0.agentID == id && $0.id == event.turnID }) { removeCancelledPending(event.turnID) }
         }
         let finished = pending.filter { message in
-            message.agentID == id && (message.hasStarted(in: events)
+            message.agentID == id && steeringTransfer(message.id) == nil && (message.hasStarted(in: events)
                 || state.map { message.hasFinished(activeTurns: $0.activeTurns, stateCursor: $0.stateCursor) } == true)
         }
         for message in finished {
@@ -1935,9 +2094,23 @@ final class InboxModel: ObservableObject {
             cancellations = (try? JSONDecoder().decode([PendingTurnCancellation].self, from: data)) ?? []
             for index in cancellations.indices { cancellations[index].error = nil }
         }
-        // Migrate older saved in-flight controls without losing the user's Stop.
-        for message in pending where message.phase == .starting || message.phase == .cancelling {
-            let turnID = message.phase == .cancelling ? message.id : message.predecessor
+        if let data = UserDefaults.standard.data(forKey: "inbox.steering." + scope) {
+            steeringTransfers = (try? JSONDecoder().decode([SteeringTransfer].self, from: data)) ?? []
+            for index in steeringTransfers.indices { steeringTransfers[index].restore() }
+        }
+        // A crash can occur after the steering acknowledgement is persisted but
+        // before its source leaves pending. Complete that local bookkeeping.
+        for transfer in steeringTransfers where transfer.wasAccepted || transfer.phase == .withdrawn {
+            if pending.contains(where: { $0.id == transfer.id }) { completeSteering(transfer.id) }
+        }
+        for index in pending.indices where pending[index].phase == .starting && steeringTransfer(pending[index].id) == nil {
+            pending[index].phase = .queued
+            pending[index].error = "Steering has not been sent. Tap Steer now to update the active turn."
+        }
+        // Restore explicit queued cancellation, never infer a stop of the active
+        // turn from the old cancel-and-continue presentation phase.
+        for message in pending where message.phase == .cancelling {
+            let turnID = message.id
             let intent = PendingTurnCancellation(agentID: message.agentID, turnID: turnID)
             if !turnID.isEmpty, !cancellations.contains(where: { $0.id == intent.id }) { cancellations.append(intent) }
         }
@@ -1945,12 +2118,23 @@ final class InboxModel: ObservableObject {
     private func execute(_ command: AgentCommand) async throws -> JSON {
         voice.noteTypedInput(conversationID: command.agentID)
         if isDemo {
-            let delayKey = command.kind == .stop ? "NANOCODEX_DEMO_CANCEL_DELAY_MS" : "NANOCODEX_DEMO_DELAY_MS"
+            let delayKey = command.kind == .stop ? "NANOCODEX_DEMO_CANCEL_DELAY_MS" : command.kind == .steer ? "NANOCODEX_DEMO_STEER_DELAY_MS" : "NANOCODEX_DEMO_DELAY_MS"
             let delay = Int(ProcessInfo.processInfo.environment[delayKey] ?? ProcessInfo.processInfo.environment["NANOCODEX_DEMO_DELAY_MS"] ?? "200") ?? 200
             try await Task.sleep(for: .milliseconds(delay))
-            let fault = command.kind == .stop ? "cancel" : "submit"
+            let fault = command.kind == .stop ? "cancel" : command.kind == .steer ? "steer" : "submit"
             if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_FAIL_ONCE"] == fault, demoFaults.insert(fault).inserted {
                 throw APIError.http(503)
+            }
+            if command.kind == .steer {
+                guard cards.contains(where: { $0.id == command.agentID && $0.activeTurns.contains(command.turnID) }) else { throw APIError.http(409) }
+                return .object(["turn_id": .string(command.turnID), "state": .string("steering")])
+            }
+            if command.kind == .withdrawSteer {
+                return .object(["turn_id": .string(command.turnID), "message_id": .string(command.requestID), "withdrawn": .bool(ProcessInfo.processInfo.environment["NANOCODEX_DEMO_STEER_CONSUMED"] != "1")])
+            }
+            if command.kind == .stop, steeringTransfer(command.turnID) != nil,
+               let index = cards.firstIndex(where: { $0.id == command.agentID }) {
+                cards[index].activeTurns.removeAll { $0 == command.turnID }
             }
             return .object(["turn_id": .string(command.kind == .followUp ? command.requestID : command.turnID), "state": .string(command.kind == .stop ? "cancelling" : "accepted")])
         }
@@ -1986,7 +2170,16 @@ final class InboxModel: ObservableObject {
         // Cancelling a queued item must not start its successor while an older
         // turn is still running. Rebase the successor onto that older turn.
         let wasQueued = pending.contains { $0.agentID == agentID && $0.id == turnID }
-        if wasQueued { removeCancelledPending(turnID) }
+        if wasQueued {
+            var history = demoRows[agentID] ?? DemoContent.rows(agentID)
+            for index in history.indices where history[index].role == "You" && (history[index].turnID ?? history[index].id) == turnID {
+                history[index].role = "Status"
+                history[index].text = "Cancelled request: " + history[index].text
+            }
+            demoRows[agentID] = history
+            if focused?.id == agentID { rows = history }
+            removeCancelledPending(turnID)
+        }
         if let next = pending.first(where: { $0.agentID == agentID && $0.predecessor == turnID && $0.phase != .failed && $0.phase != .submitting }) {
             pending.removeAll { $0.id == next.id }
             var history = demoRows[agentID] ?? DemoContent.rows(agentID)
@@ -1999,7 +2192,8 @@ final class InboxModel: ObservableObject {
     }
     func stop(agentID: String, turnID: String) {
         guard !turnID.isEmpty else { return }
-        if pending.contains(where: { $0.agentID == agentID && $0.id == turnID }) { cancelPending(turnID) }
+        if pending.contains(where: { $0.agentID == agentID && $0.id == turnID })
+            || (agentID == focused?.id && focusedQueue.messages.contains(where: { $0.id == turnID })) { cancelPending(turnID) }
         else { requestCancellation(agentID: agentID, turnID: turnID) }
     }
     func retry() async { if let id = focused?.id, let command = retries[id], command.kind == .followUp { await perform(command) } }
@@ -2127,7 +2321,7 @@ final class InboxModel: ObservableObject {
         let scope = scope, drafts = drafts, attachmentDrafts = attachmentDrafts, seen = seen
         let closedConversationIDs = closedConversationIDs
         let selectedContext = selectedContext, excludedContext = excludedContext
-        let pending = pending, cancellations = cancellations, pendingCreations = pendingCreations
+        let pending = pending, cancellations = cancellations, steeringTransfers = steeringTransfers, pendingCreations = pendingCreations
         let isDemo = isDemo, demoRows = demoRows
         let demoTurns = isDemo ? Dictionary(uniqueKeysWithValues: cards.map { ($0.id, $0.activeTurns) }) : [:]
         preferences.enqueue { defaults in
@@ -2139,6 +2333,7 @@ final class InboxModel: ObservableObject {
             defaults.set(excludedContext, forKey: "inbox.contextExclusions." + scope)
             if let data = try? JSONEncoder().encode(pending) { defaults.set(data, forKey: "inbox.pending." + scope) }
             if let data = try? JSONEncoder().encode(cancellations) { defaults.set(data, forKey: "inbox.cancellations." + scope) }
+            if let data = try? JSONEncoder().encode(steeringTransfers) { defaults.set(data, forKey: "inbox.steering." + scope) }
             defaults.set(Array(pendingCreations), forKey: "inbox.creations." + scope)
             if isDemo {
                 if let data = try? JSONEncoder().encode(demoRows) { defaults.set(data, forKey: "inbox.demoRows." + scope) }
@@ -2187,6 +2382,7 @@ final class InboxModel: ObservableObject {
         }
         for id in pendingCreations { prepareAgent(id) }
         resumeCancellations()
+        resumeSteering()
         if ProcessInfo.processInfo.arguments.contains("--demo"),
            ProcessInfo.processInfo.environment["NANOCODEX_DEMO_VOICE"] == "1", let card = focused {
             voice.transcriptFeed.begin(conversationID: card.id, durableRows: rows, after: card.latestCursor)
