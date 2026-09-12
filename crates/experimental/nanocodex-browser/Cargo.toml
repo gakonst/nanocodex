@@ -23,6 +23,8 @@ async-trait.workspace = true
 base64.workspace = true
 chrono.workspace = true
 chromiumoxide.workspace = true
+# Enables TLS on chromiumoxide's CDP socket; see the workspace manifest.
+async-tungstenite.workspace = true
 futures-util.workspace = true
 fs2.workspace = true
 image.workspace = true

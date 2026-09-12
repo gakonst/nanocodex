@@ -5,6 +5,7 @@ mod cookie_source;
 mod features;
 mod ios;
 mod native;
+pub mod popcorn;
 mod session;
 #[cfg(any(
     all(target_os = "linux", not(target_env = "musl")),

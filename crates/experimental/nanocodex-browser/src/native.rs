@@ -3462,7 +3462,13 @@ impl NativeBrowser {
         lighthouse_executable: Option<PathBuf>,
         crux_client: Option<BrowserCruxClient>,
     ) -> Result<Arc<Self>, BrowserBuildError> {
-        let executable = preferred_automation_executable(executable)?;
+        // A remote CDP attach drives Chromium over the wire and never launches a
+        // local binary, so do not require one to be installed on this host.
+        let executable = if cdp_endpoint.is_some() {
+            executable
+        } else {
+            preferred_automation_executable(executable)?
+        };
         Ok(Arc::new(Self {
             runtime_dir: tempfile::Builder::new()
                 .prefix("nanocodex-browser-")
