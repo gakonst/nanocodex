@@ -2,7 +2,7 @@ import XCTest
 
 final class RemoteScreenLifecycleUITests: XCTestCase {
     @MainActor
-    func testInlineScreenKeepsHistoryComposerAndSession() throws {
+    func testScreenCardZoomDismissalAndDraftRestoration() throws {
         guard ProcessInfo.processInfo.environment["NANOCODEX_SCREEN_FIXTURE"] == "1" else {
             throw XCTSkip("Run fixtures/remote-screen.mjs on loopback port 18965")
         }
@@ -10,42 +10,56 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launchEnvironment["NANOCODEX_DEMO_SCREENS"] = "1"
-        app.launchEnvironment["NANOCODEX_DEMO_PROFILE"] = "screen-pane-" + UUID().uuidString
+        app.launchEnvironment["NANOCODEX_DEMO_PROFILE"] = "screen-card-" + UUID().uuidString
         app.launch()
         let screens = app.buttons["conversation-remote-screens"]
-        XCTAssertTrue(screens.waitForExistence(timeout: 15)); screens.tap()
-        let desktop = app.buttons["remote-screen:fixture:desktop"]
-        XCTAssertTrue(desktop.waitForExistence(timeout: 10)); desktop.tap()
-        let watching = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Watching"), object: app.staticTexts["remote-status"])
-        XCTAssertEqual(XCTWaiter.wait(for: [watching], timeout: 15), .completed, app.debugDescription)
-        let canvas = app.descendants(matching: .any)["remote-canvas"].firstMatch
+        XCTAssertTrue(screens.waitForExistence(timeout: 15))
         let composer = app.textFields["composer"].exists ? app.textFields["composer"] : app.textViews["composer"]
-        XCTAssertTrue(canvas.exists); XCTAssertTrue(composer.exists)
-        XCTAssertLessThan(canvas.frame.maxY, composer.frame.minY)
-        let initial = canvas.frame.height
-        let divider = app.descendants(matching: .any)["screen-pane-divider"].firstMatch
-        divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1,
-            thenDragTo: divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).withOffset(CGVector(dx: 0, dy: 60)))
-        XCTAssertGreaterThan(canvas.frame.height, initial)
-        app.buttons["browser-tab:inbox"].tap()
-        XCTAssertEqual(app.staticTexts["remote-status"].label, "Watching")
-        composer.tap(); composer.typeText("Keep the screen visible while I write")
-        XCTAssertLessThan(canvas.frame.maxY, composer.frame.minY)
-        XCTAssertGreaterThan(canvas.frame.height, 20)
-        let keyboardHeight = canvas.frame.height
-        divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1,
-            thenDragTo: divider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).withOffset(CGVector(dx: 0, dy: -30)))
-        XCTAssertLessThan(canvas.frame.height, keyboardHeight - 10, "The resized height must persist when the keyboard is open")
+        let draft = "Keep my draft while I view a screen"
+        composer.tap(); composer.typeText(draft)
+        screens.tap()
+        let desktop = app.buttons["remote-screen:fixture:desktop"]
+        XCTAssertTrue(desktop.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.descendants(matching: .any)["screen-pane-divider"].exists)
+        desktop.tap()
+        let status = app.staticTexts["remote-status"]
+        func requireWatching() {
+            let watching = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Watching"), object: status)
+            XCTAssertEqual(XCTWaiter.wait(for: [watching], timeout: 15), .completed)
+        }
+        requireWatching()
+        let canvas = app.descendants(matching: .any)["remote-canvas"].firstMatch
+        XCTAssertTrue(canvas.exists)
+        let initialHeight = canvas.frame.height
+        // Drag the system sheet's navigation bar, outside the remote canvas.
+        let bar = app.navigationBars["Dashboard"]
+        let handle = bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
+        handle.press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)))
+        let expanded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            canvas.frame.height > initialHeight + 80
+        }, object: canvas)
+        XCTAssertEqual(XCTWaiter.wait(for: [expanded], timeout: 5), .completed)
+        requireWatching()
+        canvas.pinch(withScale: 2, velocity: 1)
+        let zoomed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            (canvas.value as? String ?? "").hasPrefix("Zoom ") && canvas.value as? String != "Zoom 100%"
+        }, object: canvas)
+        XCTAssertEqual(XCTWaiter.wait(for: [zoomed], timeout: 5), .completed)
         let evidence = XCTAttachment(screenshot: app.screenshot())
-        evidence.name = "mobile-screen-and-composer"; evidence.lifetime = .keepAlways; add(evidence)
+        evidence.name = "native-screen-card-expanded-zoom"; evidence.lifetime = .keepAlways; add(evidence)
+        app.buttons["Screens"].tap()
+        XCTAssertTrue(desktop.waitForExistence(timeout: 10)); desktop.tap(); requireWatching()
         app.buttons["close-screen-pane"].tap()
         XCTAssertFalse(canvas.exists)
-        XCTAssertEqual(composer.value as? String, "Keep the screen visible while I write")
-        screens.tap(); XCTAssertTrue(desktop.waitForExistence(timeout: 10)); desktop.tap()
-        let resumed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "Watching"), object: app.staticTexts["remote-status"])
-        XCTAssertEqual(XCTWaiter.wait(for: [resumed], timeout: 15), .completed)
-        let full = XCTAttachment(screenshot: app.screenshot())
-        full.name = "mobile-screen-and-history"; full.lifetime = .keepAlways; add(full)
+        XCTAssertEqual(composer.value as? String, draft)
+        screens.tap(); XCTAssertTrue(desktop.waitForExistence(timeout: 10)); desktop.tap(); requireWatching()
+        let card = XCTAttachment(screenshot: app.screenshot())
+        card.name = "native-screen-card-medium"; card.lifetime = .keepAlways; add(card)
+        let dismissHandle = app.navigationBars["Dashboard"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
+        dismissHandle.press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)))
+        XCTAssertTrue(canvas.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(composer.value as? String, draft)
+        screens.tap(); XCTAssertTrue(desktop.waitForExistence(timeout: 10)); desktop.tap(); requireWatching()
         app.buttons["close-screen-pane"].tap()
     }
 

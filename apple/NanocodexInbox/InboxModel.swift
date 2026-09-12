@@ -9,6 +9,7 @@ import InboxCore
 import NanocodexVoice
 import NanocodexContext
 import NanocodexHand
+import NanocodexUI
 #if os(iOS)
 import UIKit
 import BackgroundTasks
@@ -25,7 +26,9 @@ final class InboxModel: ObservableObject {
     @Published var deck = InboxDeck()
     @Published var filter: Filter = .all { didSet { reconcile() } }
     @Published var drafts: [String: String] = [:]
-    @Published var rows: [TranscriptRow] = []
+    @Published var rows: [TranscriptRow] = [] { didSet { mediaProjection.update(rows) } }
+    private var mediaProjection = InboxMediaProjection()
+    var generatedOutputsByRow: [String: [ChatGeneratedOutput]] { mediaProjection.outputs }
     @Published var threadLoading = false
     @Published var threadError: String?
     private var observedAgentID: String?
@@ -42,6 +45,7 @@ final class InboxModel: ObservableObject {
         var rows: [TranscriptRow]
         var retainedBytes: Int
         var projector: TranscriptStreamProjection
+        var media = InboxMediaProjection()
     }
     private var tabHistories: [String: TabHistory] = [:]
     private var recentTabs: [String] = []
@@ -77,6 +81,7 @@ final class InboxModel: ObservableObject {
     @Published var loadingNewer = false
     private var followingLatest = true
     private var protectedHistoryCursors: ClosedRange<Cursor>?
+    private var protectedHistorySelection: (ids: Set<String>, revision: UUID)?
     @Published var selectedTurn = ""
     @Published private var pendingCreations = Set<String>()
     @Published private var creationErrors: [String: String] = [:]
@@ -145,7 +150,7 @@ final class InboxModel: ObservableObject {
     private var focusedHistoryLoaded = false
     private var streamReceivedFrame = false
     private var generation = UUID()
-    private var observation = UUID()
+    private var observation = UUID() { didSet { cancelOlderHistoryPrefetch() } }
     private var events: [AgentEvent] = [] { didSet { eventsRevision = UUID() } }
     private var eventsRevision = UUID()
     private var projectedFirstCursor: Cursor?
@@ -156,7 +161,10 @@ final class InboxModel: ObservableObject {
     @Published private var navigation: [(id: String, seen: String?, deferred: Cursor?, filter: Filter)] = []
     private var deferred: [String: Cursor] = [:] { didSet { scheduleAgentNotifications() } }
     private var cursor = Cursor.zero
-    private var olderBefore: Cursor?
+    private var olderBefore: Cursor? {
+        didSet { if olderBefore != oldValue { cancelOlderHistoryPrefetch() } }
+    }
+    private var olderHistoryPrefetch: (id: String, before: Cursor, task: Task<(EventPage, [Int]), Error>)?
     private var seen: [String: String] = [:] { didSet { scheduleAgentNotifications() } }
     private var scope = "" { didSet { scheduleAgentNotifications() } }
     private lazy var agentNotifications = AgentNotificationController(open: { [weak self] url in self?.openAgentActivity(url) })
@@ -295,6 +303,28 @@ final class InboxModel: ObservableObject {
     }
     func openThread() {
         pinnedThreadID = focused?.id
+        #if DEBUG
+        if isDemo, ProcessInfo.processInfo.environment["NANOCODEX_DEMO_STREAMING_GROWTH"] == "1", let id = focused?.id {
+            let epoch = generation
+            Task {
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled, generation == epoch, focused?.id == id,
+                      !rows.contains(where: { $0.id == "demo-streaming-growth" }) else { return }
+                rows.append(.init(id: "demo-streaming-growth", role: "Agent", text: "Streaming response begins.", running: true))
+                for index in 1...60 {
+                    try? await Task.sleep(for: .milliseconds(180))
+                    guard !Task.isCancelled, generation == epoch, focused?.id == id,
+                          let row = rows.firstIndex(where: { $0.id == "demo-streaming-growth" }) else { return }
+                    rows[row].text += "\n\nStream paragraph \(index). A steadily growing response keeps the live tail visible while preserving the reader's chosen position."
+                }
+                guard !Task.isCancelled, generation == epoch, focused?.id == id,
+                      let row = rows.firstIndex(where: { $0.id == "demo-streaming-growth" }) else { return }
+                rows[row].text += "\n\nStreaming response complete."
+                rows[row].running = false
+                demoRows[id] = rows
+            }
+        }
+        #endif
         if isDemo, ProcessInfo.processInfo.environment["NANOCODEX_DEMO_LONG_THREAD"] == "1", let id = focused?.id {
             hasOlder = true
             let epoch = generation
@@ -353,7 +383,21 @@ final class InboxModel: ObservableObject {
     func attachmentURL(_ attachment: MessageAttachment) -> URL? {
         attachmentURLs[attachment.id]
     }
+    func attachmentOriginalURL(_ attachment: MessageAttachment) -> URL? {
+        guard let store = try? AttachmentStore(scope: scope) else { return nil }
+        return try? store.url(for: attachment)
+    }
     func attachmentMovieURL(_ attachment: MessageAttachment) -> URL? { attachmentMovieURLs[attachment.id] }
+    func downloadAttachment(_ attachment: MessageAttachment, agentID: String) async throws -> URL {
+        guard let client else { throw APIError.invalidCredential }
+        let epoch = generation
+        let url = try await client.downloadAttachment(agentID: agentID, attachment: attachment)
+        guard epoch == generation, !Task.isCancelled else {
+            try? FileManager.default.removeItem(at: url)
+            throw CancellationError()
+        }
+        return url
+    }
     func downloadVideo(_ video: TranscriptVideo, agentID: String) async throws -> URL {
         guard let client else { throw APIError.invalidCredential }
         let epoch = generation
@@ -1174,7 +1218,7 @@ final class InboxModel: ObservableObject {
         if changed, let previous = observedAgentID, !isDemo, focusedHistoryLoaded {
             // Preserve loaded history along with each tab's draft.
             tabHistories[previous] = TabHistory(events: events, cursor: cursor, hasOlder: hasOlder, hasNewer: hasNewer,
-                                                bytes: eventBytes, rows: rows, retainedBytes: retainedBytes, projector: streamProjector)
+                                                bytes: eventBytes, rows: rows, retainedBytes: retainedBytes, projector: streamProjector, media: mediaProjection)
             recentTabs.removeAll { $0 == previous }; recentTabs.append(previous)
             trimTabCache()
         }
@@ -1209,7 +1253,7 @@ final class InboxModel: ObservableObject {
             focusedHistoryLoaded = true
             events = cached.events; cursor = cached.cursor; hasOlder = cached.hasOlder; hasNewer = cached.hasNewer
             eventBytes = cached.bytes; retainedBytes = cached.retainedBytes
-            olderBefore = events.first?.cursor; rows = cached.rows
+            olderBefore = events.first?.cursor; mediaProjection = cached.media; rows = cached.rows
         }
         threadLoading = !focusedHistoryLoaded
         guard let client, isActive else { return }
@@ -1261,6 +1305,9 @@ final class InboxModel: ObservableObject {
                         self.events = prepared.events; self.hasOlder = prepared.hasMore; self.hasNewer = prepared.hasNewer
                         self.eventBytes = prepared.byteCounts; self.retainedBytes = prepared.byteCounts.reduce(0, +)
                         self.cursor = prepared.latest; self.olderBefore = self.events.first?.cursor
+                        let media = await self.prepareMedia(prepared.rows)
+                        guard self.generation == epoch, self.observation == token, !Task.isCancelled else { return }
+                        self.mediaProjection = media
                         self.rows = prepared.rows; self.projectedFirstCursor = self.events.first?.cursor
                         self.focusedHistoryLoaded = true
                         if let index = self.cards.firstIndex(where: { $0.id == id }) {
@@ -1470,14 +1517,26 @@ final class InboxModel: ObservableObject {
             }
         }
     }
+    private func prepareMedia(_ rows: [TranscriptRow]) async -> InboxMediaProjection {
+        let previous = mediaProjection
+        let task = Task.detached(priority: .userInitiated) {
+            var next = previous
+            next.update(rows)
+            return next
+        }
+        return await withTaskCancellationHandler(operation: { await task.value }, onCancel: { task.cancel() })
+    }
     private func projectEvents(id: String, epoch: UUID, token: UUID) async -> Bool {
         guard generation == epoch, observation == token, !Task.isCancelled else { return false }
         let history = events, revision = eventsRevision
         guard let projected = try? await streamProjector.rows(history),
               generation == epoch, observation == token, !Task.isCancelled else { return false }
-        // A prepend/trim changes the reading window. Never replace it with an
-        // older projection; appended stream frames can still publish progress.
+        let media = await prepareMedia(projected)
+        guard generation == epoch, observation == token, !Task.isCancelled else { return false }
+        // Rows and media become visible together. A second asynchronous media
+        // insertion after a history prepend would invalidate its reading anchor.
         if history.first?.cursor == events.first?.cursor {
+            mediaProjection = media
             if rows != projected { rows = projected }
             projectedFirstCursor = history.first?.cursor
             if let index = cards.firstIndex(where: { $0.id == id }) {
@@ -1492,6 +1551,8 @@ final class InboxModel: ObservableObject {
     func setHistoryAtLatest(_ atLatest: Bool) { followingLatest = atLatest && !hasNewer }
 
     func protectHistoryRows(_ ids: Set<String>) {
+        if let previous = protectedHistorySelection, previous.ids == ids, previous.revision == eventsRevision { return }
+        protectedHistorySelection = (ids, eventsRevision)
         let visible = rows.filter { ids.contains($0.id) || $0.turnID.map { ids.contains("activity-" + $0) } == true }
         let turns = Set(visible.compactMap(\.turnID))
         // A row's cursor is its admission, but later events can supply its text.
@@ -1531,6 +1592,7 @@ final class InboxModel: ObservableObject {
     func loadNewer(latest: Bool = false) async {
         guard let client, let id = focused?.id, !loadingOlder, !loadingNewer,
               latest || hasNewer, let after = events.last?.cursor else { return }
+        cancelOlderHistoryPrefetch()
         let token = observation, epoch = generation
         loadingNewer = true
         defer { if token == observation { loadingNewer = false } }
@@ -1560,11 +1622,32 @@ final class InboxModel: ObservableObject {
             reconcilePending(id: id, events: loadedEvents)
             retainedBytes = eventBytes.reduce(0, +)
             olderBefore = events.first?.cursor
-            scheduleProjection(id: id, epoch: epoch, token: token)
+            scheduleProjection(id: id, epoch: epoch, token: token, delay: .zero)
             repeat { await projection?.value }
             while token == observation && generation == epoch && !Task.isCancelled
                 && projectedFirstCursor != events.first?.cursor && projection != nil
         } catch { if token == observation { threadError = error.localizedDescription } }
+    }
+
+    private func cancelOlderHistoryPrefetch() {
+        olderHistoryPrefetch?.task.cancel()
+        olderHistoryPrefetch = nil
+        protectedHistorySelection = nil
+    }
+
+    // One cursor-bound page ahead of the viewport. Fetching does not mutate
+    // the visible history; switching tabs or changing its boundary cancels it.
+    func prefetchOlder() {
+        guard !isDemo, !threadLoading, !loadingOlder, !loadingNewer, hasOlder,
+              let client, let id = focused?.id, let before = olderBefore else { return }
+        if let pending = olderHistoryPrefetch, pending.id == id, pending.before == before { return }
+        cancelOlderHistoryPrefetch()
+        olderHistoryPrefetch = (id, before, Task {
+            let page = try await client.history(id, before: before)
+            let bytes = try await TranscriptPreparation.byteCounts(page.events)
+            try Task.checkCancellation()
+            return (page, bytes)
+        })
     }
 
     func loadOlder() async {
@@ -1580,11 +1663,23 @@ final class InboxModel: ObservableObject {
         }
         guard let client, let id = focused?.id, let before = olderBefore, hasOlder, !loadingOlder, !loadingNewer else { return }
         let token = observation, epoch = generation
+        prefetchOlder()
+        let prefetched = olderHistoryPrefetch
         loadingOlder = true
-        defer { if token == observation { loadingOlder = false } }
+        defer {
+            if token == observation {
+                loadingOlder = false
+                cancelOlderHistoryPrefetch()
+            }
+        }
         do {
-            let page = try await client.history(id, before: before)
-            let bytes = try await TranscriptPreparation.byteCounts(page.events)
+            let page: EventPage, bytes: [Int]
+            if let prefetched, prefetched.id == id, prefetched.before == before {
+                (page, bytes) = try await prefetched.task.value
+            } else {
+                page = try await client.history(id, before: before)
+                bytes = try await TranscriptPreparation.byteCounts(page.events)
+            }
             guard token == observation, generation == epoch, !Task.isCancelled else { return }
             guard !page.hasMore || page.events.first.map({ $0.cursor < before }) == true else { throw APIError.invalidResponse }
             let inserted = page.events.indices.filter { page.events[$0].cursor < before }
@@ -1595,7 +1690,7 @@ final class InboxModel: ObservableObject {
             hasOlder = page.hasMore
             trimMeasuredEvents(towardOlder: true, keeping: inserted.count + overlap)
             olderBefore = events.first?.cursor
-            scheduleProjection(id: id, epoch: epoch, token: token)
+            scheduleProjection(id: id, epoch: epoch, token: token, delay: .zero)
             repeat { await projection?.value }
             while token == observation && generation == epoch && !Task.isCancelled
                 && projectedFirstCursor != events.first?.cursor && projection != nil
@@ -2508,5 +2603,33 @@ private enum KeychainAccount {
             }
             return "The saved sign-in could not be \(action) securely (\(status)). Try again."
         }
+    }
+}
+
+/// The same parsed media survives streamed updates and cached-tab restoration.
+/// Keep parsing off the UI thread when admitting real history; synchronous updates
+/// only reconcile prepared entries or small local/demo changes.
+private struct InboxMediaProjection: Sendable {
+    private struct Entry: Sendable {
+        var results: [String]
+        var outputs: [ChatGeneratedOutput]
+    }
+    private var entries: [String: Entry] = [:]
+    private(set) var outputs: [String: [ChatGeneratedOutput]] = [:]
+    mutating func update(_ rows: [TranscriptRow]) {
+        var retained: [String: Entry] = [:]
+        var projected: [String: [ChatGeneratedOutput]] = [:]
+        for row in rows {
+            guard !Task.isCancelled else { return }
+            guard let tool = row.tool, !tool.isInspectionOutput, let results = tool.generatedResults else { continue }
+            let entry: Entry
+            if let previous = entries[row.id], previous.results == results { entry = previous }
+            else {
+                entry = Entry(results: results, outputs: ChatGeneratedOutput.parse(results: results))
+            }
+            retained[row.id] = entry
+            if !entry.outputs.isEmpty { projected[row.id] = entry.outputs }
+        }
+        entries = retained; outputs = projected
     }
 }

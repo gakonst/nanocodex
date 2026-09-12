@@ -116,7 +116,7 @@ public struct SSEParser: Sendable {
 }
 
 public struct TranscriptRow: Identifiable, Codable, Equatable, Sendable {
-    public let id: String
+    public internal(set) var id: String
     public var role: String
     public var text: String
     public var detail: String = ""
@@ -180,12 +180,8 @@ public struct TranscriptProjection: Sendable {
             let id = prefix + ":" + envelope.cursor.rawValue
             if envelope.type == "turn_accepted" {
                 let input = d["input"]
-                let fileImages = ImageAttachmentContent.project(input.array)
-                let media = VideoAttachmentContent.project(fileImages.remaining)
-                let text = input.array.isEmpty ? input.string : media.remaining.compactMap {
-                    $0["type"].string == "image" ? nil : $0["type"].string == "audio" ? "[Audio]" : $0["text"].string
-                }.joined(separator: "\n")
-                let images = media.remaining.filter { $0["type"].string == "image" }.map { $0["image_url"].string }
+                let media = TranscriptInput(input)
+                let text = media.text, images = media.images
                 if let spoken = RealtimeTranscript.project(text) {
                     for (index, entry) in spoken.enumerated() {
                         rows.append(.init(id: id + ":voice:\(index)", role: entry.speaker == "user" ? "You" : "Agent", text: entry.text))
@@ -193,7 +189,7 @@ public struct TranscriptProjection: Sendable {
                 } else {
                     var row = TranscriptRow(id: id, role: "You", text: text, images: images.isEmpty ? nil : images)
                     row.videos = media.videos.isEmpty ? nil : media.videos
-                    row.imageFiles = fileImages.images.isEmpty ? nil : fileImages.images
+                    row.imageFiles = media.imageFiles.isEmpty ? nil : media.imageFiles
                     rows.append(row)
                 }
             } else if envelope.type == "turn_completed" {

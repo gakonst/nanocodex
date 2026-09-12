@@ -21,13 +21,14 @@ final class MessageQueuePresentationTests: XCTestCase {
         XCTAssertTrue(started.messages.isEmpty)
         XCTAssertEqual(started.rows.map(\.turnID), ["running", "queued"])
     }
-    func testFirstSendAndEveryUnresolvedStateStayInQueue() {
+    func testFirstSendStaysInConversationAcrossEveryDeliveryState() {
         for phase in [PendingMessage.Phase.submitting, .queued, .starting, .cancelling, .failed] {
             var message = message("first", phase: phase)
             message.predecessor = ""
             let projection = MessageQueuePresentation(agentID: "a", rows: [row("first")], pending: [message], activeTurns: ["first"])
             XCTAssertEqual(projection.messages.count, 1)
-            XCTAssertTrue(projection.rows.isEmpty)
+            XCTAssertEqual(projection.rows.map(\.text), ["Text first"])
+            XCTAssertTrue(projection.queuedMessages.isEmpty)
             XCTAssertEqual(projection.messages[0].phase, phase)
         }
     }
@@ -55,7 +56,7 @@ final class MessageQueuePresentationTests: XCTestCase {
     }
     func testQueueHeadDoesNotClaimToWaitBehindStalePredecessor() {
         let projection = MessageQueuePresentation(agentID: "a", rows: [row("next")], pending: [message("next")], activeTurns: ["next"])
-        XCTAssertEqual(projection.messages.first?.queueTitle, "Waiting to start")
+        XCTAssertEqual(projection.messages.first?.queueTitle, "Sent")
         XCTAssertNil(projection.messages.first?.interruption(activeTurns: ["next"]))
     }
     func testAdoptedRemoteContentRefreshesWithoutLosingControlIntent() {
@@ -74,13 +75,27 @@ final class MessageQueuePresentationTests: XCTestCase {
         XCTAssertFalse(adopted.hasFinished(activeTurns: [], stateCursor: Cursor(rawValue: "41")!))
         XCTAssertTrue(adopted.hasFinished(activeTurns: [], stateCursor: Cursor(rawValue: "43")!))
     }
-    func testRemoteHeadNeedsExecutionEvidenceBeforePromotion() {
+    func testRemoteHeadDisplaysBeforeExecutionBegins() {
         let waiting = MessageQueuePresentation(agentID: "a", rows: [row("head")], pending: [], activeTurns: ["head"])
-        XCTAssertEqual(waiting.messages.first?.queueTitle, "Waiting for execution update")
-        XCTAssertTrue(waiting.rows.isEmpty)
+        XCTAssertEqual(waiting.messages.first?.queueTitle, "Sent")
+        XCTAssertEqual(waiting.rows.count, 1)
         let started = MessageQueuePresentation(agentID: "a", rows: [row("head")], pending: [], activeTurns: ["head"], executingTurns: ["head"])
         XCTAssertTrue(started.messages.isEmpty)
         XCTAssertEqual(started.rows.count, 1)
+    }
+    func testFirstBubbleHasOneStableIdentityBeforeReceiptThroughExecution() throws {
+        var pending = PendingMessage(agentID: "a", input: "Show this immediately", predecessor: "", id: "instant")
+        let local = MessageQueuePresentation(agentID: "a", rows: [], pending: [pending], activeTurns: [])
+        XCTAssertEqual(local.rows.map(\.text), [pending.input])
+        var accepted = row("instant")
+        accepted.text = pending.input
+        accepted.imageFiles = [try MessageAttachment(name: "Photo.png", mediaType: "image/png", byteCount: 20)]
+        pending.phase = .queued
+        let admitted = MessageQueuePresentation(agentID: "a", rows: [accepted], pending: [pending], activeTurns: [pending.id])
+        let started = MessageQueuePresentation(agentID: "a", rows: [accepted], pending: [], activeTurns: [pending.id], executingTurns: [pending.id])
+        XCTAssertEqual(local.rows.map(\.id), admitted.rows.map(\.id))
+        XCTAssertEqual(admitted.rows, started.rows)
+        XCTAssertEqual(admitted.rows.first?.imageFiles, accepted.imageFiles)
     }
     func testMissingRemotePayloadStillOwnsItsQueuePosition() {
         let projection = MessageQueuePresentation(agentID: "a", rows: [row("local")], pending: [message("local")],

@@ -35,6 +35,14 @@ public struct ChatGeneratedOutput: Identifiable, Equatable, Hashable, Sendable {
         return parser.outputs
     }
 
+    /// Attachments already contain a source URL. Apply the same media policy
+    /// without serializing and decoding the entire image as an artificial event.
+    static func image(source: String) -> Self? {
+        var parser = Parser(includesText: false)
+        parser.emitSource(source, kind: .image, mime: "image/png", title: "")
+        return parser.outputs.first
+    }
+
     /// Keep Activity readable without ever printing an embedded binary payload.
     public static func sanitizedText(_ source: String) -> String {
         let value = sanitized(decode(source) ?? source)
@@ -131,6 +139,9 @@ public struct ChatGeneratedOutput: Identifiable, Equatable, Hashable, Sendable {
         private mutating func walkObject(_ value: Any, includeText: Bool, work: inout [Step]) {
             guard let object = value as? [String: Any] else { return }
             let type = object["type"] as? String ?? ""
+            // A read tool may return serialized history or an echoed request.
+            // Those user attachments keep their original conversation ownership.
+            if type == "turn_accepted" || object["role"] as? String == "user" { return }
             let mime = (object["mimeType"] ?? object["mime_type"]) as? String
             let title = (object["title"] as? String) ?? (object["name"] as? String) ?? ""
             if ["input_text", "text", "output_text", "image", "input_image", "image_url", "audio", "input_audio", "output_audio", "video", "input_video", "resource_link", "file", "input_file", "output_file", "resource", "unsupported"].contains(type) { recognized += 1 }

@@ -1,5 +1,6 @@
 import Foundation
 import NanocodexUI
+import InboxCore
 
 indirect enum JSONValue: Codable, Equatable, Sendable {
     case object([String: JSONValue]), array([JSONValue]), string(String), number(Double), bool(Bool), null
@@ -28,6 +29,18 @@ indirect enum JSONValue: Codable, Equatable, Sendable {
     subscript(_ key: String) -> JSONValue { if case .object(let value) = self { return value[key] ?? .null }; return .null }
     var string: String { if case .string(let v) = self { return v }; return "" }
     var array: [JSONValue] { if case .array(let v) = self { return v }; return [] }
+    var inboxJSON: InboxCore.JSON {
+        // Share string storage for large image inputs instead of serializing
+        // their base64 again on every streamed timeline update.
+        switch self {
+        case .object(let value): return .object(value.mapValues(\.inboxJSON))
+        case .array(let value): return .array(value.map(\.inboxJSON))
+        case .string(let value): return .string(value)
+        case .number(let value): return .number(value)
+        case .bool(let value): return .bool(value)
+        case .null: return .null
+        }
+    }
     var pretty: String {
         if case .string(let value) = self {
             guard let data = value.data(using: .utf8), let parsed = try? JSONDecoder().decode(JSONValue.self, from: data) else { return value }
@@ -267,6 +280,7 @@ struct MessageEntry: Identifiable, Equatable, Sendable {
     var name = ""
     var output = ""
     var generatedOutputs: [ChatGeneratedOutput] = []
+    var attachments: TranscriptInput?
     var status = ""
     var streaming = false
     var agent: String?
@@ -428,8 +442,10 @@ private func projectTimeline(_ events: [ManagedEvent], toolOutputs: inout [Strin
         switch d["type"].string {
         case "turn_accepted":
             let input = d["input"]
-            let text = input.array.isEmpty ? input.string : input.array.map { $0["text"].string.isEmpty ? "[Attachment]" : $0["text"].string }.joined(separator: "\n")
-            rows.append(.init(id: MessageEntry.userID(turn), turnId: turn, kind: .user, text: text))
+            let projected = TranscriptInput(input.inboxJSON)
+            let media = projected.images.isEmpty && projected.imageFiles.isEmpty && projected.videos.isEmpty ? nil : projected
+            rows.append(.init(id: MessageEntry.userID(turn), turnId: turn, kind: .user,
+                              text: projected.text, attachments: media))
         case "turn_completed":
             let final = d["final_message"].string
             if !final.isEmpty {
@@ -479,8 +495,7 @@ private func projectTimeline(_ events: [ManagedEvent], toolOutputs: inout [Strin
                 let result = p["result"], structured = p["structured_result"]
                 let index = rows.firstIndex(where: { $0.id == toolID })
                 let name = index.map { rows[$0].name } ?? p["tool"].string
-                let family = name.components(separatedBy: "__").last?.replacingOccurrences(of: "functions.", with: "") ?? name
-                let includeText = family == "exec"
+                let includeText = false // Tool diagnostics stay in Activity.
                 let resultID = toolID + ":" + envelope.cursor
                 let output: NativeToolOutputProjection
                 if let cached = toolOutputs[resultID], cached.result == result, cached.structured == structured, cached.includeText == includeText { output = cached }
@@ -490,10 +505,10 @@ private func projectTimeline(_ events: [ManagedEvent], toolOutputs: inout [Strin
                 let status = p["status"].string == "cancelled" ? "cancelled" : failed ? "failed" : p["status"].string.isEmpty ? "completed" : p["status"].string
                 if let index {
                     rows[index].output = output.diagnostics
-                    rows[index].generatedOutputs = output.outputs
+                    rows[index].generatedOutputs = ToolOutputVisibility.isInspection(name: name, arguments: rows[index].text) ? [] : output.outputs
                     rows[index].status = status
                 } else {
-                    rows.append(.init(id: toolID, turnId: turn, kind: .tool, text: "", name: name, output: output.diagnostics, generatedOutputs: output.outputs, status: status, agent: agent))
+                    rows.append(.init(id: toolID, turnId: turn, kind: .tool, text: "", name: name, output: output.diagnostics, generatedOutputs: ToolOutputVisibility.isInspection(name: name, arguments: "") ? [] : output.outputs, status: status, agent: agent))
                 }
             case "run.steered": rows.append(.init(id: id, turnId: turn, kind: .notice, text: "Direction updated"))
             case "run.error":

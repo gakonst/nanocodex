@@ -347,6 +347,23 @@ public final class ManagedClient: @unchecked Sendable {
         return data
     }
 
+    /// The native previewer receives a local file, never an account credential or bearer URL.
+    public func downloadAttachment(agentID: String, attachment: MessageAttachment) async throws -> URL {
+        var request = try request(path: Self.agentPath(agentID) + "/attachments/" + attachment.id.lowercased())
+        request.timeoutInterval = 120
+        request.setValue(attachment.mediaType, forHTTPHeaderField: "Accept")
+        let (download, response) = try await session.download(for: request)
+        defer { try? FileManager.default.removeItem(at: download) }
+        guard let response = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+        guard response.statusCode == 200 else { throw APIError.http(response.statusCode) }
+        guard try download.resourceValues(forKeys: [.fileSizeKey]).fileSize == attachment.byteCount else { throw APIError.invalidResponse }
+        let suffix = URL(fileURLWithPath: attachment.originalPath).pathExtension
+        let local = FileManager.default.temporaryDirectory.appendingPathComponent("attachment-" + UUID().uuidString).appendingPathExtension(suffix)
+        try FileManager.default.moveItem(at: download, to: local)
+        if Task.isCancelled { try? FileManager.default.removeItem(at: local); throw CancellationError() }
+        return local
+    }
+
     /// AVPlayer receives a local file, never an account credential or bearer URL.
     /// The caller removes this temporary copy when playback closes.
     public func downloadVideo(agentID: String, video: TranscriptVideo) async throws -> URL {

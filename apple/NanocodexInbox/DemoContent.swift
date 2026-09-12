@@ -136,7 +136,11 @@ enum DemoContent {
             .object(["type": .string("input_text"), "text": .string("INTERNAL_COMMAND_OUTPUT: completed diagnostics")]),
             .object(["type": .string("input_image"), "image_url": .string("data:image/png;base64," + image)])
         ])
-        let structured: JSON = .object(["exit_code": .number(0), "content": .array([
+        var extraMedia: [JSON] = []
+        if let video = ProcessInfo.processInfo.environment["NANOCODEX_DEMO_VIDEO_BASE64"] {
+            extraMedia.append(.object(["type": .string("video"), "mimeType": .string("video/mp4"), "name": .string("Sample video.mp4"), "data": .string(video)]))
+        }
+        let structured: JSON = .object(["exit_code": .number(0), "content": .array(extraMedia + [
             .object(["type": .string("resource"), "resource": .object(["uri": .string("artifact:///chart.csv"), "mimeType": .string("text/csv"), "blob": .string(Data("Series,Value\nA,48\nB,82\nC,108\n".utf8).base64EncodedString())])]),
             .object(["type": .string("audio"), "mimeType": .string("audio/wav"), "data": .string(audio.base64EncodedString())])
         ])])
@@ -249,10 +253,11 @@ private final class StartupFixtureProtocol: URLProtocol, @unchecked Sendable {
     private static let queue = DispatchQueue(label: "nanocodex.startup-fixture")
     private static var historyLive = false
     private static var historyStreams: [String: StartupFixtureProtocol] = [:]
-    private static let historyPages = 20
+    private static var historyPages: Int { historyMedia ? 6 : 20 }
     private static let historyPageSize = 128
     private static let historyPadding = String(repeating: "p", count: 1_200_000)
     private static var warmTabs: Bool { ProcessInfo.processInfo.environment["NANOCODEX_STARTUP_WARM_TABS"] == "1" }
+    private static var historyMedia: Bool { ProcessInfo.processInfo.environment["NANOCODEX_STARTUP_HISTORY_MEDIA"] == "1" }
     private static var historyWindow: Bool { ProcessInfo.processInfo.environment["NANOCODEX_STARTUP_HISTORY_WINDOW"] == "1" }
     private var stopped = false
     private let requestID = UUID().uuidString
@@ -302,6 +307,9 @@ private final class StartupFixtureProtocol: URLProtocol, @unchecked Sendable {
                     body = #"{"data":["saved"],"summaries":{"saved":{"title":"History window fixture","updated_at":\#(now),"turn_count":20}}}"#
                 } else if path.hasSuffix("/events/history") {
                     body = Self.historyBody(request.url!)
+                    if Self.historyMedia, request.url!.query?.contains("before=") == true {
+                        delay = Double(ProcessInfo.processInfo.environment["NANOCODEX_STARTUP_HISTORY_DELAY_MS"].flatMap(Int.init) ?? 3000) / 1000
+                    }
                 } else if isStream {
                     Self.historyStreams[requestID] = self
                 } else if !path.hasSuffix("/triggers") {
@@ -331,6 +339,31 @@ private final class StartupFixtureProtocol: URLProtocol, @unchecked Sendable {
         if cursor > historyPages * historyPageSize {
             return ["cursor": String(cursor), "type": "turn_completed", "turn_id": "fixture-live",
                     "final_message": "Fixture live arrival beyond history window."]
+        }
+        if historyMedia {
+            let slot = (cursor - 1) % historyPageSize
+            let call = "history-image-\((cursor - 1) / historyPageSize * 3 + max(0, slot - 121) / 2 + 1)"
+            if slot >= 121 && slot <= 126 {
+                let index = (cursor - 1) / historyPageSize * 3 + (slot - 121) / 2 + 1
+                let type = slot % 2 == 1 ? "tool.call" : "tool.result"
+                var payload: [String: Any] = ["call_id": call, "tool": "make_chart"]
+                if type == "tool.call" { payload["arguments"] = ["title": "History image \(index)"] }
+                else {
+                    let context = CGContext(data: nil, width: 240, height: 360, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                    context.setFillColor(CGColor(red: CGFloat(index) / 20, green: 0.3, blue: 0.6, alpha: 1))
+                    context.fill(CGRect(x: 0, y: 0, width: 240, height: 360))
+                    let data = NSMutableData()
+                    let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil)!
+                    CGImageDestinationAddImage(destination, context.makeImage()!, nil); CGImageDestinationFinalize(destination)
+                    let bytes = data as Data
+                    payload["result"] = ["type": "image", "mimeType": "image/png", "data": bytes.base64EncodedString(), "title": "History image \(index)"]
+                }
+                return ["cursor": String(cursor), "type": "event", "turn_id": "one-large-turn", "event": ["type": type, "payload": payload]]
+            }
+            if cursor == historyPages * historyPageSize {
+                return ["cursor": String(cursor), "type": "turn_completed", "turn_id": "one-large-turn", "final_message": "Completed image review."]
+            }
+            return ["cursor": String(cursor), "type": "event", "turn_id": "one-large-turn", "event": ["type": "fixture.transport", "payload": [:]]]
         }
         let page = (cursor - 1) / historyPageSize + 1
         if cursor % historyPageSize == 0 {

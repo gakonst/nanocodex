@@ -114,11 +114,11 @@ agents and simulated actions.
 ## Interaction
 
 Use **Remote screens** from the inbox or a conversation to watch a published
-Hand desktop and take control. The viewer opens above the conversation, with
-history and the composer below. Drag the divider to adjust its height; the
-keyboard gives more of the remaining space to the screen. Switching agent tabs
-keeps the selected screen connected. Close the pane with **×** or the Screens
-button. Remote typing controls are behind the keyboard button after taking control.
+Hand desktop and take control. On iPhone and iPad, screens open in a native sheet
+with grouped screen cards. Drag the sheet to expand it, pinch the screen to zoom,
+and tap **Done** or swipe down to return to the conversation with your draft intact.
+Resizing keeps the selected screen connected; closing releases its session.
+Remote typing controls are behind the keyboard button after taking control.
 The iPhone/iPad and native Mac app share the
 `NanocodexRemote` WebRTC viewer, including video, pointer, keyboard, and control
 leases. Desktop-enabled factory VMs publish automatically; the screen list
@@ -154,7 +154,12 @@ to the previous conversation, retaining its draft and reading position.
 The overview replaces the sidebar: search conversations, filter to running agents,
 or select a live preview. The app menu opens Scheduled jobs and Account settings.
 The full conversation scrolls independently; horizontal swipes and upward pulls do not switch
-agents or create conversations. Scheduled jobs and Settings use full-page
+agents or create conversations.
+Streamed responses follow the bottom while you are reading the latest output. Scrolling
+back pauses following and preserves your reading position. A small circular down-arrow
+above the composer returns to the latest messages and resumes following, including
+when newer history must first load. Working activity appears as a compact inline
+indicator; details expand when activity is available. Scheduled jobs and Settings use full-page
 navigation with a Back button. Agent updates refresh automatically without a
 refresh button.
 
@@ -211,7 +216,7 @@ preparation/errors remain in the queue. Terminal-target rejection retains input.
 Stop and queued-message cancellation remain available during submission and
 account refresh. Cancellation intent survives relaunch; the send button shows
 progress until the exact turn is terminal, with a retry on an unconfirmed stop.
-A cancelling message stays in the queue until terminal confirmation. Once its
+A cancelling follow-up stays in the queue until terminal confirmation. Once its
 cancellation is durably acknowledged, its successor can be interrupted for;
 the cancelled request is retained in history as a cancellation, not a sent bubble.
 A confirmed cancellation before admission fences any late submission of that ID.
@@ -604,7 +609,11 @@ scope and never connects to the account service. Use `ChatMarkdownParse` Points
 of Interest with Time Profiler to inspect actual parsing during this journey;
 simulator metrics do not represent physical-device input latency.
 
-Thinking, tool calls, explicit progress commentary, and subagent updates share one collapsed **Activity** row per turn. Its status and step count update in place; tool failures remain visible as an issue count. Expand once for a compact, scrollable timeline, then expand a step for its notes, inputs, and results. Both levels have bounded height. Final answers and errors remain visible outside Activity; older untagged assistant text is preserved. Commands retain code formatting and structured results use readable fields. Expansion respects Reduce Motion, and new steps never grow the closed transcript.
+Thinking, tool calls, explicit progress commentary, and subagent updates share one collapsed **Activity** row per turn. Running activity uses a native spinner without changing status text or step counts in the transcript. Counts remain available to accessibility; failed steps show their status after expansion. Expand once for a compact, scrollable timeline, then expand a step for its notes, inputs, and results. Both levels use native DisclosureGroup controls with bounded scrollable content. Final answers and errors remain visible outside Activity; older untagged assistant text is preserved. Commands retain code formatting and structured results use readable fields. Expansion respects Reduce Motion, and new steps never grow the closed transcript.
+
+Images and videos open in native Quick Look, including original uploads, draft attachments, and generated media. Original files download only when opened; the conversation uses bounded thumbnails with stable loading heights. Generated media has independent, stable transcript rows; it is projected with its history page so earlier outputs within the same turn cannot arrive as a second layout insertion. Scrolling toward earlier messages prefetches one cursor-bound page within two viewports of the top, without inserting it or moving the reader. Crossing the load boundary reuses that request and presents the page without the live-stream batching delay. Geometry updates reuse an item index and only recalculate history retention when the visible selection changes. Reconnect controls do not change the transcript viewport, and history insertions cannot reverse the inferred swipe direction. One history insertion consumes the direct scroll direction that triggered it; deceleration and bounce-back do not establish a new paging direction. Expanded Activity retains the visible tool step while earlier work arrives, even when the timeline changes height. Legacy sampled video frames stay grouped inside one attachment and open as a native preview collection. Attachment descriptors, echoed user history, and image-inspection results do not become generated replies. Remote screens use UIScrollView/AppKit magnification: pinch to zoom, pan locally while watching, or use two fingers to pan a magnified screen while controlling its pointer with one finger.
+
+The focused media journey is `InboxUITests/testNativeMediaPreviewZoomPlaybackAndDraftRestoration`. The screen fixture journey is `RemoteScreenLifecycleUITests/testScreenCardZoomDismissalAndDraftRestoration`; start `NanocodexInboxUITests/fixtures/remote-screen.mjs` and pass `TEST_RUNNER_NANOCODEX_SCREEN_FIXTURE=1` to xcodebuild.
 
 New conversations open synchronously as local drafts. Creation runs in the background using a persisted idempotency key; Send and voice share that request. Draft text, pending messages, attachments (including imports still in progress), context selections, and keyboard focus survive the server identity arriving. A late response never changes the selected conversation. Failed creation can be retried from the composer, and unfinished drafts survive relaunch.
 
@@ -612,7 +621,9 @@ Verified on 2026-09-06: seven native UI checks passed, including creation delaye
 
 Conversation scroll targets retain the visible message across prepended history and new output, and new conversations open at the latest messages. Returning to the foreground resumes the existing cursor and transcript rather than clearing the screen. Conversation scrolling preserves the selected agent; navigation uses the tab strip and overview.
 
-The conversation keeps the same agent composer fixed above the keyboard while you read older messages. Sending dismisses the iPhone/iPad keyboard. Pending input appears once in the queue above the composer, including first sends, attachments, and delivery errors. Follow-up admission does not create a sent bubble: execution evidence promotes it into the conversation. API-accepted steering appears with an explicit steering label. The queue follows server order across devices and relaunch; messages whose content has not loaded retain a placeholder and queue position. Cancelling and retrying keep the same identity. “Steer now” injects the input through the active turn’s steering API without stopping that turn. With an empty draft and a running turn, the send button becomes Stop; adding text or an image restores Send in the same position. Drafts, queued follow-ups, steering, and stop controls belong to the selected agent. Switching tabs or opening the overview preserves that work.
+The conversation keeps the same agent composer fixed above the keyboard while you read older messages. Sending dismisses the iPhone/iPad keyboard. Sending to an idle conversation immediately displays the message and local attachment previews in the transcript, even while conversation creation or admission is pending. The bubble retains its identity through acknowledgement and execution; unconfirmed delivery shows Retry and Cancel beside that message. Follow-ups waiting behind another turn appear once in the queue above the composer; execution evidence promotes them into the conversation. API-accepted steering appears with an explicit steering label. The queue follows server order across devices and relaunch; messages whose content has not loaded retain a placeholder and queue position. Cancelling and retrying keep the same identity. “Steer now” injects the input through the active turn’s steering API without stopping that turn. With an empty draft and a running turn, the send button becomes Stop; adding text or an image restores Send in the same position. Drafts, queued follow-ups, steering, and stop controls belong to the selected agent. Switching tabs or opening the overview preserves that work.
+
+Verified on 2026-09-12: focused simulator checks cover immediate first-send rendering during delayed creation, stable bubbles through delayed failure and Retry, cached tabs without reload, startup restoration, and reading position during streaming. Transcript grouping is computed with the conversation revision rather than each scroll update. Row geometry does not publish per-pixel view updates, and history navigation follows native scroll events without an additional drag recognizer. The phone uses a fully measured native stack for its bounded history window, avoiding feedback between estimated lazy heights and scroll restoration. Native visibility events load and release generated image thumbnails as they enter and leave the viewport. Native size-change anchoring follows streamed output. Image previews apply media validation directly without encoding the complete image into JSON first. Desktop thread loading uses the system progress indicator, and first-send failures remain beside their original bubble. These fixture checks do not measure physical-device network latency.
 
 Verified on 2026-09-08: focused iPhone/iPad checks cover browser tabs, searchable live previews, the All/Running filter, app-menu navigation, independent drafts, keyboard placement, point-based reading restoration, slow creation, cancellation, and retry. The signed-in iPhone 17 Pro completed a real reply, relaunched, and retained both messages through three round trips to other tabs. InboxCore passed 68 tests with three skips. The top tab strip, bottom Back/+/overview/screens/menu bar, Back draft restoration, and activity-sorted overview were checked in iPhone and iPad simulators. These tab checks do not establish voice latency or microphone performance.
 

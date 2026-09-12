@@ -30,6 +30,28 @@ private final class RemoteHTTPFixture: URLProtocol {
 }
 
 final class RemoteViewerTests: XCTestCase {
+    @MainActor func testNativeZoomKeepsScreenCoordinatesStable() {
+        let viewer = RemoteViewer()
+        #if os(macOS)
+        let viewport = MacRemoteViewport(viewer: viewer)
+        viewport.frame = CGRect(x: 0, y: 0, width: 640, height: 360)
+        viewport.layoutSubtreeIfNeeded()
+        let original = viewport.canvas.frame.size
+        viewport.setMagnification(2, centeredAt: CGPoint(x: 320, y: 180))
+        viewport.layoutSubtreeIfNeeded()
+        XCTAssertEqual(viewport.magnification, 2, accuracy: 0.01)
+        XCTAssertEqual(viewport.canvas.frame.size, original, "Magnification changes the viewport, not the remote document's coordinates")
+        #else
+        let canvas = TouchRemoteCanvas(viewer: viewer)
+        canvas.frame = CGRect(x: 0, y: 0, width: 640, height: 360)
+        canvas.layoutIfNeeded()
+        XCTAssertEqual(canvas.normalizedPoint(CGPoint(x: 320, y: 180)), CGPoint(x: 0.5, y: 0.5))
+        canvas.viewport.setZoomScale(2, animated: false)
+        canvas.viewport.contentOffset = CGPoint(x: 320, y: 180)
+        XCTAssertEqual(canvas.normalizedPoint(CGPoint(x: 320, y: 180)), CGPoint(x: 0.5, y: 0.5))
+        #endif
+    }
+
     @MainActor func testCanvasTeardownDoesNotPublishDuringSwiftUIInvalidation() {
         let viewer = RemoteViewer()
 #if os(macOS)
