@@ -2,3 +2,4 @@ target
 tests
 fixtures
 vendor/rquickjs-sys/target
+artifacts
