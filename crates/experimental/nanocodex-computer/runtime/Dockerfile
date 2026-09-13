@@ -4,6 +4,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY vendor ./vendor
+COPY extensions ./extensions
 RUN RUSTFLAGS="-C target-feature=-crt-static" cargo build --locked --release --bin nanocodex-computer
 
 FROM alpine:3.24

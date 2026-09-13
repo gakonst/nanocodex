@@ -1,0 +1,86 @@
+[
+  {
+    "chords" : [
+      [
+        "a ́b"
+      ]
+    ],
+    "input" : "a ́b"
+  },
+  {
+    "chords" : [
+      [
+        "a+́b"
+      ]
+    ],
+    "input" : "a+́b"
+  },
+  {
+    "chords" : [
+      [
+        "a؀ b"
+      ]
+    ],
+    "input" : "a؀ b"
+  },
+  {
+    "chords" : [
+      [
+        "a؀+b"
+      ]
+    ],
+    "input" : "a؀+b"
+  },
+  {
+    "chords" : [
+      [
+        "a‍"
+      ],
+      [
+        "b"
+      ]
+    ],
+    "input" : "a‍ b"
+  },
+  {
+    "chords" : [
+      [
+        "a ‍b"
+      ]
+    ],
+    "input" : "a ‍b"
+  },
+  {
+    "chords" : [
+      [
+        "a+‍b"
+      ]
+    ],
+    "input" : "a+‍b"
+  },
+  {
+    "chords" : [
+      [
+        "a ️b"
+      ]
+    ],
+    "input" : "a ️b"
+  },
+  {
+    "chords" : [
+      [
+        "a+️b"
+      ]
+    ],
+    "input" : "a+️b"
+  },
+  {
+    "chords" : [
+      [
+        "á",
+        "b"
+      ]
+    ],
+    "input" : "á+b"
+  }
+]

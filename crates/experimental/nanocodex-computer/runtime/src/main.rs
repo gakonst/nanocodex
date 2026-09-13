@@ -37,6 +37,9 @@ struct Cli {
     /// Explicit browser endpoint, ID=ws://host:port/devtools/browser/...
     #[arg(long, global = true)]
     cdp: Vec<String>,
+    /// Trusted default browser and exact-origin preferences among configured providers.
+    #[arg(long, global = true)]
+    browser_preferences: Option<PathBuf>,
     /// Trusted IAB routes, owned CDP endpoints, and current host turn metadata.
     #[arg(long, global = true)]
     iab_config: Option<PathBuf>,
@@ -75,6 +78,11 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Export the bundled browser extension to a new directory for explicit installation.
+    ExtensionExport {
+        #[arg(long)]
+        destination: PathBuf,
+    },
     /// Inspect this executable's own native grants; --request opens OS consent prompts.
     Permissions {
         #[arg(long)]
@@ -154,6 +162,7 @@ struct Server {
     engine: Rc<RefCell<Engine>>,
     host: Option<Worker>,
     host_options: skyre::runtime::HostOptions,
+    request_metadata_baseline: Option<Value>,
     host_kernel_route: Option<skyre::host_turns::Route>,
     inactive_route_hosts: std::collections::BTreeMap<String, Worker>,
     pending_kernel_cleanup: std::collections::BTreeSet<String>,
@@ -170,6 +179,52 @@ struct Server {
     origin_elicitation: Option<skyre::origin_elicitation::OriginElicitationBroker>,
 }
 impl Server {
+    fn set_call_metadata(&mut self, incoming: Option<&Value>) -> Result<()> {
+        let turn = incoming
+            .and_then(|meta| meta.get("x-codex-turn-metadata"))
+            .filter(|turn| !turn.is_null());
+        if turn.is_some_and(|turn| !turn.is_object()) {
+            return Err(Error::invalid("x-codex-turn-metadata must be an object"));
+        }
+        let managed = self.engine.borrow().host_turns.is_some();
+        let mut metadata = if managed {
+            &self.host_options.request_meta
+        } else {
+            &self.request_metadata_baseline
+        }
+        .clone()
+        .unwrap_or(json!({}));
+        let object = metadata
+            .as_object_mut()
+            .ok_or_else(|| Error::invalid("Configured request metadata must be an object"))?;
+        if managed {
+            // A tool call may refresh diagnostics, never the authenticated
+            // browser route or turn selected by the private host channel.
+            if let Some(current) = object
+                .get_mut("x-codex-turn-metadata")
+                .and_then(Value::as_object_mut)
+            {
+                for key in ["call_id", "model"] {
+                    current.remove(key);
+                    if let Some(value) = turn.and_then(|turn| turn.get(key)) {
+                        current.insert(key.into(), value.clone());
+                    }
+                }
+            }
+        } else {
+            if let Some(turn) = turn {
+                object.insert("x-codex-turn-metadata".into(), turn.clone());
+            }
+        }
+        // Confirmation policy comes from trusted launch configuration. Omitted
+        // call metadata clears the previous call's identity instead of leaking it.
+        if let Some(host) = self.host.as_mut() {
+            host.set_request_meta(Some(metadata.clone()))?;
+        }
+        self.host_options.request_meta = Some(metadata);
+        Ok(())
+    }
+
     fn check_connection_output(&self) -> Result<()> {
         let result = self
             .connection_output
@@ -630,6 +685,11 @@ impl Server {
             if ["js", "js_reset"].contains(&name)
                 && let Err(error) =
                     validate_js_arguments(name, args.get("arguments").unwrap_or(&Value::Null))
+            {
+                return Some(protocol::response(id, Err(error)));
+            }
+            if ["js", "js_reset"].contains(&name)
+                && let Err(error) = self.set_call_metadata(args.get("_meta"))
             {
                 return Some(protocol::response(id, Err(error)));
             }
@@ -1116,6 +1176,13 @@ fn bounded_config(path: &std::path::Path) -> Result<Vec<u8>> {
 fn run() -> Result<()> {
     let args = Cli::parse();
     match &args.command {
+        Command::ExtensionExport { destination } => {
+            println!(
+                "{}",
+                skyre::browser_extension::export_extension(destination)?
+            );
+            return Ok(());
+        }
         Command::Permissions { request } => {
             println!(
                 "{}",
@@ -1233,6 +1300,11 @@ fn run() -> Result<()> {
                 .set_iab_context(&config.id, Some(&config.context))?;
         }
     }
+    if let Some(path) = args.browser_preferences {
+        engine
+            .browsers
+            .configure_preferences(serde_json::from_slice(&bounded_config(&path)?)?)?;
+    }
     if let Some(path) = args.host_turns_config {
         let config: skyre::host_turns::Config = serde_json::from_slice(
             &skyre::browser::persistence::read_private(&path, 1024 * 1024)?,
@@ -1242,17 +1314,19 @@ fn run() -> Result<()> {
             &mut engine.browsers,
         )?);
     }
+    let host_options: skyre::runtime::HostOptions = args
+        .runtime_config
+        .as_deref()
+        .map(bounded_config)
+        .transpose()?
+        .map(|bytes| serde_json::from_slice(&bytes))
+        .transpose()?
+        .unwrap_or_default();
     let mut server = Server {
         engine: Rc::new(RefCell::new(engine)),
         host: None,
-        host_options: args
-            .runtime_config
-            .as_deref()
-            .map(bounded_config)
-            .transpose()?
-            .map(|bytes| serde_json::from_slice(&bytes))
-            .transpose()?
-            .unwrap_or_default(),
+        request_metadata_baseline: host_options.request_meta.clone(),
+        host_options,
         input: None,
         connection_output: None,
         pending: VecDeque::new(),
@@ -1283,7 +1357,8 @@ fn run() -> Result<()> {
     server.host_options.runtime.require_available()?;
     server.engine.borrow_mut().runtime_backend = server.host_options.runtime;
     match args.command {
-        Command::Permissions { .. }
+        Command::ExtensionExport { .. }
+        | Command::Permissions { .. }
         | Command::ExtensionBridge { .. }
         | Command::ExtensionHost { .. }
         | Command::ExtensionManifest { .. } => {
@@ -1622,6 +1697,7 @@ mod elicitation_tests {
             engine: Rc::new(RefCell::new(Engine::new(Box::new(Fixture::default())))),
             host: None,
             host_options: skyre::runtime::HostOptions::default(),
+            request_metadata_baseline: None,
             input: None,
             connection_output: None,
             pending: VecDeque::new(),
@@ -1640,6 +1716,52 @@ mod elicitation_tests {
     }
     fn request() -> Value {
         json!({"message":"Owned synthetic review","meta":{"connector_id":"computer-use"}})
+    }
+    #[test]
+    fn call_metadata_restores_launch_baseline_and_never_replaces_confirmation_policy() {
+        let mut server = server();
+        let baseline = json!({
+            "x-codex-turn-metadata":{"thread_id":"launch-thread"},
+            "openai/confirmation_policies":{"computer_use":"trusted-host-policy"}
+        });
+        server.request_metadata_baseline = Some(baseline.clone());
+        server.host_options.request_meta = Some(baseline.clone());
+        // Also exercise an already-running kernel; updating only the options
+        // would otherwise leave the previous identity in nodeRepl.requestMeta.
+        server
+            .eval("let retained=41;", Duration::from_secs(5), &mut |_| Ok(()))
+            .unwrap();
+        server
+            .set_call_metadata(Some(&json!({
+                "x-codex-turn-metadata":{"thread_id":"current-thread","call_id":"call"},
+                "openai/confirmation_policies":{"computer_use":"tool-supplied-policy"}
+            })))
+            .unwrap();
+        let current = server.host_options.request_meta.clone().unwrap();
+        assert_eq!(
+            current["x-codex-turn-metadata"]["thread_id"],
+            "current-thread"
+        );
+        assert_eq!(
+            current["openai/confirmation_policies"],
+            baseline["openai/confirmation_policies"]
+        );
+        assert!(
+            server
+                .set_call_metadata(Some(&json!({"x-codex-turn-metadata":42})))
+                .is_err()
+        );
+        assert_eq!(server.host_options.request_meta, Some(current));
+        server.set_call_metadata(None).unwrap();
+        assert_eq!(server.host_options.request_meta, Some(baseline));
+        let restored = server
+            .eval(
+                "[retained,nodeRepl.requestMeta['x-codex-turn-metadata'].thread_id]",
+                Duration::from_secs(5),
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+        assert_eq!(restored["value"], json!([41, "launch-thread"]));
     }
     #[derive(Default)]
     struct BackgroundRecording {
@@ -1934,6 +2056,19 @@ mod elicitation_tests {
                 .clone()
         }
         call(&mut server, "host/turn", start("a", 1));
+        let host_turn = server.host_options.request_meta.clone().unwrap();
+        server
+            .set_call_metadata(Some(&json!({"x-codex-turn-metadata":{
+                "conversation_id":"forged", "thread_id":"forged", "turn_id":"forged",
+                "call_id":"call-a", "model":"test-model"
+            }})))
+            .unwrap();
+        let mut expected = host_turn.clone();
+        expected["x-codex-turn-metadata"]["call_id"] = json!("call-a");
+        expected["x-codex-turn-metadata"]["model"] = json!("test-model");
+        assert_eq!(server.host_options.request_meta, Some(expected));
+        server.set_call_metadata(None).unwrap();
+        assert_eq!(server.host_options.request_meta, Some(host_turn));
         assert_eq!(js(&mut server, "let onlyA=41;nodeRepl.write(onlyA);"), "41");
         call(&mut server, "host/turn", start("b", 2));
         assert_eq!(

@@ -1,6 +1,9 @@
 //! Independent Chrome native-messaging/CDP bridge. No vendor signing identities.
 use crate::{Error, Result};
 use std::path::Path;
+#[path = "browser_extension_export.rs"]
+mod export;
+pub use export::export_extension;
 #[cfg(unix)]
 #[path = "browser_extension_assets.rs"]
 mod assets;
@@ -604,8 +607,8 @@ mod unix {
         fn quote(value: &str) -> String {
             format!("'{}'", value.replace('\'', "'\\''"))
         }
-        let wrapper = destination.join("skyre-native-host");
-        let manifest = destination.join("org.skyre.bridge.json");
+        let wrapper = destination.join("nanocodex-native-host");
+        let manifest = destination.join("org.nanocodex.computer.json");
         let script = format!(
             "#!/bin/sh\nexec {} extension-host --socket {}\n",
             quote(&executable.to_string_lossy()),
@@ -618,7 +621,7 @@ mod unix {
         let mut file = options.open(&wrapper)?;
         file.write_all(script.as_bytes())?;
         file.sync_all()?;
-        let definition = json!({"name":"org.skyre.bridge","description":"Independent Skyre computer-use bridge","path":wrapper,"type":"stdio","allowed_origins":[format!("chrome-extension://{extension_id}/")]});
+        let definition = json!({"name":"org.nanocodex.computer","description":"Nanocodex computer-use bridge","path":wrapper,"type":"stdio","allowed_origins":[format!("chrome-extension://{extension_id}/")]});
         let mut options = fs::OpenOptions::new();
         options.write(true).create_new(true).mode(0o600);
         match options.open(&manifest).and_then(|mut f| {

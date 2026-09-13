@@ -4,4 +4,4 @@ export const CUA_DESCRIPTION: string;
 export const CUA_PARAMETERS: Readonly<{ type: "object"; properties: Record<string, unknown>; required: readonly string[]; additionalProperties: false }>;
 export const CUA_RESET_DESCRIPTION: string;
 export const CUA_RESET_PARAMETERS: Readonly<{ type: "object"; properties: Record<string, unknown>; additionalProperties: false }>;
-export function validateInput(input: unknown, reset?: boolean): { code?: string; title?: string; timeout_ms?: number };
+export function validateInput(input: unknown, reset?: boolean): { code?: string; title?: string | null; timeout_ms?: number };

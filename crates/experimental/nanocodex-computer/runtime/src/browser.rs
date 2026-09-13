@@ -37,6 +37,8 @@ pub mod iab;
 mod iab_host;
 #[path = "browser_persistence.rs"]
 pub mod persistence;
+#[path = "browser_preferences.rs"]
+pub mod preferences;
 #[path = "browser_raw_events.rs"]
 mod raw_events;
 #[path = "browser_raw_wait_host.rs"]
@@ -991,6 +993,7 @@ impl Browser {
 #[derive(Default)]
 pub struct Browsers {
     providers: BTreeMap<String, Browser>,
+    preferences: preferences::Preferences,
     revisions: Sessions,
     current_host_route: Option<String>,
     host_managed: bool,
@@ -999,6 +1002,11 @@ pub struct Browsers {
     activation: crate::browser_activation::Owner,
 }
 impl Browsers {
+    pub fn configure_preferences(&mut self, preferences: preferences::Preferences) -> Result<()> {
+        preferences.validate(|id| self.providers.contains_key(id))?;
+        self.preferences = preferences;
+        Ok(())
+    }
     /// Native authorization snapshot. The provider/session identity is never
     /// obtained from a renderer or accepted as authority in JavaScript arguments.
     pub(crate) fn authorization_context(&mut self, args: &Value) -> Result<Value> {
@@ -1372,14 +1380,35 @@ impl Browsers {
             ));
         }
         if method == "get_default_browser" || method == "get_browser_for_url" {
-            if method == "get_browser_for_url" {
-                url::Url::parse(string(args, "url")?)
-                    .map_err(|_| Error::invalid("Invalid browser URL"))?;
+            let url = if method == "get_browser_for_url" {
+                Some(
+                    url::Url::parse(string(args, "url")?)
+                        .map_err(|_| Error::invalid("Invalid browser URL"))?,
+                )
+            } else {
+                None
+            };
+            let explicit = self.preferences.select(url.as_ref());
+            let system = if explicit.is_none() {
+                preferences::system_browser(url.as_ref())
+            } else {
+                None
+            };
+            let preferred = explicit.or(system);
+            let preferred = preferred
+                .and_then(|id| self.providers.get_key_value(id))
+                .filter(|(_, browser)| self.host_visible(browser));
+            if explicit.is_some() && preferred.is_none() {
+                return Err(Error::action(
+                    "The preferred browser is unavailable in this conversation.",
+                ));
             }
-            let (id, browser) = self
-                .providers
-                .iter()
-                .find(|(_, browser)| self.host_visible(browser))
+            let (id, browser) = preferred
+                .or_else(|| {
+                    self.providers
+                        .iter()
+                        .find(|(_, browser)| self.host_visible(browser))
+                })
                 .ok_or_else(|| Error::action("No browser is available."))?;
             browser.ensure_context()?;
             return Ok(browser.metadata(id));

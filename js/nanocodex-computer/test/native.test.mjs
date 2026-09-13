@@ -7,7 +7,7 @@ import { createComputerTools } from "../index.mjs";
 const app = process.env.NANOCODEX_TEST_NATIVE_APP;
 test("macOS public CUA controls an owned AppKit fixture and emits its screenshot", { skip: !app, timeout: 30_000 }, async t => {
   assert.equal(process.platform, "darwin");
-  const executable = fileURLToPath(new URL("../../../crates/experimental/nanocodex-computer/runtime/target/debug/nanocodex-computer", import.meta.url));
+  const executable = process.env.NANOCODEX_TEST_COMPUTER ?? fileURLToPath(new URL("../../../crates/experimental/nanocodex-computer/runtime/target/debug/nanocodex-computer", import.meta.url));
   const computer = createComputerTools({ executable });
   t.after(computer.close);
   const context = { sessionId: "native-fixture", callId: "native-fixture", model: "test", signal: new AbortController().signal };

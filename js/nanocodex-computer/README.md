@@ -18,8 +18,13 @@ await computer.close();
 Each conversation has its own persistent process. Calls are serialized, and
 cancellation stops the process before another call can continue. A failed
 transport requires `cua_repl.js_reset`. The named tools implement `releaseSession` and
-`dispose` for attachment cleanup. Screenshot results are API image content with
-original detail, including when consumed through Code Mode.
+`dispose` for attachment cleanup. Releasing a conversation cancels its active and
+queued calls; a new conversation with the same ID receives a fresh scope.
+Screenshot results are API image content with original detail, including when
+consumed through Code Mode. MCP result metadata and current Codex call metadata
+survive the adapter. Optional `title`/`timeout_ms` accept `null`; the default timeout
+is 30 seconds, and positive safe-integer deadlines are supported without Node's
+32-bit timer overflow.
 
 `createComputerTools` accepts trusted `args`, `environment` and a Linux Hand's
 private `desktopRuntime` directory. Those are host configuration, not model

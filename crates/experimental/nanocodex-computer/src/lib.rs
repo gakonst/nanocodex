@@ -17,12 +17,7 @@ use nanocodex_oai_api::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
-    ffi::OsString,
-    path::PathBuf,
-    process::Stdio,
-    sync::Arc,
-    time::{Duration, Instant},
+    collections::BTreeMap, ffi::OsString, path::PathBuf, process::Stdio, sync::Arc, time::Duration,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -33,7 +28,8 @@ use tokio::{
 const MAX_FRAME: usize = 8 * 1024 * 1024;
 const MAX_CODE: usize = 1024 * 1024;
 const MAX_SESSIONS: usize = 32;
-const MAX_TIMEOUT_MS: u64 = 120_000;
+// The shared JSON contract cannot represent integers above JavaScript's range.
+const MAX_TIMEOUT_MS: u64 = 9_007_199_254_740_991;
 
 /// Trusted launch configuration, supplied by the embedding application.
 #[derive(Clone, Debug)]
@@ -51,6 +47,13 @@ impl ComputerConfig {
         for (name, flag) in [
             ("NANOCODEX_COMPUTER_SECURITY_CONFIG", "--security-config"),
             ("NANOCODEX_COMPUTER_CDP", "--cdp"),
+            (
+                "NANOCODEX_COMPUTER_BROWSER_PREFERENCES",
+                "--browser-preferences",
+            ),
+            ("NANOCODEX_COMPUTER_IAB_CONFIG", "--iab-config"),
+            ("NANOCODEX_COMPUTER_RUNTIME_CONFIG", "--runtime-config"),
+            ("NANOCODEX_COMPUTER_PLATFORM_CONFIG", "--platform-config"),
         ] {
             if let Some(value) = std::env::var_os(name) {
                 args.extend([flag.into(), value]);
@@ -111,8 +114,11 @@ pub struct ComputerRequest {
     pub code: String,
     #[serde(default)]
     pub title: Option<String>,
-    #[serde(default = "default_timeout")]
+    #[serde(default = "default_timeout", deserialize_with = "deserialize_timeout")]
     pub timeout_ms: u64,
+}
+fn deserialize_timeout<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+    Ok(Option::<u64>::deserialize(deserializer)?.unwrap_or_else(default_timeout))
 }
 fn default_timeout() -> u64 {
     30_000
@@ -124,14 +130,14 @@ impl ComputerRequest {
             return Err("CUA code exceeds 1 MiB".into());
         }
         if !(1..=MAX_TIMEOUT_MS).contains(&self.timeout_ms) {
-            return Err("CUA timeout must be between 1 and 120000 ms".into());
+            return Err("CUA timeout must be a positive safe integer in milliseconds".into());
         }
         if self
             .title
             .as_ref()
-            .is_some_and(|title| title.trim().is_empty() || title.chars().count() > 80)
+            .is_some_and(|title| title.trim().is_empty())
         {
-            return Err("CUA title must contain 1–80 characters".into());
+            return Err("CUA title must be non-empty".into());
         }
         Ok(())
     }
@@ -189,7 +195,7 @@ impl Tool for ComputerTool {
         if self.reset {
             ToolDefinition::function(
                 "mcp__cua_repl__js_reset",
-                "Reset this conversation's persistent CUA JavaScript scope. External applications remain open. The next cua_repl.js call must select a surface again.",
+                include_str!("../runtime/src/cua_reset_description.md"),
                 json!({"type":"object","properties":{},"additionalProperties":false}),
             )
         } else {
@@ -204,7 +210,7 @@ impl Tool for ComputerTool {
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
         let request = if self.reset {
             let value = input.decode_json::<Value>()?;
-            if !value.as_object().is_some_and(|object| object.is_empty()) {
+            if !value.is_null() && !value.as_object().is_some_and(|object| object.is_empty()) {
                 return Err("cua_repl.js_reset expects an empty object".into());
             }
             None
@@ -303,6 +309,7 @@ impl Process {
             "XDG_RUNTIME_DIR",
             "DBUS_SESSION_BUS_ADDRESS",
             "LANG",
+            "SKY_ENABLE_AUDIO",
         ] {
             if let Some(value) = std::env::var_os(name) {
                 command.env(name, value);
@@ -363,11 +370,7 @@ impl Process {
         let id = self.next_id;
         self.send(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
             .await?;
-        let deadline = Instant::now() + Duration::from_millis(MAX_TIMEOUT_MS + 5000);
         loop {
-            if Instant::now() >= deadline {
-                return Err("CUA response deadline exceeded".into());
-            }
             let mut line = Vec::new();
             loop {
                 let chunk = self.output.fill_buf().await?;
@@ -462,7 +465,11 @@ pub fn output(value: Value) -> ToolResult {
         }
     }
     let success = value["isError"] != true;
+    let metadata = value.get("_meta").cloned();
     let mut output = ToolOutput::content(content).with_structured_result(value);
+    if let Some(metadata) = metadata {
+        output = output.with_metadata(metadata);
+    }
     output.success = success;
     Ok(output)
 }

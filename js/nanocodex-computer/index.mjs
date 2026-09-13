@@ -34,29 +34,41 @@ export async function discoverComputer({ binary } = {}) {
 export function createComputerTools({ executable, args = [], environment = {}, desktopRuntime }) {
   if (!executable) throw new TypeError("A trusted CUA executable is required");
   const launchArgs = [...args];
-  for (const [name, flag] of [["NANOCODEX_COMPUTER_SECURITY_CONFIG", "--security-config"], ["NANOCODEX_COMPUTER_CDP", "--cdp"]]) {
+  for (const [name, flag] of [["NANOCODEX_COMPUTER_SECURITY_CONFIG", "--security-config"], ["NANOCODEX_COMPUTER_CDP", "--cdp"], ["NANOCODEX_COMPUTER_BROWSER_PREFERENCES", "--browser-preferences"], ["NANOCODEX_COMPUTER_IAB_CONFIG", "--iab-config"], ["NANOCODEX_COMPUTER_RUNTIME_CONFIG", "--runtime-config"], ["NANOCODEX_COMPUTER_PLATFORM_CONFIG", "--platform-config"]]) {
     if (process.env[name]) launchArgs.push(flag, process.env[name]);
   }
   const sessions = new Map();
   let serial = Promise.resolve();
   let disposed = false;
-  const releaseSession = id => { sessions.get(id)?.close(); sessions.delete(id); };
+  const releaseSession = id => {
+    const session = sessions.get(id);
+    sessions.delete(id);
+    session?.lifetime.abort(new Error("CUA conversation was released"));
+    session?.process?.close();
+  };
   const close = async () => { disposed = true; for (const id of sessions.keys()) releaseSession(id); };
   const invoke = (reset, input, context) => {
     const value = validateInput(input, reset);
+    const id = context.sessionId;
+    if (!id) throw new Error("CUA requires a conversation identity");
+    if (disposed) throw new Error("CUA attachment is closed");
+    if (!sessions.has(id)) {
+      if (sessions.size >= 32) throw new Error("CUA attachment has reached its 32-conversation limit");
+      sessions.set(id, { lifetime: new AbortController(), process: undefined, interrupted: false });
+    }
+    const session = sessions.get(id);
+    const signal = AbortSignal.any([session.lifetime.signal, ...(context.signal ? [context.signal] : [])]);
     const run = async () => {
-      context.signal?.throwIfAborted();
+      signal.throwIfAborted();
       if (disposed) throw new Error("CUA attachment is closed");
-      const id = context.sessionId;
-      if (!id) throw new Error("CUA requires a conversation identity");
-      if (sessions.has(id) && !sessions.get(id) && !reset) throw new Error("CUA session was interrupted. Call cua_repl.js_reset, then select the surface again.");
-      if (!sessions.has(id) && sessions.size >= 32) throw new Error("CUA attachment has reached its 32-conversation limit");
-      let session = sessions.get(id);
-      const abort = () => { session?.close(); sessions.set(id, null); };
-      const timeout = setTimeout(abort, (value.timeout_ms ?? 30_000) + 5_000);
-      context.signal?.addEventListener("abort", abort, { once: true });
+      if (session.interrupted && !reset) throw new Error("CUA session was interrupted. Call cua_repl.js_reset, then select the surface again.");
+      const deadline = new AbortController();
+      const operation = AbortSignal.any([signal, deadline.signal]);
+      const abort = () => { session.process?.close(operation.reason); session.process = undefined; session.interrupted = true; };
+      const cancelTimeout = scheduleDeadline(() => deadline.abort(new Error("CUA runtime timed out; call cua_repl.js_reset before continuing")), (value.timeout_ms ?? 30_000) + 5_000);
+      operation.addEventListener("abort", abort, { once: true });
       try {
-        if (!session) {
+        if (!session.process) {
           let desktopEnvironment = {};
           if (desktopRuntime) {
             const ready = JSON.parse(await readFile(join(desktopRuntime, "ready"), "utf8")
@@ -64,26 +76,29 @@ export function createComputerTools({ executable, args = [], environment = {}, d
             if (typeof ready.display !== "string" || !ready.display.startsWith(":")) throw new Error("Hand desktop did not publish a local X display");
             desktopEnvironment = { DISPLAY: ready.display, XAUTHORITY: join(desktopRuntime, "Xauthority"), WAYLAND_DISPLAY: undefined };
           }
-          context.signal?.throwIfAborted();
+          operation.throwIfAborted();
           if (disposed) throw new Error("CUA attachment is closed");
-          session = new ComputerProcess(executable, launchArgs, { ...environment, ...desktopEnvironment });
-          sessions.set(id, session);
-          await session.initialize();
+          session.process = new ComputerProcess(executable, launchArgs, { ...environment, ...desktopEnvironment });
+          await session.process.initialize();
         }
-        const result = await session.rpc("tools/call", {
+        const result = await session.process.rpc("tools/call", {
           name: reset ? "js_reset" : "js", arguments: value,
           _meta: { "x-codex-turn-metadata": { thread_id: id, call_id: context.callId, model: context.model } },
         });
-        context.signal?.throwIfAborted();
+        operation.throwIfAborted();
         const content = outputContent(result);
-        return toolResult(content, result, { value: result, success: result.isError !== true });
+        session.interrupted = false;
+        return toolResult(content, result, { value: result, success: result.isError !== true, metadata: result._meta });
       } catch (error) {
-        session?.close(); sessions.set(id, null); throw error;
-      } finally { clearTimeout(timeout); context.signal?.removeEventListener("abort", abort); }
+        session.process?.close(); session.process = undefined; session.interrupted = true; throw error;
+      } finally { cancelTimeout(); operation.removeEventListener("abort", abort); }
     };
     const result = serial.then(run);
     serial = result.catch(() => {});
-    return result;
+    // A queued cancellation must reach the caller immediately, even while an
+    // unrelated conversation owns the native input queue. The queued run still
+    // checks this signal before touching its process.
+    return interruptible(result, signal);
   };
   return Object.freeze({
     close,
@@ -94,9 +109,32 @@ export function createComputerTools({ executable, args = [], environment = {}, d
   });
 }
 
+function interruptible(result, signal) {
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+    result.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
+// Node's setTimeout overflows above 2^31-1 ms. Long valid Codex timeouts must
+// remain long instead of unexpectedly terminating the kernel after one ms.
+function scheduleDeadline(callback, milliseconds) {
+  const deadline = performance.now() + milliseconds;
+  let timer;
+  const tick = () => {
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) callback();
+    else timer = setTimeout(tick, Math.min(remaining, 2_147_483_647));
+  };
+  tick();
+  return () => clearTimeout(timer);
+}
+
 class ComputerProcess {
   constructor(executable, args, environment) {
-    const env = Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "SystemRoot", "LOCALAPPDATA", "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "LANG"]
+    const env = Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "SystemRoot", "LOCALAPPDATA", "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "LANG", "SKY_ENABLE_AUDIO"]
       .filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
     this.child = spawn(executable, [...args, "--allow-native-control", "serve"], { env: { ...env, ...environment }, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
     this.pending = new Map(); this.sequence = 0; this.buffer = Buffer.alloc(0);

@@ -86,3 +86,7 @@ tempfile = "3"
 
 [patch.crates-io]
 rquickjs-sys = { path = "vendor/rquickjs-sys" }
+
+[[test]]
+name = "parity"
+path = "tests/parity.rs"

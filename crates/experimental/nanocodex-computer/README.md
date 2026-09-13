@@ -53,6 +53,8 @@ does not provide this X11 backend. Windows provider code is included in the
 experimental runtime, but this integration's release targets are macOS and Linux.
 Linux desktop hosts require `libpulse` and `libxkbcommon` (Debian/Ubuntu packages
 `libpulse0` and `libxkbcommon0`); Hand installers and images include them.
+Browser-only Linux sessions do not require `DISPLAY`; the X11 connection opens
+on the first native desktop operation.
 The separate legacy Wayland screen-only service is not a CUA tool host.
 
 ## Tool contract
@@ -94,6 +96,57 @@ are not attached automatically. Trusted embeddings can pass multiple `--cdp`
 arguments in `ComputerConfig.args`. `NANOCODEX_COMPUTER_SECURITY_CONFIG` supplies
 the runtime's app/origin policy file. These are host settings, never tool inputs.
 
+`NANOCODEX_COMPUTER_BROWSER_PREFERENCES` selects a JSON file with an optional
+default and exact HTTP(S) origin rules. Every value must name a configured browser:
+
+```json
+{
+  "defaultBrowser": "chrome",
+  "origins": { "https://work.example": "edge" }
+}
+```
+
+`cua.getBrowser({url})` first uses an exact origin rule, then the configured
+default. Without an explicit preference it consults the OS URI handler on macOS
+and Linux (when GIO is available), and falls back to a configured browser.
+This lookup never opens a browser or expands a conversation's visible providers.
+An explicitly preferred browser outside the active host route returns an error.
+
+Trusted embeddings can also set `NANOCODEX_COMPUTER_IAB_CONFIG`,
+`NANOCODEX_COMPUTER_RUNTIME_CONFIG` and `NANOCODEX_COMPUTER_PLATFORM_CONFIG` to
+forward the corresponding runtime JSON files. They configure existing providers;
+they do not create an embedded browser shell. The optional audio surface retains
+the `SKY_ENABLE_AUDIO` environment switch. See the
+[compatibility record](PARITY.md) for implemented and remaining behavior.
+
+## Browser extension
+
+The companion embeds an independent Chrome MV3 extension. Export it into a new
+directory, load that directory explicitly in your chosen Chromium profile, and
+use its extension ID to configure native messaging:
+
+```sh
+nanocodex-computer extension-export --destination /absolute/new/extension
+nanocodex-computer extension-bridge --socket /absolute/private/bridge.sock
+# In another terminal, with the bridge still running:
+nanocodex-computer extension-manifest \
+  --destination /absolute/private/NativeMessagingHosts \
+  --socket /absolute/private/bridge.sock \
+  --extension-id YOUR_32_CHARACTER_EXTENSION_ID
+```
+
+The socket parent and manifest directory must be private to your user. Register
+the generated `org.nanocodex.computer.json` in that browser's native-messaging
+host location. The bridge prints its capability-bearing `endpoint`; pass that
+whole value as `NANOCODEX_COMPUTER_CDP=chrome=<endpoint>` in the host environment.
+Exports and manifests refuse to overwrite existing files. No profile or extension
+installation is modified automatically.
+
+The bridge supports tab claims, native tab groups, screenshots, input, downloads,
+chunked messages and reconnecting service workers. A bridge has one active
+controller; sharing it between concurrent conversation processes still requires
+host lifecycle integration. See [PARITY.md](PARITY.md).
+
 The tools use ordinary function calls and multimodal function outputs, following
 the [OpenAI code-execution computer-use integration](https://developers.openai.com/api/docs/guides/tools-computer-use).
 Text stays text; screenshot bytes become `input_image` with `detail: "original"`.
@@ -116,12 +169,15 @@ Each conversation owns a process and persistent scope. Calls are serialized
 within an attachment. Cancellation, timeouts or malformed protocol output stop
 the affected process and require an explicit reset. Detaching drops the owned
 processes. Attachments permit up to 32 retained conversations; Node hosts also
-release scopes through the existing tool lifecycle hooks. Account credentials
+release scopes through the existing tool lifecycle hooks, cancelling both active
+and queued calls without reviving the released scope. Account credentials
 are omitted from the companion's environment. The runtime's browser, app and
 OS permission checks still apply.
-Nanocodex adapters bound individual evaluations to 120 seconds; hosted transport
-deadlines may end a call sooner. The standalone MCP server accepts a caller's
-positive timeout. Both use a 30-second default.
+The adapters accept positive safe-integer millisecond timeouts, including calls
+longer than 120 seconds. Omission or `null` uses a 30-second default; hosted
+transport deadlines can end a call sooner. Per-call Codex metadata reaches the
+running REPL, and MCP result metadata survives both adapters. Tool metadata cannot
+replace trusted confirmation policies or an authenticated host's route and turn.
 
 ## Validation
 
@@ -141,3 +197,5 @@ The live Linux test creates its own X server/window, verifies native Unicode
 typing and a button click through independent widget state, captures a screenshot,
 and verifies reset. The optional Node native test uses the owned AppKit fixture
 selected by `NANOCODEX_TEST_NATIVE_APP` and requires an unlocked Mac.
+The default suite includes the imported compatibility corpus. For browser and
+extension live checks, see [PARITY.md](PARITY.md).

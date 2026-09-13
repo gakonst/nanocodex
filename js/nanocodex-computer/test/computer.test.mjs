@@ -4,11 +4,13 @@ import { fileURLToPath } from "node:url";
 import { createComputerTools, outputContent } from "../index.mjs";
 import { validateInput } from "../contract.mjs";
 
-const executable = fileURLToPath(new URL("../../../crates/experimental/nanocodex-computer/runtime/target/debug/nanocodex-computer", import.meta.url));
+const executable = process.env.NANOCODEX_TEST_COMPUTER ?? fileURLToPath(new URL("../../../crates/experimental/nanocodex-computer/runtime/target/debug/nanocodex-computer", import.meta.url));
 const context = (sessionId, signal = new AbortController().signal) => ({ sessionId, signal, callId: "test", parentCallId: "", model: "gpt-6-astra" });
 
 test("CUA input bounds match the Rust transport", () => {
-  for (const timeout_ms of [0, -1, 1.5, 120001]) assert.throws(() => validateInput({ code: "1", timeout_ms }));
+  for (const timeout_ms of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) assert.throws(() => validateInput({ code: "1", timeout_ms }));
+  assert.equal(validateInput({ code: "1", timeout_ms: 300000 }).timeout_ms, 300000);
+  assert.equal(validateInput({ code: "1", title: null, timeout_ms: null }).timeout_ms, 30000);
   assert.throws(() => validateInput({ code: "1", executable: "/bin/sh" }));
   assert.throws(() => validateInput({ code: "1" }, true));
   assert.throws(() => validateInput({ code: "🧪".repeat(262145) }));
@@ -33,6 +35,8 @@ test("real companion retains each conversation, returns screenshots, and resets"
   const [js, reset] = computer.tools;
   const first = await js.handler({ code: "let app = await cua.getApp('fixture://native');" }, context("one"));
   assert.equal(first.success, true);
+  assert.equal(typeof first.metadata["codex/nodeReplExecutionDurationMs"], "number");
+  assert.deepEqual(first.metadata, first.value._meta);
   const image = await js.handler({ code: "await app.click(2); await nodeRepl.emitImage(await app.getScreenshot({emit:false}));" }, context("one"));
   assert.equal(image.success, true);
   assert(image.output.some(item => item.type === "input_image"));
@@ -55,4 +59,49 @@ test("aborting native execution closes the process and requires reset", async t 
   await assert.rejects(js.handler({ code: "nodeRepl.write(2);" }, context("cancel")), /js_reset/);
   await reset.handler({}, context("cancel"));
   assert.equal((await js.handler({ code: "nodeRepl.write(3);" }, context("cancel"))).success, true);
+});
+
+test("Codex optional nulls, long deadlines and current metadata survive the Node adapter", async t => {
+  const computer = createComputerTools({ executable, args: ["--fixture"] });
+  t.after(computer.close);
+  const [js] = computer.tools;
+  for (const timeout_ms of [null, 300_000, 2_147_483_648]) {
+    const result = await js.handler({ code: "await new Promise(resolve=>setTimeout(resolve,20)); nodeRepl.write(JSON.stringify(nodeRepl.requestMeta));", title: null, timeout_ms }, context("metadata"));
+    assert.equal(result.success, true);
+    assert.deepEqual(JSON.parse(result.output.at(-1).text)["x-codex-turn-metadata"], { thread_id: "metadata", call_id: "test", model: "gpt-6-astra" });
+  }
+});
+
+test("queued cancellation rejects immediately and only release discards the scope", { timeout: 10_000 }, async t => {
+  for (const release of [true, false]) {
+    const computer = createComputerTools({ executable, args: ["--fixture"] });
+    t.after(computer.close);
+    const [js] = computer.tools;
+    await js.handler({ code: "let marker = 'old';" }, context("queued"));
+    const blocker = new AbortController(), cancelled = new AbortController();
+    const blocking = assert.rejects(js.handler({ code: "while (true) {}" }, context("other", blocker.signal)));
+    const queued = js.handler({ code: "throw new Error('cancelled call ran');" }, context("queued", cancelled.signal));
+    const rejected = assert.rejects(queued, release ? /released/ : /cancelled/);
+    if (release) js.releaseSession("queued");
+    else cancelled.abort(new Error("queued call cancelled"));
+    // Do not release the input queue until cancellation is visible to its
+    // caller. Waiting for the prior call would deadlock this test.
+    await rejected;
+    blocker.abort();
+    await blocking;
+    const fresh = await js.handler({ code: "nodeRepl.write(typeof marker);" }, context("queued"));
+    assert.equal(fresh.output.at(-1).text, release ? "undefined" : "string");
+  }
+});
+
+test("releasing an executing conversation interrupts its owned process", async t => {
+  const computer = createComputerTools({ executable, args: ["--fixture"] });
+  t.after(computer.close);
+  const [js] = computer.tools;
+  await js.handler({ code: "let marker = 1;" }, context("released"));
+  const pending = js.handler({ code: "while (true) {}" }, context("released"));
+  const rejected = assert.rejects(pending, /released/);
+  setTimeout(() => js.releaseSession("released"), 100);
+  await rejected;
+  assert.equal((await js.handler({ code: "nodeRepl.write(typeof marker);" }, context("released"))).output.at(-1).text, "undefined");
 });

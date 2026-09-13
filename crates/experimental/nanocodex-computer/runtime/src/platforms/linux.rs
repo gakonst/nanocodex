@@ -405,14 +405,28 @@ fn button(params: &Value) -> Result<String> {
 enum DesktopBackend {
     Tools(X11),
     #[cfg(target_os = "linux")]
-    Native(Box<super::linux_x11::NativeX11>),
+    Native(Option<Box<super::linux_x11::NativeX11>>),
 }
 impl DesktopBackend {
+    #[cfg(target_os = "linux")]
+    fn native(
+        provider: &mut Option<Box<super::linux_x11::NativeX11>>,
+    ) -> Result<&mut super::linux_x11::NativeX11> {
+        if provider.is_none() {
+            if std::env::var_os("DISPLAY").is_none() {
+                return Err(Error::unsupported(
+                    "X11 DISPLAY is unavailable; browser operations remain available",
+                ));
+            }
+            *provider = Some(Box::new(super::linux_x11::NativeX11::connect()?));
+        }
+        Ok(provider.as_deref_mut().unwrap())
+    }
     fn execute(&mut self, method: &str, params: &Value) -> Result<Value> {
         match self {
             Self::Tools(provider) => provider.execute(method, params),
             #[cfg(target_os = "linux")]
-            Self::Native(provider) => provider.execute(method, params),
+            Self::Native(provider) => Self::native(provider)?.execute(method, params),
         }
     }
     fn key(&mut self, down: bool, key: &str) -> Result<()> {
@@ -425,6 +439,7 @@ impl DesktopBackend {
                 .map(|_| ()),
             #[cfg(target_os = "linux")]
             Self::Native(provider) => {
+                let provider = Self::native(provider)?;
                 if down {
                     provider.key_down(key)
                 } else {
@@ -437,14 +452,18 @@ impl DesktopBackend {
         match self {
             Self::Tools(provider) => provider.execute("get_screenshot", &json!({})),
             #[cfg(target_os = "linux")]
-            Self::Native(provider) => provider.execute("get_desktop_screenshot", &json!({})),
+            Self::Native(provider) => {
+                Self::native(provider)?.execute("get_desktop_screenshot", &json!({}))
+            }
         }
     }
     fn release_all(&mut self) -> Result<()> {
         match self {
             Self::Tools(_) => Ok(()),
             #[cfg(target_os = "linux")]
-            Self::Native(provider) => provider.release_all(),
+            Self::Native(provider) => provider
+                .as_mut()
+                .map_or(Ok(()), |provider| provider.release_all()),
         }
     }
 }
@@ -469,14 +488,11 @@ impl LinuxDesktop {
         }
     }
     pub fn from_environment() -> Result<Self> {
-        if std::env::var_os("DISPLAY").is_none() {
-            return Err(Error::unsupported(
-                "X11 DISPLAY is unavailable; Wayland requires another backend",
-            ));
-        }
         #[cfg(target_os = "linux")]
         return Ok(Self {
-            provider: DesktopBackend::Native(Box::new(super::linux_x11::NativeX11::connect()?)),
+            // MCP initialization, JavaScript and browser-only use do not require
+            // an X server. Bind the configured display on the first native action.
+            provider: DesktopBackend::Native(None),
             audio: None,
             sky_drags: BTreeMap::new(),
             sky_settler: Settler::new(Duration::from_millis(100)),

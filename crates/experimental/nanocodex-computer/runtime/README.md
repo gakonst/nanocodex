@@ -13,8 +13,10 @@ service parity.
 
 The runtime uses native macOS APIs, Linux X11/XTEST, and explicitly configured
 Chromium CDP. Windows UIA/capture provider code is retained for development.
-Optional providers, IAB routing, browser extensions and V8 require explicit
-host configuration; they are not enabled by the Nanocodex attachment adapter.
+Optional providers, IAB routing and V8 require explicit host configuration. The
+Nanocodex adapters forward trusted provider/runtime configuration. The Chrome
+extension is embedded in the companion and exported with `extension-export`;
+installation and bridge registration remain explicit.
 
 `serve` handles newline-delimited MCP on stdin/stdout. `eval`, `call`,
 `capabilities` and `permissions` are useful for development. `--fixture` uses
@@ -30,3 +32,5 @@ Production builds do not depend on the research checkout or original binaries.
 Build and test from the repository root with `pnpm build:computer` and
 `pnpm test:computer`. See the [adapter README](../README.md) for installation,
 configuration and the execution-mode matrix.
+The [compatibility record](../PARITY.md) separates tested public behavior from
+remaining native, browser and host integration gaps.

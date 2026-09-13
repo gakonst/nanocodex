@@ -23,7 +23,21 @@ fn input(code: &str) -> ToolInput {
 
 #[test]
 fn validates_code_and_timeout_at_the_transport_boundary() {
-    for timeout_ms in [0, 120_001, u64::MAX] {
+    for timeout_ms in [30_000, 120_001, 300_000, 2_147_483_648] {
+        assert!(
+            ComputerRequest {
+                code: "1".into(),
+                title: None,
+                timeout_ms
+            }
+            .validate()
+            .is_ok()
+        );
+    }
+    let defaults: ComputerRequest =
+        serde_json::from_value(json!({"code":"1","title":null,"timeout_ms":null})).unwrap();
+    assert_eq!(defaults.timeout_ms, 30_000);
+    for timeout_ms in [0, 9_007_199_254_740_992, u64::MAX] {
         assert!(
             ComputerRequest {
                 code: "1".into(),
@@ -43,6 +57,37 @@ fn validates_code_and_timeout_at_the_transport_boundary() {
         .validate()
         .is_err()
     );
+}
+
+#[tokio::test]
+#[ignore = "requires built CUA companion; pnpm test:computer runs this"]
+async fn long_timeout_and_current_call_metadata_cross_the_rust_adapter() {
+    let computer = fixture();
+    for call in ["first", "next"] {
+        let args = json!({"code":"nodeRepl.write(JSON.stringify(nodeRepl.requestMeta));","timeout_ms":300_000,"title":null});
+        let result = computer
+            .js()
+            .execute(
+                ToolInput::Function(serde_json::value::to_raw_value(&args).unwrap()),
+                ToolContext::new("owned-model", "metadata-thread", call, &[], 16000),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        let text = result.structured_result()["content"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let metadata: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            metadata["x-codex-turn-metadata"],
+            json!({"thread_id":"metadata-thread","call_id":call,"model":"owned-model"})
+        );
+    }
 }
 
 #[test]
@@ -88,6 +133,10 @@ async fn conversation_state_reset_and_screenshots_cross_the_real_process_boundar
         .await
         .unwrap();
     assert!(first.success);
+    let metadata: serde_json::Value =
+        serde_json::from_str(first.metadata.as_ref().unwrap().get()).unwrap();
+    assert!(metadata["codex/nodeReplExecutionDurationMs"].is_number());
+    assert_eq!(metadata, first.structured_result()["_meta"]);
     let changed = js.execute(input("await app.click(2); await app.getAXState(); await nodeRepl.emitImage(await app.getScreenshot({emit:false}));"), context("one")).await.unwrap();
     assert!(changed.success, "{}", changed.structured_result());
     let ToolOutputBody::Content(content) = changed.output else {
