@@ -11,6 +11,18 @@ const ADDRESS_ID = "a".repeat(22);
 const PHONE_ID = "p".repeat(22);
 
 describe("managed account info", () => {
+  it("preserves offline hand status through account discovery and projection", async () => {
+    const machines = [{
+      id: "user:desktop-vm", name: "Desktop VM", kind: "user" as const,
+      mount: "/desktop-vm", workspace: "/desktop-vm", capabilities: ["shell"], online: false,
+    }];
+    const info = await accountInfo({ fetch: async () => Response.json(statuses()) }, "user", {
+      enabled: true, machines,
+    });
+    expect(projectAccountInfo(info, [], {}).machines).toEqual(machines);
+    expect(JSON.stringify(projectAccountInfo(info, [], {}))).toContain('"online":false');
+  });
+
   it("discovers native public APIs without granting X connector access", async () => {
     for (const enabled of [true, false]) {
       const info = await accountInfo({ fetch: async () => new Response(null, { status: 503 }) },

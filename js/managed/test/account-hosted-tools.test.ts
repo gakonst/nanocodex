@@ -4,6 +4,10 @@ import {
   EXEC_COMMAND_PARAMETERS,
   EXECUTION_OUTPUT_SCHEMA,
 } from "nanocodex-tools/execution-contract";
+import { HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE } from "nanocodex-tools/hosted";
+// @ts-expect-error The runtime subpath is intentionally JavaScript-only.
+import { ToolRouter, toolMapSource } from "nanocodex-tools/runtime/tool-router";
+import { createNamespaceExecutionTools } from "../src/namespace-tools";
 
 import {
   AccountHostedTools,
@@ -32,6 +36,7 @@ const snapshot = {
     },
   }],
   machines: [{
+    online: true,
     machine: {
       id: "laptop",
       name: "Build laptop",
@@ -47,6 +52,141 @@ const snapshot = {
 };
 
 describe("account Hosted Tools provider", () => {
+  it("settles an offline VM probe through the real broker and tool router, then recovers after reconnect", async () => {
+    const namespace = (env as unknown as {
+      NANOCODEX_ACCOUNT_TOOLS: DurableObjectNamespace<AccountHostedTools>;
+    }).NANOCODEX_ACCOUNT_TOOLS;
+    const owner = crypto.randomUUID();
+    const stub = namespace.getByName(owner);
+    const attach = async () => {
+      const response = await stub.fetch("https://account-tools.internal/tool-host", {
+        headers: { upgrade: "websocket", "x-nanocodex-owner-id": owner },
+      });
+      const socket = response.webSocket!;
+      socket.accept();
+      const ready = nextFrame(socket);
+      socket.send(JSON.stringify({
+        type: "catalog", attachment_id: "desktop-vm", tools: [machineEntry()],
+        machines: [{ id: "desktop-vm", name: "Desktop VM", workspace: "/app", capabilities: ["shell"] }],
+      }));
+      await expect(ready).resolves.toEqual({ type: "ready" });
+      return socket;
+    };
+    const first = await attach();
+    const provider = new AccountHostedToolsProvider(namespace, owner, () => true);
+    await provider.refresh();
+    expect(provider.machineOnline("desktop-vm")).toBe(true);
+    const admittedContext = { sessionId: "agent", callId: "admitted-before-disconnect" };
+    const admittedInput = { cmd: "touch receipt", workdir: "/app" };
+    const admittedFrame = nextFrame(first);
+    const admitted = provider.machineTool("desktop-vm", "exec_command")!.handler(admittedInput, admittedContext);
+    first.send(JSON.stringify({
+      type: "result", call_id: (await admittedFrame).call_id,
+      outcome: { status: "completed", output: {
+        output: "saved receipt", success: true,
+        structured_result: { output: "saved receipt", exit_code: 0, wall_time_seconds: 0 },
+        metadata: null, process_trace: null,
+      } },
+    }));
+    await expect(admitted).resolves.toMatchObject({ output: "saved receipt" });
+    first.close(1000, "VM stopped");
+    await vi.waitFor(async () => {
+      await provider.refresh();
+      expect(provider.machineOnline("desktop-vm")).toBe(false);
+    });
+    // Retain the namespace so previously admitted calls can still resolve receipts.
+    expect(provider.machines().map(({ id }) => id)).toEqual(["desktop-vm"]);
+    await expect(provider.machineTool("desktop-vm", "exec_command")!.handler(admittedInput, admittedContext))
+      .resolves.toMatchObject({ success: true, output: "saved receipt" });
+    const tools = createNamespaceExecutionTools(
+      () => provider.machines(),
+      (id, name, context) => provider.machineTool(id, name, context),
+    );
+    const router = new ToolRouter([toolMapSource("namespace", tools)]);
+    const context = (callId: string) => ({
+      sessionId: "agent", callId, model: "fixture", signal: new AbortController().signal,
+    });
+    const unavailable = await router.execute("exec_command", {
+      cmd: "command -v blender", workdir: "/desktop-vm",
+    }, context("offline-probe"));
+    expect(unavailable).toMatchObject({
+      success: false,
+      output: expect.stringContaining("did not start tool execution"),
+      structuredResult: { status: "unavailable" },
+    });
+
+    const successor = await attach();
+    try {
+      await provider.refresh();
+      expect(provider.machineOnline("desktop-vm")).toBe(true);
+      const call = nextFrame(successor);
+      const completed = router.execute("exec_command", {
+        cmd: "command -v blender", workdir: "/desktop-vm",
+      }, context("reconnected-probe"));
+      const frame = await call;
+      expect(frame).toMatchObject({ type: "call", name: "exec_command", input: { workdir: "/app" } });
+      successor.send(JSON.stringify({
+        type: "result", call_id: frame.call_id,
+        outcome: { status: "completed", output: {
+          output: "/usr/bin/blender", success: true,
+          structured_result: { output: "/usr/bin/blender", exit_code: 0, wall_time_seconds: 0 },
+          metadata: null, process_trace: null,
+        } },
+      }));
+      await expect(completed).resolves.toMatchObject({ success: true, output: "/usr/bin/blender" });
+    } finally {
+      successor.close(1000, "test complete");
+    }
+  });
+
+  it("returns a known unstarted call to the agent without requesting durable replay", async () => {
+    const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([[ACCOUNT_A, async (request) => {
+      if (new URL(request.url).pathname === "/snapshot") return Response.json(snapshot);
+      return Response.json({
+        output: "Hosted machine is reconnecting", structured_result: { status: "unavailable" },
+        success: false, metadata: null, value: null, pre_admission_unavailable: true,
+      });
+    }]])), ACCOUNT_A, () => true);
+    await provider.refresh();
+    const result = await provider.machineTool("laptop", "exec_command")!.handler({}, {
+      sessionId: "agent", callId: "unstarted",
+    });
+    expect(result).toMatchObject({ success: false, structuredResult: { status: "unavailable" } });
+    expect((result as Record<PropertyKey, unknown>)[HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE]).toBe(true);
+    expect((result as { output: string }).output).toContain("Hosted machine is reconnecting");
+  });
+
+  it.each(["transport", "truncated", "invalid", "stale", "missing", "server"])(
+    "retains call identity for %s failures where prior admission is unknown", async (mode) => {
+      const calls: Record<string, unknown>[] = [];
+      const transportError = new Error("connection lost");
+      const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([[ACCOUNT_A, async (request) => {
+        if (new URL(request.url).pathname === "/snapshot") return Response.json(snapshot);
+        calls.push(await request.json<Record<string, unknown>>());
+        if (calls.length > 1) return Response.json({
+          output: "retained receipt", structured_result: null, success: true, metadata: null, value: "retained receipt",
+        });
+        if (mode === "transport") throw transportError;
+        if (mode === "truncated") return new Response("{");
+        if (mode === "invalid") return Response.json({ success: true });
+        return new Response(null, { status: mode === "stale" ? 409 : mode === "missing" ? 404 : 503 });
+      }]])), ACCOUNT_A, () => true);
+      await provider.refresh();
+      const context = { sessionId: "agent", callId: "possibly-admitted" };
+      const tool = provider.machineTool("laptop", "exec_command")!;
+      const failure = tool.handler({ cmd: "touch receipt" }, context);
+      await expect(failure).rejects.toMatchObject({ code: "host_interrupted" });
+      if (mode === "truncated" || mode === "invalid") {
+        await expect(failure).rejects.toThrow("response could not be decoded");
+      } else if (mode === "transport") {
+        await expect(failure).rejects.toMatchObject({ cause: transportError });
+      }
+      await expect(tool.handler({ cmd: "touch receipt" }, context)).resolves.toMatchObject({ output: "retained receipt" });
+      expect(calls).toHaveLength(2);
+      expect(calls[1]).toEqual(calls[0]);
+    },
+  );
+
   it("releases stalled discovery and fences its late response from the next refresh", async () => {
     vi.useFakeTimers();
     try {
@@ -313,9 +453,12 @@ describe("account Hosted Tools provider", () => {
 
     expect(owned.definitions()).toHaveLength(1);
     expect(other.definitions()).toEqual([]);
+    expect(owned.machineOnline("laptop")).toBe(true);
+    expect(other.machineOnline("laptop")).toBe(false);
     allowed = false;
     expect(owned.definitions()).toEqual([]);
     expect(owned.machines()).toEqual([]);
+    expect(owned.machineOnline("laptop")).toBe(false);
     expect(requested).toContain(ACCOUNT_B);
   });
 

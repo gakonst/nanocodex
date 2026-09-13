@@ -7818,6 +7818,8 @@ export class DurableAgentSession extends DurableComputerSession {
             id: `user:${machine.id}`,
             name: machine.name,
             kind: "user" as const,
+            online: this.#hostedTools.machineOnline(machine.id)
+              || this.#accountHostedTools?.machineOnline(machine.id, context) === true,
             mount,
             workspace: mount,
             capabilities: machine.capabilities,
