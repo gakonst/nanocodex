@@ -11,6 +11,7 @@ public actor HandWorkspace {
     private let platform: String
     private nonisolated let messageContext: ContextQuery?
     private nonisolated let flipper: FlipperZeroBridge?
+    private nonisolated let bluetooth: BluetoothLEBridge?
 
     public init(
         id: String,
@@ -18,11 +19,13 @@ public actor HandWorkspace {
         root: URL,
         platform: String = "ios",
         messageContext: ContextQuery? = nil,
-        flipper: FlipperZeroBridge? = nil
+        flipper: FlipperZeroBridge? = nil,
+        bluetooth: BluetoothLEBridge? = nil
     ) throws {
         guard id.range(of: #"^[A-Za-z0-9][A-Za-z0-9._:-]{0,122}$"#, options: .regularExpression) != nil,
               !name.isEmpty, name.utf8.count <= 128 else { throw HandFailure.invalidIdentity }
-        self.id = id; self.name = name; self.platform = platform; self.messageContext = messageContext; self.flipper = flipper
+        self.id = id; self.name = name; self.platform = platform; self.messageContext = messageContext
+        self.flipper = flipper; self.bluetooth = bluetooth
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         self.root = root.standardizedFileURL.resolvingSymlinksInPath()
     }
@@ -48,8 +51,12 @@ public actor HandWorkspace {
         let flipperTools = flipper == nil ? [] : FlipperZeroTools.catalog {
             tool($0, $1, properties: $2, required: $3, parallel: false, timeout: 180_000)
         }
+        let bluetoothTools = bluetooth == nil ? [] : BluetoothLETools.catalog {
+            tool($0, $1, properties: $2, required: $3, parallel: false, timeout: 180_000)
+        }
         let optionalCapabilities = (messageContext == nil ? [] : ["message_context"])
             + (flipper == nil ? [] : ["bluetooth", "flipper_zero"])
+            + (bluetooth == nil ? [] : ["bluetooth_le", "gatt"])
         return .object([
             "type": .string("catalog"), "attachment_id": .string(id),
             "machines": .array([.object(["id": .string(id), "name": .string(name), "workspace": .string("/workspace"), "capabilities": .array((["native", "filesystem", platform == "ios" ? "background_limited" : "background"] + optionalCapabilities).map(JSON.string))])]),
@@ -58,7 +65,7 @@ public actor HandWorkspace {
                 tool("list_files", "List files in this device's app workspace. No setup is needed. Other apps' files are not accessible.", properties: ["path": path], required: ["path"]),
                 tool("read_file", "Read a UTF-8 file from this device's app workspace.", properties: ["path": path], required: ["path"]),
                 tool("write_file", "Write a UTF-8 file in this device's app workspace. Creates parent folders and replaces the file atomically.", properties: ["path": path, "content": .object(["type": .string("string")])], required: ["path", "content"], parallel: false)
-            ] + contextTools + flipperTools)
+            ] + contextTools + flipperTools + bluetoothTools)
         ])
     }
 
@@ -72,6 +79,11 @@ public actor HandWorkspace {
             do { return try await FlipperZeroTools.call(name: name, fields: fields, bridge: flipper) }
             catch let error as HandFailure { throw error }
             catch { throw HandFailure.flipper(error.localizedDescription) }
+        }
+        if let bluetooth, BluetoothLETools.names.contains(name) {
+            do { return try await BluetoothLETools.call(name: name, fields: fields, bridge: bluetooth) }
+            catch let error as HandFailure { throw error }
+            catch { throw HandFailure.bluetooth(error.localizedDescription) }
         }
         if name == "device_info" {
             guard fields.isEmpty else { throw HandFailure.invalidInput }
@@ -126,7 +138,7 @@ public actor HandWorkspace {
 
 public enum HandFailure: Error, LocalizedError {
     case invalidIdentity, invalidInput, outsideWorkspace, invalidFile, protocolViolation, connectionLost
-    case contextAccess(String), flipper(String)
+    case contextAccess(String), flipper(String), bluetooth(String)
     public var errorDescription: String? {
         switch self {
         case .invalidIdentity: return "Invalid Hand identity."
@@ -137,6 +149,7 @@ public enum HandFailure: Error, LocalizedError {
         case .connectionLost: return "The device Hand is reconnecting."
         case .contextAccess(let message): return message
         case .flipper(let message): return message
+        case .bluetooth(let message): return message
         }
     }
 }

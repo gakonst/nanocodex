@@ -13,7 +13,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Take a photo to attach to your message.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Connect to your Flipper Zero so your Nanocodex agent can inspect and control it.</string>
+	<string>Connect to nearby Bluetooth Low Energy devices so your Nanocodex agent can inspect and control them.</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

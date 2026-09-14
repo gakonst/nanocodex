@@ -123,6 +123,7 @@ final class InboxModel: ObservableObject {
     private var accountCredential: AccountCredential?
     private var deviceHand: HandSession?
     private let flipperZero = FlipperZeroBridge.shared
+    private let bluetoothLE = BluetoothLEBridge.shared
     @Published private(set) var deviceHandConnected = false
     @Published var deviceHandEnabled = UserDefaults.standard.object(forKey: "inbox.hand.enabled") as? Bool ?? true {
         didSet {
@@ -817,7 +818,8 @@ final class InboxModel: ObservableObject {
                 root: root,
                 platform: platform,
                 messageContext: messageContext,
-                flipper: flipperZero
+                flipper: flipperZero,
+                bluetooth: bluetoothLE
             )
             let hand = try HandSession(credential: credential, workspace: workspace)
             let epoch = generation
