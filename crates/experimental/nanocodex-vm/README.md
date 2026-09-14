@@ -427,3 +427,36 @@ artifact independently from the host feature.
 
 See `docs/VM.md` in the repository for CLI operation, egress composition, and
 build commands.
+
+## Docker workspaces
+
+[`docker::DockerWorkspace`] runs the same Rust guest tool protocol through a
+Linux Docker daemon without KVM. It provides persistent named workspace
+volumes, bounded startup and shutdown, exclusive per-volume Hand ownership,
+resource limits, a read-only root, and a non-root guest. Network access is off
+by default; `.internet()` enables ordinary Docker bridge access. Containers
+share the Docker host kernel and are an explicitly selected isolation mode.
+
+```rust,no_run
+use nanocodex_vm::docker::DockerWorkspace;
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let workspace = DockerWorkspace::builder("nanocodex-hand:local", "my-hand-workspace")
+    .cpus(2)
+    .memory_mib(1024)
+    .launch().await?;
+let tools = workspace.attachment_tools_builder().build()?;
+// Attach these tools using the ordinary Hosted Tools contract.
+drop(tools);
+workspace.shutdown().await?; // The named volume survives.
+# Ok(())
+# }
+```
+
+Build the image with `pnpm build:hand-docker`. See the
+[Docker Hand operator guide](../../../bin/nanocodex/nanocodex2/README.md#docker-hand-no-kvm)
+for image requirements, desktop support, network semantics, and stale-container
+recovery. The launcher never forwards the host environment or account
+credentials into the guest and does not mount host directories or the Docker
+socket. A daemon administrator remains trusted. Broker-only networking and
+on-demand Docker pools are not part of this backend.

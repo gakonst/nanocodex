@@ -55,6 +55,8 @@ export type VaultEntry =
 export type AccountMachine = Readonly<HostedMachine & {
   /** Logical namespace root. Native host workspace paths are never projected. */
   mount: string;
+  /** Current attachment presence for user hands; absent when not known. */
+  online?: boolean;
 } & (
   | { kind: "sandbox"; provider: string }
   | { kind: "user"; provider?: never }
@@ -72,7 +74,7 @@ export type AccountInfo = Readonly<{
   connectorAccounts: Readonly<
     Partial<Record<ConnectorCapabilityId, readonly ConnectorConnection[]>>
   >;
-  /** Hands currently available to the account-owned agent. */
+  /** Known hands, including retained user hands whose attachment is offline. */
   machines: readonly AccountMachine[];
   identity: Readonly<Record<string, never>>;
   stablecoins: readonly [];

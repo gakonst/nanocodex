@@ -61,6 +61,7 @@ nanocodex-vm.workspace = true
 nanocodex-hand = { version = "0.5.0", path = "../../../crates/experimental/nanocodex-hand" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+kvm-ioctls = "0.24.0"
 nanocodex-vm = { workspace = true, features = ["desktop"] }
 
 [target.'cfg(unix)'.dependencies]

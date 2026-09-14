@@ -97,9 +97,19 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   vm-guest:
-    name: static Linux VM guest
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    name: static Linux guest and Docker Hand (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -109,7 +119,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: stable
-          targets: x86_64-unknown-linux-musl
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
           cache-on-failure: true
@@ -121,9 +131,46 @@ jobs:
       - name: Build the actual static guest artifact
         run: >-
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
           cargo build --locked --package nanocodex-vm
           --bin nanocodex-vm-guest --no-default-features
-          --features guest-runtime --target x86_64-unknown-linux-musl
+          --features guest-runtime --target ${{ matrix.target }}
+
+      - name: Build the Docker Hand image
+        run: |
+          context=$(mktemp -d)
+          trap 'rm -rf "$context"' EXIT
+          cp target/${{ matrix.target }}/debug/nanocodex-vm-guest "$context/"
+          cp crates/experimental/nanocodex-vm/image/Dockerfile.hand "$context/Dockerfile"
+          cp -R crates/experimental/nanocodex-vm/image/toolkit "$context/toolkit"
+          docker build --tag nanocodex-hand:ci "$context"
+      - name: Exercise offline toolkit with a read-only root and unprivileged user
+        run: >-
+          docker run --rm --network none --read-only --user 1000:1000
+          --cap-drop ALL --security-opt no-new-privileges --pids-limit 512
+          --tmpfs /tmp:rw,nosuid,nodev,size=256m --env HOME=/workspace
+          --tmpfs /workspace:rw,exec,nosuid,nodev,uid=1000,gid=1000,size=2g
+          --env TMPDIR=/workspace --workdir /workspace
+          --entrypoint sh nanocodex-hand:ci -lc nanocodex-check-hand-toolkit
+      - name: Test Docker tools, desktop, persistence, and cleanup without KVM
+        run: |
+          cargo test --locked -p nanocodex-vm --test docker_live -- --ignored --nocapture
+          cargo test --locked -p nanocodex2-bin --test nanocodex2_managed docker_hand_live -- --ignored --nocapture
+        env:
+          NANOCODEX_DOCKER_TEST_IMAGE: nanocodex-hand:ci
+          NANOCODEX_DOCKER_HOST_SENTINEL: must-not-enter-the-container
+      - name: Verify missing KVM is explained before account setup
+        run: |
+          sudo unshare --mount --propagation private sh -eu -c '
+            if test -e /dev/kvm; then mount --bind /dev/null /dev/kvm; fi
+            if target/debug/nanocodex2 hand --vm /nonexistent-root.ext4 > /tmp/hand-kvm-error 2>&1; then
+              cat /tmp/hand-kvm-error
+              exit 1
+            fi
+            cat /tmp/hand-kvm-error
+            grep -F "VM backend is unavailable" /tmp/hand-kvm-error
+            grep -F "hand --docker IMAGE --volume NAME" /tmp/hand-kvm-error
+          '
 
   policy:
     name: dependencies and spelling

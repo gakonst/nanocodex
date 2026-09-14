@@ -395,7 +395,7 @@ test("VM readiness can exceed 60 seconds and stopping cancels pending setup", { 
   const binary = join(path, "vm-fixture");
   const image = join(path, "root.ext4");
   await writeFile(image, "fixture");
-  await writeFile(binary, `#!${process.execPath}\nsetTimeout(() => console.log(JSON.stringify({ fields: { stage: 'vm.hand.ready' } })), 61_000); setInterval(() => {}, 1000);\n`, { mode: 0o700 });
+  await writeFile(binary, `#!${process.execPath}\nif(process.argv[2]==='__vm-clone-image'){require('node:fs').copyFileSync(process.argv[3],process.argv[4],require('node:fs').constants.COPYFILE_EXCL);process.exit(0); }\nsetTimeout(() => console.log(JSON.stringify({ fields: { stage: 'vm.hand.ready' } })), 61_000); setInterval(() => {}, 1000);\n`, { mode: 0o700 });
   const runtime = new DesktopRuntime({ baseUrl: await service(t), apiKey: key, dataDirectory: path });
   t.after(() => runtime.close());
   await runtime.refresh();

@@ -16,9 +16,28 @@ import AppKit
 public struct RemoteCanvas: NSViewRepresentable {
     @ObservedObject var viewer: RemoteViewer
     public init(viewer: RemoteViewer) { self.viewer = viewer }
-    public func makeNSView(context: Context) -> MacRemoteCanvas { MacRemoteCanvas(viewer: viewer) }
-    public func updateNSView(_ view: MacRemoteCanvas, context: Context) { view.update(viewer) }
-    public static func dismantleNSView(_ view: MacRemoteCanvas, coordinator: ()) { view.detach() }
+    public func makeNSView(context: Context) -> MacRemoteViewport { MacRemoteViewport(viewer: viewer) }
+    public func updateNSView(_ view: MacRemoteViewport, context: Context) { view.canvas.update(viewer) }
+    public static func dismantleNSView(_ view: MacRemoteViewport, coordinator: ()) { view.canvas.detach() }
+}
+
+public final class MacRemoteViewport: NSScrollView {
+    let canvas: MacRemoteCanvas
+    init(viewer: RemoteViewer) {
+        canvas = MacRemoteCanvas(viewer: viewer)
+        super.init(frame: .zero)
+        drawsBackground = true; backgroundColor = .black
+        allowsMagnification = true; minMagnification = 1; maxMagnification = 6
+        hasHorizontalScroller = true; hasVerticalScroller = true; autohidesScrollers = true
+        documentView = canvas
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    public override func layout() {
+        super.layout()
+        // Document coordinates stay stable while AppKit magnifies the clip view.
+        let size = contentSize
+        if canvas.frame.size != size { canvas.setFrameSize(size) }
+    }
 }
 
 public final class MacRemoteCanvas: NSView, NSTextInputClient {
@@ -81,6 +100,7 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient {
     public override func rightMouseDragged(with event: NSEvent) { mouseMoved(with: event) }
     public override func otherMouseDragged(with event: NSEvent) { mouseMoved(with: event) }
     public override func scrollWheel(with event: NSEvent) {
+        guard viewer?.controlling == true else { super.scrollWheel(with: event); return }
         guard let point = point(event) else { return }
         let scale: Double = event.hasPreciseScrollingDeltas ? 1 : 20
         viewer?.input(kind: .scroll, x: point.x, y: point.y,
@@ -147,9 +167,14 @@ public struct RemoteCanvas: UIViewRepresentable {
     public static func dismantleUIView(_ view: TouchRemoteCanvas, coordinator: ()) { view.detach() }
 }
 
-public final class TouchRemoteCanvas: UIView {
+public final class TouchRemoteCanvas: UIView, UIScrollViewDelegate {
+    let viewport = UIScrollView()
+    private let content = UIView()
     private let video = RTCMTLVideoView()
     private let snapshot = UIImageView()
+    private var viewportSize = CGSize.zero
+    private var remoteDrag: UIPanGestureRecognizer!
+    private var remoteScroll: UIPanGestureRecognizer!
     private weak var viewer: RemoteViewer?
     private var track: RTCVideoTrack?
     private var surface = CGSize(width: 16, height: 9)
@@ -157,13 +182,20 @@ public final class TouchRemoteCanvas: UIView {
     public override var canBecomeFirstResponder: Bool { viewer?.controlling == true }
     init(viewer: RemoteViewer) {
         self.viewer = viewer; super.init(frame: .zero)
-        backgroundColor = .black; video.isUserInteractionEnabled = false; video.videoContentMode = .scaleAspectFit; addSubview(video)
-        snapshot.contentMode = .scaleAspectFit; snapshot.isUserInteractionEnabled = false; addSubview(snapshot)
+        backgroundColor = .black
+        viewport.delegate = self; viewport.minimumZoomScale = 1; viewport.maximumZoomScale = 6
+        viewport.bouncesZoom = true; viewport.contentInsetAdjustmentBehavior = .never
+        viewport.showsHorizontalScrollIndicator = false; viewport.showsVerticalScrollIndicator = false
+        addSubview(viewport); viewport.addSubview(content)
+        video.isUserInteractionEnabled = false; video.videoContentMode = .scaleAspectFit; content.addSubview(video)
+        snapshot.contentMode = .scaleAspectFit; snapshot.isUserInteractionEnabled = false; content.addSubview(snapshot)
         let tap = UITapGestureRecognizer(target: self, action: #selector(tap(_:))); addGestureRecognizer(tap)
-        let drag = UIPanGestureRecognizer(target: self, action: #selector(drag(_:))); drag.maximumNumberOfTouches = 1; addGestureRecognizer(drag)
-        let scroll = UIPanGestureRecognizer(target: self, action: #selector(scroll(_:))); scroll.minimumNumberOfTouches = 2; addGestureRecognizer(scroll)
+        remoteDrag = UIPanGestureRecognizer(target: self, action: #selector(drag(_:))); remoteDrag.maximumNumberOfTouches = 1; addGestureRecognizer(remoteDrag)
+        remoteScroll = UIPanGestureRecognizer(target: self, action: #selector(scroll(_:))); remoteScroll.minimumNumberOfTouches = 2; addGestureRecognizer(remoteScroll)
         let secondary = UILongPressGestureRecognizer(target: self, action: #selector(secondary(_:))); addGestureRecognizer(secondary)
-        tap.require(toFail: secondary); update(viewer)
+        tap.require(toFail: secondary)
+        if let pinch = viewport.pinchGestureRecognizer { tap.require(toFail: pinch); secondary.require(toFail: pinch) }
+        update(viewer)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func update(_ viewer: RemoteViewer) {
@@ -174,16 +206,46 @@ public final class TouchRemoteCanvas: UIView {
         snapshot.image = viewer.frame.map { UIImage(cgImage: $0) }
         snapshot.isHidden = !viewer.connected || viewer.frame == nil
         if !viewer.controlling { dragOrigin = nil; resignFirstResponder() }
-        setNeedsLayout()
+        updateGestures(); setNeedsLayout()
     }
-    public override func layoutSubviews() { super.layoutSubviews(); video.frame = fitted(surface, in: bounds); snapshot.frame = video.frame }
-    private func point(_ point: CGPoint, clamp: Bool = false) -> CGPoint? {
-        let rect = video.frame
+    public override func layoutSubviews() {
+        super.layoutSubviews()
+        viewport.frame = bounds
+        if viewportSize != bounds.size {
+            let scale = viewport.zoomScale
+            viewport.setZoomScale(1, animated: false)
+            viewportSize = bounds.size; content.frame = CGRect(origin: .zero, size: bounds.size)
+            viewport.contentSize = bounds.size
+            viewport.setZoomScale(scale, animated: false)
+        }
+        video.frame = fitted(surface, in: content.bounds); snapshot.frame = video.frame
+    }
+    public func viewForZooming(in scrollView: UIScrollView) -> UIView? { content }
+    public func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {
+        remoteDrag.isEnabled = false; remoteScroll.isEnabled = false
+        if dragOrigin != nil { viewer?.input(kind: .releaseAll); dragOrigin = nil }
+    }
+    public func scrollViewDidZoom(_ scrollView: UIScrollView) {
+        accessibilityValue = "Zoom " + String(Int(scrollView.zoomScale * 100)) + "%"
+        if !scrollView.isZooming { updateGestures() }
+    }
+    public func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) { updateGestures() }
+    private func updateGestures() {
+        let controlling = viewer?.controlling == true
+        remoteDrag.isEnabled = controlling && !viewport.isZooming
+        remoteScroll.isEnabled = controlling && viewport.zoomScale <= 1.01 && !viewport.isZooming
+        // Pinch always zooms locally. When magnified, two fingers pan the
+        // viewport; one finger continues to control the remote pointer.
+        viewport.panGestureRecognizer.minimumNumberOfTouches = controlling ? 2 : 1
+        viewport.panGestureRecognizer.isEnabled = !controlling || viewport.zoomScale > 1.01
+    }
+    func normalizedPoint(_ location: CGPoint, clamp: Bool = false) -> CGPoint? {
+        let point = content.convert(location, from: self), rect = video.frame
         guard rect.width > 0, rect.height > 0, clamp || rect.contains(point) else { return nil }
         return CGPoint(x: min(1, max(0, (point.x - rect.minX) / rect.width)), y: min(1, max(0, (point.y - rect.minY) / rect.height)))
     }
     private func click(_ location: CGPoint, button: Int) {
-        guard let point = point(location) else { return }; becomeFirstResponder()
+        guard let point = normalizedPoint(location) else { return }; becomeFirstResponder()
         for down in [true, false] { viewer?.input(kind: .button, x: point.x, y: point.y, button: button, down: down) }
     }
     @objc private func tap(_ gesture: UITapGestureRecognizer) { click(gesture.location(in: self), button: 0) }
@@ -195,13 +257,13 @@ public final class TouchRemoteCanvas: UIView {
         switch gesture.state {
         case .began:
             let translation = gesture.translation(in: self)
-            guard let origin = point(CGPoint(x: location.x - translation.x, y: location.y - translation.y)) else { return }
+            guard let origin = normalizedPoint(CGPoint(x: location.x - translation.x, y: location.y - translation.y)) else { return }
             becomeFirstResponder(); dragOrigin = origin
             viewer?.input(kind: .button, x: origin.x, y: origin.y, button: 0, down: true)
         case .changed:
-            if dragOrigin != nil, let point = point(location, clamp: true) { viewer?.input(kind: .move, x: point.x, y: point.y) }
+            if dragOrigin != nil, let point = normalizedPoint(location, clamp: true) { viewer?.input(kind: .move, x: point.x, y: point.y) }
         case .ended:
-            if dragOrigin != nil, let point = point(location, clamp: true) { viewer?.input(kind: .button, x: point.x, y: point.y, button: 0, down: false) }
+            if dragOrigin != nil, let point = normalizedPoint(location, clamp: true) { viewer?.input(kind: .button, x: point.x, y: point.y, button: 0, down: false) }
             dragOrigin = nil
         case .cancelled, .failed:
             if dragOrigin != nil { viewer?.input(kind: .releaseAll) }
@@ -210,7 +272,7 @@ public final class TouchRemoteCanvas: UIView {
         }
     }
     @objc private func scroll(_ gesture: UIPanGestureRecognizer) {
-        guard gesture.state == .changed, let point = point(gesture.location(in: self)) else { return }
+        guard gesture.state == .changed, let point = normalizedPoint(gesture.location(in: self)) else { return }
         let delta = gesture.translation(in: self); gesture.setTranslation(.zero, in: self)
         viewer?.input(kind: .scroll, x: point.x, y: point.y, deltaX: min(4096, max(-4096, delta.x)), deltaY: min(4096, max(-4096, delta.y)))
     }

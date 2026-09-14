@@ -9,6 +9,19 @@ pub(crate) use super::vm_hand_config::VmHandConfig;
 pub(crate) struct VmHand;
 
 impl VmHand {
+    pub(crate) async fn preflight(config: &Hand) -> Result<(), ManagedError> {
+        let backend = if config.docker.is_some() {
+            "Docker"
+        } else {
+            "VM"
+        };
+        Err(ManagedError::Configuration(format!(
+            "{backend} Hands are not supported by this {}/{} build; use a glibc Linux or Apple Silicon macOS build. Linux Docker Hands require a Linux Docker daemon; Linux VM Hands additionally require KVM. No fallback was attempted",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )))
+    }
+
     pub(crate) async fn start(_config: &Hand) -> Result<Self, ManagedError> {
         Err(unsupported())
     }
@@ -38,6 +51,10 @@ impl VmHand {
 }
 
 pub(crate) fn run_config(_path: &Path) -> Result<(), ManagedError> {
+    Err(unsupported())
+}
+
+pub(crate) fn clone_image(_source: &Path, _destination: &Path) -> Result<(), ManagedError> {
     Err(unsupported())
 }
 

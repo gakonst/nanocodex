@@ -7,8 +7,8 @@ tar --extract --numeric-owner --same-owner --preserve-permissions -f - -C /rootf
 for binary in usr/bin/Xvfb usr/bin/openbox usr/bin/xterm; do
   test -x "/rootfs/$binary" || { echo "Missing executable: /$binary" >&2; exit 1; }
 done
-# Reject legacy desktop runtimes and build toolchains anywhere in the template.
-find /rootfs \( -name nanocodex-remote -o -name 'waymote*' -o -name grim -o -name zig -o -name go \) -print > /out/forbidden-files.txt
+# Reject legacy desktop runtimes anywhere in the template.
+find /rootfs \( -name nanocodex-remote -o -name 'waymote*' -o -name grim \) -print > /out/forbidden-files.txt
 test ! -s /out/forbidden-files.txt || { cat /out/forbidden-files.txt >&2; exit 1; }
 test -d /rootfs/usr/share/fonts/dejavu
 rm -f /rootfs/.dockerenv /rootfs/etc/hostname /rootfs/etc/hosts /rootfs/etc/resolv.conf
@@ -30,3 +30,6 @@ for binary in /usr/bin/Xvfb /usr/bin/openbox /usr/bin/xterm; do
   rm /checked-binary
 done
 sha256sum /out/desktop.ext4 > /out/desktop.sha256
+# Docker preserves root ownership on Linux bind mounts. Publish artifacts to the
+# invoking user while retaining the original numeric ownership inside ext4.
+chown "${OUTPUT_UID:?}:${OUTPUT_GID:?}" /out/*

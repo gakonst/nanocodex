@@ -6,7 +6,7 @@ final class InboxUITests: XCTestCase {
     }
     override func setUp() { super.setUp(); continueAfterFailure = false }
     #if DEBUG && targetEnvironment(simulator)
-    private func startupFixture(reject: Bool = false, historyWindow: Bool = false, warmTabs: Bool = false) -> XCUIApplication {
+    private func startupFixture(reject: Bool = false, historyWindow: Bool = false, warmTabs: Bool = false, historyMedia: Bool = false, historyDelay: Int = 3000) -> XCUIApplication {
         addUIInterruptionMonitor(withDescription: "Isolated simulator notifications") { alert in
             guard alert.buttons["Don’t Allow"].exists || alert.buttons["Don't Allow"].exists else { return false }
             let button = alert.buttons["Don’t Allow"].exists ? alert.buttons["Don’t Allow"] : alert.buttons["Don't Allow"]
@@ -15,7 +15,8 @@ final class InboxUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["NANOCODEX_STARTUP_FIXTURE": "1", "NANOCODEX_STARTUP_PROFILE": UUID().uuidString.lowercased(),
                                  "NANOCODEX_STARTUP_REJECT": reject ? "1" : "0", "NANOCODEX_STARTUP_HISTORY_WINDOW": historyWindow ? "1" : "0",
-                                 "NANOCODEX_STARTUP_WARM_TABS": warmTabs ? "1" : "0"]
+                                 "NANOCODEX_STARTUP_WARM_TABS": warmTabs ? "1" : "0", "NANOCODEX_STARTUP_HISTORY_MEDIA": historyMedia ? "1" : "0",
+                                 "NANOCODEX_STARTUP_HISTORY_DELAY_MS": String(historyDelay)]
         app.launch()
         return app
     }
@@ -151,13 +152,19 @@ final class InboxUITests: XCTestCase {
             !first.isHittable || abs(first.frame.minY - y) >= 8
         }, object: nil)
         moved.isInverted = true
-        XCTAssertEqual(XCTWaiter.wait(for: [moved], timeout: 4), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [moved], timeout: 4), .completed,
+                       "History position changed from \(y) to \(first.frame.minY) while stationary")
         let next = conversation.staticTexts["History page 19 of 20"]
         for _ in 0..<50 {
-            if next.exists && next.isHittable { break }
-            conversation.swipeUp(velocity: .fast)
+            if next.exists {
+                if next.isHittable { break }
+                // A fast native fling may already have crossed this heading.
+                if next.frame.maxY < conversation.frame.minY { conversation.swipeDown(velocity: .slow) }
+                else { conversation.swipeUp(velocity: .slow) }
+            } else { conversation.swipeUp(velocity: .fast) }
         }
-        XCTAssertTrue(next.isHittable, "Scrolling forward retrieves content trimmed while reading older pages")
+        capture(app, "history-window-forward-position")
+        XCTAssertTrue(next.isHittable, "Scrolling forward retrieves content trimmed while reading older pages\n" + app.debugDescription)
         capture(app, "history-window-forward-page")
         latest.tap()
         let live = conversation.staticTexts["Fixture live arrival beyond history window."]
@@ -166,6 +173,59 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(live.isHittable)
         XCTAssertFalse(latest.exists, "The latest jump catches up to the independent live cursor")
         capture(app, "history-window-live-tail")
+    }
+
+    func testSameTurnMediaPrependKeepsVisibleImage() {
+        let app = startupFixture(historyWindow: true, historyMedia: true)
+        let conversation = app.descendants(matching: .any).matching(identifier: "conversation").firstMatch
+        XCTAssertTrue(conversation.waitForExistence(timeout: 15))
+        let image = conversation.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@ AND label == %@", "generated-image-loaded", "Open History image 16")).firstMatch
+        XCTAssertTrue(conversation.staticTexts["Completed image review."].waitForExistence(timeout: 15))
+        let loading = app.descendants(matching: .any)["loading-older"].firstMatch
+        for _ in 0..<8 {
+            if loading.exists { break }
+            conversation.swipeDown()
+        }
+        XCTAssertTrue(loading.exists)
+        XCTAssertTrue(image.isHittable, app.debugDescription)
+        let y = image.frame.minY
+        capture(app, "same-turn-image-before-history")
+        gone(loading, timeout: 8)
+        XCTAssertTrue(image.isHittable)
+        XCTAssertEqual(image.frame.minY, y, accuracy: 4, "Older outputs in the same turn cannot replace the image under the reader")
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            loading.exists || !image.isHittable || abs(image.frame.minY - y) > 4
+        }, object: nil)
+        settled.isInverted = true
+        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 4), .completed, "One history load must not cascade into more loads while stationary")
+        capture(app, "same-turn-image-after-history")
+    }
+
+    func testSameTurnHistoryKeepsExpandedActivityVisible() {
+        let app = startupFixture(historyWindow: true, historyMedia: true, historyDelay: 6000)
+        let conversation = app.scrollViews["conversation"]
+        XCTAssertTrue(conversation.waitForExistence(timeout: 15))
+        XCTAssertTrue(conversation.staticTexts["Completed image review."].waitForExistence(timeout: 15))
+        let loading = app.descendants(matching: .any)["loading-older"].firstMatch
+        for _ in 0..<8 {
+            if loading.exists { break }
+            conversation.swipeDown()
+        }
+        XCTAssertTrue(loading.exists)
+        let disclosure = conversation.buttons["activity-disclosure"]
+        XCTAssertTrue(disclosure.isHittable)
+        disclosure.tap()
+        let timeline = conversation.scrollViews["activity-disclosure"]
+        XCTAssertTrue(timeline.waitForExistence(timeout: 3), app.debugDescription)
+        let steps = timeline.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "activity-step-"))
+        let step = steps.allElementsBoundByIndex.first { $0.isHittable }!
+        let id = step.identifier, screenY = step.frame.minY
+        capture(app, "same-turn-activity-before-history")
+        gone(loading, timeout: 10)
+        let retained = timeline.buttons[id]
+        XCTAssertTrue(retained.isHittable, "The expanded Activity stays under the reader while earlier media arrives")
+        XCTAssertEqual(retained.frame.minY, screenY, accuracy: 4)
+        capture(app, "same-turn-activity-after-history")
     }
 
     func testStartupRejectsUnauthorizedRoster() {
@@ -1361,6 +1421,13 @@ final class InboxUITests: XCTestCase {
         search.tap(); search.typeText(id ?? title)
         let card = id.map { app.buttons["overview-card:" + $0] }
             ?? app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label == %@", "overview-card:", title)).firstMatch
+        for _ in 0..<20 {
+            if card.exists { break }
+            let older = app.buttons["load-older-conversations"]
+            guard older.exists else { break }
+            if !older.isHittable { overview.swipeUp() }
+            older.tap()
+        }
         XCTAssertTrue(card.waitForExistence(timeout: 10))
         XCTAssertTrue(card.isHittable)
         card.tap(); gone(overview)
@@ -1430,6 +1497,12 @@ final class InboxUITests: XCTestCase {
 
         XCTAssertTrue(app.scrollViews["conversation"].waitForExistence(timeout: 5))
         let conversation = app.scrollViews["conversation"]
+        // A queued message has one representation in the queue, not a sent bubble.
+        let queued = app.scrollViews["pending-messages"].staticTexts.matching(NSPredicate(format: "label == %@", text))
+        if queued.count == 1 {
+            XCTAssertFalse(conversation.staticTexts[text].exists)
+            return
+        }
         let message = conversation.staticTexts[text]
         if !message.isHittable { conversation.swipeUp() }
         XCTAssertTrue(message.waitForExistence(timeout: 5))
@@ -1440,14 +1513,14 @@ final class InboxUITests: XCTestCase {
         selectTab(app, id: "inbox", title: "Build the agent inbox")
         composer(app).tap(); composer(app).typeText("Keep my scrub draft")
         let selector = app.buttons["tab-overview"]
-        let leftStart = selector.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        leftStart.press(forDuration: 0.12, thenDragTo: leftStart.withOffset(CGVector(dx: -36, dy: 0)))
+        let rightStart = selector.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        rightStart.press(forDuration: 0.12, thenDragTo: rightStart.withOffset(CGVector(dx: 36, dy: 0)))
         let next = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: app.buttons["browser-tab:data"])
         XCTAssertEqual(XCTWaiter.wait(for: [next], timeout: 5), .completed)
         XCTAssertFalse(app.scrollViews["conversation-overview"].exists)
         XCTAssertFalse(app.descendants(matching: .any)["tab-scrub-preview"].firstMatch.exists)
-        let rightStart = selector.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        rightStart.press(forDuration: 0.12, thenDragTo: rightStart.withOffset(CGVector(dx: 36, dy: 0)))
+        let leftStart = selector.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        leftStart.press(forDuration: 0.12, thenDragTo: leftStart.withOffset(CGVector(dx: -36, dy: 0)))
         let previous = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: app.buttons["browser-tab:inbox"])
         XCTAssertEqual(XCTWaiter.wait(for: [previous], timeout: 5), .completed)
         XCTAssertEqual(composer(app).value as? String, "Keep my scrub draft")
@@ -1473,9 +1546,64 @@ final class InboxUITests: XCTestCase {
         capture(app, "glass-tabs-centered-create-no-duplicate-title")
     }
 
+    func testQueueBecomesSteeringWithoutStoppingCurrentTurn() {
+        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString, "NANOCODEX_DEMO_COMPLETE_AFTER_MS": "60000",
+                          "NANOCODEX_DEMO_CANCEL_DELAY_MS": "2000"])
+        selectInbox(app)
+        let text = "Show Blender on each VM desktop"
+        queue(app, text)
+        let queueView = app.scrollViews["pending-messages"]
+        XCTAssertTrue(queueView.staticTexts[text].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.scrollViews["conversation"].staticTexts[text].exists)
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", text)).count, 1)
+        XCTAssertEqual(app.buttons["steer-now"].label, "Steer now")
+        capture(app, "queue-single-representation")
+        app.buttons["steer-now"].tap()
+        XCTAssertTrue(queueView.staticTexts["Preparing steering…"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.scrollViews["conversation"].staticTexts[text].exists)
+        gone(app.staticTexts["pending-message"])
+        thread(app, contains: text)
+        XCTAssertEqual(app.buttons["send"].label, "Stop turn")
+        XCTAssertEqual(app.buttons["browser-tab:inbox"].value as? String, "Running")
+        XCTAssertFalse(app.staticTexts["Working on: " + text].exists, "Steering must not launch another turn")
+        XCTAssertTrue(app.buttons["withdraw-steering"].exists)
+        app.terminate(); app.launch(); selectInbox(app)
+        XCTAssertFalse(app.staticTexts["pending-message"].exists)
+        thread(app, contains: text)
+        XCTAssertTrue(app.buttons["withdraw-steering"].waitForExistence(timeout: 5))
+        app.buttons["withdraw-steering"].tap()
+        XCTAssertTrue(app.staticTexts["Steering withdrawn: " + text].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons["send"].label, "Stop turn")
+        capture(app, "steering-api-withdrawn-current-turn-running")
+    }
+
+    func testSteeringResponseLossSurvivesRelaunchWithoutResubmission() {
+        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString, "NANOCODEX_DEMO_FAIL_ONCE": "steer"])
+        selectInbox(app); queue(app, "Retain uncertain steering")
+        XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 5))
+        app.buttons["steer-now"].tap()
+        XCTAssertTrue(app.staticTexts["Steering delivery unconfirmed"].waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons["retry-steering"].exists)
+        app.terminate(); app.launch(); selectInbox(app)
+        XCTAssertTrue(app.staticTexts["Steering delivery unconfirmed"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["steer-now"].exists)
+        app.buttons["Cancel queued message"].tap()
+        gone(app.staticTexts["pending-message"])
+        XCTAssertEqual(app.buttons["send"].label, "Stop turn")
+    }
+    func testConsumedSteeringCannotBePresentedAsWithdrawn() {
+        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString, "NANOCODEX_DEMO_STEER_CONSUMED": "1"])
+        selectInbox(app); queue(app, "Already consumed steering")
+        XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 5))
+        app.buttons["steer-now"].tap(); gone(app.staticTexts["pending-message"])
+        app.buttons["withdraw-steering"].tap()
+        XCTAssertTrue(app.staticTexts["Steering could not be withdrawn; it may already be in use."].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Steering withdrawn: Already consumed steering"].exists)
+        XCTAssertEqual(app.buttons["send"].label, "Stop turn")
+    }
     func testTabsPreserveIndependentDraftsAndQueuedSteering() {
         let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
-        selectTab(app, id: "durability", title: "Make long sessions bulletproof")
+        selectAgentFromOverview(app, title: "Make long sessions bulletproof")
         composer(app).tap(); composer(app).typeText("Check the reconnect boundary")
         selectTab(app, id: "inbox", title: "Build the agent inbox")
         XCTAssertNotEqual(composer(app).value as? String, "Check the reconnect boundary")
@@ -1535,10 +1663,10 @@ final class InboxUITests: XCTestCase {
     }
 
     func testFailedSubmissionRetainsMessageAndRetriesOnce() {
-        let app = launch(["NANOCODEX_DEMO_FAIL_ONCE": "submit"])
+        let app = launch(["NANOCODEX_DEMO_FAIL_ONCE": "submit", "NANOCODEX_DEMO_PROFILE": UUID().uuidString])
         selectInbox(app); queue(app, "Retry only once")
         XCTAssertTrue(app.buttons["retry-pending"].waitForExistence(timeout: 5))
-        selectTab(app, id: "durability", title: "Make long sessions bulletproof"); selectInbox(app)
+        selectTab(app, id: "data", title: "Tighten the fuel forecast"); selectInbox(app)
         app.buttons["retry-pending"].doubleTap()
         XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 5))
         thread(app, contains: "Retry only once")
@@ -1598,7 +1726,7 @@ final class InboxUITests: XCTestCase {
         let cancel = app.buttons["Cancel queued message"]
         XCTAssertTrue(cancel.isEnabled, "Steering must not disable cancelling the queued message")
         cancel.tap(); gone(app.staticTexts["pending-message"], timeout: 10)
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Stopped"), object: app.buttons["browser-tab:inbox"])], timeout: 10), .completed)
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Running"), object: app.buttons["browser-tab:inbox"])], timeout: 10), .completed)
     }
     func testLiveCancelQueuedMessageThenSteerItsSuccessor() throws {
         guard ProcessInfo.processInfo.environment["NANOCODEX_INBOX_LIVE"] == "1" else { throw XCTSkip("Requires a signed-in physical phone.") }
@@ -1646,8 +1774,8 @@ final class InboxUITests: XCTestCase {
         selectInbox(app); queue(app, "Keep the captured target")
         XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 5))
         app.buttons["steer-now"].tap()
-        XCTAssertTrue(app.staticTexts["Cancellation unconfirmed. The queued message is retained; try again."].waitForExistence(timeout: 5))
-        app.buttons["steer-now"].tap(); gone(app.staticTexts["pending-message"])
+        XCTAssertTrue(app.buttons["retry-steering"].waitForExistence(timeout: 5))
+        app.buttons["retry-steering"].tap(); gone(app.staticTexts["pending-message"])
         thread(app, contains: "Keep the captured target")
     }
     func testPendingSurvivesRelaunchAndCanBeCancelled() {
@@ -1660,7 +1788,7 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 5))
         app.buttons["Cancel queued message"].tap(); gone(app.staticTexts["pending-message"])
         XCTAssertTrue(app.buttons["Stop turn"].exists, "Cancelling the queued message keeps its predecessor running")
-        thread(app, contains: "Survive restart")
+        XCTAssertTrue(app.staticTexts["Cancelled request: Survive restart"].waitForExistence(timeout: 5))
     }
     func testQueuedMessageStartsNaturallyWhileReadingThread() {
         let app = launch(["NANOCODEX_DEMO_COMPLETE_AFTER_MS": "2500"])
@@ -1685,7 +1813,8 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["pending-message"].label, "Second queued message")
         app.buttons["steer-now"].tap(); gone(app.staticTexts["pending-message"])
         thread(app, contains: "Second queued message")
-        XCTAssertTrue(app.staticTexts["Working on: Second queued message"].exists)
+        XCTAssertTrue(app.staticTexts["Steering sent to the active turn"].exists)
+        XCTAssertEqual(app.buttons["send"].label, "Stop turn")
     }
     func testFinishedAgentStaysSelectedUntilAnotherTabIsTapped() {
         let app = launch(["NANOCODEX_DEMO_FINISH_IN_THREAD": "1"])
@@ -1819,6 +1948,8 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(conversation.staticTexts["Build the agent inbox"].isHittable)
         XCTAssertFalse(conversation.staticTexts["Checking the remaining steps."].exists)
         XCTAssertFalse(conversation.staticTexts["Thinking"].exists)
+        XCTAssertFalse(conversation.staticTexts["Working"].exists)
+        XCTAssertEqual(conversation.buttons["activity-disclosure"].label, "Activity")
         capture(app, "10-readable-activity")
         conversation.buttons["activity-disclosure"].tap()
         let step = conversation.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "activity-step-tool-")).firstMatch
@@ -1944,6 +2075,40 @@ final class InboxUITests: XCTestCase {
         capture(app, "long-markdown-latest-with-keyboard")
 
         XCTAssertEqual(composer(app).value as? String, "Keep the latest reply in view")
+    }
+
+    func testNativeMediaPreviewZoomPlaybackAndDraftRestoration() throws {
+        let clip = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "VideoAudioCheck", withExtension: "mp4"))
+        let app = launch(["NANOCODEX_DEMO_GENERATED_OUTPUTS": "1", "NANOCODEX_DEMO_VIDEO_BASE64": try Data(contentsOf: clip).base64EncodedString()])
+        let conversation = app.scrollViews["conversation"]
+        XCTAssertTrue(conversation.waitForExistence(timeout: 10))
+        let photo = app.descendants(matching: .any).matching(identifier: "generated-image-loaded").firstMatch
+        for _ in 0..<5 { if photo.isHittable { break }; conversation.swipeDown() }
+        XCTAssertTrue(photo.waitForExistence(timeout: 10)); photo.tap()
+        let done = app.buttons["Done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 10), app.debugDescription)
+        capture(app, "native-photo-preview")
+        app.pinch(withScale: 2.5, velocity: 1)
+        capture(app, "native-photo-zoom")
+        done.tap()
+        XCTAssertTrue(conversation.waitForExistence(timeout: 5))
+        let video = app.buttons["generated-video-play"]
+        for _ in 0..<5 { if video.isHittable { break }; conversation.swipeUp() }
+        XCTAssertTrue(video.waitForExistence(timeout: 5)); video.tap()
+        XCTAssertTrue(done.waitForExistence(timeout: 10), app.debugDescription)
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        let playback = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.buttons["Play"].firstMatch.exists || app.buttons["Pause"].firstMatch.exists
+        }, object: app)
+        XCTAssertEqual(XCTWaiter.wait(for: [playback], timeout: 5), .completed, app.debugDescription)
+        capture(app, "native-video-playback")
+        done.tap()
+        composer(app).tap(); composer(app).typeText("Keep this draft after viewing media")
+        conversation.swipeDown()
+        for _ in 0..<5 { if photo.isHittable { break }; conversation.swipeDown() }
+        photo.tap(); XCTAssertTrue(done.waitForExistence(timeout: 10)); done.tap()
+        XCTAssertEqual(composer(app).value as? String, "Keep this draft after viewing media")
+        capture(app, "native-media-restores-draft")
     }
 
     func testGeneratedAttachmentsStayVisibleWhileInternalToolOutputStaysInActivity() {
@@ -2112,7 +2277,8 @@ final class InboxUITests: XCTestCase {
 
         XCTAssertTrue(app.scrollViews["conversation"].waitForExistence(timeout: 5))
         let conversation = app.scrollViews["conversation"]
-        XCTAssertTrue(conversation.buttons["activity-disclosure"].value as? String == "1 step, 1 issue, Collapsed")
+        XCTAssertEqual(conversation.buttons["activity-disclosure"].label, "Activity")
+        XCTAssertFalse(conversation.staticTexts["1 issue"].exists, "Collapsed activity must not clutter the transcript with issue counts")
         conversation.buttons["activity-disclosure"].tap()
         conversation.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "activity-step-tool-")).firstMatch.tap()
         let failure = conversation.staticTexts["The browser disconnected. Reconnect it and try again."]
@@ -2251,13 +2417,14 @@ final class InboxUITests: XCTestCase {
         selectInbox(app)
         composer(app).tap(); composer(app).typeText("Keep my place")
         let conversation = app.scrollViews["conversation"]
-        conversation.swipeDown(); conversation.swipeDown()
+        scrollVisibleConversation(app, upward: false); scrollVisibleConversation(app, upward: false)
         let anchor = conversation.staticTexts.allElementsBoundByIndex.first {
             $0.isHittable && $0.label.hasPrefix("Progress note ") && $0.frame.minY >= conversation.frame.minY
         }
         XCTAssertNotNil(anchor)
         guard let anchor else { return }
         let label = anchor.label, y = anchor.frame.minY
+        capture(app, "tabs-before-reading-switch")
         selectTab(app, id: "data", title: "Tighten the fuel forecast")
         selectTab(app, id: "inbox", title: "Build the agent inbox")
         XCTAssertEqual(composer(app).value as? String, "Keep my place")
@@ -2551,12 +2718,14 @@ final class InboxUITests: XCTestCase {
 
     func testNewConversationOpensAndSendsDuringSlowCreation() {
         let app = launch(["NANOCODEX_DEMO_CREATE_DELAY_MS": "20000"])
-        navigationAction(app, "New agent").tap()
+        app.buttons["new-conversation"].tap()
         XCTAssertEqual(self.selectedConversationTab(app).label, "New agent")
         XCTAssertTrue(composer(app).isEnabled)
         queue(app, "A message before creation finishes")
         XCTAssertEqual(latestUserText(app).label, "A message before creation finishes")
         XCTAssertTrue(latestUserText(app).isHittable)
+        XCTAssertFalse(app.scrollViews["pending-messages"].exists)
+        XCTAssertFalse(app.staticTexts["Waiting to start"].exists)
         composer(app).tap(); composer(app).typeText("Keep my next draft")
         let admitted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             app.buttons["send"].isEnabled
@@ -2568,6 +2737,21 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(composer(app).value as? String, "Keep my next draft")
         XCTAssertTrue(app.keyboards.firstMatch.exists, "Creation must keep the active composer focused.")
         capture(app, "instant-conversation-send-and-draft")
+    }
+    func testFirstMessageRemainsVisibleThroughDelayedFailureAndRetry() {
+        let app = launch(["NANOCODEX_DEMO_DELAY_MS": "4000", "NANOCODEX_DEMO_FAIL_ONCE": "submit", "NANOCODEX_DEMO_PROFILE": UUID().uuidString])
+        app.buttons["new-conversation"].tap()
+        queue(app, "Keep this bubble through delivery retry")
+        let message = app.scrollViews["conversation"].staticTexts["Keep this bubble through delivery retry"]
+        XCTAssertTrue(message.isHittable, "Sending renders locally before the delayed API response")
+        XCTAssertFalse(app.scrollViews["pending-messages"].exists)
+        XCTAssertTrue(app.buttons["retry-pending"].waitForExistence(timeout: 12))
+        XCTAssertTrue(message.isHittable)
+        capture(app, "instant-send-retry-in-place")
+        app.buttons["retry-pending"].tap()
+        XCTAssertTrue(message.isHittable)
+        gone(app.buttons["retry-pending"])
+        XCTAssertEqual(app.scrollViews["conversation"].staticTexts.matching(NSPredicate(format: "label == %@", "Keep this bubble through delivery retry")).count, 1)
     }
     func testLateCreationDoesNotNavigateAwayFromAnotherConversation() {
         let app = launch(["NANOCODEX_DEMO_CREATE_DELAY_MS": "5000"])

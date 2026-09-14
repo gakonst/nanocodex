@@ -125,7 +125,25 @@ RUN ln -s /usr/bin/fdfind /usr/local/bin/fd \
     && pnpm --version \
     && uv --version
 
-COPY scripts/check-dev-stack.sh /usr/local/bin/nanocodex-check-dev-stack
+# Creative, document, OCR, and scientific tools are available without a download.
+COPY .generated/toolkit/python.txt /opt/hand-toolkit/python.txt
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        blender ffmpeg imagemagick inkscape libreoffice pandoc \
+        poppler-utils qpdf ghostscript tesseract-ocr tesseract-ocr-eng graphviz \
+        fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji \
+    && rm -rf /var/lib/apt/lists/* \
+    && uv venv --python /usr/bin/python3 --seed /opt/hand-python \
+    && /opt/hand-python/bin/pip install --no-cache-dir \
+        numpy==2.2.6 scipy==1.15.3 pandas==2.3.3 matplotlib==3.10.6 \
+        sympy==1.14.0 Pillow==11.3.0 lxml==6.0.2 openpyxl==3.1.5 reportlab==4.4.4 \
+        -r /opt/hand-toolkit/python.txt
+COPY .generated/toolkit/check.py .generated/toolkit/install-paths.sh /opt/hand-toolkit/
+RUN sh /opt/hand-toolkit/install-paths.sh \
+    && chmod 0755 /opt/hand-toolkit/check.py \
+    && ln -s /opt/hand-toolkit/check.py /usr/local/bin/nanocodex-check-hand-toolkit
+ENV PATH=/opt/hand-python/bin:${PATH}
+
+COPY --chmod=0755 scripts/check-dev-stack.sh /usr/local/bin/nanocodex-check-dev-stack
 RUN sh /usr/local/bin/nanocodex-check-dev-stack
 
 COPY --from=hand /out/nanocodex-remote /usr/local/bin/nanocodex-remote

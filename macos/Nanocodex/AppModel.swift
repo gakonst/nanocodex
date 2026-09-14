@@ -86,6 +86,37 @@ final class AppModel: ObservableObject {
             }
         }
     }
+    func attachmentPreview(_ attachment: MessageAttachment, agentID: String) async throws -> Data {
+        guard let credential = currentCredential else { throw APIError.invalidCredential }
+        let epoch = generation
+        let client = ManagedClient(credential: try .init(origin: credential.baseUrl, apiKey: credential.apiKey))
+        defer { client.close() }
+        let data = try await client.attachmentPreview(agentID: agentID, attachmentID: attachment.id)
+        guard generation == epoch, !Task.isCancelled else { throw CancellationError() }
+        return data
+    }
+    func attachmentFile(_ attachment: MessageAttachment, agentID: String) async throws -> URL {
+        guard let credential = currentCredential else { throw APIError.invalidCredential }
+        let epoch = generation
+        let client = ManagedClient(credential: try .init(origin: credential.baseUrl, apiKey: credential.apiKey))
+        defer { client.close() }
+        let url = try await client.downloadAttachment(agentID: agentID, attachment: attachment)
+        guard generation == epoch, !Task.isCancelled else {
+            try? FileManager.default.removeItem(at: url); throw CancellationError()
+        }
+        return url
+    }
+    func videoFile(_ video: TranscriptVideo, agentID: String) async throws -> URL {
+        guard let credential = currentCredential else { throw APIError.invalidCredential }
+        let epoch = generation
+        let client = ManagedClient(credential: try .init(origin: credential.baseUrl, apiKey: credential.apiKey))
+        defer { client.close() }
+        let url = try await client.downloadVideo(agentID: agentID, video: video)
+        guard generation == epoch, !Task.isCancelled else {
+            try? FileManager.default.removeItem(at: url); throw CancellationError()
+        }
+        return url
+    }
     private var signInPreviousCredential: AccountKeychain.Credential?
     private var signInPreviousSavedCredential: AccountKeychain.Credential?
     private var signInChangedAccount = false

@@ -1655,12 +1655,14 @@ mod supported {
             let locked_template_root = locked_file_path(&template_lock);
             let hand_template = vm_hand::VmHandConfig {
                 rootfs: config.vm_template.clone(),
+                docker: None,
                 vm_guest_runtime: Some(config.vm_guest_runtime.clone()),
                 vm_cache: config.vm_cache.clone(),
                 vm_firmware: config.vm_firmware.clone(),
                 vm_workspace: config.vm_workspace.clone(),
                 vm_cpus: config.vm_cpus,
                 vm_memory_mib: config.vm_memory_mib,
+                vm_gpu: config.vm_gpu,
                 vm_shell: config.vm_shell.clone(),
                 vm_no_network: config.vm_no_network,
                 machine_id: "unprovisioned".to_owned(),
@@ -1684,6 +1686,26 @@ mod supported {
                 _template_lock: template_lock,
                 supervisor,
             })
+        }
+
+        // Validate the complete GPU recipe before accepting allocations. A
+        // permanently broken driver must not enter the managed redrive loop.
+        async fn preflight_gpu(&self) -> Result<(), ManagedError> {
+            let factory = &self.supervisor.factory;
+            if !factory.hand_template.vm_gpu {
+                return Ok(());
+            }
+            let temporary = tempfile::tempdir_in(&self.state.directory)
+                .map_err(|error| ManagedError::Configuration(error.to_string()))?;
+            let root = temporary.path().join("root.ext4");
+            clone_private_root(factory.template_root.clone(), root.clone()).await?;
+            let mut config = factory.hand_template.clone();
+            config.rootfs = root;
+            config.vm_no_network = true;
+            vm_hand::VmHand::start_config(&config)
+                .await?
+                .shutdown()
+                .await
         }
 
         pub(crate) const fn host_id(&self) -> Uuid {
@@ -2108,6 +2130,7 @@ mod supported {
         auth: &ControlAuth,
         host: &mut VmHost,
     ) -> Result<(), ManagedError> {
+        host.preflight_gpu().await?;
         host.complete_startup_releases().await?;
         tracing::info!(
             target: "nanocodex2",
