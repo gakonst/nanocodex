@@ -3,7 +3,8 @@
   "name": "nanocodex-durable-agent",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-29",
-  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  // Durable event streams release subscriber slots when their clients disconnect.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public", "enable_request_signal"],
   "alias": {
     "node-rsa": "../nanocodex/tools/browser/unsupportedNodeRsa.mjs"
   },
@@ -24,6 +25,7 @@
     }
   },
   "services": [
+    { "binding": "NANOCODEX_X", "service": "nanocodex-x" },
     {
       "binding": "NANOCODEX",
       "service": "nanocodex-egress"
@@ -89,6 +91,10 @@
         "class_name": "AccountHostedTools"
       },
       {
+        "name": "NANOCODEX_VM_HOST_POOLS",
+        "class_name": "VmHostPool"
+      },
+      {
         "name": "NANOCODEX_ROOMS",
         "class_name": "MultiplayerRoom"
       },
@@ -151,16 +157,24 @@
     {
       "tag": "v7",
       "new_sqlite_classes": ["AccountHostedTools"]
+    },
+    {
+      "tag": "v8",
+      "new_sqlite_classes": ["VmHostPool"]
     }
   ],
   "vars": {
     "AGENT_IDLE_TIMEOUT_MS": "30000",
+    "MANAGED_AGENT_DIRECT_CREDENTIALS": "true",
+    "NANOCODEX_SANDBOX_DESKTOPS": "true",
+    "NANOCODEX_HAND_IMAGE": "ghcr.io/gakonst/nanocodex-hand@sha256:cf44994c9ca68dd69962cb52cf8e9af572550763780d57483bfcaa05e2ab337b",
     "MANAGED_BROWSER_PROVIDER": "cloudflare"
   },
   "env": {
     "development": {
       "name": "nanocodex-durable-agent",
       "services": [
+        { "binding": "NANOCODEX_X", "service": "nanocodex-x" },
         { "binding": "NANOCODEX", "service": "nanocodex-egress", "remote": false },
         {
           "binding": "NANOCODEX_CHIEF_EGRESS",
@@ -202,6 +216,7 @@
         "bindings": [
           { "name": "NANOCODEX_SESSIONS", "class_name": "DurableAgentSession" },
           { "name": "NANOCODEX_ACCOUNT_TOOLS", "class_name": "AccountHostedTools" },
+          { "name": "NANOCODEX_VM_HOST_POOLS", "class_name": "VmHostPool" },
           { "name": "NANOCODEX_ROOMS", "class_name": "MultiplayerRoom" },
           { "name": "NANOCODEX_MULTIPLAYER_QUOTA", "class_name": "MultiplayerQuota" },
           { "name": "NANOCODEX_AUTH", "class_name": "NonceStorage" },
@@ -214,6 +229,7 @@
       },
       "vars": {
         "AGENT_IDLE_TIMEOUT_MS": "1000",
+        "MANAGED_AGENT_DIRECT_CREDENTIALS": "true",
         "ENVIRONMENT": "development",
         "MANAGED_BROWSER_PROVIDER": "cloudflare",
         "NANOCODEX_ADMIN_TOKEN": "nanocodex-local-room-signing-key",
@@ -221,13 +237,14 @@
         "NANOCODEX_OTP_HMAC_KEY": "nanocodex-local-sms-otp-hmac-key-v1-only",
         "NANOCODEX_LOCAL_WEBAUTHN_HMAC_KEY": "nanocodex-local-passkey-portability-v1",
         "NANOCODEX_LOCAL_OAUTH_RELAY_HMAC_KEY": "nanocodex-local-oauth-relay-hmac-v1-only",
+        "NANOCODEX_SYSTEM_HOST_TOKEN": "nanocodex-local-system-vm-host-token-v1-ONLY",
         "NANOCODEX_SANDBOX_LOCAL": "true"
       },
       "containers": [
         {
           "class_name": "Sandbox",
           "image": "./Dockerfile",
-          "instance_type": "standard-1"
+          "instance_type": "standard-3"
         }
       ]
     }
@@ -236,7 +253,8 @@
     {
       "class_name": "Sandbox",
       "image": "./Dockerfile",
-      "instance_type": "standard-1",
+      // The full toolkit occupies about 10 GiB; retain room for builds and artifacts.
+      "instance_type": "standard-3",
       // Preserve active containers across the current >120s build journey during rollouts.
       "rollout_active_grace_period": 300
     }

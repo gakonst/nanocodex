@@ -27,13 +27,13 @@ test("PostgreSQL fences owners before comparing complete-state revisions", async
     revision: "0",
     payload: null,
   });
-  assert.deepEqual(await store.replace("state", {
+  assert.deepEqual(await store.replace("state", { records: [],
     ownerId: first.ownerId,
     fence: first.fence,
     expectedRevision: "0",
     payload: "first",
   }), { status: "replaced", revision: "1" });
-  assert.deepEqual(await store.replace("state", {
+  assert.deepEqual(await store.replace("state", { records: [],
     ownerId: first.ownerId,
     fence: first.fence,
     expectedRevision: "0",
@@ -46,31 +46,31 @@ test("PostgreSQL fences owners before comparing complete-state revisions", async
     revision: "1",
     payload: "first",
   });
-  assert.deepEqual(await store.replace("state", {
+  assert.deepEqual(await store.replace("state", { records: [],
     ownerId: first.ownerId,
     fence: first.fence,
     expectedRevision: "999",
     payload: "stale",
   }), { status: "fenced" });
-  assert.deepEqual(await store.replace("state", {
+  assert.deepEqual(await store.replace("state", { records: [],
     ownerId: first.ownerId,
     fence: first.fence,
     expectedRevision: "not-a-revision",
     payload: new Uint8Array(),
   }), { status: "fenced" });
-  assert.deepEqual(await store.replace("state", {
+  assert.deepEqual(await store.replace("state", { records: [],
     ownerId: second.ownerId,
     fence: second.fence,
     expectedRevision: "0",
     payload: new Uint8Array(),
   }), { status: "conflict", actualRevision: "1" });
-  await assert.rejects(store.replace("state", {
+  await assert.rejects(store.replace("state", { records: [],
     ownerId: second.ownerId,
     fence: second.fence,
     expectedRevision: "not-a-revision",
     payload: "invalid",
   }), /unsigned 64-bit decimal string/);
-  await assert.rejects(store.replace("state", {
+  await assert.rejects(store.replace("state", { records: [],
     ownerId: second.ownerId,
     fence: second.fence,
     expectedRevision: "1",
@@ -83,7 +83,7 @@ test("PostgreSQL distinguishes rolled-back writes and reconciles lost COMMIT res
   const store = createPostgresDurabilityStore(pool);
   const owner = await store.acquire("state", { ownerId: "owner" });
   pool.failNextUpsert = true;
-  assert.deepEqual(await store.replace("state", {
+  assert.deepEqual(await store.replace("state", { records: [],
     ...owner,
     expectedRevision: "0",
     payload: "rolled-back",
@@ -93,7 +93,7 @@ test("PostgreSQL distinguishes rolled-back writes and reconciles lost COMMIT res
   pool.failNextCommit = true;
   const releasesBefore = pool.releases.length;
   assert.deepEqual(
-    await store.replace("state", { ...owner, expectedRevision: "0", payload: "committed-once" }),
+    await store.replace("state", { records: [], ...owner, expectedRevision: "0", payload: "committed-once" }),
     { status: "replaced", revision: "1" },
   );
   assert.deepEqual(await store.load("state"), { revision: "1", payload: "committed-once" });

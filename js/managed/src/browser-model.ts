@@ -5,6 +5,7 @@ import {
   type Principal,
 } from "./account-auth";
 import { bindAgentCredential, browserModelSubject } from "./credentials";
+import { readSessionCredentialSubject } from "./session-credential-ownership";
 
 const MODEL_HOST = "nanocodex.internal";
 const STATUS_HOST = "broker.internal";
@@ -91,7 +92,7 @@ export async function routeBrowserModel(
     await retryRequest.body?.cancel().catch(() => {});
     throw error;
   }
-  if (!await agentSubjectUnavailable(response)) {
+  if (realtimeSubject?.startsWith("managed-session-v1_") || !await agentSubjectUnavailable(response)) {
     await retryRequest.body?.cancel().catch(() => {});
     return response;
   }
@@ -153,12 +154,12 @@ async function ownedRealtimeSubject(
   const durableId = env.NANOCODEX_SESSIONS.idFromName(agentId);
   const ownershipHeaders = new Headers();
   forwardPrincipalAssertions(ownershipHeaders, principal);
-  const owned = await env.NANOCODEX_SESSIONS.get(durableId).fetch("https://session.internal/state", {
+  const owned = await env.NANOCODEX_SESSIONS.get(durableId).fetch("https://session.internal/credential-subject", {
     headers: ownershipHeaders,
   });
-  await owned.body?.cancel();
-  if (!owned.ok) return Response.json({ error: "not_found" }, { status: 404 });
-  return durableId.toString();
+  const retained = await readSessionCredentialSubject(owned, durableId.toString());
+  if (!retained) return Response.json({ error: "not_found" }, { status: 404 });
+  return retained.subject;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

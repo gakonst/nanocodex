@@ -524,6 +524,7 @@ async function dispatch(message, state) {
     const resultId = state.allocateResult(result);
     return { finalMessage: result.finalMessage, resultId };
   }
+  if (method === "turn.withdrawSteer") return required(turns, args[0], "turn").withdrawSteer(args[1]);
   if (method === "turn.steer") return required(turns, args[0], "turn").steer(args[1]);
   if (method === "turn.cancel") return required(turns, args[0], "turn").cancel();
   if (method === "turn.dispose") {
@@ -542,6 +543,10 @@ async function dispatch(message, state) {
     releaseWorkerResult(results, args[0]);
     return;
   }
+  if (method === "voice.configure") return required(voices, args[0], "voice").configure(args[1]);
+  if (method === "voice.appendSpeech") return required(voices, args[0], "voice").appendSpeech(args[1]);
+  if (method === "voice.appendText") return required(voices, args[0], "voice").appendText(args[1], args[2]);
+  if (method === "voice.appendContext") return required(voices, args[0], "voice").appendContext(args[1]);
   if (method === "voice.start") return required(voices, args[0], "voice").start();
   if (method === "voice.callBody") return required(voices, args[0], "voice").callBody(args[1]);
   if (method === "voice.completeCall") {
@@ -793,6 +798,10 @@ class WorkerConnection {
     const connection = this;
     let released = false;
     return {
+      configure: (settings) => connection.rpc("voice.configure", [voiceId, settings]),
+      appendSpeech: (text) => connection.rpc("voice.appendSpeech", [voiceId, text]),
+      appendText: (role, text) => connection.rpc("voice.appendText", [voiceId, role, text]),
+      appendContext: (text) => connection.rpc("voice.appendContext", [voiceId, text]),
       start: () => connection.rpc("voice.start", [voiceId]),
       callBody: (sdp) => connection.rpc("voice.callBody", [voiceId, sdp]),
       completeCall: (body, location) => connection.rpc(
@@ -853,8 +862,9 @@ class WorkerConnection {
           .finally(release);
         return result;
       },
-      steer(input) { return accepted.then(() => thisConnection().rpc("turn.steer", [turnId, { input }])); },
-      steerContent(input) { return accepted.then(() => thisConnection().rpc("turn.steer", [turnId, { input: JSON.parse(input) }])); },
+      steer(input, messageId) { return accepted.then(() => thisConnection().rpc("turn.steer", [turnId, { input, messageId }])); },
+      steerContent(input, messageId) { return accepted.then(() => thisConnection().rpc("turn.steer", [turnId, { input: JSON.parse(input), messageId }])); },
+      withdrawSteer(messageId) { return accepted.then(() => thisConnection().rpc("turn.withdrawSteer", [turnId, { messageId }])); },
       cancel() { return accepted.then(() => thisConnection().rpc("turn.cancel", [turnId])); },
       free() {
         if (disposed) return;
@@ -1369,11 +1379,18 @@ async function hydrateConfig(config, createDurabilityStore) {
     options.durabilityId = workerDurabilityId;
   }
   if (harnessRuntime) {
+    if ((options.model ?? "gpt-6-astra") === "gpt-6-astra" && options.instructions === undefined) {
+      options.additionalInstructions = [
+        harnessRuntime.instructions,
+        options.additionalInstructions,
+      ].filter((instructions) => instructions !== undefined && instructions !== "").join("\n\n");
+    } else {
+      options.instructions ??= harnessRuntime.instructions;
+    }
     Object.assign(options, {
       codeEvaluator: harnessRuntime.codeEvaluator,
       filesystem: harnessRuntime.filesystem,
       filesystemTools: false,
-      instructions: options.instructions ?? harnessRuntime.instructions,
       tools: harnessRuntime.tools,
       executionEnvironment: options.executionEnvironment ?? harnessRuntime.executionEnvironment,
     });
@@ -1446,5 +1463,5 @@ function harnessDescriptor(options = {}, requireIdentity = false) {
   };
 }
 function harnessKey(harness) { return `${harness?.origin ?? ""}\n${harness?.threadId ?? ""}`; }
-function encodeError(error) { return { name: error?.name || "Error", message: error?.message || String(error), stack: error?.stack, ...(typeof error?.code === "string" ? { code: error.code } : {}) }; }
-function decodeError(encoded = {}) { const error = encoded.name === "RangeError" ? new RangeError(encoded.message) : encoded.name === "TypeError" ? new TypeError(encoded.message) : new Error(encoded.message || "Worker Agent failed"); if (encoded.stack) error.stack = encoded.stack; if (typeof encoded.code === "string") error.code = encoded.code; return error; }
+function encodeError(error) { return { name: error?.name || "Error", message: error?.message || String(error), stack: error?.stack, ...(typeof error?.code === "string" ? { code: error.code } : {}), ...(typeof error?.blockedBy === "string" ? { blockedBy: error.blockedBy } : {}) }; }
+function decodeError(encoded = {}) { const error = encoded.name === "RangeError" ? new RangeError(encoded.message) : encoded.name === "TypeError" ? new TypeError(encoded.message) : new Error(encoded.message || "Worker Agent failed"); if (encoded.stack) error.stack = encoded.stack; if (typeof encoded.code === "string") error.code = encoded.code; if (typeof encoded.blockedBy === "string") error.blockedBy = encoded.blockedBy; return error; }

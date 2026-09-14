@@ -14,6 +14,7 @@ export type SshIdentityReferenceRequest = Readonly<{
   endpoint: SshEndpoint;
   username: string;
   commandArgs: readonly string[];
+  stdin?: string;
 }>;
 
 export type SshCommandOptions = Readonly<{
@@ -48,3 +49,8 @@ export function createWebStreamSshStream(
   }>,
   signal?: AbortSignal,
 ): SshStream;
+
+/** Host-only credential generation; keep privateKey in the credential vault. */
+export function createSshKeyPair(): Promise<Readonly<{ privateKey: string; publicKey: string }>>;
+/** Derives an OpenSSH authorized_keys line from a PEM private key. */
+export function sshPublicKey(privateKey: string): Promise<string>;

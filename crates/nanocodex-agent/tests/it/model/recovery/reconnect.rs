@@ -261,7 +261,7 @@ async fn sol_compacts_with_the_session_agents_md_and_installs_the_returned_conte
             json!({
                 "type": "response.output_item.done",
                 "item": {
-                    "id": "cmp-server-id",
+                    "id": "cmp_01a0710d-9f5e-7f80-91ad-730ae4a6ba93",
                     "type": "compaction",
                     "encrypted_content": "opaque-summary"
                 }
@@ -287,7 +287,10 @@ async fn sol_compacts_with_the_session_agents_md_and_installs_the_returned_conte
             continuation["input"][5]["encrypted_content"],
             "opaque-summary"
         );
-        assert!(continuation["input"][5].get("id").is_none());
+        assert_eq!(
+            continuation["input"][5]["id"],
+            "cmp_01a0710d-9f5e-7f80-91ad-730ae4a6ba93"
+        );
         assert!(continuation.to_string().contains("exercise compaction"));
         assert!(
             continuation
@@ -374,7 +377,7 @@ async fn sol_compacts_before_sampling_a_follow_on_turn() -> Result<()> {
             json!({
                 "type": "response.output_item.done",
                 "item": {
-                    "id": "cmp-server-id",
+                    "id": "cmp_01a0710d-9f5e-7f80-91ad-730ae4a6ba93",
                     "type": "compaction",
                     "encrypted_content": "opaque-summary"
                 }
@@ -400,6 +403,10 @@ async fn sol_compacts_before_sampling_a_follow_on_turn() -> Result<()> {
                 .contains("first prompt")
         );
         assert_eq!(second_input[compact_index]["type"], "compaction");
+        assert_eq!(
+            second_input[compact_index]["id"],
+            "cmp_01a0710d-9f5e-7f80-91ad-730ae4a6ba93"
+        );
         assert_eq!(
             second_input[compact_index]["encrypted_content"],
             "opaque-summary"

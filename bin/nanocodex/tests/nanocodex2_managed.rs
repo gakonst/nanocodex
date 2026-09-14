@@ -27,7 +27,7 @@ const CLOUD_TURN_ID: &str = "019fc927-b283-7a11-8445-1b9996ad2fb0";
 const PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[tokio::test]
-async fn hand_help_exposes_the_capability_and_machine_contract() {
+async fn hand_help_exposes_the_vm_and_machine_contract() {
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
         .args(["hand", "--help"])
         .output()
@@ -42,12 +42,14 @@ async fn hand_help_exposes_the_capability_and_machine_contract() {
     assert!(!stdout.contains("AGENT_ID"), "{stdout}");
     for expected in [
         "--vm <ROOTFS>",
-        "--browser",
-        "--browser-executable <PATH>",
-        "--vm-guest-runtime <ELF>",
-        "--vm-workspace <PATH>",
-        "--vm-cpus <COUNT>",
-        "--vm-memory-mib <MIB>",
+        "--docker <IMAGE>",
+        "--volume <VOLUME>",
+        "--network <NETWORK>",
+        "--runtime <RUNTIME>",
+        "--guest-runtime <ELF>",
+        "--workspace <PATH>",
+        "--cpus <COUNT>",
+        "--memory <MIB>",
         "--machine-id <MACHINE_ID>",
         "--machine-name <MACHINE_NAME>",
         "--log-filter <LOG_FILTER>",
@@ -60,6 +62,110 @@ async fn hand_help_exposes_the_capability_and_machine_contract() {
             "missing {expected:?} in:\n{stdout}"
         );
     }
+}
+
+#[tokio::test]
+async fn hand_requires_an_explicit_backend_and_rejects_mixed_options() {
+    for args in [
+        vec!["hand"],
+        vec!["hand", "--docker", "image"],
+        vec!["hand", "--volume", "work"],
+        vec!["hand", "--docker", "image", "--volume", "work", "--gpu"],
+        vec![
+            "hand",
+            "--docker",
+            "image",
+            "--volume",
+            "work",
+            "--network",
+            "bogus",
+        ],
+        vec!["hand", "--vm", "root", "--runtime", "runsc"],
+        vec![
+            "hand",
+            "--vm",
+            "root.ext4",
+            "--docker",
+            "image",
+            "--docker-volume",
+            "work",
+        ],
+        vec!["hand", "--vm", "root.ext4", "--docker-internet"],
+        vec![
+            "hand",
+            "--docker",
+            "image",
+            "--docker-volume",
+            "work",
+            "--vm-firmware",
+            "/tmp/fw",
+        ],
+        vec![
+            "hand",
+            "--docker",
+            "image",
+            "--docker-volume",
+            "work",
+            "--docker-internet",
+            "--vm-no-network",
+        ],
+    ] {
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .args(&args)
+            .env_remove("NANOCODEX_VM_GUEST_RUNTIME")
+            .env_remove("NANOCODEX_KRUNFW_DIR")
+            .output()
+            .await
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[tokio::test]
+async fn host_help_exposes_the_bounded_vm_pool_contract() {
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        .args(["host", "--help"])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains(
+            "Usage: nanocodex2 host [OPTIONS] --factory-name <FACTORY_NAME> --vm-template <ROOTFS> --state-dir <PATH> --vm-guest-runtime <ELF>"
+        ),
+        "{stdout}"
+    );
+    for expected in [
+        "--scope <SCOPE>",
+        "--agent <AGENT_ID>",
+        "--factory-name <FACTORY_NAME>",
+        "--vm-template <ROOTFS>",
+        "--state-dir <PATH>",
+        "--max-vms <COUNT>",
+        "--host-id <UUID>",
+        "--vm-guest-runtime <ELF>",
+        "--vm-workspace <PATH>",
+        "--vm-cpus <COUNT>",
+        "--vm-memory-mib <MIB>",
+        "--log-filter <LOG_FILTER>",
+        "--otel-endpoint <OTEL_ENDPOINT>",
+    ] {
+        assert!(
+            stdout.contains(expected),
+            "missing {expected:?} in:\n{stdout}"
+        );
+    }
+    assert!(stdout.contains("[default: user]"), "{stdout}");
+    assert!(
+        stdout.contains("possible values: user, agent, system"),
+        "{stdout}"
+    );
 }
 
 #[cfg(any(
@@ -86,6 +192,8 @@ async fn hand_json_tracing_exposes_resources_without_paths_or_credentials() {
             "98304",
             "--log-format",
             "json",
+            "--log-filter",
+            "warn,nanocodex2=info,nanocodex_tools::attachment=info",
         ])
         .env("NANOCODEX_MANAGED_URL", "http://127.0.0.1:9")
         .env("NC_API_KEY", &api_key)
@@ -107,7 +215,7 @@ async fn hand_json_tracing_exposes_resources_without_paths_or_credentials() {
         .collect::<Vec<_>>();
     assert!(!traces.is_empty(), "{stderr}");
     let encoded = serde_json::to_string(&traces).unwrap();
-    assert!(encoded.contains("hand.launch"), "{encoded}");
+    assert!(encoded.contains("hand.preflight"), "{encoded}");
     assert!(encoded.contains("failed"), "{encoded}");
     for expected in ["trace-hand", "24", "98304", "missing"] {
         assert!(
@@ -126,233 +234,6 @@ async fn hand_json_tracing_exposes_resources_without_paths_or_credentials() {
             "trace leaked {secret:?}: {encoded}"
         );
     }
-}
-
-#[derive(Clone)]
-struct BrowserHandState {
-    authorization: String,
-    live_ip_check: bool,
-    catalogs: Arc<Mutex<Vec<serde_json::Value>>>,
-    public_ip: Arc<Mutex<Option<std::net::IpAddr>>>,
-    completed: Arc<tokio::sync::Notify>,
-}
-
-#[tokio::test]
-async fn browser_only_hand_publishes_residential_egress_capability() {
-    let api_key = format!("ncx_live_{}_{}", "5".repeat(12), "6".repeat(43));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let state = BrowserHandState {
-        authorization: format!("Bearer {api_key}"),
-        live_ip_check: false,
-        catalogs: Arc::new(Mutex::new(Vec::new())),
-        public_ip: Arc::new(Mutex::new(None)),
-        completed: Arc::new(tokio::sync::Notify::new()),
-    };
-    let app = Router::new()
-        .route("/v1/account/tool-host", get(browser_hand_host))
-        .with_state(state.clone());
-    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let mut child = spawn_browser_hand(&api_key, address);
-
-    tokio::time::timeout(PROCESS_TIMEOUT, state.completed.notified())
-        .await
-        .expect("browser hand did not publish its catalog");
-    child.kill().await.unwrap();
-    let _ = child.wait().await;
-
-    let catalogs = state.catalogs.lock().unwrap();
-    assert_eq!(catalogs.len(), 1);
-    let catalog = &catalogs[0];
-    assert_eq!(catalog["attachment_id"], "home-browser");
-    assert_eq!(catalog["machines"][0]["id"], "home-browser");
-    assert_eq!(catalog["machines"][0]["workspace"], "/");
-    assert_eq!(
-        catalog["machines"][0]["capabilities"],
-        serde_json::json!(["browser", "browser-egress"])
-    );
-    let tools = catalog["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0]["definition"]["name"], "browser");
-    assert!(tools[0]["definition"].get("output_schema").is_none());
-    assert!(
-        serde_json::to_vec(&tools[0]["definition"]["parameters"])
-            .unwrap()
-            .len()
-            <= 128 * 1024
-    );
-    drop(catalogs);
-    server.abort();
-}
-
-#[tokio::test]
-#[ignore = "requires Chrome/Chromium and public internet; set NANOCODEX_TEST_CHROME"]
-async fn browser_only_hand_routes_whatsmyip_through_its_egress() {
-    let executable = std::env::var("NANOCODEX_TEST_CHROME")
-        .expect("NANOCODEX_TEST_CHROME must point to Chrome or Chromium");
-    let api_key = format!("ncx_live_{}_{}", "9".repeat(12), "0".repeat(43));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let state = BrowserHandState {
-        authorization: format!("Bearer {api_key}"),
-        live_ip_check: true,
-        catalogs: Arc::new(Mutex::new(Vec::new())),
-        public_ip: Arc::new(Mutex::new(None)),
-        completed: Arc::new(tokio::sync::Notify::new()),
-    };
-    let app = Router::new()
-        .route("/v1/account/tool-host", get(browser_hand_host))
-        .with_state(state.clone());
-    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    let mut child = spawn_browser_hand_with_executable(&api_key, address, &executable);
-
-    tokio::time::timeout(PROCESS_TIMEOUT, state.completed.notified())
-        .await
-        .expect("browser hand did not complete the public IP proof");
-    child.kill().await.unwrap();
-    let _ = child.wait().await;
-
-    assert!(state.public_ip.lock().unwrap().is_some());
-    server.abort();
-}
-
-fn spawn_browser_hand(api_key: &str, address: std::net::SocketAddr) -> tokio::process::Child {
-    spawn_browser_hand_with_executable(api_key, address, env!("CARGO_BIN_EXE_nanocodex2"))
-}
-
-fn spawn_browser_hand_with_executable(
-    api_key: &str,
-    address: std::net::SocketAddr,
-    executable: &str,
-) -> tokio::process::Child {
-    tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
-        .args([
-            "hand",
-            "--browser",
-            "--browser-executable",
-            executable,
-            "--machine-id",
-            "home-browser",
-            "--machine-name",
-            "Home browser",
-        ])
-        .env("NANOCODEX_MANAGED_URL", format!("http://{address}"))
-        .env("NC_API_KEY", api_key)
-        .env_remove("NANOCODEX_API_KEY")
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap()
-}
-
-async fn browser_hand_host(
-    State(state): State<BrowserHandState>,
-    headers: HeaderMap,
-    upgrade: WebSocketUpgrade,
-) -> impl IntoResponse {
-    if headers
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        != Some(state.authorization.as_str())
-    {
-        return unauthorized();
-    }
-    upgrade
-        .on_upgrade(move |socket| serve_browser_hand(socket, state))
-        .into_response()
-}
-
-async fn serve_browser_hand(mut socket: WebSocket, state: BrowserHandState) {
-    let Some(Ok(Message::Text(catalog))) = socket.recv().await else {
-        return;
-    };
-    let catalog: serde_json::Value = serde_json::from_str(&catalog).unwrap();
-    assert_eq!(catalog["type"], "catalog");
-    state.catalogs.lock().unwrap().push(catalog);
-    socket
-        .send(Message::Text(
-            serde_json::json!({"type":"ready"}).to_string().into(),
-        ))
-        .await
-        .unwrap();
-
-    if !state.live_ip_check {
-        state.completed.notify_one();
-        serve_until_drain(&mut socket).await;
-        return;
-    }
-
-    call_attached_browser(
-        &mut socket,
-        "call-ip-open",
-        serde_json::json!({
-            "action": "open",
-            "url": "https://api.ipify.org?format=json"
-        }),
-    )
-    .await;
-    let evaluated = call_attached_browser(
-        &mut socket,
-        "call-ip-read",
-        serde_json::json!({
-            "action": "evaluate",
-            "expression": "document.body.innerText"
-        }),
-    )
-    .await;
-    let text = evaluated["outcome"]["output"]["structured_result"]["value"]
-        .as_str()
-        .expect("IP echo page evaluation did not return text");
-    let value: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
-    let ip = value["ip"]
-        .as_str()
-        .unwrap()
-        .parse::<std::net::IpAddr>()
-        .unwrap();
-    *state.public_ip.lock().unwrap() = Some(ip);
-    state.completed.notify_one();
-    serve_until_drain(&mut socket).await;
-}
-
-async fn call_attached_browser(
-    socket: &mut WebSocket,
-    call_id: &str,
-    input: serde_json::Value,
-) -> serde_json::Value {
-    socket
-        .send(Message::Text(
-            serde_json::json!({
-                "type": "call",
-                "session_id": AGENT_ID,
-                "call_id": call_id,
-                "model": "gpt-5.6-sol",
-                "name": "browser",
-                "input": input,
-                "output_token_budget": 4096,
-                "output_byte_budget": 131072,
-                "deadline_at": 9_000_000_000_000_u64
-            })
-            .to_string()
-            .into(),
-        ))
-        .await
-        .unwrap();
-    let Some(Ok(Message::Text(result))) = socket.recv().await else {
-        panic!("browser hand disconnected before {call_id}");
-    };
-    let result: serde_json::Value = serde_json::from_str(&result).unwrap();
-    assert_eq!(result["type"], "result");
-    assert_eq!(result["call_id"], call_id);
-    assert_eq!(result["outcome"]["status"], "completed", "{result}");
-    assert_eq!(result["outcome"]["output"]["success"], true, "{result}");
-    socket
-        .send(Message::Text(
-            serde_json::json!({"type":"ack", "call_id":call_id})
-                .to_string()
-                .into(),
-        ))
-        .await
-        .unwrap();
-    result
 }
 
 #[cfg(any(
@@ -396,6 +277,100 @@ struct TestState {
     delay_ready_until_submission: bool,
     disconnect_after_ready: bool,
     catalogs: Arc<Mutex<Vec<serde_json::Value>>>,
+}
+
+#[tokio::test]
+async fn run_flushes_each_assistant_delta_before_completion() {
+    use tokio::io::AsyncBufReadExt;
+
+    let next = Arc::new(tokio::sync::Notify::new());
+    let gate = Arc::clone(&next);
+    let app = Router::new().route("/v1/agents/live", get(move |upgrade: WebSocketUpgrade| {
+        let gate = Arc::clone(&gate);
+        async move {
+            upgrade.on_upgrade(move |mut socket| async move {
+                send_ready(&mut socket, "0", false).await;
+                let Some(Ok(Message::Text(prompt))) = socket.recv().await else { return; };
+                let prompt: serde_json::Value = serde_json::from_str(&prompt).unwrap();
+                let turn = prompt["id"].as_str().unwrap();
+                send_accepted(&mut socket, turn, "stream answer", 1).await;
+                for (seq, text) in [(1, "first"), (2, " second")] {
+                    socket.send(Message::Text(serde_json::json!({
+                        "cursor": (seq + 1).to_string(), "turn_id": turn, "type": "event",
+                        "event": {"protocol_version": 1, "request_id": turn, "seq": seq,
+                            "type": "assistant.delta", "payload": {
+                                "model_call_index": 1, "item_id": "answer", "phase": "final_answer", "text": text
+                            }}
+                    }).to_string().into())).await.unwrap();
+                    // The next event cannot arrive until stdout exposes this one.
+                    gate.notified().await;
+                }
+                send_turn_messages(&mut socket, turn, "first second", 4, 3).await;
+            })
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let workspace = tempfile::tempdir().unwrap();
+    let (config_home, decoy) = configure_workspace(workspace.path());
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        .args([
+            "run",
+            "stream answer",
+            "--idempotency-key",
+            "stream-request",
+        ])
+        .env("NANOCODEX_MANAGED_URL", origin)
+        .env(
+            "NC_API_KEY",
+            format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43)),
+        )
+        .env_remove("NANOCODEX_API_KEY")
+        .env("NANOCODEX_HOME", config_home.path())
+        .env_remove("OPENAI_API_KEY")
+        .current_dir(decoy.path())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    for expected in ["first", " second"] {
+        let line = tokio::time::timeout(PROCESS_TIMEOUT, lines.next_line())
+            .await
+            .expect("assistant delta was buffered until completion")
+            .unwrap()
+            .unwrap();
+        let event: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(event["type"], "assistant.delta");
+        assert_eq!(event["payload"]["text"], expected);
+        assert!(child.try_wait().unwrap().is_none());
+        next.notify_one();
+    }
+    let output = tokio::time::timeout(PROCESS_TIMEOUT, child.wait_with_output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut remaining = Vec::new();
+    while let Some(line) = lines.next_line().await.unwrap() {
+        remaining.push(serde_json::from_str::<serde_json::Value>(&line).unwrap());
+    }
+    assert_eq!(remaining.len(), 2);
+    assert_eq!(remaining[0]["type"], "assistant.message");
+    assert_eq!(remaining[1]["type"], "run.completed");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr)
+            .matches("first second")
+            .count(),
+        1
+    );
+    server.abort();
 }
 
 #[tokio::test]
@@ -932,7 +907,6 @@ fn agent_state_value(latest_event_cursor: &str) -> serde_json::Value {
         "completed_turns": usize::from(latest_event_cursor != "0"),
         "last_active": 1,
         "active_turns": [],
-        "active_turn_details": [],
         "agent_loaded": latest_event_cursor != "0",
         "connected_clients": 0,
         "capabilities": {
@@ -1244,7 +1218,6 @@ async fn agent_state(State(state): State<TestState>, headers: HeaderMap) -> impl
             "completed_turns": 0,
             "last_active": 1,
             "active_turns": [],
-            "active_turn_details": [],
             "agent_loaded": false,
             "connected_clients": 0,
             "capabilities": {
@@ -1341,7 +1314,6 @@ async fn failed_create_live_socket(
                         "session_id": "wrong-agent",
                         "restored": false,
                         "active_turns": [],
-                        "active_turn_details": [],
                         "capabilities": agent_capabilities(),
                         "settings": agent_settings(),
                         "latest_event_cursor": "not-a-cursor"
@@ -1390,7 +1362,6 @@ async fn send_ready(socket: &mut WebSocket, cursor: &str, restored: bool) {
                 "session_id": AGENT_ID,
                 "restored": restored,
                 "active_turns": [],
-                "active_turn_details": [],
                 "capabilities": agent_capabilities(),
                 "settings": agent_settings(),
                 "latest_event_cursor": cursor
@@ -1404,8 +1375,8 @@ async fn send_ready(socket: &mut WebSocket, cursor: &str, restored: bool) {
 
 fn agent_settings() -> serde_json::Value {
     serde_json::json!({
-        "model": "gpt-5.6-sol",
-        "thinking": "high",
+        "model": "gpt-6-astra",
+        "thinking": "low",
         "reasoning_mode": "standard",
         "fast_mode": false
     })
@@ -1543,7 +1514,7 @@ async fn serve_tool_host(mut socket: WebSocket, state: TestState, disconnect_aft
                 "type": "call",
                 "session_id": AGENT_ID,
                 "call_id": "call-managed",
-                "model": "gpt-5.6-sol",
+                "model": "gpt-6-astra",
                 "name": "exec_command",
                 "input": {"cmd":"printf 'private-host\\n' > hosted-proof.txt && cat hosted-proof.txt"},
                 "output_token_budget": 1024,
@@ -1717,4 +1688,413 @@ fn configure_workspace(workspace: &std::path::Path) -> (tempfile::TempDir, tempf
     )
     .unwrap();
     (config_home, decoy)
+}
+
+#[tokio::test]
+async fn headless_settings_and_cron_use_the_managed_contract() {
+    use axum::{Json, extract::Request};
+    use serde_json::{Value, json};
+
+    let key = format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let observed = requests.clone();
+    let authorization = format!("Bearer {key}");
+    let app = Router::new().fallback(move |request: Request| {
+        let observed = observed.clone();
+        let authorization = authorization.clone();
+        async move {
+            assert_eq!(request.headers()["authorization"], authorization);
+            let method = request.method().clone();
+            let path = request.uri().path().to_owned();
+            let body = axum::body::to_bytes(request.into_body(), 128 * 1024).await.unwrap();
+            let body: Value = if body.is_empty() { Value::Null } else { serde_json::from_slice(&body).unwrap() };
+            observed.lock().unwrap().push((method.to_string(), path.clone(), body));
+            if method == axum::http::Method::DELETE {
+                return StatusCode::NO_CONTENT.into_response();
+            }
+            if path == "/v1/agents" {
+                return Json(json!({
+                    "agent_id": AGENT_ID, "session_id": AGENT_ID,
+                    "events_url": format!("/v1/agents/{AGENT_ID}/events"),
+                    "websocket_url": format!("/v1/agents/{AGENT_ID}/live"),
+                })).into_response();
+            }
+            if path.ends_with("/settings") {
+                return Json(json!({"settings": {
+                    "model": "gpt-6-astra", "thinking": "high", "reasoning_mode": "standard", "fast_mode": false,
+                }})).into_response();
+            }
+            let mut trigger = json!({
+                "id": "daily", "cron": "0 9 * * *", "timezone": "Europe/Athens", "input": "Summarize progress",
+                "enabled": true, "session_mode": "new", "last_agent_id": null,
+                "next_run_at": 1788768000000_u64, "last_run_at": null, "last_turn_id": null,
+                "last_skipped_at": null, "created_at": 1788767000000_u64, "updated_at": 1788767000000_u64,
+            });
+            if method == axum::http::Method::GET && path.ends_with("/daily") {
+                trigger.as_object_mut().unwrap().remove("session_mode");
+                trigger.as_object_mut().unwrap().remove("last_agent_id");
+            }
+            Json(if path.ends_with("/triggers") { json!({"data": [trigger]}) } else { trigger }).into_response()
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let cwd = tempfile::tempdir().unwrap();
+    for args in [
+        vec!["new", "--model", "sol", "--thinking", "high", "--fast-mode"],
+        vec!["settings", AGENT_ID, "thinking", "high"],
+        vec![
+            "cron",
+            "put",
+            AGENT_ID,
+            "daily",
+            "--cron",
+            "0 9 * * *",
+            "--timezone",
+            "Europe/Athens",
+            "--prompt",
+            "Summarize progress",
+        ],
+        vec!["cron", "list", AGENT_ID],
+        vec!["cron", "get", AGENT_ID, "daily"],
+        vec!["cron", "delete", AGENT_ID, "daily"],
+    ] {
+        let output = tokio::time::timeout(
+            PROCESS_TIMEOUT,
+            tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+                .args(&args)
+                .current_dir(cwd.path())
+                .env("NANOCODEX_MANAGED_URL", &origin)
+                .env("NANOCODEX_API_KEY", &key)
+                .output(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if args[1] != "delete" {
+            let body = serde_json::from_slice::<Value>(&output.stdout).unwrap();
+            if args[1] == "get" {
+                assert_eq!(body["session_mode"], "continue");
+            }
+        }
+    }
+    let before_invalid = requests.lock().unwrap().len();
+    for args in [
+        vec!["run", "hello", "--agent", AGENT_ID, "--model", "sol"],
+        vec!["cron", "get", AGENT_ID, "../escape"],
+        vec!["new", "--model", "astra", "--thinking", "none"],
+    ] {
+        let output = tokio::time::timeout(
+            PROCESS_TIMEOUT,
+            tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+                .args(&args)
+                .current_dir(cwd.path())
+                .env("NANOCODEX_MANAGED_URL", &origin)
+                .env("NANOCODEX_API_KEY", &key)
+                .output(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(!output.status.success(), "{args:?}");
+    }
+    server.abort();
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), before_invalid);
+    assert_eq!(
+        requests[0].2["settings"],
+        json!({"model": "gpt-5.6-sol", "thinking": "high", "reasoning_mode": "standard", "fast_mode": true})
+    );
+    assert_eq!(requests[1].2, json!({"thinking": "high"}));
+    assert_eq!(requests[2].0, "PUT");
+    assert_eq!(
+        requests[2].2,
+        json!({"cron": "0 9 * * *", "timezone": "Europe/Athens", "input": "Summarize progress", "enabled": true, "session_mode": "new"})
+    );
+    assert_eq!(requests[5].0, "DELETE");
+}
+
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "musl")),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+mod docker_hand_live {
+    use super::*;
+    use axum::extract::ws::WebSocket;
+    use serde_json::{Value, json};
+    use tokio::sync::mpsc;
+
+    #[derive(Clone)]
+    struct Service {
+        authorization: String,
+        ready: mpsc::UnboundedSender<&'static str>,
+    }
+
+    async fn receive(socket: &mut WebSocket) -> Value {
+        loop {
+            let Some(Ok(Message::Text(text))) = socket.recv().await else {
+                panic!("Hand socket closed early")
+            };
+            let message: Value = serde_json::from_str(&text).unwrap();
+            if message["type"] != "ping" {
+                return message;
+            }
+            send(socket, json!({"type":"pong","nonce":message["nonce"]})).await;
+        }
+    }
+    async fn send(socket: &mut WebSocket, message: Value) {
+        socket
+            .send(Message::Text(message.to_string().into()))
+            .await
+            .unwrap();
+    }
+    async fn tools(
+        State(state): State<Service>,
+        headers: HeaderMap,
+        upgrade: WebSocketUpgrade,
+    ) -> Response<Body> {
+        assert_eq!(headers["authorization"], state.authorization);
+        upgrade.on_upgrade(move |mut socket| async move {
+            let catalog = receive(&mut socket).await;
+            assert_eq!(catalog["type"], "catalog");
+            let machine = &catalog["machines"][0];
+            assert_eq!(machine["id"], "docker-cli-test");
+            assert_eq!(machine["workspace"], "/app");
+            let capabilities = machine["capabilities"].as_array().unwrap();
+            assert!(capabilities.iter().any(|v| v == "container"));
+            assert!(!capabilities.iter().any(|v| v == "vm" || v == "network"));
+            send(&mut socket, json!({"type":"ready"})).await;
+            send(&mut socket, json!({
+                "type":"call", "session_id":"docker-cli-agent", "call_id":"docker-cli-command",
+                "model":"test", "name":"exec_command",
+                "input":{"cmd":"test -z \"${NC_API_KEY-}${NANOCODEX_API_KEY-}\" && test ! -e /dev/kvm && printf 'docker-cli-proof\\n' > /app/proof && cat /app/proof", "login":false},
+                "output_token_budget":1024, "output_byte_budget":131072,
+                "deadline_at":9_000_000_000_000_u64,
+            })).await;
+            let result = receive(&mut socket).await;
+            assert_eq!(result["type"], "result");
+            assert_eq!(result["outcome"]["status"], "completed");
+            assert_eq!(result["outcome"]["output"]["success"], true, "{result}");
+            assert!(result["outcome"]["output"]["output"].as_str().unwrap().contains("docker-cli-proof"), "{result}");
+            send(&mut socket, json!({"type":"ack","call_id":"docker-cli-command"})).await;
+            state.ready.send("tools").unwrap();
+            assert_eq!(receive(&mut socket).await["type"], "drain");
+            send(&mut socket, json!({"type":"draining"})).await;
+        })
+    }
+    async fn screen(
+        State(state): State<Service>,
+        headers: HeaderMap,
+        upgrade: WebSocketUpgrade,
+    ) -> Response<Body> {
+        assert_eq!(headers["authorization"], state.authorization);
+        upgrade.on_upgrade(move |mut socket| async move {
+            send(
+                &mut socket,
+                json!({"type":"ready","connection_id":"docker-screen"}),
+            )
+            .await;
+            let catalog = receive(&mut socket).await;
+            assert_eq!(catalog["type"], "catalog");
+            assert_eq!(catalog["machine_id"], "docker-cli-test");
+            send(
+                &mut socket,
+                json!({"type":"published","generation":"docker-screen-generation"}),
+            )
+            .await;
+            send(
+                &mut socket,
+                json!({"type":"viewer","viewer_id":"test-viewer","surface_id":"desktop"}),
+            )
+            .await;
+            send(
+                &mut socket,
+                json!({"type":"frame_request","viewer_id":"test-viewer"}),
+            )
+            .await;
+            let frame = receive(&mut socket).await;
+            assert_eq!(frame["type"], "frame");
+            assert!(frame["jpeg"].as_str().unwrap().starts_with("/9j/"));
+            state.ready.send("screen").unwrap();
+            while socket.recv().await.is_some() {}
+        })
+    }
+
+    struct WorkspaceVolume(String);
+    impl Drop for WorkspaceVolume {
+        fn drop(&mut self) {
+            let output = std::process::Command::new("docker")
+                .args(["ps", "-aq", "--filter", &format!("volume={}", self.0)])
+                .output()
+                .unwrap();
+            for id in String::from_utf8_lossy(&output.stdout).lines() {
+                let _ = std::process::Command::new("docker")
+                    .args(["rm", "-f", id])
+                    .output();
+            }
+            let _ = std::process::Command::new("docker")
+                .args(["volume", "rm", &self.0])
+                .output();
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the built Docker Hand image and a Linux Docker daemon"]
+    async fn docker_hand_publishes_tools_and_screen_then_drains_on_sigterm() {
+        let image =
+            std::env::var("NANOCODEX_DOCKER_TEST_IMAGE").expect("set NANOCODEX_DOCKER_TEST_IMAGE");
+        let volume = WorkspaceVolume(format!("nanocodex-cli-test-{}", uuid::Uuid::new_v4()));
+        let key = format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43));
+        let (ready, mut events) = mpsc::unbounded_channel();
+        let service = Service {
+            authorization: format!("Bearer {key}"),
+            ready,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new()
+            .route("/v1/account/tool-host", get(tools))
+            .route("/v1/account/hands/host", get(screen))
+            .with_state(service);
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let config = tempfile::tempdir().unwrap();
+        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .args([
+                "hand",
+                "--docker",
+                &image,
+                "--volume",
+                &volume.0,
+                "--network",
+                "off",
+                "--machine-id",
+                "docker-cli-test",
+            ])
+            .env("NC_API_KEY", &key)
+            .env("NANOCODEX_MANAGED_URL", origin)
+            .env("NANOCODEX_HOME", config.path())
+            .env_remove("NANOCODEX_API_KEY")
+            .env_remove("NANOCODEX_VM_GUEST_RUNTIME")
+            .env_remove("NANOCODEX_KRUNFW_DIR")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let ready = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            let first = events.recv().await.unwrap();
+            let second = events.recv().await.unwrap();
+            assert_ne!(first, second);
+        })
+        .await;
+        if ready.is_err() {
+            let _ = child.start_kill();
+            let output = child.wait_with_output().await.unwrap();
+            panic!(
+                "Docker Hand did not publish: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(i32::try_from(child.id().unwrap()).unwrap()),
+            nix::sys::signal::Signal::SIGTERM,
+        )
+        .unwrap();
+        let output =
+            tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output())
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(&key));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(&key));
+        let containers = tokio::process::Command::new("docker")
+            .args(["ps", "-aq", "--filter", &format!("volume={}", volume.0)])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            containers.stdout.is_empty(),
+            "SIGTERM left a container behind"
+        );
+        let volume_exists = tokio::process::Command::new("docker")
+            .args(["volume", "inspect", &volume.0])
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            volume_exists.status.success(),
+            "SIGTERM deleted the workspace volume"
+        );
+        server.abort();
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn docker_preflight_errors_are_actionable_before_account_login() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let docker = dir.path().join("docker");
+    for (script, extra, expected) in [
+        (None, vec![], "Install the Docker CLI"),
+        (Some("exit 1"), vec![], "start a Linux Docker daemon"),
+        (
+            Some("echo '{\"OSType\":\"windows\"}'"),
+            vec![],
+            "switch Docker to Linux containers",
+        ),
+        (
+            Some(
+                "echo '{\"OSType\":\"linux\",\"Architecture\":\"x86_64\",\"Runtimes\":{\"runc\":{}}}'",
+            ),
+            vec!["--runtime", "runsc"],
+            "not configured on this daemon",
+        ),
+        (
+            Some(
+                "if [ \"$1\" = info ]; then echo '{\"OSType\":\"linux\",\"Architecture\":\"x86_64\"}'; else exit 1; fi",
+            ),
+            vec![],
+            "pnpm build:hand-docker",
+        ),
+        (
+            Some(
+                "if [ \"$1\" = info ]; then echo '{\"OSType\":\"linux\",\"Architecture\":\"x86_64\"}'; else echo linux/arm64; fi",
+            ),
+            vec![],
+            "rebuild the image",
+        ),
+    ] {
+        if let Some(script) = script {
+            std::fs::write(&docker, format!("#!/bin/sh\n{script}\n")).unwrap();
+            std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .args(["hand", "--docker", "image", "--volume", "work"])
+            .args(extra)
+            .env_clear()
+            .env("PATH", dir.path())
+            .env("NANOCODEX_HOME", dir.path())
+            // VM environment defaults must not invalidate Docker selection.
+            .env("NANOCODEX_VM_GUEST_RUNTIME", "/missing/guest")
+            .env("NANOCODEX_KRUNFW_DIR", "/missing/firmware")
+            .current_dir(dir.path())
+            .output()
+            .await
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{stderr}");
+    }
 }

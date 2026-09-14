@@ -5,7 +5,10 @@
 
 use super::{
     actions::{Action, ActionAvailability, ActionsEffect, ActionsEvent, ActionsMenu},
-    composer::{Composer, ComposerChromeTarget, ComposerDraft, ComposerEffect, ComposerEvent},
+    composer::{
+        Composer, ComposerChromeTarget, ComposerDraft, ComposerEffect, ComposerEvent,
+        SettingsCommand,
+    },
     context_diagnostics::{
         ContextDiagnosticsEffect, ContextDiagnosticsEvent, ContextDiagnosticsPanel,
     },
@@ -156,6 +159,7 @@ pub(crate) enum RootEvent {
     WorkerTurnFinished {
         terminal_expected: bool,
     },
+    ManagedTurnFinished,
     ManagedActiveTurns(usize),
     ShellFinished,
     TurnsCancelled,
@@ -190,7 +194,12 @@ pub(crate) enum RootEvent {
     ConfirmReviewDownload,
     UpdateAvailable(Version),
     SteerAdmitted(QueueId),
-    SteerPromoted(QueueId),
+    SteerWithdrawn(QueueId),
+    SteerWithdrawalFailed {
+        id: QueueId,
+        error: String,
+    },
+    SteerUnconfirmed(QueueId),
     SteerFailed {
         id: QueueId,
     },
@@ -202,6 +211,28 @@ pub(crate) struct RestoredSessionProjection {
     context_diagnostics: ContextDiagnostics,
     context_tokens: Option<u64>,
     recent_prompts: Vec<RecentPromptDraft>,
+}
+
+impl RestoredSessionProjection {
+    pub(crate) fn append_records(
+        &mut self,
+        records: impl IntoIterator<Item = Arc<TranscriptRecord>>,
+    ) {
+        for record in records {
+            if let Some(prompt) = recent_prompt(&record) {
+                self.recent_prompts.push(prompt);
+            }
+            let observation = self.context_diagnostics.observe(&record);
+            if observation.completed_tokens.is_some() {
+                self.context_tokens = observation.completed_tokens;
+            }
+            let _ = self.transcript.update(TranscriptEvent::Record(record));
+        }
+    }
+
+    pub(crate) fn close_stream(&mut self) {
+        let _ = self.transcript.update(TranscriptEvent::AgentStreamClosed);
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -235,7 +266,16 @@ pub(crate) enum RootEffect {
         id: QueueId,
         prompt: Submission,
     },
-    PersistSteer(String),
+    WithdrawSteer {
+        id: QueueId,
+    },
+    PersistSteerWithdrawal {
+        text: String,
+    },
+    PersistSteer {
+        id: QueueId,
+        text: String,
+    },
     Copy(String),
     Handoff,
     Review {
@@ -316,6 +356,11 @@ pub(crate) struct RootNode {
     key_confirmation: Option<KeyConfirmation>,
     notification: Option<Notification>,
     discarded_draft: Option<ComposerDraft>,
+    last_admitted_steer: Option<(QueueId, Submission)>,
+    withdrawn_draft: Option<ComposerDraft>,
+    withdrawing_steer: Option<QueueId>,
+    withdrawing_prompt: Option<Submission>,
+    withdrawing_remote: bool,
     queue_edit: Option<QueueEdit>,
     selection: Selection,
     selection_auto_scroll: Option<SelectionAutoScroll>,
@@ -358,6 +403,11 @@ impl RootNode {
             key_confirmation: None,
             notification: None,
             discarded_draft: None,
+            last_admitted_steer: None,
+            withdrawn_draft: None,
+            withdrawing_steer: None,
+            withdrawing_prompt: None,
+            withdrawing_remote: false,
             queue_edit: None,
             selection: Selection::default(),
             selection_auto_scroll: None,
@@ -479,6 +529,7 @@ impl RootNode {
     ) {
         let current_draft = self.composer.component_mut().take_draft();
         let previous_discarded_draft = self.discarded_draft.take();
+        let withdrawn_draft = self.withdrawn_draft.take();
         let replaced_draft = current_draft.is_some() && matches!(draft_reset, DraftReset::Clear);
         let (preserved_draft, discarded_draft) = match draft_reset {
             DraftReset::Clear => (None, current_draft.or(previous_discarded_draft)),
@@ -490,6 +541,7 @@ impl RootNode {
         *self = Self::new(workspace, thinking);
         self.set_reasoning_modes(reasoning_mode, preferred_reasoning_mode);
         self.discarded_draft = discarded_draft;
+        self.withdrawn_draft = withdrawn_draft;
         self.fork_available = fork_available;
         self.theme_mode = theme_mode;
         self.set_max_subagents(max_subagents);
@@ -541,29 +593,17 @@ impl RootNode {
         records: Vec<Arc<TranscriptRecord>>,
         stream_closed: bool,
     ) -> RestoredSessionProjection {
-        let mut transcript = Transcript::with_effort(thinking);
-        let mut context_diagnostics = ContextDiagnostics::default();
-        let mut context_tokens = None;
-        let mut recent_prompts = Vec::new();
-        for record in records {
-            if let Some(prompt) = recent_prompt(&record) {
-                recent_prompts.push(prompt);
-            }
-            let observation = context_diagnostics.observe(&record);
-            if observation.completed_tokens.is_some() {
-                context_tokens = observation.completed_tokens;
-            }
-            let _ = transcript.update(TranscriptEvent::Record(record));
-        }
+        let mut projection = RestoredSessionProjection {
+            transcript: Transcript::with_effort(thinking),
+            context_diagnostics: ContextDiagnostics::default(),
+            context_tokens: None,
+            recent_prompts: Vec::new(),
+        };
+        projection.append_records(records);
         if stream_closed {
-            let _ = transcript.update(TranscriptEvent::AgentStreamClosed);
+            projection.close_stream();
         }
-        RestoredSessionProjection {
-            transcript,
-            context_diagnostics,
-            context_tokens,
-            recent_prompts,
-        }
+        projection
     }
 
     fn replay_history(&mut self, mut projection: RestoredSessionProjection) {
@@ -571,6 +611,9 @@ impl RootNode {
             .transcript
             .preserve_viewport_from(self.transcript.component());
         projection.transcript.set_workspace(&self.workspace);
+        projection
+            .transcript
+            .set_effort(self.composer.component().effort());
         self.transcript = Node::new(projection.transcript);
         self.context_diagnostics = projection.context_diagnostics;
         self.recent_prompts = projection.recent_prompts;
@@ -594,6 +637,7 @@ impl RootNode {
         let preserve_active_submission = self.has_active_turns()
             || !self.queue.component().is_empty()
             || self.queue.component().has_pending_steer();
+        let started = preserve_active_submission || !projection.recent_prompts.is_empty();
         if preserve_active_submission {
             self.workspace = workspace.to_path_buf();
             let _ = self
@@ -629,7 +673,11 @@ impl RootNode {
                 .component_mut()
                 .update(ComposerEvent::ContextTokens(tokens));
         }
-        self.thread = ThreadState::Started;
+        self.thread = if started {
+            ThreadState::Started
+        } else {
+            ThreadState::New
+        };
     }
 
     pub(crate) const fn composer(&self) -> &Composer {
@@ -859,6 +907,12 @@ impl RootNode {
         if self.overlay.is_some() {
             return self.update_overlay(event, Instant::now());
         }
+        if matches!(&event, Event::Key(key)
+            if key.code == KeyCode::Char('u') && key.modifiers == KeyModifiers::ALT
+                && key.kind == KeyEventKind::Press)
+        {
+            return self.undo_latest_message();
+        }
         if is_control_key(&event, 'z')
             && !self.queue.component().focused()
             && !self.transcript.component().expandables_focused()
@@ -894,7 +948,7 @@ impl RootNode {
                 self.key_confirmation = None;
                 return self.update_transcript(TranscriptEvent::BlurExpandables);
             }
-            if self.has_active_turns() {
+            if self.has_active_turns() || self.in_flight_shells > 0 {
                 return self.update_key_confirmation(ConfirmationAction::Interrupt, Instant::now());
             }
             let cleared = self
@@ -1481,6 +1535,10 @@ impl RootNode {
         let update = actions.update(ActionsEvent::Terminal(event));
         match update.effects.into_iter().next() {
             Some(ActionsEffect::Dismiss) => self.overlay = None,
+            Some(ActionsEffect::Settings(command)) => {
+                self.overlay = None;
+                return self.apply_settings_command(command);
+            }
             Some(ActionsEffect::Trigger(Action::Effort)) => {
                 return self.open_effort();
             }
@@ -1628,7 +1686,11 @@ impl RootNode {
 
     fn open_model(&mut self) -> ComponentUpdate<RootEffect> {
         if self.thread != ThreadState::New {
-            return ComponentUpdate::none();
+            self.notification = Some(Notification::plain(
+                "The model can only be changed before the first prompt".to_owned(),
+                Color::Red,
+            ));
+            return ComponentUpdate::render(RenderRequest::Immediate);
         }
         self.overlay = Some(Overlay::Model(Node::new(ModelSelector::new(
             self.composer.component().model(),
@@ -1945,38 +2007,40 @@ impl RootNode {
         self.overlay = None;
         match effect {
             EffortEffect::Dismiss => ComponentUpdate::render(RenderRequest::Immediate),
-            EffortEffect::Apply(effort, pro) => {
-                let reasoning_mode = if pro {
-                    ReasoningMode::Pro
-                } else {
-                    ReasoningMode::Standard
-                };
-                let previous_reasoning_mode = self.preferred_reasoning_mode;
-                self.preferred_reasoning_mode = reasoning_mode;
-                if reasoning_mode != previous_reasoning_mode {
-                    let state = if pro { "enabled" } else { "disabled" };
-                    let suffix = if self.composer.component().reasoning_mode() != reasoning_mode {
-                        " · start a new session to apply."
-                    } else {
-                        "."
-                    };
-                    let message = format!("Pro {state} for new sessions{suffix}");
-                    self.notification = Some(Notification::plain(message, Color::Green));
-                }
-                self.transcript.component_mut().set_effort(effort);
-                self.subagents.set_effort(effort);
-                let _ = self
-                    .composer
-                    .component_mut()
-                    .update(ComposerEvent::SetEffort(effort));
-                ComponentUpdate {
-                    effects: vec![RootEffect::SetEffort {
-                        effort,
-                        reasoning_mode,
-                    }],
-                    render: RenderRequest::Immediate,
-                }
-            }
+            EffortEffect::Apply(effort, pro) => self.apply_effort(effort, pro),
+        }
+    }
+
+    fn apply_effort(&mut self, effort: ReasoningEffort, pro: bool) -> ComponentUpdate<RootEffect> {
+        let reasoning_mode = if pro {
+            ReasoningMode::Pro
+        } else {
+            ReasoningMode::Standard
+        };
+        let previous_reasoning_mode = self.preferred_reasoning_mode;
+        self.preferred_reasoning_mode = reasoning_mode;
+        if reasoning_mode != previous_reasoning_mode {
+            let state = if pro { "enabled" } else { "disabled" };
+            let suffix = if self.composer.component().reasoning_mode() != reasoning_mode {
+                " · start a new session to apply."
+            } else {
+                "."
+            };
+            let message = format!("Pro {state} for new sessions{suffix}");
+            self.notification = Some(Notification::plain(message, Color::Green));
+        }
+        self.transcript.component_mut().set_effort(effort);
+        self.subagents.set_effort(effort);
+        let _ = self
+            .composer
+            .component_mut()
+            .update(ComposerEvent::SetEffort(effort));
+        ComponentUpdate {
+            effects: vec![RootEffect::SetEffort {
+                effort,
+                reasoning_mode,
+            }],
+            render: RenderRequest::Immediate,
         }
     }
 
@@ -1998,24 +2062,33 @@ impl RootNode {
         }
         match effect {
             ModelSelectorEffect::Dismiss => ComponentUpdate::render(RenderRequest::Immediate),
-            ModelSelectorEffect::Apply(model) if model == self.composer.component().model() => {
-                ComponentUpdate::render(RenderRequest::Immediate)
-            }
-            ModelSelectorEffect::Apply(model) => {
-                self.interactive = false;
-                let _ = self
-                    .composer
-                    .component_mut()
-                    .update(ComposerEvent::Activity {
-                        active: true,
-                        status: Some(format!("Starting {} session…", model_name(model))),
-                        now: Instant::now(),
-                    });
-                ComponentUpdate {
-                    effects: vec![RootEffect::SetModel(model)],
-                    render: RenderRequest::Immediate,
-                }
-            }
+            ModelSelectorEffect::Apply(model) => self.apply_model(model),
+        }
+    }
+
+    fn apply_model(&mut self, model: Model) -> ComponentUpdate<RootEffect> {
+        if self.thread != ThreadState::New {
+            self.notification = Some(Notification::plain(
+                "The model can only be changed before the first prompt".to_owned(),
+                Color::Red,
+            ));
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        if model == self.composer.component().model() {
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        self.interactive = false;
+        let _ = self
+            .composer
+            .component_mut()
+            .update(ComposerEvent::Activity {
+                active: true,
+                status: Some(format!("Starting {} session…", model_name(model))),
+                now: Instant::now(),
+            });
+        ComponentUpdate {
+            effects: vec![RootEffect::SetModel(model)],
+            render: RenderRequest::Immediate,
         }
     }
 
@@ -2120,6 +2193,9 @@ impl RootNode {
         priority: RenderRequest,
     ) -> ComponentUpdate<RootEffect> {
         let update = self.composer.component_mut().update(event);
+        if let Some(ComposerEffect::Settings(command)) = &update.effect {
+            return self.apply_settings_command(command.clone());
+        }
         let delivered = matches!(
             &update.effect,
             Some(ComposerEffect::Submit(_) | ComposerEffect::Queue(_))
@@ -2159,6 +2235,9 @@ impl RootNode {
                 vec![RootEffect::RunShell(command)]
             }
             Some(ComposerEffect::OpenDraftEditor) => vec![RootEffect::OpenDraftEditor],
+            Some(ComposerEffect::Settings(_)) => {
+                unreachable!("settings commands return before prompt delivery")
+            }
             None => Vec::new(),
         };
 
@@ -2179,6 +2258,21 @@ impl RootNode {
         render = render.max(controls);
 
         ComponentUpdate { effects, render }
+    }
+
+    fn apply_settings_command(&mut self, command: SettingsCommand) -> ComponentUpdate<RootEffect> {
+        match command {
+            SettingsCommand::OpenEffort => self.open_effort(),
+            SettingsCommand::SetEffort(effort) => {
+                self.apply_effort(effort, self.preferred_reasoning_mode == ReasoningMode::Pro)
+            }
+            SettingsCommand::OpenModel => self.open_model(),
+            SettingsCommand::SetModel(model) => self.apply_model(model),
+            SettingsCommand::Invalid(message) => {
+                self.notification = Some(Notification::plain(message, Color::Red));
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
+        }
     }
 
     fn submit_reflection(&mut self) -> ComponentUpdate<RootEffect> {
@@ -2214,10 +2308,14 @@ impl RootNode {
     }
 
     fn restore_discarded_draft(&mut self) -> ComponentUpdate<RootEffect> {
-        if !self.composer.component().draft().is_empty() {
+        if !self.composer.component().draft().is_empty() || self.composer.component().has_images() {
             return ComponentUpdate::none();
         }
-        let Some(draft) = self.discarded_draft.take() else {
+        let Some(draft) = self
+            .withdrawn_draft
+            .take()
+            .or_else(|| self.discarded_draft.take())
+        else {
             return ComponentUpdate::none();
         };
         self.composer.component_mut().restore_draft(draft);
@@ -2250,6 +2348,13 @@ impl RootNode {
             if activity.changed {
                 update.render = update.render.max(RenderRequest::Immediate);
             }
+            let timers = self
+                .composer
+                .component_mut()
+                .update(ComposerEvent::TurnsCleared);
+            if timers.changed {
+                update.render = update.render.max(RenderRequest::Immediate);
+            }
         }
         update.render = update.render.max(self.sync_live_controls());
         update
@@ -2277,18 +2382,19 @@ impl RootNode {
     }
 
     fn turns_cancelled(&mut self) -> ComponentUpdate<RootEffect> {
-        self.queue.component_mut().cancel_steers();
+        // Cancellation admission is not a terminal event or a steering acknowledgement.
+        // Keep applied-before-ack evidence until both have resolved.
         self.submit_next_queued()
     }
 
     fn managed_active_turns(&mut self, count: usize) -> ComponentUpdate<RootEffect> {
         self.managed_active_turns = count;
-        let active = self.has_active_turns();
-        let mut update = if active {
+        let mut update = if self.has_active_turns() {
             ComponentUpdate::render(RenderRequest::Immediate)
         } else {
             self.submit_next_queued()
         };
+        let active = self.has_active_turns();
         let activity = self
             .composer
             .component_mut()
@@ -2299,6 +2405,12 @@ impl RootNode {
             });
         if activity.changed {
             update.render = update.render.max(RenderRequest::Immediate);
+        }
+        if !active {
+            let _ = self
+                .composer
+                .component_mut()
+                .update(ComposerEvent::TurnsCleared);
         }
         update.render = update.render.max(self.sync_live_controls());
         update
@@ -2330,16 +2442,110 @@ impl RootNode {
         update
     }
 
-    fn steer_admitted(&mut self, id: QueueId) -> ComponentUpdate<RootEffect> {
-        let applied = self.queue.component_mut().steer_admitted(id);
-        self.finish_applied_steer(applied)
+    fn undo_latest_message(&mut self) -> ComponentUpdate<RootEffect> {
+        if self.withdrawing_steer.is_some() {
+            return ComponentUpdate::none();
+        }
+        if self.withdrawn_draft.is_some() {
+            self.notification = Some(Notification::plain(
+                "Restore the withdrawn draft with Ctrl+Z first.".to_owned(),
+                Color::Yellow,
+            ));
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        let queued = self.queue.component().latest();
+        let admitted = self
+            .last_admitted_steer
+            .as_ref()
+            .map(|(id, _)| (*id, false));
+        let Some((id, local)) = queued.into_iter().chain(admitted).max_by_key(|(id, _)| *id) else {
+            self.notification = Some(Notification::plain(
+                "No queued message to undo.".to_owned(),
+                Color::Yellow,
+            ));
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        };
+        self.withdrawing_prompt = self.queue.component().prompt(id).or_else(|| {
+            self.last_admitted_steer
+                .as_ref()
+                .filter(|(candidate, _)| *candidate == id)
+                .map(|(_, prompt)| prompt.clone())
+        });
+        self.withdrawing_steer = Some(id);
+        self.withdrawing_remote = !local;
+        if local {
+            return self.steer_withdrawn(id);
+        }
+        self.notification = Some(Notification::plain(
+            "Withdrawing message…".to_owned(),
+            Color::Yellow,
+        ));
+        ComponentUpdate {
+            effects: vec![RootEffect::WithdrawSteer { id }],
+            render: RenderRequest::Immediate,
+        }
     }
 
-    fn steer_promoted(&mut self, id: QueueId) -> ComponentUpdate<RootEffect> {
-        let _ = self.queue.component_mut().steer_promoted(id);
-        self.in_flight_turns = self.in_flight_turns.saturating_add(1);
-        let controls = self.sync_live_controls();
-        ComponentUpdate::render(RenderRequest::Immediate.max(controls))
+    fn steer_withdrawn(&mut self, id: QueueId) -> ComponentUpdate<RootEffect> {
+        if self.withdrawing_steer != Some(id) {
+            return ComponentUpdate::none();
+        }
+        self.withdrawing_steer = None;
+        let prompt = self.queue.component_mut().withdraw(id).or_else(|| {
+            if self
+                .last_admitted_steer
+                .as_ref()
+                .is_some_and(|(candidate, _)| *candidate == id)
+            {
+                self.last_admitted_steer.take().map(|(_, prompt)| prompt)
+            } else {
+                None
+            }
+        });
+        let Some(prompt) = prompt.or_else(|| self.withdrawing_prompt.take()) else {
+            return ComponentUpdate::none();
+        };
+        self.withdrawing_prompt = None;
+        let effects = if self.withdrawing_remote {
+            vec![RootEffect::PersistSteerWithdrawal {
+                text: prompt.display_text().to_owned(),
+            }]
+        } else {
+            Vec::new()
+        };
+        self.withdrawing_remote = false;
+        self.queue.component_mut().set_focused(false);
+        let message = if self.composer.component().draft().is_empty()
+            && !self.composer.component().has_images()
+            && self.queue_edit.is_none()
+            && !self.reflection_input
+            && self.overlay.is_none()
+        {
+            self.composer.component_mut().restore_draft(prompt.into());
+            "Message withdrawn · edit and send again."
+        } else {
+            // Never overwrite text typed while the server was deciding withdrawal.
+            self.withdrawn_draft = Some(prompt.into());
+            "Message withdrawn · clear the composer, then Ctrl+Z to restore."
+        };
+        self.notification = Some(Notification::plain(message.to_owned(), Color::Green));
+        ComponentUpdate {
+            effects,
+            render: RenderRequest::Immediate,
+        }
+    }
+
+    fn steer_admitted(&mut self, id: QueueId) -> ComponentUpdate<RootEffect> {
+        let accepted = self.queue.component_mut().steer_admitted(id);
+        if let Some(accepted) = &accepted {
+            self.last_admitted_steer = Some(accepted.clone());
+        }
+        self.finish_accepted_steer(accepted)
+    }
+
+    fn steer_unconfirmed(&mut self, id: QueueId) -> ComponentUpdate<RootEffect> {
+        self.queue.component_mut().steer_unconfirmed(id);
+        self.submit_next_queued()
     }
 
     fn steer_failed(&mut self, id: QueueId) -> ComponentUpdate<RootEffect> {
@@ -2347,27 +2553,28 @@ impl RootNode {
         self.submit_next_queued()
     }
 
-    fn steer_applied(&mut self) -> ComponentUpdate<RootEffect> {
-        let applied = self.queue.component_mut().steer_applied();
-        self.finish_applied_steer(applied)
-    }
-
-    fn finish_applied_steer(&mut self, applied: Option<Submission>) -> ComponentUpdate<RootEffect> {
+    fn finish_accepted_steer(
+        &mut self,
+        accepted: Option<(QueueId, Submission)>,
+    ) -> ComponentUpdate<RootEffect> {
         let mut update = self.submit_next_queued();
-        if let Some(prompt) = applied {
+        if let Some((id, prompt)) = accepted {
             update.effects.insert(
                 0,
-                RootEffect::PersistSteer(prompt.display_text().to_owned()),
+                RootEffect::PersistSteer {
+                    id,
+                    text: prompt.display_text().to_owned(),
+                },
             );
         }
         update
     }
 
     fn submit_next_queued(&mut self) -> ComponentUpdate<RootEffect> {
-        if !self.interactive
-            || self.has_active_turns()
-            || self.queue.component().has_pending_steer()
-        {
+        if !self.interactive || self.has_active_turns() {
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        if self.withdrawing_steer.is_some() || self.queue.component().has_pending_steer() {
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
         let prompts = self.queue.component_mut().drain_ready();
@@ -2410,12 +2617,18 @@ impl RootNode {
         let update = self.transcript.update(event);
         let mut render = update.render;
         for effect in update.effects {
+            // Local submission is rendered before the server starts the run.
+            // An idle transcript must not clear that pending turn's activity.
+            let active = effect.active || self.has_active_turns();
+            let status = effect
+                .status
+                .or_else(|| active.then(|| "Thinking…".to_owned()));
             let composer = self
                 .composer
                 .component_mut()
                 .update(ComposerEvent::Activity {
-                    active: effect.active,
-                    status: effect.status,
+                    active,
+                    status,
                     now: Instant::now(),
                 });
             if composer.changed {
@@ -2569,17 +2782,10 @@ impl RootNode {
         result
     }
 
-    fn transcript_record(
-        &mut self,
-        record: Arc<TranscriptRecord>,
-        track_local_turn: bool,
-    ) -> ComponentUpdate<RootEffect> {
+    fn transcript_record(&mut self, record: Arc<TranscriptRecord>) -> ComponentUpdate<RootEffect> {
         if let Some(prompt) = recent_prompt(&record) {
             self.recent_prompts.push(prompt);
         }
-        let steer_applied = record.kind() == "run.steered";
-        let turn_finished =
-            track_local_turn && matches!(record.kind(), "run.completed" | "run.failed");
         let turn_timer = turn_timer_event(&record);
         let observation = self.context_diagnostics.observe(&record);
         if let Some(Overlay::ContextDiagnostics(panel)) = &mut self.overlay {
@@ -2600,16 +2806,6 @@ impl RootNode {
             );
             update.effects.extend(context.effects);
             update.render = update.render.max(context.render);
-        }
-        if steer_applied {
-            let applied = self.steer_applied();
-            update.effects.extend(applied.effects);
-            update.render = update.render.max(applied.render);
-        }
-        if turn_finished {
-            let finished = self.agent_turn_finished();
-            update.effects.extend(finished.effects);
-            update.render = update.render.max(finished.render);
         }
         update
     }
@@ -2651,8 +2847,9 @@ impl Component for RootNode {
                 ComposerEvent::ContextTokens(tokens),
                 RenderRequest::Streaming,
             ),
-            RootEvent::Transcript(record) => self.transcript_record(record, true),
-            RootEvent::ExternalTranscript(record) => self.transcript_record(record, false),
+            RootEvent::Transcript(record) | RootEvent::ExternalTranscript(record) => {
+                self.transcript_record(record)
+            }
             RootEvent::AgentStreamClosed => self.agent_stream_closed(),
             RootEvent::Subagent(update) => self.apply_subagent_update(update),
             RootEvent::ReplaceDraft(draft) => {
@@ -2792,6 +2989,7 @@ impl Component for RootNode {
             RootEvent::WorkerTurnFinished { terminal_expected } => {
                 self.worker_turn_finished(terminal_expected)
             }
+            RootEvent::ManagedTurnFinished => self.agent_turn_finished(),
             RootEvent::ManagedActiveTurns(count) => self.managed_active_turns(count),
             RootEvent::ShellFinished => {
                 self.in_flight_shells = self.in_flight_shells.saturating_sub(1);
@@ -2876,7 +3074,16 @@ impl Component for RootNode {
                 ComponentUpdate::render(RenderRequest::Immediate)
             }
             RootEvent::SteerAdmitted(id) => self.steer_admitted(id),
-            RootEvent::SteerPromoted(id) => self.steer_promoted(id),
+            RootEvent::SteerWithdrawn(id) => self.steer_withdrawn(id),
+            RootEvent::SteerWithdrawalFailed { id, error } => {
+                if self.withdrawing_steer == Some(id) {
+                    self.withdrawing_steer = None;
+                    self.withdrawing_prompt = None;
+                    self.notification = Some(Notification::plain(error, Color::Yellow));
+                }
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
+            RootEvent::SteerUnconfirmed(id) => self.steer_unconfirmed(id),
             RootEvent::SteerFailed { id } => self.steer_failed(id),
             RootEvent::AnimationFrame(now) => self.update_animation(now),
         }
@@ -3342,15 +3549,162 @@ mod history_tests {
 #[cfg(test)]
 mod live_control_tests {
     use super::{Component, RootEffect, RootEvent, RootNode};
-    use crate::config::ReasoningEffort;
-    use crate::tui::transcript::TranscriptRecord;
+    use crate::config::{ReasoningEffort, ReasoningMode};
+    use crate::tui::transcript::{LocalEvent, TranscriptRecord, TurnId};
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    use nanocodex::agent::events::{AgentEvent, AgentEventKind};
+    use nanocodex::{
+        Model,
+        agent::events::{AgentEvent, AgentEventKind},
+    };
     use serde_json::{json, value::to_raw_value};
     use std::{path::Path, sync::Arc};
 
     fn key(code: KeyCode) -> RootEvent {
         RootEvent::Terminal(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    }
+
+    fn undo_message() -> RootEvent {
+        RootEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::ALT,
+        )))
+    }
+
+    #[test]
+    fn undo_latest_queued_message_uses_submission_order() {
+        let mut root = root_with_draft("");
+        root.in_flight_turns = 1;
+        root.queue.component_mut().push("older followup".to_owned());
+        let (id, _) = root
+            .queue
+            .component_mut()
+            .begin_steer("newer steer".to_owned().into());
+        root.queue.component_mut().steer_failed(id);
+        let update = root.update(undo_message());
+        assert!(update.effects.is_empty());
+        assert_eq!(root.composer.component().draft(), "newer steer");
+        assert_eq!(root.queue.component().len(), 1);
+    }
+
+    #[test]
+    fn undo_queued_image_message_restores_the_original_image_payload() {
+        use nanocodex::agent::input::{PromptInput, UserInput};
+        let mut root = root_with_draft("inspect ");
+        root.update(RootEvent::PasteImage(
+            "data:image/png;base64,original".to_owned(),
+        ));
+        let draft = root.composer.component_mut().take_draft().unwrap();
+        root.in_flight_turns = 1;
+        root.queue.component_mut().push(draft.into_submission());
+        root.update(undo_message());
+        assert!(root.composer.component().has_images());
+        let draft = root.composer.component_mut().take_draft().unwrap();
+        let PromptInput::Content(content) = draft.into_submission().agent_prompt().instruction
+        else {
+            panic!("expected content")
+        };
+        assert!(content.iter().any(|item| matches!(item, UserInput::Image { image_url, .. } if image_url == "data:image/png;base64,original")));
+    }
+
+    #[test]
+    fn undo_steer_waits_for_confirmed_withdrawal_and_ignores_duplicate_shortcut() {
+        let mut root = root_with_draft("change direction");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        let sent = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id, .. }] = sent.effects.as_slice() else {
+            panic!("expected steer")
+        };
+        let id = *id;
+        let update = root.update(undo_message());
+        assert_eq!(update.effects, [RootEffect::WithdrawSteer { id }]);
+        assert!(root.composer.component().draft().is_empty());
+        assert_eq!(root.queue.component().len(), 1);
+        assert!(root.update(undo_message()).effects.is_empty());
+        root.update(RootEvent::SteerAdmitted(id));
+        assert!(root.composer.component().draft().is_empty());
+        root.update(RootEvent::SteerWithdrawn(id));
+        assert_eq!(root.composer.component().draft(), "change direction");
+        assert!(root.queue.component().is_empty());
+        assert!(root.last_admitted_steer.is_none());
+    }
+
+    #[test]
+    fn undo_failure_never_restores_or_removes_the_steer() {
+        let mut root = root_with_draft("already received");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        let sent = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id, .. }] = sent.effects.as_slice() else {
+            panic!("expected steer")
+        };
+        let id = *id;
+        root.update(undo_message());
+        root.update(RootEvent::SteerWithdrawalFailed {
+            id,
+            error: "Already received by the model".to_owned(),
+        });
+        assert!(root.composer.component().draft().is_empty());
+        assert_eq!(root.queue.component().len(), 1);
+        assert!(root.withdrawing_steer.is_none());
+    }
+
+    #[test]
+    fn undo_preserves_its_prompt_when_a_newer_steer_is_admitted() {
+        let mut root = root_with_draft("withdraw first");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        let sent = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id, .. }] = sent.effects.as_slice() else {
+            panic!("expected steer")
+        };
+        let id = *id;
+        root.update(RootEvent::SteerAdmitted(id));
+        root.update(undo_message());
+        root.composer
+            .component_mut()
+            .replace_draft("new steer".to_owned());
+        let sent = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id: newer, .. }] = sent.effects.as_slice() else {
+            panic!("expected steer")
+        };
+        let newer = *newer;
+        root.update(RootEvent::SteerAdmitted(newer));
+        root.update(RootEvent::SteerWithdrawn(id));
+        assert_eq!(root.composer.component().draft(), "withdraw first");
+        assert_eq!(root.last_admitted_steer.as_ref().unwrap().0, newer);
+    }
+
+    #[test]
+    fn confirmed_undo_preserves_an_image_only_composer() {
+        let mut root = root_with_draft("withdraw me");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        let sent = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id, .. }] = sent.effects.as_slice() else {
+            panic!("expected steer")
+        };
+        let id = *id;
+        root.update(RootEvent::SteerAdmitted(id));
+        root.update(undo_message());
+        root.update(RootEvent::PasteImage(
+            "data:image/png;base64,new-image".to_owned(),
+        ));
+        let image_draft = root.composer.component().draft().to_owned();
+        root.update(RootEvent::SteerWithdrawn(id));
+        root.restore_discarded_draft();
+        assert_eq!(root.composer.component().draft(), image_draft);
+        assert!(root.composer.component().has_images());
+        assert!(root.withdrawn_draft.is_some());
+        let draft = root.composer.component_mut().take_draft().unwrap();
+        let nanocodex::agent::input::PromptInput::Content(content) =
+            draft.into_submission().agent_prompt().instruction
+        else {
+            panic!("expected image content")
+        };
+        assert!(content.iter().any(|item| matches!(item,
+            nanocodex::agent::input::UserInput::Image { image_url, .. }
+                if image_url == "data:image/png;base64,new-image")));
+        root.restore_discarded_draft();
+        assert_eq!(root.composer.component().draft(), "withdraw me");
+        assert!(!root.composer.component().has_images());
+        assert!(root.withdrawn_draft.is_none());
     }
 
     fn root_with_draft(draft: &str) -> RootNode {
@@ -3372,6 +3726,152 @@ mod live_control_tests {
         );
         assert_eq!(root.in_flight_turns, 1);
         assert!(root.queue.component().is_empty());
+    }
+
+    #[test]
+    fn durable_completion_releases_queue_in_either_callback_order() {
+        for worker_first in [false, true] {
+            let mut root = root_with_draft("start work");
+            root.update(key(KeyCode::Enter));
+            root.queue.component_mut().push("followup".to_owned());
+            let worker = RootEvent::WorkerTurnFinished {
+                terminal_expected: true,
+            };
+            let managed = RootEvent::ManagedTurnFinished;
+            let (first, last) = if worker_first {
+                (worker, managed)
+            } else {
+                (managed, worker)
+            };
+            assert!(root.update(first).effects.is_empty());
+            let update = root.update(last);
+            assert!(
+                matches!(update.effects.as_slice(), [RootEffect::Submit(prompt)] if prompt.display_text() == "followup")
+            );
+            assert_eq!(root.in_flight_turns, 1);
+            assert_eq!(root.unmatched_worker_turns, 0);
+            assert_eq!(root.unmatched_agent_turns, 0);
+        }
+    }
+
+    #[test]
+    fn local_prompt_keeps_thinking_visible_until_a_pending_submission_fails() {
+        let mut root = root_with_draft("start work");
+        let _ = root.update(key(KeyCode::Enter));
+        let record = TranscriptRecord::from_local(
+            1,
+            1,
+            LocalEvent::UserSubmitted {
+                id: TurnId::new(1),
+                text: "start work".to_owned(),
+            },
+        )
+        .unwrap();
+        let _ = root.update(RootEvent::Transcript(Arc::new(record)));
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        let mut rendered = |root: &mut RootNode| {
+            terminal
+                .draw(|frame| {
+                    root.render_focused(
+                        frame,
+                        frame.area(),
+                        &crate::tui::theme::Theme::default(),
+                        true,
+                    )
+                })
+                .unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        };
+        let pending = rendered(&mut root);
+        assert!(pending.contains("start work"));
+        assert!(pending.contains("Thinking…"));
+
+        let _ = root.update(RootEvent::WorkerTurnFinished {
+            terminal_expected: false,
+        });
+        assert!(!rendered(&mut root).contains("Thinking…"));
+    }
+
+    #[test]
+    fn slash_model_command_routes_as_a_hosted_setting_instead_of_a_prompt() {
+        let mut root = root_with_draft("/model sol");
+
+        let update = root.update(key(KeyCode::Enter));
+
+        assert!(matches!(
+            update.effects.as_slice(),
+            [RootEffect::SetModel(Model::Sol)]
+        ));
+        assert!(matches!(root.thread, super::ThreadState::New));
+        assert!(root.composer.component().draft().is_empty());
+        assert_eq!(root.in_flight_turns, 0);
+    }
+
+    #[test]
+    fn slash_action_overlay_routes_direct_model_command() {
+        let mut root = root_with_draft("");
+        let _ = root.update(key(KeyCode::Char('/')));
+        for character in "model sol".chars() {
+            let _ = root.update(key(KeyCode::Char(character)));
+        }
+
+        let update = root.update(key(KeyCode::Enter));
+
+        assert!(matches!(
+            update.effects.as_slice(),
+            [RootEffect::SetModel(Model::Sol)]
+        ));
+        assert!(matches!(root.thread, super::ThreadState::New));
+        assert_eq!(root.in_flight_turns, 0);
+    }
+
+    #[test]
+    fn empty_attached_agent_keeps_model_selection_unlocked() {
+        let mut root = root_with_draft("");
+        let projection = RootNode::project_open_session(ReasoningEffort::Medium, Vec::new());
+        root.install_session_projection(
+            Path::new("/workspace"),
+            ReasoningEffort::Medium,
+            ReasoningMode::Standard,
+            ReasoningMode::Standard,
+            false,
+            projection,
+        );
+        let _ = root.update(key(KeyCode::Char('/')));
+        for character in "model sol".chars() {
+            let _ = root.update(key(KeyCode::Char(character)));
+        }
+
+        let update = root.update(key(KeyCode::Enter));
+
+        assert!(matches!(
+            update.effects.as_slice(),
+            [RootEffect::SetModel(Model::Sol)]
+        ));
+    }
+
+    #[test]
+    fn slash_thinking_alias_routes_as_a_durable_effort_setting() {
+        let mut root = root_with_draft("/reasoning high");
+
+        let update = root.update(key(KeyCode::Enter));
+
+        assert!(matches!(
+            update.effects.as_slice(),
+            [RootEffect::SetEffort {
+                effort: ReasoningEffort::High,
+                ..
+            }]
+        ));
+        assert_eq!(root.composer.component().effort(), ReasoningEffort::High);
+        assert_eq!(root.in_flight_turns, 0);
     }
 
     #[test]
@@ -3403,6 +3903,57 @@ mod live_control_tests {
         assert_eq!(root.in_flight_turns, 0);
         assert_eq!(root.managed_active_turns, 1);
         assert!(root.queue.component().has_pending_steer());
+    }
+
+    #[test]
+    fn foreign_steering_never_consumes_local_input_and_unknown_delivery_survives_completion() {
+        let mut root = root_with_draft("my instruction");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        let update = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id, .. }] = update.effects.as_slice() else {
+            panic!("expected local steering");
+        };
+        let id = *id;
+        let foreign = |seq| {
+            Arc::new(TranscriptRecord::from_agent(
+                seq,
+                seq,
+                AgentEvent {
+                    protocol_version: 1,
+                    request_id: Arc::from("shared-agent"),
+                    seq,
+                    kind: AgentEventKind::RunSteered,
+                    payload: to_raw_value(&json!({"steer_index": seq, "instruction_bytes": 14}))
+                        .unwrap()
+                        .into(),
+                },
+            ))
+        };
+        assert!(
+            root.update(RootEvent::ExternalTranscript(foreign(1)))
+                .effects
+                .is_empty()
+        );
+        assert_eq!(root.queue.component().len(), 1);
+        assert!(root.queue.component().has_pending_steer());
+        root.update(RootEvent::SteerUnconfirmed(id));
+        assert!(
+            root.update(RootEvent::ExternalTranscript(foreign(2)))
+                .effects
+                .is_empty()
+        );
+        assert_eq!(root.queue.component().len(), 1);
+        root.queue.component_mut().push("known unsent".to_owned());
+        let completion = root.update(RootEvent::ManagedActiveTurns(0));
+        assert!(
+            matches!(completion.effects.as_slice(), [RootEffect::Submit(prompt)] if prompt.display_text() == "known unsent")
+        );
+        assert_eq!(
+            root.queue.component().len(),
+            1,
+            "uncertain input must remain visible after completion"
+        );
+        assert!(root.queue.component_mut().drain_ready().is_empty());
     }
 
     #[test]

@@ -60,6 +60,7 @@ async function executeBrokeredSsh(
       port: request.endpoint.port,
       username: request.username,
       command: request.commandArgs,
+      ...(request.stdin === undefined ? {} : { stdin: request.stdin }),
     }),
     signal,
   });

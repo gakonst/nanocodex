@@ -26,6 +26,7 @@ test("Worker connector execution fences and forwards the exact approved identity
   const worker = (await import(new URL(`file://${path.join(outdir, "index.js")}`))).default;
   let grant = activeGrant({ gmail: [alpha, bravo] });
   const forwarded = [];
+  let reply = () => new Response("ok", { status: 200 });
   const env = {
     CONNECT_STATE: {
       idFromName: (name) => name,
@@ -36,7 +37,7 @@ test("Worker connector execution fences and forwards the exact approved identity
     },
     EGRESS: { fetch: async (request) => {
       forwarded.push(request);
-      return new Response("ok", { status: 200 });
+      return reply();
     } },
   };
   const context = { waitUntil() {} };
@@ -61,6 +62,61 @@ test("Worker connector execution fences and forwards the exact approved identity
   const legacyExpansion = await worker.fetch(egressRequest(alpha), env, context);
   assert.equal(legacyExpansion.status, 403);
   assert.equal((await legacyExpansion.json()).error.code, "connector_connection_not_granted");
+
+  grant = { ...activeGrant({ github: [alpha] }), capabilities: ["github"] };
+  const bytes = Uint8Array.from({ length: 300 * 1024 }, (_, index) => index % 256);
+  const largeSize = 17 * 1024 * 1024 + 123;
+  reply = () => {
+    let remaining = largeSize;
+    return new Response(new ReadableStream({
+      pull(controller) {
+        if (!remaining) { controller.close(); return; }
+        const size = Math.min(remaining, 64 * 1024);
+        controller.enqueue(new Uint8Array(size).fill(255));
+        remaining -= size;
+      },
+    }), { headers: { "content-type": "application/x-git-upload-pack-result" } });
+  };
+  const cloned = await worker.fetch(egressRequest(undefined, {
+    url: "https://github.com/fixture/large.git/git-upload-pack",
+    method: "POST",
+    headers: { "content-type": "application/x-git-upload-pack-request", "git-protocol": "version=2" },
+    body_base64: Buffer.from(bytes).toString("base64"),
+  }), env, context);
+  assert.equal(cloned.status, 200);
+  const git = forwarded.at(-1);
+  assert.equal(git.url, "https://github.com/fixture/large.git/git-upload-pack");
+  assert.equal(git.headers.get("x-nanocodex-subject"), grant.egressSubject);
+  assert.equal(git.headers.get("x-nanocodex-connector-connection"), alpha);
+  assert.equal(git.headers.get("git-protocol"), "version=2");
+  assert.deepEqual(new Uint8Array(await git.arrayBuffer()), bytes);
+  const downloaded = new Uint8Array(await cloned.arrayBuffer());
+  assert.equal(downloaded.byteLength, largeSize);
+  assert(downloaded.every((byte) => byte === 255));
+
+  reply = () => new Response("public");
+  const publicResponse = await worker.fetch(egressRequest(undefined, {
+    url: "https://example.com/archive", method: "POST", body_base64: "AP+A/g==",
+  }), env, context);
+  assert.equal(await publicResponse.text(), "public");
+  const publicRequest = forwarded.at(-1);
+  assert.equal(publicRequest.url, "https://public-egress.internal/v1/request");
+  assert.equal(publicRequest.headers.get("x-nanocodex-target-url"), "https://example.com/archive");
+  assert.equal(publicRequest.headers.get("x-nanocodex-subject"), grant.egressSubject);
+  assert.equal(publicRequest.headers.get("authorization"), null);
+  assert.deepEqual([...new Uint8Array(await publicRequest.arrayBuffer())], [0, 255, 128, 254]);
+
+  const before = forwarded.length;
+  const spoofed = await worker.fetch(egressRequest(undefined, {
+    url: "https://example.com", headers: { "x-nanocodex-target-url": "https://api.github.com/user" },
+  }), env, context);
+  assert.equal(spoofed.status, 403);
+  const outsideGrant = await worker.fetch(egressRequest(bravo, {
+    url: "https://github.com/fixture/large.git/info/refs?service=git-upload-pack",
+  }), env, context);
+  assert.equal(outsideGrant.status, 403);
+  assert.equal(forwarded.length, before);
+
 });
 
 function activeGrant(connectorConnections) {
@@ -82,7 +138,7 @@ function activeGrant(connectorConnections) {
   };
 }
 
-function egressRequest(connectionId) {
+function egressRequest(connectionId, fields = {}) {
   return new Request("https://nanocodex-connect-api.gakonst.workers.dev/v1/egress", {
     method: "POST",
     headers: {
@@ -95,6 +151,7 @@ function egressRequest(connectionId) {
       url: "https://gmail.googleapis.com/gmail/v1/users/me/messages",
       thread_id: "123e4567-e89b-42d3-a456-426614174000",
       ...(connectionId === undefined ? {} : { connection_id: connectionId }),
+      ...fields,
     }),
   });
 }

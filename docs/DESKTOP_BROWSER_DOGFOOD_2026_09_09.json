@@ -1,0 +1,125 @@
+{
+  "baselineCommit": "b1b563a0",
+  "before": {
+    "firstNativeViewLayoutMs": 256.5120458602905,
+    "longStreamingSnapshotMedianMs": 44.2119836807251,
+    "longStreamingSnapshotP95Ms": 44.78597640991211,
+    "nativeEditorInputMs": 29.13498878479004,
+    "network": "none; isolated native view and protocol evidence",
+    "phase": "browser-before",
+    "tabSwitchMedianMs": 16.219019889831543,
+    "tabSwitchP95Ms": 22.189974784851074,
+    "unchanged800EventSnapshotMs": 19.510698318481445
+  },
+  "after": {
+    "firstNativeViewLayoutMs": 152.57692337036133,
+    "longStreamingSnapshotMedianMs": 43.43998432159424,
+    "longStreamingSnapshotP95Ms": 43.974995613098145,
+    "nativeEditorInputMs": 19.165992736816406,
+    "network": "none; isolated native view and protocol evidence",
+    "phase": "browser-after-isolated",
+    "tabSwitchMedianMs": 14.811038970947266,
+    "tabSwitchP95Ms": 18.670082092285156,
+    "unchanged800EventSnapshotMs": 19.099849462509155
+  },
+  "splits": {
+    "dividerResizeMedianMs": 7.493019104003906,
+    "dividerResizeP95Ms": 9.647965431213379,
+    "menuBarItemWidthPt": 22,
+    "network": "none; native window, editors, split layout and persistence",
+    "timestamp": "2026-09-08T23:39:52Z"
+  },
+  "voiceRestarts": [
+    {
+      "active": true,
+      "attempt": 1,
+      "cleanup_ms": 403.65099906921387,
+      "startup_ms": 2266.8029069900513,
+      "utc": "2026-09-08T23:38:37Z"
+    },
+    {
+      "active": true,
+      "attempt": 2,
+      "cleanup_ms": 398.2499837875366,
+      "startup_ms": 1674.66402053833,
+      "utc": "2026-09-08T23:38:39Z"
+    },
+    {
+      "active": true,
+      "attempt": 3,
+      "cleanup_ms": 379.6499967575073,
+      "startup_ms": 1507.1070194244385,
+      "utc": "2026-09-08T23:38:42Z"
+    }
+  ],
+  "voiceSpeech": {
+    "first_quiet_after_interrupt_ms": 1047.9689836502075,
+    "milestones": [
+      {
+        "elapsed_ms": 0.02205371856689453,
+        "stage": "call_start",
+        "utc": "2026-09-08T23:40:21Z"
+      },
+      {
+        "elapsed_ms": 1931.1860799789429,
+        "stage": "call_ready",
+        "utc": "2026-09-08T23:40:23Z"
+      },
+      {
+        "elapsed_ms": 1931.2530755996704,
+        "stage": "count_fixture_start",
+        "utc": "2026-09-08T23:40:23Z"
+      },
+      {
+        "elapsed_ms": 4050.6640672683716,
+        "stage": "first_user_transcript",
+        "utc": "2026-09-08T23:40:25Z"
+      },
+      {
+        "elapsed_ms": 12693.178057670593,
+        "stage": "count_output",
+        "utc": "2026-09-08T23:40:33Z"
+      },
+      {
+        "elapsed_ms": 13289.431095123291,
+        "stage": "first_assistant_transcript",
+        "utc": "2026-09-08T23:40:34Z"
+      },
+      {
+        "elapsed_ms": 13754.649043083191,
+        "stage": "interrupt_fixture_start",
+        "utc": "2026-09-08T23:40:35Z"
+      },
+      {
+        "elapsed_ms": 14802.62005329132,
+        "stage": "interrupt_output_quiet",
+        "utc": "2026-09-08T23:40:36Z"
+      },
+      {
+        "elapsed_ms": 22907.697081565857,
+        "stage": "interrupt_answer",
+        "utc": "2026-09-08T23:40:44Z"
+      },
+      {
+        "elapsed_ms": 22907.780051231384,
+        "stage": "followup_fixture_start",
+        "utc": "2026-09-08T23:40:44Z"
+      },
+      {
+        "elapsed_ms": 27088.995099067688,
+        "stage": "followup_answer",
+        "utc": "2026-09-08T23:40:48Z"
+      }
+    ],
+    "restart_ms": 1556.5710067749023,
+    "startup_ms": 1931.2530755996704,
+    "stop_ms": 104.85994815826416
+  },
+  "installation": {
+    "installedAt": "2026-09-08T23:47:58.217593+00:00",
+    "executableSHA256": "5e5458c517da16d9bc3783d237350b13f7b47e8c9c1707382697c7588bab7eba",
+    "backup": "/tmp/Nanocodex-before-browser-workspace-20260909.app",
+    "signature": "codesign --verify --deep --strict passed",
+    "path": "/Applications/Nanocodex.app"
+  }
+}

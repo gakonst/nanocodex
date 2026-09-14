@@ -2,17 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   DEFAULT_MEMORY_SCAN_LIMIT,
-  MAX_MEMORY_CONTENT_BYTES,
-  MAX_MEMORY_QUERY_BYTES,
-  MAX_MEMORY_READ_KEYS,
-  MAX_MEMORY_RECORDS,
-  MAX_MEMORY_SCAN_RESULTS,
-  MAX_MEMORY_TOTAL_CONTENT_BYTES,
   MEMORY_PROBATION_DURATION_MS,
   memoryPreview,
   normalizeMemoryIdentity,
   parseMemoryOperation,
-  parseMemoryToolOperation,
   rankMemories,
   tokenizeMemory,
   type MemoryRecord,
@@ -68,7 +61,7 @@ describe("durable memory contract", () => {
     })).toThrow("supported memory key fields are id and version");
   });
 
-  it("validates positive safe keys and byte-bounded nonempty input", () => {
+  it("validates positive safe keys and nonempty input", () => {
     for (const key of [
       { id: 0, version: 1 },
       { id: 1, version: -1 },
@@ -87,29 +80,23 @@ describe("durable memory contract", () => {
     );
     expect(parseMemoryOperation({ operation: "scan", query: "é".repeat(256), limit: 1 }))
       .toMatchObject({ limit: 1 });
-    expect(() => parseMemoryOperation({ operation: "scan", query: "é".repeat(257) })).toThrow(
-      `${MAX_MEMORY_QUERY_BYTES} UTF-8 bytes`,
-    );
+    expect(parseMemoryOperation({ operation: "scan", query: "é".repeat(257) }))
+      .toMatchObject({ operation: "scan" });
     expect(parseMemoryOperation({ operation: "put", content: "é".repeat(512) }))
       .toMatchObject({ operation: "put" });
-    expect(() => parseMemoryOperation({ operation: "put", content: "é".repeat(513) })).toThrow(
-      `${MAX_MEMORY_CONTENT_BYTES} UTF-8 bytes`,
-    );
-    for (const limit of [0, 6, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    expect(parseMemoryOperation({ operation: "put", content: "é".repeat(1_100_000) }))
+      .toMatchObject({ operation: "put" });
+    for (const limit of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
       expect(() => parseMemoryOperation({ operation: "scan", query: "rust", limit })).toThrow(
-        "integer from 1 to 5",
+        "positive safe integer",
       );
     }
     expect(() => parseMemoryOperation({ operation: "read", keys: [] })).toThrow(
       "requires at least one key",
     );
-    expect(() => parseMemoryOperation({
-      operation: "read",
-      keys: Array.from({ length: MAX_MEMORY_READ_KEYS + 1 }, (_, index) => ({
-        id: index + 1,
-        version: 1,
-      })),
-    })).toThrow(`at most ${MAX_MEMORY_READ_KEYS} keys`);
+    expect(parseMemoryOperation({
+      operation: "read", keys: Array.from({ length: 120 }, (_, index) => ({ id: index + 1, version: 1 })),
+    })).toMatchObject({ keys: expect.arrayContaining([{ id: 120, version: 1 }]) });
     expect(parseMemoryOperation({
       operation: "read",
       keys: [{ id: 1, version: 1 }, { id: 1, version: 1 }, { id: 1, version: 2 }],
@@ -119,25 +106,13 @@ describe("durable memory contract", () => {
     });
   });
 
-  it("bounds oversized model-authored scan limits without relaxing the public parser", () => {
-    expect(parseMemoryToolOperation({ operation: "scan", query: "rust", limit: 10 })).toEqual({
-      operation: "scan",
-      query: "rust",
-      limit: MAX_MEMORY_SCAN_RESULTS,
+  it("preserves caller-selected scan limits without a separate model-only parser", () => {
+    expect(parseMemoryOperation({ operation: "scan", query: "rust", limit: 120 })).toEqual({
+      operation: "scan", query: "rust", limit: 120,
     });
-    expect(() => parseMemoryOperation({ operation: "scan", query: "rust", limit: 10 })).toThrow(
-      "integer from 1 to 5",
-    );
-    for (const limit of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
-      expect(() => parseMemoryToolOperation({ operation: "scan", query: "rust", limit })).toThrow(
-        "integer from 1 to 5",
-      );
-    }
   });
 
-  it("exports Tact's account bounds and probation duration", () => {
-    expect(MAX_MEMORY_RECORDS).toBe(512);
-    expect(MAX_MEMORY_TOTAL_CONTENT_BYTES).toBe(256 * 1_024);
+  it("exports the probation duration", () => {
     expect(MEMORY_PROBATION_DURATION_MS).toBe(7 * 24 * 60 * 60 * 1_000);
   });
 });
@@ -189,6 +164,19 @@ describe("durable memory retrieval", () => {
       2,
     );
     expect(candidates.candidates.map((candidate) => candidate.key.id).sort()).toEqual([1, 2]);
+  });
+
+  it("replays a lazy corpus twice and retains exact BM25 scores and stable ties", () => {
+    const corpus = Array.from({ length: 2_000 }, (_, index) => memory(index + 1,
+      index === 1_999 ? "copper copper lighthouse" : "copper ballast"));
+    let passes = 0;
+    const actual = rankMemories("copper lighthouse", function* () {
+      passes += 1;
+      yield* corpus;
+    });
+    expect(passes).toBe(2);
+    expect(actual).toEqual(rankMemories("copper lighthouse", corpus));
+    expect(actual.candidates.map((candidate) => candidate.key.id)).toEqual([2_000, 1, 2, 3, 4]);
   });
 
   it("returns UTF-8-safe previews bounded to 64 bytes", () => {

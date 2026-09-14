@@ -1,5 +1,13 @@
 # nanocodex-react
 
+The `nanocodex-react/agent` presentation contract exposes `projectToolOutput`,
+`formatToolOutput`, and `GeneratedOutput`. The controller retains emitted content
+from both model-visible and structured tool results in `ToolActivity.generatedOutput`,
+separately from bounded diagnostics. Code-mode content and MCP media/resources
+survive history boundaries; inline binary is omitted from diagnostics. Resources
+need embedded bytes or an HTTP(S) URL; a path on another machine is not resolved
+against the app origin. `generatedOutputUrl` applies the same URL policy in renderers.
+
 React hooks over the headless browser SDK. The vanilla config owns the package
 Worker, Rust/WASM Agent, persistent workspace, and cleanup. React only reads
 that external state and binds event subscriptions.
@@ -39,6 +47,11 @@ bursts publish at most once per animation frame; while `visible` is false the
 controller continues reducing events and publishes one catch-up snapshot after
 becoming visible. `AgentController` provides the same API as a render-prop
 component.
+
+Calling `cancel()` immediately fences corrections already submitted for that
+turn. A later `submit()` starts a new turn while cancellation settles, and
+repeated Stop requests share the same cancellation. Detaching the controller
+also prevents a delayed steering response from starting another turn.
 
 Reasoning summaries and assistant text arrive as separate Markdown-bearing
 entries. Consumers can apply the same streaming renderer to both while keeping

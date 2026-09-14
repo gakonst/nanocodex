@@ -12,7 +12,7 @@ type BrowserEgressEnv = AccountAuthEnv & { NANOCODEX: Fetcher };
 
 const THREAD_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
-const ENVELOPE_FIELDS = new Set(["thread_id", "url", "method", "headers", "body"]);
+const ENVELOPE_FIELDS = new Set(["thread_id", "url", "method", "headers", "body", "body_base64"]);
 const PRINCIPAL_HEADERS = new Set([
   "authorization",
   "cookie",
@@ -26,6 +26,7 @@ type EgressEnvelope = Readonly<{
   method?: string;
   headers?: Record<string, string>;
   body?: string;
+  body_base64?: string;
 }>;
 
 /** One credential-free, destination-policy-owned egress capability for browser runtimes. */
@@ -55,7 +56,7 @@ export async function routeBrowserEgress(
   if (!envelope) return json({ error: "invalid_request" }, 400);
   const method = (envelope.method ?? "GET").toUpperCase();
   if (!METHODS.has(method)) return json({ error: "method_denied" }, 403);
-  if ((method === "GET" || method === "HEAD") && envelope.body !== undefined) {
+  if ((method === "GET" || method === "HEAD") && (envelope.body !== undefined || envelope.body_base64 !== undefined)) {
     return json({ error: "body_denied" }, 400);
   }
   const headers = decodeHeaders(envelope.headers);
@@ -65,12 +66,14 @@ export async function routeBrowserEgress(
   try { destination = new URL(envelope.url); } catch { return json({ error: "invalid_url" }, 400); }
   let target: Request;
   try {
+    const body = envelope.body_base64 === undefined ? envelope.body
+      : Uint8Array.from(atob(envelope.body_base64), (character) => character.charCodeAt(0));
     target = new Request(destination, {
       method,
       headers,
-      ...(method === "GET" || method === "HEAD" || envelope.body === undefined
+      ...(method === "GET" || method === "HEAD" || body === undefined
         ? {}
-        : { body: envelope.body }),
+        : { body }),
       redirect: "manual",
       signal: request.signal,
     });
@@ -114,6 +117,9 @@ async function readEnvelope(request: Request): Promise<EgressEnvelope | undefine
     || typeof value.url !== "string"
     || (value.method !== undefined && typeof value.method !== "string")
     || (value.body !== undefined && typeof value.body !== "string")
+    || (value.body !== undefined && value.body_base64 !== undefined)
+    || (value.body_base64 !== undefined && (typeof value.body_base64 !== "string"
+      || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.body_base64)))
     || (value.headers !== undefined && !isRecord(value.headers))) return undefined;
   return value as EgressEnvelope;
 }

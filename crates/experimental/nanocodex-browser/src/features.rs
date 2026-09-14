@@ -1262,10 +1262,14 @@ pub struct BrowserHeapInspection {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BrowserVideoArtifact {
     pub path: PathBuf,
+    /// Constant-rate frames written to the encoded video.
     pub frame_count: usize,
+    /// Distinct frames received from Chromium before timeline backfill.
+    pub captured_frame_count: usize,
     pub duration_ms: u64,
     pub width: u32,
     pub height: u32,
+    pub frames_per_second: u8,
 }
 
 /// File-backed PDF rendered by Chromium from the active page.

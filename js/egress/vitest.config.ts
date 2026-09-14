@@ -1,3 +1,4 @@
+import { gitProvider } from "../test-fixtures/git-provider.mjs";
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
@@ -67,6 +68,11 @@ export default defineConfig({
     cloudflareTest({
       wrangler: { configPath: "./wrangler.broker.jsonc" },
       miniflare: {
+        // Ownership tests provide their resolver explicitly; other tests deny
+        // direct subjects without loading the managed application's runtime.
+        serviceBindings: {
+          MANAGED_AGENT_OWNERSHIP: async () => new Response(null, { status: 503 }),
+        },
         bindings: {
           ENVIRONMENT: "test",
           CREDENTIAL_ENCRYPTION_KEY: TEST_KEY,
@@ -97,6 +103,8 @@ export default defineConfig({
           durableObjects: { CHATGPT_EGRESS: "ChatGptEgress" },
         }],
         outboundService: async (request) => {
+          const gitResponse = await gitProvider(request);
+          if (gitResponse) return gitResponse;
           const url = new URL(request.url);
           if (request.method === "POST" && url.hostname === "slack.com"
             && url.pathname === "/api/oauth.v2.access") {

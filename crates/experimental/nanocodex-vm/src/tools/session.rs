@@ -12,7 +12,7 @@ use std::{
 
 use crate::{
     command::GuestCommand,
-    config::VmConfig,
+    config::{Gpu, VmConfig},
     egress::EgressLease,
     process::{PrivateVmProcessConfig, VmProcessConfig, VmProcessError},
 };
@@ -229,6 +229,10 @@ pub enum VmToolSessionError {
     #[error("guest tool execution failed: {0}")]
     Guest(String),
 
+    /// The requested GPU failed its guest driver and command submission check.
+    #[error("GPU readiness failed; use a prepared GPU guest image: {0}")]
+    GpuReadiness(String),
+
     /// A trusted host-control command exceeded its deadline.
     #[error("guest command exceeded {timeout:?}")]
     GuestTimeout {
@@ -322,6 +326,7 @@ struct VmToolSessionInner {
     child: StdMutex<Option<Child>>,
     egress: StdMutex<Option<EgressLease>>,
     process_config: StdMutex<Option<PrivateVmProcessConfig>>,
+    lifetime_guards: StdMutex<Vec<Arc<dyn std::any::Any + Send + Sync>>>,
 }
 
 #[derive(Default)]
@@ -459,10 +464,26 @@ impl VmToolSession {
         startup_timeout: Duration,
         shutdown_timeout: Duration,
     ) -> Result<Self, VmToolSessionError> {
+        let gpu = vm.gpu_value();
         let (vm, guest) = egress.configure(vm, &guest);
         let session = Self::spawn_vm_with_shutdown_timeout(command, vm, guest, shutdown_timeout)?;
         let startup = async {
             session.ready().await?;
+            if gpu == Gpu::Vulkan {
+                let output = session
+                    .command(
+                        VmCommand::new("/usr/local/bin/nanocodex-gpu-check")
+                            .timeout(Duration::from_secs(20))
+                            .max_output_bytes(4096),
+                    )
+                    .await
+                    .map_err(|error| VmToolSessionError::GpuReadiness(error.to_string()))?;
+                if output.exit_code != 0 {
+                    return Err(VmToolSessionError::GpuReadiness(
+                        String::from_utf8_lossy(&output.stderr).into_owned(),
+                    ));
+                }
+            }
             session.provision_egress(egress).await
         };
         match tokio::time::timeout(startup_timeout, startup).await {
@@ -562,6 +583,7 @@ impl VmToolSession {
                 child: StdMutex::new(Some(child)),
                 egress: StdMutex::new(None),
                 process_config: StdMutex::new(None),
+                lifetime_guards: StdMutex::new(Vec::new()),
             });
             runtime.spawn(write_requests(
                 input,
@@ -585,6 +607,11 @@ impl VmToolSession {
         });
         record_vm_result(&span, started_at, &result);
         result
+    }
+
+    /// Retains an external runtime owner until the last tool capability drops.
+    pub(crate) fn retain<T: std::any::Any + Send + Sync>(&self, guard: Arc<T>) {
+        lock_unpoisoned(&self.handle.inner.lifetime_guards).push(guard);
     }
 
     /// Returns a clone-cheap capability for this session.
@@ -780,7 +807,7 @@ impl VmToolSession {
         result
     }
 
-    async fn terminate(&self) {
+    pub(crate) async fn terminate(&self) {
         let child = begin_termination(&self.handle.inner);
         if let Some(mut child) = child {
             let _ = tokio::time::timeout(self.handle.inner.shutdown_timeout, child.wait()).await;
@@ -2164,7 +2191,8 @@ mod tracing_tests {
                     ToolInput::Function(to_raw_value(&json!({"cmd": "true"})).unwrap()),
                     ToolContext::new("model", "session", "call", &[], 1_000),
                 )
-                .await;
+                .await
+                .expect("a settled VM failure must remain a tool result");
             assert!(!output.success);
             let ToolOutputBody::Text(model_error) = output.output else {
                 panic!("tool registry should produce a model-visible text error");

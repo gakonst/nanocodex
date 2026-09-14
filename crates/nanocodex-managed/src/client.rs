@@ -1,4 +1,4 @@
-use std::{fmt, sync::Arc};
+use std::{fmt, sync::Arc, time::Duration};
 
 use reqwest::{
     Method, Response,
@@ -13,13 +13,15 @@ use nanocodex_oai_api::{Model, ReasoningMode, Thinking};
 use crate::{
     AgentList, AgentReceipt, AgentSettings, AgentSettingsPatch, AgentSettingsResponse, AgentState,
     EventCursor, EventHistoryPage, FindSessionsRequest, FindSessionsResponse, ManagedApiKey,
-    ManagedError, ManagedEventStream, MemoryKey, MemoryListResponse, MemoryRecord,
-    ModelCapabilities, PromptInput, ReadSessionBody, ReadSessionRequest, ReadSessionResponse,
-    TurnAction, TurnSteer, TurnSubmission, TurnView,
+    ManagedError, ManagedEventStream, MemoryKey, MemoryListResponse, MemoryRecord, PromptInput,
+    ReadSessionBody, ReadSessionRequest, ReadSessionResponse, SteerWithdrawal, TurnAction,
+    TurnSteer, TurnSubmission, TurnView,
 };
 
 const MAX_HISTORY_PAGE: u16 = 256;
 const SUBMIT_ATTEMPTS: usize = 3;
+const READ_ATTEMPTS: usize = 3;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Builder for a cloneable native managed HTTP client.
 ///
@@ -67,7 +69,9 @@ impl ManagedClientBuilder {
 /// Cloneable authenticated client for the account-managed control plane.
 ///
 /// Clones share one redirect-disabled HTTP pool and immutable authorization
-/// policy. Turn submission is the only ordinary request that retries.
+/// policy. Reads retry transient failures, turn submission retries with its
+/// durable identity, and steering retries only an explicit recovery rejection
+/// that guarantees no input was delivered.
 #[derive(Clone)]
 pub struct ManagedClient {
     pub(crate) http: reqwest::Client,
@@ -126,6 +130,10 @@ impl ManagedClient {
         let http = reqwest::Client::builder()
             .default_headers(headers)
             .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(10))
+            // SSE sends keepalives every 15 seconds. Bound a dead connection
+            // without limiting the lifetime of a healthy event stream.
+            .read_timeout(Duration::from_secs(45))
             .build()
             .map_err(ManagedError::Transport)?;
         drop(builder.api_key);
@@ -147,20 +155,12 @@ impl ManagedClient {
         validate_agent_receipt(receipt)
     }
 
-    /// Resolves the model availability advertised by the connected account.
-    ///
-    /// This is an authoritative, fail-closed server projection; provider
-    /// credentials and the raw remote model catalog never cross this boundary.
+    /// Creates an agent with its initial model and reasoning policy.
     ///
     /// # Errors
     ///
-    /// Returns a transport, HTTP, size, or response-schema failure.
-    pub async fn model_capabilities(&self) -> Result<ModelCapabilities, ManagedError> {
-        self.json(Method::GET, "v1/model-capabilities", None, None)
-            .await
-    }
-
-    pub(crate) async fn create_with_settings(
+    /// Returns a settings-validation, transport, HTTP, or response-schema failure.
+    pub async fn create_with_settings(
         &self,
         settings: AgentSettings,
     ) -> Result<AgentReceipt, ManagedError> {
@@ -350,6 +350,79 @@ impl ManagedClient {
         Ok(())
     }
 
+    /// Lists an agent's durable cron schedules.
+    ///
+    /// # Errors
+    /// Returns an identifier, transport, HTTP, or response-schema failure.
+    pub async fn triggers(&self, agent_id: &str) -> Result<crate::CronTriggerList, ManagedError> {
+        validate_id("agent", agent_id)?;
+        self.json(
+            Method::GET,
+            &format!("{}/triggers", agent_path(agent_id)),
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Reads one durable cron schedule.
+    ///
+    /// # Errors
+    /// Returns an identifier, transport, HTTP, or response-schema failure.
+    pub async fn trigger(
+        &self,
+        agent_id: &str,
+        trigger_id: &str,
+    ) -> Result<crate::CronTrigger, ManagedError> {
+        self.json(
+            Method::GET,
+            &trigger_path(agent_id, trigger_id)?,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Creates or replaces one named cron schedule with an idempotent PUT.
+    ///
+    /// # Errors
+    /// Returns a configuration, transport, HTTP, or response-schema failure.
+    pub async fn put_trigger(
+        &self,
+        agent_id: &str,
+        trigger_id: &str,
+        config: &crate::CronTriggerConfig,
+    ) -> Result<crate::CronTrigger, ManagedError> {
+        let path = trigger_path(agent_id, trigger_id)?;
+        config.validate()?;
+        let body = serde_json::to_vec(config)
+            .map_err(|_| ManagedError::InvalidResponse("failed to encode cron trigger"))?;
+        self.json(Method::PUT, &path, Some(&body), None).await
+    }
+
+    /// Deletes a durable cron schedule.
+    ///
+    /// # Errors
+    /// Returns an identifier, transport, or HTTP failure.
+    pub async fn delete_trigger(
+        &self,
+        agent_id: &str,
+        trigger_id: &str,
+    ) -> Result<(), ManagedError> {
+        let response = self
+            .request(
+                Method::DELETE,
+                &trigger_path(agent_id, trigger_id)?,
+                None,
+                None,
+            )
+            .await?;
+        if !response.status().is_success() {
+            return Err(response_error(response).await);
+        }
+        Ok(())
+    }
+
     /// Searches retained managed sessions.
     ///
     /// # Errors
@@ -423,6 +496,7 @@ impl ManagedClient {
         let response = self
             .http
             .delete(url)
+            .timeout(REQUEST_TIMEOUT)
             .send()
             .await
             .map_err(ManagedError::Transport)?;
@@ -469,13 +543,7 @@ impl ManagedClient {
                 query.append_pair("before", cursor);
             }
         }
-        let response = self
-            .http
-            .get(url)
-            .send()
-            .await
-            .map_err(ManagedError::Transport)?;
-        let page: EventHistoryPage = decode_response(response).await?;
+        let page: EventHistoryPage = self.read_json(url).await?;
         crate::sse::validate_numeric_cursor(&page.latest_cursor)?;
         if page.data.len() > limit as usize {
             return Err(ManagedError::InvalidResponse(
@@ -576,8 +644,47 @@ impl ManagedClient {
         turn_id: &str,
         input: &PromptInput,
     ) -> Result<TurnAction, ManagedError> {
-        self.turn_action(agent_id, turn_id, "steer", Some(input))
+        self.steer_identified(agent_id, turn_id, input, None).await
+    }
+
+    /// Adds input with a caller-selected identity for pending withdrawal.
+    ///
+    /// # Errors
+    /// Returns a validation, transport, HTTP, or response-schema failure.
+    pub async fn steer_with_id(
+        &self,
+        agent_id: &str,
+        turn_id: &str,
+        message_id: &str,
+        input: &PromptInput,
+    ) -> Result<TurnAction, ManagedError> {
+        validate_id("message", message_id)?;
+        self.steer_identified(agent_id, turn_id, input, Some(message_id))
             .await
+    }
+
+    async fn steer_identified(
+        &self,
+        agent_id: &str,
+        turn_id: &str,
+        input: &PromptInput,
+        message_id: Option<&str>,
+    ) -> Result<TurnAction, ManagedError> {
+        loop {
+            let result = self
+                .turn_action(agent_id, turn_id, "steer", Some(input), message_id)
+                .await;
+            if matches!(&result, Err(ManagedError::Http { status, code, .. })
+                if *status == reqwest::StatusCode::SERVICE_UNAVAILABLE && code == "turn_recovering")
+            {
+                // The service returns this only before calling turn.steer.
+                // A transport failure is ambiguous and must never be retried
+                // here because steering has no durable idempotency key.
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+            return result;
+        }
     }
 
     /// Requests cancellation of an active managed turn.
@@ -587,7 +694,39 @@ impl ManagedClient {
     /// Returns an identifier-validation, transport, HTTP, size, or
     /// response-schema failure.
     pub async fn cancel(&self, agent_id: &str, turn_id: &str) -> Result<TurnAction, ManagedError> {
-        self.turn_action(agent_id, turn_id, "cancel", None).await
+        self.turn_action(agent_id, turn_id, "cancel", None, None)
+            .await
+    }
+
+    /// Atomically withdraws an identified steer if it is still pending.
+    ///
+    /// # Errors
+    /// Returns a validation, transport, HTTP, or response-schema failure.
+    pub async fn withdraw_steer(
+        &self,
+        agent_id: &str,
+        turn_id: &str,
+        message_id: &str,
+    ) -> Result<SteerWithdrawal, ManagedError> {
+        validate_id("agent", agent_id)?;
+        validate_id("turn", turn_id)?;
+        validate_id("message", message_id)?;
+        let body = serde_json::to_vec(&serde_json::json!({"message_id": message_id}))
+            .map_err(|_| ManagedError::InvalidResponse("failed to encode withdrawal"))?;
+        let receipt: SteerWithdrawal = self
+            .json(
+                Method::POST,
+                &format!("{}/turns/{turn_id}/withdraw-steer", agent_path(agent_id)),
+                Some(&body),
+                None,
+            )
+            .await?;
+        if receipt.turn_id != turn_id || receipt.message_id != message_id {
+            return Err(ManagedError::InvalidResponse(
+                "withdrawal acknowledged a different steer",
+            ));
+        }
+        Ok(receipt)
     }
 
     /// Opens a resumable durable event stream starting at a validated cursor.
@@ -614,11 +753,12 @@ impl ManagedClient {
         turn_id: &str,
         action: &str,
         input: Option<&PromptInput>,
+        message_id: Option<&str>,
     ) -> Result<TurnAction, ManagedError> {
         validate_id("agent", agent_id)?;
         validate_id("turn", turn_id)?;
         let body = input
-            .map(|input| serde_json::to_vec(&TurnSteer { input }))
+            .map(|input| serde_json::to_vec(&TurnSteer { input, message_id }))
             .transpose()
             .map_err(|_| ManagedError::InvalidResponse("failed to encode steer"))?;
         self.json(
@@ -695,8 +835,38 @@ impl ManagedClient {
         body: Option<&[u8]>,
         idempotency_key: Option<&str>,
     ) -> Result<T, ManagedError> {
+        if method == Method::GET && body.is_none() && idempotency_key.is_none() {
+            return self.read_json(self.url(path)?).await;
+        }
         let response = self.request(method, path, body, idempotency_key).await?;
         decode_response(response).await
+    }
+
+    async fn read_json<T: DeserializeOwned>(&self, url: Url) -> Result<T, ManagedError> {
+        for attempt in 0..READ_ATTEMPTS {
+            let result = match self
+                .http
+                .get(url.clone())
+                .timeout(REQUEST_TIMEOUT)
+                .send()
+                .await
+            {
+                Ok(response) => decode_response(response).await,
+                Err(error) => Err(ManagedError::Transport(error)),
+            };
+            let retry = match &result {
+                Err(ManagedError::Transport(_)) => true,
+                Err(ManagedError::Http { status, .. }) => {
+                    status.is_server_error() || *status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                }
+                _ => false,
+            };
+            if !retry || attempt + 1 == READ_ATTEMPTS {
+                return result;
+            }
+            tokio::time::sleep(Duration::from_millis(250 << attempt)).await;
+        }
+        unreachable!("the last read attempt always returns")
     }
 
     async fn request(
@@ -706,7 +876,10 @@ impl ManagedClient {
         body: Option<&[u8]>,
         idempotency_key: Option<&str>,
     ) -> Result<Response, ManagedError> {
-        let mut request = self.http.request(method, self.url(path)?);
+        let mut request = self
+            .http
+            .request(method, self.url(path)?)
+            .timeout(REQUEST_TIMEOUT);
         if let Some(body) = body {
             request = request
                 .header(CONTENT_TYPE, "application/json")
@@ -731,7 +904,7 @@ fn install_default_rustls_crypto_provider() {
     }
 }
 
-fn validate_origin(origin: &Url) -> Result<(), ManagedError> {
+pub(crate) fn validate_origin(origin: &Url) -> Result<(), ManagedError> {
     if !matches!(origin.scheme(), "http" | "https")
         || !origin.username().is_empty()
         || origin.password().is_some()
@@ -829,6 +1002,21 @@ pub(crate) fn validate_idempotency_key(value: &str) -> Result<(), ManagedError> 
     Ok(())
 }
 
+fn trigger_path(agent_id: &str, trigger_id: &str) -> Result<String, ManagedError> {
+    validate_id("agent", agent_id)?;
+    if trigger_id.is_empty()
+        || trigger_id.len() > 64
+        || !trigger_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(ManagedError::Configuration(
+            "trigger id must be 1-64 letters, digits, underscores or hyphens".to_owned(),
+        ));
+    }
+    Ok(format!("{}/triggers/{trigger_id}", agent_path(agent_id)))
+}
+
 pub(crate) fn agent_path(agent_id: &str) -> String {
     format!("v1/agents/{agent_id}")
 }
@@ -861,6 +1049,165 @@ mod tests {
 
     fn key() -> String {
         format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43))
+    }
+
+    #[tokio::test]
+    async fn history_retries_transient_failures_with_the_same_page_cursor() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        for (status, expected_attempts) in [
+            (StatusCode::SERVICE_UNAVAILABLE, 3),
+            (StatusCode::TOO_MANY_REQUESTS, 3),
+            (StatusCode::FORBIDDEN, 1),
+        ] {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let observed = attempts.clone();
+            let app = Router::new().route("/v1/agents/agent-1/events/history", get(move |uri: axum::http::Uri| {
+                let observed = observed.clone();
+                async move {
+                    assert_eq!(uri.query(), Some("limit=256&before=500"));
+                    if observed.fetch_add(1, Ordering::SeqCst) < 2 {
+                        (status, axum::Json(serde_json::json!({"error": "fixture", "message": "temporarily unavailable"})))
+                    } else {
+                        (StatusCode::OK, axum::Json(serde_json::json!({"data": [], "has_more": false, "latest_cursor": "500"})))
+                    }
+                }
+            }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let client = ManagedClient::new(
+                format!("http://{address}"),
+                ManagedApiKey::parse(key()).unwrap(),
+            )
+            .unwrap();
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                client.history("agent-1", Some("500"), 256),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.is_ok(), expected_attempts == 3);
+            assert_eq!(attempts.load(Ordering::SeqCst), expected_attempts);
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn identified_steers_and_withdrawals_preserve_identity() {
+        let app = Router::new()
+            .route("/v1/agents/agent-1/turns/turn-1/steer", axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
+                assert_eq!(body, serde_json::json!({"input": "correction", "message_id": "pending"}));
+                axum::Json(serde_json::json!({"turn_id": "turn-1", "state": "steering"}))
+            }))
+            .route("/v1/agents/agent-1/turns/turn-1/withdraw-steer", axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
+                let id = body["message_id"].as_str().unwrap();
+                axum::Json(serde_json::json!({"turn_id": "turn-1", "message_id": if id == "mismatch" { "other" } else { id }, "withdrawn": id == "pending"}))
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ManagedClient::new(
+            format!("http://{address}"),
+            ManagedApiKey::parse(key()).unwrap(),
+        )
+        .unwrap();
+        client
+            .steer_with_id(
+                "agent-1",
+                "turn-1",
+                "pending",
+                &PromptInput::Text("correction".to_owned()),
+            )
+            .await
+            .unwrap();
+        assert!(
+            client
+                .withdraw_steer("agent-1", "turn-1", "pending")
+                .await
+                .unwrap()
+                .withdrawn
+        );
+        assert!(
+            !client
+                .withdraw_steer("agent-1", "turn-1", "consumed")
+                .await
+                .unwrap()
+                .withdrawn
+        );
+        assert!(matches!(
+            client.withdraw_steer("agent-1", "turn-1", "mismatch").await,
+            Err(ManagedError::InvalidResponse(_))
+        ));
+        assert!(
+            client
+                .withdraw_steer("agent-1", "turn-1", "../invalid")
+                .await
+                .is_err()
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn steering_retries_only_explicit_pre_delivery_recovery_rejections() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        for (status, code, expected_attempts) in [
+            (StatusCode::SERVICE_UNAVAILABLE, "turn_recovering", 2),
+            (StatusCode::SERVICE_UNAVAILABLE, "retryable", 1),
+            (StatusCode::CONFLICT, "turn_not_steerable", 1),
+        ] {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let observed = attempts.clone();
+            let app = Router::new().route(
+                "/v1/agents/agent-1/turns/turn-1/steer",
+                axum::routing::post(move |body: axum::body::Bytes| {
+                    let observed = observed.clone();
+                    async move {
+                        assert_eq!(
+                            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                            serde_json::json!({"input": "once"})
+                        );
+                        if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                            (
+                                status,
+                                axum::Json(
+                                    serde_json::json!({"error": code, "message": "fixture"}),
+                                ),
+                            )
+                        } else {
+                            (
+                                StatusCode::ACCEPTED,
+                                axum::Json(
+                                    serde_json::json!({"turn_id": "turn-1", "state": "steering"}),
+                                ),
+                            )
+                        }
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let client = ManagedClient::new(
+                format!("http://{address}"),
+                ManagedApiKey::parse(key()).unwrap(),
+            )
+            .unwrap();
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                client.steer("agent-1", "turn-1", &PromptInput::Text("once".to_owned())),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.is_ok(), expected_attempts == 2);
+            assert_eq!(attempts.load(Ordering::SeqCst), expected_attempts);
+            server.abort();
+        }
     }
 
     #[test]

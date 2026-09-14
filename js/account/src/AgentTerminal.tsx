@@ -1,3 +1,4 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   memo,
   type ReactNode,
@@ -25,6 +26,7 @@ import {
   type CredentialSource,
 } from "./modelSession";
 import { ArtifactDock } from "./ArtifactDock";
+import { ManagedAgentSchedules } from "./ManagedAgentSchedules";
 import {
   ACCOUNT_MCP_CATALOG_CHANGED,
   browserMcpConfiguration,
@@ -32,14 +34,18 @@ import {
   type BrowserAccountMcpConnection,
 } from "./browserMcp";
 import { clientFailureMessage } from "./clientFailure";
+import { AgentModelMenu } from "./AgentModelMenu";
 import { attachManagedBrowserHand } from "./managedBrowserHand";
-import { managedTerminalAgent, openManagedAgent } from "./managedAgentRuntime";
+import { useAccountSession } from "./AccountSession";
+import { RemoteScreens } from "./RemoteScreens";
+import { managedConversationQueryOptions, managedTerminalAgent, openManagedAgent } from "./managedAgentRuntime";
 
 export type { AgentTerminalMode, AgentTerminalState } from "nanocodex-terminal";
 export { AgentTerminalView } from "nanocodex-terminal";
 
 type Model = ManagedCreateSettings["model"];
 type Thinking = ManagedCreateSettings["thinking"];
+
 
 /** Authenticated website policy around the headless Agent SDK and shared transcript view. */
 type AgentTerminalProps = Readonly<{
@@ -114,10 +120,11 @@ const BrowserAgentTerminal = memo(function BrowserAgentTerminal({
 }: AgentTerminalProps & {
   accountMcpConnections: readonly BrowserAccountMcpConnection[];
 }) {
-  const defaultSettings = terminalDefaultSettings(source, authStatus);
+  const account = useAccountSession().account;
+  const defaultSettings = terminalDefaultSettings(source);
   const [settings, setSettings] = useState(defaultSettings);
   const [conversationStarted, setConversationStarted] = useState(false);
-  const settingsIdentity = `${threadId}:${source ?? "none"}:${authStatus?.state === "ready" && authStatus.astraEntitled}`;
+  const settingsIdentity = `${threadId}:${source ?? "none"}`;
   useEffect(() => {
     setSettings(defaultSettings);
     setConversationStarted(false);
@@ -132,14 +139,14 @@ const BrowserAgentTerminal = memo(function BrowserAgentTerminal({
         thinking: "none" as const,
         reasoningMode: "standard" as const,
         fastMode: false,
-      } : source === "brokered" && authStatus?.state === "ready" && authStatus.astraEntitled ? {
+      } : {
         model: "gpt-6-astra" as const,
-        thinking: "high" as const,
+        thinking: "low" as const,
         reasoningMode: "standard" as const,
         fastMode: false,
-      } : {}),
+      }),
     },
-  }), [accountMcpConnections, authStatus, source, threadId]);
+  }), [accountMcpConnections, source, threadId]);
   const {
     data: agent,
     error,
@@ -179,6 +186,7 @@ const BrowserAgentTerminal = memo(function BrowserAgentTerminal({
       agent={agent}
       agentError={isError ? errorMessage(error) : undefined}
       composer={composer}
+      composerPlaceholder="Ask Nanocodex"
       inactiveMessage={({ agentError, agentStatus }) => inactiveTerminalMessage({
         agentError,
         agentStatus,
@@ -193,16 +201,18 @@ const BrowserAgentTerminal = memo(function BrowserAgentTerminal({
       retryAgent={retryAgent}
       voice={voiceEnabled}
       welcome={welcome}
-      controls={source === "brokered" ? ({ agentReady }) => (
-        <TerminalSettingsControls
-          agentReady={agentReady}
-          astraEntitled={authStatus?.state === "ready" && authStatus.astraEntitled}
-          modelLocked={conversationStarted}
-          settings={settings}
-          onFastMode={updateFastMode}
-          onModel={updateModel}
-          onThinking={updateThinking}
-        />
+      controls={source === "brokered" || account?.persistent ? ({ agentReady }) => (
+        <>
+          {source === "brokered" && <AgentModelMenu
+            agentReady={agentReady}
+            modelLocked={conversationStarted}
+            settings={settings}
+            onFastMode={updateFastMode}
+            onModel={updateModel}
+            onThinking={updateThinking}
+          />}
+          {account?.persistent && <RemoteScreens key={account.id} />}
+        </>
       ) : undefined}
       accessory={({ agentReady, submit }) => (
         <ArtifactDock
@@ -231,14 +241,33 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
   source: Exclude<CredentialSource, null>;
   voiceEnabled: boolean;
 }) {
-  const managed = useMemo(() => openManagedAgent(agentId), [agentId]);
-  const agent = useMemo(() => managedTerminalAgent(managed), [managed]);
-  const [settings, setSettings] = useState<ManagedCreateSettings>(() => (
-    terminalDefaultSettings(source, authStatus)
-  ));
-  const [settingsReady, setSettingsReady] = useState(false);
-  const [conversationStarted, setConversationStarted] = useState(true);
+  const accountId = useAccountSession().account?.id;
+  const queryClient = useQueryClient();
+  const managed = useMemo(() => openManagedAgent(agentId), [accountId, agentId]);
+  const agent = useMemo(() => managedTerminalAgent(managed, { accountId }), [accountId, managed]);
+  const stateOptions = managedConversationQueryOptions(accountId ?? "", agentId);
+  const stateQuery = useQuery({ ...stateOptions, enabled: Boolean(accountId) });
+  const wireSettings = stateQuery.data?.settings;
+  const settings: ManagedCreateSettings = wireSettings ? {
+    model: wireSettings.model, thinking: wireSettings.thinking,
+    reasoningMode: wireSettings.reasoning_mode, fastMode: wireSettings.fast_mode,
+  } : terminalDefaultSettings(source);
+  const settingsReady = stateQuery.isSuccess && Boolean(wireSettings);
+  const [locallyStarted, setLocallyStarted] = useState(false);
+  const conversationStarted = locallyStarted || stateQuery.data?.accepted_turns !== 0;
+  const settingsMutation = useMutation({
+    mutationKey: [...stateOptions.queryKey, "settings"],
+    mutationFn: (patch: Partial<ManagedCreateSettings>) => managed.settings.update(patch),
+    onSuccess: async (updated) => {
+      await queryClient.cancelQueries({ queryKey: stateOptions.queryKey, exact: true });
+      queryClient.setQueryData(stateOptions.queryKey, (current) => current ? {
+        ...current,
+        settings: { model: updated.model, thinking: updated.thinking, reasoning_mode: updated.reasoningMode, fast_mode: updated.fastMode },
+      } : undefined);
+    },
+  });
   const [browserHand, setBrowserHand] = useState<Awaited<ReturnType<typeof attachManagedBrowserHand>>>();
+  const [browserHandSettledFor, setBrowserHandSettledFor] = useState<typeof managed>();
   const [browserHandAttempt, setBrowserHandAttempt] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
@@ -266,44 +295,36 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
       if (controller.signal.aborted) return;
       console.warn("nanocodex:browser_hand_attach_failed", { error: errorMessage(error) });
       reconnect();
+    }).finally(() => {
+      if (!controller.signal.aborted) setBrowserHandSettledFor(managed);
     });
     return () => {
       controller.abort();
       if (retry) clearTimeout(retry);
       if (hand) void hand.close();
     };
-  }, [browserHandAttempt, managed]);
-  useEffect(() => {
-    let active = true;
-    setSettingsReady(false);
-    void Promise.all([managed.state(), managed.settings.read()]).then(([state, current]) => {
-      if (!active) return;
-      setSettings(current);
-      setConversationStarted(state.accepted_turns > 0);
-      setSettingsReady(true);
-    }).catch((error) => {
-      if (!active) return;
-      console.warn("nanocodex:managed_settings_failed", { error: errorMessage(error) });
-    });
-    return () => { active = false; };
-  }, [managed]);
+  }, [accountId, browserHandAttempt, managed]);
   const retryAgent = useCallback(() => {
     setBrowserHandAttempt((current) => current + 1);
-  }, []);
+    void stateQuery.refetch();
+  }, [stateQuery.refetch]);
   const recordConversationActivity = useCallback((input: string) => {
-    setConversationStarted(true);
+    setLocallyStarted(true);
     onConversationActivity(input);
   }, [onConversationActivity]);
   const updateManagedSettings = useCallback(async (
     patch: Partial<ManagedCreateSettings>,
   ) => {
-    const updated = await managed.settings.update(patch);
-    setSettings(updated);
-  }, [managed]);
+    await settingsMutation.mutateAsync(patch);
+  }, [settingsMutation.mutateAsync]);
+  // Keep the first prompt queued while this page's hand is still attaching,
+  // so the host can include it in the initial environment snapshot. A failed
+  // optional hand does not block the managed brain or subsequent reconnects.
+  const startupReady = browserHandSettledFor === managed || (settingsReady && conversationStarted);
   return (
     <AgentTerminalView
-      agent={agent}
-      agentError={undefined}
+      agent={startupReady ? agent : undefined}
+      agentError={stateQuery.error?.message}
       inactiveMessage={({ agentError, agentStatus }) => inactiveTerminalMessage({
         agentError,
         agentStatus,
@@ -317,21 +338,26 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
       onStateChange={onStateChange}
       retryAgent={retryAgent}
       voice={voiceEnabled}
+      welcome={settingsReady && !conversationStarted ? "# What should we work on?" : undefined}
+      composerPlaceholder="Ask Nanocodex"
       controls={({ agentReady }) => (
-        <TerminalSettingsControls
-          agentReady={agentReady && settingsReady}
-          astraEntitled={authStatus?.state === "ready" && authStatus.astraEntitled}
-          modelLocked={conversationStarted}
-          settings={settings}
-          onFastMode={(fastMode) => updateManagedSettings({ fastMode })}
-          onModel={(model) => updateManagedSettings({
-            model,
-            ...(model === "gpt-6-astra" && settings.thinking === "none"
-              ? { thinking: "high" }
-              : {}),
-          })}
-          onThinking={(thinking) => updateManagedSettings({ thinking })}
-        />
+        <>
+          <AgentModelMenu
+            agentReady={agentReady && settingsReady}
+            modelLocked={conversationStarted}
+            settings={settings}
+            onFastMode={(fastMode) => updateManagedSettings({ fastMode })}
+            onModel={(model) => updateManagedSettings({
+              model,
+              ...(model === "gpt-6-astra" && settings.thinking === "none"
+                ? { thinking: "high" }
+                : {}),
+            })}
+            onThinking={(thinking) => updateManagedSettings({ thinking })}
+          />
+          <ManagedAgentSchedules agent={managed} />
+          <RemoteScreens key={managed.id} />
+        </>
       )}
       accessory={({ agentReady, submit }) => browserHand ? (
         <ArtifactDock
@@ -345,80 +371,18 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
   );
 });
 
-function terminalDefaultSettings(
-  source: CredentialSource | undefined,
-  authStatus: ModelSessionStatus | undefined,
-): ManagedCreateSettings {
+function terminalDefaultSettings(source: CredentialSource | undefined): ManagedCreateSettings {
   if (source === "sponsored") {
     return { model: "gpt-5.6-luna", thinking: "none", reasoningMode: "standard", fastMode: false };
   }
   return {
-    model: authStatus?.state === "ready" && authStatus.astraEntitled
-      ? "gpt-6-astra"
-      : "gpt-5.6-sol",
-    thinking: "high",
+    model: "gpt-6-astra",
+    thinking: "low",
     reasoningMode: "standard",
     fastMode: false,
   };
 }
 
-function TerminalSettingsControls({
-  agentReady,
-  astraEntitled,
-  modelLocked,
-  settings,
-  onFastMode,
-  onModel,
-  onThinking,
-}: Readonly<{
-  agentReady: boolean;
-  astraEntitled: boolean;
-  modelLocked: boolean;
-  settings: ManagedCreateSettings;
-  onFastMode(enabled: boolean): Promise<unknown>;
-  onModel(model: Model): Promise<unknown>;
-  onThinking(thinking: Thinking): Promise<unknown>;
-}>) {
-  const [error, setError] = useState<string>();
-  const run = (operation: Promise<unknown>) => {
-    setError(undefined);
-    void operation.catch((cause) => setError(errorMessage(cause)));
-  };
-  const models: readonly Model[] = settings.model === "gpt-6-astra" || astraEntitled
-    ? ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"]
-    : ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
-  const thinking: readonly Thinking[] = ["none", "low", "medium", "high", "xhigh", "max"];
-  return <div className="agent-runtime-controls" title={error}>
-    <select
-      aria-label="Model"
-      disabled={!agentReady || modelLocked}
-      value={settings.model}
-      onChange={(event) => run(onModel(event.currentTarget.value as Model))}
-    >
-      {models.map((model) => <option key={model} value={model}>{model.replace("gpt-5.6-", "").replace("gpt-6-", "")}</option>)}
-    </select>
-    <select
-      aria-label="Thinking"
-      disabled={!agentReady}
-      value={settings.thinking}
-      onChange={(event) => run(onThinking(event.currentTarget.value as Thinking))}
-    >
-      {thinking.map((effort) => <option
-        key={effort}
-        value={effort}
-        disabled={settings.model === "gpt-6-astra" && effort === "none"}
-      >{effort}</option>)}
-    </select>
-    <button
-      aria-label="Fast mode"
-      aria-pressed={settings.fastMode}
-      className={settings.fastMode ? "is-active" : undefined}
-      disabled={!agentReady}
-      type="button"
-      onClick={() => run(onFastMode(!settings.fastMode))}
-    >fast</button>
-  </div>;
-}
 
 function artifactFollowOnPrompt(
   artifact: ArtifactDocument,

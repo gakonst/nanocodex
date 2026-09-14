@@ -23,6 +23,13 @@
       "head_sampling_rate": 1
     }
   },
+  "services": [
+    {
+      "binding": "MANAGED_AGENT_OWNERSHIP",
+      "service": "nanocodex-durable-agent",
+      "entrypoint": "ManagedAgentOwnership"
+    }
+  ],
   "vars": {
     "ENVIRONMENT": "production"
   },
@@ -76,6 +83,14 @@
   "env": {
     "development": {
       "name": "nanocodex-egress",
+      "services": [
+        {
+          "binding": "MANAGED_AGENT_OWNERSHIP",
+          "service": "nanocodex-durable-agent",
+          "entrypoint": "ManagedAgentOwnership",
+          "remote": false
+        }
+      ],
       "vars": {
         "ENVIRONMENT": "development",
         "ALLOW_LOCAL_CREDENTIAL_CLAIM": "true"

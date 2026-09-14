@@ -8,11 +8,22 @@
 
 #[allow(dead_code)]
 mod config;
-mod hand;
+mod control;
 mod hand_observability;
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "musl")),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
+mod hand_workspace;
 mod host;
 #[allow(dead_code)]
 mod installation;
+mod native_hand;
+#[cfg(target_os = "macos")]
+mod screen_macos;
+mod screen_native;
+mod screen_publisher;
+mod service;
 #[allow(dead_code)]
 mod skill;
 #[allow(dead_code, unused_imports)]
@@ -28,22 +39,24 @@ mod vm_hand;
 )))]
 #[path = "vm_hand_unsupported.rs"]
 mod vm_hand;
+mod vm_hand_config;
+mod vm_host;
 
 use std::{
-    env,
     io::{self, Write},
     path::PathBuf,
     process::ExitCode,
     time::Instant,
 };
 
-use clap::{Args, Parser, Subcommand, builder::NonEmptyStringValueParser};
+use clap::{Args, Parser, Subcommand, ValueEnum, builder::NonEmptyStringValueParser};
 use hand_observability::HandObservabilityArgs;
 use host::HostConfig;
 use nanocodex_agent::{AgentEvents, Nanocodex, NanocodexError, PromptRequest, Turn, TurnResult};
+use nanocodex_cli_auth::client_from_environment;
 use nanocodex_managed::{
-    AgentSettings, AgentState, EventCursor, Managed, ManagedApiKey, ManagedClient, ManagedError,
-    ManagedEvent, PromptInput,
+    AgentSettings, AgentState, EventCursor, Managed, ManagedClient, ManagedError, ManagedEvent,
+    PromptInput, validate_vm_factory_name,
 };
 use nanocodex_tools::{
     Tools, WorkspaceTools,
@@ -53,14 +66,12 @@ use percent_encoding::percent_decode_str;
 use tracing::Instrument as _;
 use url::Url;
 
-const MANAGED_URL_ENV: &str = "NANOCODEX_MANAGED_URL";
-const API_KEY_ENV: &str = "NANOCODEX_API_KEY";
-const API_KEY_FALLBACK_ENV: &str = "NC_API_KEY";
-const DEFAULT_MANAGED_ORIGIN: &str = "https://nanocodex.gakonst.workers.dev";
+const SYSTEM_HOST_TOKEN_ENV: &str = "NANOCODEX_SYSTEM_HOST_TOKEN";
 
 #[derive(Parser)]
 #[command(
     name = "nanocodex2",
+    version,
     about = "Small managed Nanocodex client with local workspace tools"
 )]
 struct Cli {
@@ -70,12 +81,35 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Sign in with an SMS code, or import an account API key from stdin.
+    Login(nanocodex_cli_auth::Login),
+    /// Verify the selected account credential without displaying secrets.
+    Status(nanocodex_cli_auth::Options),
+    /// Remove the saved account credential on this machine.
+    Logout(nanocodex_cli_auth::Options),
+    /// Manage account credentials (also available as login, status, and logout).
+    #[command(visible_alias = "auth")]
+    Account(nanocodex_cli_auth::Account),
     /// Attach this machine's workspace to an existing managed agent.
     Attach(Attach),
-    /// Register VM and browser capabilities as an account-owned hand.
+    /// Register a retained VM or Docker workspace as a compute hand for the account.
     Hand(Hand),
+    /// Connect this machine's native workspace to the account over outbound HTTPS.
+    NativeHand(native_hand::NativeHand),
+    /// Publish this Hand's native screen; owned by the desktop runtime.
+    #[command(name = "__hand-screen", hide = true)]
+    HandScreen(screen_native::ScreenCommand),
+    #[cfg(target_os = "linux")]
+    #[command(name = "__hand-desktop", hide = true)]
+    HandDesktop(screen_native::DesktopCommand),
+    /// Serve a bounded pool of on-demand libkrun VM hands.
+    Host(Host),
     /// Create a managed agent and print its receipt as JSON.
-    New,
+    New(control::InitialSettings),
+    /// Read or update an agent's model and reasoning settings.
+    Settings(control::Settings),
+    /// Manage durable scheduled prompts.
+    Cron(control::Cron),
     /// List account-owned managed agents as JSON.
     List,
     /// Read one managed agent's durable state as JSON.
@@ -97,6 +131,12 @@ enum Command {
     /// Private synchronous entrypoint used by the VM hand's VMM child.
     #[command(name = "__vm-run-config", hide = true)]
     VmRunConfig(VmRunConfig),
+    /// Create a private VM disk through the shared Rust image lifecycle.
+    #[command(name = "__vm-clone-image", hide = true)]
+    VmCloneImage {
+        source: PathBuf,
+        destination: PathBuf,
+    },
 }
 
 #[derive(Args)]
@@ -112,37 +152,215 @@ struct AgentReference {
     managed_origin: Option<String>,
 }
 
-#[derive(Args)]
-#[command(group(
-    clap::ArgGroup::new("hand-capability")
-        .required(true)
-        .multiple(true)
-        .args(["rootfs", "browser"])
-))]
-struct Hand {
-    #[command(flatten)]
-    observability: HandObservabilityArgs,
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum HandNetwork {
+    Off,
+    Internet,
+}
 
-    /// Writable raw ext4 image or development directory used as the retained VM root.
-    #[arg(long = "vm", visible_alias = "vm-rootfs", value_name = "ROOTFS")]
+#[derive(Args)]
+#[command(
+    group(clap::ArgGroup::new("backend").required(true).args(["rootfs", "docker"])),
+    after_help = "Choose exactly one backend; startup never falls back to another backend.\n\nExamples:\n  nanocodex2 hand --docker nanocodex-hand:local --volume my-workspace\n  nanocodex2 hand --vm root.ext4 --guest-runtime /path/to/nanocodex-vm-guest\n\nUse --network internet to give a Docker Hand internet access."
+)]
+struct Hand {
+    /// VM with a persistent ext4 root (Linux KVM or Apple Silicon Hypervisor.framework).
+    #[arg(
+        long = "vm",
+        alias = "vm-rootfs",
+        value_name = "ROOTFS",
+        help_heading = "Backend"
+    )]
     rootfs: Option<PathBuf>,
 
-    /// Expose an isolated Chromium browser whose requests leave through this machine.
-    #[arg(long)]
+    /// Container using an existing Linux Docker image; no KVM required.
+    #[arg(long, value_name = "IMAGE", requires = "docker_volume", conflicts_with_all = ["vm_guest_runtime", "vm_firmware", "vm_gpu"], help_heading = "Backend")]
+    docker: Option<String>,
+
+    /// Persistent named Docker workspace volume (required with --docker).
+    #[arg(
+        long = "volume",
+        alias = "docker-volume",
+        value_name = "VOLUME",
+        requires = "docker",
+        help_heading = "Workspace"
+    )]
+    docker_volume: Option<String>,
+
+    /// Guest network access [default: off for Docker, internet for VM].
+    #[arg(long, value_enum, conflicts_with_all = ["docker_internet", "vm_no_network"], help_heading = "Workspace")]
+    network: Option<HandNetwork>,
+
+    #[arg(
+        long,
+        hide = true,
+        requires = "docker",
+        conflicts_with = "vm_no_network"
+    )]
+    docker_internet: bool,
+
+    #[arg(long, hide = true, requires = "rootfs")]
+    vm_no_network: bool,
+
+    /// Absolute workspace directory inside the Hand.
+    #[arg(
+        long = "workspace",
+        alias = "vm-workspace",
+        value_name = "PATH",
+        default_value = "/app",
+        help_heading = "Workspace"
+    )]
+    vm_workspace: String,
+
+    /// CPU limit.
+    #[arg(long = "cpus", alias = "vm-cpus", value_name = "COUNT", default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..), help_heading = "Resources")]
+    vm_cpus: u8,
+
+    /// Memory limit in MiB.
+    #[arg(long = "memory", alias = "vm-memory-mib", value_name = "MIB", default_value_t = 1_024, value_parser = clap::value_parser!(u32).range(1..), help_heading = "Resources")]
+    vm_memory_mib: u32,
+
+    /// Share the host GPU with a VM; requires a GPU-enabled build and Vulkan renderer.
+    #[arg(
+        long = "gpu",
+        alias = "vm-gpu",
+        requires = "rootfs",
+        help_heading = "Resources"
+    )]
+    vm_gpu: bool,
+
+    /// Stable account-local identifier [default: docker or vm, matching the backend].
+    #[arg(long, help_heading = "Identity")]
+    machine_id: Option<String>,
+
+    /// Display name [default: Nanocodex Docker Hand or Nanocodex VM].
+    #[arg(long, help_heading = "Identity")]
+    machine_name: Option<String>,
+
+    /// Route managed browser work through this host alongside the VM or container Hand.
+    #[arg(long, help_heading = "Browser")]
     browser: bool,
 
-    /// Exact Chrome or Chromium executable used by the attached browser.
+    /// Exact Chrome or Chromium executable used by this Hand's private browser.
     #[arg(
         long,
         value_name = "PATH",
         env = "NANOCODEX_BROWSER_EXECUTABLE",
-        requires = "browser"
+        requires = "browser",
+        help_heading = "Browser"
     )]
     browser_executable: Option<PathBuf>,
 
-    /// Statically linked Linux guest executable used with a raw ext4 root.
-    #[arg(long, value_name = "ELF", env = "NANOCODEX_VM_GUEST_RUNTIME")]
+    /// Static Linux guest executable for an ext4 VM (or NANOCODEX_VM_GUEST_RUNTIME).
+    #[arg(
+        long = "guest-runtime",
+        alias = "vm-guest-runtime",
+        value_name = "ELF",
+        requires = "rootfs",
+        help_heading = "VM setup"
+    )]
     vm_guest_runtime: Option<PathBuf>,
+
+    /// Installed Docker OCI runtime, e.g. runsc; fails if unavailable.
+    #[arg(
+        long = "runtime",
+        alias = "docker-runtime",
+        value_name = "RUNTIME",
+        requires = "docker",
+        help_heading = "Advanced"
+    )]
+    docker_runtime: Option<String>,
+
+    /// Prepared VM guest disk cache.
+    #[arg(
+        long = "cache",
+        alias = "vm-cache",
+        value_name = "PATH",
+        default_value = ".cache/vm",
+        requires = "rootfs",
+        help_heading = "Advanced"
+    )]
+    vm_cache: PathBuf,
+
+    /// libkrun firmware directory (or NANOCODEX_KRUNFW_DIR).
+    #[arg(
+        long = "firmware",
+        alias = "vm-firmware",
+        value_name = "PATH",
+        requires = "rootfs",
+        help_heading = "Advanced"
+    )]
+    vm_firmware: Option<PathBuf>,
+
+    /// Shell described to the managed brain.
+    #[arg(
+        long = "shell",
+        alias = "vm-shell",
+        value_name = "SHELL",
+        default_value = "sh",
+        help_heading = "Advanced"
+    )]
+    vm_shell: String,
+
+    #[command(flatten, next_help_heading = "Logging")]
+    observability: HandObservabilityArgs,
+}
+
+impl Hand {
+    fn machine_id(&self) -> &str {
+        self.machine_id
+            .as_deref()
+            .unwrap_or(if self.docker.is_some() {
+                "docker"
+            } else {
+                "vm"
+            })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum HostScope {
+    User,
+    Agent,
+    System,
+}
+
+#[derive(Args)]
+struct Host {
+    #[command(flatten)]
+    observability: HandObservabilityArgs,
+
+    /// Authority scope that may provision VMs from this host.
+    #[arg(long, value_enum, default_value_t = HostScope::User)]
+    scope: HostScope,
+
+    /// Exact /mount provider selector, unique within the selected scope.
+    #[arg(long, value_name = "FACTORY_NAME")]
+    factory_name: String,
+
+    /// Managed agent ID. Required only with --scope agent.
+    #[arg(long, value_name = "AGENT_ID", required_if_eq("scope", "agent"))]
+    agent: Option<String>,
+
+    /// Immutable raw ext4 image cloned privately for every allocation.
+    #[arg(long, value_name = "ROOTFS")]
+    vm_template: PathBuf,
+
+    /// Durable private host state and per-allocation VM roots.
+    #[arg(long, value_name = "PATH")]
+    state_dir: PathBuf,
+
+    /// Maximum number of provisioning, live, or releasing VMs.
+    #[arg(long, value_name = "COUNT", default_value_t = 4, value_parser = clap::value_parser!(u16).range(1..=64))]
+    max_vms: u16,
+
+    /// Stable host UUID. Generated and persisted under --state-dir when omitted.
+    #[arg(long, value_name = "UUID")]
+    host_id: Option<uuid::Uuid>,
+
+    /// Statically linked Linux guest executable used with the raw ext4 roots.
+    #[arg(long, value_name = "ELF", env = "NANOCODEX_VM_GUEST_RUNTIME")]
+    vm_guest_runtime: PathBuf,
 
     /// Cache for the prepared read-only guest runtime disk.
     #[arg(long, value_name = "PATH", default_value = ".cache/vm")]
@@ -152,17 +370,21 @@ struct Hand {
     #[arg(long, value_name = "PATH", env = "NANOCODEX_KRUNFW_DIR")]
     vm_firmware: Option<PathBuf>,
 
-    /// Absolute working directory inside the VM.
+    /// Absolute working directory inside every provisioned VM.
     #[arg(long, value_name = "PATH", default_value = "/app")]
     vm_workspace: String,
 
-    /// Number of virtual CPUs assigned to the hand.
-    #[arg(long, value_name = "COUNT", default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..))]
+    /// Number of virtual CPUs assigned to each VM.
+    #[arg(long, value_name = "COUNT", default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..=64))]
     vm_cpus: u8,
 
-    /// Guest memory in mebibytes.
-    #[arg(long, value_name = "MIB", default_value_t = 1_024, value_parser = clap::value_parser!(u32).range(1..))]
+    /// Guest memory in mebibytes assigned to each VM.
+    #[arg(long, value_name = "MIB", default_value_t = 1_024, value_parser = clap::value_parser!(u32).range(128..=262_144))]
     vm_memory_mib: u32,
+
+    /// Expose shared host Vulkan through virtio-gpu Venus.
+    #[arg(long)]
+    vm_gpu: bool,
 
     /// Shell name described to the managed brain.
     #[arg(long, value_name = "SHELL", default_value = "sh")]
@@ -171,14 +393,6 @@ struct Hand {
     /// Disable guest internet socket proxying.
     #[arg(long)]
     vm_no_network: bool,
-
-    /// Stable account-local machine identifier.
-    #[arg(long, default_value = "vm")]
-    machine_id: String,
-
-    /// Human-readable name shown in accountInfo().machines.
-    #[arg(long, default_value = "Nanocodex Hand")]
-    machine_name: String,
 }
 
 #[derive(Args)]
@@ -186,6 +400,32 @@ struct VmRunConfig {
     /// Mode-0600 launch record prepared by nanocodex-vm.
     #[arg(long)]
     config: PathBuf,
+}
+
+impl Host {
+    fn validate(&self) -> Result<(), ManagedError> {
+        validate_vm_factory_name(&self.factory_name)?;
+        if self.host_id.is_some_and(|id| {
+            id.get_version_num() != 4 || id.get_variant() != uuid::Variant::RFC4122
+        }) {
+            return Err(ManagedError::Configuration(
+                "--host-id must be a UUID v4".to_owned(),
+            ));
+        }
+        match (self.scope, self.agent.as_deref()) {
+            (HostScope::Agent, Some(agent)) if valid_managed_agent_id(agent) => Ok(()),
+            (HostScope::Agent, Some(_)) => Err(ManagedError::Configuration(
+                "--agent must be a safe managed agent identifier".to_owned(),
+            )),
+            (HostScope::Agent, None) => Err(ManagedError::Configuration(
+                "--agent is required with --scope agent".to_owned(),
+            )),
+            (HostScope::User | HostScope::System, Some(_)) => Err(ManagedError::Configuration(
+                "--agent is only valid with --scope agent".to_owned(),
+            )),
+            (HostScope::User | HostScope::System, None) => Ok(()),
+        }
+    }
 }
 
 #[derive(Args)]
@@ -204,11 +444,13 @@ struct TurnId {
 
 #[derive(Args)]
 struct Run {
+    #[command(flatten)]
+    settings: control::InitialSettings,
     /// Prompt text.
     #[arg(value_parser = NonEmptyStringValueParser::new())]
     prompt: String,
     /// Resume this account-owned agent. A new one is created when omitted.
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["model", "thinking", "reasoning_mode", "fast_mode"])]
     agent: Option<String>,
     /// Stable idempotency key. The managed backend generates one when omitted.
     #[arg(long)]
@@ -268,26 +510,81 @@ fn try_main() -> Result<(), ManagedError> {
 }
 
 async fn run(cli: Cli) -> Result<(), ManagedError> {
-    if let Some(Command::VmRunConfig(command)) = &cli.command {
-        return vm_hand::run_config(&command.config);
-    }
-    let managed_origin = match &cli.command {
-        Some(Command::Attach(Attach { agent: Some(agent) })) => agent.managed_origin.as_deref(),
-        _ => None,
-    };
-    let client = client_from_environment(managed_origin)?;
-    match cli.command {
-        Some(Command::Attach(command)) => {
-            attach_tui(&client, command.agent.map(|agent| agent.agent_id)).await
+    let command = match cli.command {
+        Some(Command::Login(command)) => return command.run().await.map_err(auth_error),
+        Some(Command::Status(command)) => {
+            return nanocodex_cli_auth::AccountCommand::Status(command)
+                .run()
+                .await
+                .map_err(auth_error);
         }
+        Some(Command::Logout(command)) => {
+            return nanocodex_cli_auth::AccountCommand::Logout(command)
+                .run()
+                .await
+                .map_err(auth_error);
+        }
+        Some(Command::Account(command)) => return command.run().await.map_err(auth_error),
+        Some(Command::VmRunConfig(command)) => return vm_hand::run_config(&command.config),
+        Some(Command::VmCloneImage {
+            source,
+            destination,
+        }) => {
+            return vm_hand::clone_image(&source, &destination);
+        }
+        #[cfg(target_os = "linux")]
+        Some(Command::HandDesktop(command)) => return screen_native::serve_desktop(command).await,
         Some(Command::Hand(command)) => {
             let _observability = command
                 .observability
                 .install()
                 .map_err(|error| ManagedError::Configuration(error.to_string()))?;
-            serve_hand(&client, command).await
+            tracing::info!(target: "nanocodex2", stage = "hand.preflight",
+                machine.id = command.machine_id(),
+                hand.backend = if command.docker.is_some() { "docker" } else { "vm" },
+                vm.cpu.count = command.vm_cpus,
+                vm.memory.limit_mib = command.vm_memory_mib,
+                vm.root.kind = command.rootfs.as_ref().map_or("container", |root| if root.exists() { "existing" } else { "missing" }),
+                "checking Hand backend support");
+            if let Err(error) = vm_hand::VmHand::preflight(&command).await {
+                tracing::error!(target: "nanocodex2", stage = "hand.preflight.failed", "Hand backend preflight failed");
+                return Err(error);
+            }
+            let client = client_from_environment(None)?;
+            return serve_vm_hand(&client, command).await;
         }
-        Some(Command::New) => write_json(&client.create().await?),
+        Some(Command::Host(command)) => {
+            let _observability = command
+                .observability
+                .install()
+                .map_err(|error| ManagedError::Configuration(error.to_string()))?;
+            return vm_host::serve(command).await;
+        }
+        command => command,
+    };
+    let managed_origin = match &command {
+        Some(Command::Attach(Attach { agent: Some(agent) })) => agent.managed_origin.as_deref(),
+        _ => None,
+    };
+    let client = client_from_environment(managed_origin)?;
+    match command {
+        Some(Command::Login(_) | Command::Status(_) | Command::Logout(_) | Command::Account(_)) => {
+            unreachable!("handled before managed client setup")
+        }
+        Some(Command::Attach(command)) => {
+            attach_tui(&client, command.agent.map(|agent| agent.agent_id)).await
+        }
+        Some(Command::Hand(_)) => unreachable!("handled before managed client setup"),
+        Some(Command::NativeHand(command)) => native_hand::serve(&client, command).await,
+        Some(Command::HandScreen(command)) => screen_native::serve(&client, command).await,
+        #[cfg(target_os = "linux")]
+        Some(Command::HandDesktop(_)) => unreachable!("handled before managed client setup"),
+        Some(Command::Host(_)) => unreachable!("handled before managed client setup"),
+        Some(Command::New(settings)) => {
+            write_json(&client.create_with_settings(settings.resolve()).await?)
+        }
+        Some(Command::Settings(command)) => command.run(&client).await,
+        Some(Command::Cron(command)) => command.run(&client).await,
         Some(Command::List) => write_json(&client.list().await?),
         Some(Command::State(command)) => write_json(&client.state(&command.agent_id).await?),
         Some(Command::Turn(command)) => write_json(
@@ -316,31 +613,31 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
             write_json(&client.cancel(&command.agent_id, &command.turn_id).await?)
         }
         Some(Command::VmRunConfig(_)) => unreachable!("handled before managed client setup"),
+        Some(Command::VmCloneImage { .. }) => unreachable!("handled before managed client setup"),
         None => new_tui(&client).await,
     }
 }
 
-async fn launch_hand(command: &Hand) -> Result<hand::HandRuntime, ManagedError> {
+async fn launch_vm_hand(command: &Hand) -> Result<vm_hand::VmHand, ManagedError> {
     let (root_kind, root_bytes) = match command.rootfs.as_ref().map(std::fs::metadata) {
-        None => ("none", 0),
         Some(Ok(metadata)) if metadata.is_file() => ("file", metadata.len()),
         Some(Ok(metadata)) if metadata.is_dir() => ("directory", 0),
         Some(Ok(_)) => ("other", 0),
         Some(Err(_)) => ("missing", 0),
+        None => ("docker", 0),
     };
     let span = tracing::info_span!(
         target: "nanocodex2",
-        "hand.launch",
+        "vm.launch",
         otel.kind = "internal",
         otel.status_code = tracing::field::Empty,
-        machine.id = command.machine_id.as_str(),
-        vm.enabled = command.rootfs.is_some(),
-        browser.enabled = command.browser,
+        machine.id = command.machine_id(),
         vm.cpu.count = command.vm_cpus,
         vm.memory.limit_mib = command.vm_memory_mib,
         vm.root.kind = root_kind,
         vm.root.bytes = root_bytes,
-        network.enabled = !command.vm_no_network,
+        network.enabled = command.network.map_or(if command.docker.is_some() { command.docker_internet } else { !command.vm_no_network }, |network| network == HandNetwork::Internet),
+        hand.backend = if command.docker.is_some() { "docker" } else { "libkrun" },
         status = tracing::field::Empty,
         duration_ns = tracing::field::Empty,
     );
@@ -348,10 +645,10 @@ async fn launch_hand(command: &Hand) -> Result<hand::HandRuntime, ManagedError> 
     async {
         tracing::info!(
             target: "nanocodex2",
-            stage = "hand.launch.starting",
-            "starting hand capabilities"
+            stage = "vm.launch.starting",
+            "starting Hand workspace"
         );
-        let result = hand::HandRuntime::start(command).await;
+        let result = vm_hand::VmHand::start(command).await;
         span.record(
             "duration_ns",
             u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
@@ -362,8 +659,8 @@ async fn launch_hand(command: &Hand) -> Result<hand::HandRuntime, ManagedError> 
                 span.record("otel.status_code", "OK");
                 tracing::info!(
                     target: "nanocodex2",
-                    stage = "hand.launch.ready",
-                    "hand capabilities are ready"
+                    stage = "vm.launch.ready",
+                    "Hand guest is ready"
                 );
             }
             Err(_) => {
@@ -371,8 +668,8 @@ async fn launch_hand(command: &Hand) -> Result<hand::HandRuntime, ManagedError> 
                 span.record("otel.status_code", "ERROR");
                 tracing::error!(
                     target: "nanocodex2",
-                    stage = "hand.launch.failed",
-                    "hand capabilities failed to start"
+                    stage = "vm.launch.failed",
+                    "Hand guest failed to start"
                 );
             }
         }
@@ -382,58 +679,60 @@ async fn launch_hand(command: &Hand) -> Result<hand::HandRuntime, ManagedError> 
     .await
 }
 
-async fn serve_hand(client: &ManagedClient, command: Hand) -> Result<(), ManagedError> {
+async fn serve_vm_hand(client: &ManagedClient, command: Hand) -> Result<(), ManagedError> {
     let target = client.account_attachment_target()?;
-    let hand = launch_hand(&command).await?;
+    let mut hand = launch_vm_hand(&command).await?;
     drop(command);
-    let connected = connect_hand(&hand, target).await;
+    let connected = async {
+        hand.start_desktop(&target).await?;
+        connect_vm_hand(&hand, target).await
+    }
+    .await;
     let attachment = match connected {
         Ok(Some(attachment)) => attachment,
         Ok(None) => {
-            shutdown_hand(hand).await?;
+            shutdown_vm_hand(hand).await?;
             return Ok(());
         }
         Err(error) => {
-            return match shutdown_hand(hand).await {
+            return match shutdown_vm_hand(hand).await {
                 Ok(()) => Err(error),
                 Err(shutdown) => Err(ManagedError::Configuration(format!(
-                    "{error}; hand shutdown also failed: {shutdown}"
+                    "{error}; VM shutdown also failed: {shutdown}"
                 ))),
             };
         }
     };
     tracing::info!(
         target: "nanocodex2",
-        stage = "hand.ready",
-        "hand is ready; press Ctrl-C to detach"
+        stage = "vm.hand.ready",
+        "Hand is ready; press Ctrl-C to detach"
     );
     let closed = attachment.clone();
     let attachment_result = tokio::select! {
-        signal = tokio::signal::ctrl_c() => {
-            signal.map_err(|error| ManagedError::Configuration(
-                format!("failed to listen for Ctrl-C: {error}")
-            ))?;
+        signal = service::shutdown_signal() => {
+            signal?;
             attachment.clone().detach().await
         }
         result = closed.closed() => result,
     };
     drop(attachment);
     drop(closed);
-    let shutdown = shutdown_hand(hand).await;
+    let shutdown = shutdown_vm_hand(hand).await;
     match (attachment_result, shutdown) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(ManagedError::Configuration(error.to_string())),
         (Ok(()), Err(error)) => Err(error),
         (Err(error), Err(shutdown)) => Err(ManagedError::Configuration(format!(
-            "{error}; hand shutdown also failed: {shutdown}"
+            "{error}; VM shutdown also failed: {shutdown}"
         ))),
     }
 }
 
-async fn shutdown_hand(hand: hand::HandRuntime) -> Result<(), ManagedError> {
+async fn shutdown_vm_hand(hand: vm_hand::VmHand) -> Result<(), ManagedError> {
     let span = tracing::info_span!(
         target: "nanocodex2",
-        "hand.shutdown",
+        "vm.shutdown",
         otel.kind = "internal",
         otel.status_code = tracing::field::Empty,
         status = tracing::field::Empty,
@@ -443,8 +742,8 @@ async fn shutdown_hand(hand: hand::HandRuntime) -> Result<(), ManagedError> {
     async {
         tracing::info!(
             target: "nanocodex2",
-            stage = "hand.shutdown.starting",
-            "stopping hand capabilities"
+            stage = "vm.shutdown.starting",
+            "stopping Hand guest"
         );
         let result = hand.shutdown().await;
         span.record(
@@ -456,16 +755,16 @@ async fn shutdown_hand(hand: hand::HandRuntime) -> Result<(), ManagedError> {
             span.record("otel.status_code", "OK");
             tracing::info!(
                 target: "nanocodex2",
-                stage = "hand.shutdown.completed",
-                "hand capabilities stopped"
+                stage = "vm.shutdown.completed",
+                "Hand guest stopped"
             );
         } else {
             span.record("status", "failed");
             span.record("otel.status_code", "ERROR");
             tracing::error!(
                 target: "nanocodex2",
-                stage = "hand.shutdown.failed",
-                "hand capabilities failed to stop cleanly"
+                stage = "vm.shutdown.failed",
+                "Hand guest failed to stop cleanly"
             );
         }
         result
@@ -474,8 +773,8 @@ async fn shutdown_hand(hand: hand::HandRuntime) -> Result<(), ManagedError> {
     .await
 }
 
-async fn connect_hand(
-    hand: &hand::HandRuntime,
+async fn connect_vm_hand(
+    hand: &vm_hand::VmHand,
     target: AttachmentTarget,
 ) -> Result<Option<Attachment>, ManagedError> {
     let connector = hand
@@ -483,10 +782,8 @@ async fn connect_hand(
         .attach(target)
         .metadata(AttachmentMetadata::machine(hand.machine().clone()));
     let connected = tokio::select! {
-        signal = tokio::signal::ctrl_c() => {
-            signal.map_err(|error| ManagedError::Configuration(
-                format!("failed to listen for Ctrl-C: {error}")
-            ))?;
+        signal = service::shutdown_signal() => {
+            signal?;
             Ok(None)
         }
         connected = connector.connect() => connected
@@ -496,33 +793,12 @@ async fn connect_hand(
     connected.map(|connected| connected.map(|(attachment, _events)| attachment))
 }
 
-fn client_from_environment(url_origin: Option<&str>) -> Result<ManagedClient, ManagedError> {
-    let base_url = managed_url_from_environment(url_origin)?;
-    let api_key = api_key_from_environment().map_err(|_| {
-        ManagedError::Configuration(format!(
-            "{API_KEY_ENV} (or {API_KEY_FALLBACK_ENV}) must be set to an account-issued ncx_live key"
-        ))
-    })?;
-    ManagedClient::new(base_url, ManagedApiKey::parse(api_key)?)
+fn auth_error(error: nanocodex_cli_auth::Error) -> ManagedError {
+    ManagedError::Configuration(error.to_string())
 }
 
-fn api_key_from_environment() -> Result<String, env::VarError> {
-    env::var(API_KEY_ENV).or_else(|_| env::var(API_KEY_FALLBACK_ENV))
-}
-
-fn managed_url_from_environment(fallback_origin: Option<&str>) -> Result<String, ManagedError> {
-    match env::var(MANAGED_URL_ENV) {
-        Ok(value) if !value.trim().is_empty() => Ok(value),
-        Ok(_) => Err(ManagedError::Configuration(format!(
-            "{MANAGED_URL_ENV} must not be empty"
-        ))),
-        Err(env::VarError::NotPresent) => {
-            Ok(fallback_origin.unwrap_or(DEFAULT_MANAGED_ORIGIN).to_owned())
-        }
-        Err(env::VarError::NotUnicode(_)) => Err(ManagedError::Configuration(format!(
-            "{MANAGED_URL_ENV} must be valid Unicode"
-        ))),
-    }
+fn managed_url_from_environment(fallback: Option<&str>) -> Result<String, ManagedError> {
+    nanocodex_cli_auth::managed_url_from_environment(fallback).map_err(auth_error)
 }
 
 fn parse_agent_reference(value: &str) -> Result<AgentReference, String> {
@@ -593,8 +869,14 @@ fn supported_agent_page_origin(url: &Url) -> bool {
 
 async fn run_turn(client: &ManagedClient, command: Run) -> Result<(), ManagedError> {
     let created = command.agent.is_none();
-    let (agent, mut events, agent_id, _) =
-        open_workspace_agent_from(client, command.agent, None, None).await?;
+    let (agent, mut events, agent_id, _) = open_workspace_agent_with_settings(
+        client,
+        command.agent,
+        None,
+        command.settings.resolve(),
+        None,
+    )
+    .await?;
     if created {
         eprintln!("Managed agent: {agent_id}");
     }
@@ -828,5 +1110,83 @@ mod tests {
         ] {
             assert!(parse_agent_reference(value).is_err(), "{value}");
         }
+    }
+
+    #[test]
+    fn host_scope_requires_agent_exactly_for_agent_scope() {
+        let common = [
+            "--factory-name",
+            "garage-mac",
+            "--vm-template",
+            "/tmp/template.ext4",
+            "--state-dir",
+            "/tmp/host-state",
+            "--vm-guest-runtime",
+            "/tmp/guest",
+        ];
+        let user = Cli::try_parse_from(["nanocodex2", "host"].into_iter().chain(common)).unwrap();
+        let Some(Command::Host(user)) = user.command else {
+            panic!("host parsed into the wrong command")
+        };
+        assert_eq!(user.scope, HostScope::User);
+        assert_eq!(user.factory_name, "garage-mac");
+        user.validate().unwrap();
+
+        for invalid_name in ["host", "cloudflare", "cf_sandbox", "Garage-Mac", "bad/name"] {
+            let invalid = Cli::try_parse_from(
+                ["nanocodex2", "host", "--factory-name", invalid_name]
+                    .into_iter()
+                    .chain(common[2..].iter().copied()),
+            )
+            .unwrap();
+            let Some(Command::Host(invalid)) = invalid.command else {
+                panic!("invalid factory host parsed into the wrong command")
+            };
+            assert!(invalid.validate().is_err(), "accepted {invalid_name:?}");
+        }
+
+        assert!(
+            Cli::try_parse_from(
+                ["nanocodex2", "host", "--scope", "agent"]
+                    .into_iter()
+                    .chain(common),
+            )
+            .is_err()
+        );
+        let agent = Cli::try_parse_from(
+            [
+                "nanocodex2",
+                "host",
+                "--scope",
+                "agent",
+                "--agent",
+                "agent-1",
+            ]
+            .into_iter()
+            .chain(common),
+        )
+        .unwrap();
+        let Some(Command::Host(agent)) = agent.command else {
+            panic!("agent host parsed into the wrong command")
+        };
+        agent.validate().unwrap();
+
+        let system_with_agent = Cli::try_parse_from(
+            [
+                "nanocodex2",
+                "host",
+                "--scope",
+                "system",
+                "--agent",
+                "agent-1",
+            ]
+            .into_iter()
+            .chain(common),
+        )
+        .unwrap();
+        let Some(Command::Host(system_with_agent)) = system_with_agent.command else {
+            panic!("system host parsed into the wrong command")
+        };
+        assert!(system_with_agent.validate().is_err());
     }
 }

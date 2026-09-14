@@ -26,7 +26,7 @@ describe("cwd-root namespace execution", () => {
     const tools = createRuntimeNamespaceExecutionTools(() => []);
 
     await expect(tools.exec_command!.handler({ cmd: "pwd" }, context()))
-      .rejects.toThrow("call mount when native execution is needed");
+      .rejects.toThrow("namespace cwd /brain lacks process.exec");
   });
 
   it("keeps canonical schemas and routes an explicit logical cwd to a sandbox hand", async () => {
@@ -80,7 +80,7 @@ describe("cwd-root namespace execution", () => {
       workdir: "/Users/me/repo/crates/core",
       yield_time_ms: 30_000,
     }, expect.anything());
-    expect(resolve).toHaveBeenCalledWith("laptop", "exec_command");
+    expect(resolve).toHaveBeenCalledWith("laptop", "exec_command", expect.anything());
   });
 
   it("lets the real tool router dispatch separate hands concurrently", async () => {
@@ -141,6 +141,28 @@ describe("cwd-root namespace execution", () => {
     expect(newExec.mock.calls[0]![0]).toMatchObject({ workdir: "/new" });
   });
 
+  it("captures a fresh binding for each top-level call while retaining the same call on replay", async () => {
+    const oldExec = vi.fn(async () => ({ output: "old", wall_time_seconds: 0, exit_code: 0 }));
+    const newExec = vi.fn(async () => ({ output: "new", wall_time_seconds: 0, exit_code: 0 }));
+    let currentExec = oldExec;
+    const tools = createRuntimeNamespaceExecutionTools(
+      () => [{ id: "laptop", workspace: "/workspace" }],
+      (_id, name) => name === "exec_command" ? { handler: currentExec } : undefined,
+    );
+    const firstCall = context({ parentCallId: "", callId: "first-call" });
+    const secondCall = context({ parentCallId: "", callId: "second-call" });
+
+    await expect(tools.exec_command!.handler({ cmd: "pwd", workdir: "/laptop" }, firstCall))
+      .resolves.toMatchObject({ output: "old" });
+    currentExec = newExec; // The same machine reconnects with a new attachment lease.
+    await expect(tools.exec_command!.handler({ cmd: "pwd", workdir: "/laptop" }, secondCall))
+      .resolves.toMatchObject({ output: "new" });
+    await expect(tools.exec_command!.handler({ cmd: "pwd", workdir: "/laptop" }, firstCall))
+      .resolves.toMatchObject({ output: "old" });
+    expect(oldExec).toHaveBeenCalledTimes(2);
+    expect(newExec).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps a mount created after capture out of the calling cell", async () => {
     let machines: readonly { id: string; root: string; workspace: string }[] = [];
     const exec = vi.fn(async () => ({ output: "mounted", wall_time_seconds: 0, exit_code: 0 }));
@@ -195,6 +217,75 @@ describe("cwd-root namespace execution", () => {
       { session_id: started.session_id },
       context({ sessionId: "sibling-session", callId: "steal" }),
     )).rejects.toThrow("unknown or stale");
+  });
+
+  it("lets agents resume hosted processes using the session ID in model-visible output", async () => {
+    const metadata = { machine_id: "laptop", machine_name: "My Mac" };
+    const hostedResult = (result: Record<string, unknown>) => Object.freeze({
+      [Symbol.for("nanocodex.toolResult")]: true,
+      metadata,
+      output: JSON.stringify(result),
+      structuredResult: result,
+      value: result,
+      success: true,
+    });
+    const writeStdin = vi.fn()
+      .mockResolvedValueOnce(hostedResult({ output: "still running", wall_time_seconds: 0, session_id: 7 }))
+      .mockResolvedValueOnce(hostedResult({ output: "done", wall_time_seconds: 0, exit_code: 0 }));
+    const tools = createRuntimeNamespaceExecutionTools(
+      () => [{ id: "laptop", workspace: "/Users/me" }],
+      (_id, name) => name === "exec_command"
+        ? { handler: async () => hostedResult({ output: "ready", wall_time_seconds: 0, session_id: 7 }) }
+        : name === "write_stdin" ? { handler: writeStdin } : undefined,
+    );
+    const router = new ToolRouter([toolMapSource("namespace", tools)]);
+    const started = await router.execute("exec_command", { cmd: "long", workdir: "/laptop" }, context());
+    const visible = JSON.parse(started.output);
+    expect(visible).toEqual(started.structuredResult);
+    expect(visible).toEqual(started.value);
+    expect(visible.session_id).not.toBe(7);
+    expect(started.metadata).toEqual(metadata);
+    expect(started.success).toBe(true);
+
+    const polled = await router.execute("write_stdin", { session_id: visible.session_id }, context({ callId: "poll" }));
+    const polledVisible = JSON.parse(polled.output);
+    expect(polledVisible).toEqual(polled.structuredResult);
+    expect(polledVisible).toEqual(polled.value);
+    expect(polledVisible.session_id).toBe(visible.session_id);
+    expect(polled.metadata).toEqual(metadata);
+    expect(writeStdin).toHaveBeenLastCalledWith({ session_id: 7 }, expect.anything());
+
+    const completed = await router.execute("write_stdin", { session_id: polledVisible.session_id }, context({ callId: "finish" }));
+    expect(JSON.parse(completed.output)).toEqual({ output: "done", wall_time_seconds: 0, exit_code: 0 });
+    expect(completed.structuredResult).toEqual(JSON.parse(completed.output));
+    await expect(router.execute("write_stdin", { session_id: visible.session_id }, context({ callId: "stale" })))
+      .rejects.toThrow("unknown or stale");
+  });
+
+  it("keeps a process binding after a failed poll so the agent can retry it", async () => {
+    const failure = Object.freeze({
+      [Symbol.for("nanocodex.toolResult")]: true,
+      output: "RangeError: invalid wait duration",
+      structuredResult: undefined,
+      metadata: { machine_id: "laptop" },
+      success: false,
+    });
+    const writeStdin = vi.fn()
+      .mockResolvedValueOnce(failure)
+      .mockResolvedValueOnce({ output: "still running", wall_time_seconds: 0, session_id: 7 })
+      .mockResolvedValueOnce({ output: "done", wall_time_seconds: 0, exit_code: 0 });
+    const tools = createRuntimeNamespaceExecutionTools(
+      () => [{ id: "laptop", workspace: "/Users/me" }],
+      (_id, name) => name === "exec_command"
+        ? { handler: async () => ({ output: "", wall_time_seconds: 0, session_id: 7 }) }
+        : name === "write_stdin" ? { handler: writeStdin } : undefined,
+    );
+    const started = await tools.exec_command!.handler({ cmd: "long", workdir: "/laptop" }, context()) as { session_id: number };
+    await expect(tools.write_stdin!.handler({ session_id: started.session_id }, context())).resolves.toBe(failure);
+    await expect(tools.write_stdin!.handler({ session_id: started.session_id }, context())).resolves.toMatchObject({ session_id: started.session_id });
+    expect(writeStdin).toHaveBeenLastCalledWith({ session_id: 7 }, expect.anything());
+    await expect(tools.write_stdin!.handler({ session_id: started.session_id }, context())).resolves.toMatchObject({ exit_code: 0 });
+    await expect(tools.write_stdin!.handler({ session_id: started.session_id }, context())).rejects.toThrow("unknown or stale");
   });
 
   it("accepts many simultaneously retained process bindings", async () => {
@@ -401,8 +492,8 @@ function createNamespaceExecutionTools(
 ) {
   return createRuntimeNamespaceExecutionTools(
     () => [{ id: "sandbox", root: "/sandbox", workspace: "/workspace" }, ...machines()],
-    (machineId, name) => machineId === "sandbox"
+    (machineId, name, context) => machineId === "sandbox"
       ? sandbox[name]
-      : resolveMachineTool(machineId, name),
+      : resolveMachineTool(machineId, name, context),
   );
 }

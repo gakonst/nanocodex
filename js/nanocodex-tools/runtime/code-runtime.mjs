@@ -11,6 +11,10 @@ const CANCELLATION_MESSAGE = "Code Mode execution was cancelled";
 export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
   const activeExecutions = new Set();
   const codeObservations = new Map();
+  const cells = new Map();
+  const turns = new Map();
+  const cellGeneration = globalThis.crypto.randomUUID();
+  let nextCellId = 1;
   const stores = new Map();
   const ownsRouter = !toolConfiguration?.[toolRouterBrand];
   const router = !ownsRouter
@@ -19,7 +23,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
   let nextSourceId = 1;
   let nextCallId = 1;
   const toolByName = new Map();
-  const subagentsBySession = new Map();
+  const subagentBindingsBySession = new Map();
   const subagentSessions = extras.subagentSessions;
 
   function addTools(configuration = {}) {
@@ -53,7 +57,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
       return encodeToolOutput(`invalid tool input: ${errorMessage(error)}`, false, null);
     }
     const controller = new AbortController();
-    const execution = { callId, controller, sessionId };
+    const execution = { callId, controller, sessionId, turn: turns.get(sessionId) ?? 0 };
     activeExecutions.add(execution);
     try {
       const tool = resolveTool(name);
@@ -64,7 +68,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         callId,
         model,
         signal: controller.signal,
-        subagent: subagentsBySession.get(sessionId),
+        subagent: subagentBindingsBySession.get(sessionId)?.descriptor,
       });
       return encodeToolOutput(
         outputBody(result),
@@ -73,24 +77,25 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         toolMetadata(result, `tool ${name} metadata`),
       );
     } catch (error) {
+      if (error?.code === "host_interrupted") throw error;
       return encodeToolOutput(errorMessage(error), false, null);
     } finally {
       activeExecutions.delete(execution);
     }
   }
 
-  async function executeCode(source, sessionId = "default", parentCallId = "exec", model = "unknown", observer) {
+  async function executeCode(source, sessionId = "default", parentCallId = "exec", model = "unknown", observer, cell) {
     if (typeof model === "function" && observer === undefined) {
       observer = model;
       model = "unknown";
     }
     const startedAt = performance.now();
-    const content = [];
+    const content = cell?.content ?? [];
     const stored = stores.get(sessionId) || new Map();
     stores.set(sessionId, stored);
     const nestedCalls = [];
-    const controller = new AbortController();
-    const execution = { callId: parentCallId, controller, sessionId };
+    const controller = cell?.controller ?? new AbortController();
+    const execution = { callId: parentCallId, controller, sessionId, cell, turn: turns.get(sessionId) ?? 0 };
     activeExecutions.add(execution);
     let admission;
     try {
@@ -115,8 +120,15 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         })
       : definition);
     const nestedInvocations = [];
-    for (const { handler, name, parallelSafe } of availableTools) {
-      tools[name] = (input) => {
+    const normalized = availableTools.map(({ name }) => normalizeIdentifier(name));
+    if (new Set(normalized).size !== normalized.length) {
+      admission.release();
+      activeExecutions.delete(execution);
+      return JSON.stringify({ output: "Script failed\nOutput:\nCode Mode tool names collide after normalization", success: false, nested_calls: [] });
+    }
+    for (const { name } of availableTools) {
+      const normalizedName = normalizeIdentifier(name);
+      tools[normalizedName] = (input) => {
         const invocation = executeNestedTool(input);
         // Attach a rejection handler immediately so a discarded guest Promise
         // cannot become an unhandled rejection before the cell reaches its
@@ -124,6 +136,9 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         nestedInvocations.push(invocation.then(() => undefined, () => undefined));
         return invocation;
       };
+      // Preserve existing SDK bracket access while advertising Codex's
+      // normalized identifiers to newly generated cells.
+      if (name !== normalizedName) tools[name] = tools[normalizedName];
 
       async function executeNestedTool(input) {
         const callId = `${parentCallId}/code-${nextCallId++}`;
@@ -162,9 +177,14 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
             callId,
             model,
             signal: controller.signal,
-            subagent: subagentsBySession.get(sessionId),
+            subagent: subagentBindingsBySession.get(sessionId)?.descriptor,
           });
         } catch (error) {
+          if (error?.code === "host_interrupted") {
+            execution.interruption = error;
+            controller.abort(error);
+            throw error;
+          }
           const message = errorMessage(error);
           Object.assign(recordedCall, {
             output: message,
@@ -211,21 +231,30 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     const EXIT = Symbol("exit");
 
     function text(value) {
+      controller.signal.throwIfAborted();
       content.push({ type: "input_text", text: stringify(value) });
     }
-    function image(value, detail = "auto") {
-      if (typeof value === "string") {
-        content.push({ type: "input_image", image_url: value, detail });
-        return;
+    function image(value, detail) {
+      controller.signal.throwIfAborted();
+      const url = typeof value === "string" ? value
+        : value?.type === "image" ? `data:${value.mimeType};base64,${value.data}`
+        : value?.image_url;
+      if (typeof url !== "string" || !url.startsWith("data:image/")) {
+        throw new TypeError("image() requires a base64 data URL or MCP image block");
       }
-      if (!value || typeof value !== "object" || typeof value.image_url !== "string") {
-        throw new TypeError("image() requires an image URL or image item");
+      const selected = detail ?? value?._meta?.["codex/imageDetail"] ?? value?.detail ?? "auto";
+      if (!["auto", "low", "high", "original"].includes(selected)) throw new TypeError("invalid image detail");
+      content.push({ type: "input_image", image_url: url, detail: selected });
+    }
+    function audio(value) {
+      controller.signal.throwIfAborted();
+      const url = typeof value === "string" ? value
+        : value?.type === "audio" ? `data:${value.mimeType};base64,${value.data}`
+        : value?.audio_url;
+      if (typeof url !== "string" || !url.startsWith("data:audio/")) {
+        throw new TypeError("audio() requires a base64 data URL or MCP audio block");
       }
-      content.push({
-        type: "input_image",
-        image_url: value.image_url,
-        detail: value.detail == null ? detail : value.detail,
-      });
+      content.push({ type: "input_audio", audio_url: url });
     }
     function generatedImage(result) {
       if (!result || typeof result !== "object" || typeof result.image_url !== "string") {
@@ -234,7 +263,37 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
       image(result.image_url, "high");
       if (typeof result.output_hint === "string" && result.output_hint) text(result.output_hint);
     }
+    function notify(value) {
+      controller.signal.throwIfAborted();
+      if (cell) {
+        cell.notifications.push({ call_id: parentCallId, text: stringify(value) });
+        cell.wake?.();
+      } else text(value);
+    }
+    function yield_control() {
+      if (cell) { cell.yieldRequested = true; cell.wake?.(); }
+    }
+    const timers = new Map();
+    let nextTimer = 1;
+    function schedule(callback, delay = 0) {
+      controller.signal.throwIfAborted();
+      const id = nextTimer++;
+      const timer = setTimeout(() => {
+        timers.delete(id);
+        if (!controller.signal.aborted) {
+          try { Promise.resolve(callback()).catch((error) => controller.abort(error)); }
+          catch (error) { controller.abort(error); }
+        }
+      }, delay);
+      timers.set(id, timer);
+      return id;
+    }
+    function unschedule(id) {
+      clearTimeout(timers.get(id));
+      timers.delete(id);
+    }
     function store(key, value) {
+      controller.signal.throwIfAborted();
       if (typeof key !== "string") throw new TypeError("store key must be a string");
       stored.set(key, clone(value));
     }
@@ -254,6 +313,11 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
               toolDefinitions: availableDefinitions,
               text,
               image,
+              audio,
+              notify,
+              yield_control,
+              setTimeout: schedule,
+              clearTimeout: unschedule,
               generatedImage,
               store,
               load,
@@ -273,46 +337,131 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
       } catch (error) {
         if (error !== EXIT) throw error;
       }
+      if (execution.interruption) throw execution.interruption;
       return JSON.stringify({
         output: withStatus("Script completed", startedAt, content),
         success: true,
         nested_calls: nestedCalls,
       });
     } catch (error) {
+      if (execution.interruption) throw execution.interruption;
+      if (error?.code === "host_interrupted") throw error;
       return JSON.stringify({
         output: `Script failed\nWall time ${wallTime(startedAt)} seconds\nOutput:\n${errorMessage(error)}`,
         success: false,
         nested_calls: nestedCalls,
       });
     } finally {
+      for (const timer of timers.values()) clearTimeout(timer);
       admission.release();
       activeExecutions.delete(execution);
     }
   }
 
   function executeCodeObserved(source, sessionId = "default", parentCallId = "exec", model = "unknown") {
-    const key = codeObservationKey(sessionId, parentCallId);
+    return observeOperation(sessionId, parentCallId, (observation) => {
+      const options = parseExec(source);
+      const cell = {
+        id: `${cellGeneration}:${nextCellId++}`, sessionId, parentCallId, controller: new AbortController(),
+        content: [], updates: [], completedCalls: [], notifications: [], turn: turns.get(sessionId) ?? 0,
+        budget: options.max_output_tokens ?? 10_000, result: undefined, observing: false,
+      };
+      cells.set(cell.id, cell);
+      cell.completion = executeCode(options.source, sessionId, parentCallId, model, (update) => {
+        // Keep queued completions immutable; the invocation record is mutable
+        // until the nested call finishes. Original call IDs survive every wait.
+        const encoded = JSON.stringify(update);
+        if (cell.observation) cell.observation.push(encoded);
+        else cell.updates.push(encoded);
+        if (update.type === "nested_call_completed") cell.completedCalls.push(update.call);
+      }, cell).then((result) => {
+        const completed = JSON.parse(result);
+        if (!completed.success && typeof completed.output === "string") {
+          cell.content.push({ type: "input_text", text: completed.output.split("Output:\n").slice(1).join("Output:\n") || completed.output });
+        }
+        cell.result = { success: completed.success };
+        cell.wake?.();
+      }, (error) => {
+        if (error?.code === "host_interrupted") cell.interruption = error;
+        cell.content.push({ type: "input_text", text: errorMessage(error) });
+        cell.result = { success: false };
+        cell.wake?.();
+      });
+      return observeCell(cell, observation, options.yield_time_ms ?? 10_000, cell.budget);
+    });
+  }
+
+  function waitCodeObserved(input, sessionId = "default", callId = "wait") {
+    return observeOperation(sessionId, callId, (observation) => {
+      const options = parseCellOptions(JSON.parse(input), ["cell_id", "yield_time_ms", "max_tokens", "terminate"]);
+      if (typeof options.cell_id !== "string") throw new TypeError("wait requires a string cell_id");
+      if (options.terminate !== undefined && typeof options.terminate !== "boolean") throw new TypeError("terminate must be boolean");
+      const cell = cells.get(options.cell_id);
+      if (!cell || cell.sessionId !== sessionId) throw new Error(`exec cell ${options.cell_id} not found`);
+      if (cell.observing) throw new Error(`exec cell ${cell.id} already has an active observer`);
+      cell.turn = turns.get(sessionId) ?? 0;
+      if (options.terminate) {
+        cell.terminated = true;
+        cell.controller.abort(new Error(CANCELLATION_MESSAGE));
+      }
+      return observeCell(cell, observation, options.yield_time_ms ?? 10_000, options.max_tokens ?? cell.budget);
+    });
+  }
+
+  function observeOperation(sessionId, callId, operation) {
+    const key = codeObservationKey(sessionId, callId);
+    const observation = createCodeObservation(sessionId, turns.get(sessionId) ?? 0);
     codeObservations.get(key)?.close();
-    const observation = createCodeObservation(sessionId);
     codeObservations.set(key, observation);
-    let execution;
+    return Promise.resolve().then(() => operation(observation)).catch((error) => {
+      if (error?.code === "host_interrupted") throw error;
+      return JSON.stringify({
+        output: `Script failed\nOutput:\n${errorMessage(error)}`, success: false, nested_calls: [],
+      });
+    }).finally(() => observation.close());
+  }
+
+  async function observeCell(cell, observation, yieldTime, budget) {
+    const startedAt = performance.now();
+    cell.observing = true;
+    cell.observation = observation;
+    for (const update of cell.updates.splice(0)) observation.push(update);
+    let timer;
     try {
-      execution = executeCode(
-        source,
-        sessionId,
-        parentCallId,
-        model,
-        (update) => observation.push(JSON.stringify(update)),
-      );
-    } catch (error) {
-      observation.close();
-      throw error;
+      if (cell.terminated) await cell.completion;
+      else if (!cell.result && !cell.yieldRequested && cell.notifications.length === 0) {
+        await new Promise((resolve) => {
+          cell.wake = resolve;
+          // JS timer APIs overflow past this boundary; clamp instead of
+          // accidentally turning a large valid duration into a 1 ms wait.
+          timer = setTimeout(resolve, Math.min(yieldTime, 2_147_483_647));
+        });
+      }
+      if (cell.interruption) throw cell.interruption;
+      cell.yieldRequested = false;
+      const result = cell.result;
+      const status = cell.terminated ? "Script terminated"
+        : result ? (result.success ? "Script completed" : "Script failed")
+        : `Script running with cell ID ${cell.id}`;
+      const output = withStatus(status, startedAt, cell.content.splice(0));
+      if (result) cells.delete(cell.id);
+      let limited = limitCodeOutput(output, budget);
+      if (result?.success === false && Array.isArray(limited) && limited.every((item) => item.type === "input_text")) {
+        limited = limited.map((item) => item.text).join("");
+      }
+      return JSON.stringify({
+        output: limited,
+        success: cell.terminated || (result?.success ?? true),
+        cell: { origin_call_id: cell.parentCallId, running: !result },
+        nested_calls: cell.completedCalls.splice(0),
+        notifications: cell.notifications.splice(0),
+      });
+    } finally {
+      clearTimeout(timer);
+      cell.wake = undefined;
+      cell.observation = undefined;
+      cell.observing = false;
     }
-    void Promise.resolve(execution).then(
-      () => observation.close(),
-      () => observation.close(),
-    );
-    return execution;
   }
 
   async function nextCodeUpdate(sessionId, parentCallId) {
@@ -326,27 +475,38 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     return update;
   }
 
-  function closeCodeObservations(sessionId) {
+  function closeCodeObservations(sessionId, turn) {
     for (const [key, observation] of codeObservations) {
       if (sessionId !== undefined && observation.sessionId !== sessionId) continue;
+      if (turn !== undefined && observation.turn !== turn) continue;
       codeObservations.delete(key);
       observation.close();
     }
   }
 
-  function cancel(sessionId) {
+  function cancel(sessionId, turn) {
     for (const execution of activeExecutions) {
-      if (sessionId === undefined || execution.sessionId === sessionId) {
+      if ((sessionId === undefined || execution.sessionId === sessionId)
+        && (turn === undefined || (execution.cell?.turn ?? execution.turn) === turn)) {
         execution.controller.abort(new Error(CANCELLATION_MESSAGE));
       }
     }
-    closeCodeObservations(sessionId);
+    for (const [id, cell] of cells) {
+      if ((sessionId === undefined || cell.sessionId === sessionId)
+        && (turn === undefined || cell.turn === turn)) cells.delete(id);
+    }
+    closeCodeObservations(sessionId, turn);
   }
 
   function releaseSession(sessionId) {
-    if (subagentsBySession.has(sessionId)) subagentSessions?.release?.(sessionId);
+    cancel(sessionId);
+    const binding = subagentBindingsBySession.get(sessionId);
+    if (binding !== undefined) {
+      subagentSessions?.release?.(sessionId, binding.hostContextRef);
+    }
+    turns.delete(sessionId);
     stores.delete(sessionId);
-    subagentsBySession.delete(sessionId);
+    subagentBindingsBySession.delete(sessionId);
     router.releaseSession(sessionId);
     closeCodeObservations(sessionId);
   }
@@ -355,8 +515,10 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     for (const execution of activeExecutions) {
       execution.controller.abort(new Error(CANCELLATION_MESSAGE));
     }
+    cells.clear();
+    turns.clear();
     stores.clear();
-    subagentsBySession.clear();
+    subagentBindingsBySession.clear();
     closeCodeObservations();
     return ownsRouter ? router.reset() : undefined;
   }
@@ -389,14 +551,31 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     router,
     executeCode,
     executeCodeObserved,
+    waitCodeObserved,
     executeTool,
-    bindSubagentSession(sessionId, context) {
-      const descriptor = Object.freeze({ ...context });
-      if (sameSubagentDescriptor(subagentsBySession.get(sessionId), descriptor)) return;
-      subagentSessions?.bind?.(sessionId, descriptor);
-      subagentsBySession.set(sessionId, descriptor);
+    bindSubagentSession(sessionId, context, hostContextRef) {
+      if (hostContextRef !== undefined
+        && (typeof hostContextRef !== "string" || hostContextRef.length === 0)) {
+        throw new TypeError("subagent host context ref must be a non-empty string when supplied");
+      }
+      const descriptor = Object.freeze({
+        agentId: context.agentId,
+        parentAgentId: context.parentAgentId,
+        sessionId: context.sessionId,
+        role: context.role,
+        task: context.task,
+      });
+      const existing = subagentBindingsBySession.get(sessionId);
+      if (sameSubagentBinding(existing, descriptor, hostContextRef)) return;
+      subagentSessions?.bind?.(sessionId, descriptor, hostContextRef);
+      subagentBindingsBySession.set(sessionId, Object.freeze({
+        descriptor,
+        hostContextRef,
+      }));
     },
     nextCodeUpdate,
+    beginTurn(sessionId) { turns.set(sessionId, (turns.get(sessionId) ?? 0) + 1); },
+    cancelTurn(sessionId) { cancel(sessionId, turns.get(sessionId) ?? 0); },
     cancel,
     toolDefinitions: () => JSON.stringify(callableDefinitions()),
     releaseSession,
@@ -404,13 +583,15 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
   });
 }
 
-function sameSubagentDescriptor(left, right) {
+function sameSubagentBinding(binding, descriptor, hostContextRef) {
+  const left = binding?.descriptor;
   return left !== undefined
-    && left.agentId === right.agentId
-    && left.parentAgentId === right.parentAgentId
-    && left.sessionId === right.sessionId
-    && left.role === right.role
-    && left.task === right.task;
+    && left.agentId === descriptor.agentId
+    && left.parentAgentId === descriptor.parentAgentId
+    && left.sessionId === descriptor.sessionId
+    && left.role === descriptor.role
+    && left.task === descriptor.task
+    && binding.hostContextRef === hostContextRef;
 }
 
 async function evaluateNative(source, environment) {
@@ -421,6 +602,11 @@ async function evaluateNative(source, environment) {
     "text",
     "image",
     "generatedImage",
+    "audio",
+    "notify",
+    "yield_control",
+    "setTimeout",
+    "clearTimeout",
     "store",
     "load",
     "exit",
@@ -434,6 +620,11 @@ async function evaluateNative(source, environment) {
     environment.text,
     environment.image,
     environment.generatedImage,
+    environment.audio,
+    environment.notify,
+    environment.yield_control,
+    environment.setTimeout,
+    environment.clearTimeout,
     environment.store,
     environment.load,
     environment.exit,
@@ -568,12 +759,13 @@ function codeObservationKey(sessionId, callId) {
   return JSON.stringify([sessionId, callId]);
 }
 
-function createCodeObservation(sessionId) {
+function createCodeObservation(sessionId, turn) {
   const queued = [];
   const waiters = [];
   let closed = false;
   return Object.freeze({
     sessionId,
+    turn,
     push(update) {
       if (closed) return;
       const resolve = waiters.shift();
@@ -591,4 +783,50 @@ function createCodeObservation(sessionId) {
       return new Promise((resolve) => waiters.push(resolve));
     },
   });
+}
+
+function normalizeIdentifier(name) {
+  return [...name].map((character, index) => (index === 0 ? /[A-Za-z_$]/ : /[A-Za-z0-9_$]/).test(character) ? character : "_").join("") || "_";
+}
+
+function parseExec(source) {
+  const [line] = source.split(/\r?\n/, 1);
+  if (!line.trimStart().startsWith("// @exec:")) return { source };
+  const rest = source.slice(line.length).replace(/^\r?\n/, "");
+  if (!rest) throw new TypeError("exec pragma must be followed by JavaScript source on subsequent lines");
+  return { ...parseCellOptions(JSON.parse(line.trimStart().slice("// @exec:".length)), ["yield_time_ms", "max_output_tokens"]), source: rest };
+}
+
+function parseCellOptions(value, allowed) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("cell options must be a JSON object");
+  for (const [key, field] of Object.entries(value)) {
+    if (!allowed.includes(key)) throw new TypeError(`unknown cell option: ${key}`);
+    if (key !== "cell_id" && key !== "terminate" && (!Number.isSafeInteger(field) || field < 0)) {
+      throw new TypeError(`${key} must be a non-negative safe integer`);
+    }
+  }
+  return value;
+}
+
+function limitCodeOutput(output, budget) {
+  let remaining = budget * 4;
+  const limit = (text) => {
+    const bytes = new TextEncoder().encode(text);
+    if (bytes.length <= remaining) { remaining -= bytes.length; return text; }
+    const half = Math.floor(remaining / 2);
+    remaining = 0;
+    // Decode complete code points only, including for non-ASCII tool output.
+    let end = half;
+    let start = bytes.length - half;
+    while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+    while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++;
+    const decoder = new TextDecoder();
+    return `${decoder.decode(bytes.subarray(0, end))}…output truncated…${decoder.decode(bytes.subarray(start))}`;
+  };
+  if (typeof output === "string") {
+    const split = output.indexOf("Output:\n");
+    return split < 0 ? output : output.slice(0, split + 8) + limit(output.slice(split + 8));
+  }
+  return output.map((item, index) =>
+    item.type === "input_text" ? { ...item, text: index === 0 ? item.text : limit(item.text) } : item);
 }

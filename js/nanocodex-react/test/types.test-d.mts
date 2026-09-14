@@ -15,11 +15,23 @@ import {
 import {
   AgentController,
   useAgentController,
+  projectToolOutput,
+  generatedOutputUrl,
+  formatToolOutput,
+  type GeneratedOutput,
   type Agent,
   type AgentControllerSnapshot,
   type AgentEntry,
   type ToolActivity,
 } from "../agent/index.mjs";
+
+const generated: readonly GeneratedOutput[] = projectToolOutput({ content: [] }, undefined);
+for (const item of generated) {
+  if (item.kind === "text") { const text: string = item.text; void text; }
+  else { const url: string | undefined = generatedOutputUrl(item.url, item.kind); void url; }
+}
+const outputDetail: string = formatToolOutput({ output: "Done" });
+void outputDetail;
 import {
   createConnectAgentSource,
   useConnectAgent,
@@ -72,6 +84,21 @@ function VoiceConsumer(agent: DefaultAgent | ManagedAgent | ConnectAgent | undef
   void voice.start({ voice: "juniper" });
   void voice.stop();
   void voice.cancel();
+  voice.setMuted(true);
+  voice.toggleMuted();
+  const fence: Promise<void> = voice.noteTypedInput();
+  const muted: boolean = voice.muted;
+  const level: number = voice.microphoneLevel;
+  void fence; void muted; void level;
+  void voice.start({ voice: "maple", pace: "fast", updates: "results", acknowledgements: false, instructions: "Speak Greek.", handoffMode: "bem_tags" });
+  const speech: Promise<void> = voice.speak("Read this aloud.");
+  void speech;
+  void voice.appendText("Selected file: README.md", { role: "developer" });
+  void voice.appendContext("The current file changed.");
+  // @ts-expect-error Platform VAD settings are not subscription voice settings.
+  void voice.start({ turnDetection: "semantic_vad" });
+  // @ts-expect-error Text roles are restricted to the subscription protocol roles.
+  void voice.appendText("Hello", { role: "system" });
   // @ts-expect-error platform-only voices are not accepted by ChatGPT V3.
   void voice.start({ voice: "marin" });
   return voice.isActive ? voice.voice : voice.status;
@@ -145,6 +172,7 @@ const detailedTool: ToolActivity = {
   output: "{\"matches\":[1]}",
   status: "completed",
   durationNs: 1_000,
+  startedAtMs: 1_788_766_853_390,
   images: [],
   children: [],
 };

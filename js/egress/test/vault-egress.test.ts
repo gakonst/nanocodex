@@ -72,6 +72,46 @@ describe("manual vault private egress", () => {
     }
   });
 
+  it("uses API keys through bearer and custom headers without exposing secrets", async () => {
+    const user = "vault-api-key";
+    const owner = subject("vault-api-key");
+    const secret = "fixture-api-key";
+    const created = await SELF.fetch(`https://broker.internal/users/${user}/credentials/vault/api_key`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Service", api_key: secret }),
+    });
+    expect(created.status).toBe(201);
+    const metadata = await created.json<{ id: string }>();
+    expect(JSON.stringify(metadata)).not.toContain(secret);
+    await bindSubject(owner, user);
+    const outbound = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      expect(request.headers.get("authorization")).toBe(`Bearer ${secret}`);
+      expect(request.headers.get("x-api-key")).toBe(secret);
+      return new Response(secret, { headers: { "x-secret": secret } });
+    });
+    const envelope = {
+      vault_id: metadata.id, url: "https://service.example.com/api", method: "POST",
+      headers: { authorization: "Bearer {{NANOCODEX_VAULT_API_KEY}}", "x-api-key": "{{NANOCODEX_VAULT_API_KEY}}" },
+    };
+    const response = await handleEgress(vaultRequest(owner, envelope), workerEnv, undefined, outbound as typeof fetch);
+    expect(await response.json()).toEqual({ status: 200, ok: true });
+    expect(response.headers.get("x-secret")).toBeNull();
+    expect(outbound).toHaveBeenCalledTimes(1);
+    const mismatch = await handleEgress(vaultRequest(owner, {
+      ...envelope, headers: { authorization: "Bearer {{NANOCODEX_VAULT_PASSWORD}}" },
+    }), workerEnv, undefined, outbound as typeof fetch);
+    expect(mismatch.status).toBe(403);
+    await bindSubject(subject("other-api-key"), "other-api-key");
+    const crossAccount = await handleEgress(vaultRequest(subject("other-api-key"), envelope), workerEnv, undefined, outbound as typeof fetch);
+    expect(crossAccount.status).not.toBe(200);
+    const deleted = await SELF.fetch(`https://broker.internal/users/${user}/credentials/vault/api_key/${metadata.id}`, { method: "DELETE" });
+    expect(deleted.status).toBe(204);
+    const revoked = await handleEgress(vaultRequest(owner, envelope), workerEnv, undefined, outbound as typeof fetch);
+    expect(revoked.status).toBe(409);
+    expect(outbound).toHaveBeenCalledTimes(1);
+  });
+
   it("injects every closed card placeholder and no partial token", async () => {
     const user = "vault-egress-card";
     const ownerSubject = subject("vault-egress-card");

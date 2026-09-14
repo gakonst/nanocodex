@@ -4,13 +4,62 @@ import {
   EXECUTION_OUTPUT_SCHEMA,
 } from "./execution-contract.mjs";
 
-const DEFAULT_EXECUTION_TIMEOUT_MS = 30_000;
-const DEFAULT_MAX_ENTRIES = 2_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = 10_000;
 const MAX_OUTPUT_TOKENS = 100_000;
 const OUTPUT_TRUNCATION_NOTICE = "\n[output truncated by exec_command]";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+// The host owns resources and cancellation. Interpreter ceilings must not
+// turn otherwise valid commands, repositories, or data files into errors.
+// Just Bash's bounded builders require safe integers, so use JavaScript's
+// largest exact integer instead of Infinity for effectively unbounded work.
+const PRACTICALLY_UNBOUNDED = Number.MAX_SAFE_INTEGER;
+const UNLIMITED_EXECUTION_LIMITS = Object.freeze({
+  maxSourceBytes: PRACTICALLY_UNBOUNDED,
+  maxExecDepth: PRACTICALLY_UNBOUNDED,
+  maxCallDepth: PRACTICALLY_UNBOUNDED,
+  maxCommandCount: PRACTICALLY_UNBOUNDED,
+  maxLoopIterations: PRACTICALLY_UNBOUNDED,
+  maxAwkIterations: PRACTICALLY_UNBOUNDED,
+  maxSedIterations: PRACTICALLY_UNBOUNDED,
+  maxJqIterations: PRACTICALLY_UNBOUNDED,
+  maxQueryTokens: PRACTICALLY_UNBOUNDED,
+  maxQueryDepth: PRACTICALLY_UNBOUNDED,
+  maxQueryElements: PRACTICALLY_UNBOUNDED,
+  maxAwkParserTokens: PRACTICALLY_UNBOUNDED,
+  maxAwkParserDepth: PRACTICALLY_UNBOUNDED,
+  maxAwkParserOperations: PRACTICALLY_UNBOUNDED,
+  maxCsvRows: PRACTICALLY_UNBOUNDED,
+  maxCsvCells: PRACTICALLY_UNBOUNDED,
+  maxWorkUnits: PRACTICALLY_UNBOUNDED,
+  maxTraversalEntries: PRACTICALLY_UNBOUNDED,
+  maxTraversalDepth: PRACTICALLY_UNBOUNDED,
+  maxTraversalWork: PRACTICALLY_UNBOUNDED,
+  maxLiveBytes: PRACTICALLY_UNBOUNDED,
+  maxInputBytes: PRACTICALLY_UNBOUNDED,
+  maxFileSystemBytes: PRACTICALLY_UNBOUNDED,
+  maxDatabaseBytes: PRACTICALLY_UNBOUNDED,
+  maxDatabaseResultBytes: PRACTICALLY_UNBOUNDED,
+  maxArchiveBytes: PRACTICALLY_UNBOUNDED,
+  maxArchiveCompressedBytes: PRACTICALLY_UNBOUNDED,
+  maxArchiveEntryBytes: PRACTICALLY_UNBOUNDED,
+  maxArchiveEntries: PRACTICALLY_UNBOUNDED,
+  maxWorkerMessageBytes: PRACTICALLY_UNBOUNDED,
+  maxExecutionTimeMs: PRACTICALLY_UNBOUNDED,
+  maxSqliteTimeoutMs: PRACTICALLY_UNBOUNDED,
+  maxPythonTimeoutMs: PRACTICALLY_UNBOUNDED,
+  maxJsTimeoutMs: PRACTICALLY_UNBOUNDED,
+  maxGlobOperations: PRACTICALLY_UNBOUNDED,
+  maxStringLength: PRACTICALLY_UNBOUNDED,
+  maxArrayElements: PRACTICALLY_UNBOUNDED,
+  maxHeredocSize: PRACTICALLY_UNBOUNDED,
+  maxSubstitutionDepth: PRACTICALLY_UNBOUNDED,
+  maxBraceExpansionResults: PRACTICALLY_UNBOUNDED,
+  maxOutputSize: PRACTICALLY_UNBOUNDED,
+  maxFileDescriptors: PRACTICALLY_UNBOUNDED,
+  maxSourceDepth: PRACTICALLY_UNBOUNDED,
+});
 
 const DEVICES = new Set(["/dev/full", "/dev/null", "/dev/stderr", "/dev/stdout"]);
 
@@ -21,10 +70,11 @@ export async function justBash(options) {
   validateWorkspace(options.filesystem);
   const executionTimeoutMs = positiveInteger(
     options.executionTimeoutMs,
-    DEFAULT_EXECUTION_TIMEOUT_MS,
+    undefined,
     "executionTimeoutMs",
   );
-  const maxEntries = positiveInteger(options.maxEntries, DEFAULT_MAX_ENTRIES, "maxEntries");
+  const maxEntries = options.maxEntries === undefined
+    ? undefined : positiveInteger(options.maxEntries, undefined, "maxEntries");
   const maxOutputTokens = Math.min(
     MAX_OUTPUT_TOKENS,
     positiveInteger(options.maxOutputTokens, DEFAULT_MAX_OUTPUT_TOKENS, "maxOutputTokens"),
@@ -48,19 +98,20 @@ export async function justBash(options) {
         ? undefined
         : "restricted-http"),
     customCommands: options.customCommands,
+    aroundExecute: options.refreshFilesystemBeforeExec
+      ? async ({ execute, signal }) => {
+        signal.throwIfAborted();
+        await shellFilesystem.open();
+        signal.throwIfAborted();
+        return execute();
+      }
+      : undefined,
     executionTimeoutMs,
     defaultMaxOutputTokens: maxOutputTokens,
     maxOutputTokens,
     executionLimits: {
-      maxCommandCount: 10_000,
-      maxExecutionTimeMs: executionTimeoutMs,
-      maxFileSystemBytes: 64 * 1024 * 1024,
-      maxInputBytes: 16 * 1024 * 1024,
-      maxLiveBytes: 32 * 1024 * 1024,
-      maxOutputSize: maxOutputTokens * 4,
-      maxSourceBytes: 1024 * 1024,
-      maxStringLength: 16 * 1024 * 1024,
-      maxTraversalEntries: maxEntries,
+      ...(executionTimeoutMs === undefined ? {} : { maxExecutionTimeMs: executionTimeoutMs }),
+      ...(maxEntries === undefined ? {} : { maxTraversalEntries: maxEntries }),
     },
   });
 
@@ -81,7 +132,7 @@ export async function createJustBashRuntime(options) {
   const cwd = normalizeRoot(requiredString(options.cwd, "cwd"));
   const executionTimeoutMs = positiveInteger(
     options.executionTimeoutMs,
-    DEFAULT_EXECUTION_TIMEOUT_MS,
+    undefined,
     "executionTimeoutMs",
   );
   const defaultMaxOutputTokens = positiveInteger(
@@ -97,7 +148,7 @@ export async function createJustBashRuntime(options) {
   if (defaultMaxOutputTokens > maxOutputTokens) {
     throw new RangeError("defaultMaxOutputTokens cannot exceed maxOutputTokens");
   }
-  const executionLimits = Object.freeze({ ...options.executionLimits });
+  const executionLimits = Object.freeze({ ...UNLIMITED_EXECUTION_LIMITS, ...options.executionLimits });
   const { Bash, defineCommand } = await import("just-bash/browser");
   const customCommands = typeof options.customCommands === "function"
     ? await options.customCommands({ defineCommand })
@@ -112,8 +163,15 @@ export async function createJustBashRuntime(options) {
         ? {}
         : { network: options.network }),
     ...(customCommands === undefined ? {} : { customCommands: [...customCommands] }),
-    executionLimitProfile: "hardened",
-    executionLimits,
+    executionLimitProfile: "normal",
+    // Allocation builders require safe integer capacities, even for tiny output.
+    // Keep the host's declared policy in the descriptor, while representing its
+    // unlimited buffer capacities with the largest supported integer internally.
+    executionLimits: {
+      ...executionLimits,
+      maxOutputSize: Math.min(executionLimits.maxOutputSize, Number.MAX_SAFE_INTEGER),
+      maxStringLength: Math.min(executionLimits.maxStringLength, Number.MAX_SAFE_INTEGER),
+    },
   });
   const descriptor = describeRuntime({
     bash,
@@ -193,7 +251,7 @@ async function executeCommand({
   const abort = () => deadline.abort(signal?.reason);
   signal?.addEventListener("abort", abort, { once: true });
   if (signal?.aborted) abort();
-  const timeout = setTimeout(
+  const timeout = executionTimeoutMs === undefined ? undefined : setTimeout(
     () => deadline.abort(new Error(`exec_command exceeded ${executionTimeoutMs} milliseconds`)),
     executionTimeoutMs,
   );
@@ -240,7 +298,9 @@ function describeRuntime({
     commands: Object.freeze([...bash.commands.keys()].sort()),
     customCommands: Object.freeze(customCommandNames.sort()),
     cwd,
-    limits: executionLimits,
+    limits: Object.freeze(Object.fromEntries(Object.entries(executionLimits).filter(
+      ([, value]) => Number.isFinite(value) && value !== PRACTICALLY_UNBOUNDED,
+    ))),
     network: Object.freeze({
       enabled: networkEnabled,
       mode: networkMode ?? (networkEnabled ? "http" : "disabled"),
@@ -260,6 +320,8 @@ Use exec_command for shell work. When the user requests an explicit shell operat
 available command, call exec_command immediately and once with the complete command. Do not inspect the runtime,
 account, or workspace, search for another tool, or split the operation into exploratory calls before trying it.
 For an ordinary clone request, use exactly gh repo clone OWNER/REPO DESTINATION or git clone URL DESTINATION.
+By default these commands download and extract a source archive: all current files, without .git or history.
+Use --branch for a requested revision. An explicit --depth requests a Git checkout with that history depth.
 Do not add depth, filter, branch, or other flags unless the user requests them, and do not inspect a successful clone.
 Only investigate after that direct command fails or when the user explicitly asks for investigation.
 Available commands: ${descriptor.commands.join(", ")}. Use ${descriptor.cwd}/tmp, not /tmp, for temporary files. Commands run without a host process, container, PTY, session, or sandbox
@@ -272,6 +334,7 @@ class WorkspaceShellFileSystem {
   #root;
   #maxEntries;
   #entries = new Map();
+  #children = new Map();
   #sortedPaths;
 
   constructor(workspace, maxEntries) {
@@ -281,8 +344,11 @@ class WorkspaceShellFileSystem {
   }
 
   async open() {
-    this.#entries.set(this.#root, directoryEntry());
-    const entries = await this.#source.list(".", { recursive: true, maxEntries: this.#maxEntries });
+    const entries = await this.#source.list(".", { recursive: true, ...(this.#maxEntries === undefined ? {} : { maxEntries: this.#maxEntries }) });
+    this.#entries.clear();
+    this.#children.clear();
+    this.#sortedPaths = undefined;
+    this.#set(this.#root, directoryEntry());
     for (const entry of entries) {
       const path = resolvePath(this.#root, this.#root, entry.path);
       this.#addParents(path);
@@ -401,14 +467,7 @@ class WorkspaceShellFileSystem {
     const absolute = resolvePath(this.#root, this.#root, path);
     const entry = this.#require(absolute);
     if (entry.kind !== "directory") throw fsError("ENOTDIR", `${absolute} is not a directory`);
-    const prefix = `${absolute}/`;
-    const names = new Set();
-    for (const candidate of this.#entries.keys()) {
-      if (!candidate.startsWith(prefix)) continue;
-      const remainder = candidate.slice(prefix.length);
-      if (remainder && !remainder.includes("/")) names.add(remainder);
-    }
-    return [...names].sort();
+    return [...this.#children.get(absolute) ?? []].sort();
   }
 
   async readdirWithFileTypes(path) {
@@ -443,6 +502,9 @@ class WorkspaceShellFileSystem {
     const source = resolvePath(this.#root, this.#root, sourcePath);
     const destination = resolvePath(this.#root, this.#root, destinationPath);
     const entry = this.#require(source);
+    if (source === destination || (entry.kind === "directory" && destination.startsWith(`${source}/`))) {
+      throw fsError("EINVAL", "cannot copy a path onto itself or into its own subtree");
+    }
     if (entry.kind === "directory") {
       if (!options.recursive) throw fsError("EISDIR", "copying a directory requires recursive mode");
       await this.mkdir(destination, { recursive: true });
@@ -460,7 +522,7 @@ class WorkspaceShellFileSystem {
   }
 
   resolvePath(base, path) {
-    return resolvePath(this.#root, base, path);
+    return resolveShellPath(this.#root, base, path);
   }
 
   getAllPaths() {
@@ -506,14 +568,26 @@ class WorkspaceShellFileSystem {
   }
 
   #set(path, entry) {
-    if (!this.#entries.has(path) && this.#entries.size - 1 >= this.#maxEntries) {
+    const exists = this.#entries.has(path);
+    if (this.#maxEntries !== undefined && !exists && this.#entries.size - 1 >= this.#maxEntries) {
       throw fsError("EFBIG", `workspace exceeds ${this.#maxEntries} entries`);
     }
     this.#entries.set(path, entry);
+    if (entry.kind === "directory") {
+      if (!this.#children.has(path)) this.#children.set(path, new Set());
+    } else {
+      this.#children.delete(path);
+    }
+    if (!exists && path !== this.#root) {
+      const parent = parentPath(path);
+      if (!this.#children.has(parent)) this.#children.set(parent, new Set());
+      this.#children.get(parent).add(path.slice(parent.length + 1));
+    }
     this.#sortedPaths = undefined;
   }
 
   #assertCapacity(path) {
+    if (this.#maxEntries === undefined) return;
     let additions = this.#entries.has(path) ? 0 : 1;
     const relative = path.slice(this.#root.length + 1);
     let current = this.#root;
@@ -537,17 +611,21 @@ class WorkspaceShellFileSystem {
   }
 
   #remove(path) {
+    const removed = [];
     for (const candidate of this.#entries.keys()) {
-      if (candidate === path || candidate.startsWith(`${path}/`)) this.#entries.delete(candidate);
+      if (candidate === path || candidate.startsWith(`${path}/`)) removed.push(candidate);
+    }
+    for (const candidate of removed) {
+      this.#entries.delete(candidate);
+      this.#children.delete(candidate);
+      const parent = parentPath(candidate);
+      this.#children.get(parent)?.delete(candidate.slice(parent.length + 1));
     }
     this.#sortedPaths = undefined;
   }
 
   #hasChildren(path) {
-    for (const candidate of this.#entries.keys()) {
-      if (candidate.startsWith(`${path}/`)) return true;
-    }
-    return false;
+    return (this.#children.get(path)?.size ?? 0) > 0;
   }
 }
 
@@ -589,6 +667,26 @@ function resolvePath(root, base, path) {
     throw fsError("EPERM", `path escapes ${root}`);
   }
   return absolute;
+}
+
+function resolveShellPath(root, base, path) {
+  if (DEVICES.has(path)) return path;
+  if (path.startsWith("/")) return resolvePath(root, base, path);
+  const safeBase = normalizeRoot(base);
+  if (safeBase !== root && !safeBase.startsWith(`${root}/`)) {
+    throw fsError("EPERM", `working directory escapes ${root}`);
+  }
+  const rootSegments = root.split("/").filter(Boolean);
+  const segments = safeBase.split("/").filter(Boolean);
+  for (const segment of path.replaceAll("\\", "/").split("/")) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      if (segments.length > rootSegments.length) segments.pop();
+    } else {
+      segments.push(segment);
+    }
+  }
+  return `/${segments.join("/")}`;
 }
 
 function normalizeRoot(root) {

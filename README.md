@@ -17,6 +17,7 @@ data, memory, infrastructure, and policy.
 
 **[Rust](#rust-start-here)** · **[JavaScript](#javascript-node-browser-and-wasm)** ·
 **[Python](#python)** · **[Capabilities](#one-agent-owned-end-to-end)** ·
+**[Desktop apps](#desktop-apps)** ·
 **[Evaluation](#evaluation-is-a-product-boundary)** ·
 **[Deployments](#deployment-proofs)** · **[Status](#what-is-stable)**
 
@@ -49,6 +50,20 @@ The interface is deliberately not part of that list. Consume ordered typed
 events in a native TUI, wterm, xterm.js, React, logs, or something that only
 your product could have. The included renderers are complete consumers, not a
 UI protocol every embedding must adopt.
+
+## Desktop app
+
+The [native SwiftUI/AppKit macOS app](macos/README.md) is Nanocodex's only desktop
+app. It owns the tiled workspace, persistent sidebar or top tabs, streamed
+conversations, agent activity menu bar, and automatic background Mac Hand.
+Choosing a folder and sending automatically connects compute for that thread.
+Its managed-agent transport and local, VM, and cloud Hand lifecycle live in
+[`@nanocodex/desktop-runtime`](js/desktop-runtime/README.md).
+The separate [mobile Inbox](apple/README.md) targets iPhone and iPad only.
+
+Build the desktop app with `pnpm build:macos` after preparing the documented
+bundled Node runtime. The [macOS README](macos/README.md) describes account setup,
+native controls, and real-service verification.
 
 ## Install
 
@@ -105,6 +120,50 @@ process protocol that applications must adopt. See
 [`bin/nanocodex`](bin/nanocodex), the [examples index](examples/README.md), and
 the [release switcher documentation](bin/nanocodex/src/update.rs).
 
+For managed agents, `nanocodex2 login` signs in with an SMS code and saves an
+account key; `nanocodex2 status` verifies it, and `nanocodex2 logout` removes the
+local login. `nanocodex account login/status/logout` manages the same saved account. Account
+keys are separate from `nanocodex auth` (ChatGPT provider credentials) and
+`nanocodex login/connect/status/logout` (Connect installation grants). See the
+[CLI account sign-in guide](bin/nanocodex/nanocodex2/README.md#account-sign-in)
+for environment overrides, storage, and key revocation.
+
+### Linux Hands and VM factories
+
+From a host already signed in to your Nanocodex account:
+
+```sh
+nanocodex hand add ubuntu@your-server
+# SSH configuration aliases and --port work too.
+```
+
+Or install and authenticate directly on the Linux device:
+
+```sh
+curl -fsSL https://nanocodex.paradigm.xyz | bash
+nanocodex update --nightly
+nanocodex account login # existing SMS OTP flow
+nanocodex hand setup
+```
+
+Both commands install the same native Hand, private desktop, and account-scoped
+VM factory. Setup currently supports x86-64 Debian/Ubuntu with systemd and
+sudo. On-device setup can prompt for your administrator password; SSH enrollment
+uses your existing SSH keys/configuration and requires passwordless sudo.
+KVM is required for a factory. Use `--native-only` for a native Hand on a host
+without KVM. The default factory selector is `linux-<hostname>`; override it
+with `--factory-name`. The default pool has four VMs, each with two vCPUs,
+4 GiB RAM, and a retained 16 GiB root disk. `--max-vms`, `--vm-cpus`, and
+`--vm-memory-mib` configure physical capacity.
+
+The installer verifies release checksums, keeps credentials out of command
+arguments, and waits for remote registration and the native desktop catalog.
+`nanocodex-hand.service` and `nanocodex-factory.service` start at boot and
+reconnect independently of SSH. Re-running setup reuses identities and private
+VM roots under `/srv/nanocodex`; it never replaces a retained workspace. A setup
+already enrolled to another account or origin is rejected. `--artifacts DIR`
+accepts matching locally built Linux host/guest executables for development.
+
 ## Rust: start here
 
 Build one agent, submit ordered prompts through its cheap handle, and await a
@@ -150,12 +209,14 @@ snapshots, see [`examples/lifecycle.rs`](examples/lifecycle.rs),
 [`examples/resume.rs`](examples/resume.rs).
 
 Nanocodex supports OpenAI `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and
-`gpt-6-astra`. Sol remains the SDK default; connected terminal applications
-select Astra for a new conversation only when the account's authoritative
-model catalog exposes it. Astra requires at least low reasoning. Nanocodex owns
-the typed Responses WebSocket behavior for this closed model family. An API-key gateway may prefix the on-wire
-model identifier with `NANOCODEX_MODEL_ID_PREFIX`, but that does not create an
-alternate-provider or arbitrary-model API.
+`gpt-6-astra`. Sol remains the SDK default. The managed `nanocodex2` terminal
+and account app select Astra directly for new conversations, as does the native
+CLI when using ChatGPT authentication. Native API-key and generic SDK defaults
+remain Sol; sponsored homepage sessions remain Luna. Astra requires at least low
+reasoning. Nanocodex owns the typed Responses WebSocket behavior for this closed
+model family. An API-key gateway may prefix the on-wire model identifier with
+`NANOCODEX_MODEL_ID_PREFIX`, but that does not create an alternate-provider or
+arbitrary-model API.
 
 ## One agent, owned end to end
 
@@ -606,6 +667,7 @@ client projection, and sandbox policy while reusing one agent lifecycle:
 | [React + Vite Worker](examples/react-vite/README.md) | A browser Worker owns one persistent session and React consumes ordered events without reshaping the contract. |
 | [Cloudflare managed agents + Multiplayer](js/managed/README.md) | Signed room objects add ordered N-human chat, bounded replay, a tool-free host-owned agent, and a global durable spend/allocation quota; provider credentials stay behind a private broker binding. |
 | [Cloudflare credential broker](js/egress/README.md) | Two ordinary Workers use a private Service Binding for exact API-key or OAuth replacement and a singleton rotating Codex OAuth broker. |
+| [Cloudflare X API](js/x-api/README.md) | First-party public X conversion and browsing Worker, exposed to agents as `browseX` and advertised by `accountInfo`. Deploy with `pnpm deploy:x` before managed agents. |
 | [Cloudflare fetch + MCP](examples/cloudflare-fetch-mcp/README.md) | CSP-safe QuickJS Code Mode, deferred remote MCP, and caller-owned paid transport inside a serialized Durable Object. |
 | [Rivet Actor](examples/rivet-actors/README.md) | Durable SQLite snapshots and idempotent turns around the WASM driver, with an actor-owned AgentOS workspace and previews. |
 | [Vercel Workflow actor](examples/vercel-workflows/README.md) | A Rust-owned journal between stateless steps, replayable multi-client streams rendered through a replaceable wterm agent UI, and a persistent caller-owned Vercel Sandbox with a separate ephemeral wterm operator shell. |

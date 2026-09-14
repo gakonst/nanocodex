@@ -18,6 +18,7 @@ pub struct OwnedToolContext {
     pub(crate) call_id: String,
     pub(crate) history: Arc<Vec<ResponseItem>>,
     pub(crate) output_token_budget: usize,
+    pub(crate) host_context: Option<Arc<str>>,
 }
 
 impl OwnedToolContext {
@@ -36,6 +37,7 @@ impl OwnedToolContext {
             call_id: call_id.into(),
             history,
             output_token_budget,
+            host_context: None,
         }
     }
 
@@ -49,6 +51,7 @@ impl OwnedToolContext {
             Arc::new(context.history().to_vec()),
             context.output_token_budget(),
         )
+        .with_host_context(context.host_context().map(Arc::from))
     }
 
     /// Borrows this owned state as the standard tool invocation context.
@@ -61,6 +64,15 @@ impl OwnedToolContext {
             self.history.as_slice(),
             self.output_token_budget,
         )
+        .with_host_context(self.host_context.as_deref())
+    }
+
+    /// Attaches embedding-owned context to this owned invocation.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_host_context(mut self, host_context: Option<Arc<str>>) -> Self {
+        self.host_context = host_context;
+        self
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -70,10 +82,22 @@ impl OwnedToolContext {
     }
 }
 
+/// Identity and lifetime of the code cell observed by an exec or wait call.
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodeModeCell {
+    /// Original exec call, preserved across subsequent wait calls.
+    pub origin_call_id: String,
+    /// Whether this cell can produce more updates.
+    pub running: bool,
+}
+
 /// Complete result of one Code Mode cell observation.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CodeModeExecution {
+    /// Cell lifetime, absent when no cell was observed.
+    pub cell: Option<CodeModeCell>,
     /// Ordered model-visible output emitted by the cell.
     pub output: ToolOutputBody,
     /// Whether the JavaScript cell reached a successful terminal state.

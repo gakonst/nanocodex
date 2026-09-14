@@ -1,4 +1,5 @@
 import { namedTool } from "../namedTool.mjs";
+import { X_API } from "nanocodex-tools/x";
 
 const CONNECTOR_IDS = [
   "github",
@@ -150,6 +151,15 @@ const VAULT_ENTRY_SCHEMA = {
 const ACCOUNT_INFO_SCHEMA = Object.freeze({
   type: "object",
   properties: {
+    apis: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: Object.fromEntries(Object.entries(X_API).map(([key, value]) => [key, { type: "string", const: value }])),
+        required: Object.keys(X_API),
+        additionalProperties: false,
+      },
+    },
     status: {
       type: "string",
       enum: ["ready", "requires_login", "unavailable"],
@@ -283,7 +293,7 @@ const ACCOUNT_INFO_SCHEMA = Object.freeze({
   },
   required: [
     "status", "authenticated", "accounts", "connectorAccounts", "identity",
-    "stablecoins", "authorizations", "vault",
+    "stablecoins", "authorizations", "vault", "apis",
   ],
   additionalProperties: false,
 });
@@ -311,7 +321,7 @@ const ACCOUNT_CONNECTION_REQUEST_SCHEMA = Object.freeze({
 
 export function browserAccountInfoTool(options) {
   return namedTool("accountInfo", {
-    description: "Report account authentication, safe Vault references, stablecoin balances, and app authorization boundaries. Vault references never include passwords, full card numbers, CVVs, expiry details, or billing ZIPs.",
+    description: "Report native public APIs, account authentication, safe Vault references, stablecoin balances, and app authorization boundaries. Native APIs in apis need no connector authorization; call their listed tools directly. Vault references never include passwords, full card numbers, CVVs, expiry details, or billing ZIPs.",
     parameters: { type: "object", additionalProperties: false },
     outputSchema: ACCOUNT_INFO_SCHEMA,
     handler: (_input, context) => browserAccountInfo(options, context?.signal),
@@ -509,6 +519,7 @@ export async function browserAccountInfo(options, signal) {
     }
     return {
       status: "ready",
+      apis: [X_API],
       authenticated,
       accounts,
       connectorAccounts,
@@ -526,6 +537,7 @@ export async function browserAccountInfo(options, signal) {
 function emptyInfo(status) {
   return {
     status,
+    apis: [X_API],
     authenticated: [],
     accounts: {},
     connectorAccounts: {},

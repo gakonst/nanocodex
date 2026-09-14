@@ -86,6 +86,7 @@ pub(crate) enum AppEvent {
         pane: PaneId,
         terminal_expected: bool,
     },
+    ManagedTurnFinished(PaneId),
     ManagedActiveTurns {
         pane: PaneId,
         count: usize,
@@ -96,7 +97,16 @@ pub(crate) enum AppEvent {
         pane: PaneId,
         id: QueueId,
     },
-    SteerPromoted {
+    SteerWithdrawn {
+        pane: PaneId,
+        id: QueueId,
+    },
+    SteerWithdrawalFailed {
+        pane: PaneId,
+        id: QueueId,
+        error: String,
+    },
+    SteerUnconfirmed {
         pane: PaneId,
         id: QueueId,
     },
@@ -297,6 +307,9 @@ impl AppNode {
                 pane,
                 terminal_expected,
             } => self.update_root(pane, RootEvent::WorkerTurnFinished { terminal_expected }),
+            AppEvent::ManagedTurnFinished(pane) => {
+                self.update_root(pane, RootEvent::ManagedTurnFinished)
+            }
             AppEvent::ManagedActiveTurns { pane, count } => {
                 self.update_root(pane, RootEvent::ManagedActiveTurns(count))
             }
@@ -305,8 +318,14 @@ impl AppNode {
             AppEvent::SteerAdmitted { pane, id } => {
                 self.update_root(pane, RootEvent::SteerAdmitted(id))
             }
-            AppEvent::SteerPromoted { pane, id } => {
-                self.update_root(pane, RootEvent::SteerPromoted(id))
+            AppEvent::SteerWithdrawn { pane, id } => {
+                self.update_root(pane, RootEvent::SteerWithdrawn(id))
+            }
+            AppEvent::SteerWithdrawalFailed { pane, id, error } => {
+                self.update_root(pane, RootEvent::SteerWithdrawalFailed { id, error })
+            }
+            AppEvent::SteerUnconfirmed { pane, id } => {
+                self.update_root(pane, RootEvent::SteerUnconfirmed(id))
             }
             AppEvent::SteerFailed { pane, id } => {
                 self.update_root(pane, RootEvent::SteerFailed { id })

@@ -113,6 +113,16 @@ pub mod tools;
 ))]
 mod workspace;
 
+/// Docker workspaces for Linux daemons without a KVM requirement.
+#[cfg(all(
+    feature = "host",
+    any(
+        all(target_os = "linux", not(target_env = "musl")),
+        all(target_os = "macos", target_arch = "aarch64")
+    )
+))]
+pub mod docker;
+
 /// Low-level host-side VM configuration and lifecycle components.
 ///
 /// Most applications should start with [`crate::VmWorkspaceBuilder`]. This
@@ -129,7 +139,7 @@ pub mod host {
     pub use crate::{
         capabilities::{Capabilities, KrunFeature},
         command::GuestCommand,
-        config::{BlockDevice, Network, RootFilesystem, SharedDirectory, VmConfig},
+        config::{BlockDevice, Gpu, Network, RootFilesystem, SharedDirectory, VmConfig},
         egress::{
             EgressError, EgressFile, EgressLease, EgressMount, GUEST_EGRESS_ROOT,
             MAX_EGRESS_FILE_BYTES,
@@ -149,3 +159,6 @@ pub mod host {
     )
 ))]
 pub use workspace::{VmWorkspace, VmWorkspaceBuilder, VmWorkspaceError};
+
+#[cfg(all(feature = "desktop", target_os = "linux"))]
+pub mod desktop;

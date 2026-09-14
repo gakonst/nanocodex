@@ -39,6 +39,12 @@ test("useVoice is a thin idle resource until its Agent is ready", async () => {
   assert.equal(voice.status, "idle");
   assert.equal(voice.isIdle, true);
   assert.equal(voice.isActive, false);
+  assert.equal(voice.muted, false);
+  assert.equal(voice.microphoneLevel, 0);
+  assert.equal(voice.speakerLevel, 0);
+  assert.equal(typeof voice.setMuted, "function");
+  assert.equal(typeof voice.toggleMuted, "function");
+  await voice.noteTypedInput();
   await assert.rejects(voice.start(), /ready Agent/);
 
   await act(async () => {

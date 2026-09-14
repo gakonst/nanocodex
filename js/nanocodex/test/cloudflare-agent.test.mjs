@@ -21,12 +21,15 @@ const SECOND_OBJECT_ID = "b".repeat(64);
 class MemoryStorage {
   constructor() {
     this.states = [];
+    this.records = new Map();
     this.chunks = [];
     this.chunkHeads = new Map();
     this.events = [];
     this.stateRevisions = new Map();
     this.owners = new Map();
     this.subagents = new Map();
+    this.subagentHostContextColumn = true;
+    this.subagentSchemaAlterations = 0;
     this.meta = { total_bytes: 0, stream_error: null };
     this.sessionId = undefined;
     this.stateId = undefined;
@@ -38,10 +41,14 @@ class MemoryStorage {
   #exec(sql, args) {
     const statement = sql.replace(/\s+/g, " ").trim();
     let rows = [];
+    let rowsWritten = 0;
     if (statement.startsWith("CREATE TABLE")) {
       // Schema setup is idempotent.
+    } else if (statement.startsWith("ALTER TABLE nanocodex_cloudflare_subagents")) {
+      this.subagentHostContextColumn = true;
+      this.subagentSchemaAlterations += 1;
     } else if (statement.startsWith("PRAGMA table_info")) {
-      rows = durabilityPragmaRows(statement);
+      rows = durabilityPragmaRows(statement, this.subagentHostContextColumn);
     } else if (statement.startsWith("INSERT OR IGNORE INTO nanocodex_cloudflare_event_meta")) {
       // The in-memory meta row exists from construction.
     } else if (statement.startsWith("SELECT total_bytes, stream_error")) {
@@ -77,16 +84,38 @@ class MemoryStorage {
       if (this.stateId !== undefined) throw new Error("duplicate Cloudflare durability identity");
       this.stateId = args[0];
     } else if (statement.startsWith(
-      "SELECT descriptor_json FROM nanocodex_cloudflare_subagents",
+      "SELECT descriptor_json, host_context_ref FROM nanocodex_cloudflare_subagents",
     )) {
       this.onSubagentLoad?.();
       rows = [...this.subagents.values()]
-        .map(({ descriptorJson }) => ({ descriptor_json: descriptorJson }));
+        .map(({ descriptorJson, hostContextRef }) => ({
+          descriptor_json: descriptorJson,
+          host_context_ref: hostContextRef ?? null,
+        }));
     } else if (statement.startsWith("INSERT INTO nanocodex_cloudflare_subagents")) {
-      this.subagents.set(args[0], { agentId: args[1], descriptorJson: args[2] });
+      this.subagents.set(args[0], {
+        agentId: args[1],
+        descriptorJson: args[2],
+        hostContextRef: args[3],
+      });
+      rowsWritten = 1;
+    } else if (statement.startsWith(
+      "SELECT 1 AS retained FROM nanocodex_cloudflare_subagents",
+    )) {
+      const retained = this.subagents.get(args[0]);
+      rows = retained?.hostContextRef === args[1] ? [{ retained: 1 }] : [];
     } else if (statement.startsWith("DELETE FROM nanocodex_cloudflare_subagents")) {
-      if (args.length > 0) this.subagents.delete(args[0]);
-      else this.subagents.clear();
+      if (args.length > 1) {
+        const retained = this.subagents.get(args[0]);
+        if (retained?.hostContextRef === args[1]) {
+          rowsWritten = Number(this.subagents.delete(args[0]));
+        }
+      } else if (args.length > 0) {
+        rowsWritten = Number(this.subagents.delete(args[0]));
+      } else {
+        rowsWritten = this.subagents.size;
+        this.subagents.clear();
+      }
     } else if (statement.startsWith("SELECT owner_id, fence FROM nanocodex_durable_owners")) {
       const owner = this.owners.get(args[0]);
       rows = owner === undefined ? [] : [{ owner_id: owner.ownerId, fence: owner.fence }];
@@ -95,25 +124,25 @@ class MemoryStorage {
       rows = owner === undefined ? [] : [{ fence: owner.fence }];
     } else if (statement.startsWith("INSERT INTO nanocodex_durable_owners")) {
       this.owners.set(args[0], { ownerId: args[1], fence: args[2] });
+    } else if (statement.startsWith("SELECT revision FROM nanocodex_durable_states")) {
+      rows = this.states.filter((batch) => batch.stateId === args[0])
+        .map(({ revision }) => ({ revision }));
     } else if (statement.startsWith("SELECT revision, payload FROM nanocodex_durable_states")) {
       rows = this.states
         .filter((batch) => batch.stateId === args[0])
         .map(({ revision, payload }) => ({ revision, payload }));
-    } else if (statement.startsWith(
-      "SELECT revision, chunk_count FROM nanocodex_durable_chunk_heads",
-    )) {
-      const head = this.chunkHeads.get(args[0]);
-      rows = head ? [head] : [];
-    } else if (statement.startsWith(
-      "SELECT revision, chunk_index, payload FROM nanocodex_durable_state_chunks",
-    )) {
-      rows = this.chunks
-        .filter((chunk) => chunk.stateId === args[0])
-        .map((chunk) => ({
-          revision: chunk.revision,
-          chunk_index: chunk.chunkIndex,
-          payload: chunk.payload,
-        }));
+    } else if (statement.startsWith("SELECT key, value FROM nanocodex_durable_records")) {
+      rows = [...this.records].map(([address, value]) => ({ address: JSON.parse(address), value }))
+        .filter(({ address: [stateId, key] }) => stateId === args[0] && (statement.includes("key IN") ? args.slice(1).includes(key) : key > args[1]))
+        .map(({ address: [, key], value }) => ({ key, value })).sort((a, b) => a.key < b.key ? -1 : 1);
+      if (statement.includes("LIMIT")) rows = rows.slice(0, args[2]);
+    } else if (statement.startsWith("SELECT value FROM nanocodex_durable_records")) {
+      const value = this.records.get(JSON.stringify(args));
+      rows = value === undefined ? [] : [{ value }];
+    } else if (statement.startsWith("INSERT INTO nanocodex_durable_records")) {
+      this.records.set(JSON.stringify(args.slice(0, 2)), args[2]);
+    } else if (statement.startsWith("DELETE FROM nanocodex_durable_records")) {
+      for (const key of this.records.keys()) if (!args.length || JSON.parse(key)[0] === args[0]) this.records.delete(key);
     } else if (statement.startsWith("INSERT INTO nanocodex_durable_states")) {
       this.stateRevisions.set(args[0], args[1]);
       this.states = this.states.filter((batch) => batch.stateId !== args[0]);
@@ -143,13 +172,20 @@ class MemoryStorage {
     } else {
       throw new Error(`unexpected SQL: ${statement}`);
     }
-    return { toArray: () => rows };
+    return { rowsWritten, toArray: () => rows, [Symbol.iterator]: () => rows[Symbol.iterator]() };
   }
 }
 
-function durabilityPragmaRows(sql) {
+function durabilityPragmaRows(sql, subagentHostContextColumn = true) {
   let shapes;
-  if (sql.includes("nanocodex_durable_owners")) {
+  if (sql.includes("nanocodex_cloudflare_subagents")) {
+    shapes = [
+      ["session_id", "TEXT", 0, 1],
+      ["agent_id", "TEXT", 1, 0],
+      ["descriptor_json", "TEXT", 1, 0],
+      ...(subagentHostContextColumn ? [["host_context_ref", "TEXT", 0, 0]] : []),
+    ];
+  } else if (sql.includes("nanocodex_durable_owners")) {
     shapes = [["state_id", "TEXT", 0, 1], ["owner_id", "TEXT", 1, 0], ["fence", "TEXT", 1, 0]];
   } else if (sql.includes("nanocodex_durable_states")) {
     shapes = [["state_id", "TEXT", 0, 1], ["revision", "TEXT", 1, 0], ["payload", "TEXT", 1, 0]];
@@ -204,7 +240,7 @@ test("Cloudflare Agent owns credentials, transport, and durability options", asy
   await assert.rejects(create(module), /requires a Durable Object instance/);
   await assert.rejects(
     create(module, durableOwner(new MemoryStorage()), { apiKey: "managed-secret" }),
-    /does not accept apiKey; only durabilityId, eventPersistence, instructions, terminalReceiptRetention, and tools are configurable/,
+    /does not accept apiKey; only durabilityId, eventPersistence, instructions, additionalInstructions, terminalReceiptRetention, and tools are configurable/,
   );
   await assert.rejects(
     create(module, durableOwner(new MemoryStorage()), { CODEX_OAUTH_BOOTSTRAP: "managed-secret" }),
@@ -217,6 +253,7 @@ test("Cloudflare Agent owns credentials, transport, and durability options", asy
   for (const name of [
     "model", "thinking", "reasoningMode", "fastMode",
     "filesystem", "mcp", "codeEvaluator", "toolMode",
+    "waitForPreconnect",
   ]) {
     await assert.rejects(
       create(module, durableOwner(new MemoryStorage()), { [name]: "forbidden" }),
@@ -246,6 +283,26 @@ test("Cloudflare Agent owns credentials, transport, and durability options", asy
     /internal runtime options must be an object/,
   );
   await assert.rejects(
+    create(module, durableOwner(new MemoryStorage()), {
+      [Symbol.for("nanocodex.cloudflare.internalRuntime")]: {
+        subagentLifecycle: true,
+      },
+    }),
+    /subagent lifecycle hook must be a function/,
+  );
+  await assert.rejects(
+    create(module, durableOwner(new MemoryStorage()), {
+      [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { subagentMaxConcurrency: 0 },
+    }),
+    /subagentMaxConcurrency must be a positive safe integer/,
+  );
+  await assert.rejects(
+    create(module, durableOwner(new MemoryStorage()), {
+      [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { waitForPreconnect: "false" },
+    }),
+    /waitForPreconnect must be a boolean/,
+  );
+  await assert.rejects(
     create(module, { env: { NANOCODEX: egressBinding() } }),
     /requires owner\.ctx/,
   );
@@ -273,6 +330,7 @@ test("Cloudflare Agent accepts complete hosted policy only through its internal 
     },
   });
   const agent = await configured.create(owner, {
+    additionalInstructions: "Keep the host's account boundaries.",
     [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: {
       model: "gpt-6-astra",
       thinking: "xhigh",
@@ -282,6 +340,8 @@ test("Cloudflare Agent accepts complete hosted policy only through its internal 
   });
 
   assert.equal(captured.model, "gpt-6-astra");
+  assert.equal(captured.instructions, undefined);
+  assert.equal(captured.additionalInstructions, "Keep the host's account boundaries.");
   assert.equal(captured.thinking, "xhigh");
   assert.equal(captured.reasoningMode, "standard");
   assert.equal(captured.fastMode, true);
@@ -335,6 +395,82 @@ test("Cloudflare ephemeral Agent validates adapter-owned startup", async () => {
     createEphemeral(module, owner, { transport: {} }),
     /createEphemeral does not accept transport/,
   );
+});
+
+test("managed voice admission does not wait for a cold Responses preconnection", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const release = deferred();
+  let requests = 0;
+  const socket = new UpstreamSocket();
+  const owner = durableOwner(new MemoryStorage(), {
+    async fetch(_input, init) {
+      requests += 1;
+      assert.equal(init.headers.get("x-nanocodex-subject"), FIRST_OBJECT_ID);
+      assert.equal(init.headers.get("authorization"), "Bearer NANOCODEX_PROVIDER_CREDENTIAL");
+      await release.promise;
+      return { status: 101, headers: new Headers(), webSocket: socket };
+    },
+  });
+  const options = { eventPersistence: "caller" };
+  Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalRuntime"), {
+    value: { waitForPreconnect: false },
+  });
+  let agent;
+  try {
+    // Keep the text relay unavailable through both voice lifecycle operations.
+    // Its container allows 20 seconds to become ready; the old creation gate
+    // rejected this otherwise healthy voice session after just 10 seconds.
+    agent = await create(module, owner, options);
+    const context = await agent.session.realtime.start();
+    assert.ok(Array.isArray(context.history));
+    await agent.session.realtime.end();
+    assert.equal(requests, 1, "Warm the owned Responses transport speculatively");
+    await agent.session.shutdown();
+    agent = undefined;
+  } finally {
+    release.resolve();
+    await agent?.session.shutdown();
+  }
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(socket.closed, true, "Shutdown closes a preconnection that finishes late");
+});
+
+test("public durable creation still validates credentials before returning", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const owner = durableOwner(new MemoryStorage(), {
+    async fetch() { return { status: 403, headers: new Headers() }; },
+  });
+  await assert.rejects(create(module, owner), /EGRESS broker rejected.*HTTP 403/);
+});
+
+test("a failed speculative connection does not authorize a later managed text turn", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  let requests = 0;
+  const owner = durableOwner(new MemoryStorage(), {
+    async fetch(_input, init) {
+      requests += 1;
+      assert.equal(init.headers.get("x-nanocodex-subject"), FIRST_OBJECT_ID);
+      assert.equal(init.headers.get("authorization"), "Bearer NANOCODEX_PROVIDER_CREDENTIAL");
+      return { status: 403, headers: new Headers() };
+    },
+  });
+  const agent = await create(module, owner, {
+    eventPersistence: "caller",
+    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { waitForPreconnect: false },
+  });
+  try {
+    // Let the speculative denial settle; the actual turn must request its own
+    // brokered transport and still surface the credential rejection.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(requests, 1);
+    await assert.rejects(
+      agent.turn.prompt({ input: "Check transport authorization" }).result(),
+      /WebSocket handshake was rejected with HTTP 403: credential_broker_rejected/,
+    );
+    assert.ok(requests > 1, "A model turn must still cross the credential broker");
+  } finally {
+    await agent.session.shutdown();
+  }
 });
 
 test("Cloudflare Agent isolates states per Durable Object and can recreate after shutdown", async () => {
@@ -406,10 +542,17 @@ test("Cloudflare Agent reconstructs interrupted subagents without stale-owner cl
       handler: (_input, context) => ({ source, subagent: context.subagent ?? null }),
     },
   });
+  const predecessorLifecycle = [];
+  const predecessorOptions = { tools: identity("predecessor") };
+  Object.defineProperty(
+    predecessorOptions,
+    Symbol.for("nanocodex.cloudflare.internalRuntime"),
+    { value: { subagentLifecycle: (event) => predecessorLifecycle.push(event) } },
+  );
   const first = await create(
     module,
     durableOwner(storage, binding, FIRST_OBJECT_ID),
-    { tools: identity("predecessor") },
+    predecessorOptions,
   );
   const bridge = globalThis.nanocodexHost;
   const predecessorBinds = [];
@@ -445,16 +588,43 @@ test("Cloudflare Agent reconstructs interrupted subagents without stale-owner cl
     .map(({ descriptorJson }) => JSON.parse(descriptorJson))
     .find((candidate) => candidate.agentId === String(continued.agent_id));
   const predecessorBind = predecessorBinds.find((args) => args[2] === descriptor.sessionId);
+  const hostContextRef = "opaque-root-turn";
+  bridge.bindSubagentSession(
+    predecessorBind[0],
+    predecessorBind[1],
+    predecessorBind[2],
+    predecessorBind[3],
+    hostContextRef,
+  );
+  assert.equal(storage.subagents.get(descriptor.sessionId).hostContextRef, hostContextRef);
+  assert.equal(JSON.stringify(descriptor).includes(hostContextRef), false);
+  assert.deepEqual(
+    predecessorLifecycle
+      .filter(({ hostContextRef: retained }) => retained === hostContextRef)
+      .map(({ type, sessionId, hostContextRef: retained }) => ({
+        type,
+        sessionId,
+        hostContextRef: retained,
+      })),
+    [{ type: "bind", sessionId: descriptor.sessionId, hostContextRef }],
+  );
   const predecessorFence = storage.owners.get(storage.stateId).fence;
   storage.onSubagentLoad = () => assert.ok(
     BigInt(storage.owners.get(storage.stateId).fence) > BigInt(predecessorFence),
     "restored descriptors must load only after the replacement acquires its durability fence",
   );
 
+  const replacementLifecycle = [];
+  const replacementOptions = { tools: identity("replacement") };
+  Object.defineProperty(
+    replacementOptions,
+    Symbol.for("nanocodex.cloudflare.internalRuntime"),
+    { value: { subagentLifecycle: (event) => replacementLifecycle.push(event) } },
+  );
   const reconstructed = await create(
     module,
     durableOwner(storage, binding, FIRST_OBJECT_ID),
-    { tools: identity("replacement") },
+    replacementOptions,
   );
   storage.onSubagentLoad = undefined;
   const listed = await Subagents.list(reconstructed, {
@@ -468,6 +638,16 @@ test("Cloudflare Agent reconstructs interrupted subagents without stale-owner cl
     { state: "interrupted" },
   );
   assert.equal(descriptor.agentId, String(started.agent_id));
+  assert.deepEqual(
+    replacementLifecycle
+      .filter(({ hostContextRef: retained }) => retained === hostContextRef)
+      .map(({ type, sessionId, hostContextRef: retained }) => ({
+        type,
+        sessionId,
+        hostContextRef: retained,
+      })),
+    [{ type: "reconstruct", sessionId: descriptor.sessionId, hostContextRef }],
+  );
 
   let routed = JSON.parse(await globalThis.nanocodexHost.executeTool(
     "identity", "{}", descriptor.sessionId, "replacement-before-stale-release",
@@ -481,12 +661,16 @@ test("Cloudflare Agent reconstructs interrupted subagents without stale-owner cl
   assert.deepEqual(routed.structured_result.subagent, continuedDescriptor);
 
   const staleDescriptor = { ...descriptor, role: "stale-predecessor-rebind" };
+  const predecessorLifecycleCount = predecessorLifecycle.length;
+  const replacementLifecycleCount = replacementLifecycle.length;
   bridge.bindSubagentSession(
     predecessorBind[0],
     predecessorBind[1],
     predecessorBind[2],
     JSON.stringify(staleDescriptor),
   );
+  assert.equal(predecessorLifecycle.length, predecessorLifecycleCount);
+  assert.equal(replacementLifecycle.length, replacementLifecycleCount);
   assert.equal(
     storage.subagents.get(descriptor.sessionId).descriptorJson,
     JSON.stringify(descriptor),
@@ -499,6 +683,8 @@ test("Cloudflare Agent reconstructs interrupted subagents without stale-owner cl
   assert.deepEqual(routed.structured_result.subagent, descriptor);
 
   await first.session.shutdown();
+  assert.equal(predecessorLifecycle.length, predecessorLifecycleCount);
+  assert.equal(replacementLifecycle.length, replacementLifecycleCount);
   routed = JSON.parse(await globalThis.nanocodexHost.executeTool(
     "identity", "{}", descriptor.sessionId, "replacement-after-stale-release",
   ));
@@ -507,12 +693,118 @@ test("Cloudflare Agent reconstructs interrupted subagents without stale-owner cl
 
   await reconstructed.session.shutdown();
   assert.equal(storage.subagents.size, 0);
+  assert.deepEqual(
+    replacementLifecycle
+      .filter(({ hostContextRef: retained }) => retained === hostContextRef)
+      .map(({ type, sessionId, hostContextRef: retained }) => ({
+        type,
+        sessionId,
+        hostContextRef: retained,
+      })),
+    [
+      { type: "reconstruct", sessionId: descriptor.sessionId, hostContextRef },
+      { type: "release", sessionId: descriptor.sessionId, hostContextRef },
+    ],
+  );
   assert.throws(
     () => globalThis.nanocodexHost.executeTool(
       "identity", "{}", descriptor.sessionId, "after-planned-release",
     ),
     /no Nanocodex host is active/,
   );
+});
+
+test("Cloudflare Agent migrates and restores legacy subagent rows without private refs", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const storage = new MemoryStorage();
+  const binding = egressBinding();
+  const first = await create(
+    module,
+    durableOwner(storage, binding, FIRST_OBJECT_ID),
+  );
+  const started = await Subagents.spawn(first, {
+    role: "legacy-ref",
+    task: "Remain reconstructable without private provenance.",
+    outputSchema: { type: "object" },
+  });
+  await eventually(() => assert.equal(storage.subagents.size, 1));
+  const retained = [...storage.subagents.values()][0];
+  delete retained.hostContextRef;
+  storage.subagentHostContextColumn = false;
+
+  const reconstructed = await create(
+    module,
+    durableOwner(storage, binding, FIRST_OBJECT_ID),
+  );
+  assert.equal(storage.subagentHostContextColumn, true);
+  assert.equal(storage.subagentSchemaAlterations, 1);
+  const listed = await Subagents.list(reconstructed, { includeCompleted: true });
+  assert.deepEqual(
+    listed.agents.find(({ agent_id }) => agent_id === started.agent_id)?.status,
+    { state: "interrupted" },
+  );
+  assert.equal([...storage.subagents.values()][0].hostContextRef, null);
+
+  first.dispose();
+  await reconstructed.session.shutdown();
+  assert.equal(storage.subagents.size, 0);
+});
+
+test("Cloudflare Agent keeps failed private releases exactly retryable", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const storage = new MemoryStorage();
+  let releaseAttempts = 0;
+  const lifecycle = (event) => {
+    if (event.type !== "release") return;
+    releaseAttempts += 1;
+    if (releaseAttempts === 1) throw new Error("private release failed");
+  };
+  const options = {};
+  Object.defineProperty(
+    options,
+    Symbol.for("nanocodex.cloudflare.internalRuntime"),
+    { value: { subagentLifecycle: lifecycle } },
+  );
+  const agent = await create(
+    module,
+    durableOwner(storage, egressBinding(), FIRST_OBJECT_ID),
+    options,
+  );
+  const bridge = globalThis.nanocodexHost;
+  const binds = [];
+  globalThis.nanocodexHost = Object.freeze({
+    ...bridge,
+    bindSubagentSession(...args) {
+      binds.push(args);
+      return bridge.bindSubagentSession(...args);
+    },
+  });
+  let started;
+  try {
+    started = await Subagents.spawn(agent, {
+      role: "release-retry",
+      task: "Keep the private release retryable.",
+      outputSchema: { type: "object" },
+    });
+  } finally {
+    globalThis.nanocodexHost = bridge;
+  }
+  await eventually(() => assert.equal(storage.subagents.size, 1));
+  await Subagents.interrupt(agent, started.agent_id);
+  const bind = binds[0];
+  assert.ok(bind);
+
+  assert.throws(
+    () => bridge.releaseSubagentSession(bind[0], bind[1], bind[2]),
+    /private release failed/,
+  );
+  assert.equal(storage.subagents.size, 1);
+  bridge.releaseSubagentSession(bind[0], bind[1], bind[2]);
+  assert.equal(storage.subagents.size, 0);
+  assert.equal(releaseAttempts, 2);
+
+  await agent.session.shutdown();
+  assert.equal(releaseAttempts, 2);
 });
 
 test("Cloudflare Agent reconstruction rejects a different durable owner before fencing", async () => {
@@ -621,12 +913,12 @@ test("Cloudflare Agent exports and imports one stable state across a fresh runti
   const ownership = store.acquire(stateId, { ownerId: "seed" });
   const payload = JSON.stringify({
     nanocodex_durable_state: {
-      format: 2,
+      format: 4,
       operations: {},
       latest_checkpoint: null,
     },
   });
-  assert.deepEqual(store.replace(stateId, {
+  assert.deepEqual(store.replace(stateId, { records: [],
     ownerId: ownership.ownerId,
     fence: ownership.fence,
     expectedRevision: ownership.revision,
@@ -634,8 +926,9 @@ test("Cloudflare Agent exports and imports one stable state across a fresh runti
   }), { status: "replaced", revision: "1" });
 
   const archive = await exportDurabilityState(sourceOwner);
+  assert.deepEqual(await bindAgent(module).exportDurabilityHead(sourceOwner), { ...archive, records: [] });
   assert.deepEqual(archive, {
-    format: "nanocodex-durability-state-v1",
+    format: "nanocodex-durability-state-v2", records: [],
     stateId,
     revision: "1",
     payload,
@@ -686,7 +979,7 @@ test("Cloudflare Agent rejects corrupt canonical state before importing it", asy
   const owner = durableOwner(storage);
   await assert.rejects(
     bindAgent(module).importDurabilityState(owner, {
-      format: "nanocodex-durability-state-v1",
+      format: "nanocodex-durability-state-v2", records: [],
       stateId: "corrupt-canonical-state",
       revision: "1",
       payload: "{}",
@@ -708,7 +1001,7 @@ test("Cloudflare Agent portability refuses active and non-pristine owners", asyn
   await assert.rejects(importDurabilityState(owner, {}), /shutdown must complete/);
   await agent.session.shutdown();
   await assert.rejects(importDurabilityState(owner, {
-    format: "nanocodex-durability-state-v1",
+    format: "nanocodex-durability-state-v2", records: [],
     stateId: "another-state",
     revision: "0",
     payload: null,
@@ -744,6 +1037,7 @@ test("Cloudflare Agent prunes retained receipts before runtime construction", as
       input: JSON.stringify("prompt"),
       status: { cancelled: { checkpoint: null } },
       steps: {},
+      retired_steers: 0,
       accepted_order: index * 2 + 1,
     },
   ]));
@@ -752,7 +1046,7 @@ test("Cloudflare Agent prunes retained receipts before runtime construction", as
     revision: "20",
     payload: JSON.stringify({
       nanocodex_durable_state: {
-        format: 2,
+        format: 4,
         operations,
         latest_checkpoint: null,
       },
@@ -769,7 +1063,7 @@ test("Cloudflare Agent prunes retained receipts before runtime construction", as
   assert.equal(storage.states.length, 1);
   assert.equal(storage.states[0].revision, "20");
   let checkpoint = JSON.parse(storage.states[0].payload).nanocodex_durable_state;
-  assert.equal(checkpoint.format, 2);
+  assert.equal(checkpoint.format, 4);
   assert.equal(Object.keys(checkpoint.operations).length, 10);
 
   await pruneDurableReceipts(module, owner, {
@@ -793,13 +1087,14 @@ test("Cloudflare receipt pruning reserves lifecycle authority against create", a
     revision: "1",
     payload: JSON.stringify({
       nanocodex_durable_state: {
-        format: 2,
+        format: 4,
         operations: {
           "turn-compaction-race": {
             input: JSON.stringify("prompt"),
             status: "pending",
             steps: {},
-            accepted_order: 1,
+            retired_steers: 0,
+      accepted_order: 1,
           },
         },
         latest_checkpoint: null,
@@ -937,7 +1232,7 @@ test("Cloudflare Agent destroy owns idempotent adapter cleanup", async () => {
   const stateId = storage.stateId;
   const staleOwner = { ...storage.owners.get(stateId) };
   assert.equal(staleOwner.fence, "2");
-  storage.chunks.push({ stateId, revision: "1", chunkIndex: 0, payload: "retained" });
+  storage.records.set(JSON.stringify([stateId, "fixture"]), "retained");
   storage.subagents.set("child-session", {
     agentId: "1",
     descriptorJson: JSON.stringify({
@@ -963,7 +1258,7 @@ test("Cloudflare Agent destroy owns idempotent adapter cleanup", async () => {
   destroy(owner);
 
   assert.equal(storage.states.length, 0);
-  assert.equal(storage.chunks.length, 0);
+  assert.equal(storage.records.size, 0);
   assert.equal(storage.stateRevisions.size, 0);
   assert.equal(storage.events.length, 0);
   assert.equal(storage.subagents.size, 0);

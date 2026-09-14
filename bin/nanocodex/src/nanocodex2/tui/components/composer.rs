@@ -54,6 +54,54 @@ pub(crate) enum ComposerEffect {
     Queue(Submission),
     RunShell(String),
     OpenDraftEditor,
+    Settings(SettingsCommand),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum SettingsCommand {
+    OpenEffort,
+    SetEffort(ReasoningEffort),
+    OpenModel,
+    SetModel(Model),
+    Invalid(String),
+}
+
+impl SettingsCommand {
+    pub(super) fn parse(input: &str) -> Option<Self> {
+        let mut parts = input.split_whitespace();
+        let command = parts.next()?;
+        match command {
+            "/model" => {
+                let Some(argument) = parts.next() else {
+                    return Some(Self::OpenModel);
+                };
+                if parts.next().is_some() {
+                    return Some(Self::Invalid(
+                        "Usage: /model [sol|terra|luna|astra]".to_owned(),
+                    ));
+                }
+                Some(match argument.parse() {
+                    Ok(model) => Self::SetModel(model),
+                    Err(error) => Self::Invalid(error),
+                })
+            }
+            "/effort" | "/reasoning" | "/thinking" => {
+                let Some(argument) = parts.next() else {
+                    return Some(Self::OpenEffort);
+                };
+                if parts.next().is_some() {
+                    return Some(Self::Invalid(
+                        "Usage: /thinking [low|medium|high|xhigh|max]".to_owned(),
+                    ));
+                }
+                Some(match argument.parse() {
+                    Ok(effort) => Self::SetEffort(effort),
+                    Err(error) => Self::Invalid(error),
+                })
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -144,6 +192,44 @@ struct PastedImage {
     data_url: String,
 }
 
+impl From<Submission> for ComposerDraft {
+    fn from(prompt: Submission) -> Self {
+        let (text, images) = prompt.into_parts();
+        let images: Vec<_> = images
+            .map(|(range, data_url)| PastedImage { range, data_url })
+            .collect();
+        let next_image = images
+            .iter()
+            .filter_map(|image| {
+                text.get(image.range.clone())?
+                    .strip_prefix("[Image #")?
+                    .strip_suffix(']')?
+                    .parse::<u64>()
+                    .ok()
+            })
+            .max()
+            .unwrap_or_default()
+            .saturating_add(1);
+        Self {
+            cursor: text.len(),
+            text,
+            images,
+            next_image,
+        }
+    }
+}
+
+impl ComposerDraft {
+    pub(crate) fn into_submission(self) -> Submission {
+        Submission::multimodal(
+            self.text,
+            self.images
+                .into_iter()
+                .map(|image| (image.range, image.data_url)),
+        )
+    }
+}
+
 struct CachedLayout {
     width: usize,
     cursor: usize,
@@ -213,7 +299,7 @@ impl Composer {
             context_tokens: 0,
             workspace: shorten_home(workspace),
             thinking,
-            model: Model::Sol,
+            model: Model::default(),
             reasoning_mode: ReasoningMode::Standard,
             fast_mode: false,
             input_mode: None,
@@ -797,11 +883,15 @@ impl Composer {
     }
 
     fn submit(&mut self) -> ComposerUpdate {
-        let trimmed = self.draft.trim();
-        if trimmed.is_empty() {
+        if self.draft.trim().is_empty() {
             return ComposerUpdate::unchanged();
         }
 
+        if let Some(command) = self.take_settings_command() {
+            return command;
+        }
+
+        let trimmed = self.draft.trim();
         if self.images.is_empty() && self.draft.starts_with('!') {
             let command = trimmed.trim_start_matches('!').trim().to_owned();
             if command.is_empty() {
@@ -820,11 +910,27 @@ impl Composer {
     }
 
     fn queue(&mut self) -> ComposerUpdate {
+        if let Some(command) = self.take_settings_command() {
+            return command;
+        }
         let Some(prompt) = self.take_submission() else {
             return ComposerUpdate::unchanged();
         };
         self.history.record(prompt.display_text().to_owned());
         ComposerUpdate::effect(ComposerEffect::Queue(prompt), true)
+    }
+
+    fn take_settings_command(&mut self) -> Option<ComposerUpdate> {
+        if !self.images.is_empty() {
+            return None;
+        }
+        let command = SettingsCommand::parse(self.draft.trim())?;
+        self.history.record(self.draft.trim().to_owned());
+        self.replace_draft(String::new());
+        Some(ComposerUpdate::effect(
+            ComposerEffect::Settings(command),
+            true,
+        ))
     }
 
     fn move_up(&mut self) -> bool {
@@ -1699,7 +1805,7 @@ fn render_selection(
 mod tests {
     use super::{
         super::selection::{Selection, Surface, TextRange},
-        Composer, ComposerEffect, ComposerEvent, context_percent,
+        Composer, ComposerEffect, ComposerEvent, SettingsCommand, context_percent,
     };
     use crate::{
         config::{ReasoningEffort, ReasoningMode},
@@ -1773,13 +1879,13 @@ mod tests {
         let footer = if crate::installation::current().is_development() {
             "╰─ / actions · @ paths · @@ sessions ─────── ◉ dev  /work ─╯"
         } else {
-            "╰─ / actions · @ paths · @@ sessions ───────────────── /work ─╯"
+            "╰─ Enter send · / actions · @ paths · @@ sessions ─ /work ─╯"
         };
 
         assert_eq!(
             rows(&terminal),
             [
-                "╭─ 0%/272k ────────────────────────── gpt-5.6-sol  medium ─╮",
+                "╭─ 0%/272k ────────────────────────── gpt-6-astra  medium ─╮",
                 "│                                                          │",
                 "│                                                          │",
                 "│                                                          │",
@@ -1846,14 +1952,14 @@ mod tests {
         });
 
         let terminal = render(&mut composer, 72, 5);
-        assert!(rows(&terminal)[0].contains(" 1m 5s  gpt-5.6-sol "));
+        assert!(rows(&terminal)[0].contains(" 1m 5s  gpt-6-astra "));
 
         let update = composer.update(ComposerEvent::AnimationFrame(
             started_at + Duration::from_secs(2),
         ));
         assert!(update.changed);
         let terminal = render(&mut composer, 72, 5);
-        assert!(rows(&terminal)[0].contains(" 1m 7s  gpt-5.6-sol "));
+        assert!(rows(&terminal)[0].contains(" 1m 7s  gpt-6-astra "));
 
         composer.update(ComposerEvent::TurnFinished);
         let terminal = render(&mut composer, 72, 5);
@@ -1877,7 +1983,7 @@ mod tests {
         composer.update(ComposerEvent::TurnFinished);
 
         let terminal = render(&mut composer, 72, 5);
-        assert!(rows(&terminal)[0].contains(" 7s  gpt-5.6-sol "));
+        assert!(rows(&terminal)[0].contains(" 7s  gpt-6-astra "));
         assert!(composer.animation_deadline().is_some());
     }
 
@@ -2698,6 +2804,51 @@ mod tests {
         assert_eq!(context_percent(0), 0);
         assert_eq!(context_percent(136_000), 50);
         assert_eq!(context_percent(1_400), 1);
+    }
+
+    #[test]
+    fn slash_settings_commands_open_pickers_and_accept_direct_values() {
+        let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+
+        composer.replace_draft("/model".to_owned());
+        assert_eq!(
+            composer.submit().effect,
+            Some(ComposerEffect::Settings(SettingsCommand::OpenModel))
+        );
+        composer.replace_draft("/model astra".to_owned());
+        assert_eq!(
+            composer.submit().effect,
+            Some(ComposerEffect::Settings(SettingsCommand::SetModel(
+                Model::Astra
+            )))
+        );
+
+        for alias in ["/effort", "/reasoning", "/thinking"] {
+            composer.replace_draft(alias.to_owned());
+            assert_eq!(
+                composer.submit().effect,
+                Some(ComposerEffect::Settings(SettingsCommand::OpenEffort))
+            );
+            composer.replace_draft(format!("{alias} high"));
+            assert_eq!(
+                composer.submit().effect,
+                Some(ComposerEffect::Settings(SettingsCommand::SetEffort(
+                    ReasoningEffort::High
+                )))
+            );
+        }
+    }
+
+    #[test]
+    fn similarly_prefixed_prompts_are_not_treated_as_settings_commands() {
+        let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+        composer.replace_draft("/modeling the system".to_owned());
+
+        assert!(matches!(
+            composer.submit().effect,
+            Some(ComposerEffect::Submit(prompt))
+                if prompt.display_text() == "/modeling the system"
+        ));
     }
 
     #[test]

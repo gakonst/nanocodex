@@ -77,7 +77,10 @@ fn image_generation(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool)
             Style::default().fg(theme.accent()),
         ));
     }
-    presentation
-        .unselectable_details(details)
-        .footer("image generation details")
+    let mut presentation = presentation.unselectable_details(details);
+    if let Some(result) = &tool.result {
+        let (source, details) = super::selectable_result(result, width, theme);
+        presentation = presentation.selectable_details(source, details);
+    }
+    presentation.footer("image generation details")
 }

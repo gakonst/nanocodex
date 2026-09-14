@@ -446,6 +446,33 @@ impl ResponseItem {
     pub fn strip_id(&mut self) {
         self.set_id(None);
     }
+
+    /// Removes a replaceable item ID while preserving IDs bound into opaque
+    /// encrypted provider content.
+    ///
+    /// Recovered requests may assign fresh IDs to ordinary copied items. An
+    /// encrypted compaction, reasoning item, or function argument authenticates
+    /// the provider-issued ID inside its ciphertext, so changing that ID makes
+    /// the otherwise valid content impossible to replay.
+    pub fn strip_unbound_id(&mut self) {
+        let provider_bound = matches!(
+            self,
+            Self::Reasoning {
+                encrypted_content: Some(_),
+                ..
+            } | Self::FunctionCall {
+                encrypted_function_args: Some(_),
+                ..
+            } | Self::Compaction { .. }
+                | Self::ContextCompaction {
+                    encrypted_content: Some(_),
+                    ..
+                }
+        );
+        if !provider_bound {
+            self.strip_id();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -509,6 +536,31 @@ mod tests {
         assert_eq!(client.as_str(), "msg_stable");
         assert!(client.is_prefixed());
         assert!(!server.is_prefixed());
+    }
+
+    #[test]
+    fn replay_copies_preserve_ids_bound_to_encrypted_provider_content() {
+        let mut compact: ResponseItem = serde_json::from_value(serde_json::json!({
+            "id": "cmp_01a0710d-9f5e-7f80-91ad-730ae4a6ba93",
+            "type": "compaction",
+            "encrypted_content": "opaque"
+        }))
+        .unwrap();
+        compact.strip_unbound_id();
+        assert_eq!(
+            compact.id().map(ResponseItemId::as_str),
+            Some("cmp_01a0710d-9f5e-7f80-91ad-730ae4a6ba93")
+        );
+
+        let mut message = ResponseItem::message(
+            MessageRole::User,
+            [ContentItem::InputText {
+                text: "copied".into(),
+            }],
+        );
+        message.set_id(Some(ResponseItemId::with_suffix("msg", "old")));
+        message.strip_unbound_id();
+        assert!(message.id().is_none());
     }
 
     #[test]

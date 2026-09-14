@@ -90,7 +90,7 @@ test("the host boundary accepts only the four exact replace outcomes", async () 
     }, `state-${index}`);
     retain(host, route.id);
     await assert.rejects(
-      replace(route.id, `state-${index}`, "owner", "1", "0", "payload"),
+      replace(route.id, `state-${index}`, "owner", "1", "0", "payload", "[]"),
       /durability/,
     );
     release(host, route.id);
@@ -100,18 +100,18 @@ test("the host boundary accepts only the four exact replace outcomes", async () 
 test("stale owners lose before revision comparison and replacement is total", () => {
   const store = createMemoryDurabilityStore("state");
   const first = store.acquire("state", { ownerId: "first" });
-  assert.deepEqual(store.replace("state", {
+  assert.deepEqual(store.replace("state", { records: [],
     ...first,
     expectedRevision: "0",
     payload: "first-state",
   }), { status: "replaced", revision: "1" });
   const second = store.acquire("state", { ownerId: "second" });
-  assert.deepEqual(store.replace("state", {
+  assert.deepEqual(store.replace("state", { records: [],
     ...first,
     expectedRevision: "999",
     payload: "stale",
   }), { status: "fenced" });
-  assert.deepEqual(store.replace("state", {
+  assert.deepEqual(store.replace("state", { records: [],
     ...second,
     expectedRevision: "1",
     payload: "second-state",
@@ -125,7 +125,7 @@ test("stale owners lose before revision comparison and replacement is total", ()
 test("portable export fences the source and exact import refuses overwrite", async () => {
   const source = createMemoryDurabilityStore("source");
   const sourceOwner = source.acquire("source", { ownerId: "source-owner" });
-  assert.deepEqual(source.replace("source", {
+  assert.deepEqual(source.replace("source", { records: [],
     ...sourceOwner,
     expectedRevision: "0",
     payload: "opaque-total-state",
@@ -133,12 +133,12 @@ test("portable export fences the source and exact import refuses overwrite", asy
 
   const archive = await exportDurabilityState(source, "source");
   assert.deepEqual(archive, {
-    format: "nanocodex-durability-state-v1",
+    format: "nanocodex-durability-state-v2", records: [],
     stateId: "source",
     revision: "1",
     payload: "opaque-total-state",
   });
-  assert.deepEqual(source.replace("source", {
+  assert.deepEqual(source.replace("source", { records: [],
     ...sourceOwner,
     expectedRevision: "1",
     payload: "split-brain-write",
@@ -173,7 +173,7 @@ test("cursor export resumes only from the exact from-state lineage", async () =>
   assert.equal(first.from, "4");
   assert.match(first.fromDigest, /^sha256:[0-9a-f]{64}$/);
   assert.equal(first.to, "9");
-  assert.equal(first.cursor, "v1:0");
+  assert.equal(first.cursor, "v2:0");
   assert.notEqual(first.nextCursor, null);
 
   const repeated = await exportDurabilityStatePage(source, "range", {
@@ -280,7 +280,7 @@ test("portable import rejects malformed or unsupported archives", async () => {
   const destination = createMemoryDurabilityStore("destination");
   await assert.rejects(
     importDurabilityState(destination, {
-      format: "nanocodex-durability-state-v0",
+      format: "nanocodex-durability-state-v0", records: [],
       stateId: "source",
       revision: "1",
       payload: "state",
@@ -289,7 +289,7 @@ test("portable import rejects malformed or unsupported archives", async () => {
   );
   await assert.rejects(
     importDurabilityState(destination, {
-      format: "nanocodex-durability-state-v1",
+      format: "nanocodex-durability-state-v2", records: [],
       stateId: "source",
       revision: "0",
       payload: "impossible",
@@ -332,4 +332,21 @@ test("portable cutover has no random-number-generator dependency", async () => {
     if (cryptoDescriptor) Object.defineProperty(globalThis, "crypto", cryptoDescriptor);
     else delete globalThis.crypto;
   }
+});
+
+
+test("large Unicode acquired states cross as exact UTF-8 without a nested JSON envelope", async () => {
+  const payload = 'retained \" 🧪\n'.repeat(100_000);
+  const host = {};
+  const store = createMemoryDurabilityStore("unicode-state", { revision: "1", payload });
+  const route = own(host, store, "unicode-state");
+  retain(host, route.id);
+  try {
+    const acquired = await acquire(route.id, "unicode-state", "owner");
+    assert.equal(acquired.owner_id, "owner");
+    assert.equal(acquired.revision, "1");
+    assert.ok(acquired.payload instanceof Uint8Array);
+    assert.equal(new TextDecoder().decode(acquired.payload), payload);
+    assert.equal(store.load("unicode-state").payload, payload);
+  } finally { release(host, route.id); }
 });

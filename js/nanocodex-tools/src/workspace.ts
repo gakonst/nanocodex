@@ -1,8 +1,8 @@
 import type { Workspace, WorkspaceEntry } from "../tools/types.mjs";
 
 const ROOT = "/workspace";
-const DEFAULT_MAX_ENTRIES = 2_000;
-const DEFAULT_MAX_FILE_BYTES = 64 * 1024 * 1024;
+const DEFAULT_MAX_ENTRIES = Infinity;
+const DEFAULT_MAX_FILE_BYTES = Infinity;
 
 type ComputerDirent = Readonly<{
   name: string;
@@ -74,21 +74,23 @@ function createFilesystem(
 
       while (pending.length > 0) {
         const current = pending.shift()!;
-        const remaining = maxEntries - entries.length;
-        const children = await fs.readdir(current, { limit: remaining + 1, offset: 0 });
-        if (children.length > remaining) {
-          throw new RangeError(`workspace listing exceeds ${maxEntries} entries`);
-        }
-        for (const child of children) {
-          const childPath = resolveChild(current, child.name);
-          requireSupportedEntry(child, childPath);
-          entries.push(Object.freeze({
-            kind: child.isDirectory ? "directory" : "file",
-            modifiedAt: child.mtime,
-            path: childPath,
-            ...(child.isFile ? { size: child.size } : {}),
-          }));
-          if (recursive && child.isDirectory) pending.push(childPath);
+        let offset = 0;
+        for (;;) {
+          const children = await fs.readdir(current, { limit: 1_000, offset });
+          if (!children.length) break;
+          for (const child of children) {
+            const childPath = resolveChild(current, child.name);
+            requireSupportedEntry(child, childPath);
+            entries.push(Object.freeze({
+              kind: child.isDirectory ? "directory" : "file",
+              modifiedAt: child.mtime,
+              path: childPath,
+              ...(child.isFile ? { size: child.size } : {}),
+            }));
+            if (entries.length > maxEntries) throw new RangeError(`workspace listing exceeds ${maxEntries} entries`);
+            if (recursive && child.isDirectory) pending.push(childPath);
+          }
+          offset += children.length;
         }
         if (!recursive) break;
       }

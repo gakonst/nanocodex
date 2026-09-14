@@ -156,8 +156,13 @@ export function steer(turn, options) {
   const state = turnState(turn);
   const input = actionInput(options);
   return typeof input === "string"
-    ? state.raw.steer(input)
-    : state.raw.steerContent(JSON.stringify(input));
+    ? state.raw.steer(input, options.messageId)
+    : state.raw.steerContent(JSON.stringify(input), options.messageId);
+}
+
+export function withdrawSteer(turn, { messageId }) {
+  if (typeof messageId !== "string" || !messageId) throw new TypeError("messageId must be a non-empty string");
+  return turnState(turn).raw.withdrawSteer(messageId);
 }
 
 export function cancel(turn) {
@@ -313,6 +318,7 @@ export function toWasmConfig(options = {}) {
   copy(config, "websocket_url", options.websocketUrl);
   copy(config, "api_base_url", options.apiBaseUrl);
   copy(config, "instructions", options.instructions);
+  copy(config, "additional_instructions", options.additionalInstructions);
   copy(config, "session_id", options.sessionId);
   copy(config, "workspace", options.workspace);
   if (options.executionEnvironment !== undefined) {
@@ -463,10 +469,10 @@ const hostBridge = Object.freeze({
       ? connection.host.send(connection.handle, message)
       : Promise.resolve(JSON.stringify({ ok: false, reconnectable: true, error: "unknown WebSocket handle" }));
   },
-  next(handle, timeoutMs) {
+  next(handle) {
     const connection = hostConnections.get(handle);
     return connection
-      ? connection.host.next(connection.handle, timeoutMs)
+      ? connection.host.next(connection.handle)
       : Promise.resolve(JSON.stringify({ kind: "closed", detail: "for an unknown WebSocket handle" }));
   },
   close(handle) {
@@ -482,7 +488,13 @@ const hostBridge = Object.freeze({
     }
     return host.sleep(milliseconds);
   },
-  bindSubagentSession(hostDefinitionId, rootSessionId, sessionId, contextJson) {
+  bindSubagentSession(
+    hostDefinitionId,
+    rootSessionId,
+    sessionId,
+    contextJson,
+    hostContextRef,
+  ) {
     let host;
     if (contextJson === undefined) {
       contextJson = sessionId;
@@ -501,7 +513,7 @@ const hostBridge = Object.freeze({
         throw new Error(`Nanocodex subagent session ID is already active: ${sessionId}`);
       }
     }
-    host.bindSubagentSession(sessionId, JSON.parse(contextJson));
+    host.bindSubagentSession(sessionId, JSON.parse(contextJson), hostContextRef);
     hostSessions.set(sessionId, host);
   },
   releaseSubagentSession(hostDefinitionId, rootSessionId, sessionId) {
@@ -522,11 +534,20 @@ const hostBridge = Object.freeze({
   executeCode(source, sessionId, callId, model) {
     return requiredSessionHost(sessionId).executeCode(source, sessionId, callId, model);
   },
+  waitCode(input, sessionId, callId) {
+    return requiredSessionHost(sessionId).waitCode(input, sessionId, callId);
+  },
   nextCodeUpdate(sessionId, callId) {
     return requiredSessionHost(sessionId).nextCodeUpdate(sessionId, callId);
   },
   executeTool(name, input, sessionId, callId, model) {
     return requiredSessionHost(sessionId).executeTool(name, input, sessionId, callId, model);
+  },
+  beginCodeTurn(sessionId) {
+    hostSessions.get(sessionId)?.beginCodeTurn?.(sessionId);
+  },
+  cancelCodeTurn(sessionId) {
+    hostSessions.get(sessionId)?.cancelCodeTurn?.(sessionId);
   },
   cancelCode(sessionId) {
     hostSessions.get(sessionId)?.cancelCode?.(sessionId);
@@ -565,6 +586,12 @@ const hostBridge = Object.freeze({
     // keeps that lookup instance-scoped for roots and Rust-spawned children.
     return requiredDefinitionHost(definitionHostId).toolDefinitions(sessionId);
   },
+  async durabilityReadRecords(routeId, stateId, keys) {
+    return (await loadDurabilityRuntime()).readRecords(routeId, stateId, keys);
+  },
+  async durabilityReadRecord(routeId, stateId, key) {
+    return (await loadDurabilityRuntime()).readRecord(routeId, stateId, key);
+  },
   async durabilityAcquire(routeId, stateId, ownerId) {
     return (await loadDurabilityRuntime()).acquire(routeId, stateId, ownerId);
   },
@@ -575,6 +602,7 @@ const hostBridge = Object.freeze({
     fence,
     expectedRevision,
     payload,
+    records,
   ) {
     return (await loadDurabilityRuntime()).replace(
       routeId,
@@ -583,6 +611,7 @@ const hostBridge = Object.freeze({
       fence,
       expectedRevision,
       payload,
+      records,
     );
   },
   emitEvent(sessionId, eventJson, encodedBytes, encodedAgentId) {
@@ -950,6 +979,7 @@ function createTurn(raw, agent) {
     accepted: () => awaitTurnAcceptance(turn),
     result: () => getTurnResult(turn),
     steer: (input) => steer(turn, input),
+    withdrawSteer: (options) => withdrawSteer(turn, options),
     cancel: () => cancel(turn),
     dispose() {
       if (state.disposed) return;

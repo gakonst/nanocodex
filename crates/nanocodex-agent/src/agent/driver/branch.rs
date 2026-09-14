@@ -11,6 +11,7 @@ pub(in crate::agent) struct BranchSpawner<S> {
     pub(in crate::agent) context_source: ContextSource,
     pub(in crate::agent) depth: u32,
     pub(in crate::agent) execution: ExecutionConfig,
+    pub(in crate::agent) host_context: Option<Arc<str>>,
     pub(in crate::agent) service_factory: ServiceFactory<S>,
 }
 
@@ -34,6 +35,7 @@ impl<S> BranchSpawner<S> {
             context_source: self.context_source.clone(),
             depth: self.depth,
             execution: self.execution.for_new_thread(operation)?,
+            host_context: self.host_context.as_ref().map(Arc::clone),
             service_factory: Arc::clone(&self.service_factory),
         })
     }
@@ -52,11 +54,13 @@ where
         model: Model,
         thinking: Thinking,
         fast_mode: bool,
+        host_context: Option<Arc<str>>,
     ) -> Result<(Nanocodex, AgentEvents)> {
         let session_id = SessionId::new();
         let workspace = Some(Arc::<str>::from(checkpoint.model().workspace()));
         let mut spawner = self.for_new_thread("fork")?;
         spawner.context_source = spawner.context_config.build();
+        spawner.host_context = host_context;
         let mut config = (*spawner.config).clone();
         config.model = model;
         config.thinking = thinking;
@@ -85,6 +89,7 @@ where
         model: Model,
         thinking: Thinking,
         fast_mode: bool,
+        host_context: Option<Arc<str>>,
     ) -> Result<(Nanocodex, AgentEvents)> {
         let session_id = SessionId::new();
         let session_id_text = session_id.to_string();
@@ -108,6 +113,7 @@ where
             context_source: self.context_config.build(),
             depth,
             execution: self.execution.for_new_thread("spawn")?,
+            host_context,
             service_factory: Arc::clone(&self.service_factory),
         };
         let service = (spawner.service_factory)(Arc::clone(&spawner.config));
@@ -132,6 +138,7 @@ where
         defaults: TurnDefaults,
         count: usize,
         observer: Option<&SpawnObserver>,
+        host_context: Option<Arc<str>>,
     ) -> Result<Vec<(Nanocodex, AgentEvents)>> {
         let mut children = Vec::with_capacity(count);
         for _ in 0..count {
@@ -141,6 +148,10 @@ where
                 defaults.model,
                 defaults.thinking,
                 defaults.fast_mode,
+                host_context
+                    .as_ref()
+                    .or(self.host_context.as_ref())
+                    .map(Arc::clone),
             )?;
             if let Some(observer) = observer {
                 observer(child.0.session_id());

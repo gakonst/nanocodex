@@ -1,19 +1,17 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { clearOtherAccountQueries, sessionQueryKey } from "./queryClient";
+import { sessionQueryOptions, type BrowserSession } from "./sessionQueries";
 import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
   useMemo,
-  useRef,
   useState,
   type ReactNode,
 } from "react";
 import type { AccountSelection } from "nanocodex-connect-ui/AccountChooser";
 import {
   getCurrentUser,
-  isRecord,
-  ReauthenticationRequiredError,
-  responseFailure,
   type AuthenticatedAccount,
 } from "./accountSessionRequest";
 import { logoutBrowserAccountSession } from "nanocodex-connect-ui/browserAccountSession";
@@ -39,47 +37,24 @@ type AccountSession = Readonly<{
 const AccountSessionContext = createContext<AccountSession | null>(null);
 
 export function AccountSessionProvider({ children }: { children: ReactNode }) {
-  const [status, setStatus] = useState<SessionStatus>("checking");
-  const [user, setUser] = useState<AuthenticatedAccount | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const query = useQuery(sessionQueryOptions(queryClient));
+  const user = query.data?.account ?? null;
+  const status: SessionStatus = query.isPending ? "checking" : query.isError ? "error" : "ready";
+  const [operationError, setError] = useState<string | null>(null);
+  const error = operationError ?? (query.error ? accountFailure(query.error, "Couldn’t check your account session.") : null);
   const [operation, setOperation] = useState<AccountOperation | null>(null);
-  const [reauthenticationRequired, setReauthenticationRequired] = useState(false);
-  const requestId = useRef(0);
-  const refreshRequest = useRef<Promise<void> | undefined>(undefined);
-  const refresh = useCallback((): Promise<void> => {
-    if (refreshRequest.current) return refreshRequest.current;
-    const currentRequest = ++requestId.current;
-    let current!: Promise<void>;
-    current = getCurrentUser().then(
-      (nextUser) => {
-        if (requestId.current !== currentRequest) return;
-        setUser(nextUser);
-        setStatus("ready");
-        setError(null);
-        setReauthenticationRequired(false);
-      },
-      (cause: unknown) => {
-        if (requestId.current !== currentRequest) return;
-        if (cause instanceof ReauthenticationRequiredError) {
-          setUser(null);
-          setStatus("ready");
-          setError(null);
-          setReauthenticationRequired(true);
-          return;
-        }
-        setStatus("error");
-        setError(accountFailure(cause, "Couldn’t check your account session."));
-      },
-    ).finally(() => {
-      if (refreshRequest.current === current) refreshRequest.current = undefined;
-    });
-    refreshRequest.current = current;
-    return current;
-  }, []);
+  const reauthenticationRequired = query.data?.reauthenticationRequired ?? false;
+  const refresh = useCallback(async () => {
+    setError(null);
+    await queryClient.invalidateQueries({ queryKey: sessionQueryKey }, { cancelRefetch: false });
+  }, [queryClient]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  const acceptSession = useCallback(async (account: AuthenticatedAccount | null) => {
+    await queryClient.cancelQueries({ queryKey: sessionQueryKey });
+    clearOtherAccountQueries(queryClient, account?.id);
+    queryClient.setQueryData<BrowserSession>(sessionQueryKey, { account, reauthenticationRequired: false });
+  }, [queryClient]);
 
   const chooseAccount = useCallback(async (selection: AccountSelection) => {
     setOperation("sign-in");
@@ -88,32 +63,27 @@ export function AccountSessionProvider({ children }: { children: ReactNode }) {
       if (selection.authentication !== "sms_otp") throw new Error("SMS verification is required.");
       const nextUser = await getCurrentUser();
       if (!nextUser?.persistent) throw new Error("The SMS account session was not created.");
-      requestId.current++;
-      setUser(nextUser);
-      setStatus("ready");
-      setReauthenticationRequired(false);
+      await acceptSession(nextUser);
     } catch (cause) {
       setError(accountFailure(cause, "Couldn’t sign in by SMS. Try again."));
     } finally {
       setOperation(null);
     }
-  }, []);
+  }, [acceptSession]);
   const signOut = useCallback(async () => {
     setOperation("sign-out");
     setError(null);
     try {
+      await queryClient.cancelQueries({ queryKey: sessionQueryKey });
       await logoutBrowserAccountSession();
-      const nextUser = await getCurrentUser();
-      requestId.current++;
-      setUser(nextUser);
-      setStatus("ready");
-      setReauthenticationRequired(false);
+      await acceptSession(null);
+      await refresh();
     } catch (cause) {
       setError(accountFailure(cause, "Couldn’t sign out. Try again."));
     } finally {
       setOperation(null);
     }
-  }, []);
+  }, [acceptSession, queryClient, refresh]);
 
   const value = useMemo<AccountSession>(() => ({
     account: user,

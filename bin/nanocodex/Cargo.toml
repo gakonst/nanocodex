@@ -47,6 +47,7 @@ indicatif.workspace = true
 percent-encoding.workspace = true
 jsonschema.workspace = true
 nanocodex.workspace = true
+nanocodex-cli-auth.workspace = true
 nanocodex-durability = { workspace = true, features = ["sqlite"] }
 nanocodex-browser.workspace = true
 nanocodex-observability = { workspace = true, features = ["cli"] }
@@ -115,6 +116,10 @@ path = "tests/managed_memory.rs"
 [[test]]
 name = "login"
 path = "tests/login.rs"
+
+[[test]]
+name = "account_auth"
+path = "tests/account_auth.rs"
 
 [[test]]
 name = "durable_run"

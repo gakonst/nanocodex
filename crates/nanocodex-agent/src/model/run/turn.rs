@@ -15,14 +15,51 @@ where
         cancel: &mut tokio::sync::oneshot::Receiver<()>,
         execution_steps: Option<ExecutionSteps>,
     ) -> Result<ModelCompactOutcome> {
+        let configured = (Arc::clone(&self.config), self.model);
+        let outcome = self
+            .compact_inner(
+                requested_workspace,
+                thinking,
+                fast_mode,
+                logical_turn,
+                cancel,
+                execution_steps,
+            )
+            .await;
+        self.restore_runtime(configured, logical_turn)?;
+        outcome
+    }
+
+    async fn compact_inner(
+        &mut self,
+        requested_workspace: Option<Arc<str>>,
+        thinking: Thinking,
+        fast_mode: bool,
+        logical_turn: u64,
+        cancel: &mut tokio::sync::oneshot::Receiver<()>,
+        execution_steps: Option<ExecutionSteps>,
+    ) -> Result<ModelCompactOutcome> {
         self.execution_steps = execution_steps;
         self.thinking = thinking;
         self.fast_mode = fast_mode;
         self.started_at = Instant::now();
         self.stats = RunStats::default();
-        let mut session = match self.session.take() {
-            Some(session) => session,
-            None => self.empty_session(requested_workspace.as_deref())?,
+        self.transport_baseline = self.transport_stats.snapshot();
+        let restored = self
+            .restore_execution(requested_workspace.as_deref(), logical_turn)
+            .await?;
+        let resumed = restored.is_some();
+        let mut session = match restored {
+            Some((session, ExecutionPhase::Compact)) => session,
+            Some(_) => {
+                return Err(NanocodexError::InvalidExecutionPolicy(
+                    "invalid compaction continuation".into(),
+                ));
+            }
+            None => match self.session.take() {
+                Some(session) => session,
+                None => self.empty_session(requested_workspace.as_deref())?,
+            },
         };
         session.factory = session.factory.for_logical_turn(logical_turn);
         if let Err(error) = session.validate_workspace(requested_workspace.as_deref()) {
@@ -35,6 +72,10 @@ where
             .conversation
             .prepare_request_policy(self.continuation_policy());
 
+        if !resumed {
+            self.retain_execution(&session, ExecutionPhase::Compact)
+                .await?;
+        }
         let active_context_tokens = session.conversation.active_context_tokens();
         let previous_response_id = session
             .conversation
@@ -153,6 +194,15 @@ where
         fast_mode: bool,
         error: &NanocodexError,
     ) -> Result<()> {
+        if matches!(
+            error.execution_policy_disposition(),
+            Some(
+                crate::ExecutionPolicyDisposition::Retry
+                    | crate::ExecutionPolicyDisposition::Reopen
+            )
+        ) {
+            return Ok(());
+        }
         self.thinking = thinking;
         self.fast_mode = fast_mode;
         self.started_at = Instant::now();
@@ -198,7 +248,7 @@ where
         if let Some(tools) = &self.active_tools {
             tools.begin_turn();
         }
-        let transport_before = self.transport_stats.snapshot();
+        self.transport_baseline = self.transport_stats.snapshot();
         self.events.emit(
             AgentEventKind::RunStarted,
             RunStarted {
@@ -214,6 +264,7 @@ where
             },
         )?;
 
+        let configured = (Arc::clone(&self.config), self.model);
         let outcome = self
             .execute_task(
                 task,
@@ -224,10 +275,10 @@ where
                 &fork_snapshots,
             )
             .await;
+        self.restore_runtime(configured, logical_turn)?;
         match outcome {
             Ok(ModelTaskOutcome::Completed(message)) => {
-                self.stats
-                    .apply_transport(self.transport_stats.since(transport_before));
+                self.record_transport();
                 let usage = self.stats.turn_usage();
                 record_turn_usage(&tracing::Span::current(), &usage);
                 let checkpoint = self.commit_checkpoint()?;
@@ -246,13 +297,23 @@ where
                 let message = error.to_string();
                 self.events
                     .emit(AgentEventKind::RunError, RunError { message: &message })?;
-                self.stats
-                    .apply_transport(self.transport_stats.since(transport_before));
+                self.record_transport();
                 let usage = self.stats.turn_usage();
                 record_turn_usage(&tracing::Span::current(), &usage);
                 Ok(ModelTurnOutcome::Cancelled(checkpoint))
             }
             Err(error) => {
+                if self.execution_steps.is_some()
+                    && error.execution_policy_disposition()
+                        == Some(crate::ExecutionPolicyDisposition::Reopen)
+                {
+                    // An interrupted host did not settle its effect. Leave the
+                    // durable batch intact; do not invent failed tool outputs.
+                    if let Some(tools) = &self.active_tools {
+                        tools.cancel_turn().await;
+                    }
+                    return Err(error);
+                }
                 if error
                     .responses_error()
                     .is_some_and(ResponsesError::is_context_window_exceeded)
@@ -273,6 +334,12 @@ where
                             matches!(source, ResponsesError::InvalidImageRequest { .. })
                         }) {
                             session.conversation.replace_rejected_images();
+                        }
+                        if let Some(definition) = error
+                            .responses_error()
+                            .and_then(ResponsesError::invalid_tool_schema)
+                        {
+                            session.conversation.remove_tool_definition(definition);
                         }
                         session.conversation.commit_interrupted();
                         session.preserve_inherited_delta = false;
@@ -297,8 +364,7 @@ where
                 let message = error.to_string();
                 self.events
                     .emit(AgentEventKind::RunError, RunError { message: &message })?;
-                self.stats
-                    .apply_transport(self.transport_stats.since(transport_before));
+                self.record_transport();
                 let usage = self.stats.turn_usage();
                 record_turn_usage(&tracing::Span::current(), &usage);
                 match checkpoint {
@@ -407,7 +473,16 @@ where
         cancel: &mut tokio::sync::oneshot::Receiver<()>,
         fork_snapshots: &watch::Sender<Option<ModelCheckpoint>>,
     ) -> Result<ModelTaskOutcome> {
-        let mut session = if let Some(mut session) = self.session.take() {
+        let restored = self
+            .restore_execution(requested_workspace.as_deref(), logical_turn)
+            .await?;
+        let resumed = restored.is_some();
+        let phase;
+        let mut session = if let Some((session, saved_phase)) = restored {
+            phase = saved_phase;
+            self.session = None;
+            session
+        } else if let Some(mut session) = self.session.take() {
             session.factory = session.factory.for_logical_turn(logical_turn);
             if let Err(error) = session.validate_workspace(requested_workspace.as_deref()) {
                 self.session = Some(session);
@@ -416,20 +491,7 @@ where
             session
                 .conversation
                 .prepare_request_policy(self.continuation_policy());
-            match self
-                .prepare_follow_on_turn(&mut session, &task, cancel)
-                .await
-            {
-                Ok(true) => {}
-                Ok(false) => {
-                    self.session = Some(session);
-                    return Ok(ModelTaskOutcome::Cancelled);
-                }
-                Err(error) => {
-                    self.session = Some(session);
-                    return Err(error);
-                }
-            }
+            phase = ExecutionPhase::PrepareTurn;
             session
         } else {
             // The owning driver resolves its workspace before accepting
@@ -477,50 +539,85 @@ where
                 fork_snapshots,
                 self.global_instructions.as_ref(),
             );
-            let warmup = {
-                let warmup = self.perform_warmup(&session.factory);
-                tokio::pin!(warmup);
-                tokio::select! {
-                    biased;
-                    _ = &mut *cancel => None,
-                    outcome = &mut warmup => Some(outcome),
+            phase = ExecutionPhase::Warmup;
+            session
+        };
+
+        if !resumed {
+            self.retain_execution(&session, phase).await?;
+        }
+        match phase {
+            ExecutionPhase::PrepareTurn => {
+                match self
+                    .prepare_follow_on_turn(&mut session, &task, cancel)
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        self.session = Some(session);
+                        return Ok(ModelTaskOutcome::Cancelled);
+                    }
+                    Err(error) => {
+                        self.session = Some(session);
+                        return Err(error);
+                    }
                 }
-            };
-            let Some(warmup) = warmup else {
-                self.session = Some(session);
-                return Ok(ModelTaskOutcome::Cancelled);
-            };
-            match warmup {
-                Ok(outcome) => {
-                    session
-                        .conversation
-                        .observe_server_reasoning(outcome.server_reasoning_included);
-                    if let Some(response_id) = outcome.response_id {
-                        session.conversation.set_previous_response_id(response_id);
-                    } else {
+            }
+            ExecutionPhase::Warmup => {
+                let warmup = {
+                    let warmup = self.perform_warmup(&session.factory);
+                    tokio::pin!(warmup);
+                    tokio::select! {
+                        biased;
+                        _ = &mut *cancel => None,
+                        outcome = &mut warmup => Some(outcome),
+                    }
+                };
+                let Some(warmup) = warmup else {
+                    self.session = Some(session);
+                    return Ok(ModelTaskOutcome::Cancelled);
+                };
+                match warmup {
+                    Ok(outcome) => {
+                        session
+                            .conversation
+                            .observe_server_reasoning(outcome.server_reasoning_included);
+                        if let Some(response_id) = outcome.response_id {
+                            session.conversation.set_previous_response_id(response_id);
+                        } else {
+                            session.conversation.reset_for_full_request();
+                            self.stats.last_response_id = None;
+                        }
+                    }
+                    Err(error)
+                        if error
+                            .responses_error()
+                            .is_some_and(|source| source.is_misalignment_policy_violation()) =>
+                    {
+                        self.session = Some(session);
+                        return Err(error);
+                    }
+                    Err(error) if error.responses_error().is_some() => {
                         session.conversation.reset_for_full_request();
                         self.stats.last_response_id = None;
                     }
-                }
-                Err(error)
-                    if error
-                        .responses_error()
-                        .is_some_and(|source| source.is_misalignment_policy_violation()) =>
-                {
-                    self.session = Some(session);
-                    return Err(error);
-                }
-                Err(error) if error.responses_error().is_some() => {
-                    session.conversation.reset_for_full_request();
-                    self.stats.last_response_id = None;
-                }
-                Err(error) => {
-                    self.session = Some(session);
-                    return Err(error);
+                    Err(error) => {
+                        self.session = Some(session);
+                        return Err(error);
+                    }
                 }
             }
-            session
-        };
+            ExecutionPhase::Generate => {}
+            ExecutionPhase::Compact => {
+                return Err(NanocodexError::InvalidExecutionPolicy(
+                    "invalid turn continuation".into(),
+                ));
+            }
+        }
+        if phase != ExecutionPhase::Generate {
+            self.retain_execution(&session, ExecutionPhase::Generate)
+                .await?;
+        }
 
         let outcome = {
             let TurnSteering {
@@ -532,6 +629,7 @@ where
                 &mut session,
                 receiver,
                 retained,
+                resumed && phase == ExecutionPhase::Generate,
                 model_call_index,
                 fork_snapshots,
             );
@@ -679,27 +777,42 @@ where
     pub(super) async fn drive_session(
         &mut self,
         session: &mut ModelSessionState,
-        mut steers: tokio::sync::mpsc::Receiver<QueuedSteer>,
+        steers: crate::agent::execution::SteerQueue,
         retained_steers: Vec<QueuedSteer>,
+        resumed: bool,
         model_call_index: Arc<tokio::sync::Mutex<u32>>,
         fork_snapshots: &watch::Sender<Option<ModelCheckpoint>>,
     ) -> Result<String> {
         // Match Codex's ordering: always sample the turn's initial prompt once
         // before injecting input that arrived while that first request ran.
         let mut can_drain_steers = false;
-        let mut pending_steers = VecDeque::from(retained_steers);
+        let next_call = self.stats.model_calls + 1;
+        let mut pending_steers = retained_steers
+            .into_iter()
+            .filter(|steer| {
+                !resumed
+                    || !steer
+                        .model_call_index
+                        .is_some_and(|index| index <= next_call)
+            })
+            .collect::<VecDeque<_>>();
+        *model_call_index.lock().await = next_call;
+        let mut first_batch = true;
         loop {
             let call_index = self.stats.model_calls + 1;
             if can_drain_steers {
                 let mut current_call_index = model_call_index.lock().await;
                 *current_call_index = call_index;
-                while let Ok(steer) = steers.try_recv() {
-                    pending_steers.push_back(steer);
-                }
+                pending_steers.extend(steers.lock().await.drain(..));
                 drop(current_call_index);
                 self.drain_steers(&mut session.conversation, &mut pending_steers, call_index)
                     .await?;
             }
+            if !first_batch {
+                self.retain_execution(session, ExecutionPhase::Generate)
+                    .await?;
+            }
+            first_batch = false;
             Self::publish_fork_snapshot(session, fork_snapshots, self.global_instructions.as_ref());
             let model_call = self
                 .perform_model_call(call_index, &mut session.conversation, &session.factory)
@@ -748,7 +861,17 @@ where
                     can_drain_steers = !compacted;
                     continue;
                 }
-                if !steers.is_empty() || !pending_steers.is_empty() {
+                pending_steers.extend(steers.lock().await.drain(..));
+                let mut live_steers = VecDeque::new();
+                while let Some(steer) = pending_steers.pop_front() {
+                    if *steer.delivery.lock().await
+                        != crate::agent::execution::SteerDelivery::Withdrawn
+                    {
+                        live_steers.push_back(steer);
+                    }
+                }
+                pending_steers = live_steers;
+                if !pending_steers.is_empty() {
                     // The completed response is retained by previous_response_id;
                     // the next delta contains only newly drained steer messages.
                     session.conversation.clear_delta();
@@ -829,6 +952,12 @@ where
             let steer = pending_steers
                 .pop_front()
                 .expect("eligible steering input disappeared");
+            let mut delivery = steer.delivery.lock().await;
+            if *delivery == crate::agent::execution::SteerDelivery::Withdrawn {
+                continue;
+            }
+            *delivery = crate::agent::execution::SteerDelivery::Consumed;
+            drop(delivery);
             if steer.model_call_index.is_none()
                 && let (Some(steps), Some(index)) = (&self.execution_steps, steer.durable_index)
             {

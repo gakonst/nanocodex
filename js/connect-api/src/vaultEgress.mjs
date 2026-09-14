@@ -2,7 +2,7 @@ const VAULT_ID = /^[A-Za-z0-9_-]{22,64}$/;
 const VAULT_ID_HEADER = "x-nanocodex-vault-id";
 const METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
 const PRIVATE_HEADER = /(?:^|[-_])(?:auth(?:orization)?|cookie|credential|password|proxy|secret|token|api[-_]?key)(?:$|[-_]|\d)/i;
-const VAULT_PLACEHOLDER = /\{\{NANOCODEX_VAULT_(?:USERNAME|PASSWORD|BASIC|CARD_NUMBER|EXPIRY_MONTH|EXPIRY_YEAR|CVV|BILLING_ZIP)\}\}/;
+const VAULT_PLACEHOLDER = /\{\{NANOCODEX_VAULT_(?:USERNAME|PASSWORD|API_KEY|BASIC|CARD_NUMBER|EXPIRY_MONTH|EXPIRY_YEAR|CVV|BILLING_ZIP)\}\}/;
 const FORBIDDEN_HEADERS = new Set([
   "connection", "cookie", "host", "origin", "proxy-authorization", "proxy-connection", "referer", "te", "trailer",
   "transfer-encoding", "upgrade", "x-nanocodex-subject", VAULT_ID_HEADER,
@@ -65,9 +65,10 @@ function safeVaultHeaderValue(name, value) {
   if (name === "cookie" || name === "proxy-authorization") return false;
   if (name === "authorization") {
     return value === "Basic {{NANOCODEX_VAULT_BASIC}}"
+      || value === "Bearer {{NANOCODEX_VAULT_API_KEY}}"
       || value === "Bearer {{NANOCODEX_VAULT_PASSWORD}}";
   }
-  return /^\{\{NANOCODEX_VAULT_(?:PASSWORD|BASIC|CARD_NUMBER|EXPIRY_MONTH|EXPIRY_YEAR|CVV|BILLING_ZIP)\}\}$/.test(value);
+  return /^\{\{NANOCODEX_VAULT_(?:PASSWORD|API_KEY|BASIC|CARD_NUMBER|EXPIRY_MONTH|EXPIRY_YEAR|CVV|BILLING_ZIP)\}\}$/.test(value);
 }
 
 function isRecord(value) {

@@ -1,4 +1,4 @@
-export type VaultEntryKind = "login" | "card" | "address" | "phone";
+export type VaultEntryKind = "login" | "api_key" | "card" | "address" | "phone";
 
 export type VaultEntryMetadata = Readonly<{
   id: string;
@@ -8,7 +8,7 @@ export type VaultEntryMetadata = Readonly<{
 }>;
 
 const ENTRY_ID = /^[A-Za-z0-9_-]{22,64}$/;
-const ENTRY_KINDS = new Set<VaultEntryKind>(["login", "card", "address", "phone"]);
+const ENTRY_KINDS = new Set<VaultEntryKind>(["login", "api_key", "card", "address", "phone"]);
 
 export function decodeVaultEntries(value: unknown): readonly VaultEntryMetadata[] {
   if (!Array.isArray(value)) throw new Error("Invalid vault response.");

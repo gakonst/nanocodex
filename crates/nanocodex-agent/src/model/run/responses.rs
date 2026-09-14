@@ -1,22 +1,5 @@
 use super::*;
 
-#[derive(Serialize)]
-struct RecordedModelCall<'a> {
-    call_index: u32,
-    model: &'a str,
-    model_id_prefix: Option<&'a str>,
-    reasoning_mode: &'a str,
-    effort: &'a str,
-    fast_mode: bool,
-    store_responses: bool,
-    transport: &'a str,
-    websocket_url: &'a str,
-    api_base_url: &'a str,
-    prompt_cache_key: &'a str,
-    request_prefix: &'a [ResponseItem],
-    prompt_history: &'a [ResponseItem],
-}
-
 #[derive(Deserialize, Serialize)]
 struct RecordedModelResult {
     response: TurnResult,
@@ -43,6 +26,11 @@ where
         conversation: &mut ConversationState,
         factory: &ResponsesAttemptFactory,
     ) -> Result<ModelCallOutcome> {
+        let step_id = format!("model-{call_index}");
+        let model = self.model;
+        let thinking = self.thinking;
+        let reasoning_mode = self.config.reasoning_mode;
+        let fast_mode = self.fast_mode;
         let (prompt_history, prompt_repaired) = conversation.prompt_history_with_repair();
         let previous_response_id = if prompt_repaired {
             None
@@ -55,9 +43,9 @@ where
             AgentEventKind::ModelCallStarted,
             ModelCallStarted {
                 call_index,
-                model: self.model.as_str(),
-                reasoning_mode: self.config.reasoning_mode.as_str(),
-                effort: self.thinking.as_str(),
+                model: model.as_str(),
+                reasoning_mode: reasoning_mode.as_str(),
+                effort: thinking.as_str(),
                 previous_response_id: previous_response_id.as_deref(),
             },
         )?;
@@ -67,16 +55,16 @@ where
             conversation.shared_history(),
             conversation.delta_start(),
             previous_response_id.as_deref(),
-            self.model,
-            self.thinking,
-            self.fast_mode,
+            model,
+            thinking,
+            fast_mode,
         );
         let (input_item_count, input_bytes, input_content) = trace_model_input(&request);
         let span = model_call_span(
             call_index,
-            self.model.as_str(),
-            self.config.reasoning_mode.as_str(),
-            self.thinking.as_str(),
+            model.as_str(),
+            reasoning_mode.as_str(),
+            thinking.as_str(),
             previous_response_id.is_some(),
             input_item_count,
             input_bytes,
@@ -85,33 +73,9 @@ where
             record_span_content(&span, "model.input", input_content);
         }
         let execution_steps = self.execution_steps.clone();
-        let step_id = format!("model-{call_index}");
-        let mut recorded_prompt_history = prompt_history.iter().cloned().collect::<Vec<_>>();
-        for item in &mut recorded_prompt_history {
-            item.strip_id();
-        }
-        let mut recorded_request_prefix = factory.profile().prefix().to_vec();
-        for item in &mut recorded_request_prefix {
-            item.strip_id();
-        }
-        let step_input = RecordedModelCall {
-            call_index,
-            model: self.model.as_str(),
-            model_id_prefix: self.config.model_id_prefix.as_deref(),
-            reasoning_mode: self.config.reasoning_mode.as_str(),
-            effort: self.thinking.as_str(),
-            fast_mode: self.fast_mode,
-            store_responses: self.config.store_responses,
-            transport: self.config.responses_transport.as_str(),
-            websocket_url: &self.config.websocket_url,
-            api_base_url: &self.config.api_base_url,
-            prompt_cache_key: factory.profile().prompt_cache_key(),
-            request_prefix: &recorded_request_prefix,
-            prompt_history: &recorded_prompt_history,
-        };
         let recovered = if let Some(steps) = &execution_steps {
             match steps
-                .begin::<_, RecordedModelResult>(&step_id, "model_call", &step_input)
+                .begin::<_, RecordedModelResult>(&step_id, "model_call", &())
                 .await?
             {
                 crate::agent::ExecutionStep::Execute => None,
@@ -176,18 +140,18 @@ where
         span.record("otel.status_code", "OK");
         span.record("duration_ns", duration_ns);
         if let Some(usage) = &response.usage {
-            record_usage(&span, usage, self.model, self.fast_mode);
+            record_usage(&span, usage, model, fast_mode);
         }
         self.stats.model_duration_ns += duration_ns;
         if let Some(usage) = &response.usage {
-            self.stats.usage.add(usage, self.model, self.fast_mode);
+            self.stats.usage.add(usage, model, fast_mode);
         }
         self.stats.last_response_id = transport_continuation_valid.then(|| response.id.clone());
         self.events.emit(
             AgentEventKind::ModelCallCompleted,
             ModelCallCompleted {
                 call_index,
-                model: self.model.as_str(),
+                model: model.as_str(),
                 response_id: &response.id,
                 attempt,
                 connection_generation,
@@ -328,6 +292,7 @@ pub(super) fn owned_code_context(
     history: Option<Arc<Vec<ResponseItem>>>,
     session_id: &str,
     model: Model,
+    host_context: Option<&str>,
 ) -> Result<Option<OwnedToolContext>> {
     if call.name != "exec" {
         return Ok(None);
@@ -335,13 +300,16 @@ pub(super) fn owned_code_context(
     let history = history.ok_or(NanocodexError::MalformedResponse {
         detail: "exec call did not have an owned history snapshot",
     })?;
-    Ok(Some(OwnedToolContext::new(
-        model.as_str(),
-        session_id,
-        &call.call_id,
-        history,
-        DEFAULT_TOOL_OUTPUT_TOKENS,
-    )))
+    Ok(Some(
+        OwnedToolContext::new(
+            model.as_str(),
+            session_id,
+            &call.call_id,
+            history,
+            DEFAULT_TOOL_OUTPUT_TOKENS,
+        )
+        .with_host_context(host_context.map(Arc::from)),
+    ))
 }
 
 pub(super) fn record_span_content(span: &tracing::Span, kind: &'static str, content: &str) {

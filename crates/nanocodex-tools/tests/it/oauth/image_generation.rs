@@ -52,7 +52,8 @@ async fn chatgpt_auth_recovers_across_generation_and_edit_routes() -> Result<()>
             }))?),
             context("generate"),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(generated.success);
 
     let edited = runtime
@@ -64,7 +65,8 @@ async fn chatgpt_auth_recovers_across_generation_and_edit_routes() -> Result<()>
             }))?),
             context("edit"),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(edited.success);
 
     let requests = server.await??;

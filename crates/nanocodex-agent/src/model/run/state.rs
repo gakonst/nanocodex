@@ -208,6 +208,10 @@ impl ConversationState {
         self.managed.replace_rejected_images()
     }
 
+    pub(super) fn remove_tool_definition(&mut self, definition: &Value) -> usize {
+        self.managed.remove_tool_definition(definition)
+    }
+
     pub(super) fn commit_tail(&mut self) {
         self.managed.commit_tail();
     }

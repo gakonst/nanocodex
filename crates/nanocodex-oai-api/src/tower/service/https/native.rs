@@ -111,10 +111,8 @@ pub(crate) async fn run(
 }
 
 impl ResponseEventSource for ResponsesHttpStream {
-    async fn next_text_or_idle_timeout(
-        &mut self,
-    ) -> Result<crate::socket::ReceivedText, ResponsesError> {
-        Self::next_text_or_idle_timeout(self).await
+    async fn next_text(&mut self) -> Result<crate::socket::ReceivedText, ResponsesError> {
+        Self::next_text(self).await
     }
 }
 

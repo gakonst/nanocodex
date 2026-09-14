@@ -64,3 +64,8 @@ test("Vault metadata projection fails closed on malformed or unbounded snapshots
   ];
   for (const value of invalid) assert.throws(() => projectVaultEntries(value));
 });
+
+test("API key metadata excludes key material", () => {
+  assert.deepEqual(projectVaultEntries([{ id: id("k"), kind: "api_key", name: "Service", created_at: 1, api_key: "secret" }]),
+    [{ id: id("k"), kind: "api_key", name: "Service", created_at: 1 }]);
+});

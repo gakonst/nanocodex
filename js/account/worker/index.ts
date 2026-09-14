@@ -16,6 +16,7 @@ import { routeEvalRead } from "./evalReadApi.ts";
 import { handleGitRequest, type GitStorageEnv } from "./gitRoutes.ts";
 import { GitRepository } from "./gitRepository.ts";
 import { proxyDefaultMcp } from "./mcpProxy.ts";
+import { proxyX, type XProxyEnv } from "./xProxy.ts";
 import {
   handleThreadGitRequest,
   type ThreadGitStorageEnv,
@@ -101,6 +102,7 @@ const LOCAL_SPONSORED_TRIAL_RESET = typeof __NANOCODEX_LOCAL_SPONSORED_TRIAL_RES
   && __NANOCODEX_LOCAL_SPONSORED_TRIAL_RESET__;
 
 type WorkerEnv = GitStorageEnv & ThreadGitStorageEnv & EvalStorageEnv & ChatGptEgressEnv
+  & XProxyEnv
   & AccountFundingProxyEnv
   & ConnectDialogProxyEnv
   & LocalConnectApiEnv
@@ -172,6 +174,8 @@ export default {
       env.NANOCODEX_BACKEND,
     );
     if (mcpResponse != null) return mcpResponse;
+    const xResponse = await proxyX(request, env, sameOrigin(request, url, env));
+    if (xResponse != null) return xResponse;
 
     if (url.pathname === "/api/health" && request.method === "GET") {
       const managed = managedAccess(request, env);
@@ -180,7 +184,6 @@ export default {
         const model = await managedModelStatus(managed);
         return json({
           agent_configured: model.ready,
-          astra_entitled: model.astraEntitled,
           credential_source: model.source === "sponsored"
             ? "sponsored"
             : model.ready ? "brokered" : null,
@@ -205,7 +208,6 @@ export default {
       }
       return json({
         agent_configured: Boolean(credential),
-        astra_entitled: false,
         credential_source: credential?.source ?? null,
         voice_enabled: credential?.kind === "chatgpt",
         deployment_sha: GIT_SHA_PATTERN.test(env.DEPLOYMENT_SHA ?? "")

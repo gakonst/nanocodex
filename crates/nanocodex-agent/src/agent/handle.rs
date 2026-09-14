@@ -78,7 +78,18 @@ impl AgentHandle {
     /// Returns an error after the containing driver has stopped.
     pub async fn spawn_with(&self, options: SpawnOptions) -> Result<(Nanocodex, AgentEvents)> {
         let commands = self.commands()?;
-        request_spawn(&commands, &self.shutdown, options).await
+        request_spawn_with_host_context(&commands, &self.shutdown, options, None).await
+    }
+
+    /// Starts a clean child with embedding-owned context inherited by its tool invocations.
+    #[doc(hidden)]
+    pub async fn spawn_with_host_context(
+        &self,
+        options: SpawnOptions,
+        host_context: Option<Arc<str>>,
+    ) -> Result<(Nanocodex, AgentEvents)> {
+        let commands = self.commands()?;
+        request_spawn_with_host_context(&commands, &self.shutdown, options, host_context).await
     }
 
     /// Starts several clean agents in the order requested.
@@ -92,7 +103,7 @@ impl AgentHandle {
     /// Returns an error after the containing driver has stopped.
     pub async fn spawn_many(&self, count: usize) -> Result<Vec<(Nanocodex, AgentEvents)>> {
         let commands = self.commands()?;
-        request_spawn_many(&commands, &self.shutdown, count, None).await
+        request_spawn_many(&commands, &self.shutdown, count, None, None).await
     }
 
     /// Starts several clean agents and synchronously observes each child as it
@@ -108,7 +119,33 @@ impl AgentHandle {
         observer: impl Fn(&str) + Send + Sync + 'static,
     ) -> Result<Vec<(Nanocodex, AgentEvents)>> {
         let commands = self.commands()?;
-        request_spawn_many(&commands, &self.shutdown, count, Some(Arc::new(observer))).await
+        request_spawn_many(
+            &commands,
+            &self.shutdown,
+            count,
+            Some(Arc::new(observer)),
+            None,
+        )
+        .await
+    }
+
+    /// Observes a clean batch while privately inheriting embedding-owned context.
+    #[doc(hidden)]
+    pub async fn spawn_many_observed_with_host_context(
+        &self,
+        count: usize,
+        observer: impl Fn(&str) + Send + Sync + 'static,
+        host_context: Option<Arc<str>>,
+    ) -> Result<Vec<(Nanocodex, AgentEvents)>> {
+        let commands = self.commands()?;
+        request_spawn_many(
+            &commands,
+            &self.shutdown,
+            count,
+            Some(Arc::new(observer)),
+            host_context,
+        )
+        .await
     }
 
     /// Forks the containing agent's latest safe model boundary.
@@ -491,8 +528,19 @@ pub(super) async fn request_spawn(
     shutdown: &DriverShutdown,
     options: SpawnOptions,
 ) -> Result<(Nanocodex, AgentEvents)> {
+    request_spawn_with_host_context(commands, shutdown, options, None).await
+}
+
+#[cfg(feature = "openai")]
+async fn request_spawn_with_host_context(
+    commands: &mpsc::Sender<Command>,
+    shutdown: &DriverShutdown,
+    options: SpawnOptions,
+    host_context: Option<Arc<str>>,
+) -> Result<(Nanocodex, AgentEvents)> {
     request_command(commands, shutdown, |result| Command::Spawn {
         options,
+        host_context,
         result,
     })
     .await
@@ -504,10 +552,12 @@ async fn request_spawn_many(
     shutdown: &DriverShutdown,
     count: usize,
     observer: Option<Arc<SpawnObserver>>,
+    host_context: Option<Arc<str>>,
 ) -> Result<Vec<(Nanocodex, AgentEvents)>> {
     request_command(commands, shutdown, |result| Command::SpawnBatch {
         count,
         observer,
+        host_context,
         result,
     })
     .await

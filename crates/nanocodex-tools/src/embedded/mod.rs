@@ -31,6 +31,7 @@
 //!     ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
 //!         Box::pin(async move {
 //!             Ok(CodeModeExecution {
+//!                 cell: None,
 //!                 output: ToolOutputBody::Text(format!("evaluated: {source}")),
 //!                 success: true,
 //!                 nested_calls: Vec::new(),
@@ -59,8 +60,8 @@ use crate::{ToolContext, ToolDefinition, ToolInput, ToolOutput};
 pub use input::{prepare_output_images, prepare_user_input};
 pub use runtime::{EmbeddedToolRuntime, EmbeddedToolRuntimeControl};
 pub use types::{
-    CodeModeExecution, CodeModeNotification, CodeModeObserver, CodeModeUpdate, NestedToolCall,
-    OwnedToolContext,
+    CodeModeCell, CodeModeExecution, CodeModeNotification, CodeModeObserver, CodeModeUpdate,
+    NestedToolCall, OwnedToolContext,
 };
 
 /// Binds a caller-owned Code Mode host to one immutable [`crate::Tools`] recipe.
@@ -141,6 +142,26 @@ pub trait CodeModeHost: Send + Sync + 'static {
         EmbeddedToolMode::Code
     }
 
+    /// Whether the host implements resumable `exec`/`wait` cells and helpers.
+    /// Existing complete-cell embeddings retain their original contract.
+    fn supports_cells(&self) -> bool {
+        false
+    }
+
+    /// Resumes a yielded cell while streaming newly observed nested work.
+    fn wait_with_updates<'a>(
+        &'a self,
+        _input: &'a str,
+        _context: ToolContext<'a>,
+        _observer: &'a mut dyn CodeModeObserver,
+    ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
+        Box::pin(async {
+            Err(CodeModeHostError::new(
+                "embedded host does not support resumable cells",
+            ))
+        })
+    }
+
     /// Returns the tools available to Code Mode for this session.
     ///
     /// The runtime calls this synchronously while building the model-visible
@@ -192,6 +213,17 @@ pub trait CodeModeHost: Send + Sync + 'static {
                 "direct embedded tool `{name}` is unavailable"
             )))
         })
+    }
+
+    /// Starts a logical turn without cancelling cells retained by earlier turns.
+    fn begin_turn(&self, _session_id: &str) {}
+
+    /// Cancels cells created or observed during the current logical turn.
+    fn cancel_turn<'a>(
+        &'a self,
+        session_id: &'a str,
+    ) -> HostFuture<'a, Result<(), CodeModeHostError>> {
+        self.cancel(session_id)
     }
 
     /// Cancels host-owned Code Mode and nested-tool work for one agent session.

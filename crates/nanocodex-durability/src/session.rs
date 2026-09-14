@@ -142,11 +142,37 @@ struct AgentAcquisition {
 }
 
 enum Command {
+    LoadPayloads {
+        caller: Option<Caller>,
+        payloads: Vec<EncodedPayload>,
+        result: oneshot::Sender<Result<Vec<EncodedPayload>>>,
+    },
+    LoadPayload {
+        caller: Option<Caller>,
+        payload: EncodedPayload,
+        result: oneshot::Sender<Result<EncodedPayload>>,
+    },
+    Continuation {
+        caller: Caller,
+        operation_id: String,
+        result: oneshot::Sender<Result<Option<EncodedPayload>>>,
+    },
+    Advance {
+        caller: Caller,
+        operation_id: String,
+        continuation: EncodedPayload,
+        result: oneshot::Sender<Result<()>>,
+    },
+    RecoverFailure {
+        caller: Caller,
+        operation_id: String,
+        result: oneshot::Sender<Result<Option<OperationStatus>>>,
+    },
     State {
         result: oneshot::Sender<DurableState>,
     },
     LatestCheckpoint {
-        result: oneshot::Sender<Option<EncodedPayload>>,
+        result: oneshot::Sender<Result<Option<EncodedPayload>>>,
     },
     AcquireAgent {
         result: oneshot::Sender<Result<AgentAcquisition>>,
@@ -188,6 +214,12 @@ enum Command {
         caller: Caller,
         operation_id: String,
         result: oneshot::Sender<Result<Vec<StoredSteer>>>,
+    },
+    WithdrawSteer {
+        caller: Caller,
+        operation_id: String,
+        steer_index: u32,
+        result: oneshot::Sender<Result<()>>,
     },
     BindSteer {
         caller: Caller,
@@ -328,9 +360,106 @@ impl Driver {
                 self.handle_release(release);
             }
             match command {
+                Command::LoadPayloads {
+                    caller,
+                    payloads,
+                    result,
+                } => {
+                    let outcome = match caller
+                        .as_ref()
+                        .map_or(Ok(()), |caller| self.authorize(caller))
+                    {
+                        Ok(()) => {
+                            EncodedPayload::load_many(&payloads, &mut *self.store, &self.state_id)
+                                .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                    drop(result.send(outcome));
+                }
+                Command::LoadPayload {
+                    caller,
+                    payload,
+                    result,
+                } => {
+                    let outcome = match caller
+                        .as_ref()
+                        .map_or(Ok(()), |caller| self.authorize(caller))
+                    {
+                        Ok(()) => payload.load(&mut *self.store, &self.state_id).await,
+                        Err(error) => Err(error),
+                    };
+                    drop(result.send(outcome));
+                }
+                Command::Continuation {
+                    caller,
+                    operation_id,
+                    result,
+                } => {
+                    let outcome = async {
+                        self.authorize(&caller)?;
+                        self.require_claimed(&caller, &operation_id)?;
+                        self.require_running(&operation_id)?;
+                        match self
+                            .state
+                            .operation(&operation_id)
+                            .and_then(|op| op.continuation.as_ref())
+                        {
+                            Some(value) => {
+                                Ok(Some(value.load(&mut *self.store, &self.state_id).await?))
+                            }
+                            None => Ok(None),
+                        }
+                    }
+                    .await;
+                    drop(result.send(outcome));
+                }
+                Command::Advance {
+                    caller,
+                    operation_id,
+                    continuation,
+                    result,
+                } => {
+                    let outcome = async {
+                        self.authorize(&caller)?;
+                        self.require_claimed(&caller, &operation_id)?;
+                        self.require_running(&operation_id)?;
+                        self.apply(Transition::ExecutionAdvanced {
+                            operation_id,
+                            continuation,
+                        })
+                        .await
+                    }
+                    .await;
+                    drop(result.send(outcome));
+                }
+                Command::RecoverFailure {
+                    caller,
+                    operation_id,
+                    result,
+                } => {
+                    let outcome = self.authorize(&caller).and_then(|()| {
+                        let operation = self.state.operation(&operation_id);
+                        if operation.is_some_and(|operation| !operation.status.is_terminal())
+                            && let Some((pending_id, _)) = self.state.first_pending_operation()
+                            && pending_id != operation_id
+                        {
+                            return Err(Error::OperationBlocked {
+                                operation_id,
+                                pending_id: pending_id.to_owned(),
+                            });
+                        }
+                        Ok(operation.map(|operation| operation.status.clone()))
+                    });
+                    drop(result.send(outcome));
+                }
                 Command::State { result } => drop(result.send(self.state.clone())),
                 Command::LatestCheckpoint { result } => {
-                    drop(result.send(self.state.latest_checkpoint().cloned()));
+                    let outcome = match self.state.latest_checkpoint() {
+                        Some(value) => value.load(&mut *self.store, &self.state_id).await.map(Some),
+                        None => Ok(None),
+                    };
+                    drop(result.send(outcome));
                 }
                 Command::AcquireAgent { result } => {
                     let outcome = self.acquire_agent().await;
@@ -445,6 +574,42 @@ impl Driver {
                     let outcome = self
                         .authorize(&caller)
                         .and_then(|()| self.retained_steers(&caller, &operation_id));
+                    let outcome = match outcome {
+                        Ok(mut steers) => {
+                            let mut error = None;
+                            for steer in &mut steers {
+                                match steer
+                                    .state
+                                    .input
+                                    .load(&mut *self.store, &self.state_id)
+                                    .await
+                                {
+                                    Ok(value) => steer.state.input = value,
+                                    Err(failure) => {
+                                        error = Some(failure);
+                                        break;
+                                    }
+                                }
+                            }
+                            error.map_or(Ok(steers), Err)
+                        }
+                        Err(error) => Err(error),
+                    };
+                    drop(result.send(outcome));
+                }
+                Command::WithdrawSteer {
+                    caller,
+                    operation_id,
+                    steer_index,
+                    result,
+                } => {
+                    let outcome = match self.authorize(&caller) {
+                        Ok(()) => {
+                            self.withdraw_steer(&caller, operation_id, steer_index)
+                                .await
+                        }
+                        Err(error) => Err(error),
+                    };
                     drop(result.send(outcome));
                 }
                 Command::BindSteer {
@@ -557,7 +722,13 @@ impl Driver {
                                 Ok(()) => {
                                     let admissible = match checkpoint.as_ref() {
                                         Some(_) => self.require_running(&operation_id),
-                                        None if self.running.contains(&operation_id) => {
+                                        None if self.running.contains(&operation_id)
+                                            || self.state.operation(&operation_id).is_some_and(
+                                                |operation| {
+                                                    operation.cancellation_requires_checkpoint()
+                                                },
+                                            ) =>
+                                        {
                                             Err(Error::CancellationCheckpointRequired {
                                                 operation_id: operation_id.clone(),
                                             })
@@ -697,7 +868,10 @@ impl Driver {
         self.active_agent_generation = Some(generation);
         Ok(AgentAcquisition {
             generation,
-            checkpoint: self.state.latest_checkpoint().cloned(),
+            checkpoint: match self.state.latest_checkpoint() {
+                Some(value) => Some(value.load(&mut *self.store, &self.state_id).await?),
+                None => None,
+            },
         })
     }
 
@@ -724,12 +898,12 @@ impl Driver {
                 }
                 OperationStatus::Completed { checkpoint, output } => {
                     Ok(StoredAdmission::Completed {
-                        checkpoint: checkpoint.clone(),
-                        output: output.clone(),
+                        checkpoint: checkpoint.load(&mut *self.store, &self.state_id).await?,
+                        output: output.load(&mut *self.store, &self.state_id).await?,
                     })
                 }
                 OperationStatus::Failed { checkpoint, error } => Ok(StoredAdmission::Failed {
-                    checkpoint: checkpoint.clone(),
+                    checkpoint: checkpoint.load(&mut *self.store, &self.state_id).await?,
                     error: error.clone(),
                 }),
                 OperationStatus::Cancelled { .. } => Ok(StoredAdmission::Cancelled),
@@ -805,22 +979,17 @@ impl Driver {
     ) -> Result<u32> {
         self.require_claimed(caller, &operation_id)?;
         self.require_running(&operation_id)?;
-        let steer_index = u32::try_from(
-            self.state
-                .operation(&operation_id)
-                .ok_or_else(|| {
-                    Error::InvalidState(format!("operation `{operation_id}` was not accepted"))
-                })?
-                .steers
-                .len(),
-        )
-        .ok()
-        .and_then(|length| length.checked_add(1))
-        .ok_or_else(|| {
-            Error::InvalidState(format!(
-                "operation `{operation_id}` exceeded the steer counter range"
-            ))
+        let operation = self.state.operation(&operation_id).ok_or_else(|| {
+            Error::InvalidState(format!("operation `{operation_id}` was not accepted"))
         })?;
+        let steer_index = u32::try_from(operation.steers.len())
+            .ok()
+            .and_then(|length| length.checked_add(operation.retired_steers)?.checked_add(1))
+            .ok_or_else(|| {
+                Error::InvalidState(format!(
+                    "operation `{operation_id}` exceeded the steer counter range"
+                ))
+            })?;
         self.apply(Transition::SteerAccepted {
             operation_id,
             steer_index,
@@ -845,7 +1014,7 @@ impl Driver {
             .map(|(offset, state)| {
                 let index = u32::try_from(offset)
                     .ok()
-                    .and_then(|offset| offset.checked_add(1))
+                    .and_then(|offset| offset.checked_add(operation.retired_steers)?.checked_add(1))
                     .ok_or_else(|| {
                         Error::InvalidState(format!(
                             "operation `{operation_id}` exceeded the steer counter range"
@@ -854,6 +1023,21 @@ impl Driver {
                 Ok(StoredSteer { index, state })
             })
             .collect()
+    }
+
+    async fn withdraw_steer(
+        &mut self,
+        caller: &Caller,
+        operation_id: String,
+        steer_index: u32,
+    ) -> Result<()> {
+        self.require_claimed(caller, &operation_id)?;
+        self.require_running(&operation_id)?;
+        self.apply(Transition::SteerWithdrawn {
+            operation_id,
+            steer_index,
+        })
+        .await
     }
 
     async fn bind_steer(
@@ -869,11 +1053,14 @@ impl Driver {
             .state
             .operation(&operation_id)
             .and_then(|operation| {
-                steer_index.checked_sub(1).and_then(|index| {
-                    usize::try_from(index)
-                        .ok()
-                        .and_then(|index| operation.steers.get(index))
-                })
+                steer_index
+                    .checked_sub(operation.retired_steers)
+                    .and_then(|index| index.checked_sub(1))
+                    .and_then(|index| {
+                        usize::try_from(index)
+                            .ok()
+                            .and_then(|index| operation.steers.get(index))
+                    })
             })
             .ok_or_else(|| {
                 Error::InvalidState(format!(
@@ -927,7 +1114,9 @@ impl Driver {
             }
             match &step.status {
                 StepStatus::Completed(output) => {
-                    return Ok(StoredBeginStep::Replay(output.clone()));
+                    return Ok(StoredBeginStep::Replay(
+                        output.load(&mut *self.store, &self.state_id).await?,
+                    ));
                 }
                 StepStatus::EffectPending => {}
             }
@@ -1072,7 +1261,7 @@ impl Driver {
         self.persist(next).await
     }
 
-    async fn persist(&mut self, next: DurableState) -> Result<()> {
+    async fn persist(&mut self, mut next: DurableState) -> Result<()> {
         let expected_revision = self.state.revision().checked_add(1).ok_or_else(|| {
             Error::InvalidState("state revision exceeded the u64 range".to_owned())
         })?;
@@ -1082,10 +1271,17 @@ impl Driver {
                 next.revision()
             )));
         }
+        let records = next.stage_records();
         let payload = next.checkpoint_payload()?;
         let revision = match self
             .store
-            .replace(&self.state_id, &self.owner, self.state.revision(), &payload)
+            .replace(
+                &self.state_id,
+                &self.owner,
+                self.state.revision(),
+                &payload,
+                &records,
+            )
             .await
         {
             Ok(revision) => revision,
@@ -1304,12 +1500,70 @@ impl DurableSession {
         receiver.await.map_err(|_| Error::DriverStopped)
     }
 
+    pub(crate) async fn resolve_many(
+        &self,
+        payloads: Vec<EncodedPayload>,
+    ) -> Result<Vec<EncodedPayload>> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::LoadPayloads {
+            caller: None,
+            payloads,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    /// Resolves one immutable payload reference without loading unrelated state.
+    pub async fn resolve(&self, payload: &EncodedPayload) -> Result<EncodedPayload> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::LoadPayload {
+            caller: None,
+            payload: payload.clone(),
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    /// Restores the latest agent snapshot from its immutable context pages.
+    pub async fn agent_snapshot(
+        &self,
+    ) -> Result<Option<nanocodex_agent::session::SessionSnapshot>> {
+        match self.latest_checkpoint().await? {
+            Some(payload) => crate::context::load_snapshot(self.into(), payload)
+                .await
+                .map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Restores the current agent execution, without acquiring model ownership.
+    pub async fn agent_continuation(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<nanocodex_agent::execution::ExecutionContinuation>> {
+        let state = self.state().await?;
+        match state
+            .operation(operation_id)
+            .and_then(|operation| operation.continuation.as_ref())
+        {
+            Some(reference) => {
+                let payload = self.resolve(reference).await?;
+                crate::context::load_continuation(self.into(), payload)
+                    .await
+                    .map(|(value, _)| Some(value))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Copies the latest terminal checkpoint from the owning driver without
     /// cloning the rest of the reduced state.
     pub async fn latest_checkpoint(&self) -> Result<Option<EncodedPayload>> {
         let (result, receiver) = oneshot::channel();
         self.send(Command::LatestCheckpoint { result }).await?;
-        receiver.await.map_err(|_| Error::DriverStopped)
+        receive(receiver).await
     }
 
     pub(crate) async fn acquire_agent(&self) -> Result<(DurableOwner, Option<EncodedPayload>)> {
@@ -1694,6 +1948,75 @@ pub(crate) struct DurableOwner {
 }
 
 impl DurableOwner {
+    pub(crate) async fn load_payloads(
+        &self,
+        payloads: Vec<EncodedPayload>,
+    ) -> Result<Vec<EncodedPayload>> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::LoadPayloads {
+            caller: Some(self.caller()?),
+            payloads,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    pub(crate) async fn load_payload(&self, payload: EncodedPayload) -> Result<EncodedPayload> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::LoadPayload {
+            caller: Some(self.caller()?),
+            payload,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    pub(crate) async fn continuation(
+        &self,
+        operation_id: String,
+    ) -> Result<Option<EncodedPayload>> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::Continuation {
+            caller: self.caller()?,
+            operation_id,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    pub(crate) async fn advance(
+        &self,
+        operation_id: String,
+        continuation: EncodedPayload,
+    ) -> Result<()> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::Advance {
+            caller: self.caller()?,
+            operation_id,
+            continuation,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
+    pub(crate) async fn recover_failure(
+        &self,
+        operation_id: String,
+    ) -> Result<Option<OperationStatus>> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::RecoverFailure {
+            caller: self.caller()?,
+            operation_id,
+            result,
+        })
+        .await?;
+        receiver.await.map_err(|_| Error::DriverStopped)?
+    }
+
     fn caller(&self) -> Result<Caller> {
         if self.release.state.load(Ordering::Acquire) != OWNER_ACTIVE {
             Err(Error::ModelOwnerFenced)
@@ -1815,6 +2138,22 @@ impl DurableOwner {
         receive(receiver).await
     }
 
+    pub(crate) async fn withdraw_steer(
+        &self,
+        operation_id: String,
+        steer_index: u32,
+    ) -> Result<()> {
+        let (result, receiver) = oneshot::channel();
+        self.send(Command::WithdrawSteer {
+            caller: self.caller()?,
+            operation_id,
+            steer_index,
+            result,
+        })
+        .await?;
+        receive(receiver).await
+    }
+
     pub(crate) async fn bind_steer(
         &self,
         operation_id: String,
@@ -1877,17 +2216,17 @@ impl DurableOwner {
         receive(receiver).await
     }
 
-    pub(crate) async fn complete<C: Serialize + ?Sized, O: Serialize + ?Sized>(
+    pub(crate) async fn complete<O: Serialize + ?Sized>(
         &self,
         operation_id: String,
-        checkpoint: &C,
+        checkpoint: EncodedPayload,
         output: &O,
     ) -> Result<()> {
         let (result, receiver) = oneshot::channel();
         self.send(Command::Complete {
             caller: self.caller()?,
             operation_id,
-            checkpoint: EncodedPayload::encode(checkpoint)?,
+            checkpoint,
             output: EncodedPayload::encode(output)?,
             result,
         })
@@ -1895,17 +2234,17 @@ impl DurableOwner {
         receive(receiver).await
     }
 
-    pub(crate) async fn fail<C: Serialize + ?Sized>(
+    pub(crate) async fn fail(
         &self,
         operation_id: String,
-        checkpoint: &C,
+        checkpoint: EncodedPayload,
         error: String,
     ) -> Result<()> {
         let (result, receiver) = oneshot::channel();
         self.send(Command::Fail {
             caller: self.caller()?,
             operation_id,
-            checkpoint: EncodedPayload::encode(checkpoint)?,
+            checkpoint,
             error,
             result,
         })
@@ -1924,30 +2263,27 @@ impl DurableOwner {
         receive(receiver).await
     }
 
-    pub(crate) async fn cancel<C: Serialize + ?Sized>(
+    pub(crate) async fn cancel(
         &self,
         operation_id: String,
-        checkpoint: Option<&C>,
+        checkpoint: Option<EncodedPayload>,
     ) -> Result<()> {
         let (result, receiver) = oneshot::channel();
         self.send(Command::Cancel {
             caller: self.caller()?,
             operation_id,
-            checkpoint: checkpoint.map(EncodedPayload::encode).transpose()?,
+            checkpoint,
             result,
         })
         .await?;
         receive(receiver).await
     }
 
-    pub(crate) async fn commit_checkpoint<C: Serialize + ?Sized>(
-        &self,
-        checkpoint: &C,
-    ) -> Result<()> {
+    pub(crate) async fn commit_checkpoint(&self, checkpoint: EncodedPayload) -> Result<()> {
         let (result, receiver) = oneshot::channel();
         self.send(Command::CommitCheckpoint {
             caller: self.caller()?,
-            checkpoint: EncodedPayload::encode(checkpoint)?,
+            checkpoint,
             result,
         })
         .await?;
@@ -2188,7 +2524,13 @@ mod tests {
         let (newer, _) = session.acquire_agent().await.unwrap();
         let revision = session.state().await.unwrap().revision();
         assert!(matches!(
-            older.complete("turn-1".to_owned(), &1, &"stale").await,
+            older
+                .complete(
+                    "turn-1".to_owned(),
+                    EncodedPayload::encode(&1).unwrap(),
+                    &"stale"
+                )
+                .await,
             Err(Error::ModelOwnerFenced)
         ));
         assert!(matches!(
@@ -2198,7 +2540,7 @@ mod tests {
             Err(Error::ModelOwnerFenced)
         ));
         assert!(matches!(
-            older.cancel("turn-1".to_owned(), None::<&u32>).await,
+            older.cancel("turn-1".to_owned(), None).await,
             Err(Error::ModelOwnerFenced)
         ));
         assert_eq!(session.state().await.unwrap().revision(), revision);
@@ -2212,7 +2554,11 @@ mod tests {
         ));
         newer.begin_attempt("turn-1".to_owned()).await.unwrap();
         newer
-            .complete("turn-1".to_owned(), &2, &"authoritative")
+            .complete(
+                "turn-1".to_owned(),
+                EncodedPayload::encode(&2).unwrap(),
+                &"authoritative",
+            )
             .await
             .unwrap();
         newer.shutdown().await.unwrap();
@@ -2326,7 +2672,10 @@ mod tests {
             .unwrap();
         owner.begin_attempt("turn-1".to_owned()).await.unwrap();
         owner
-            .cancel("turn-1".to_owned(), Some(&41_u32))
+            .cancel(
+                "turn-1".to_owned(),
+                Some(EncodedPayload::encode(&41_u32).unwrap()),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -2359,15 +2708,21 @@ mod tests {
             .unwrap();
         owner.begin_attempt("turn-1".to_owned()).await.unwrap();
         assert!(matches!(
-            owner.cancel("turn-2".to_owned(), Some(&99_u32)).await,
+            owner
+                .cancel(
+                    "turn-2".to_owned(),
+                    Some(EncodedPayload::encode(&99_u32).unwrap())
+                )
+                .await,
             Err(Error::AttemptNotStarted { .. })
         ));
+        owner.cancel("turn-2".to_owned(), None).await.unwrap();
         owner
-            .cancel("turn-2".to_owned(), None::<&u32>)
-            .await
-            .unwrap();
-        owner
-            .complete("turn-1".to_owned(), &1_u32, &"done")
+            .complete(
+                "turn-1".to_owned(),
+                EncodedPayload::encode(&1_u32).unwrap(),
+                &"done",
+            )
             .await
             .unwrap();
         owner.shutdown().await.unwrap();
@@ -2391,7 +2746,11 @@ mod tests {
             ));
             owner.begin_attempt(operation_id.clone()).await.unwrap();
             owner
-                .complete(operation_id, &index, &format!("output-{index}"))
+                .complete(
+                    operation_id,
+                    EncodedPayload::encode(&index).unwrap(),
+                    &format!("output-{index}"),
+                )
                 .await
                 .unwrap();
         }
@@ -2439,7 +2798,11 @@ mod tests {
             ));
             owner.begin_attempt(operation_id.clone()).await.unwrap();
             owner
-                .complete(operation_id, &index, &format!("output-{index}"))
+                .complete(
+                    operation_id,
+                    EncodedPayload::encode(&index).unwrap(),
+                    &format!("output-{index}"),
+                )
                 .await
                 .unwrap();
         }
@@ -2459,7 +2822,13 @@ mod tests {
         assert!(state.operation("turn-21").is_some());
         assert!(state.operation("turn-18").is_none());
         assert_eq!(
-            state.latest_checkpoint().unwrap().decode::<u32>().unwrap(),
+            reopened
+                .latest_checkpoint()
+                .await
+                .unwrap()
+                .unwrap()
+                .decode::<u32>()
+                .unwrap(),
             21
         );
     }
@@ -2551,10 +2920,17 @@ mod tests {
             .unwrap();
         owner.begin_attempt("turn-1".to_owned()).await.unwrap();
         owner
-            .complete("turn-1".to_owned(), &1_u32, &"done")
+            .complete(
+                "turn-1".to_owned(),
+                EncodedPayload::encode(&1_u32).unwrap(),
+                &"done",
+            )
             .await
             .unwrap();
-        owner.commit_checkpoint(&2_u32).await.unwrap();
+        owner
+            .commit_checkpoint(EncodedPayload::encode(&2_u32).unwrap())
+            .await
+            .unwrap();
         owner.shutdown().await.unwrap();
 
         let reopened = DurableSession::open(store, "standalone-checkpoint")
@@ -2584,6 +2960,9 @@ mod tests {
 
         fn operation(status: OperationStatus, steers: Vec<SteerState>) -> OperationState {
             OperationState {
+                continuation: None,
+                retired_model_calls: 0,
+                retired_steers: 0,
                 input: EncodedPayload::encode(&"prompt").unwrap(),
                 status,
                 steps: BTreeMap::new(),
@@ -2598,7 +2977,7 @@ mod tests {
                 payload: Some(
                     serde_json::json!({
                         "nanocodex_durable_state": {
-                            "format": 2,
+                            "format": 4,
                             "operations": BTreeMap::from([("turn".to_owned(), operation)]),
                             "latest_checkpoint": null
                         }

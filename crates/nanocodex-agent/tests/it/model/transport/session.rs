@@ -42,7 +42,7 @@ async fn a_turn_stream_mirrors_one_turn_and_await_retains_its_result() -> Result
     let estimated_cost = usage
         .estimated_cost()
         .expect("provider usage should produce an estimate");
-    assert_eq!(estimated_cost.amount().decimal(), "0.000062");
+    assert_eq!(estimated_cost.amount().decimal(), "0.000155");
     assert_eq!(usage.cost_status(), CostStatus::EstimatedFromUsage);
 
     drop(agent);
@@ -79,10 +79,10 @@ async fn a_turn_stream_mirrors_one_turn_and_await_retains_its_result() -> Result
             .expect("terminal should retain the automatic estimate")
             .amount()
             .decimal(),
-        "0.000062"
+        "0.000155"
     );
     let terminal_payload = terminal.decode_payload::<Value>()?;
-    assert_eq!(terminal_payload["estimated_cost"]["usd"], json!("0.000062"));
+    assert_eq!(terminal_payload["estimated_cost"]["usd"], json!("0.000155"));
     assert_eq!(
         terminal_payload["estimated_cost"]["service_tier"],
         json!("standard")

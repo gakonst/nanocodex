@@ -1,3 +1,4 @@
+use crate::{VoiceSettings, VoiceTextRole};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
@@ -82,29 +83,27 @@ pub fn build_chatgpt_realtime_call(
     voice: &str,
     startup_context: Option<&str>,
 ) -> Result<String, String> {
+    let settings = VoiceSettings {
+        voice: voice.to_owned(),
+        ..VoiceSettings::default()
+    };
+    build_chatgpt_realtime_call_with_settings(sdp, &settings, startup_context)
+}
+
+pub fn build_chatgpt_realtime_call_with_settings(
+    sdp: &str,
+    settings: &VoiceSettings,
+    startup_context: Option<&str>,
+) -> Result<String, String> {
     if sdp.trim().is_empty() {
         return Err("browser voice requires an SDP offer".to_owned());
     }
-    if !CHATGPT_REALTIME_VOICES.contains(&voice) {
-        return Err(format!("unsupported ChatGPT voice: {voice}"));
-    }
-    let mut instructions = super::chatgpt_realtime_instructions("there");
+    let mut base = super::chatgpt_realtime_instructions("there");
     if let Some(context) = startup_context.filter(|context| !context.is_empty()) {
-        instructions.push_str("\n\n");
-        instructions.push_str(context);
+        base.push_str("\n\n");
+        base.push_str(context);
     }
-    Ok(json!({
-        "sdp": sdp,
-        "session": {
-            "model": CHATGPT_REALTIME_MODEL,
-            "instructions": instructions,
-            "audio": {
-                "output": { "voice": voice },
-            },
-            "delegation": { "type": "client" },
-        },
-    })
-    .to_string())
+    Ok(json!({ "sdp": sdp, "session": settings.chatgpt_session(&base)? }).to_string())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -155,6 +154,46 @@ pub fn valid_realtime_call_id(value: &str) -> bool {
 pub struct BrowserTranscript {
     pub speaker: String,
     pub text: String,
+    pub id: u64,
+    pub is_partial: bool,
+}
+
+#[derive(Default)]
+struct LiveTranscript {
+    id: u64,
+    text: String,
+    complete: bool,
+}
+
+impl LiveTranscript {
+    fn update(&mut self, speaker: &str, text: &str, partial: bool) -> BrowserTranscript {
+        if self.complete {
+            self.id += 1;
+            self.text.clear();
+        }
+        if partial {
+            self.text.push_str(text);
+        } else if !text.is_empty() && !retains_spoken_prefix(speaker, &self.text, text) {
+            self.text = text.to_owned();
+        }
+        self.complete = !partial;
+        let text = super::project_transcript(&self.text, partial).map_or_else(
+            || self.text.clone(),
+            |turns| {
+                turns
+                    .into_iter()
+                    .map(|turn| turn.text)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            },
+        );
+        BrowserTranscript {
+            speaker: speaker.to_owned(),
+            text,
+            id: self.id,
+            is_partial: partial,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
@@ -169,10 +208,20 @@ pub struct BrowserVoiceEffects {
     pub reconnect_after_ms: Option<u64>,
     pub acknowledge_frames: bool,
     pub schedule_flush: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playback_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub undelivered_answers: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ready: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_generation: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BrowserVoiceDelegation {
+    pub id: String,
+    pub bootstrap: bool,
     pub input: String,
     pub transcript: Vec<super::TranscriptEntry>,
 }
@@ -181,14 +230,26 @@ pub struct BrowserVoiceDelegation {
 pub struct BrowserVoiceUpdate {
     pub effects: BrowserVoiceEffects,
     pub delegation: Option<BrowserVoiceDelegation>,
+    pub prefetch: Option<VoicePrefetch>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct VoicePrefetch {
+    pub query: String,
+    pub debounce_ms: u32,
 }
 
 pub struct BrowserVoiceProtocol {
-    voice: String,
+    settings: VoiceSettings,
+    client_delivery: Option<crate::browser_delivery::BrowserSpeechDelivery>,
+    output_phase: Option<String>,
     transcript: Vec<super::TranscriptEntry>,
     new_input_entry: bool,
     new_output_entry: bool,
+    input: LiveTranscript,
+    output_transcript: LiveTranscript,
     active_delegation: Option<String>,
+    seen_delegations: VecDeque<String>,
     output: HandoffStream,
     streamed_this_message: bool,
     output_sent_this_run: bool,
@@ -212,11 +273,19 @@ impl BrowserVoiceProtocol {
             return Err(format!("unsupported ChatGPT voice: {voice}"));
         }
         Ok(Self {
-            voice: voice.to_owned(),
+            client_delivery: None,
+            settings: VoiceSettings {
+                voice: voice.to_owned(),
+                ..VoiceSettings::default()
+            },
+            output_phase: None,
             transcript: Vec::new(),
             new_input_entry: false,
             new_output_entry: false,
+            input: LiveTranscript::default(),
+            output_transcript: LiveTranscript::default(),
             active_delegation: None,
+            seen_delegations: VecDeque::new(),
             output: HandoffStream::default(),
             streamed_this_message: false,
             output_sent_this_run: false,
@@ -226,9 +295,99 @@ impl BrowserVoiceProtocol {
         })
     }
 
+    /// Select the current desktop handoff contract while keeping media browser-owned.
+    pub fn enable_client_managed_handoffs(&mut self) {
+        self.client_delivery = Some(crate::browser_delivery::BrowserSpeechDelivery::new());
+    }
+
+    pub fn note_typed_input(&mut self) -> BrowserVoiceEffects {
+        let effects = self
+            .client_delivery
+            .as_mut()
+            .map(|delivery| delivery.invalidate())
+            .unwrap_or_default();
+        self.discard_superseded_speech(&effects);
+        effects
+    }
+
+    fn discard_superseded_speech(&mut self, effects: &BrowserVoiceEffects) {
+        if effects.playback_enabled == Some(false) {
+            self.pending_frames.retain(|frame| {
+                serde_json::from_str::<Value>(frame)
+                    .ok()
+                    .is_none_or(|value| value["channel"] != "speakable")
+            });
+        }
+    }
+
     #[must_use]
     pub fn voice(&self) -> &str {
-        &self.voice
+        &self.settings.voice
+    }
+
+    pub fn settings(&self) -> &VoiceSettings {
+        &self.settings
+    }
+
+    /// Configure before starting a new provider call. Voice changes require a new call.
+    pub fn configure(&mut self, settings: VoiceSettings) -> Result<(), String> {
+        settings.validate_chatgpt()?;
+        self.settings = settings;
+        Ok(())
+    }
+
+    /// Explicit speech is independent of background narration preferences.
+    pub fn append_speech(&mut self, text: &str) -> Result<BrowserVoiceEffects, String> {
+        validate_text(text)?;
+        let mut effects = self.enqueue_frames(
+            session_context_frames(text, "speakable")
+                .into_iter()
+                .map(|frame| frame.to_string())
+                .collect(),
+        )?;
+        if let Some(delivery) = &mut self.client_delivery {
+            delivery.allow_explicit_speech();
+            effects.playback_enabled = Some(true);
+        }
+        Ok(effects)
+    }
+
+    /// Adds validated background context without requesting speech.
+    pub fn append_context(&mut self, text: &str) -> Result<BrowserVoiceEffects, String> {
+        validate_text(text)?;
+        Ok(self.context(text))
+    }
+
+    /// Codex's subscription adapter sends text as chunked context, regardless
+    /// of its API role. Background-only callers should use `append_context`.
+    pub fn append_text(
+        &mut self,
+        _role: VoiceTextRole,
+        text: &str,
+    ) -> Result<BrowserVoiceEffects, String> {
+        validate_text(text)?;
+        self.enqueue_frames(
+            text_context_frames(text, None)
+                .into_iter()
+                .map(|frame| frame.to_string())
+                .collect(),
+        )
+    }
+
+    fn enqueue_frames(&mut self, frames: Vec<String>) -> Result<BrowserVoiceEffects, String> {
+        if self.pending_frames.len() + frames.len() > 128 {
+            return Err("voice output queue is full".to_owned());
+        }
+        self.pending_frames.extend(frames.iter().cloned());
+        Ok(BrowserVoiceEffects {
+            input_generation: self
+                .client_delivery
+                .as_ref()
+                .map(|delivery| delivery.generation()),
+            frames,
+            acknowledge_frames: true,
+            ..BrowserVoiceEffects::default()
+        })
     }
 
     pub fn realtime_message(&mut self, payload: &str) -> BrowserVoiceUpdate {
@@ -238,7 +397,16 @@ impl BrowserVoiceProtocol {
         let Some(kind) = event.get("type").and_then(Value::as_str) else {
             return BrowserVoiceUpdate::default();
         };
+        let accepts_output = self
+            .client_delivery
+            .as_ref()
+            .is_none_or(|delivery| delivery.accepts_caption());
         let mut update = BrowserVoiceUpdate::default();
+        if let Some(delivery) = &mut self.client_delivery {
+            update.effects = delivery.realtime(&event);
+            update.effects.input_generation = Some(delivery.generation());
+        }
+        self.discard_superseded_speech(&update.effects);
         match kind {
             "error" => {
                 let status = event
@@ -259,8 +427,10 @@ impl BrowserVoiceProtocol {
                 update.effects.terminate = Some(status);
             }
             "session.started" | "session.updated" => {
-                update.effects.status = Some(format!("Voice active ({})", self.voice));
+                update.effects.ready = Some(true);
+                update.effects.status = Some(format!("Voice active ({})", self.settings.voice));
             }
+            "output_transcript.added" if !accepts_output => {}
             "input_transcript.added" | "output_transcript.added" => {
                 let speaker = if kind == "input_transcript.added" {
                     "user"
@@ -278,10 +448,21 @@ impl BrowserVoiceProtocol {
                         self.new_output_entry
                     };
                     append_transcript(&mut self.transcript, speaker, text, force_new);
+                    let live = if speaker == "user" {
+                        &mut self.input
+                    } else {
+                        &mut self.output_transcript
+                    };
+                    update
+                        .effects
+                        .transcripts
+                        .push(live.update(speaker, text, true));
                     if speaker == "user" {
                         self.new_input_entry = false;
-                        update.effects.status =
-                            Some(format!("Voice active ({}) — hearing you…", self.voice));
+                        update.effects.status = Some(format!(
+                            "Voice active ({}) — hearing you…",
+                            self.settings.voice
+                        ));
                     } else {
                         self.new_output_entry = false;
                     }
@@ -293,30 +474,57 @@ impl BrowserVoiceProtocol {
                     .pointer("/turn/transcript")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                if matches!(role, Some("user" | "assistant")) && !text.is_empty() {
+                if role == Some("assistant") && !accepts_output {
+                    self.new_output_entry = true;
+                    if !self.output_transcript.complete && !self.output_transcript.text.is_empty() {
+                        update
+                            .effects
+                            .transcripts
+                            .push(self.output_transcript.update("assistant", "", false));
+                    }
+                    return update;
+                }
+                if matches!(role, Some("user" | "assistant")) {
                     let role = role.unwrap_or_default();
                     let force_new = if role == "user" {
                         self.new_input_entry
                     } else {
                         self.new_output_entry
                     };
-                    complete_transcript(&mut self.transcript, role, text, force_new);
+                    if !text.is_empty() {
+                        complete_transcript(&mut self.transcript, role, text, force_new);
+                    }
                     if role == "user" {
                         self.new_input_entry = true;
                     } else {
                         self.new_output_entry = true;
                     }
-                    update.effects.transcripts.push(BrowserTranscript {
-                        speaker: role.to_owned(),
-                        text: text.to_owned(),
-                    });
+                    let live = if role == "user" {
+                        &mut self.input
+                    } else {
+                        &mut self.output_transcript
+                    };
+                    update
+                        .effects
+                        .transcripts
+                        .push(live.update(role, text, false));
                 }
             }
             "delegation.created" => {
                 let Some((id, input)) = browser_voice_delegation(&event) else {
                     return update;
                 };
-                self.active_delegation = Some(id);
+                if self.seen_delegations.contains(&id) {
+                    return update;
+                }
+                self.seen_delegations.push_back(id.clone());
+                if self.seen_delegations.len() > 256 {
+                    self.seen_delegations.pop_front();
+                }
+                self.active_delegation = Some(id.clone());
+                if let Some(delivery) = &mut self.client_delivery {
+                    delivery.delegate();
+                }
                 if !self
                     .transcript
                     .iter()
@@ -326,6 +534,8 @@ impl BrowserVoiceProtocol {
                         .push(super::TranscriptEntry::new("user", input.clone()));
                 }
                 update.delegation = Some(BrowserVoiceDelegation {
+                    id,
+                    bootstrap: false,
                     input,
                     transcript: std::mem::take(&mut self.transcript),
                 });
@@ -346,15 +556,56 @@ impl BrowserVoiceProtocol {
         let Some(kind) = event.get("type").and_then(Value::as_str) else {
             return BrowserVoiceEffects::default();
         };
+        if let Some(delivery) = &mut self.client_delivery {
+            let mut effects =
+                delivery.agent(&event, self.settings.updates == crate::VoiceUpdates::Silent);
+            self.discard_superseded_speech(&effects);
+            if self.pending_frames.len() + effects.frames.len() > 128 {
+                effects.frames.clear();
+                effects.terminate = Some("Voice fell behind. Please reconnect.".into());
+            } else {
+                self.pending_frames.extend(effects.frames.iter().cloned());
+            }
+            if matches!(
+                kind,
+                "run.completed" | "run.failed" | "run.cancelled" | "turn_failed"
+            ) {
+                self.active_delegation = None;
+            }
+            return effects;
+        }
         match kind {
+            "turn_failed" => {
+                // The managed host can fail admission before run.started. Only
+                // an outstanding provider handoff needs this fallback; a prior
+                // run.failed already completed it. Hosts correlate turn IDs.
+                if self.active_delegation.is_none() {
+                    return BrowserVoiceEffects::default();
+                }
+                self.output = HandoffStream::default();
+                self.streamed_this_message = false;
+                self.output_phase = None;
+                self.run_error = None;
+                let mut effects = BrowserVoiceEffects::default();
+                self.push_output_frames(
+                    "I couldn't complete that request. Please try again.",
+                    &mut effects,
+                );
+                self.active_delegation = None;
+                effects
+            }
             "run.started" => {
                 self.streamed_this_message = false;
                 self.output_sent_this_run = false;
                 self.run_error = None;
                 self.output = HandoffStream::default();
+                self.output_phase = None;
                 BrowserVoiceEffects::default()
             }
             "assistant.delta" => {
+                if let Some(phase) = event.pointer("/payload/phase").and_then(Value::as_str) {
+                    self.output_phase = Some(phase.to_owned());
+                }
                 let text = payload_text(&event);
                 if text.is_empty() {
                     return BrowserVoiceEffects::default();
@@ -367,6 +618,9 @@ impl BrowserVoiceProtocol {
                 }
             }
             "assistant.message" => {
+                if let Some(phase) = event.pointer("/payload/phase").and_then(Value::as_str) {
+                    self.output_phase = Some(phase.to_owned());
+                }
                 let text = payload_text(&event);
                 if !text.is_empty() && !self.streamed_this_message {
                     self.output.push_text(text);
@@ -374,6 +628,7 @@ impl BrowserVoiceProtocol {
                 let effects = self.flush(true);
                 self.output = HandoffStream::default();
                 self.streamed_this_message = false;
+                self.output_phase = None;
                 effects
             }
             "run.error" => {
@@ -384,18 +639,17 @@ impl BrowserVoiceProtocol {
                 });
                 BrowserVoiceEffects::default()
             }
-            "run.completed" | "run.failed" => {
+            "run.completed" | "run.failed" | "run.cancelled" => {
                 let mut effects = self.flush(true);
-                if kind == "run.failed"
-                    && self.active_delegation.is_some()
-                    && !self.output_sent_this_run
-                {
+                // The managed first utterance can start a run before the
+                // provider emits a delegation ID. Its failures still need
+                // feedback through the session context channel.
+                if kind == "run.failed" && !self.output_sent_this_run {
                     let output = self
                         .run_error
                         .clone()
                         .unwrap_or_else(|| "The coding agent failed.".to_owned());
-                    self.push_output_frames(&output, &mut effects.frames);
-                    effects.acknowledge_frames = true;
+                    self.push_output_frames(&output, &mut effects);
                 }
                 self.output = HandoffStream::default();
                 self.active_delegation = None;
@@ -414,8 +668,7 @@ impl BrowserVoiceProtocol {
         };
         let mut effects = BrowserVoiceEffects::default();
         if let Some(output) = output {
-            self.push_output_frames(&output, &mut effects.frames);
-            effects.acknowledge_frames = true;
+            self.push_output_frames(&output, &mut effects);
         }
         effects
     }
@@ -429,11 +682,16 @@ impl BrowserVoiceProtocol {
     }
 
     #[must_use]
-    pub fn close_effects(&self) -> BrowserVoiceEffects {
+    pub fn close_effects(&mut self) -> BrowserVoiceEffects {
+        let recovery = self
+            .client_delivery
+            .as_mut()
+            .map(|delivery| delivery.close())
+            .unwrap_or_default();
         BrowserVoiceEffects {
             frames: vec![json!({ "type": "session.close" }).to_string()],
             status: Some("Voice stopped".to_owned()),
-            ..BrowserVoiceEffects::default()
+            ..recovery
         }
     }
 
@@ -443,6 +701,15 @@ impl BrowserVoiceProtocol {
         BrowserVoiceEffects {
             acknowledge_frames: !frames.is_empty(),
             frames,
+            input_generation: self
+                .client_delivery
+                .as_ref()
+                .map(|delivery| delivery.generation()),
+            playback_enabled: Some(
+                self.client_delivery
+                    .as_ref()
+                    .is_none_or(|delivery| delivery.playback_enabled()),
+            ),
             ..BrowserVoiceEffects::default()
         }
     }
@@ -466,29 +733,82 @@ impl BrowserVoiceProtocol {
         }
     }
 
-    fn push_output_frames(&mut self, output: &str, frames: &mut Vec<String>) {
-        self.output_sent_this_run = true;
-        for chunk in context_append_chunks(output) {
-            if let Some(handoff_id) = self.active_delegation.as_deref() {
-                let frame = json!({
-                    "type": "delegation.context.append",
-                    "delegation_item_id": handoff_id,
-                    "content": [{ "type": "input_text", "text": chunk }],
-                })
-                .to_string();
-                self.pending_frames.push_back(frame.clone());
-                frames.push(frame);
-            } else {
-                let frame = json!({
-                    "type": "session.context.append",
-                    "content": [{ "type": "input_text", "text": chunk }],
-                })
-                .to_string();
-                self.pending_frames.push_back(frame.clone());
-                frames.push(frame);
-            }
+    /// Background data uses the same retained queue as normal output, without
+    /// consuming the transcript or changing the active delegation.
+    #[must_use]
+    pub fn context(&mut self, text: &str) -> BrowserVoiceEffects {
+        self.queue_context(text)
+    }
+
+    /// Send all selected startup context through the acknowledged control queue.
+    #[must_use]
+    pub fn startup_context(&mut self, text: &str) -> BrowserVoiceEffects {
+        self.queue_context(text)
+    }
+
+    fn queue_context(&mut self, text: &str) -> BrowserVoiceEffects {
+        if text.is_empty() {
+            return BrowserVoiceEffects::default();
+        }
+        let frames = session_context_frames(text, "commentary");
+        if self.pending_frames.len() + frames.len() > 128 {
+            return BrowserVoiceEffects {
+                terminate: Some("Voice fell behind. Please reconnect.".to_owned()),
+                ..BrowserVoiceEffects::default()
+            };
+        }
+        let frames = frames
+            .into_iter()
+            .map(|frame| frame.to_string())
+            .collect::<Vec<_>>();
+        self.pending_frames.extend(frames.iter().cloned());
+        BrowserVoiceEffects {
+            frames,
+            acknowledge_frames: true,
+            ..BrowserVoiceEffects::default()
         }
     }
+
+    fn push_output_frames(&mut self, output: &str, effects: &mut BrowserVoiceEffects) {
+        if self.output_phase.is_none() {
+            self.output_phase =
+                if output.starts_with("<|start|>assistant<|channel|>final<|message|>") {
+                    Some("final_answer".to_owned())
+                } else if output.starts_with("<|start|>assistant<|channel|>commentary<|message|>")
+                    || output.starts_with("<|start|>assistant<|channel|>analysis<|message|>")
+                {
+                    Some("commentary".to_owned())
+                } else {
+                    None
+                };
+        }
+        let channel = self.settings.output_channel(self.output_phase.as_deref());
+        let new_frames = context_append_chunks(output).into_iter().map(|chunk| {
+            let mut frame = if let Some(handoff_id) = self.active_delegation.as_deref() {
+                json!({ "type": "delegation.context.append", "delegation_item_id": handoff_id,
+                    "content": [{ "type": "input_text", "text": chunk }] })
+            } else {
+                json!({ "type": "session.context.append", "content": [{ "type": "input_text", "text": chunk }] })
+            };
+            if let Some(channel) = channel { frame["channel"] = json!(channel); }
+            frame.to_string()
+        }).collect::<Vec<_>>();
+        if self.pending_frames.len() + new_frames.len() > 128 {
+            effects.terminate = Some("Voice fell behind. Please reconnect.".to_owned());
+            return;
+        }
+        self.output_sent_this_run = true;
+        self.pending_frames.extend(new_frames.iter().cloned());
+        effects.frames.extend(new_frames);
+        effects.acknowledge_frames = true;
+    }
+}
+
+fn validate_text(text: &str) -> Result<(), String> {
+    if text.trim().is_empty() || text.contains('\0') {
+        return Err("voice text must not be empty or contain NUL".to_owned());
+    }
+    Ok(())
 }
 
 fn browser_voice_delegation(event: &Value) -> Option<(String, String)> {
@@ -515,6 +835,28 @@ fn reconnect_delay_ms(rapid_disconnects: u32) -> u64 {
     RECONNECT_BASE_DELAY_MS
         .saturating_mul(1_u64 << exponent)
         .min(RECONNECT_MAX_DELAY_MS)
+}
+
+/// Codex's conservative UTF-8 byte chunks keep each message below the provider's
+/// token limit while preserving the selected context across all frames.
+pub(crate) fn session_context_frames(text: &str, channel: &str) -> Vec<Value> {
+    text_context_frames(text, Some(channel))
+}
+
+fn text_context_frames(text: &str, channel: Option<&str>) -> Vec<Value> {
+    context_append_chunks(text)
+        .into_iter()
+        .map(|chunk| {
+            let mut frame = json!({
+                "type": "session.context.append",
+                "content": [{ "type": "input_text", "text": chunk }],
+            });
+            if let Some(channel) = channel {
+                frame["channel"] = json!(channel);
+            }
+            frame
+        })
+        .collect()
 }
 
 fn context_append_chunks(text: &str) -> Vec<&str> {
@@ -549,7 +891,21 @@ fn current_thread(history: &[VoiceHistoryEntry]) -> Option<String> {
     let mut turns: Vec<(Vec<String>, Vec<String>)> = Vec::new();
     let mut user = Vec::new();
     let mut assistant = Vec::new();
-    for entry in history {
+    for entry in history
+        .iter()
+        .filter(|entry| matches!(entry.role.as_str(), "user" | "assistant"))
+        .flat_map(|entry| {
+            crate::project_transcript(&entry.text, false).map_or_else(
+                || vec![entry.clone()],
+                |turns| {
+                    turns
+                        .into_iter()
+                        .map(|turn| VoiceHistoryEntry::new(turn.role, turn.text))
+                        .collect()
+                },
+            )
+        })
+    {
         let text = entry.text.trim();
         if text.is_empty() || contextual(text) {
             continue;
@@ -664,10 +1020,7 @@ fn append_transcript(
     text: &str,
     force_new: bool,
 ) {
-    if !force_new
-        && let Some(last) = transcript.last_mut()
-        && last.role == role
-    {
+    if !force_new && let Some(last) = transcript.iter_mut().rev().find(|entry| entry.role == role) {
         last.text.push_str(text);
     } else {
         transcript.push(super::TranscriptEntry::new(role, text));
@@ -680,14 +1033,25 @@ fn complete_transcript(
     text: &str,
     force_new: bool,
 ) {
-    if !force_new
-        && let Some(last) = transcript.last_mut()
-        && last.role == role
-    {
-        last.text = text.to_owned();
+    if !force_new && let Some(last) = transcript.iter_mut().rev().find(|entry| entry.role == role) {
+        if !retains_spoken_prefix(role, &last.text, text) {
+            last.text = text.to_owned();
+        }
     } else {
         transcript.push(super::TranscriptEntry::new(role, text));
     }
+}
+
+fn retains_spoken_prefix(role: &str, streamed: &str, completed: &str) -> bool {
+    // Frameless turn boundaries can omit speech already emitted before the
+    // other speaker's turn ended. Keep that prefix only for an exact suffix;
+    // corrected finals and removal of interrupted trailing speech still win.
+    role == "assistant"
+        && !completed.trim().is_empty()
+        && streamed
+            .trim_end()
+            .strip_suffix(completed.trim())
+            .is_some_and(|prefix| prefix.is_empty() || prefix.ends_with(char::is_whitespace))
 }
 
 fn truncate_active_transcript(entries: &mut Vec<super::TranscriptEntry>) {
@@ -843,6 +1207,218 @@ fn built_in_audio_input(label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_speech_and_role_text_are_validated_and_retained_until_acknowledged() {
+        let mut voice = BrowserVoiceProtocol::new("maple").unwrap();
+        voice
+            .configure(VoiceSettings {
+                updates: crate::VoiceUpdates::Silent,
+                ..Default::default()
+            })
+            .unwrap();
+        let text = "🦊".repeat(150);
+        let speech = voice.append_speech(&text).unwrap();
+        let frames: Vec<Value> = speech
+            .frames
+            .iter()
+            .map(|frame| serde_json::from_str(frame).unwrap())
+            .collect();
+        assert_eq!(frames.len(), 2);
+        assert!(frames.iter().all(|frame| frame["channel"] == "speakable"));
+        assert_eq!(
+            frames
+                .iter()
+                .map(|frame| frame["content"][0]["text"].as_str().unwrap())
+                .collect::<String>(),
+            text
+        );
+        let item = voice
+            .append_text(VoiceTextRole::Assistant, "Already said.")
+            .unwrap();
+        let frame: Value = serde_json::from_str(&item.frames[0]).unwrap();
+        assert_eq!(frame["type"], "session.context.append");
+        assert_eq!(frame["content"][0]["type"], "input_text");
+        assert!(frame.get("channel").is_none());
+        assert!(frame.get("item").is_none());
+        assert_eq!(voice.sideband_opened().frames.len(), 3);
+        voice.frames_sent(3);
+        assert!(voice.sideband_opened().frames.is_empty());
+        for invalid in [" ".to_owned(), "bad\0text".to_owned()] {
+            assert!(voice.append_speech(&invalid).is_err());
+            assert!(voice.append_text(VoiceTextRole::User, &invalid).is_err());
+        }
+        let long = "🦊".repeat(4096);
+        for effects in [
+            voice.append_speech(&long).unwrap(),
+            voice.append_context(&long).unwrap(),
+            voice.startup_context(&long),
+        ] {
+            let chunks = effects
+                .frames
+                .iter()
+                .map(|frame| {
+                    let frame: Value = serde_json::from_str(frame).unwrap();
+                    let text = frame["content"][0]["text"].as_str().unwrap();
+                    assert!(text.len() <= CONTEXT_APPEND_MAX_BYTES);
+                    text.to_owned()
+                })
+                .collect::<String>();
+            assert_eq!(chunks, long);
+            voice.frames_sent(effects.frames.len());
+        }
+        for role in [
+            VoiceTextRole::User,
+            VoiceTextRole::Developer,
+            VoiceTextRole::Assistant,
+        ] {
+            let effects = voice.append_text(role, &long).unwrap();
+            let text = effects
+                .frames
+                .iter()
+                .map(|frame| {
+                    let frame: Value = serde_json::from_str(frame).unwrap();
+                    assert_eq!(frame["type"], "session.context.append");
+                    assert!(frame.get("channel").is_none());
+                    assert!(frame.get("item").is_none());
+                    let text = frame["content"][0]["text"].as_str().unwrap();
+                    assert!(text.len() <= CONTEXT_APPEND_MAX_BYTES);
+                    text.to_owned()
+                })
+                .collect::<String>();
+            assert_eq!(text, long);
+            voice.frames_sent(effects.frames.len());
+        }
+    }
+
+    #[test]
+    fn narration_uses_message_phases_through_streaming_and_resets_between_messages() {
+        let mut voice = BrowserVoiceProtocol::new("cove").unwrap();
+        voice
+            .configure(VoiceSettings {
+                updates: crate::VoiceUpdates::Results,
+                ..Default::default()
+            })
+            .unwrap();
+        let _ = voice.agent_event(
+            &json!({"type":"assistant.delta","payload":{"phase":"commentary","text":"Checking."}})
+                .to_string(),
+        );
+        let first = voice.flush(false);
+        assert_eq!(
+            serde_json::from_str::<Value>(&first.frames[0]).unwrap()["channel"],
+            "commentary"
+        );
+        let _ = voice.agent_event(
+            &json!({"type":"assistant.delta","payload":{"text":" Still checking."}}).to_string(),
+        );
+        let next = voice.agent_event(
+            &json!({"type":"assistant.message","payload":{"text":"Checking. Still checking."}})
+                .to_string(),
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&next.frames[0]).unwrap()["channel"],
+            "commentary"
+        );
+        let last = voice.agent_event(&json!({"type":"assistant.message","payload":{"phase":"final_answer","text":"All done."}}).to_string());
+        assert_eq!(
+            serde_json::from_str::<Value>(&last.frames[0]).unwrap()["channel"],
+            "speakable"
+        );
+    }
+
+    #[test]
+    fn output_backlog_terminates_instead_of_silently_dropping_agent_output() {
+        let mut voice = BrowserVoiceProtocol::new("cove").unwrap();
+        for _ in 0..128 {
+            voice.append_text(VoiceTextRole::User, "retained").unwrap();
+        }
+        let effects = voice.agent_event(
+            &json!({"type":"assistant.message","payload":{"text":"Must not disappear."}})
+                .to_string(),
+        );
+        assert!(effects.terminate.is_some());
+        assert!(effects.frames.is_empty());
+        assert_eq!(voice.sideband_opened().frames.len(), 128);
+    }
+
+    #[test]
+    fn live_transcripts_reconcile_each_speaker_and_suppress_replayed_delegations() {
+        let mut voice = BrowserVoiceProtocol::new("cove").unwrap();
+        let delta =
+            |kind: &str, text: &str| json!({"type": kind, "item": {"text": text}}).to_string();
+        let first = voice.realtime_message(&delta("input_transcript.added", "Check "));
+        let user_id = first.effects.transcripts[0].id;
+        assert!(first.effects.transcripts[0].is_partial);
+        voice.realtime_message(&delta("output_transcript.added", "I will "));
+        let user = voice.realtime_message(&delta("input_transcript.added", "the build"));
+        assert_eq!(user.effects.transcripts[0].text, "Check the build");
+        assert_eq!(user.effects.transcripts[0].id, user_id);
+        let assistant = voice.realtime_message(&delta("output_transcript.added", "check"));
+        assert_eq!(assistant.effects.transcripts[0].text, "I will check");
+        let done = voice.realtime_message(
+            r#"{"type":"turn.done","turn":{"role":"user","transcript":"Check the build."}}"#,
+        );
+        assert_eq!(done.effects.transcripts[0].id, user_id);
+        assert!(!done.effects.transcripts[0].is_partial);
+        assert_eq!(done.effects.transcripts[0].text, "Check the build.");
+        assert_eq!(voice.transcript.len(), 2);
+        assert_eq!(voice.transcript[0].text, "Check the build.");
+        let next = voice.realtime_message(&delta("input_transcript.added", "Then test"));
+        assert_ne!(next.effects.transcripts[0].id, user_id);
+        let delegation = r#"{"type":"delegation.created","item":{"type":"delegation","target":"client","id":"d1","content":[{"type":"input_text","text":"ship it"}]}}"#;
+        assert!(voice.realtime_message(delegation).delegation.is_some());
+        assert!(voice.realtime_message(delegation).delegation.is_none());
+    }
+
+    #[test]
+    fn completed_output_keeps_spoken_prefix_but_not_interrupted_tail() {
+        for (role, streamed, completed, expected) in [
+            (
+                "assistant",
+                " Sure thing. Starting now. One...",
+                " thing. Starting now. One...",
+                " Sure thing. Starting now. One...",
+            ),
+            ("assistant", "One. Two. Three.", "One. Two.", "One. Two."),
+            ("assistant", "cannot", "not", "not"),
+            ("user", "Sure thing.", "thing.", "thing."),
+        ] {
+            let mut voice = BrowserVoiceProtocol::new("cove").unwrap();
+            let kind = if role == "user" {
+                "input_transcript.added"
+            } else {
+                "output_transcript.added"
+            };
+            voice.realtime_message(&json!({"type": kind, "item": {"text": streamed}}).to_string());
+            let done = voice.realtime_message(
+                &json!({"type": "turn.done", "turn": {"role": role, "transcript": completed}})
+                    .to_string(),
+            );
+            assert_eq!(done.effects.transcripts[0].text, expected);
+            assert!(!done.effects.transcripts[0].is_partial);
+            assert_eq!(voice.take_transcript_tail()[0].text, expected);
+        }
+    }
+
+    #[test]
+    fn live_transcript_never_publishes_an_internal_opening_tag() {
+        let mut voice = BrowserVoiceProtocol::new("cove").unwrap();
+        for fragment in [
+            "<",
+            "realtime_",
+            "delegation>",
+            "<input>ship it</input>",
+            "</realtime_delegation>",
+        ] {
+            let update = voice.realtime_message(
+                &json!({"type":"input_transcript.added","item":{"text":fragment}}).to_string(),
+            );
+            let text = &update.effects.transcripts[0].text;
+            assert!(!text.contains('<'));
+            assert!(text.is_empty() || text == "ship it");
+        }
+    }
 
     #[test]
     fn v3_events_and_agent_output_are_owned_in_rust() {

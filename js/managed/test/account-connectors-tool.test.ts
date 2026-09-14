@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ToolContext } from "nanocodex";
 
-import { manageAccountConnectors } from "../src/account-connectors-tool";
+import { accountConnectorsTool, manageAccountConnectors } from "../src/account-connectors-tool";
 
 const A = "a".repeat(43);
 const B = "b".repeat(43);
@@ -13,6 +14,52 @@ const base = {
 };
 
 describe("managed account connector tool", () => {
+  it("resolves inventory and control authority from the invoking agent context", async () => {
+    const fetch = vi.fn(async () => Response.json(canonicalStatuses()));
+    const options = vi.fn((context: ToolContext) => ({
+      ...base,
+      broker: { fetch } as unknown as Fetcher,
+      canManage: () => context.subagent === undefined,
+      allowedConnectors: () => context.subagent === undefined ? undefined : ["gmail" as const],
+      allowedConnectorConnections: () => context.subagent === undefined ? undefined : { gmail: [B] },
+    }));
+    const tool = accountConnectorsTool(options);
+    const root = {
+      sessionId: base.sessionId,
+      callId: "root-list",
+      parentCallId: "root-cell",
+      model: "gpt-5.6-sol",
+      signal: new AbortController().signal,
+    };
+    const child = {
+      ...root,
+      sessionId: "88888888-8888-4888-8888-888888888888",
+      callId: "child-list",
+      subagent: {
+        sessionId: "88888888-8888-4888-8888-888888888888",
+        agentId: "child",
+        parentAgentId: null,
+        role: "worker",
+        task: "read the permitted account",
+      },
+    };
+
+    expect(await tool.handler({ operation: "list" }, root)).toMatchObject({
+      connectors: { github: { connected: true } },
+    });
+    expect(await tool.handler({ operation: "list" }, child)).toMatchObject({
+      connectors: {
+        github: { connected: false, connections: [] },
+        gmail: { connected: true, connections: [{ id: B }] },
+      },
+    });
+    fetch.mockClear();
+    expect(await tool.handler({ operation: "disconnect", connector: "github", connection_id: A }, child))
+      .toMatchObject({ ok: false, status: "forbidden" });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(options.mock.calls.map(([context]) => context)).toEqual([root, child, child]);
+  });
+
   it("lists provider-neutral connection metadata without broker credentials", async () => {
     const fetch = vi.fn(async () => Response.json(canonicalStatuses()));
     const result = await manageAccountConnectors({

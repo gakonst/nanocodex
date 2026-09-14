@@ -44,7 +44,7 @@ export declare namespace getUsage {
 /** Adds input to an active Turn. */
 export function steer(turn: Turn, options: steer.Options): Promise<void>;
 export declare namespace steer {
-  type Options = { input: PromptInput };
+  type Options = { input: PromptInput; messageId?: string };
   type ReturnType = void;
 }
 
@@ -53,3 +53,6 @@ export function cancel(turn: Turn): Promise<void>;
 export declare namespace cancel {
   type ReturnType = void;
 }
+
+/** Removes an identified steer only before it reaches a model boundary. */
+export function withdrawSteer(turn: Turn, options: { messageId: string }): Promise<boolean>;

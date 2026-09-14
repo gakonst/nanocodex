@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,56 @@ import test from "node:test";
 
 import * as NodeWorkspace from "../node/workspace.mjs";
 import { materializeRepositoryWorkspace } from "../tools/repository-workspace.mjs";
+import { createComputerRuntime } from "nanocodex-tools";
+
+test("Just Bash downloads source archives by default and honors explicit Git history depth", async () => {
+  const fixture = await gitFixture();
+  const destination = await mkdtemp(join(tmpdir(), "nanocodex-shell-clone-"));
+  try {
+    const runtime = await createComputerRuntime({
+      filesystem: await NodeWorkspace.open({ path: destination }),
+      networkMode: "test",
+      fetch: async (url, options) => {
+        const target = new URL(url);
+        assert.ok(["https://github.com", "https://api.github.com"].includes(target.origin));
+        assert.ok(options.signal instanceof AbortSignal);
+        const path = target.origin === "https://api.github.com"
+          ? `/archive/${target.pathname.split("/").at(-1)}`
+          : `/git/${fixture.head}${target.pathname.slice("/fixture/repo.git".length)}${target.search}`;
+        const response = await fetch(`${fixture.url}${path}`, options);
+        return {
+          status: response.status, statusText: response.statusText,
+          headers: Object.fromEntries(response.headers),
+          body: new Uint8Array(await response.arrayBuffer()), url,
+        };
+      },
+    });
+    const call = { signal: new AbortController().signal, sessionId: "fixture" };
+    const cloned = await runtime.tool.handler({
+      cmd: "gh repo clone fixture/repo /workspace/source && cat source/README.md",
+    }, call);
+    assert.equal(cloned.exit_code, 0, cloned.output);
+    assert.match(cloned.output, /Downloaded source files into 'source'/);
+    assert.equal(await readFile(join(destination, "source/README.md"), "utf8"), "immutable\n");
+    await assert.rejects(access(join(destination, "source/.git")), { code: "ENOENT" });
+    assert.equal(await readFile(join(destination, "source/.gitignore"), "utf8"), "target/\n");
+    const shallow = await runtime.tool.handler({
+      cmd: "git clone --branch v1 https://github.com/fixture/repo.git snapshot",
+    }, call);
+    assert.equal(shallow.exit_code, 0, shallow.output);
+    await assert.rejects(access(join(destination, "snapshot/.git")), { code: "ENOENT" });
+    assert.equal(await readFile(join(destination, "snapshot/README.md"), "utf8"), "immutable\n");
+    const deeper = await runtime.tool.handler({
+      cmd: "gh repo clone fixture/repo deeper -- --depth 2 --branch main",
+    }, call);
+    assert.equal(deeper.exit_code, 0, deeper.output);
+    assert.equal(await git(["rev-list", "--count", "HEAD"], join(destination, "deeper")), "2\n");
+    assert.equal(await git(["branch", "--show-current"], join(destination, "deeper")), "main\n");
+  } finally {
+    await fixture.close();
+    await rm(destination, { recursive: true, force: true });
+  }
+});
 
 test("materializes once, reopens without network, and preserves retained work", async () => {
   const fixture = await gitFixture();
@@ -105,14 +155,23 @@ async function gitFixture() {
   await git(["config", "user.name", "Nanocodex Test"], source);
   await git(["config", "user.email", "test@nanocodex.dev"], source);
   await writeFile(join(source, "README.md"), "immutable\n");
-  await git(["add", "README.md"], source);
+  await writeFile(join(source, ".gitignore"), "target/\n");
+  await git(["add", "README.md", ".gitignore"], source);
   await git(["commit", "-q", "-m", "seed"], source);
+  await git(["tag", "v1"], source);
+  await git(["commit", "-q", "--allow-empty", "-m", "second"], source);
   const head = (await git(["rev-parse", "HEAD"], source)).trim();
   await git(["clone", "-q", "--bare", source, join(repositories, "seed.git")], directory);
 
   const server = createServer(async (request, response) => {
     try {
       const requestUrl = new URL(request.url, "http://localhost");
+      if (requestUrl.pathname.startsWith("/archive/")) {
+        const ref = decodeURIComponent(requestUrl.pathname.slice("/archive/".length));
+        const archive = await command("git", ["archive", "--format=tar.gz", "--prefix=fixture-repo/", ref], source);
+        response.writeHead(200, { "content-type": "application/gzip" }).end(archive);
+        return;
+      }
       const suffix = requestUrl.pathname.match(/^\/git\/[a-f0-9]{40}(\/.*)$/)?.[1];
       if (!suffix) {
         response.writeHead(404).end();

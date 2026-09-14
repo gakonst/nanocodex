@@ -35,6 +35,7 @@ test("Worker Agent preserves synchronous prompt handles, independent results, an
   assert.equal(typeof turn.result, "function");
   const pending = turn.result();
   await turn.steer({ input: "carefully" });
+  assert.equal(await turn.withdrawSteer({ messageId: "pending" }), true);
   fixture.emit("root", 1);
   fixture.emit("root", 2);
   await tick();
@@ -111,7 +112,11 @@ test("Worker Agent retains and proxies the Rust browser voice handle", async () 
   const agent = await createWorkerAgent({ sessionId: "root", harness: false }, { worker });
   const voice = await createBrowserVoice(agent, "cove");
 
+  await voice.configure('{"voice":"cove","updates":"results"}');
   await voice.start();
+  await voice.appendSpeech("Speak this.");
+  await voice.appendText("developer", "Selected README.md");
+  await voice.appendContext("Background update");
   const call = JSON.parse(await voice.callBody("v=offer"));
   assert.equal(JSON.parse(call.call_body).session.audio.output.voice, "cove");
   assert.deepEqual(
@@ -134,7 +139,11 @@ test("Worker Agent retains and proxies the Rust browser voice handle", async () 
 
   assert.deepEqual(fixture.log.filter(([kind]) => kind.startsWith("voice-")), [
     ["voice-create", "root", "cove"],
+    ["voice-configure", "root", '{"voice":"cove","updates":"results"}'],
     ["voice-start", "root"],
+    ["voice-speech", "root", "Speak this."],
+    ["voice-text", "root", "developer", "Selected README.md"],
+    ["voice-context", "root", "Background update"],
     ["voice-call", "root", "v=offer"],
     ["voice-complete", "root", "v=answer", "/v1/live/rtc_test"],
     ["voice-sideband", "root", "rtc_test"],
@@ -151,9 +160,11 @@ test("Worker Agent retains and proxies the Rust browser voice handle", async () 
   assert.equal(worker.terminated, 1);
 });
 
-test("Worker turn admission preserves stable error codes", async () => {
+test("Worker turn admission preserves stable error codes and recovery identity", async () => {
   const fixture = createFixture({
-    acceptanceError: Object.assign(new Error("durable input conflict"), { code: "conflict" }),
+    acceptanceError: Object.assign(new Error("durable operation blocked"), {
+      code: "retryable", blockedBy: "older-operation",
+    }),
   });
   const worker = new LoopbackWorker(fixture.createAgent);
   const agent = await createWorkerAgent({ sessionId: "root", harness: false }, { worker });
@@ -162,10 +173,12 @@ test("Worker turn admission preserves stable error codes", async () => {
   await assert.rejects(
     turn.accepted(),
     (error) => error instanceof Error
-      && error.message === "durable input conflict"
-      && error.code === "conflict",
+      && error.message === "durable operation blocked"
+      && error.code === "retryable"
+      && error.blockedBy === "older-operation",
   );
-  await assert.rejects(turn.result(), (error) => error?.code === "conflict");
+  await assert.rejects(turn.result(), (error) => error?.code === "retryable"
+    && error.blockedBy === "older-operation");
   assert.equal(fixture.log.filter(([kind]) => kind === "turn-dispose").length, 1);
 
   turn.dispose();
@@ -1743,6 +1756,7 @@ function createFixture(options = {}) {
           },
           result: () => result,
           async steer(steering) { log.push(["steer", sessionId, steering]); },
+          async withdrawSteer(messageId) { assert.equal(messageId, "pending"); return true; },
           async cancel() { log.push(["cancel", sessionId]); },
           free() { log.push(["turn-dispose", sessionId]); },
         };
@@ -1787,6 +1801,10 @@ function createFixture(options = {}) {
       browserVoice(voice) {
         log.push(["voice-create", sessionId, voice]);
         return {
+          async configure(settings) { log.push(["voice-configure", sessionId, settings]); },
+          async appendSpeech(text) { log.push(["voice-speech", sessionId, text]); return "{}"; },
+          async appendText(role, text) { log.push(["voice-text", sessionId, role, text]); return "{}"; },
+          async appendContext(text) { log.push(["voice-context", sessionId, text]); return "{}"; },
           async start() { log.push(["voice-start", sessionId]); },
           callBody(sdp) {
             log.push(["voice-call", sessionId, sdp]);

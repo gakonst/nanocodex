@@ -9,6 +9,52 @@ import { bindBrowser } from "../tools/browser/index.mjs";
 import * as datasets from "../tools/dataset.mjs";
 import * as standard from "../tools/standard.mjs";
 
+import { createBrowserVoice } from "../internal.mjs";
+
+test("WASM voice starts without scanning or injecting workspace context", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const agent = await Agent.create({
+    module, harness: false,
+    transport: Transport.openAi({ apiKey: "test-key", websocketWarmup: false }),
+  });
+  const original = globalThis.nanocodexHost;
+  let workspaceReads = 0;
+  globalThis.nanocodexHost = { ...original, listWorkspace: async () => {
+    workspaceReads += 1;
+    return JSON.stringify([{ kind: "file", path: "private-workspace-file.txt" }]);
+  } };
+  const voice = await createBrowserVoice(agent, "cove");
+  try {
+    const instructions = "Speak Greek. ".repeat(400);
+    voice.configure(JSON.stringify({ voice: "maple", pace: "slow", updates: "results", acknowledgements: false, instructions }));
+    await voice.start();
+    assert.equal(workspaceReads, 0);
+    const body = JSON.parse(JSON.parse(await voice.callBody("v=offer")).call_body);
+    assert.doesNotMatch(body.session.instructions, /private-workspace-file/);
+    assert.equal(JSON.parse(voice.noteTypedInput()).playback_enabled, false);
+    assert.equal(body.session.audio.output.voice, "maple");
+    assert.equal(body.session.delegation.ack_filler, false);
+    assert.match(body.session.instructions, /unhurried/);
+    assert.ok(body.session.instructions.endsWith(instructions.trim()));
+    assert.throws(() => voice.configure('{"voice":"cove"}'), /new call/);
+    assert.equal(JSON.parse(JSON.parse(voice.appendSpeech("Read this." )).frames[0]).channel, "speakable");
+    const appendedText = JSON.parse(JSON.parse(voice.appendText("developer", "Selected a file.")).frames[0]);
+    assert.equal(appendedText.type, "session.context.append");
+    assert.equal(appendedText.content[0].text, "Selected a file.");
+    assert.equal("channel" in appendedText, false);
+    assert.throws(() => voice.appendContext("bad\0context"), /contain NUL/);
+    const longContext = "🦊".repeat(4096);
+    const contextFrames = JSON.parse(voice.appendContext(longContext)).frames.map((frame) => JSON.parse(frame));
+    assert.equal(contextFrames.map((frame) => frame.content[0].text).join(""), longContext);
+    assert.ok(contextFrames.every((frame) => Buffer.byteLength(frame.content[0].text) <= 500));
+  } finally {
+    await voice.stop();
+    voice.free();
+    globalThis.nanocodexHost = original;
+    agent.dispose();
+  }
+});
+
 const SUBAGENT_TOOL_NAMES = Object.freeze([
   "submit_result",
   "spawn_agent",
@@ -321,6 +367,7 @@ test("web-target WASM exposes browser bash and Rust apply_patch as standard tool
     const toolPrefix = warmup.input.find((item) => item.type === "additional_tools");
     assert.deepEqual(toolPrefix.tools.map((tool) => tool.name), [
       "exec",
+      "wait",
       "exec_command",
       "apply_patch",
       ...SUBAGENT_TOOL_NAMES,
@@ -429,6 +476,7 @@ test("web-target WASM keeps remote MCP deferred behind tool_search and Code Mode
     const toolPrefix = warmup.input.find((item) => item.type === "additional_tools");
     assert.deepEqual(toolPrefix.tools.map((tool) => tool.name ?? tool.type), [
       "exec",
+      "wait",
       "tool_search",
       ...SUBAGENT_TOOL_NAMES,
     ]);
@@ -839,6 +887,7 @@ test("web-target WASM executes the complete browser harness tool contract", asyn
     const toolPrefix = warmup.input.find((item) => item.type === "additional_tools");
     assert.deepEqual(toolPrefix.tools.map((tool) => tool.name ?? tool.type), [
       "exec",
+      "wait",
       "exec_command",
       "update_plan",
       "apply_patch",
@@ -1069,7 +1118,7 @@ test("web-target WASM executes the complete browser harness tool contract", asyn
       url: "https://demo.test/api/tools/web-search",
       body: {
         commands: { search_query: [{ q: "browser tools" }] },
-        model: "gpt-5.6-sol",
+        model: "gpt-6-astra",
         session_id: agent.sessionId,
       },
     }]);

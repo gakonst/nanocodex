@@ -31,6 +31,12 @@ async function checkManaged() {
   // @ts-expect-error thread terminology was replaced by sessions.
   Agent.readThread;
   const created: ManagedAgent = await Agent.create();
+  await created.events.page({ after: "0", limit: 128 });
+  await created.events.page({ before: "99" });
+  const optionalCursor: string | undefined = Math.random() > 0.5 ? "1" : undefined;
+  await created.events.page({ after: optionalCursor });
+  // @ts-expect-error history has a single exclusive direction.
+  await created.events.page({ before: "99", after: "0" });
   await Agent.create({
     settings: {
       model: "gpt-6-astra",
@@ -44,6 +50,24 @@ async function checkManaged() {
     settings: { model: "gpt-6-astra", thinking: "high" },
   });
   const opened: ManagedAgent = Agent.open("0198d3f0-8844-7000-8000-000000000001");
+  const cron = await opened.triggers.put("morning", {
+    cron: "0 7 * * *", timezone: "Europe/Athens", input: "Daily summary", session_mode: "new",
+  });
+  const nextRun: number | null = cron.next_run_at;
+  const mode: "new" | "continue" = cron.session_mode;
+  const runAgent: string | null = cron.last_agent_id;
+  void mode; void runAgent;
+  await opened.triggers.put(cron.id, { cron: cron.cron, input: cron.input, enabled: false, session_mode: "continue" });
+  await opened.triggers.get(cron.id);
+  await opened.triggers.delete(cron.id);
+  const schedules: readonly import("nanocodex/managed").ManagedCronTrigger[] = await opened.triggers.list();
+  void nextRun; void schedules;
+  // @ts-expect-error unsupported session mode.
+  await opened.triggers.put("bad-mode", { cron: "* * * * *", input: "test", session_mode: "fork" });
+  // @ts-expect-error cron triggers require an input.
+  await opened.triggers.put("missing", { cron: "* * * * *" });
+  // @ts-expect-error enabled is boolean.
+  await opened.triggers.put("bad", { cron: "* * * * *", input: "test", enabled: "yes" });
   const settings = await opened.settings.read();
   await opened.settings.update({ model: "gpt-6-astra" });
   await opened.settings.update({ thinking: settings.thinking, fastMode: true });
@@ -61,6 +85,11 @@ async function checkManaged() {
     input: [{ type: "text", text: "hello" }],
     idempotencyKey: "request-1",
   });
+  await turn.steer({ input: "correction", messageId: "steer-1" });
+  const withdrawn: boolean = (await turn.withdrawSteer({ messageId: "steer-1" })).withdrawn;
+  void withdrawn;
+  // @ts-expect-error withdrawal requires a steer identity.
+  await turn.withdrawSteer({});
   const accepted: string = await turn.accepted();
   const result: ManagedTurnResult = await turn.result();
   await turn.result({ signal: new AbortController().signal });

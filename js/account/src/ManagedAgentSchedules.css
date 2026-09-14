@@ -1,0 +1,49 @@
+.agent-schedules-open { display: inline-flex; align-items: center; gap: 5px; }
+.agent-schedules {
+  width: min(620px, calc(100vw - 24px)); max-height: calc(100dvh - 32px);
+  padding: 0; margin: auto; border: 1px solid var(--border-soft, #ddd); border-radius: 14px;
+  color: var(--text, #222); background: var(--surface, #fff); font-family: var(--font-sans, sans-serif);
+  font-size: 13px; line-height: 1.5; box-shadow: 0 18px 70px #0003;
+}
+.agent-schedules::backdrop { background: #0006; }
+.agent-schedules header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 20px; border-bottom: 1px solid var(--border-soft, #ddd); }
+.agent-schedules h2, .agent-schedules h3, .agent-schedules p { margin: 0; }
+.agent-schedules h2 { font-size: 18px; font-weight: 600; }
+.agent-schedules h3 { font-size: 14px; margin-bottom: 12px; }
+.agent-schedules header p, .agent-schedules-note, .agent-schedules-status { color: var(--text-secondary, #666); }
+.agent-schedules-body { display: grid; gap: 14px; padding: 20px; }
+.agent-schedules button { cursor: pointer; padding: 8px 12px; min-height: 36px; color: inherit; font: inherit; background: transparent; border: 1px solid var(--border-soft, #ddd); border-radius: 8px; }
+.agent-schedules button:hover:not(:disabled) { background: var(--surface-hover, #f4f4f4); }
+.agent-schedules button:disabled { opacity: .5; cursor: default; }
+.agent-schedules :focus-visible { outline: 2px solid var(--text, #222); outline-offset: 3px; }
+.agent-schedules-toolbar, .agent-schedules-actions, .agent-schedules-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.agent-schedules-toolbar, .agent-schedules-row { justify-content: space-between; }
+.agent-schedules form, .agent-schedules-list > li { padding: 16px; border: 1px solid var(--border-soft, #ddd); border-radius: 10px; min-width: 0; }
+.agent-schedules fieldset { padding: 0; margin: 0; border: 0; display: grid; gap: 12px; min-width: 0; }
+.agent-schedules label { display: grid; gap: 5px; min-width: 0; }
+.agent-schedules input:not([type=checkbox]), .agent-schedules select, .agent-schedules textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--border-soft, #ddd); border-radius: 7px; background: var(--surface, #fff); color: inherit; font: inherit; }
+.agent-schedules textarea { resize: vertical; }
+.agent-schedules-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.agent-schedules .agent-schedules-checkbox { display: flex; align-items: center; gap: 8px; }
+.agent-schedules-list { display: grid; gap: 12px; list-style: none; margin: 0; padding: 0; }
+.agent-schedules-list > li { display: grid; gap: 8px; overflow-wrap: anywhere; }
+.agent-schedules-row strong { overflow-wrap: anywhere; }
+.agent-schedules-row span { font-size: 12px; color: var(--text-secondary, #666); }
+.agent-schedules-prompt { white-space: pre-wrap; max-height: 150px; overflow: auto; }
+.agent-schedules-note { font-size: 12px; }
+.agent-schedules-status:empty { display: none; }
+.agent-schedules-error { color: var(--negative, #b42318); overflow-wrap: anywhere; }
+.agent-schedules-delete { border-top: 1px solid var(--border-soft, #ddd); padding-top: 10px; display: grid; gap: 8px; }
+@media (max-width: 640px) {
+  .nanocodex-demo .agent-touch-field:has(.agent-schedules-open) { grid-template-columns: minmax(0, 1fr); }
+  .nanocodex-demo .agent-touch-field:has(.agent-schedules-open) > textarea { grid-column: 1; grid-row: 1; }
+  .nanocodex-demo .agent-touch-field:has(.agent-schedules-open) > .agent-touch-actions {
+    grid-column: 1; grid-row: 2; flex-wrap: wrap; justify-content: flex-end; border-left: 0;
+  }
+}
+@media (max-width: 480px) {
+  .agent-schedules-fields { grid-template-columns: 1fr; }
+  .agent-schedules header, .agent-schedules-body { padding: 14px; }
+  .agent-schedules input:not([type=checkbox]), .agent-schedules textarea, .agent-schedules select { font-size: 16px; }
+  .agent-schedules button { min-height: 44px; }
+}

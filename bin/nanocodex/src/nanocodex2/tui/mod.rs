@@ -58,6 +58,7 @@ use std::{
     time::Instant,
 };
 use tokio::{sync::mpsc, task::JoinSet};
+use tokio_util::sync::CancellationToken;
 
 type Admission = (PaneId, TurnId, Result<Turn, NanocodexError>);
 type Completion = (PaneId, TurnId, Result<TurnResult, NanocodexError>);
@@ -66,8 +67,9 @@ type SteerCompletion = (
     components::QueueId,
     u64,
     SteerTarget,
-    Result<(), String>,
+    Result<(), SteerFailure>,
 );
+type WithdrawalCompletion = (PaneId, components::QueueId, u64, Result<bool, String>);
 type WaitingSteer = (PaneId, components::QueueId, Submission);
 enum CancelTarget {
     Local {
@@ -97,7 +99,7 @@ impl CancelTarget {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum SteerTarget {
     Local(TurnId),
     Managed { agent_id: String, turn_id: String },
@@ -106,7 +108,41 @@ enum SteerTarget {
 #[derive(Debug, Eq, PartialEq)]
 enum SteerResolution {
     Admitted,
-    Failed(Option<String>),
+    Failed,
+    Unconfirmed { error: String, active: bool },
+    Stale,
+}
+
+enum SteerFailure {
+    Inactive,
+    Other(String),
+}
+
+impl SteerFailure {
+    fn managed(error: ManagedError) -> Self {
+        if matches!(&error, ManagedError::Http { status, code, .. }
+            if status.as_u16() == 409 && matches!(code.as_str(), "turn_not_active" | "turn_not_steerable"))
+        {
+            Self::Inactive
+        } else {
+            Self::Other(error.to_string())
+        }
+    }
+
+    fn backend(error: NanocodexError) -> Self {
+        if matches!(error, NanocodexError::TurnNotSteerable) {
+            return Self::Inactive;
+        }
+        if let NanocodexError::Backend { source, .. } = &error
+            && let Some(ManagedError::Http { status, code, .. }) =
+                source.downcast_ref::<ManagedError>()
+            && status.as_u16() == 409
+            && matches!(code.as_str(), "turn_not_active" | "turn_not_steerable")
+        {
+            return Self::Inactive;
+        }
+        Self::Other(error.to_string())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -151,6 +187,7 @@ type ConnectedAgent = (
 #[derive(Clone, Debug, Default)]
 struct ManagedActiveTurns {
     ids: HashSet<String>,
+    order: Vec<String>,
     live_steer: bool,
     live_cancel: bool,
 }
@@ -328,6 +365,7 @@ impl ManagedActiveTurns {
     fn from_state(state: &AgentState) -> Self {
         Self {
             ids: state.active_turns.iter().cloned().collect(),
+            order: state.active_turns.clone(),
             live_steer: state.capabilities.live_steer,
             live_cancel: state.capabilities.live_cancel,
         }
@@ -346,12 +384,14 @@ impl ManagedActiveTurns {
             ManagedEventData::TurnAccepted { id, .. }
                 if !local_ids.values().any(|local_id| local_id == id) =>
             {
-                self.ids.insert(id.clone());
+                if self.ids.insert(id.clone()) {
+                    self.order.push(id.clone());
+                }
             }
             ManagedEventData::TurnCompleted { id, .. }
             | ManagedEventData::TurnCancelled { id }
             | ManagedEventData::TurnFailed { id, .. } => {
-                self.ids.remove(id);
+                self.remove(id);
             }
             _ => {}
         }
@@ -362,6 +402,7 @@ impl ManagedActiveTurns {
     }
 
     fn remove(&mut self, id: &str) -> bool {
+        self.order.retain(|retained| retained != id);
         self.ids.remove(id)
     }
 
@@ -372,7 +413,14 @@ impl ManagedActiveTurns {
         match self.ids.len() {
             1 => Ok(self.ids.iter().next().expect("one active managed turn")),
             0 => Err("no attached managed turn is active"),
-            _ => Err("more than one attached managed turn is active; steering is ambiguous"),
+            // Durable state and turn_accepted events carry admission order.
+            // Later accepted turns may still be queued behind this one.
+            _ => self
+                .order
+                .iter()
+                .find(|id| self.ids.contains(*id))
+                .map(String::as_str)
+                .ok_or("managed turn admission order is unavailable"),
         }
     }
 }
@@ -394,7 +442,6 @@ struct ConnectionFailure {
 enum ConnectionPurpose {
     Startup,
     Resume(PaneId),
-    New(PaneId),
 }
 
 enum ConnectionResult {
@@ -441,6 +488,7 @@ struct DriverRuntime {
     next_shell: u64,
     controls: HashMap<TurnId, TurnControl>,
     local_managed_turns: HashMap<TurnId, String>,
+    submitted_turns: HashSet<String>,
     managed_active_turns: ManagedActiveTurns,
     admitting: HashSet<TurnId>,
     cancel_after_admission: HashSet<TurnId>,
@@ -450,7 +498,12 @@ struct DriverRuntime {
     admissions: JoinSet<Admission>,
     completions: JoinSet<Completion>,
     steers: JoinSet<SteerCompletion>,
+    steer_receipts: HashMap<(PaneId, components::QueueId), (u64, SteerTarget, String)>,
+    pending_withdrawals: HashSet<(PaneId, components::QueueId)>,
+    withdrawals: JoinSet<WithdrawalCompletion>,
+    pending_steer_target: Option<(components::QueueId, SteerTarget)>,
     waiting_steers: VecDeque<WaitingSteer>,
+    unconfirmed_steer: Option<(components::QueueId, u64, SteerTarget)>,
     cancellations: JoinSet<CancelCompletion>,
     settings_updates: JoinSet<SettingsCompletion>,
     settings_queue: VecDeque<(PaneId, String, SettingsMutation)>,
@@ -464,6 +517,7 @@ struct DriverRuntime {
     history_records: Vec<Arc<TranscriptRecord>>,
     live_records: Vec<Arc<TranscriptRecord>>,
     active_shells: usize,
+    shell_cancellation: CancellationToken,
     shell_context: Vec<String>,
     pending_submission: Option<(PaneId, TurnId, Submission)>,
     recent_prompts: Vec<RecentPrompt>,
@@ -477,6 +531,7 @@ struct PreparedHistoryReplay {
     next_sequence: u64,
     history_records: Vec<Arc<TranscriptRecord>>,
     older_prompts: Vec<RecentPrompt>,
+    live_records_len: usize,
     projection: Box<RestoredSessionProjection>,
 }
 
@@ -526,6 +581,7 @@ fn prepare_history_replay(
         next_sequence: projected_next_sequence,
         history_records,
         older_prompts,
+        live_records_len: live_records.len(),
         projection,
     })
 }
@@ -548,20 +604,30 @@ impl DriverRuntime {
         &self,
         generation: u64,
         target: &SteerTarget,
-        outcome: Result<(), String>,
+        outcome: Result<(), SteerFailure>,
     ) -> SteerResolution {
-        let current = generation == self.connection_generation
-            && match target {
-                SteerTarget::Local(id) => self.controls.contains_key(id),
-                SteerTarget::Managed { agent_id, turn_id } => {
-                    agent_id == &self.agent_id && self.managed_active_turns.ids.contains(turn_id)
-                }
-            };
+        if generation != self.connection_generation {
+            return SteerResolution::Stale;
+        }
         match outcome {
-            Ok(()) if current => SteerResolution::Admitted,
-            Ok(()) => SteerResolution::Failed(None),
-            Err(error) if current => SteerResolution::Failed(Some(error)),
-            Err(_) => SteerResolution::Failed(None),
+            // An acknowledgement means the input was accepted even if the
+            // terminal event won the race with the control response. Requeuing
+            // it here would submit the same instruction a second time.
+            Ok(()) => SteerResolution::Admitted,
+            Err(SteerFailure::Other(error)) => SteerResolution::Unconfirmed {
+                error,
+                active: self.steer_target_current(target),
+            },
+            Err(SteerFailure::Inactive) => SteerResolution::Failed,
+        }
+    }
+
+    fn steer_target_current(&self, target: &SteerTarget) -> bool {
+        match target {
+            SteerTarget::Local(id) => self.controls.contains_key(id),
+            SteerTarget::Managed { agent_id, turn_id } => {
+                agent_id == &self.agent_id && self.managed_active_turns.ids.contains(turn_id)
+            }
         }
     }
 
@@ -636,6 +702,9 @@ impl DriverRuntime {
         let history_records = self.history_records.clone();
         let live_records = self.live_records.clone();
         let next_sequence = self.sequence;
+        // Projection allocates at most one record per older event. Reserve its IDs before
+        // yielding so incoming records cannot reuse them while the blocking task runs.
+        self.sequence = self.sequence.saturating_add(page.data.len() as u64);
         let workspace = self.workspace.clone();
         let effort = effort_from_thinking(self.settings.thinking);
         let agent_id = self.agent_id.clone();
@@ -672,6 +741,16 @@ impl DriverRuntime {
                 return Err(error);
             }
         };
+        // Only rebuild presentation state: these records have already driven queue/control
+        // effects in the live root. Replaying those effects would submit inputs twice.
+        prepared.projection.append_records(
+            self.live_records[prepared.live_records_len..]
+                .iter()
+                .cloned(),
+        );
+        if !self.managed_events_open {
+            prepared.projection.close_stream();
+        }
         self.history.prepend_window(prepared.older_history);
         self.history_sequences = prepared.sequences;
         self.sequence = self.sequence.max(prepared.next_sequence);
@@ -709,6 +788,7 @@ impl DriverRuntime {
             return;
         };
         let managed_request_id = uuid::Uuid::now_v7().to_string();
+        self.submitted_turns.insert(managed_request_id.clone());
         self.local_managed_turns
             .insert(id, managed_request_id.clone());
         self.admitting.insert(id);
@@ -718,6 +798,44 @@ impl DriverRuntime {
                 .await;
             (pane, id, turn)
         });
+    }
+
+    fn record_submission(
+        &mut self,
+        id: TurnId,
+        prompt: &Submission,
+    ) -> Result<Arc<TranscriptRecord>, ManagedError> {
+        let text = prompt.display_text().to_owned();
+        let record = self.local_record(LocalEvent::UserSubmitted {
+            id,
+            text: text.clone(),
+        })?;
+        self.recent_prompts.insert(
+            0,
+            RecentPrompt {
+                text,
+                recorded_at_unix_ms: unix_ms(),
+                session_id: self.agent_id.clone(),
+                workspace: self.workspace.clone(),
+            },
+        );
+        self.recent_prompts.truncate(100);
+        Ok(record)
+    }
+
+    fn project_managed_event(
+        &mut self,
+        event: ManagedEvent,
+    ) -> Result<Option<history::LiveManagedProjection>, ManagedError> {
+        // The local prompt is already visible, including while creation is pending.
+        // Retain IDs after completion: the observer can deliver acceptance after
+        // the completion future, and replay must not duplicate the prompt either.
+        if let ManagedEventData::TurnAccepted { id, .. } = &event.data
+            && self.submitted_turns.contains(id)
+        {
+            return Ok(None);
+        }
+        live_managed_projection(event, &self.agent_id, &self.workspace, &mut self.sequence)
     }
 
     fn queue_settings(&mut self, pane: PaneId, mutation: SettingsMutation) {
@@ -767,13 +885,48 @@ impl DriverRuntime {
         });
     }
 
+    fn start_new_session(&mut self, settings: AgentSettings) {
+        // Stop routing input and events to the previous agent before exposing
+        // the new composer. Creation then uses the same pending-input path as launch.
+        if let Some(previous) = self.agent.take() {
+            self.connection
+                .spawn(async move { ConnectionResult::Disconnected(previous.disconnect().await) });
+        }
+        self.managed_events = None;
+        self.managed_events_open = false;
+        self.connection_generation = self.connection_generation.wrapping_add(1);
+        self.agent_id.clear();
+        self.settings = settings;
+        self.pending_settings = None;
+        self.managed_active_turns = ManagedActiveTurns::default();
+        self.local_managed_turns.clear();
+        self.submitted_turns.clear();
+        self.cancellation_fences.reset();
+        self.cancellation_had_effect = false;
+        self.cancellation_failed = false;
+        self.history_generation = self.history_generation.wrapping_add(1);
+        self.history_loads = JoinSet::new();
+        self.history_replays = JoinSet::new();
+        self.history_prefetch.reset();
+        self.history = HistoryWindow::default();
+        self.history_sequences.clear();
+        self.history_records.clear();
+        self.live_records.clear();
+        self.recent_prompts.clear();
+        self.shell_context.clear();
+        self.sequence = 1;
+        self.spawn_connection(ConnectionPurpose::Startup, RetryTarget::Create(settings));
+    }
+
     fn idle(&self) -> bool {
         self.controls.is_empty()
             && self.managed_active_turns.ids.is_empty()
             && self.admissions.is_empty()
             && self.completions.is_empty()
             && self.steers.is_empty()
+            && self.withdrawals.is_empty()
             && self.waiting_steers.is_empty()
+            && self.unconfirmed_steer.is_none()
             && self.cancellations.is_empty()
             && self.settings_updates.is_empty()
             && self.settings_queue.is_empty()
@@ -834,16 +987,26 @@ impl DriverRuntime {
     }
 }
 
+fn withdraw_waiting_steer(
+    waiting: &mut VecDeque<WaitingSteer>,
+    pane: PaneId,
+    id: components::QueueId,
+) -> bool {
+    let Some(index) = waiting
+        .iter()
+        .position(|(owner, queued, _)| *owner == pane && *queued == id)
+    else {
+        return false;
+    };
+    waiting.remove(index);
+    true
+}
+
 fn take_waiting_steer_failures(
     waiting: &mut VecDeque<WaitingSteer>,
 ) -> Vec<(PaneId, components::QueueId)> {
-    // Queue failure recovery reinserts each item at the front of the ready lane,
-    // so notify newest-first to preserve the user's original FIFO order.
-    waiting
-        .drain(..)
-        .rev()
-        .map(|(pane, id, _)| (pane, id))
-        .collect()
+    // Each failure keeps its position in the queue, independent of callback order.
+    waiting.drain(..).map(|(pane, id, _)| (pane, id)).collect()
 }
 
 async fn connect_agent(
@@ -962,7 +1125,7 @@ async fn run_inner(
     let initial_settings = if matches!(attach, Some(Some(_))) {
         AgentSettings::default()
     } else {
-        account_default_settings(client).await
+        new_agent_settings()
     };
     let initial_effort = effort_from_thinking(initial_settings.thinking);
     let initial_reasoning_mode = reasoning_mode_from_managed(initial_settings.reasoning_mode);
@@ -995,6 +1158,7 @@ async fn run_inner(
         next_shell: 1,
         controls: HashMap::new(),
         local_managed_turns: HashMap::new(),
+        submitted_turns: HashSet::new(),
         managed_active_turns: ManagedActiveTurns::default(),
         admitting: HashSet::new(),
         cancel_after_admission: HashSet::new(),
@@ -1004,7 +1168,12 @@ async fn run_inner(
         admissions: JoinSet::new(),
         completions: JoinSet::new(),
         steers: JoinSet::new(),
+        steer_receipts: HashMap::new(),
+        pending_withdrawals: HashSet::new(),
+        withdrawals: JoinSet::new(),
+        pending_steer_target: None,
         waiting_steers: VecDeque::new(),
+        unconfirmed_steer: None,
         cancellations: JoinSet::new(),
         settings_updates: JoinSet::new(),
         settings_queue: VecDeque::new(),
@@ -1018,6 +1187,7 @@ async fn run_inner(
         history_records: Vec::new(),
         live_records: Vec::new(),
         active_shells: 0,
+        shell_cancellation: CancellationToken::new(),
         shell_context: Vec::new(),
         pending_submission: None,
         recent_prompts: Vec::new(),
@@ -1054,63 +1224,55 @@ async fn run_inner(
     let mut stopping = false;
 
     while !stopping {
-        // Keep runtime and component state stable while the pure replay projection runs. Events
-        // remain queued in their receivers and JoinSets, then are applied once after the replay is
-        // installed; rebuilding the entire Root for every arrival would duplicate work, while
-        // applying already-observed records again would duplicate component side effects.
-        if !runtime.history_replays.is_empty() {
-            let Some(result) = runtime.history_replays.join_next().await else {
-                continue;
-            };
-            match result {
-                Err(error) => {
-                    runtime.history_prefetch.reset();
-                    runtime.start_history_prefetch(PaneId::Main);
-                    request_render(
-                        app.update(AppEvent::NotifyError {
-                            pane: PaneId::Main,
-                            error: format!(
-                                "Older durable history replay task stopped unexpectedly: {error}"
-                            ),
-                        }),
-                        &mut scheduler,
-                    );
-                }
-                Ok((pane, agent_id, generation, requested_before, result))
-                    if history_replay_matches(
-                        &agent_id,
-                        generation,
-                        &requested_before,
-                        &runtime.agent_id,
-                        runtime.history_generation,
-                        runtime.history.before.as_deref(),
-                    ) =>
-                {
-                    match runtime.finish_history_replay(pane, result) {
-                        Err(error) => {
-                            request_render(
-                                app.update(AppEvent::NotifyError {
-                                    pane,
-                                    error: format!(
-                                        "Could not replay older durable history: {error}"
-                                    ),
-                                }),
-                                &mut scheduler,
-                            );
-                        }
-                        Ok(projection) => {
-                            request_render(
-                                app.update(AppEvent::HistoryReplayed { pane, projection }),
-                                &mut scheduler,
-                            );
-                        }
-                    }
-                }
-                Ok(_) => {}
-            }
-            continue;
+        if runtime
+            .unconfirmed_steer
+            .as_ref()
+            .is_some_and(|(_, generation, target)| {
+                *generation != runtime.connection_generation
+                    || !runtime.steer_target_current(target)
+            })
+        {
+            runtime.unconfirmed_steer = None;
         }
-
+        // Admit steering serially. In particular, attached-agent HTTP requests must not
+        // overtake one another, and cancellation must still run while an ack is pending.
+        while runtime.steers.is_empty()
+            && runtime.unconfirmed_steer.is_none()
+            && !runtime.waiting_steers.is_empty()
+        {
+            if !runtime.controls.is_empty() || !runtime.managed_active_turns.ids.is_empty() {
+                let (pane, id, prompt) = runtime.waiting_steers.pop_front().unwrap();
+                let update = ComponentUpdate {
+                    effects: vec![AppEffect::Pane {
+                        pane,
+                        effect: RootEffect::Steer { id, prompt },
+                    }],
+                    render: RenderRequest::None,
+                };
+                stopping |= apply_update(
+                    update,
+                    &mut app,
+                    &mut runtime,
+                    &mut terminal,
+                    &mut scheduler,
+                )
+                .await?;
+            } else if runtime.admitting.is_empty() && runtime.pending_submission.is_none() {
+                for (pane, id) in take_waiting_steer_failures(&mut runtime.waiting_steers) {
+                    let update = app.update(AppEvent::SteerFailed { pane, id });
+                    stopping |= apply_update(
+                        update,
+                        &mut app,
+                        &mut runtime,
+                        &mut terminal,
+                        &mut scheduler,
+                    )
+                    .await?;
+                }
+            } else {
+                break;
+            }
+        }
         if scheduler.is_due(Instant::now()) {
             terminal
                 .draw(|frame| app.render(frame))
@@ -1147,6 +1309,16 @@ async fn run_inner(
             }, if runtime.managed_events_open => {
                 match event {
                     Some(event) => {
+                        // The durable envelope is authoritative even when a failed runtime
+                        // could not publish its nested run terminal. Keep caller IDs after
+                        // completion because the worker result may win this race.
+                        let local_terminal = matches!(
+                            &event.data,
+                            ManagedEventData::TurnCompleted { id, .. }
+                                | ManagedEventData::TurnCancelled { id }
+                                | ManagedEventData::TurnFailed { id, .. }
+                                if runtime.submitted_turns.contains(id)
+                        );
                         match &event.data {
                             ManagedEventData::TurnCompleted { id, .. }
                             | ManagedEventData::TurnCancelled { id }
@@ -1168,20 +1340,19 @@ async fn run_inner(
                             .managed_active_turns
                             .observe(&event, &runtime.local_managed_turns);
                         if observation.active_changed {
-                            request_render(
-                                app.update(AppEvent::ManagedActiveTurns {
-                                    pane: PaneId::Main,
-                                    count: runtime.managed_active_turns.ids.len(),
-                                }),
+                            let update = app.update(AppEvent::ManagedActiveTurns {
+                                pane: PaneId::Main,
+                                count: runtime.managed_active_turns.ids.len(),
+                            });
+                            stopping |= apply_update(
+                                update,
+                                &mut app,
+                                &mut runtime,
+                                &mut terminal,
                                 &mut scheduler,
-                            );
+                            ).await?;
                         }
-                        if let Some((record, prompt)) = live_managed_projection(
-                            event,
-                            &runtime.agent_id,
-                            &runtime.workspace,
-                            &mut runtime.sequence,
-                        )? {
+                        if let Some((record, prompt)) = runtime.project_managed_event(event)? {
                             runtime.live_records.push(Arc::clone(&record));
                             if let Some(prompt) = prompt {
                                 runtime.recent_prompts.insert(0, prompt);
@@ -1206,6 +1377,16 @@ async fn run_inner(
                                 &mut scheduler,
                             )
                             .await?;
+                        }
+                        if local_terminal {
+                            let update = app.update(AppEvent::ManagedTurnFinished(PaneId::Main));
+                            stopping |= apply_update(
+                                update,
+                                &mut app,
+                                &mut runtime,
+                                &mut terminal,
+                                &mut scheduler,
+                            ).await?;
                         }
                     }
                     None => {
@@ -1306,6 +1487,7 @@ async fn run_inner(
                                 runtime.history_sequences.clear();
                                 runtime.history_records.clear();
                                 runtime.live_records.clear();
+                                runtime.submitted_turns.clear();
                                 runtime.sequence = 1;
                             }
                             let (history_records, mut prompts) =
@@ -1329,6 +1511,11 @@ async fn run_inner(
                             if matches!(purpose, ConnectionPurpose::Startup) {
                                 records.extend(runtime.live_records.iter().cloned());
                                 let mut live_prompts = std::mem::take(&mut runtime.recent_prompts);
+                                for prompt in &mut live_prompts {
+                                    if prompt.session_id.is_empty() {
+                                        prompt.session_id.clone_from(&agent_id);
+                                    }
+                                }
                                 live_prompts.append(&mut prompts);
                                 prompts = live_prompts;
                             }
@@ -1339,6 +1526,9 @@ async fn run_inner(
                             }
                             runtime.connection_generation =
                                 runtime.connection_generation.wrapping_add(1);
+                            runtime.steer_receipts.clear();
+                            runtime.pending_withdrawals.clear();
+                            runtime.withdrawals = JoinSet::new();
                             runtime.managed_events = Some(managed_events);
                             runtime.managed_events_open = true;
                             runtime.agent_id = agent_id;
@@ -1354,31 +1544,18 @@ async fn run_inner(
                             runtime.history_records = history_records;
                             let pane = match purpose {
                                 ConnectionPurpose::Startup => PaneId::Main,
-                                ConnectionPurpose::Resume(pane) | ConnectionPurpose::New(pane) => pane,
+                                ConnectionPurpose::Resume(pane) => pane,
                             };
                             let update = match purpose {
-                                ConnectionPurpose::New(pane) => app.update(AppEvent::NewSessionReady {
-                                    pane,
-                                    effort: effort_from_thinking(display_settings.thinking),
-                                    reasoning_mode: reasoning_mode_from_managed(display_settings.reasoning_mode),
-                                    fast_mode: display_settings.fast_mode,
-                                    model: display_settings.model,
-                                    draft_reset: DraftReset::Clear,
-                                    skills: Arc::from([]),
-                                }),
-                                ConnectionPurpose::Startup
-                                    if created && runtime.pending_submission.is_none() =>
-                                {
-                                    app.update(AppEvent::NewSessionReady {
+                                ConnectionPurpose::Startup if created => {
+                                    // This is the session already shown locally. Hydrate its
+                                    // settings without resetting prompts, cancellations, shell
+                                    // output, or a draft entered while creation was in flight.
+                                    app.update(AppEvent::SettingsHydrated {
                                         pane,
                                         effort: effort_from_thinking(display_settings.thinking),
-                                        reasoning_mode: reasoning_mode_from_managed(
-                                            display_settings.reasoning_mode,
-                                        ),
                                         fast_mode: display_settings.fast_mode,
                                         model: display_settings.model,
-                                        draft_reset: DraftReset::Preserve,
-                                        skills: Arc::from([]),
                                     })
                                 }
                                 ConnectionPurpose::Startup | ConnectionPurpose::Resume(_) => {
@@ -1452,10 +1629,6 @@ async fn run_inner(
                                     error: message.clone(),
                                 }),
                                 ConnectionPurpose::Resume(pane) => app.update(AppEvent::SessionLoadFailed {
-                                    pane,
-                                    error: message.clone(),
-                                }),
-                                ConnectionPurpose::New(pane) => app.update(AppEvent::NewSessionFailed {
                                     pane,
                                     error: message.clone(),
                                 }),
@@ -1604,22 +1777,6 @@ async fn run_inner(
                                     .expect("admitted managed turn must retain its request ID")
                                     .clone();
                                 runtime.cancel_local_turns(pane, vec![(id, managed_turn_id)]);
-                            } else {
-                                let local_turn_id = id;
-                                while let Some((pane, id, prompt)) =
-                                    runtime.waiting_steers.pop_front()
-                                {
-                                    let control = control.clone();
-                                    let generation = runtime.connection_generation;
-                                    let target = SteerTarget::Local(local_turn_id);
-                                    runtime.steers.spawn(async move {
-                                        let result = control
-                                            .steer(prompt.agent_prompt())
-                                            .await
-                                            .map_err(|error| error.to_string());
-                                        (pane, id, generation, target, result)
-                                    });
-                                }
                             }
                         }
                         Err(error) => {
@@ -1675,13 +1832,52 @@ async fn run_inner(
             result = runtime.steers.join_next(), if !runtime.steers.is_empty() => {
                 if let Some(result) = result {
                     let (pane, id, generation, target, outcome) = result.map_err(|error| ManagedError::Configuration(format!("steer task failed: {error}")))?;
-                    let update = match runtime.resolve_steer(generation, &target, outcome) {
-                        SteerResolution::Admitted => app.update(AppEvent::SteerAdmitted { pane, id }),
-                        SteerResolution::Failed(Some(error)) => {
-                            request_render(app.update(AppEvent::NotifyError { pane, error: format!("Could not steer turn: {error}") }), &mut scheduler);
+                    runtime.pending_steer_target = None;
+                    let withdraw = runtime.pending_withdrawals.remove(&(pane, id));
+                    let mut update = match runtime.resolve_steer(generation, &target, outcome) {
+                        SteerResolution::Admitted => {
+                            runtime.steer_receipts.retain(|(owner, candidate), _| *owner != pane || *candidate == id);
+                            app.update(AppEvent::SteerAdmitted { pane, id })
+                        }
+                        SteerResolution::Unconfirmed { error, active } => {
+                            if active {
+                                runtime.unconfirmed_steer = Some((id, generation, target));
+                                request_render(app.update(AppEvent::NotifyError { pane, error: format!("Could not confirm steering: {error}. Delivery unknown; it will not be retried automatically.") }), &mut scheduler);
+                            }
+                            // Shared telemetry cannot correlate this request. Preserve it
+                            // for explicit review even after the owning turn finishes.
+                            app.update(AppEvent::SteerUnconfirmed { pane, id })
+                        }
+                        SteerResolution::Failed if withdraw => {
+                            runtime.steer_receipts.remove(&(pane, id));
+                            app.update(AppEvent::SteerWithdrawn { pane, id })
+                        }
+                        SteerResolution::Failed => {
+                            runtime.steer_receipts.remove(&(pane, id));
                             app.update(AppEvent::SteerFailed { pane, id })
                         }
-                        SteerResolution::Failed(None) => app.update(AppEvent::SteerFailed { pane, id }),
+                        SteerResolution::Stale => continue,
+                    };
+                    if withdraw && runtime.steer_receipts.contains_key(&(pane, id)) {
+                        update.effects.push(AppEffect::Pane { pane, effect: RootEffect::WithdrawSteer { id } });
+                    }
+                    stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
+                }
+            }
+            result = runtime.withdrawals.join_next(), if !runtime.withdrawals.is_empty() => {
+                if let Some(result) = result {
+                    let (pane, id, generation, outcome) = result.map_err(|error| ManagedError::Configuration(format!("withdrawal task failed: {error}")))?;
+                    if generation != runtime.connection_generation { continue; }
+                    let update = match outcome {
+                        Ok(true) => {
+                            runtime.steer_receipts.remove(&(pane, id));
+                            if runtime.unconfirmed_steer.as_ref().is_some_and(|(pending, _, _)| *pending == id) {
+                                runtime.unconfirmed_steer = None;
+                            }
+                            app.update(AppEvent::SteerWithdrawn { pane, id })
+                        }
+                        Ok(false) => app.update(AppEvent::SteerWithdrawalFailed { pane, id, error: "Message already received by the model or no longer withdrawable.".to_owned() }),
+                        Err(error) => app.update(AppEvent::SteerWithdrawalFailed { pane, id, error: format!("Withdrawal unconfirmed: {error}. The message has not been restored.") }),
                     };
                     stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
                 }
@@ -1767,6 +1963,57 @@ async fn run_inner(
                     }
                 }
             }
+            result = runtime.history_replays.join_next(), if !runtime.history_replays.is_empty() => {
+                if let Some(result) = result {
+                    match result {
+                        Err(error) => {
+                            runtime.history_prefetch.reset();
+                            runtime.start_history_prefetch(PaneId::Main);
+                            request_render(
+                                app.update(AppEvent::NotifyError {
+                                    pane: PaneId::Main,
+                                    error: format!(
+                                        "Older durable history replay task stopped unexpectedly: {error}"
+                                    ),
+                                }),
+                                &mut scheduler,
+                            );
+                        }
+                        Ok((pane, agent_id, generation, requested_before, result))
+                            if history_replay_matches(
+                                &agent_id,
+                                generation,
+                                &requested_before,
+                                &runtime.agent_id,
+                                runtime.history_generation,
+                                runtime.history.before.as_deref(),
+                            ) =>
+                        {
+                            match runtime.finish_history_replay(pane, result) {
+                                Err(error) => {
+                                    request_render(
+                                        app.update(AppEvent::NotifyError {
+                                            pane,
+                                            error: format!(
+                                                "Could not replay older durable history: {error}"
+                                            ),
+                                        }),
+                                        &mut scheduler,
+                                    );
+                                }
+                                Ok(projection) => {
+                                    request_render(
+                                        app.update(AppEvent::HistoryReplayed { pane, projection }),
+                                        &mut scheduler,
+                                    );
+                                }
+                            }
+                        }
+                        Ok(_) => {}
+                    }
+                    runtime.start_requested_history_replay(PaneId::Main);
+                }
+            }
             result = runtime.history_loads.join_next(), if !runtime.history_loads.is_empty() => {
                 if let Some(result) = result {
                     match result {
@@ -1827,15 +2074,12 @@ async fn run_inner(
     }
 }
 
-async fn account_default_settings(client: &ManagedClient) -> AgentSettings {
-    match client.model_capabilities().await {
-        Ok(capabilities) if capabilities.astra_entitled => AgentSettings {
-            model: Model::Astra,
-            thinking: Thinking::High,
-            reasoning_mode: ManagedReasoningMode::Standard,
-            fast_mode: false,
-        },
-        Ok(_) | Err(_) => AgentSettings::default(),
+fn new_agent_settings() -> AgentSettings {
+    AgentSettings {
+        model: Model::Astra,
+        thinking: Thinking::Low,
+        reasoning_mode: ManagedReasoningMode::Standard,
+        fast_mode: false,
     }
 }
 
@@ -1870,6 +2114,12 @@ async fn apply_update(
                     RootEffect::Submit(prompt) | RootEffect::ContinueSubagent(prompt) => {
                         let id = TurnId::new(runtime.next_turn);
                         runtime.next_turn = runtime.next_turn.saturating_add(1);
+                        let record = runtime.record_submission(id, &prompt)?;
+                        absorb(
+                            app.update(AppEvent::Transcript { pane, record }),
+                            &mut effects,
+                            scheduler,
+                        );
                         if runtime.active_shells == 0 {
                             runtime.start_submission(pane, id, prompt);
                         } else {
@@ -1891,11 +2141,19 @@ async fn apply_update(
                             scheduler,
                         );
                         let workspace = runtime.workspace.clone();
+                        let cancellation = runtime.shell_cancellation.clone();
                         runtime.shells.spawn(async move {
-                            (pane, shell::execute(id, command, workspace).await)
+                            (
+                                pane,
+                                shell::execute(id, command, workspace, cancellation).await,
+                            )
                         });
                     }
                     RootEffect::Steer { id, prompt } => {
+                        if !runtime.steers.is_empty() || runtime.unconfirmed_steer.is_some() {
+                            runtime.waiting_steers.push_back((pane, id, prompt));
+                            continue;
+                        }
                         if let Some((turn_id, control)) = runtime
                             .controls
                             .iter()
@@ -1904,11 +2162,17 @@ async fn apply_update(
                         {
                             let generation = runtime.connection_generation;
                             let target = SteerTarget::Local(turn_id);
+                            let message_id = uuid::Uuid::now_v7().to_string();
+                            runtime.steer_receipts.insert(
+                                (pane, id),
+                                (generation, target.clone(), message_id.clone()),
+                            );
+                            runtime.pending_steer_target = Some((id, target.clone()));
                             runtime.steers.spawn(async move {
                                 let result = control
-                                    .steer(prompt.agent_prompt())
+                                    .steer_with_id(message_id, prompt.agent_prompt())
                                     .await
-                                    .map_err(|error| error.to_string());
+                                    .map_err(SteerFailure::backend);
                                 (pane, id, generation, target, result)
                             });
                         } else if !runtime.managed_active_turns.ids.is_empty() {
@@ -1926,16 +2190,21 @@ async fn apply_update(
                                         agent_id: agent_id.clone(),
                                         turn_id: turn_id.clone(),
                                     };
+                                    let message_id = uuid::Uuid::now_v7().to_string();
+                                    runtime.steer_receipts.insert(
+                                        (pane, id),
+                                        (generation, target.clone(), message_id.clone()),
+                                    );
+                                    runtime.pending_steer_target = Some((id, target.clone()));
                                     runtime.steers.spawn(async move {
                                         let result = client
-                                            .steer(&agent_id, &turn_id, &input)
+                                            .steer_with_id(&agent_id, &turn_id, &message_id, &input)
                                             .await
-                                            .map_err(|error| error.to_string())
+                                            .map_err(SteerFailure::managed)
                                             .and_then(|action| {
                                                 (action.turn_id == turn_id).then_some(()).ok_or_else(
                                                     || {
-                                                        "managed steer acknowledged a different turn"
-                                                            .to_owned()
+                                                        SteerFailure::Other("managed steer acknowledged a different turn".to_owned())
                                                     },
                                                 )
                                             });
@@ -1965,17 +2234,120 @@ async fn apply_update(
                         {
                             runtime.waiting_steers.push_back((pane, id, prompt));
                         } else {
-                            let turn_id = TurnId::new(runtime.next_turn);
-                            runtime.next_turn = runtime.next_turn.saturating_add(1);
+                            // The owning turn ended before this input could be delivered.
+                            // Let the root recover the whole steer lane in its original order.
                             absorb(
-                                app.update(AppEvent::SteerPromoted { pane, id }),
+                                app.update(AppEvent::SteerFailed { pane, id }),
                                 &mut effects,
                                 scheduler,
                             );
-                            runtime.start_submission(pane, turn_id, prompt);
                         }
                     }
-                    RootEffect::PersistSteer(text) => {
+                    RootEffect::WithdrawSteer { id } => {
+                        if withdraw_waiting_steer(&mut runtime.waiting_steers, pane, id) {
+                            absorb(
+                                app.update(AppEvent::SteerWithdrawn { pane, id }),
+                                &mut effects,
+                                scheduler,
+                            );
+                            continue;
+                        }
+                        if runtime
+                            .pending_steer_target
+                            .as_ref()
+                            .is_some_and(|(pending, _)| *pending == id)
+                        {
+                            // Wait for admission to settle: withdrawing before the POST could
+                            // otherwise race a successful late admission of the same message.
+                            runtime.pending_withdrawals.insert((pane, id));
+                            continue;
+                        }
+                        let Some((generation, target, message_id)) =
+                            runtime.steer_receipts.get(&(pane, id)).cloned()
+                        else {
+                            absorb(
+                                app.update(AppEvent::SteerWithdrawalFailed {
+                                    pane,
+                                    id,
+                                    error: "Cannot confirm withdrawal of this message.".to_owned(),
+                                }),
+                                &mut effects,
+                                scheduler,
+                            );
+                            continue;
+                        };
+                        if generation != runtime.connection_generation {
+                            absorb(
+                                app.update(AppEvent::SteerWithdrawalFailed {
+                                    pane,
+                                    id,
+                                    error: "Connection changed; withdrawal was not confirmed."
+                                        .to_owned(),
+                                }),
+                                &mut effects,
+                                scheduler,
+                            );
+                            continue;
+                        }
+                        match target {
+                            SteerTarget::Local(turn_id) => {
+                                if let Some(control) = runtime.controls.get(&turn_id).cloned() {
+                                    runtime.withdrawals.spawn(async move {
+                                        (
+                                            pane,
+                                            id,
+                                            generation,
+                                            control
+                                                .withdraw_steer(message_id)
+                                                .await
+                                                .map_err(|error| error.to_string()),
+                                        )
+                                    });
+                                } else {
+                                    absorb(app.update(AppEvent::SteerWithdrawalFailed { pane, id, error: "The turn has ended; this message cannot be withdrawn.".to_owned() }), &mut effects, scheduler);
+                                }
+                            }
+                            SteerTarget::Managed { agent_id, turn_id } => {
+                                let client = runtime.client.clone();
+                                runtime.withdrawals.spawn(async move {
+                                    let result = client
+                                        .withdraw_steer(&agent_id, &turn_id, &message_id)
+                                        .await
+                                        .map_err(|error| error.to_string())
+                                        .and_then(|response| {
+                                            if response.turn_id == turn_id
+                                                && response.message_id == message_id
+                                            {
+                                                Ok(response.withdrawn)
+                                            } else {
+                                                Err("Withdrawal acknowledged a different message"
+                                                    .to_owned())
+                                            }
+                                        });
+                                    (pane, id, generation, result)
+                                });
+                            }
+                        }
+                    }
+                    RootEffect::PersistSteerWithdrawal { text } => {
+                        let record =
+                            runtime.local_record(LocalEvent::UserSteerWithdrawn { text })?;
+                        absorb(
+                            app.update(AppEvent::Transcript { pane, record }),
+                            &mut effects,
+                            scheduler,
+                        );
+                    }
+                    RootEffect::PersistSteer { id, text } => {
+                        // Only this request's own acknowledgement may release its fence.
+                        // Uncorrelated shared telemetry never emits this effect.
+                        if runtime
+                            .unconfirmed_steer
+                            .as_ref()
+                            .is_some_and(|(pending, _, _)| *pending == id)
+                        {
+                            runtime.unconfirmed_steer = None;
+                        }
                         let record = runtime.local_record(LocalEvent::UserSteered { text })?;
                         absorb(
                             app.update(AppEvent::Transcript { pane, record }),
@@ -1984,6 +2356,8 @@ async fn apply_update(
                         );
                     }
                     RootEffect::CancelTurns => {
+                        runtime.shell_cancellation.cancel();
+                        runtime.shell_cancellation = CancellationToken::new();
                         if runtime.cancellations.is_empty()
                             && !runtime.cancellation_fences.has_in_flight()
                         {
@@ -2144,13 +2518,22 @@ async fn apply_update(
                             reasoning_mode: managed_reasoning_mode(root.preferred_reasoning_mode()),
                             fast_mode: root.composer().fast_mode(),
                         };
-                        let client = runtime.client.clone();
-                        runtime.connection.spawn(async move {
-                            ConnectionResult::Agent {
-                                purpose: ConnectionPurpose::New(pane),
-                                result: connect_agent(client, None, settings).await,
-                            }
-                        });
+                        runtime.start_new_session(settings);
+                        absorb(
+                            app.update(AppEvent::NewSessionReady {
+                                pane,
+                                effort: effort_from_thinking(settings.thinking),
+                                reasoning_mode: reasoning_mode_from_managed(
+                                    settings.reasoning_mode,
+                                ),
+                                fast_mode: settings.fast_mode,
+                                model: settings.model,
+                                draft_reset: DraftReset::Clear,
+                                skills: Arc::from([]),
+                            }),
+                            &mut effects,
+                            scheduler,
+                        );
                     }
                     RootEffect::Reflect(prompt) => {
                         let id = TurnId::new(runtime.next_turn);
@@ -2158,6 +2541,12 @@ async fn apply_update(
                         let prompt = prompt.prepend_text(
                         "Reflect on this managed conversation and return a concise, actionable report.".to_owned(),
                     );
+                        let record = runtime.record_submission(id, &prompt)?;
+                        absorb(
+                            app.update(AppEvent::Transcript { pane, record }),
+                            &mut effects,
+                            scheduler,
+                        );
                         runtime.start_submission(pane, id, prompt);
                     }
                     RootEffect::OpenLink(destination) => open_link(&destination),
@@ -2475,17 +2864,19 @@ fn terminal_error(error: io::Error) -> ManagedError {
 #[cfg(test)]
 mod tests {
     use super::{
-        CancelDisposition, CancelTarget, CancellationFences, CancellationResolution, DriverRuntime,
-        HistoryPrefetch, HistoryWindow, ManagedActiveTurns, SteerResolution, SteerTarget,
-        cursor_at_or_before, decimal_successor, history_projection,
+        CancelDisposition, CancelTarget, CancellationFences, CancellationResolution,
+        CancellationToken, DriverRuntime, HistoryPrefetch, HistoryWindow, ManagedActiveTurns,
+        SteerResolution, SteerTarget, cursor_at_or_before, decimal_successor, history_projection,
         history_projection_with_sequences, history_replay_matches, live_managed_projection,
-        prepare_history_replay, session_summaries, take_waiting_steer_failures,
+        new_agent_settings, prepare_history_replay, session_summaries, take_waiting_steer_failures,
     };
     use crate::config::ReasoningEffort;
     use crate::tui::{components::QueueId, pane::PaneId, prompt::Submission, transcript::TurnId};
+    use nanocodex::Model;
     use nanocodex_managed::{
         AgentList, AgentSettings, AgentSummary, EventHistoryPage, ManagedApiKey, ManagedClient,
-        ManagedEvent, ManagedEventData, PromptInput,
+        ManagedEvent, ManagedEventData, PromptInput, ReasoningMode as ManagedReasoningMode,
+        Thinking,
     };
     use serde_json::{json, value::to_raw_value};
     use std::{
@@ -2493,6 +2884,19 @@ mod tests {
         path::Path,
     };
     use tokio::task::JoinSet;
+
+    #[test]
+    fn new_agents_select_astra_without_an_entitlement_probe() {
+        assert_eq!(
+            new_agent_settings(),
+            AgentSettings {
+                model: Model::Astra,
+                thinking: Thinking::Low,
+                reasoning_mode: ManagedReasoningMode::Standard,
+                fast_mode: false,
+            }
+        );
+    }
 
     fn history_runtime(history: HistoryWindow) -> DriverRuntime {
         let mut history_sequences = HashMap::new();
@@ -2523,6 +2927,7 @@ mod tests {
             next_shell: 1,
             controls: HashMap::new(),
             local_managed_turns: HashMap::new(),
+            submitted_turns: HashSet::new(),
             managed_active_turns: ManagedActiveTurns::default(),
             admitting: HashSet::new(),
             cancel_after_admission: HashSet::new(),
@@ -2532,7 +2937,12 @@ mod tests {
             admissions: JoinSet::new(),
             completions: JoinSet::new(),
             steers: JoinSet::new(),
+            steer_receipts: HashMap::new(),
+            pending_withdrawals: HashSet::new(),
+            withdrawals: JoinSet::new(),
+            pending_steer_target: None,
             waiting_steers: VecDeque::new(),
+            unconfirmed_steer: None,
             cancellations: JoinSet::new(),
             settings_updates: JoinSet::new(),
             settings_queue: VecDeque::new(),
@@ -2546,6 +2956,7 @@ mod tests {
             history_records,
             live_records: Vec::new(),
             active_shells: 0,
+            shell_cancellation: CancellationToken::new(),
             shell_context: Vec::new(),
             pending_submission: None,
             recent_prompts,
@@ -2644,7 +3055,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_target_fences_late_successful_steer() {
+    fn terminal_target_preserves_acknowledged_steer() {
         let mut runtime = history_runtime(HistoryWindow::default());
         runtime.managed_active_turns.ids.insert("turn-7".to_owned());
         let target = SteerTarget::Managed {
@@ -2656,10 +3067,41 @@ mod tests {
             runtime.resolve_steer(1, &target, Ok(())),
             SteerResolution::Admitted
         );
+        assert_eq!(
+            runtime.resolve_steer(1, &target, Err(super::SteerFailure::Inactive)),
+            SteerResolution::Failed
+        );
+        assert_eq!(
+            runtime.resolve_steer(
+                1,
+                &target,
+                Err(super::SteerFailure::Other("lost ack".into()))
+            ),
+            SteerResolution::Unconfirmed {
+                error: "lost ack".into(),
+                active: true,
+            }
+        );
         runtime.managed_active_turns.ids.remove("turn-7");
         assert_eq!(
             runtime.resolve_steer(1, &target, Ok(())),
-            SteerResolution::Failed(None)
+            SteerResolution::Admitted
+        );
+        assert_eq!(
+            runtime.resolve_steer(
+                1,
+                &target,
+                Err(super::SteerFailure::Other("lost ack".into()))
+            ),
+            SteerResolution::Unconfirmed {
+                error: "lost ack".into(),
+                active: false,
+            }
+        );
+        runtime.connection_generation += 1;
+        assert_eq!(
+            runtime.resolve_steer(1, &target, Ok(())),
+            SteerResolution::Stale
         );
     }
 
@@ -2714,6 +3156,29 @@ mod tests {
     }
 
     #[test]
+    fn undo_waiting_steer_removes_only_the_exact_message_once() {
+        let first = QueueId::new(1);
+        let second = QueueId::new(2);
+        let mut waiting = VecDeque::from([
+            (PaneId::Main, first, Submission::text("first".to_owned())),
+            (PaneId::Main, second, Submission::text("second".to_owned())),
+        ]);
+        assert!(super::withdraw_waiting_steer(
+            &mut waiting,
+            PaneId::Main,
+            second
+        ));
+        assert!(!super::withdraw_waiting_steer(
+            &mut waiting,
+            PaneId::Main,
+            second
+        ));
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].1, first);
+        assert_eq!(waiting[0].2.display_text(), "first");
+    }
+
+    #[test]
     fn terminal_failures_drain_waiting_steers_in_queue_safe_order() {
         let mut waiting = VecDeque::from([
             (
@@ -2732,7 +3197,7 @@ mod tests {
 
         assert_eq!(
             failures.iter().map(|(_, id)| *id).collect::<Vec<_>>(),
-            [QueueId::new(8), QueueId::new(7)]
+            [QueueId::new(7), QueueId::new(8)]
         );
         assert!(waiting.is_empty());
     }
@@ -2741,6 +3206,7 @@ mod tests {
     fn managed_active_turns_reconcile_cursor_order_idempotently() {
         let mut active = ManagedActiveTurns {
             ids: HashSet::from(["attached-1".to_owned()]),
+            order: vec!["attached-1".to_owned()],
             live_steer: true,
             live_cancel: true,
         };
@@ -2770,6 +3236,7 @@ mod tests {
     fn managed_active_turns_do_not_claim_known_local_admissions() {
         let mut active = ManagedActiveTurns {
             ids: HashSet::new(),
+            order: Vec::new(),
             live_steer: true,
             live_cancel: true,
         };
@@ -2785,6 +3252,7 @@ mod tests {
     fn local_request_fence_survives_terminal_event_before_admission_returns() {
         let mut active = ManagedActiveTurns {
             ids: HashSet::new(),
+            order: Vec::new(),
             live_steer: true,
             live_cancel: true,
         };
@@ -2811,6 +3279,7 @@ mod tests {
     fn external_ownership_is_captured_before_turn_failed_removes_active_id() {
         let mut active = ManagedActiveTurns {
             ids: HashSet::from(["attached-1".to_owned()]),
+            order: vec!["attached-1".to_owned()],
             live_steer: true,
             live_cancel: true,
         };
@@ -2831,20 +3300,20 @@ mod tests {
     }
 
     #[test]
-    fn attached_steering_requires_one_capable_target() {
+    fn attached_steering_uses_durable_admission_order() {
         let mut active = ManagedActiveTurns {
             ids: HashSet::from(["attached-1".to_owned()]),
+            order: vec!["attached-1".to_owned()],
             live_steer: true,
             live_cancel: true,
         };
         assert_eq!(active.steer_target().unwrap(), "attached-1");
 
         active.ids.insert("attached-2".to_owned());
-        assert_eq!(
-            active.steer_target().unwrap_err(),
-            "more than one attached managed turn is active; steering is ambiguous"
-        );
-        active.ids.remove("attached-2");
+        active.order.push("attached-2".to_owned());
+        assert_eq!(active.steer_target().unwrap(), "attached-1");
+        active.remove("attached-1");
+        assert_eq!(active.steer_target().unwrap(), "attached-2");
         active.live_steer = false;
         assert_eq!(
             active.steer_target().unwrap_err(),
@@ -2924,6 +3393,72 @@ mod tests {
         assert_eq!(prompt.session_id, "agent-1");
         assert_eq!(prompt.workspace, Path::new("/workspace"));
         assert_eq!(next_sequence, 8);
+    }
+
+    #[test]
+    fn local_submission_survives_delayed_acceptance_and_replay_without_duplicates() {
+        let mut runtime = history_runtime(HistoryWindow::default());
+        let record = runtime
+            .record_submission(TurnId::new(1), &Submission::text("start work".to_owned()))
+            .unwrap();
+        assert_eq!(record.kind(), "user.submitted");
+        assert_eq!(runtime.live_records.len(), 1);
+        assert_eq!(runtime.recent_prompts[0].text, "start work");
+        assert!(runtime.agent.is_none());
+
+        runtime.submitted_turns.insert("turn-42".to_owned());
+        for _ in 0..2 {
+            assert!(
+                runtime
+                    .project_managed_event(managed_turn("42", "start work"))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        // Identical text from another client is still a separate message.
+        assert!(
+            runtime
+                .project_managed_event(managed_turn("43", "start work"))
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(runtime.live_records.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn new_session_holds_input_for_its_connection_and_discards_previous_projection() {
+        let mut runtime = history_runtime(HistoryWindow {
+            events: vec![managed_turn("1", "old thread")],
+            ..HistoryWindow::default()
+        });
+        runtime.submitted_turns.insert("old-turn".to_owned());
+        runtime.shell_context.push("old shell output".to_owned());
+        runtime.managed_events_open = true;
+        let old_generation = runtime.history_generation;
+
+        runtime.start_new_session(new_agent_settings());
+        assert!(runtime.agent_id.is_empty());
+        assert!(!runtime.managed_events_open);
+        assert!(runtime.history_records.is_empty());
+        assert!(runtime.recent_prompts.is_empty());
+        assert!(runtime.submitted_turns.is_empty());
+        assert!(runtime.shell_context.is_empty());
+        assert_ne!(runtime.history_generation, old_generation);
+
+        let prompt = Submission::text("new thread".to_owned());
+        runtime.record_submission(TurnId::new(2), &prompt).unwrap();
+        runtime.start_submission(PaneId::Main, TurnId::new(2), prompt);
+        assert!(runtime.admissions.is_empty());
+        assert_eq!(runtime.live_records.len(), 1);
+        assert_eq!(
+            runtime
+                .pending_submission
+                .as_ref()
+                .unwrap()
+                .2
+                .display_text(),
+            "new thread"
+        );
     }
 
     #[test]
@@ -3164,6 +3699,72 @@ mod tests {
         assert_eq!(history.events.len(), 1);
         assert_eq!(history.events[0].cursor, "5");
         assert_eq!(sequences, HashMap::from([("5".to_owned(), 1)]));
+    }
+
+    #[tokio::test]
+    async fn history_replay_keeps_input_received_while_projection_runs() {
+        let mut runtime = history_runtime(HistoryWindow {
+            events: vec![managed_turn("9", "retained prompt")],
+            before: Some("9".to_owned()),
+            has_more: true,
+        });
+        let before = runtime.history_prefetch.claim(&runtime.history).unwrap();
+        runtime
+            .history_prefetch
+            .store(
+                &before,
+                EventHistoryPage {
+                    data: vec![managed_turn("7", "older prompt")],
+                    has_more: false,
+                    latest_cursor: "9".to_owned(),
+                },
+            )
+            .unwrap();
+        runtime.history_prefetch.request_replay();
+        runtime.start_requested_history_replay(PaneId::Main);
+        runtime
+            .record_submission(
+                TurnId::new(50),
+                &Submission::text("input during replay".to_owned()),
+            )
+            .unwrap();
+        let (_, _, _, _, result) = runtime.history_replays.join_next().await.unwrap().unwrap();
+        let projection = runtime.finish_history_replay(PaneId::Main, result).unwrap();
+        let sequences = runtime
+            .history_records
+            .iter()
+            .chain(&runtime.live_records)
+            .map(|record| record.sequence())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sequences.iter().copied().collect::<HashSet<_>>().len(),
+            sequences.len(),
+            "history and incoming events need distinct IDs"
+        );
+        let mut root = super::RootNode::new(Path::new("/workspace"), ReasoningEffort::Medium);
+        root.install_session_projection(
+            Path::new("/workspace"),
+            ReasoningEffort::Medium,
+            crate::config::ReasoningMode::Standard,
+            crate::config::ReasoningMode::Standard,
+            false,
+            *projection,
+        );
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| root.render_focused(frame, frame.area(), &super::Theme::default(), true))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("older prompt"));
+        assert!(rendered.contains("retained prompt"));
+        assert!(rendered.contains("input during replay"));
     }
 
     #[tokio::test]

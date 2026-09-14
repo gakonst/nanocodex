@@ -24,6 +24,14 @@ export type DurableObjectContext = Readonly<{
 /** The owning Cloudflare Durable Object instance. Runtime fields remain adapter-private. */
 export type DurableObjectOwner = object;
 
+/** Rust-owned first-prompt retrieval policy; the host owns authenticated execution. */
+export type BootstrapPlan = Readonly<{
+  query: string;
+  voice_bootstrap: boolean;
+  calls: readonly Readonly<{ name: "find_session" | "memory"; arguments: unknown }>[];
+}>;
+export function bootstrapPlan(input: string): Promise<BootstrapPlan>;
+
 export type EventFrame = Readonly<{
   cursor: string;
   event: AgentEvent;
@@ -56,6 +64,9 @@ export type Agent<extended extends object = {}> =
 export function destroy(owner: DurableObjectOwner): void;
 
 /** Fences and exports this inactive Cloudflare Agent's provider-neutral state. */
+/** Execution head for a host that transfers its immutable records separately. */
+export function exportDurabilityHead(owner: DurableObjectOwner): Promise<DurabilityPortableStateArchive>;
+
 export function exportDurabilityState(
   owner: DurableObjectOwner,
 ): Promise<DurabilityPortableStateArchive>;
@@ -97,6 +108,8 @@ export declare namespace create {
      */
     eventPersistence?: "durable" | "caller" | undefined;
     instructions?: string | undefined;
+    /** Appends host instructions while retaining the selected model's prompt. */
+    additionalInstructions?: string | undefined;
     /**
      * Bounds terminal receipts retained in the hot Rust state checkpoint.
      * The caller must preserve older exact-ID results before selecting this.

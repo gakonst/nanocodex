@@ -2,6 +2,7 @@ import { ManagedBrowserVoice } from "../pkg-web/nanocodex.js";
 import { initializeBrowserEngine } from "../browser/engine.mjs";
 import {
   cancelManagedTurn,
+  prefetchManagedRealtime,
   routeManagedRealtime,
   startManagedRealtime,
   stopManagedRealtime,
@@ -20,9 +21,11 @@ export async function createManagedBrowserVoice(agent, voice, options = {}) {
   let activeTurnId;
   let routePending = false;
   let pendingEvents = [];
+  let prefetchTimer;
+  const prefetchAbort = new AbortController();
 
   function observe(value) {
-    if (value?.turnId !== activeTurnId) return undefined;
+    if (activeTurnId === undefined || value?.turnId !== activeTurnId) return undefined;
     const effects = raw.agentEvent(JSON.stringify(value.event));
     if (isTerminalAgentEvent(value.event)) {
       if (startedTurnId === activeTurnId) startedTurnId = undefined;
@@ -41,6 +44,12 @@ export async function createManagedBrowserVoice(agent, voice, options = {}) {
   }
 
   return {
+    configure: (settings) => raw.configure(settings),
+    noteTypedInput: () => raw.noteTypedInput(),
+    appendSpeech: (text) => raw.appendSpeech(text),
+    appendText: (role, text) => raw.appendText(role, text),
+    appendContext: (text) => raw.appendContext(text),
+    parallelStartup: true,
     async start() {
       const started = await startManagedRealtime(agent, voiceSessionId, startOperationId);
       raw.start(JSON.stringify(started.context));
@@ -63,7 +72,15 @@ export async function createManagedBrowserVoice(agent, voice, options = {}) {
     requiresAgentAdmission: (payload) => raw.requiresAgentAdmission(payload),
     async realtimeMessage(payload) {
       const update = JSON.parse(raw.realtimeMessage(payload));
+      if (update.prefetch) {
+        clearTimeout(prefetchTimer);
+        prefetchTimer = setTimeout(() => {
+          void prefetchManagedRealtime(agent, voiceSessionId, update.prefetch.query,
+            AbortSignal.any([prefetchAbort.signal, AbortSignal.timeout(10_000)])).catch(() => {});
+        }, update.prefetch.debounce_ms);
+      }
       if (typeof update.delegation === "string" && update.delegation.trim()) {
+        clearTimeout(prefetchTimer);
         const delegationId = managedDelegationId(payload);
         let operationId = delegationId && delegationOperations.get(delegationId);
         if (!operationId) {
@@ -88,7 +105,11 @@ export async function createManagedBrowserVoice(agent, voice, options = {}) {
     },
     agentEvent(envelope) {
       const value = typeof envelope === "string" ? JSON.parse(envelope) : envelope;
-      if (routePending && activeTurnId === undefined) {
+      if (value?.event?.type === "managed.voice.context") {
+        return raw.managedEvent(JSON.stringify(value));
+      }
+      if (routePending && value?.turnId !== activeTurnId) {
+        if (pendingEvents.length >= 256) throw new Error("Voice event backlog is full. Please reconnect.");
         pendingEvents.push(value);
         return undefined;
       }
@@ -96,6 +117,8 @@ export async function createManagedBrowserVoice(agent, voice, options = {}) {
     },
     flush: (finalChunk) => raw.flush(finalChunk),
     async stop() {
+      clearTimeout(prefetchTimer);
+      prefetchAbort.abort();
       const update = JSON.parse(raw.stop());
       let routeFailure;
       if (typeof update.delegation === "string" && update.delegation.trim()) {
@@ -131,7 +154,7 @@ export async function createManagedBrowserVoice(agent, voice, options = {}) {
       return true;
     },
     preferredPhysicalInput: (current, labels) => raw.preferredPhysicalInput(current, labels),
-    free: () => raw.free(),
+    free: () => { clearTimeout(prefetchTimer); prefetchAbort.abort(); raw.free(); },
   };
 }
 
@@ -162,19 +185,25 @@ function managedDelegationId(payload) {
 
 function isTerminalAgentEvent(event) {
   return event?.type === "run.completed" || event?.type === "run.failed"
-    || event?.type === "run.cancelled";
+    || event?.type === "run.cancelled" || event?.type === "turn_failed";
 }
 
 function mergeVoiceEffects(base, encoded) {
-  const effects = [base, ...encoded.map((value) => (
+  const allEffects = [base, ...encoded.map((value) => (
     typeof value === "string" ? JSON.parse(value) : value
   ))].filter((value) => value && typeof value === "object");
-  if (effects.length === 0) return base;
+  if (allEffects.length === 0) return base;
+  const generation = Math.max(...allEffects.map((value) => value.input_generation ?? 0));
+  const effects = allEffects.filter((value) => value.input_generation === undefined || value.input_generation === generation);
   return {
     ...effects[0],
+    input_generation: generation,
+    playback_enabled: effects.findLast((value) => value.playback_enabled !== undefined)?.playback_enabled,
     acknowledge_frames: effects.some((value) => value.acknowledge_frames),
     frames: effects.flatMap((value) => value.frames ?? []),
     transcripts: effects.flatMap((value) => value.transcripts ?? []),
+    undelivered_answers: allEffects.flatMap((value) => value.undelivered_answers ?? []),
+    ready: effects.some((value) => value.ready === true) || undefined,
     schedule_flush: effects.some((value) => value.schedule_flush),
   };
 }

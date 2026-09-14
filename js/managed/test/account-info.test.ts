@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { accountInfo, projectAccountInfo, withInitialAccountInfo } from "../src/account-info";
+import { accountInfo, projectAccountInfo } from "../src/account-info";
+import { X_API } from "nanocodex-tools/x";
 
 const A = "a".repeat(43);
 const B = "b".repeat(43);
@@ -10,6 +11,28 @@ const ADDRESS_ID = "a".repeat(22);
 const PHONE_ID = "p".repeat(22);
 
 describe("managed account info", () => {
+  it("preserves offline hand status through account discovery and projection", async () => {
+    const machines = [{
+      id: "user:desktop-vm", name: "Desktop VM", kind: "user" as const,
+      mount: "/desktop-vm", workspace: "/desktop-vm", capabilities: ["shell"], online: false,
+    }];
+    const info = await accountInfo({ fetch: async () => Response.json(statuses()) }, "user", {
+      enabled: true, machines,
+    });
+    expect(projectAccountInfo(info, [], {}).machines).toEqual(machines);
+    expect(JSON.stringify(projectAccountInfo(info, [], {}))).toContain('"online":false');
+  });
+
+  it("discovers native public APIs without granting X connector access", async () => {
+    for (const enabled of [true, false]) {
+      const info = await accountInfo({ fetch: async () => new Response(null, { status: 503 }) },
+        "user", { enabled, apis: [X_API], allowedConnectors: [] });
+      expect(info.apis).toEqual([X_API]);
+      expect(info.authenticated).toEqual([]);
+      expect(projectAccountInfo(info, [], {}).apis).toEqual([X_API]);
+    }
+  });
+
   it("forwards cancellation to every broker request and preserves its reason", async () => {
     const controller = new AbortController();
     const reason = new Error("turn cancelled");
@@ -51,6 +74,7 @@ describe("managed account info", () => {
 
     expect(info).toEqual({
       status: "ready",
+      apis: [],
       authenticated: ["gmail", "gdrive", "slack"],
       accounts: { gdrive: "work@example.com", slack: "Acme (U123)" },
       connectorAccounts: {
@@ -116,7 +140,7 @@ describe("managed account info", () => {
     });
   });
 
-  it("fails closed on malformed connection metadata and documents the generic selector", async () => {
+  it("fails closed on malformed connection metadata", async () => {
     const unavailable = await accountInfo({
       fetch: async () => Response.json({ connectors: {
         github: { connected: true, connections: [{ id: "not-opaque", label: "bad" }] },
@@ -124,11 +148,6 @@ describe("managed account info", () => {
     }, "user", { enabled: true });
     expect(unavailable).toMatchObject({ status: "unavailable", connectorAccounts: {} });
 
-    const prompt = withInitialAccountInfo("Use my calendar", unavailable);
-    expect(JSON.stringify(prompt)).toContain("X-Nanocodex-Connector-Connection");
-    expect(JSON.stringify(prompt)).toContain("Never invent a connection id");
-    expect(JSON.stringify(prompt)).toContain("call accountInfo immediately before choosing");
-    expect((prompt as readonly { text: string }[])[0]!.text).toContain('"machines":[]');
   });
 
   it("preserves available hands when connector status is unavailable", async () => {
@@ -209,6 +228,7 @@ describe("managed accountInfo vault projection", () => {
 
     expect(result).toEqual({
       status: "ready",
+      apis: [],
       authenticated: ["github"],
       accounts: { github: "octocat" },
       connectorAccounts: {},
@@ -319,6 +339,7 @@ describe("managed accountInfo vault projection", () => {
 
     expect(result).toMatchObject({
       status: "ready",
+      apis: [],
       authenticated: ["github"],
       accounts: { github: "octocat" },
       vault: [],
@@ -328,6 +349,7 @@ describe("managed accountInfo vault projection", () => {
   it("normalizes a retained legacy snapshot without Vault metadata", () => {
     const legacy = {
       status: "ready",
+      apis: [],
       authenticated: ["github"],
       accounts: { github: "octocat" },
       identity: {},

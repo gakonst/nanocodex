@@ -43,6 +43,27 @@ import {
 } from "../index.mjs";
 import type { WorkspaceEntry as BrowserWorkspaceEntry } from "../browser/workspace.mjs";
 import type { WorkspaceEntry as NodeWorkspaceEntry } from "../node/workspace.mjs";
+import type { Event as VoiceEvent, Transcript as VoiceTranscript, Voice as VoiceResource } from "../browser/Voice.mjs";
+
+function checkVoiceTranscript(event: VoiceEvent, transcript: VoiceTranscript) {
+  if (event.type === "answer.recovered") {
+    const recovered: true = event.recovered;
+    void recovered;
+  }
+  const speaker: "user" | "assistant" = transcript.speaker;
+  if (event.type === "transcript.delta") {
+    const id: string = event.id;
+    const partial: true = event.isPartial;
+    void id; void partial;
+  }
+  if (event.type === "transcript") {
+    const partial: false | undefined = event.isPartial;
+    void partial;
+  }
+  // @ts-expect-error Voice snapshots are immutable.
+  transcript.text = "replace";
+  void speaker;
+}
 
 const toolsCapability: ToolsCapability = await createTools();
 const hostedMachine: HostedMachine = {
@@ -135,6 +156,8 @@ declare const cloudflareStorage: CloudflareDurableObjectStorage;
 declare const cloudflareBinding: import("../cloudflare/egress.mjs").CloudflareEgressBinding;
 declare const cloudflareContext: CloudflareAgent.DurableObjectContext;
 declare const cloudflareOwner: CloudflareAgent.DurableObjectOwner;
+const bootstrapPlan: Promise<CloudflareAgent.BootstrapPlan> = CloudflareAgent.bootstrapPlan("Elena birthday");
+void bootstrapPlan;
 
 // @ts-expect-error durability-only types are exported from nanocodex/durability.
 type RootDurabilityStore = RootPublicTypes.DurabilityStore;
@@ -225,6 +248,7 @@ async function check() {
   void stateDigest;
   void sqliteOptions;
   const durabilityStore: DurabilityStore = {
+    readRecord: () => null,
     load: () => storedState,
     acquire: (
       _stateId: string,
@@ -241,7 +265,7 @@ async function check() {
   };
   const acquired = await durabilityStore.acquire("typed-leaf", { ownerId: "typed-owner" });
   const fence: DurabilityFence = acquired.fence;
-  await durabilityStore.replace("typed-leaf", {
+  await durabilityStore.replace("typed-leaf", { records: [],
     ownerId: acquired.ownerId,
     fence,
     expectedRevision: acquired.revision,
@@ -257,10 +281,18 @@ async function check() {
     // @ts-expect-error broker subjects are derived privately from the Durable Object identity.
     subject: "caller-selected",
   });
-  const cloudflareAgent: CloudflareAgent.Agent = await CloudflareAgent.create(cloudflareOwner);
+  const cloudflareAgent: CloudflareAgent.Agent = await CloudflareAgent.create(cloudflareOwner, {
+    additionalInstructions: "Use the account's workspace.",
+  });
   cloudflareAgent.turn.prompt({ input: "hello" });
   cloudflareAgent.events.connect(new Request("https://agent.internal/events"));
   const extendedCloudflareAgent = cloudflareAgent.extend(() => ({ application: true as const }));
+  const managedChild = await Subagents.spawn(cloudflareAgent, {
+    role: "researcher", task: "Inspect the brain", outputSchema: { type: "object" },
+  });
+  await Subagents.send(extendedCloudflareAgent, {
+    agentId: managedChild.agent_id, priority: "urgent", message: "Report status",
+  });
   extendedCloudflareAgent.events.connect(new Request("https://agent.internal/events"));
   const cloudflareApplication: true = extendedCloudflareAgent.application;
   void cloudflareApplication;
@@ -272,6 +304,7 @@ async function check() {
     cloudflareOwner,
     {
       instructions: "Search the caller's account history.",
+      additionalInstructions: "Cite the matching thread.",
       model: "gpt-5.6-sol",
       tools: [{
         name: "search",
@@ -335,6 +368,7 @@ async function check() {
     filesystem: nodeWorkspace,
     model: "gpt-6-astra",
     thinking: "high",
+    additionalInstructions: "Use the caller's workspace.",
     fastMode: false,
     workspace: nodeWorkspace.root,
     tools: [...Subagents.create({ maxConcurrency: 8 })],
@@ -635,3 +669,12 @@ async function check() {
 }
 
 void check;
+
+function checkVoiceControls(voice: VoiceResource) {
+  voice.setMuted(true);
+  voice.toggleMuted();
+  const muted: boolean = voice.getSnapshot().muted;
+  const level: number = voice.getSnapshot().microphoneLevel;
+  const fence: Promise<void> = voice.noteTypedInput();
+  void muted; void level; void fence;
+}

@@ -22,8 +22,8 @@ pub use tools::{
     start_agents, start_agents_observed,
 };
 
-/// Default maximum number of active turns in one task tree.
-pub const DEFAULT_MAX_SUBAGENTS: usize = 32;
+/// Unlimited active turns by default. Explicit finite limits remain supported.
+pub const DEFAULT_MAX_SUBAGENTS: usize = usize::MAX;
 
 /// Default maximum number of inactive, reusable subagent runtimes retained in memory.
 ///

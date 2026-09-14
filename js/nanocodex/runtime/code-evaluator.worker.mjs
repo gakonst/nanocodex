@@ -41,11 +41,14 @@ async function evaluate({ source, storedEntries = [], toolDefinitions = [], tool
   Object.freeze(tools);
 
   const text = (value) => post("output", { kind: "text", value });
-  const image = (value, detail = "auto") => post("output", {
+  const image = (value, detail) => post("output", {
     kind: "image",
     value,
     detail,
   });
+  const audio = (value) => post("output", { kind: "audio", value });
+  const notify = (value) => post("output", { kind: "notify", value });
+  const yield_control = () => post("output", { kind: "yield_control" });
   const generatedImage = (value) => post("output", { kind: "generatedImage", value });
   const store = (key, value) => {
     if (typeof key !== "string") throw new TypeError("store key must be a string");
@@ -70,6 +73,9 @@ async function evaluate({ source, storedEntries = [], toolDefinitions = [], tool
       "text",
       "image",
       "generatedImage",
+      "audio",
+      "notify",
+      "yield_control",
       "store",
       "load",
       "exit",
@@ -84,6 +90,9 @@ async function evaluate({ source, storedEntries = [], toolDefinitions = [], tool
         text,
         image,
         generatedImage,
+        audio,
+        notify,
+        yield_control,
         store,
         load,
         exit,

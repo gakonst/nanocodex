@@ -5,6 +5,7 @@ import {
   type AccountAuthEnv,
 } from "./account-auth";
 import { bindAgentCredential } from "./credentials";
+import { readSessionCredentialSubject } from "./session-credential-ownership";
 import { fetchResponseWithDeadline } from "./deadline";
 
 const AGENT_ID =
@@ -12,9 +13,6 @@ const AGENT_ID =
 const VOICE_SESSION_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CALL_ID = /^(?:rtc_[A-Za-z0-9._:-]{1,196}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
-const MAX_CALL_BODY_BYTES = 64 * 1024;
-const MAX_INSTRUCTIONS_BYTES = 32 * 1024;
-const MAX_SDP_BYTES = 32 * 1024;
 const PROVIDER_PLACEHOLDER = "Bearer NANOCODEX_PROVIDER_CREDENTIAL";
 const REALTIME_MODEL = "gpt-live-1-codex";
 const REALTIME_VOICES = new Set([
@@ -68,23 +66,23 @@ export async function routeManagedRealtimeTransport(
     ({ callId, voiceSessionId } = validated);
   }
   const durableId = env.NANOCODEX_SESSIONS.idFromName(agentId);
-  const subject = durableId.toString();
   const ownershipHeaders = new Headers();
   forwardPrincipalAssertions(ownershipHeaders, principal);
-  let owned: boolean;
+  let owned: Awaited<ReturnType<typeof readSessionCredentialSubject>>;
   try {
     owned = await fetchResponseWithDeadline(
       env.NANOCODEX_SESSIONS.get(durableId),
-      "https://session.internal/state",
+      "https://session.internal/credential-subject",
       { headers: ownershipHeaders },
       ownershipTimeoutMs,
       "managed Realtime ownership assertion",
-      (response) => response.ok,
+      (response) => readSessionCredentialSubject(response, durableId.toString()),
     );
   } catch {
     return json({ error: "agent_ownership_unavailable" }, 503);
   }
   if (!owned) return json({ error: "not_found" }, 404);
+  const { subject, direct } = owned;
   if (!voiceSessionId || !VOICE_SESSION_ID.test(voiceSessionId)) {
     return json({ error: "invalid_voice_session" }, 400);
   }
@@ -92,7 +90,7 @@ export async function routeManagedRealtimeTransport(
   try {
     // Creation installs this mapping. Rebinding here also repairs broker state
     // that was lost independently without exposing either account credential.
-    await bindAgentCredential(env.NANOCODEX, subject, principal.userId, ownershipTimeoutMs);
+    if (!direct) await bindAgentCredential(env.NANOCODEX, subject, principal.userId, ownershipTimeoutMs);
   } catch {
     return json({ error: "credential_broker_unavailable" }, 503);
   }
@@ -107,9 +105,7 @@ async function validatedCallBody(request: Request, url: URL): Promise<string | R
     !== "application/json") {
     return json({ error: "invalid_content_type" }, 415);
   }
-  let body: string;
-  try { body = await readBoundedText(request, MAX_CALL_BODY_BYTES); }
-  catch { return json({ error: "request_too_large" }, 413); }
+  const body = await request.text();
   let decoded: unknown;
   try { decoded = JSON.parse(body); }
   catch { return json({ error: "invalid_request" }, 400); }
@@ -117,7 +113,6 @@ async function validatedCallBody(request: Request, url: URL): Promise<string | R
     || !exactKeys(decoded, ["sdp", "session"])
     || typeof decoded.sdp !== "string"
     || !decoded.sdp.trim()
-    || encodedBytes(decoded.sdp) > MAX_SDP_BYTES
     || !validRealtimeSession(decoded.session)) {
     return json({ error: "invalid_request" }, 400);
   }
@@ -216,26 +211,6 @@ function internalHeaders(
   return headers;
 }
 
-async function readBoundedText(request: Request, limit: number): Promise<string> {
-  const declared = Number(request.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > limit) throw new Error("request too large");
-  if (!request.body) return "";
-  const reader = request.body.getReader();
-  const decoder = new TextDecoder();
-  let total = 0;
-  let text = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) return text + decoder.decode();
-    total += value.byteLength;
-    if (total > limit) {
-      await reader.cancel();
-      throw new Error("request too large");
-    }
-    text += decoder.decode(value, { stream: true });
-  }
-}
-
 function sanitizedHeaders(source: Headers): Headers {
   const headers = new Headers(source);
   for (const name of [
@@ -253,15 +228,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function validRealtimeSession(value: unknown): boolean {
+export function validRealtimeSession(value: unknown): boolean {
   if (!isRecord(value)
     || !exactKeys(value, ["audio", "delegation", "instructions", "model"])
     || value.model !== REALTIME_MODEL
     || typeof value.instructions !== "string"
     || !value.instructions
-    || encodedBytes(value.instructions) > MAX_INSTRUCTIONS_BYTES
     || !isRecord(value.delegation)
-    || !exactKeys(value.delegation, ["type"])
+    || !(exactKeys(value.delegation, ["type"]) || (exactKeys(value.delegation, ["type", "ack_filler"])
+      && typeof value.delegation.ack_filler === "boolean"))
     || value.delegation.type !== "client"
     || !isRecord(value.audio)
     || !exactKeys(value.audio, ["output"])
@@ -278,9 +253,6 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[]):
     && [...expected].sort().every((key, index) => key === keys[index]);
 }
 
-function encodedBytes(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
-}
 
 function json(body: unknown, status: number): Response {
   return Response.json(body, {

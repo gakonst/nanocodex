@@ -55,7 +55,6 @@ type PreparedRepositoryRequest = {
   settled: boolean;
 };
 
-let repositorySnapshotRequest: Promise<PublishedRepositorySnapshot> | undefined;
 const repositorySurfaceRequests = new Map<string, PreparedRepositoryRequest>();
 
 export { preloadEvalOverview };
@@ -176,16 +175,7 @@ async function prepareCommitSurface(
 }
 
 function loadRepositorySnapshot(): Promise<PublishedRepositorySnapshot> {
-  if (repositorySnapshotRequest) return repositorySnapshotRequest;
-  const loading = loadPublishedRepositorySnapshot()
-    .catch((error) => {
-      if (repositorySnapshotRequest === loading) {
-        repositorySnapshotRequest = undefined;
-      }
-      throw error;
-    });
-  repositorySnapshotRequest = loading;
-  return loading;
+  return loadPublishedRepositorySnapshot();
 }
 
 export async function preloadDirectSurface(url: URL): Promise<PreparedDirectRoute> {

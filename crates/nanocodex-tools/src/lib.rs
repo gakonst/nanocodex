@@ -26,6 +26,9 @@ mod code_mode_description;
 #[cfg(feature = "native")]
 mod code_mode_order;
 #[cfg(feature = "native")]
+#[path = "code_mode/spec.rs"]
+mod code_mode_spec;
+#[cfg(feature = "native")]
 pub mod embedded;
 #[cfg(all(not(target_family = "wasm"), feature = "native"))]
 #[cfg_attr(docsrs, doc(cfg(not(target_family = "wasm"))))]
@@ -84,7 +87,8 @@ pub mod contract {
 /// Code Mode results and observation contracts for the embedded WASM runtime.
 pub mod code_mode {
     pub use crate::embedded::{
-        CodeModeExecution, CodeModeNotification, CodeModeObserver, CodeModeUpdate, NestedToolCall,
+        CodeModeCell, CodeModeExecution, CodeModeNotification, CodeModeObserver, CodeModeUpdate,
+        NestedToolCall,
     };
 }
 

@@ -1,4 +1,4 @@
-import type { NamedTool } from "nanocodex";
+import type { NamedTool, ToolContext } from "nanocodex";
 
 import {
   CONNECTOR_CAPABILITY_IDS,
@@ -77,7 +77,9 @@ type AccountConnectorsToolOptions = Readonly<{
 }>;
 
 /** Creates the account-owned connector control tool exposed to a managed agent. */
-export function accountConnectorsTool(options: AccountConnectorsToolOptions): NamedTool {
+export function accountConnectorsTool(
+  options: (context: ToolContext) => AccountConnectorsToolOptions,
+): NamedTool {
   return {
     name: "account_connectors",
     description: [
@@ -110,7 +112,7 @@ export function accountConnectorsTool(options: AccountConnectorsToolOptions): Na
       required: ["operation"],
       additionalProperties: false,
     },
-    handler: async (input: unknown) => manageAccountConnectors(options, input),
+    handler: async (input, context) => manageAccountConnectors(options(context), input),
   };
 }
 

@@ -6,6 +6,7 @@ use crate::{
 };
 
 const SYSTEM_PROMPT: &str = include_str!("../../prompts/system.md");
+const ASTRA_SYSTEM_PROMPT: &str = include_str!("../../prompts/astra.md");
 
 /// Validated, read-only settings passed to a [`ResponsesServiceFactory`].
 ///
@@ -29,6 +30,9 @@ pub struct ModelConfig {
     pub reasoning_mode: ReasoningMode,
     /// Requested reasoning effort.
     pub thinking: Thinking,
+    /// Whether an embedding selected an effort instead of model defaults.
+    #[doc(hidden)]
+    pub thinking_explicit: bool,
     /// Whether requests use priority processing.
     pub fast_mode: bool,
     /// Resolved context window used for accounting and automatic compaction.
@@ -49,8 +53,10 @@ pub struct ModelConfig {
     /// Embedding-host transport used by the standard WebAssembly client.
     #[cfg(any(target_family = "wasm", docsrs))]
     pub host_transport: Option<Arc<dyn crate::transport::host::HostTransport>>,
-    /// Immutable harness system prompt serialized before session instructions.
-    pub system_prompt: Arc<str>,
+    /// Explicit replacement for the selected model's built-in instructions.
+    pub system_prompt: Option<Arc<str>>,
+    /// Host instructions appended to the selected or overridden system prompt.
+    pub additional_instructions: Option<Arc<str>>,
 }
 
 impl ModelConfig {
@@ -67,10 +73,19 @@ impl ModelConfig {
         "local_code_mode"
     }
 
-    /// Returns the immutable harness system prompt.
+    /// Resolves the selected model's instructions while preserving caller overrides.
     #[must_use]
-    pub fn system_prompt(&self) -> &str {
-        &self.system_prompt
+    pub fn system_prompt(&self) -> Cow<'_, str> {
+        let base = self.system_prompt.as_deref().unwrap_or(match self.model {
+            Model::Astra => ASTRA_SYSTEM_PROMPT,
+            Model::Sol | Model::Terra | Model::Luna => SYSTEM_PROMPT,
+        });
+        match self.additional_instructions.as_deref() {
+            Some(additional) if !additional.is_empty() => {
+                Cow::Owned(format!("{base}\n\n{additional}"))
+            }
+            _ => Cow::Borrowed(base),
+        }
     }
 
     /// Returns the `OpenAI` tool-search endpoint derived from the base URL.
@@ -88,6 +103,7 @@ impl Default for ModelConfig {
             auth: OpenAiAuth::api_key(String::new()),
             reasoning_mode: ReasoningMode::default(),
             thinking: Thinking::default(),
+            thinking_explicit: false,
             fast_mode: false,
             context_window_tokens: CONTEXT_WINDOW_TOKENS,
             responses_transport: ResponsesTransport::default(),
@@ -98,7 +114,8 @@ impl Default for ModelConfig {
             api_base_url: "https://api.openai.com/v1".to_owned(),
             #[cfg(any(target_family = "wasm", docsrs))]
             host_transport: None,
-            system_prompt: SYSTEM_PROMPT.into(),
+            system_prompt: None,
+            additional_instructions: None,
         }
     }
 }

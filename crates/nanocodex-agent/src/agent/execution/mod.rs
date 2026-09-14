@@ -6,10 +6,9 @@ mod platform;
 #[path = "disabled.rs"]
 mod platform;
 
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{collections::VecDeque, future::Future, pin::Pin, sync::Arc};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use sha2::{Digest, Sha256};
 
 use crate::{
     NanocodexError, Result,
@@ -30,8 +29,10 @@ pub type ExecutionFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 /// Result of admitting one identified execution into an attached policy.
 pub enum ExecutionAdmission {
-    /// Execute the newly accepted or previously interrupted operation.
+    /// Execute a newly accepted operation.
     Execute,
+    /// Resume an unfinished operation admitted by an earlier host instance.
+    Resume,
     /// Return an already completed operation without executing it again.
     Completed {
         /// Session boundary committed with the output.
@@ -56,6 +57,17 @@ pub enum ExecutionStepAdmission {
     Execute,
     /// Reuse the exact JSON output retained by a prior attempt.
     Replay(String),
+}
+
+/// Current execution metadata and the active model context.
+/// Hosts persist context records independently from the small execution position.
+pub struct ExecutionContinuation {
+    /// Serialized execution position and settings, excluding conversation bodies.
+    pub state_json: String,
+    /// Active conversation items in model order.
+    pub history: Vec<nanocodex_oai_api::responses::ResponseItem>,
+    /// Frozen request prefix for the current execution.
+    pub prefix: Vec<nanocodex_oai_api::responses::ResponseItem>,
 }
 
 /// One live steering input retained for deterministic operation recovery.
@@ -88,6 +100,17 @@ pub struct ExecutionOutput {
 /// without becoming a dependency of `nanocodex-agent`.
 #[cfg(not(target_family = "wasm"))]
 pub trait ExecutionPolicy: Send + Sync {
+    /// Resolves a failed attempt against the authoritative operation state.
+    /// A pending operation must return a retry/reopen disposition, even when
+    /// its original failure was not a transport or storage error.
+    fn recover_failure<'a>(
+        &'a self,
+        _operation_id: String,
+        error: NanocodexError,
+    ) -> ExecutionFuture<'a, NanocodexError> {
+        Box::pin(async move { error })
+    }
+
     /// Releases policy-owned lifecycle state after all Agent work has stopped.
     ///
     /// The default is a no-op so existing stateless policies remain source
@@ -167,6 +190,19 @@ pub trait ExecutionPolicy: Send + Sync {
         Box::pin(async { Ok(Vec::new()) })
     }
 
+    /// Durably removes the latest unbound steering input.
+    fn withdraw_steer<'a>(
+        &'a self,
+        _operation_id: String,
+        _steer_index: u32,
+    ) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "withdraw_steer",
+            })
+        })
+    }
+
     /// Binds retained steering input to the model boundary that consumes it.
     fn bind_steer<'a>(
         &'a self,
@@ -180,6 +216,19 @@ pub trait ExecutionPolicy: Send + Sync {
             })
         })
     }
+
+    /// Reads the current conversation and execution position of an interrupted turn.
+    fn continuation<'a>(
+        &'a self,
+        operation_id: String,
+    ) -> ExecutionFuture<'a, Result<Option<ExecutionContinuation>>>;
+
+    /// Atomically replaces the current execution state and retires its settled effects.
+    fn advance<'a>(
+        &'a self,
+        operation_id: String,
+        continuation: ExecutionContinuation,
+    ) -> ExecutionFuture<'a, Result<()>>;
 
     /// Begins or replays one typed external effect.
     fn begin_step<'a>(
@@ -229,6 +278,16 @@ pub trait ExecutionPolicy: Send + Sync {
 /// guarantees on every target.
 #[cfg(target_family = "wasm")]
 pub trait ExecutionPolicy: Send + Sync {
+    /// Resolves a failed attempt against the authoritative operation state.
+    /// Pending work must remain recoverable regardless of the original error.
+    fn recover_failure<'a>(
+        &'a self,
+        _operation_id: String,
+        error: NanocodexError,
+    ) -> ExecutionFuture<'a, NanocodexError> {
+        Box::pin(async move { error })
+    }
+
     /// Releases policy-owned lifecycle state after all Agent work has stopped.
     ///
     /// The default is a no-op so existing stateless policies remain source
@@ -298,6 +357,19 @@ pub trait ExecutionPolicy: Send + Sync {
     ) -> ExecutionFuture<'a, Result<Vec<ExecutionSteer>>> {
         Box::pin(async { Ok(Vec::new()) })
     }
+    /// Durably removes the latest unbound steering input.
+    fn withdraw_steer<'a>(
+        &'a self,
+        _operation_id: String,
+        _steer_index: u32,
+    ) -> ExecutionFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(NanocodexError::ExecutionPolicyCapabilityUnsupported {
+                capability: "withdraw_steer",
+            })
+        })
+    }
+
     /// Binds retained steering input to the model boundary that consumes it.
     fn bind_steer<'a>(
         &'a self,
@@ -311,6 +383,19 @@ pub trait ExecutionPolicy: Send + Sync {
             })
         })
     }
+    /// Reads the current conversation and execution position of an interrupted turn.
+    fn continuation<'a>(
+        &'a self,
+        operation_id: String,
+    ) -> ExecutionFuture<'a, Result<Option<ExecutionContinuation>>>;
+
+    /// Atomically replaces the current execution state and retires its settled effects.
+    fn advance<'a>(
+        &'a self,
+        operation_id: String,
+        continuation: ExecutionContinuation,
+    ) -> ExecutionFuture<'a, Result<()>>;
+
     /// Begins or replays one external effect.
     fn begin_step<'a>(
         &'a self,
@@ -452,6 +537,7 @@ pub(crate) struct Execution {
 
 pub(crate) enum AdmittedExecution {
     Execute,
+    Resume,
     Completed {
         output: ExecutionOutput,
         snapshot: SessionSnapshot,
@@ -481,6 +567,19 @@ struct StandaloneCompactionBase {
 }
 
 impl Execution {
+    pub(crate) async fn recover_failure<T>(
+        &self,
+        operation_id: Option<&str>,
+        outcome: Result<T>,
+    ) -> Result<T> {
+        match (self.policy.as_ref(), operation_id, outcome) {
+            (Some(policy), Some(operation_id), Err(error)) => {
+                Err(policy.recover_failure(operation_id.to_owned(), error).await)
+            }
+            (_, _, outcome) => outcome,
+        }
+    }
+
     #[cfg(not(target_family = "wasm"))]
     pub(crate) const fn info(&self) -> Option<&RolloutInfo> {
         self.platform.info()
@@ -548,7 +647,7 @@ impl Execution {
             platform: self.platform.start_turn(prompt, effort),
             policy: self.policy.clone(),
             operation_id,
-            operation_input: Some(prompt.clone()),
+            operation_input: Some(ExecutionInput::Prompt(prompt.clone())),
             outcome: ExecutionOutcome::Started,
         }
     }
@@ -560,14 +659,14 @@ impl Execution {
         effort: nanocodex_oai_api::Thinking,
         fast_mode: bool,
         workspace: Option<&str>,
-    ) -> Result<(Option<String>, AdmittedExecution)> {
+    ) -> Result<(Option<String>, Option<String>, AdmittedExecution)> {
         let Some(policy) = &self.policy else {
-            return Ok((None, AdmittedExecution::Execute));
+            return Ok((None, None, AdmittedExecution::Execute));
         };
         let base_checkpoint = base_checkpoint.map(|checkpoint| {
             let mut history = checkpoint.model().snapshot_history();
             for item in &mut history {
-                item.strip_id();
+                item.strip_unbound_id();
             }
             StandaloneCompactionBase {
                 lineage_id: checkpoint.lineage_id().to_owned(),
@@ -585,16 +684,20 @@ impl Execution {
             workspace: workspace.map(str::to_owned),
         };
         let input_json = encode(&input)?;
-        let digest = Sha256::digest(input_json.as_bytes());
-        let digest = digest
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let candidate_operation_id = format!("standalone-compaction-{digest}");
+        // A new maintenance request may have identical input to a cancelled
+        // or failed one. Pending recovery still selects the original ID.
+        let candidate_operation_id = format!(
+            "standalone-compaction-{}",
+            crate::session::SessionId::default()
+        );
         let (operation_id, admission) = policy
-            .admit_automatic(candidate_operation_id, input_json)
+            .admit_automatic(candidate_operation_id, input_json.clone())
             .await?;
-        Ok((Some(operation_id), map_admission(admission)))
+        Ok((
+            Some(operation_id),
+            Some(input_json),
+            map_admission(admission),
+        ))
     }
 
     #[cfg_attr(target_family = "wasm", allow(clippy::missing_const_for_fn))]
@@ -602,12 +705,13 @@ impl Execution {
         &self,
         effort: nanocodex_oai_api::Thinking,
         operation_id: Option<String>,
+        operation_input: Option<String>,
     ) -> ExecutionTurn {
         ExecutionTurn {
             platform: self.platform.start_compaction(effort),
             policy: self.policy.clone(),
             operation_id,
-            operation_input: None,
+            operation_input: operation_input.map(ExecutionInput::Encoded),
             outcome: ExecutionOutcome::Started,
         }
     }
@@ -691,6 +795,7 @@ impl Execution {
 fn map_admission(admission: ExecutionAdmission) -> AdmittedExecution {
     match admission {
         ExecutionAdmission::Execute => AdmittedExecution::Execute,
+        ExecutionAdmission::Resume => AdmittedExecution::Resume,
         ExecutionAdmission::Completed { snapshot, output } => {
             AdmittedExecution::Completed { output, snapshot }
         }
@@ -707,10 +812,26 @@ pub(crate) struct ExecutionSteps {
 
 #[derive(Clone)]
 pub(crate) struct QueuedSteer {
+    pub(crate) delivery: Arc<tokio::sync::Mutex<SteerDelivery>>,
     pub(crate) durable_index: Option<u32>,
     pub(crate) accepted_after_model_call_index: u32,
     pub(crate) model_call_index: Option<u32>,
     pub(crate) prompt: nanocodex_oai_api::Prompt,
+}
+
+pub(crate) struct SteerReceipt {
+    pub(crate) durable_index: Option<u32>,
+    pub(crate) delivery: Arc<tokio::sync::Mutex<SteerDelivery>>,
+}
+
+pub(crate) type SteerQueue = Arc<tokio::sync::Mutex<VecDeque<QueuedSteer>>>;
+pub(crate) type SteerSender = std::sync::Weak<tokio::sync::Mutex<VecDeque<QueuedSteer>>>;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SteerDelivery {
+    Pending,
+    Consumed,
+    Withdrawn,
 }
 
 pub(crate) enum ExecutionStep<O> {
@@ -719,6 +840,40 @@ pub(crate) enum ExecutionStep<O> {
 }
 
 impl ExecutionSteps {
+    pub(crate) async fn continuation<T: DeserializeOwned>(
+        &self,
+    ) -> Result<
+        Option<(
+            T,
+            Vec<nanocodex_oai_api::responses::ResponseItem>,
+            Vec<nanocodex_oai_api::responses::ResponseItem>,
+        )>,
+    > {
+        self.policy
+            .continuation(self.operation_id.clone())
+            .await?
+            .map(|saved| Ok((decode(&saved.state_json)?, saved.history, saved.prefix)))
+            .transpose()
+    }
+
+    pub(crate) async fn advance<T: Serialize>(
+        &self,
+        state: &T,
+        history: Vec<nanocodex_oai_api::responses::ResponseItem>,
+        prefix: Vec<nanocodex_oai_api::responses::ResponseItem>,
+    ) -> Result<()> {
+        self.policy
+            .advance(
+                self.operation_id.clone(),
+                ExecutionContinuation {
+                    state_json: encode(state)?,
+                    history,
+                    prefix,
+                },
+            )
+            .await
+    }
+
     pub(crate) async fn bind_steer(&self, steer_index: u32, model_call_index: u32) -> Result<()> {
         self.policy
             .bind_steer(self.operation_id.clone(), steer_index, model_call_index)
@@ -768,11 +923,25 @@ enum ExecutionOutcome {
     Failed { error: String, retryable: bool },
 }
 
+enum ExecutionInput {
+    Prompt(nanocodex_oai_api::Prompt),
+    Encoded(String),
+}
+
+impl ExecutionInput {
+    fn encode(&self) -> Result<String> {
+        match self {
+            Self::Prompt(prompt) => encode(prompt),
+            Self::Encoded(input) => Ok(input.clone()),
+        }
+    }
+}
+
 pub(crate) struct ExecutionTurn {
     platform: platform::Turn,
     policy: Option<Arc<dyn ExecutionPolicy>>,
     operation_id: Option<String>,
-    operation_input: Option<nanocodex_oai_api::Prompt>,
+    operation_input: Option<ExecutionInput>,
     outcome: ExecutionOutcome,
 }
 
@@ -801,6 +970,7 @@ impl ExecutionTurn {
             .into_iter()
             .map(|steer| {
                 Ok(QueuedSteer {
+                    delivery: Arc::new(tokio::sync::Mutex::new(SteerDelivery::Pending)),
                     durable_index: Some(steer.index),
                     accepted_after_model_call_index: steer.accepted_after_model_call_index,
                     model_call_index: steer.model_call_index,
@@ -808,6 +978,20 @@ impl ExecutionTurn {
                 })
             })
             .collect()
+    }
+
+    pub(crate) async fn withdraw_steer(&self, steer: &SteerReceipt) -> Result<bool> {
+        let mut delivery = steer.delivery.lock().await;
+        if *delivery != SteerDelivery::Pending {
+            return Ok(false);
+        }
+        if let (Some(policy), Some(operation_id), Some(index)) =
+            (&self.policy, &self.operation_id, steer.durable_index)
+        {
+            policy.withdraw_steer(operation_id.clone(), index).await?;
+        }
+        *delivery = SteerDelivery::Withdrawn;
+        Ok(true)
     }
 
     pub(crate) async fn accept_steer(
@@ -828,6 +1012,7 @@ impl ExecutionTurn {
             _ => None,
         };
         Ok(QueuedSteer {
+            delivery: Arc::new(tokio::sync::Mutex::new(SteerDelivery::Pending)),
             durable_index,
             accepted_after_model_call_index,
             model_call_index: None,
@@ -874,20 +1059,12 @@ impl ExecutionTurn {
         };
         self
     }
-
-    pub(crate) fn retain_pending_attempt(mut self, error: impl Into<String>) -> Self {
-        self.outcome = ExecutionOutcome::Failed {
-            error: error.into(),
-            retryable: true,
-        };
-        self
-    }
 }
 
 async fn persist_operation(
     policy: Option<Arc<dyn ExecutionPolicy>>,
     operation_id: Option<String>,
-    operation_input: Option<nanocodex_oai_api::Prompt>,
+    operation_input: Option<ExecutionInput>,
     outcome: ExecutionOutcome,
     checkpoint: &CommittedSession,
 ) -> Result<()> {
@@ -904,7 +1081,10 @@ async fn persist_operation(
                 .await
         }
         ExecutionOutcome::Interrupted => {
-            let input = operation_input.as_ref().map(encode).transpose()?;
+            let input = operation_input
+                .as_ref()
+                .map(ExecutionInput::encode)
+                .transpose()?;
             cancel_with_reclaim(&policy, operation_id, input, Some(checkpoint.snapshot())).await
         }
         ExecutionOutcome::Failed { error, retryable } => {
@@ -948,7 +1128,7 @@ async fn cancel_with_reclaim(
         .await
         .map_err(reopen_after_cancel_retry)?;
     match admission {
-        ExecutionAdmission::Execute => {
+        ExecutionAdmission::Execute | ExecutionAdmission::Resume => {
             if snapshot.is_some() {
                 policy
                     .begin_attempt(operation_id.clone())

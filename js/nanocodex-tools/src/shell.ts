@@ -1,5 +1,6 @@
 import git, { type GitHttpRequest, type HttpClient } from "isomorphic-git";
 import type { Workspace, WorkspaceEntry } from "../tools/types.mjs";
+import { downloadRepositoryArchive } from "./repository-archive.js";
 
 export type ShellFetchOptions = Readonly<{
   method?: string | undefined;
@@ -16,12 +17,17 @@ export type ShellFetchResult = Readonly<{
   url: string;
 }>;
 
-export type ShellFetch = (
+export type ShellFetch = ((
   url: string,
   options?: ShellFetchOptions,
-) => Promise<ShellFetchResult>;
+) => Promise<ShellFetchResult>) & Readonly<{
+  /** Optional streaming transport for source archives and Git packfiles. */
+  stream?: (url: string, options?: ShellFetchOptions) => Promise<
+    Omit<ShellFetchResult, "body"> & { body: AsyncIterable<Uint8Array> }
+  >;
+}>;
 
-type CommandContext = Readonly<{ cwd?: unknown }>;
+type CommandContext = Readonly<{ cwd?: unknown; signal?: AbortSignal }>;
 type CommandResult = Readonly<{
   stdout: string;
   stderr: string;
@@ -34,8 +40,6 @@ type GitClone = (
 
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const GITHUB_REPOSITORY = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/;
-const MAX_GIT_HTTP_BODY_BYTES = 16 * 1024 * 1024;
-const MAX_GIT_ENTRIES = 20_000;
 
 /** gh compatibility command backed by the connected GitHub account. */
 export function createGhCommand(
@@ -46,9 +50,14 @@ export function createGhCommand(
     name: "gh",
     trusted: true,
     async execute(args: string[], context: CommandContext = {}) {
+      const request: ShellFetch = (url, options) => {
+        context.signal?.throwIfAborted();
+        return fetch(url, { ...options, signal: context.signal });
+      };
       try {
+        context.signal?.throwIfAborted();
         if (args[0] === "auth" && args[1] === "status") {
-          const user = await github(fetch, "/user");
+          const user = await github(request, "/user");
           return ok(`Logged in to github.com as ${text(user, "login")} through the connected account.\n`);
         }
         if (args[0] === "api") {
@@ -66,7 +75,7 @@ export function createGhCommand(
             for (const [name, value] of Object.entries(fields)) target.searchParams.set(name, value);
             path = `${target.pathname}${target.search}`;
           }
-          return ok(`${JSON.stringify(await github(fetch, path, {
+          return ok(`${JSON.stringify(await github(request, path, {
             method,
             ...(hasFields && method !== "GET" && method !== "HEAD"
               ? { body: JSON.stringify(fields) }
@@ -78,7 +87,7 @@ export function createGhCommand(
             ?? args.slice(2).find((value) => !value.startsWith("-"));
           requireRepository(repository, "gh repo view requires OWNER/REPO");
           const repo = requireRecord(
-            await github(fetch, `/repos/${repository}`),
+            await github(request, `/repos/${repository}`),
             "repository",
           );
           return ok([
@@ -95,7 +104,7 @@ export function createGhCommand(
         if (args[0] === "repo" && args[1] === "list") {
           const owner = positional(args.slice(2), ["--limit", "-L"]);
           const perPage = limit(option(args.slice(2), "--limit", "-L"));
-          const repositories = await github(fetch, `/user/repos?${new URLSearchParams({
+          const repositories = await github(request, `/user/repos?${new URLSearchParams({
             affiliation: "owner,collaborator,organization_member",
             per_page: "100",
             sort: "updated",
@@ -119,7 +128,7 @@ export function createGhCommand(
         if (args[0] === "pr" && args[1] === "list") {
           const repository = option(args.slice(2), "--repo", "-R");
           requireRepository(repository, "gh pr list requires --repo OWNER/REPO");
-          const pulls = await github(fetch, `/repos/${repository}/pulls?${new URLSearchParams({
+          const pulls = await github(request, `/repos/${repository}/pulls?${new URLSearchParams({
             state: "open",
             per_page: String(limit(option(args.slice(2), "--limit", "-L"))),
           })}`);
@@ -164,13 +173,14 @@ function ghRepoCloneArguments(args: string[]): string[] {
   const repository = commandArgs[0];
   requireRepository(repository, "gh repo clone requires OWNER/REPO");
   return [
+    "clone",
     ...gitArgs,
     `https://github.com/${repository}.git`,
     ...(commandArgs[1] === undefined ? [] : [commandArgs[1]]),
   ];
 }
 
-/** Git compatibility command backed by durable workspace storage and public Git smart HTTP. */
+/** Git compatibility command backed by durable storage and host-authorized GitHub downloads. */
 export function createGitCommand(
   fetch: ShellFetch,
   workspace: () => Workspace,
@@ -178,13 +188,13 @@ export function createGitCommand(
   return {
     name: "git",
     trusted: true,
-    async execute(args: string[], context: { cwd?: unknown } = {}) {
+    async execute(args: string[], context: CommandContext = {}) {
       try {
+        const mounted = commandWorkspace(workspace(), context.signal);
         const command = args[0];
         if (command === "clone") {
-          return ok(await cloneRepository(fetch, workspace(), args.slice(1), context.cwd));
+          return ok(await cloneRepository(fetch, workspace(), args.slice(1), context));
         }
-        const mounted = workspace();
         const dir = await gitDirectory(mounted, context.cwd);
         const fs = workspaceFs(mounted);
         if (command === "status") {
@@ -268,7 +278,6 @@ function logDepth(args: string[]): number {
   const value = explicit ?? compact?.slice(1);
   if (value === undefined) return 20;
   const depth = positiveInteger(value, "log depth");
-  if (depth > 200) throw new Error("log depth cannot exceed 200");
   return depth;
 }
 
@@ -276,10 +285,11 @@ async function cloneRepository(
   fetch: ShellFetch,
   workspace: Workspace,
   args: string[],
-  cwd: unknown,
+  context: CommandContext,
 ): Promise<string> {
+  const { cwd, signal } = context;
   const depthValue = option(args, "--depth", "-") ?? joinedOption(args, "--depth");
-  const depth = depthValue === undefined ? 1 : positiveInteger(depthValue, "--depth");
+  const depth = depthValue === undefined ? undefined : positiveInteger(depthValue, "--depth");
   const branch = option(args, "--branch", "-b") ?? joinedOption(args, "--branch");
   const positionals = gitPositionals(args);
   const remote = positionals[0];
@@ -304,13 +314,16 @@ async function cloneRepository(
   const dir = `${root}/${destination}`;
   if (await workspaceEntry(workspace, dir)) throw new Error(`destination path '${destination}' already exists`);
   try {
+    if (depth === undefined) {
+      await downloadRepositoryArchive(fetch, commandWorkspace(workspace, signal), repository, branch ?? "HEAD", dir, signal);
+      return `Downloaded source files into '${destination}' (no .git or history).\n`;
+    }
     await git.clone({
-      fs: workspaceFs(workspace),
-      http: managedGitHttp(fetch),
+      fs: workspaceFs(commandWorkspace(workspace, signal)),
+      http: managedGitHttp(fetch, signal),
       dir,
       url: `https://github.com/${repository}.git`,
       depth,
-      noTags: true,
       singleBranch: true,
       ...(branch === undefined ? {} : { ref: branch }),
     });
@@ -323,24 +336,28 @@ async function cloneRepository(
   return `Cloning into '${destination}'...\n`;
 }
 
-function managedGitHttp(fetch: ShellFetch): HttpClient {
+function managedGitHttp(fetch: ShellFetch, signal?: AbortSignal): HttpClient {
   return {
     async request(request: GitHttpRequest) {
+      signal?.throwIfAborted();
       const body = request.body === undefined
         ? undefined
         : await collectGitBody(request.body);
-      const response = await fetch(request.url, {
+      const response = await (fetch.stream ?? fetch)(request.url, {
         method: request.method,
         headers: request.headers,
         body,
-        ...(request.signal instanceof AbortSignal ? { signal: request.signal } : {}),
+        signal: signal ?? (request.signal instanceof AbortSignal ? request.signal : undefined),
       });
       return {
         url: response.url,
         statusCode: response.status,
         statusMessage: response.statusText,
         headers: response.headers,
-        body: (async function* () { yield response.body; })(),
+        body: (async function* () {
+          if (response.body instanceof Uint8Array) yield response.body;
+          else yield* response.body;
+        })(),
       };
     },
   };
@@ -351,7 +368,6 @@ async function collectGitBody(body: AsyncIterable<Uint8Array>): Promise<Uint8Arr
   let size = 0;
   for await (const chunk of body) {
     size += chunk.byteLength;
-    if (size > MAX_GIT_HTTP_BODY_BYTES) throw new Error("git HTTP request body is too large");
     chunks.push(chunk);
   }
   const joined = new Uint8Array(size);
@@ -373,7 +389,7 @@ function workspaceFs(workspace: Workspace) {
     },
     writeFile: async (path: string, contents: Uint8Array | string) => workspace.writeFile(resolve(path), contents),
     unlink: async (path: string) => workspace.remove(resolve(path)),
-    readdir: async (path: string) => (await workspace.list(resolve(path), { maxEntries: MAX_GIT_ENTRIES }))
+    readdir: async (path: string) => (await workspace.list(resolve(path)))
       .map(({ path: child }) => child.slice(child.lastIndexOf("/") + 1)),
     mkdir: async (path: string, options?: { recursive?: boolean }) => {
       path = resolve(path);
@@ -398,6 +414,17 @@ function workspaceFs(workspace: Workspace) {
   return { promises };
 }
 
+function commandWorkspace(workspace: Workspace, signal?: AbortSignal): Workspace {
+  return {
+    root: workspace.root,
+    list: (...args) => { signal?.throwIfAborted(); return workspace.list(...args); },
+    readFile: (...args) => { signal?.throwIfAborted(); return workspace.readFile(...args); },
+    writeFile: (...args) => { signal?.throwIfAborted(); return workspace.writeFile(...args); },
+    mkdir: (...args) => { signal?.throwIfAborted(); return workspace.mkdir(...args); },
+    remove: (...args) => { signal?.throwIfAborted(); return workspace.remove(...args); },
+  };
+}
+
 function gitWorkspacePath(workspace: Workspace, path: string): string {
   const source = path.startsWith("/") ? path : `${workspace.root}/${path}`;
   const segments: string[] = [];
@@ -419,7 +446,7 @@ async function workspaceEntry(workspace: Workspace, path: string): Promise<Works
   const parent = path.slice(0, separator) || workspace.root;
   const target = path.slice(separator + 1);
   try {
-    return (await workspace.list(parent, { maxEntries: MAX_GIT_ENTRIES }))
+    return (await workspace.list(parent))
       .find((entry) => entry.path === target || entry.path.endsWith(`/${target}`));
   } catch (error) {
     if ((error as { code?: unknown })?.code === "ENOENT") return undefined;

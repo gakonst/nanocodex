@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { test } from "node:test";
+import WebSocket from "ws";
+import { createMemoryDurabilityStore } from "../runtime/durability-store.mjs";
+import { startResponsesServer, messageReader, sendWarmup, sendFinal } from "./support/responses.mjs";
 
 import { Actions } from "../index.mjs";
 import { Agent as HostAgent, Transport as HostTransport } from "../host/index.mjs";
@@ -147,6 +150,77 @@ test("a precompiled browser module instantiates once across isolated agents", as
   }
 });
 
+test("long durable histories preserve cold replay and cancellation results", {
+  timeout: 180_000,
+}, async (context) => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const engine = await initializeBrowserEngine({ module });
+  const server = await startResponsesServer();
+  context.after(() => server.close());
+  const store = createMemoryDurabilityStore("long-memory-budget");
+  const options = {
+    module,
+    transport: HostTransport.openAi({
+      apiKey: "fixture", websocketUrl: server.url, WebSocketImpl: WebSocket, websocketWarmup: true,
+    }),
+    durability: store, durabilityId: "long-memory-budget", terminalReceiptRetention: 16,
+    thinking: "low",
+  };
+  const agent = await HostAgent.create(options);
+  context.after(() => agent.session.shutdown());
+  const scenario = (async () => {
+    const socket = await server.nextConnection();
+    const reader = messageReader(socket);
+    await reader.next();
+    sendWarmup(socket, "warmup");
+    for (let index = 0; index < 96; index += 1) {
+      await reader.next();
+      sendFinal(socket, `response-${index}`, `DONE_${index}`);
+    }
+  })();
+  const input = Array.from({ length: 160 }, (_, index) =>
+    `Synthetic record ${index}: durability preserves operation order, exact inputs, and committed results.`).join("\n");
+  for (let index = 0; index < 96; index += 1) {
+    const turn = agent.turn.prompt({ id: `turn-${index}`, input });
+    const result = await turn.result();
+    assert.equal(result.finalMessage, `DONE_${index}`);
+    result.dispose();
+    turn.dispose();
+  }
+  await scenario;
+  const liveWasmBytes = engine.memory.buffer.byteLength;
+  await agent.session.shutdown();
+  const reopened = await HostAgent.create(options);
+  const reopenedWasmBytes = engine.memory.buffer.byteLength;
+  context.after(() => reopened.session.shutdown());
+  const replay = reopened.turn.prompt({ id: "turn-95", input });
+  const result = await replay.result();
+  assert.equal(result.finalMessage, "DONE_95");
+  result.dispose();
+  replay.dispose();
+  // Report WASM allocation without reserving an arbitrary fraction of the
+  // Worker's shared JS/WASM memory limit as a separate pass/fail threshold.
+  const wasmBytes = engine.memory.buffer.byteLength;
+  const payloadBytes = Buffer.byteLength(store.load("long-memory-budget").payload);
+  context.diagnostic(JSON.stringify({ long_thread_wasm_bytes: wasmBytes,
+    live_wasm_bytes: liveWasmBytes, reopened_wasm_bytes: reopenedWasmBytes,
+    durable_payload_bytes: payloadBytes, turns: 96, cold_replay: true }));
+  assert.ok(payloadBytes < 32 * 1024, `long thread persisted ${payloadBytes} bytes`);
+  await reopened.session.shutdown();
+
+  const cancellationAgent = await HostAgent.create(options);
+  context.after(() => cancellationAgent.session.shutdown());
+  for (let index = 0; index < 432; index += 1) {
+    const cancelled = cancellationAgent.turn.prompt({
+      id: `cancel-${index}`, input: "Cancelled archive fixture.", cancelOnAdmission: true,
+    });
+    await assert.rejects(cancelled.result(), /cancel/i);
+    cancelled.dispose();
+  }
+  const cancellationWasmBytes = engine.memory.buffer.byteLength;
+  context.diagnostic(JSON.stringify({ cancellation_wasm_bytes: cancellationWasmBytes, cancellations: 432 }));
+});
+
 test("Worker completion keeps a large retained snapshot out of the eager crossover", async (context) => {
   const retainedText = "x".repeat(8 * 1024 * 1024);
   const encodedSnapshot = JSON.stringify({
@@ -253,6 +327,9 @@ test("JavaScript actions, event buffering, and Code Mode stay below binding-owne
   }));
 
   const actionIterations = 50_000;
+  // Collect preceding workloads outside each independent timing phase. GC
+  // during the timed workload still counts toward its budget.
+  globalThis.gc?.();
   const actionStarted = performance.now();
   for (let index = 0; index < actionIterations; index += 1) {
     agent.turn.prompt({ input: "measure wrapper overhead" }).dispose();
@@ -264,6 +341,9 @@ test("JavaScript actions, event buffering, and Code Mode stay below binding-owne
   const watch = agent.events.watch();
   const iterator = watch[Symbol.asyncIterator]();
   const eventCount = 4_096;
+  // In particular, do not charge collection of 50,000 disposed prompt wrappers
+  // to event buffering simply because V8 scheduled it at the next allocation.
+  globalThis.gc?.();
   const eventsStarted = performance.now();
   for (let seq = 1; seq <= eventCount; seq += 1) {
     for (const listener of subscriptions) {
@@ -290,6 +370,7 @@ test("JavaScript actions, event buffering, and Code Mode stay below binding-owne
     },
   });
   const codeIterations = 1_000;
+  globalThis.gc?.();
   const codeStarted = performance.now();
   for (let index = 0; index < codeIterations; index += 1) {
     const result = JSON.parse(await code.executeCode(

@@ -29,6 +29,27 @@ async function evaluateInTestRealm(source, environment) {
   );
 }
 
+test("quiet model reads survive six minutes and release on cancellation", async (t) => {
+  const host = createBrowserHost({ WebSocketImpl: FakeWebSocket });
+  const connecting = host.connect("ws://example.test", "not-forwarded", "session");
+  const socket = FakeWebSocket.instances.at(-1);
+  socket.open();
+  await connecting;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let settled = false;
+  const pending = host.next(1).then((value) => { settled = true; return JSON.parse(value); });
+  t.mock.timers.tick(360_000);
+  await Promise.resolve();
+  assert.equal(settled, false);
+  await assert.rejects(host.next(1), /concurrent reads/);
+  socket.message('{"type":"response.completed"}');
+  assert.deepEqual(await pending, { kind: "text", text: '{"type":"response.completed"}' });
+  const cancelled = host.next(1);
+  host.close(1);
+  assert.deepEqual(JSON.parse(await cancelled), { kind: "closed", detail: "by the WASM runtime" });
+  assert.equal(socket.readyState, 3);
+});
+
 test("browser Code Mode fails closed when an evaluator Worker is unavailable", async () => {
   assert.equal(typeof globalThis.Worker, "undefined");
   const host = createProductionBrowserHost({ WebSocketImpl: FakeWebSocket });
@@ -60,8 +81,8 @@ test("browser host carries ordered frames and application tools", async () => {
   assert.equal(JSON.parse(await connecting).status, 101);
   socket.message('{"type":"one"}');
   socket.message('{"type":"two"}');
-  assert.equal(JSON.parse(await host.next(1, 10)).text, '{"type":"one"}');
-  assert.equal(JSON.parse(await host.next(1, 10)).text, '{"type":"two"}');
+  assert.equal(JSON.parse(await host.next(1)).text, '{"type":"one"}');
+  assert.equal(JSON.parse(await host.next(1)).text, '{"type":"two"}');
 
   const execution = JSON.parse(await host.executeCode(
     "text(await tools.double({ value: 21 })); text(await tools.numericText({}));",
@@ -212,8 +233,12 @@ test("browser host gives inherited tools the Rust-owned subagent descriptor", as
   const sessionLifecycle = [];
   const host = createBrowserHost({
     subagentSessions: {
-      bind: (sessionId, descriptor) => sessionLifecycle.push(["bind", sessionId, descriptor]),
-      release: (sessionId) => sessionLifecycle.push(["release", sessionId]),
+      bind: (sessionId, descriptor, hostContextRef) => {
+        sessionLifecycle.push(["bind", sessionId, descriptor, hostContextRef]);
+      },
+      release: (sessionId, hostContextRef) => {
+        sessionLifecycle.push(["release", sessionId, hostContextRef]);
+      },
     },
     toolMode: "direct",
     tools: {
@@ -230,10 +255,29 @@ test("browser host gives inherited tools the Rust-owned subagent descriptor", as
     role: "world-resident:fern",
     task: "Act as Fern.",
   };
-  host.bindSubagentSession("child-session", descriptor);
-  host.bindSubagentSession("child-session", { ...descriptor });
-  assert.deepEqual(sessionLifecycle, [["bind", "child-session", descriptor]]);
+  const hostContextRef = "opaque-root-turn";
+  host.bindSubagentSession("child-session", descriptor, hostContextRef);
+  host.bindSubagentSession("child-session", { ...descriptor }, hostContextRef);
+  assert.deepEqual(sessionLifecycle, [[
+    "bind", "child-session", descriptor, hostContextRef,
+  ]]);
   assert.equal(Object.isFrozen(sessionLifecycle[0][2]), true);
+  assert.deepEqual(Object.keys(sessionLifecycle[0][2]).sort(), [
+    "agentId", "parentAgentId", "role", "sessionId", "task",
+  ]);
+  assert.equal(JSON.stringify(sessionLifecycle[0][2]).includes(hostContextRef), false);
+  const replacementHostContextRef = "opaque-retried-root-turn";
+  host.bindSubagentSession(
+    "child-session",
+    { ...descriptor, hostContextRef: "must-not-be-public", ignored: true },
+    replacementHostContextRef,
+  );
+  assert.deepEqual(sessionLifecycle[1], [
+    "bind", "child-session", descriptor, replacementHostContextRef,
+  ]);
+  assert.deepEqual(Object.keys(sessionLifecycle[1][2]).sort(), [
+    "agentId", "parentAgentId", "role", "sessionId", "task",
+  ]);
 
   const child = JSON.parse(await host.executeTool(
     "identity", "{}", "child-session", "call-child",
@@ -254,13 +298,72 @@ test("browser host gives inherited tools the Rust-owned subagent descriptor", as
   host.releaseSession("child-session");
   host.releaseSession("child-session");
   assert.deepEqual(sessionLifecycle, [
-    ["bind", "child-session", descriptor],
-    ["release", "child-session"],
+    ["bind", "child-session", descriptor, hostContextRef],
+    ["bind", "child-session", descriptor, replacementHostContextRef],
+    ["release", "child-session", replacementHostContextRef],
   ]);
   const released = JSON.parse(await host.executeTool(
     "identity", "{}", "child-session", "call-released",
   ));
   assert.equal(released.structured_result, null);
+});
+
+test("browser subagent lifecycle failures leave bindings retryable", async () => {
+  const descriptor = {
+    agentId: "9",
+    parentAgentId: "1",
+    sessionId: "retry-child",
+    role: "retry",
+    task: "Retry lifecycle transitions.",
+  };
+  let bindAttempts = 0;
+  let releaseAttempts = 0;
+  const host = createBrowserHost({
+    subagentSessions: {
+      bind() {
+        bindAttempts += 1;
+        if (bindAttempts === 1) throw new Error("bind failed");
+      },
+      release() {
+        releaseAttempts += 1;
+        if (releaseAttempts === 1) throw new Error("release failed");
+      },
+    },
+    toolMode: "direct",
+    tools: {
+      identity: {
+        parameters: { type: "object", additionalProperties: false },
+        handler: (_input, context) => context.subagent ?? null,
+      },
+    },
+  });
+
+  assert.throws(
+    () => host.bindSubagentSession("retry-child", descriptor, "retry-ref"),
+    /bind failed/,
+  );
+  let routed = JSON.parse(await host.executeTool(
+    "identity", "{}", "retry-child", "before-bind-retry",
+  ));
+  assert.equal(routed.structured_result, null);
+  host.bindSubagentSession("retry-child", descriptor, "retry-ref");
+  routed = JSON.parse(await host.executeTool(
+    "identity", "{}", "retry-child", "after-bind-retry",
+  ));
+  assert.deepEqual(routed.structured_result, descriptor);
+
+  assert.throws(() => host.releaseSession("retry-child"), /release failed/);
+  routed = JSON.parse(await host.executeTool(
+    "identity", "{}", "retry-child", "before-release-retry",
+  ));
+  assert.deepEqual(routed.structured_result, descriptor);
+  host.releaseSession("retry-child");
+  routed = JSON.parse(await host.executeTool(
+    "identity", "{}", "retry-child", "after-release-retry",
+  ));
+  assert.equal(routed.structured_result, null);
+  assert.equal(bindAttempts, 2);
+  assert.equal(releaseAttempts, 2);
 });
 
 test("browser host never flattens remote MCP tools into direct mode", () => {
@@ -428,11 +531,11 @@ test("browser host opens application sockets through MPP", async () => {
   assert.equal(JSON.parse(await host.connect("wss://paid.test", "mpp-managed", "session")).status, 101);
   assert.deepEqual(endpoints, ["wss://paid.test"]);
   socket.message('{"type":"paid"}');
-  assert.equal(JSON.parse(await host.next(1, 10)).text, '{"type":"paid"}');
+  assert.equal(JSON.parse(await host.next(1)).text, '{"type":"paid"}');
   assert.equal(JSON.parse(await host.send(1, "request")).ok, true);
   assert.deepEqual(socket.sent.map(JSON.parse), [{ mpp: "message", data: "request" }]);
   socket.close(3008, "requested voucher amount exceeds local maxDeposit");
-  assert.deepEqual(JSON.parse(await host.next(1, 10)), {
+  assert.deepEqual(JSON.parse(await host.next(1)), {
     kind: "error",
     detail: "MPP WebSocket payment flow failed with code 3008: requested voucher amount exceeds local maxDeposit",
     reconnectable: false,
@@ -924,7 +1027,7 @@ test("browser host bounds queued receives and buffered sends", async () => {
 
   socket.message("first");
   socket.message("second");
-  assert.match(JSON.parse(await host.next(1, 10)).detail, /receive queue exceeded/);
+  assert.match(JSON.parse(await host.next(1)).detail, /receive queue exceeded/);
   assert.equal(socket.closedCode, 1009);
 
   const secondHost = createBrowserHost({

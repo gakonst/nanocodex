@@ -3,7 +3,7 @@
   "name": "nanocodex-durable-agent-test",
   "main": "test/memory-scope-worker.ts",
   "compatibility_date": "2026-07-29",
-  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public", "enable_request_signal"],
   "alias": {
     "node-rsa": "../nanocodex/tools/browser/unsupportedNodeRsa.mjs"
   },
@@ -11,6 +11,10 @@
     {
       "binding": "NANOCODEX_HISTORY",
       "bucket_name": "nanocodex-managed-history-test"
+    },
+    {
+      "binding": "NANOCODEX_WORKSPACES",
+      "bucket_name": "nanocodex-sandbox-workspaces-test"
     }
   ],
   "durable_objects": {
@@ -24,8 +28,16 @@
         "class_name": "AccountHostedTools"
       },
       {
+        "name": "NANOCODEX_VM_HOST_POOLS",
+        "class_name": "VmHostPool"
+      },
+      {
         "name": "NANOCODEX_SESSIONS",
         "class_name": "DurableAgentSession"
+      },
+      {
+        "name": "NANOCODEX_USERS",
+        "class_name": "UserAccount"
       }
     ]
   },
@@ -41,6 +53,14 @@
     {
       "tag": "managed-session-v1",
       "new_sqlite_classes": ["DurableAgentSession"]
+    },
+    {
+      "tag": "vm-host-pool-v1",
+      "new_sqlite_classes": ["VmHostPool"]
+    },
+    {
+      "tag": "user-account-test-v1",
+      "new_sqlite_classes": ["UserAccount"]
     }
   ]
 }

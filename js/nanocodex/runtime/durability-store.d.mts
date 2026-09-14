@@ -72,7 +72,7 @@ export declare function exportDurabilityStatePage(
 /** Imports a complete contiguous page set iff the destination still has the exact state at `from`. */
 export declare function importDurabilityStatePages(
   store: import("../types.mjs").DurabilityPortableStore,
-  pages: Iterable<import("../types.mjs").DurabilityPortableStatePage>,
+  pages: Iterable<import("../types.mjs").DurabilityPortableStatePage> | AsyncIterable<import("../types.mjs").DurabilityPortableStatePage>,
 ): Promise<import("../types.mjs").DurabilityStoredState>;
 
 export declare function createMemoryDurabilityStore(

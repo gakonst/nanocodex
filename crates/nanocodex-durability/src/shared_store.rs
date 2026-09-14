@@ -9,6 +9,16 @@ use crate::{OwnedState, OwnerId, OwnerToken, StateStore, StoreError, StoreFuture
 const COMMAND_CAPACITY: usize = 64;
 
 enum Command {
+    ReadRecords {
+        state_id: String,
+        keys: Vec<String>,
+        result: oneshot::Sender<Result<Vec<Option<String>>, StoreError>>,
+    },
+    ReadRecord {
+        state_id: String,
+        key: String,
+        result: oneshot::Sender<Result<Option<String>, StoreError>>,
+    },
     Acquire {
         state_id: String,
         owner_id: OwnerId,
@@ -19,6 +29,7 @@ enum Command {
         owner: OwnerToken,
         expected_revision: u64,
         payload: String,
+        records: Vec<crate::StoreRecord>,
         result: oneshot::Sender<Result<u64, StoreError>>,
     },
 }
@@ -42,6 +53,21 @@ impl SharedStore {
         spawn_driver(async move {
             while let Some(command) = receiver.recv().await {
                 match command {
+                    Command::ReadRecords {
+                        state_id,
+                        keys,
+                        result,
+                    } => {
+                        drop(result.send(store.read_records(&state_id, &keys).await));
+                    }
+                    Command::ReadRecord {
+                        state_id,
+                        key,
+                        result,
+                    } => {
+                        drop(result.send(store.read_record(&state_id, &key).await));
+                    }
+
                     Command::Acquire {
                         state_id,
                         owner_id,
@@ -54,12 +80,19 @@ impl SharedStore {
                         owner,
                         expected_revision,
                         payload,
+                        records: new_records,
                         result,
                     } => {
                         drop(
                             result.send(
                                 store
-                                    .replace(&state_id, &owner, expected_revision, &payload)
+                                    .replace(
+                                        &state_id,
+                                        &owner,
+                                        expected_revision,
+                                        &payload,
+                                        &new_records,
+                                    )
                                     .await,
                             ),
                         );
@@ -72,6 +105,44 @@ impl SharedStore {
 }
 
 impl StateStore for SharedStore {
+    fn read_records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>> {
+        Box::pin(async move {
+            let (result, receiver) = oneshot::channel();
+            self.commands
+                .send(Command::ReadRecords {
+                    state_id: state_id.to_owned(),
+                    keys: keys.to_vec(),
+                    result,
+                })
+                .await
+                .map_err(|_| stopped())?;
+            receiver.await.map_err(|_| stopped())?
+        })
+    }
+
+    fn read_record<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        key: &'a str,
+    ) -> StoreFuture<'a, Result<Option<String>, StoreError>> {
+        Box::pin(async move {
+            let (result, receiver) = oneshot::channel();
+            self.commands
+                .send(Command::ReadRecord {
+                    state_id: state_id.to_owned(),
+                    key: key.to_owned(),
+                    result,
+                })
+                .await
+                .map_err(|_| stopped())?;
+            receiver.await.map_err(|_| stopped())?
+        })
+    }
+
     fn acquire<'a>(
         &'a mut self,
         state_id: &'a str,
@@ -97,6 +168,7 @@ impl StateStore for SharedStore {
         owner: &'a OwnerToken,
         expected_revision: u64,
         payload: &'a str,
+        records: &'a [crate::StoreRecord],
     ) -> StoreFuture<'a, Result<u64, StoreError>> {
         Box::pin(async move {
             let (result, receiver) = oneshot::channel();
@@ -106,6 +178,7 @@ impl StateStore for SharedStore {
                     owner: owner.clone(),
                     expected_revision,
                     payload: payload.to_owned(),
+                    records: records.to_vec(),
                     result,
                 })
                 .await

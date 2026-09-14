@@ -75,6 +75,29 @@ pub trait LifecycleBackend: Send + Sync + 'static {
     /// Steers one exact active turn.
     fn steer(&self, key: BackendTurnKey, prompt: Prompt) -> BackendFuture<Result<()>>;
 
+    /// Admits a steer with a caller-owned identity unique within this turn.
+    fn steer_with_id(
+        &self,
+        _key: BackendTurnKey,
+        _id: String,
+        _prompt: Prompt,
+    ) -> BackendFuture<Result<()>> {
+        Box::pin(async {
+            Err(NanocodexError::InvalidRequest(
+                "identified steering is not supported by this backend".into(),
+            ))
+        })
+    }
+
+    /// Withdraws the latest steer if it has not reached a model boundary.
+    fn withdraw_steer(&self, _key: BackendTurnKey, _id: String) -> BackendFuture<Result<bool>> {
+        Box::pin(async {
+            Err(NanocodexError::InvalidRequest(
+                "steer withdrawal is not supported by this backend".into(),
+            ))
+        })
+    }
+
     /// Cancels one exact unfinished turn.
     fn cancel(&self, key: BackendTurnKey) -> BackendFuture<Result<()>>;
 
@@ -341,6 +364,38 @@ impl LifecycleBackend for LocalLifecycle {
             request_command(&commands, &shutdown, |result| Command::Steer {
                 key: TurnKey(key.0),
                 prompt,
+                result,
+            })
+            .await
+        })
+    }
+
+    fn steer_with_id(
+        &self,
+        key: BackendTurnKey,
+        id: String,
+        prompt: Prompt,
+    ) -> BackendFuture<Result<()>> {
+        let commands = self.commands.clone();
+        let shutdown = self.shutdown.clone();
+        Box::pin(async move {
+            request_command(&commands, &shutdown, |result| Command::SteerWithId {
+                key: TurnKey(key.0),
+                id,
+                prompt,
+                result,
+            })
+            .await
+        })
+    }
+
+    fn withdraw_steer(&self, key: BackendTurnKey, id: String) -> BackendFuture<Result<bool>> {
+        let commands = self.commands.clone();
+        let shutdown = self.shutdown.clone();
+        Box::pin(async move {
+            request_command(&commands, &shutdown, |result| Command::WithdrawSteer {
+                key: TurnKey(key.0),
+                id,
                 result,
             })
             .await

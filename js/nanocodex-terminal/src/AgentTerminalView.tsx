@@ -14,10 +14,11 @@ import {
 } from "nanocodex-react/agent";
 import {
   useVoice,
+  Voice,
   type UseVoiceParameters,
   type UseVoiceReturnType,
 } from "nanocodex-react";
-import { X } from "lucide-react";
+import { SlidersHorizontal, X } from "lucide-react";
 import { TerminalComposer } from "./TerminalComposer.js";
 import { TerminalTranscriptSurface } from "./TerminalTranscriptSurface.js";
 import type { VoiceTerminalEntry } from "./TerminalTranscriptSurface.js";
@@ -38,6 +39,7 @@ export function AgentTerminalView({
   agent,
   agentError,
   composer,
+  composerPlaceholder,
   controls,
   inactiveMessage,
   maxEntries,
@@ -57,6 +59,7 @@ export function AgentTerminalView({
   agentError: string | undefined;
   /** Replaces the default composer without detaching the transcript controller. */
   composer?: ReactNode;
+  composerPlaceholder?: string;
   controls?(controls: Pick<AgentTerminalAccessory, "agentReady">): ReactNode;
   inactiveMessage?(state: Readonly<{
     agentError: string | undefined;
@@ -86,7 +89,6 @@ export function AgentTerminalView({
   const submittedPrompts = useRef<Array<{ input: string; submittedAt: number }>>([]);
   const pendingRootPrompts = useRef<PromptTiming[]>([]);
   const currentRootPrompt = useRef<PromptTiming | undefined>(undefined);
-  const consumedVoiceTranscripts = useRef(0);
   const voiceEntrySequence = useRef(0);
   const handleControllerEvent = useCallback((event: AgentControllerEvent) => {
     const observedEvent = observeControllerTiming({
@@ -153,35 +155,26 @@ export function AgentTerminalView({
 
   useEffect(() => {
     setVoiceEntries([]);
-    consumedVoiceTranscripts.current = 0;
     voiceEntrySequence.current = 0;
   }, [agent?.sessionId]);
 
   useEffect(() => {
     const transcripts = voiceState.transcripts;
-    if (transcripts.length === 0) {
-      consumedVoiceTranscripts.current = 0;
-      return;
-    }
-    const start = Math.min(consumedVoiceTranscripts.current, transcripts.length);
-    consumedVoiceTranscripts.current = transcripts.length;
-    if (start === transcripts.length) return;
-
+    if (transcripts.length === 0) return;
     const afterEntryId = controller.entries.at(-1)?.id;
-    const appended = transcripts.slice(start).map((transcript: Readonly<{
-      speaker: "user" | "assistant";
-      text: string;
-    }>): VoiceTerminalEntry => ({
-      afterEntryId,
-      id: `voice-${agent?.sessionId ?? "detached"}-${voiceEntrySequence.current++}`,
-      kind: transcript.speaker,
-      source: "voice",
-      streaming: false,
-      text: transcript.text,
-    }));
-    setVoiceEntries((current) => [...current, ...appended].slice(-maxVoiceEntries));
+    setVoiceEntries((current) => {
+      const rows = [...current];
+      for (const transcript of transcripts) {
+        const id = `voice-${agent?.sessionId ?? "detached"}-${transcript.id ?? voiceEntrySequence.current++}`;
+        const index = rows.findIndex((entry) => entry.id === id);
+        const entry: VoiceTerminalEntry = { afterEntryId: index < 0 ? afterEntryId : rows[index]!.afterEntryId,
+          id, kind: transcript.speaker, source: "voice", streaming: transcript.isPartial === true, text: transcript.text };
+        if (index < 0) rows.push(entry); else rows[index] = entry;
+      }
+      return rows.slice(-maxVoiceEntries);
+    });
     setFollowTailRequest((current) => current + 1);
-  }, [agent?.sessionId, controller.entries, maxVoiceEntries, voiceState.transcripts]);
+  }, [agent?.sessionId, maxVoiceEntries, voiceState.transcripts]);
 
   useEffect(() => {
     onStateChange({ error: agentError, retry: retryAgent, status: agentStatus });
@@ -196,41 +189,42 @@ export function AgentTerminalView({
       setPendingTouchSubmission({ input, submittedAt });
       return;
     }
-    submitPrompt(controller, submittedPrompts.current, input, submittedAt, promptIntent);
+    void voiceState.noteTypedInput().then(() => submitPrompt(controller, submittedPrompts.current, input, submittedAt, promptIntent));
     setTouchDraft("");
-  }, [agentStatus, controller, promptIntent]);
+  }, [agentStatus, controller, promptIntent, voiceState.noteTypedInput]);
   useEffect(() => {
     if (agentStatus !== "ready" || !pendingTouchSubmission) return;
-    submitPrompt(
+    void voiceState.noteTypedInput().then(() => submitPrompt(
       controller,
       submittedPrompts.current,
       pendingTouchSubmission.input,
       pendingTouchSubmission.submittedAt,
       promptIntent,
-    );
+    ));
     setPendingTouchSubmission(undefined);
     setTouchDraft("");
-  }, [agentStatus, controller, pendingTouchSubmission, promptIntent]);
+  }, [agentStatus, controller, pendingTouchSubmission, promptIntent, voiceState.noteTypedInput]);
   const cancelTouchTurn = useCallback(() => {
-    if (agentStatus === "ready") void controller.cancel();
-  }, [agentStatus, controller]);
+    if (agentStatus === "ready") void voiceState.noteTypedInput().then(() => controller.cancel());
+  }, [agentStatus, controller, voiceState.noteTypedInput]);
   const submitAccessoryPrompt = useCallback((input: string) => {
     if (agentStatus !== "ready") return;
     const submittedAt = performance.now();
     setFollowTailRequest((current) => current + 1);
     retainSubmittedPrompt(submittedPrompts.current, input, submittedAt);
-    void controller.submit(input, { intent: "queue" });
-  }, [agentStatus, controller]);
+    void voiceState.noteTypedInput().then(() => controller.submit(input, { intent: "queue" }));
+  }, [agentStatus, controller, voiceState.noteTypedInput]);
 
   const terminal = (
     <TerminalTranscriptSurface
       composer={composer === undefined ? (
         <TerminalComposer
           controls={(voice || controls) ? <>
-            {voice ? <VoiceControl agentReady={agentStatus === "ready"} voice={voiceState} /> : null}
+            {voice ? <VoiceControl agentReady={agentStatus === "ready"} voice={voiceState} initialSettings={voiceOptions} /> : null}
             {controls?.({ agentReady: agentStatus === "ready" })}
           </> : undefined}
           draft={touchDraft}
+          placeholder={composerPlaceholder}
           pending={pendingTouchSubmission !== undefined}
           running={terminalRunning}
           status={agentStatus}
@@ -256,7 +250,9 @@ export function AgentTerminalView({
     />
   );
 
-  return mode === "full" ? (
+  // A retained full terminal keeps its transcript and artifact frame mounted
+  // while its owning route is hidden, preserving scroll and artifact state.
+  return mode !== "preview" ? (
     <div className="agent-terminal-workspace">
       {terminal}
       {accessory?.({ agentReady: agentStatus === "ready", submit: submitAccessoryPrompt })}
@@ -267,12 +263,37 @@ export function AgentTerminalView({
 export function VoiceControl({
   agentReady,
   voice,
+  initialVoice,
+  initialSettings,
 }: {
   agentReady: boolean;
   voice: UseVoiceReturnType;
+  initialVoice?: NonNullable<UseVoiceReturnType["voice"]> | undefined;
+  initialSettings?: Voice.Settings | undefined;
 }) {
   const engaged = voice.isActive || voice.isConnecting;
+  const [settings, setSettings] = useState<Voice.Settings>(() => ({ ...savedVoiceSettings(), ...initialSettings }));
+  const [selectedVoice, setSelectedVoice] = useState(voice.voice ?? initialVoice ?? settings.voice ?? Voice.defaultVoice);
+  const [showSettings, setShowSettings] = useState(false);
+  const [settingsError, setSettingsError] = useState<string>();
+  const [applying, setApplying] = useState(false);
   const statusText = voice.statusText ?? (voice.isActive ? voice.voice : undefined);
+  const saveSettings = async () => {
+    const next = { ...settings, voice: selectedVoice };
+    if (next.instructions?.includes("\0")) {
+      setSettingsError("Speaking preferences cannot contain NUL characters.");
+      return;
+    }
+    setApplying(true);
+    setSettingsError(undefined);
+    try {
+      try { globalThis.localStorage?.setItem("nanocodex.voice.settings", JSON.stringify(next)); } catch { /* Storage may be disabled. */ }
+      if (engaged) { await voice.stop(); await voice.start(next); }
+      setShowSettings(false);
+    } catch (error) {
+      setSettingsError(error instanceof Error ? error.message : String(error));
+    } finally { setApplying(false); }
+  };
   return <>
     <button
       className="agent-voice-button"
@@ -280,13 +301,70 @@ export function VoiceControl({
       aria-label={engaged ? "Stop voice" : "Start voice"}
       aria-pressed={engaged}
       disabled={!agentReady}
-      onClick={() => { void voice.toggle().catch(() => {}); }}
+      onClick={() => { void voice.toggle({ ...settings, voice: selectedVoice }).catch(() => {}); }}
     >
       <svg aria-hidden="true" viewBox="0 0 24 24">
         <path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm-7-3a1 1 0 1 1 2 0 5 5 0 0 0 10 0 1 1 0 1 1 2 0 7 7 0 0 1-6 6.92V21h3a1 1 0 1 1 0 2H8a1 1 0 1 1 0-2h3v-2.08A7 7 0 0 1 5 12Z" />
       </svg>
       <span className="agent-terminal-sr-only">Voice</span>
     </button>
+    {engaged ? <>
+      <button type="button" className="agent-voice-mute-button" aria-label={voice.muted ? "Unmute microphone" : "Mute microphone"}
+        aria-pressed={voice.muted} onClick={() => voice.toggleMuted()}>{voice.muted ? "Unmute" : "Mute"}</button>
+      <meter className="agent-voice-level" aria-label="Microphone level" min={0} max={1} value={voice.microphoneLevel} />
+      <meter className="agent-voice-level" aria-label="Speaker level" min={0} max={1} value={voice.speakerLevel} />
+    </> : null}
+    <select
+      aria-label="Voice"
+      className="agent-voice-select"
+      value={selectedVoice}
+      disabled={engaged}
+      onChange={(event) => { setSelectedVoice(event.target.value as NonNullable<UseVoiceReturnType["voice"]>); }}
+    >
+      {Voice.voices.map((name) => <option key={name} value={name}>
+        {name[0]!.toUpperCase() + name.slice(1)}
+      </option>)}
+    </select>
+    <div className="agent-voice-preferences">
+      <button type="button" aria-label="Voice settings" aria-expanded={showSettings}
+        onClick={() => { setShowSettings(!showSettings); }}>
+        <SlidersHorizontal aria-hidden="true" />
+      </button>
+      {showSettings ? <div className="agent-voice-settings" role="group" aria-label="Voice preferences">
+        <label>Voice for this call<select value={selectedVoice} onChange={(event) => {
+          setSelectedVoice(event.target.value as Voice.VoiceName);
+        }}>
+          {Voice.voices.map((name) => <option key={name} value={name}>{name[0]!.toUpperCase() + name.slice(1)}</option>)}
+        </select></label>
+        <label>Pace<select value={settings.pace ?? "natural"} onChange={(event) => {
+          setSettings({ ...settings, pace: event.target.value as Voice.Settings["pace"] });
+        }}>
+          <option value="slow">Relaxed</option><option value="natural">Natural</option><option value="fast">Brisk</option>
+        </select></label>
+        <label>Spoken updates<select value={settings.updates ?? "auto"} onChange={(event) => {
+          setSettings({ ...settings, updates: event.target.value as Voice.Settings["updates"] });
+        }}>
+          <option value="auto">As useful</option><option value="results">Results and blockers</option><option value="silent">Only when asked</option>
+        </select></label>
+        <label>Acknowledge requests<select value={settings.acknowledgements === undefined ? "auto" : String(settings.acknowledgements)} onChange={(event) => {
+          setSettings({ ...settings, acknowledgements: event.target.value === "auto" ? undefined : event.target.value === "true" });
+        }}>
+          <option value="auto">Automatic</option><option value="true">On</option><option value="false">Off</option>
+        </select></label>
+        <label>Speaking style<textarea value={settings.instructions ?? ""} rows={3}
+          placeholder="Keep answers short and speak Greek unless I ask otherwise."
+          onChange={(event) => { setSettings({ ...settings, instructions: event.target.value }); }} /></label>
+        {settingsError ? <span role="alert">{settingsError}</span> : null}
+        {voice.isActive ? <button type="button" onClick={() => {
+          void voice.speak("Voice is connected. You should hear this sentence.").catch((error: unknown) => {
+            setSettingsError(error instanceof Error ? error.message : String(error));
+          });
+        }}>Test voice</button> : null}
+        <button type="button" aria-label="Save voice settings" disabled={applying} onClick={() => { void saveSettings(); }}>
+          {applying ? "Applying…" : engaged ? "Apply and reconnect" : "Save"}
+        </button>
+      </div> : null}
+    </div>
     {voice.isActive ? (
       <button
         className="agent-voice-cancel-button"
@@ -312,6 +390,22 @@ export function VoiceControl({
       </div>
     ) : null}
   </>;
+}
+
+function savedVoiceSettings(): Voice.Settings {
+  try {
+    const value: unknown = JSON.parse(globalThis.localStorage?.getItem("nanocodex.voice.settings") ?? "{}");
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    const settings = value as Voice.Settings;
+    return {
+      voice: Voice.voices.includes(settings.voice!) ? settings.voice : undefined,
+      instructions: typeof settings.instructions === "string"
+        && !settings.instructions.includes("\0") ? settings.instructions : undefined,
+      pace: ["slow", "natural", "fast"].includes(settings.pace!) ? settings.pace : undefined,
+      updates: ["auto", "results", "silent"].includes(settings.updates!) ? settings.updates : undefined,
+      acknowledgements: typeof settings.acknowledgements === "boolean" ? settings.acknowledgements : undefined,
+    };
+  } catch { return {}; }
 }
 
 type PromptTiming = {

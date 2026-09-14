@@ -250,17 +250,12 @@ export class ManagedEventArchive<Message extends { type: string }> {
       throw new Error("managed event archive source is not newer than its ownership fence");
     }
 
-    const events = selected.map((row) => ({
-      cursor: row.cursor,
-      created_at: row.created_at,
-      message: JSON.parse(row.message_json) as Message,
-      turn_id: row.turn_id,
-    }));
-    const segmentBody = JSON.stringify({
-      version: VERSION,
-      kind: "managed_event_segment",
-      events,
-    } satisfies SegmentEnvelope<Message>);
+    // Stored messages are already canonical JSON. Embed them directly instead
+    // of retaining a second decoded copy of the complete segment during upload.
+    const segmentBody = '{"version":1,"kind":"managed_event_segment","events":['
+      + selected.map((row) => '{"cursor":' + JSON.stringify(row.cursor)
+        + ',"created_at":' + row.created_at + ',"message":' + row.message_json
+        + ',"turn_id":' + JSON.stringify(row.turn_id) + '}').join(',') + ']}';
     const segmentBytes = encoder.encode(segmentBody);
     const segmentHash = await sha256Hex(segmentBytes);
     const descriptor: SegmentDescriptor = {
@@ -382,7 +377,8 @@ export class ManagedEventArchive<Message extends { type: string }> {
   ): Promise<DurableEvent<Message>[]> {
     const state = this.#state();
     if (BigInt(after) >= BigInt(state.archived_through)) return [];
-    const descriptors = await this.#descriptorsAfter(after, limit);
+    // One immutable segment per page; never accumulate many decoded segments.
+    const descriptors = await this.#descriptorsAfter(after, 1);
     const events: DurableEvent<Message>[] = [];
     for (const descriptor of descriptors) {
       const segment = await this.#readSegment(descriptor, cache);
@@ -418,10 +414,14 @@ export class ManagedEventArchive<Message extends { type: string }> {
   ): Promise<DurableEvent<Message>[]> {
     while (true) {
       const fence = this.#readFence();
-      const archived = await this.pageAfter(after, limit, cache);
-      const localAfter = archived.at(-1)?.cursor ?? after;
-      const tail = archived.length >= limit ? [] : local.page(localAfter, limit - archived.length);
-      if (sameFence(fence, this.#readFence())) return [...archived, ...tail];
+      const archived = BigInt(after) < BigInt(fence.archived_through);
+      // A caught-up subscriber must not pin its last decoded archive segment
+      // for the lifetime of an otherwise idle SSE/WebSocket connection.
+      if (!archived) cache.segment = undefined;
+      const events = archived
+        ? await this.pageAfter(after, limit, cache)
+        : local.page(after, limit);
+      if (sameFence(fence, this.#readFence())) return events;
     }
   }
 
@@ -435,26 +435,34 @@ export class ManagedEventArchive<Message extends { type: string }> {
       const fence = this.#readFence();
       const localPage = local.history(before, limit);
       let page: DurableEventHistory<Message>;
-      if (localPage.data.length >= limit) {
+      // Do not skip a byte-truncated local page to fill it from the archive.
+      // Cursor pagination crosses the storage boundary on the next request.
+      if (localPage.data.length > 0 || fence.archived_events === 0) {
         page = {
           ...localPage,
           has_more: localPage.has_more || fence.archived_events > 0,
           latest_cursor: maxCursor(localPage.latest_cursor, fence.archived_through),
         };
-      } else if (fence.archived_events === 0) {
-        page = localPage;
       } else {
-        const archiveBefore = localPage.data[0]?.cursor ?? before;
-        const remaining = limit - localPage.data.length;
-        const archived = await this.#historyBefore(archiveBefore, remaining, cache);
-        page = {
-          data: [...archived.data, ...localPage.data],
-          has_more: archived.has_more,
-          latest_cursor: maxCursor(localPage.latest_cursor, fence.archived_through),
-        };
+        const archived = await this.#historyBefore(before, limit, cache);
+        page = { ...archived, latest_cursor: maxCursor(localPage.latest_cursor, fence.archived_through) };
       }
       if (sameFence(fence, this.#readFence())) return page;
     }
+  }
+
+  async historyAfter(
+    local: DurableEventLog<Message>,
+    after: string,
+    limit: number,
+  ): Promise<DurableEventHistory<Message>> {
+    const data = await this.page(local, after, limit);
+    const latest = this.latestCursor(local);
+    return {
+      data,
+      has_more: BigInt(data.at(-1)?.cursor ?? after) < BigInt(latest),
+      latest_cursor: latest,
+    };
   }
 
   async deleteAll(): Promise<number> {
@@ -523,9 +531,11 @@ export class ManagedEventArchive<Message extends { type: string }> {
     if (limit <= 0) return { data: [], has_more: this.#state().archived_events > 0 };
     const boundary = BigInt(before ?? (BigInt(this.archivedThrough()) + 1n).toString());
     const collected: DurableEvent<Message>[] = [];
+    let stoppedAtSegmentBoundary = false;
     const consume = async (descriptors: SegmentDescriptor[]): Promise<boolean> => {
       for (const descriptor of [...descriptors].reverse()) {
         if (BigInt(descriptor.start_cursor) >= boundary) continue;
+        if (collected.length > 0) { stoppedAtSegmentBoundary = true; return true; }
         const segment = await this.#readSegment(descriptor, cache);
         for (const event of [...segment].reverse()) {
           if (BigInt(event.cursor) >= boundary) continue;
@@ -558,8 +568,8 @@ export class ManagedEventArchive<Message extends { type: string }> {
         if (await consume(node.descriptors)) break;
       }
     }
-    const hasMore = collected.length > limit;
-    if (hasMore) collected.pop();
+    const hasMore = stoppedAtSegmentBoundary || collected.length > limit;
+    if (collected.length > limit) collected.pop();
     return { data: collected.reverse(), has_more: hasMore };
   }
 
@@ -568,18 +578,45 @@ export class ManagedEventArchive<Message extends { type: string }> {
     cache: SegmentReadCache<Message>,
   ): Promise<DurableEvent<Message>[]> {
     if (cache.segment?.key === descriptor.key) return cache.segment.events;
-    const object = await this.#bucket.get(this.#portableObjectKey(descriptor.key));
-    if (!object || !object.body) throw new Error("managed event archive segment is unavailable");
-    if (object.size !== descriptor.bytes) {
-      await object.body.cancel();
-      throw new Error("managed event archive segment size does not match its descriptor");
-    }
-    const encoded = new Uint8Array(await object.arrayBuffer());
-    const expectedHash = object.customMetadata?.sha256;
-    if (!expectedHash || object.customMetadata?.kind !== "managed_event_segment"
-      || object.customMetadata?.version !== String(VERSION)
-      || await sha256Hex(encoded) !== expectedHash) {
-      throw new Error("managed event archive segment checksum mismatch");
+    // Only content-addressed segments are cached. Ordinal index keys can be
+    // reused by portability, so they still come from the authoritative bucket.
+    // This named cache is internal; public history still checks authorization.
+    const key = this.#portableObjectKey(descriptor.key);
+    const cacheKey = `https://managed-history.internal/${key}`;
+    // Oversized individual events still work, but never grow a cache buffer
+    // beyond the normal segment target.
+    const sharedCache = descriptor.bytes <= DEFAULT_SEGMENT_TARGET_BYTES
+      ? await caches.open("nanocodex-managed-event-segments-v1").catch(() => undefined)
+      : undefined;
+    const cached = await sharedCache?.match(cacheKey).then(async (response) => {
+      if (!response) return undefined;
+      const bytes = await readCachedSegment(response, descriptor.bytes);
+      return bytes && await sha256Hex(bytes) === descriptor.key.slice(-69, -5) ? bytes : undefined;
+    }).catch(() => undefined);
+    let encoded = cached;
+    if (!encoded) {
+      const object = await this.#bucket.get(key);
+      if (!object || !object.body) throw new Error("managed event archive segment is unavailable");
+      if (object.size !== descriptor.bytes) {
+        await object.body.cancel();
+        throw new Error("managed event archive segment size does not match its descriptor");
+      }
+      encoded = new Uint8Array(await object.arrayBuffer());
+      const expectedHash = object.customMetadata?.sha256;
+      if (!expectedHash || object.customMetadata?.kind !== "managed_event_segment"
+        || object.customMetadata?.version !== String(VERSION)
+        || await sha256Hex(encoded) !== expectedHash) {
+        throw new Error("managed event archive segment checksum mismatch");
+      }
+      if (expectedHash !== descriptor.key.slice(-69, -5)) {
+        throw new Error("managed event archive segment checksum does not match its key");
+      }
+      // Cache failure or eviction never affects durable history availability.
+      // Await the write so the next page can reuse it without an in-isolate map.
+      await sharedCache?.put(cacheKey, new Response(encoded, { headers: {
+        "content-type": "application/json",
+        "cache-control": "public, max-age=86400, immutable",
+      } })).catch(() => {});
     }
     const value = JSON.parse(new TextDecoder().decode(encoded)) as SegmentEnvelope<Message>;
     if (value.version !== VERSION || value.kind !== "managed_event_segment"
@@ -714,6 +751,28 @@ export class ManagedEventArchive<Message extends { type: string }> {
     }
     return descriptors;
   }
+}
+
+/** The descriptor bounds both allocation and reads, even for a broken cache. */
+async function readCachedSegment(response: Response, size: number): Promise<Uint8Array | undefined> {
+  if (!response.body) return undefined;
+  const length = response.headers.get("content-length");
+  if (length !== null && Number(length) !== size) {
+    await response.body.cancel();
+    return undefined;
+  }
+  const reader = response.body.getReader();
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return offset === size ? bytes : undefined;
+      if (value.byteLength > size - offset) return undefined;
+      bytes.set(value, offset);
+      offset += value.byteLength;
+    }
+  } finally { await reader.cancel(); }
 }
 
 function decodeDescriptors(encoded: string): SegmentDescriptor[] {

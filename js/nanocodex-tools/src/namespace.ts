@@ -1,6 +1,7 @@
 import { utf8ByteLength } from "../runtime/utf8.mjs";
 
-export const MAX_NAMESPACE_MOUNTS = 64;
+/** @deprecated Namespace size is governed by the selected providers. */
+export const MAX_NAMESPACE_MOUNTS = Infinity;
 export const MAX_NAMESPACE_GRANTS = 128;
 export const MAX_NAMESPACE_PATH_BYTES = 4_096;
 export const MAX_NAMESPACE_PATH_SEGMENTS = 256;
@@ -118,10 +119,10 @@ export function createNamespaceManifest(input: NamespaceManifestInput): Namespac
   if (!isRecord(input) || !Array.isArray(input.mounts)) {
     throw new NamespaceError("invalid_manifest", "namespace manifest must contain a mounts array");
   }
-  if (input.mounts.length === 0 || input.mounts.length > MAX_NAMESPACE_MOUNTS) {
+  if (input.mounts.length === 0) {
     throw new NamespaceError(
       "invalid_manifest",
-      `namespace manifest must contain 1 to ${MAX_NAMESPACE_MOUNTS} mounts`,
+      "namespace manifest must contain at least one mount",
     );
   }
 

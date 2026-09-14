@@ -59,6 +59,22 @@ impl Turn {
         self.control.steer(prompt).await
     }
 
+    /// Admits a steer with an identity for later withdrawal.
+    ///
+    /// # Errors
+    /// See [`TurnControl::steer_with_id`].
+    pub async fn steer_with_id(&self, id: String, prompt: impl Into<Prompt>) -> Result<()> {
+        self.control.steer_with_id(id, prompt).await
+    }
+
+    /// Withdraws the latest steer before the next model boundary.
+    ///
+    /// # Errors
+    /// See [`TurnControl::withdraw_steer`].
+    pub async fn withdraw_steer(&self, id: String) -> Result<bool> {
+        self.control.withdraw_steer(id).await
+    }
+
     /// Cancels this exact unfinished turn.
     ///
     /// A queued turn is removed before execution and acknowledged immediately;
@@ -123,6 +139,30 @@ impl TurnControl {
         let prompt = prompt.into();
         prompt.validate().map_err(steer_validation_error)?;
         self.backend.steer(self.key, prompt).await
+    }
+
+    /// Admits input with a caller-owned identity unique within this turn.
+    ///
+    /// # Errors
+    /// Returns admission errors or an error if identified steering is unsupported.
+    pub async fn steer_with_id(&self, id: String, prompt: impl Into<Prompt>) -> Result<()> {
+        if id.is_empty() {
+            return Err(NanocodexError::InvalidRequest(
+                "steer identity must not be empty".into(),
+            ));
+        }
+        let prompt = prompt.into();
+        prompt.validate().map_err(steer_validation_error)?;
+        self.backend.steer_with_id(self.key, id, prompt).await
+    }
+
+    /// Withdraws the latest accepted steer before its model boundary.
+    /// Returns false if the identity is no longer latest or was already consumed.
+    ///
+    /// # Errors
+    /// Returns an error if persistence fails, the driver stops, or withdrawal is unsupported.
+    pub async fn withdraw_steer(&self, id: String) -> Result<bool> {
+        self.backend.withdraw_steer(self.key, id).await
     }
 
     /// Cancels the targeted unfinished turn.
@@ -294,7 +334,7 @@ impl PromptRequest {
     /// tool work can start.
     #[doc(hidden)]
     #[must_use]
-    pub fn cancel_on_admission(mut self) -> Self {
+    pub const fn cancel_on_admission(mut self) -> Self {
         self.cancel_on_admission = true;
         self
     }
@@ -385,6 +425,17 @@ pub(super) enum Command {
         prompt: Prompt,
         result: oneshot::Sender<Result<()>>,
     },
+    SteerWithId {
+        key: TurnKey,
+        id: String,
+        prompt: Prompt,
+        result: oneshot::Sender<Result<()>>,
+    },
+    WithdrawSteer {
+        key: TurnKey,
+        id: String,
+        result: oneshot::Sender<Result<bool>>,
+    },
     RoutePrompt {
         key: TurnKey,
         prompt: Prompt,
@@ -403,11 +454,13 @@ pub(super) enum Command {
     },
     Spawn {
         options: SpawnOptions,
+        host_context: Option<Arc<str>>,
         result: oneshot::Sender<Result<(Nanocodex, AgentEvents)>>,
     },
     SpawnBatch {
         count: usize,
         observer: Option<Arc<SpawnObserver>>,
+        host_context: Option<Arc<str>>,
         result: oneshot::Sender<Result<Vec<(Nanocodex, AgentEvents)>>>,
     },
     SetModel {
@@ -437,10 +490,12 @@ pub(super) enum Command {
 }
 
 #[cfg(feature = "openai")]
+#[derive(Clone)]
 pub(super) enum ExecutionOperation {
     Caller(String),
     Automatic(String),
     Admitted(String),
+    Recovered(String),
 }
 
 #[cfg(feature = "openai")]
@@ -449,8 +504,22 @@ impl ExecutionOperation {
         match self {
             Self::Caller(operation_id)
             | Self::Automatic(operation_id)
-            | Self::Admitted(operation_id) => operation_id,
+            | Self::Admitted(operation_id)
+            | Self::Recovered(operation_id) => operation_id,
         }
+    }
+
+    pub(super) fn id(&self) -> &str {
+        match self {
+            Self::Caller(operation_id)
+            | Self::Automatic(operation_id)
+            | Self::Admitted(operation_id)
+            | Self::Recovered(operation_id) => operation_id,
+        }
+    }
+
+    pub(super) const fn is_recovered(&self) -> bool {
+        matches!(self, Self::Recovered(_))
     }
 }
 
@@ -465,7 +534,7 @@ pub(super) enum QueuedTurn {
     Pending {
         key: TurnKey,
         prompt: Prompt,
-        execution_operation: Option<String>,
+        execution_operation: Option<ExecutionOperation>,
         thinking: Thinking,
         fast_mode: bool,
         parent: Option<tracing::Span>,
@@ -473,8 +542,9 @@ pub(super) enum QueuedTurn {
         result: oneshot::Sender<Result<TurnResult>>,
     },
     Cancelled {
+        key: TurnKey,
         prompt: Prompt,
-        execution_operation: Option<String>,
+        execution_operation: Option<ExecutionOperation>,
         cancellation_committed: bool,
         thinking: Thinking,
         fast_mode: bool,

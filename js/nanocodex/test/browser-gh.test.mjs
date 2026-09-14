@@ -67,7 +67,8 @@ test("Connect authorization stays on the egress gateway and never reaches its ta
   assert.equal(JSON.stringify(envelope).includes("grant-session"), false);
 });
 
-test("browser egress forwards only an opaque Vault reference and closed placeholders", async () => {
+for (const key of ["PASSWORD", "API_KEY"]) {
+test(`browser egress forwards only an opaque Vault reference and closed placeholders (${key})`, async () => {
   const requests = [];
   const fetch = createBrowserEgressFetch({
     origin: "https://nanocodex.example",
@@ -81,11 +82,11 @@ test("browser egress forwards only an opaque Vault reference and closed placehol
   await fetch("https://example.com/session", {
     method: "POST",
     headers: {
-      authorization: "Basic {{NANOCODEX_VAULT_BASIC}}",
+      authorization: `Bearer {{NANOCODEX_VAULT_${key}}}`,
       "content-type": "application/json",
       "x-nanocodex-vault-id": vaultId,
     },
-    body: JSON.stringify({ password: "{{NANOCODEX_VAULT_PASSWORD}}" }),
+    body: JSON.stringify({ password: `{{NANOCODEX_VAULT_${key}}}` }),
   });
 
   assert.deepEqual(await requests[0].json(), {
@@ -93,13 +94,14 @@ test("browser egress forwards only an opaque Vault reference and closed placehol
     url: "https://example.com/session",
     method: "POST",
     headers: {
-      authorization: "Basic {{NANOCODEX_VAULT_BASIC}}",
+      authorization: `Bearer {{NANOCODEX_VAULT_${key}}}`,
       "content-type": "application/json",
       "x-nanocodex-vault-id": vaultId,
     },
-    body: JSON.stringify({ password: "{{NANOCODEX_VAULT_PASSWORD}}" }),
+    body: JSON.stringify({ password: `{{NANOCODEX_VAULT_${key}}}` }),
   });
 });
+}
 
 test("browser egress rejects raw credentials and malformed Vault requests", async () => {
   const fetch = createBrowserEgressFetch({
@@ -228,3 +230,33 @@ function secureJson(url, value) {
     url,
   };
 }
+
+
+test("browser runtime preserves binary Git uploads and returns the broker response stream", async () => {
+  const bytes = new Uint8Array([0, 255, 128, 254, 10]);
+  let envelope;
+  let cancelled = false;
+  const upstream = new Response(new ReadableStream({
+    start(controller) { controller.enqueue(bytes); },
+    cancel() { cancelled = true; },
+  }));
+  const fetch = createBrowserRuntimeFetch({
+    origin: "https://connect.example",
+    threadId: THREAD_ID,
+    async fetch(_input, init) {
+      envelope = JSON.parse(init.body);
+      return upstream;
+    },
+  });
+  const response = await fetch("https://github.com/fixture/large.git/git-upload-pack", {
+    method: "POST", body: bytes,
+    headers: { "content-type": "application/x-git-upload-pack-request" },
+  });
+  assert.equal(response, upstream);
+  assert.deepEqual(new Uint8Array(Buffer.from(envelope.body_base64, "base64")), bytes);
+  assert.equal(envelope.body, undefined);
+  const reader = response.body.getReader();
+  assert.deepEqual((await reader.read()).value, bytes);
+  await reader.cancel();
+  assert.equal(cancelled, true);
+});

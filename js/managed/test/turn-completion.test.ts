@@ -128,7 +128,7 @@ describe("materializeTurnResolution", () => {
     });
   });
 
-  it("prefers a nested recoverable transport failure over a generic failed wrapper", () => {
+  it("does not resurrect a committed failure because its cause mentions a transport", () => {
     const recoverable = new Error("Agent connection rejected with HTTP 503: broker restarting");
     const failed = Object.assign(new Error("turn failed"), {
       cause: recoverable,
@@ -136,10 +136,29 @@ describe("materializeTurnResolution", () => {
     });
 
     expect(classifyTurnFailure("turn-nested-retry", failed)).toEqual({
-      kind: "retry",
-      error: "Agent connection rejected with HTTP 503: broker restarting",
+      kind: "terminal",
+      terminal: { type: "turn_failed", id: "turn-nested-retry", error: "turn failed" },
       reopenAgent: false,
     });
+  });
+
+  it.each(["transport failed", "turn was cancelled", "agent stopped", "durability store failed"])(
+    "honors terminal state despite misleading error text: %s", (message) => {
+      expect(classifyTurnFailure("terminal", Object.assign(new Error(message), { code: "failed" })))
+        .toEqual({ kind: "terminal", terminal: { type: "turn_failed", id: "terminal", error: message }, reopenAgent: false });
+    },
+  );
+
+  it("retains the exact blocking operation supplied by Rust", () => {
+    expect(classifyTurnFailure("next", Object.assign(new Error("blocked"), {
+      code: "retryable", blockedBy: "unfinished-operation",
+    }))).toEqual({ kind: "retry", error: "blocked", reopenAgent: false, blockedBy: "unfinished-operation" });
+  });
+
+  it("does not turn unsettled cancellation text into terminal cancellation", () => {
+    expect(classifyTurnFailure("pending", Object.assign(new Error("turn was cancelled"), {
+      code: "retryable",
+    }))).toEqual({ kind: "retry", error: "turn was cancelled", reopenAgent: false });
   });
 
   it.each([

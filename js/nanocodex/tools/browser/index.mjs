@@ -1,4 +1,5 @@
 import "./browserBuffer.mjs";
+import { browseX } from "nanocodex-tools/x";
 import {
   createBrowserEgressFetch,
   createBrowserRuntimeFetch,
@@ -132,6 +133,16 @@ export function bindBrowser(prepared, options = {}) {
       browserRuntimeInfoTool(account, shell.descriptor),
       browserAccountInfoTool(account),
       ...(options.accountConnectionRequests ? [browserAccountConnectionTool(account)] : []),
+      browseX({
+        fetch: (input, init) => {
+          const source = new URL(input);
+          const url = new URL(`/api/tools/x/${source.pathname.slice("/api/".length)}`, prepared.origin);
+          url.search = source.search;
+          const headers = new Headers(init?.headers);
+          headers.set("x-nanocodex-request", "1");
+          return fetch(url, { ...init, headers, credentials: "same-origin" });
+        },
+      }),
       standard.web(web),
       standard.imageGeneration({
         ...images,

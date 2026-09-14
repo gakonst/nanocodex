@@ -1,3 +1,4 @@
+import { useAccountQuery } from "./useAccountQuery";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { responseFailure, useAccountSession } from "./AccountSession";
 import { clientFailureMessage } from "./clientFailure";
@@ -5,7 +6,6 @@ import {
   decodeFundingAttempt,
   decodeMachineUsdConfig,
   defaultFundingAmountCents,
-  type MachineUsdConfig,
 } from "./walletFunding";
 
 type WalletFundingOperation = "prepare" | "payment";
@@ -20,11 +20,8 @@ export function useWalletFunding(enabled: boolean) {
   const accountId = session.account?.id;
   const address = session.account?.address;
   const refreshSession = session.refresh;
-  const [config, setConfig] = useState<MachineUsdConfig | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [operationError, setError] = useState<string | null>(null);
   const [operation, setOperation] = useState<WalletFundingOperation | null>(null);
-  const cachedAccountId = useRef<string | undefined>(undefined);
-  const configRequest = useRef<Promise<void> | undefined>(undefined);
   const fundingRun = useRef<WalletFundingRun | undefined>(undefined);
 
   const cancel = useCallback(() => {
@@ -33,59 +30,15 @@ export function useWalletFunding(enabled: boolean) {
     run?.controller.abort();
   }, []);
 
-  const loadConfig = useCallback((): Promise<void> => {
-    if (!accountId || config) return Promise.resolve();
-    if (configRequest.current) return configRequest.current;
-    setError(null);
-    let current!: Promise<void>;
-    current = (async () => {
-      try {
-        const response = await apiRequest("/v1/machine-usd/config");
-        if (response.status === 401) {
-          await response.body?.cancel();
-          await refreshSession();
-          return;
-        }
-        if (!response.ok) throw await responseFailure(response, "Couldn’t load Wallet funding.");
-        const next = decodeMachineUsdConfig(await response.json());
-        if (cachedAccountId.current === accountId) setConfig(next);
-      } catch (cause) {
-        if (cachedAccountId.current === accountId) {
-          setError(clientFailureMessage(cause, "Couldn’t load Wallet funding."));
-        }
-      }
-    })().finally(() => {
-      if (configRequest.current === current) configRequest.current = undefined;
-    });
-    configRequest.current = current;
-    return current;
-  }, [accountId, config, refreshSession]);
+  const { query: configQuery } = useAccountQuery(accountId, "/v1/machine-usd/config", decodeMachineUsdConfig, { enabled, staleTime: 5 * 60_000 });
+  const config = configQuery.data ?? null;
+  const error = operationError ?? (configQuery.error ? clientFailureMessage(configQuery.error, "Couldn’t load Wallet funding.") : null);
 
   useEffect(() => {
-    if (!enabled) {
-      cancel();
-      setOperation(null);
-      return;
-    }
-    if (!accountId) {
-      cancel();
-      cachedAccountId.current = undefined;
-      configRequest.current = undefined;
-      setConfig(null);
-      setError(null);
-      setOperation(null);
-      return;
-    }
-    if (cachedAccountId.current !== accountId) {
-      cancel();
-      cachedAccountId.current = accountId;
-      configRequest.current = undefined;
-      setConfig(null);
-      setError(null);
-      setOperation(null);
-    }
-    void loadConfig();
-  }, [accountId, cancel, enabled, loadConfig]);
+    cancel();
+    setOperation(null);
+    setError(null);
+  }, [accountId, cancel, enabled]);
 
   useEffect(() => cancel, [cancel]);
 
@@ -144,7 +97,7 @@ export function useWalletFunding(enabled: boolean) {
     available: config?.onrampEnabled === true,
     error,
     fund,
-    loading: enabled && config === null && error === null,
+    loading: configQuery.isLoading,
     operation,
   } as const;
 }

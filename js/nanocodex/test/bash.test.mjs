@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { justBash } from "../tools/bash.mjs";
+import { createJustBashRuntime, justBash } from "../tools/bash.mjs";
+import { Bash } from "nanocodex-tools/just-bash/browser";
 
 test("Just Bash advertises its cloud workspace execution", async () => {
   const { descriptor, instructions, tool } = await justBash({ filesystem: memoryWorkspace() });
@@ -17,8 +18,7 @@ test("Just Bash advertises its cloud workspace execution", async () => {
   assert.equal(descriptor.pty, false);
   assert.equal(descriptor.sessions, false);
   assert.equal(descriptor.sandboxEscalation, false);
-  assert.equal(descriptor.limits.maxFileSystemBytes, 64 * 1024 * 1024);
-  assert.equal(descriptor.limits.maxTraversalEntries, 2_000);
+  assert.deepEqual(descriptor.limits, {});
   assert(descriptor.commands.includes("grep"));
   assert(!descriptor.commands.includes("curl"));
   assert(!descriptor.commands.includes("wget"));
@@ -29,8 +29,49 @@ test("Just Bash advertises its cloud workspace execution", async () => {
   );
   assert.match(instructions, /exactly gh repo clone OWNER\/REPO DESTINATION/);
   assert.match(instructions, /git clone URL DESTINATION/);
+  assert.match(instructions, /all current files, without .git or history/);
   assert.match(instructions, /Do not add depth, filter, branch, or other flags/);
   assert.doesNotMatch(instructions, /\bwget\b/);
+});
+
+test("ordinary sequence commands work with host-managed interpreter limits", async () => {
+  const runtime = await justBash({ filesystem: memoryWorkspace() });
+  const result = await runtime.tool.handler({
+    cmd: "for i in $(seq 1 12); do echo tick$i; done > progress.txt; tail -n 1 progress.txt",
+  }, context());
+  assert.equal(result.exit_code, 0, result.output);
+  assert.equal(result.output, "tick12\n");
+  assert.equal(new TextDecoder().decode(await runtime.filesystem.readFile("progress.txt")),
+    Array.from({ length: 12 }, (_, index) => `tick${index + 1}\n`).join(""));
+});
+
+test("buffer compatibility preserves finite host limits and explicit unlimited policy", async () => {
+  for (const executionLimits of [
+    { maxOutputSize: 8 },
+    { maxStringLength: 8 },
+    { maxOutputSize: Infinity, maxStringLength: Infinity },
+  ]) {
+    const filesystem = new Bash().fs;
+    await filesystem.mkdir("/workspace", { recursive: true });
+    const runtime = await createJustBashRuntime({
+      filesystem,
+      cwd: "/workspace",
+      executionLimits,
+    });
+    const small = await runtime.tool.handler({ cmd: "seq 1 3" }, context());
+    assert.equal(small.exit_code, 0, small.output);
+    assert.equal(small.output, "1\n2\n3\n");
+    const larger = await runtime.tool.handler({ cmd: "seq 1 12" }, context());
+    if (Object.values(executionLimits).includes(8)) {
+      assert.notEqual(larger.exit_code, 0);
+      assert.match(larger.output, /output size limit exceeded/);
+      assert.deepEqual(runtime.descriptor.limits, executionLimits);
+    } else {
+      assert.equal(larger.exit_code, 0, larger.output);
+      assert.equal(larger.output, Array.from({ length: 12 }, (_, index) => `${index + 1}\n`).join(""));
+      assert.deepEqual(runtime.descriptor.limits, {});
+    }
+  }
 });
 
 test("Just Bash mounts one persistent workspace without a process sandbox", async () => {
@@ -56,6 +97,26 @@ test("Just Bash mounts one persistent workspace without a process sandbox", asyn
   assert.equal(persisted.output, "forty two\n");
 });
 
+test("rg --files traverses a large mounted workspace without escaping or stalling", async () => {
+  const workspace = memoryWorkspace();
+  const expected = [];
+  for (let index = 0; index < 6_000; index += 1) {
+    const path = `/workspace/package-${index}/source-${index}.ts`;
+    expected.push(`package-${index}/source-${index}.ts`);
+    await workspace.writeFile(path, "export {};\n");
+  }
+
+  const runtime = await justBash({ filesystem: workspace, maxOutputTokens: 100_000 });
+  const startedAt = performance.now();
+  const result = await runtime.tool.handler({ cmd: "rg --files" }, context());
+  const elapsedMs = performance.now() - startedAt;
+
+  assert.equal(result.exit_code, 0);
+  assert.deepEqual(result.output.trim().split("\n"), expected.sort());
+  assert.ok(elapsedMs < 3_000, `rg --files took ${Math.round(elapsedMs)}ms`);
+  assert.doesNotMatch(result.output, /invalid bounded allocation count|path escapes/);
+});
+
 test("the returned filesystem is the authoritative bounded mutation handle", async () => {
   const source = memoryWorkspace();
   const runtime = await justBash({ filesystem: source });
@@ -69,6 +130,16 @@ test("the returned filesystem is the authoritative bounded mutation handle", asy
     runtime.filesystem.writeFile("/tmp/escape.txt", "no"),
     /escapes \/workspace/,
   );
+});
+
+test("copying a directory into itself fails without losing its contents", async () => {
+  const runtime = await justBash({ filesystem: memoryWorkspace() });
+  await runtime.tool.handler({ cmd: "mkdir data && echo keep > data/file" }, context());
+  for (const command of ["cp -r data data/child", "mv data data/child"]) {
+    const result = await runtime.tool.handler({ cmd: command }, context());
+    assert.notEqual(result.exit_code, 0);
+    assert.equal(new TextDecoder().decode(await runtime.filesystem.readFile("data/file")), "keep\n");
+  }
 });
 
 test("workspace paths cannot escape the mounted root", async () => {
@@ -186,7 +257,7 @@ test("initial metadata, mutations, and returned output stay within configured bo
   });
   assert.deepEqual(defaultScan, {
     path: ".",
-    options: { recursive: true, maxEntries: 2_000 },
+    options: { recursive: true },
   });
 
   let initialScan;

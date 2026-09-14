@@ -5,6 +5,13 @@ current Rust/WASM bindings when it runs from a source checkout, installs the
 browser compatibility aliases in page and nested Worker graphs, and exposes a
 same-origin ChatGPT subscription socket during local development.
 
+The WASM build normalizes wasm-bindgen byte views for all three JavaScript
+targets. Cloudflare's V8 `subarray` offset check can reject valid strings above
+the 128 MiB address boundary after WASM memory grows. Direct bounded views keep
+those transfers valid without changing the WASM ABI. The build validates the
+generated helper shapes, and changes to the normalization script invalidate
+the binding cache.
+
 ```js
 import { nanocodex } from "nanocodex-vite";
 import { defineConfig } from "vite";

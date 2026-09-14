@@ -51,6 +51,7 @@
     ]
   },
   "services": [
+    { "binding": "NANOCODEX_X", "service": "nanocodex-x" },
     {
       "binding": "NANOCODEX_BACKEND",
       "service": "nanocodex-durable-agent"
@@ -189,6 +190,7 @@
     "development": {
       "name": "nanocodex",
       "services": [
+        { "binding": "NANOCODEX_X", "service": "nanocodex-x", "remote": false },
         {
           "binding": "NANOCODEX_BACKEND",
           "service": "nanocodex-durable-agent",

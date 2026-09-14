@@ -13,7 +13,7 @@ import {
 } from "@microsoft/dev-tunnels-ssh";
 import { exportPrivateKey } from "@microsoft/dev-tunnels-ssh-keys";
 
-import { createSshCommand, createWebStreamSshStream } from "../tools/ssh.mjs";
+import { createSshCommand, createWebStreamSshStream, createSshKeyPair, sshPublicKey } from "../tools/ssh.mjs";
 
 test("SSH rejects unsafe or incomplete invocations before opening a transport", async () => {
   let opened = 0;
@@ -95,6 +95,56 @@ test("Cloudflare byte streams preserve SSH read boundaries and writes", async ()
   assert.equal(closed, true);
 });
 
+test("SSH delivers bounded stdin separately from the command and closes input", async () => {
+  const [clientStream, serverStream] = memorySshStreamPair();
+  const server = new SshServerSession(new SshSessionConfiguration());
+  const hostKey = await SshAlgorithms.publicKey.rsaWithSha256.generateKeyPair();
+  server.credentials.publicKeys.push(hostKey);
+  server.onAuthenticating(event => {
+    event.authenticationPromise = Promise.resolve(event.authenticationType === SshAuthenticationType.clientPassword
+      && event.username === "worker" && event.password === "test-password" ? { username: "worker" } : null);
+  });
+  const received = [];
+  let remoteCommand;
+  server.onChannelOpening(event => {
+    event.channel.onDataReceived(data => { received.push(Buffer.from(data)); event.channel.adjustWindow(data.length); });
+    event.channel.onEof(async () => {
+      await event.channel.send(Buffer.from("input-complete\n"));
+      await event.channel.close(0);
+    });
+    event.channel.onRequest(request => {
+      if (request.requestType !== ChannelRequestType.command) return;
+      remoteCommand = request.request.convertTo(new CommandRequestMessage()).command;
+      request.isAuthorized = true;
+    });
+  });
+  const connected = server.connect(serverStream);
+  const command = createSshCommand({ transport: "tcp", async openStream() { return clientStream; },
+    async resolvePassword() { return "test-password"; } });
+  try {
+    const stdin = "private fixture\nΕλληνικά\n".repeat(1500);
+    const result = await command.execute(["-l", "worker", "-o", "PasswordRef=test", "-o", "StrictHostKeyChecking=no",
+      "example.test", "--", "cat"], { cwd: "/", stdin, signal: new AbortController().signal });
+    await connected;
+    assert.deepEqual(result, { stdout: "input-complete\n", stderr: "", exitCode: 0 });
+    assert.equal(remoteCommand, "cat");
+    assert.equal(Buffer.concat(received).toString("utf8"), stdin);
+  } finally { server.dispose(); hostKey.dispose(); }
+});
+
+test("brokered SSH forwards stdin and rejects excessive input before delegation", async () => {
+  let delegated;
+  const command = createSshCommand({ transport: "tcp", async openStream() { throw new Error("unexpected"); },
+    async executeWithIdentityReference(request) { delegated = request; return { stdout: "", stderr: "", exitCode: 0 }; } });
+  const args = ["-o", "IdentityRef=server", "deploy@example.com", "--", "cat"];
+  const context = { cwd: "/", stdin: "fixture\n", signal: new AbortController().signal };
+  assert.equal((await command.execute(args, context)).exitCode, 0);
+  assert.equal(delegated.stdin, context.stdin);
+  delegated = undefined;
+  assert.equal((await command.execute(args, { ...context, stdin: "😀".repeat(16385) })).exitCode, 2);
+  assert.equal(delegated, undefined);
+});
+
 test("Just Bash SSH authenticates and executes a remote command over byte streams", async () => {
   const [clientStream, serverStream] = memorySshStreamPair();
   const server = new SshServerSession(new SshSessionConfiguration());
@@ -144,12 +194,17 @@ test("Just Bash SSH authenticates and executes a remote command over byte stream
   hostKey.dispose();
 });
 
-test("Just Bash SSH imports a private key and proves possession to the server", async () => {
+for (const generated of [false, true]) test(`Just Bash SSH proves possession of ${generated ? "a vault-generated" : "an imported"} private key`, async () => {
   const [clientStream, serverStream] = memorySshStreamPair();
   const server = new SshServerSession(new SshSessionConfiguration());
   const hostKey = await SshAlgorithms.publicKey.rsaWithSha256.generateKeyPair();
-  const clientKey = await SshAlgorithms.publicKey.rsaWithSha256.generateKeyPair();
-  const privateKey = await exportPrivateKey(clientKey);
+  const generatedKey = generated ? await createSshKeyPair() : undefined;
+  const clientKey = generated ? undefined : await SshAlgorithms.publicKey.rsaWithSha256.generateKeyPair();
+  const privateKey = generatedKey?.privateKey ?? await exportPrivateKey(clientKey);
+  if (generatedKey) {
+    assert.match(generatedKey.publicKey, /^ecdsa-sha2-nistp256 AAAA/);
+    assert.equal(await sshPublicKey(privateKey), generatedKey.publicKey);
+  }
   server.credentials.publicKeys.push(hostKey);
   server.onAuthenticating((event) => {
     const publicKey = event.authenticationType === SshAuthenticationType.clientPublicKeyQuery
@@ -187,7 +242,7 @@ test("Just Bash SSH imports a private key and proves possession to the server", 
 
   assert.deepEqual(result, { stdout: "key-authenticated\n", stderr: "", exitCode: 0 });
   server.dispose();
-  clientKey.dispose();
+  clientKey?.dispose();
   hostKey.dispose();
 });
 

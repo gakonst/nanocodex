@@ -134,6 +134,10 @@ fn router(state: AppState) -> Router {
         .route("/v1/agents/{agent}/turns", post(submit_turn))
         .route("/v1/agents/{agent}/turns/{turn}", get(turn_state))
         .route("/v1/agents/{agent}/turns/{turn}/steer", post(steer_turn))
+        .route(
+            "/v1/agents/{agent}/turns/{turn}/withdraw-steer",
+            post(withdraw_steer),
+        )
         .route("/v1/agents/{agent}/turns/{turn}/cancel", post(cancel_turn))
         .route("/v1/agents/{agent}/events", get(events))
         .route("/v1/agents/{agent}/events/history", get(event_history))
@@ -852,16 +856,9 @@ impl Database {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(|_| ApiError::not_found("agent_not_found", "managed agent does not exist"))?;
-        let active = db.prepare("SELECT turn_id,input_json FROM local_managed_turns WHERE agent_id=?1 AND state IN ('accepted','cancelling') ORDER BY created_at").map_err(ApiError::internal)?.query_map([agent],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(ApiError::internal)?.collect::<rusqlite::Result<Vec<_>>>().map_err(ApiError::internal)?;
-        let ids = active.iter().map(|v| v.0.clone()).collect::<Vec<_>>();
-        let details = active
-            .into_iter()
-            .filter_map(|(id, input)| {
-                serde_json::from_str::<Value>(&input)
-                    .ok()
-                    .map(|input| json!({"id":id,"input":input}))
-            })
-            .collect::<Vec<_>>();
+        let ids = db.prepare("SELECT turn_id FROM local_managed_turns WHERE agent_id=?1 AND state IN ('accepted','cancelling') ORDER BY created_at")
+            .map_err(ApiError::internal)?.query_map([agent], |row| row.get::<_, String>(0))
+            .map_err(ApiError::internal)?.collect::<rusqlite::Result<Vec<_>>>().map_err(ApiError::internal)?;
         let latest: i64 = db
             .query_row(
                 "SELECT COALESCE(MAX(cursor),0) FROM local_managed_events WHERE agent_id=?1",
@@ -870,7 +867,7 @@ impl Database {
             )
             .map_err(ApiError::internal)?;
         Ok(
-            json!({"agent_id":agent,"session_id":agent,"has_snapshot":completed>0,"completed_turns":completed,"last_active":last,"active_turns":ids,"active_turn_details":details,"agent_loaded":loaded,"connected_clients":connected_clients,"capabilities":capabilities(),"latest_event_cursor":latest.to_string(),"stream_error":null}),
+            json!({"agent_id":agent,"session_id":agent,"has_snapshot":completed>0,"completed_turns":completed,"last_active":last,"active_turns":ids,"agent_loaded":loaded,"connected_clients":connected_clients,"capabilities":capabilities(),"settings":{"model":nanocodex::Model::default().as_str(),"thinking":nanocodex::Thinking::default(),"reasoning_mode":nanocodex::ReasoningMode::default().as_str(),"fast_mode":false},"latest_event_cursor":latest.to_string(),"stream_error":null}),
         )
     }
 
@@ -1002,6 +999,11 @@ struct Submission {
 #[derive(Deserialize)]
 struct Steer {
     input: PromptInput,
+    message_id: Option<String>,
+}
+#[derive(Deserialize)]
+struct SteerWithdrawal {
+    message_id: String,
 }
 #[derive(Deserialize)]
 struct EventQuery {
@@ -1165,8 +1167,41 @@ async fn steer_turn(
         .get(&turn)
         .cloned()
         .ok_or_else(|| ApiError::conflict("turn_not_active", "managed turn is not active"))?;
-    control.steer(text).await.map_err(ApiError::internal)?;
+    match body.message_id {
+        Some(id) => {
+            validate_id(&id)?;
+            control.steer_with_id(id, text).await
+        }
+        None => control.steer(text).await,
+    }
+    .map_err(ApiError::internal)?;
     Ok(Json(json!({"turn_id":turn,"state":"steered"})))
+}
+async fn withdraw_steer(
+    State(state): State<AppState>,
+    Path((agent, turn)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(body): Json<SteerWithdrawal>,
+) -> ApiResult<Json<Value>> {
+    state.authorize(&headers)?;
+    validate_id(&agent)?;
+    validate_id(&turn)?;
+    validate_id(&body.message_id)?;
+    let runtime = state.runtime(&agent).await?;
+    let control = runtime
+        .controls
+        .lock()
+        .await
+        .get(&turn)
+        .cloned()
+        .ok_or_else(|| ApiError::conflict("turn_not_active", "managed turn is not active"))?;
+    let withdrawn = control
+        .withdraw_steer(body.message_id.clone())
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(
+        json!({"turn_id": turn, "message_id": body.message_id, "withdrawn": withdrawn}),
+    ))
 }
 async fn cancel_turn(
     State(state): State<AppState>,

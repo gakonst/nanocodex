@@ -211,8 +211,9 @@ actions return a typed unsupported error; there is no Chromium fallback.
 - Bounded snapshots, DOM/layout/style inspection, console and source-mapped
   errors, network bodies, WebSocket messages, HAR, and React diagnostics.
 - Viewport- and element-targeted screenshots, pixel-level visual diffs,
-  PDF, visual/session/performance traces, video, CPU profiles, coverage, heap
-  inspection, accessibility/axe, Lighthouse, and CrUX actions.
+  PDF, visual/session/performance traces, constant-rate WebM video at up to 60
+  fps, CPU profiles, coverage, heap inspection, accessibility/axe, Lighthouse,
+  and CrUX actions.
 - Harness-owned cookies/storage, virtual passkeys, explicit host-passkey handoff,
   upload roots, browser egress policy, remote CDP, and libkrun VM composition.
 - Pinned Chromium mobile profiles, verified audit matrices, and an explicit

@@ -19,9 +19,10 @@
   transcript and composer components with an optional canonical stylesheet.
 - [`account`](account), [`connect-dialog`](connect-dialog), and
   [`connect-playground`](connect-playground) are product applications.
-- [`managed`](managed), [`egress`](egress), and [`connect-api`](connect-api) are
-  independently deployable Cloudflare Workers. `mcp-target.mts` owns their small
-  shared remote-target security boundary.
+- [`managed`](managed), [`egress`](egress), [`connect-api`](connect-api), and
+  [`x-api`](x-api) are independently deployable Cloudflare Workers. The X Worker
+  provides native public X browsing to managed agents. `mcp-target.mts` owns the
+  MCP consumers' shared remote-target security boundary.
 
 The registry packages include the low-level `nanocodex-tools`, the headless
 `nanocodex` binding, and `nanocodex-vite`.

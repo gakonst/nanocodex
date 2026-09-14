@@ -1,6 +1,6 @@
 :root {
   color-scheme: dark;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --black: #000000;
@@ -16,16 +16,16 @@
   --grey-600: #666666;
   --grey-700: #333333;
   --grey-800: #161616;
-  --text: var(--white);
+  --text: #ececec;
   --text-muted: color-mix(in srgb, var(--text) 60%, transparent);
   --text-secondary: color-mix(in srgb, var(--text) 64%, transparent);
   --text-faint: color-mix(in srgb, var(--text) 42%, transparent);
   --text-inverse: var(--black);
-  --border: var(--grey-600);
+  --border: #484848;
   --border-soft: rgba(255, 255, 255, 0.12);
-  --surface: var(--grey-800);
-  --surface-subtle: var(--grey-700);
-  --surface-raised: #202020;
+  --surface: #212121;
+  --surface-subtle: #191919;
+  --surface-raised: #2b2b2b;
   --surface-overlay: rgba(51, 51, 51, 0.68);
   --surface-hover: rgba(255, 255, 255, 0.06);
   --positive: #73d89b;
@@ -33,16 +33,17 @@
   --on-positive: var(--black);
   --on-negative: var(--black);
   --on-accent: var(--black);
-  --header-height: 48px;
+  --header-height: 56px;
   --shell-header-height: var(--header-height);
   --page-margin: 36px;
   --gutter: 36px;
-  --radius-small: 4px;
-  --radius-medium: 12px;
+  --radius-small: 8px;
+  --radius-medium: 16px;
   --shadow-overlay: 0 24px 70px rgba(0, 0, 0, 0.55);
-  --font-site: "Berkeley Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-site: var(--font-sans);
   --font-display: var(--font-site);
-  --font-mono: var(--font-site);
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --content-max: 1120px;
   --wide-max: 1440px;
   --coarse-target-size: 44px;
@@ -50,12 +51,12 @@
 
 html[data-theme="light"] {
   color-scheme: light;
-  --text: var(--black);
+  --text: #262626;
   --text-inverse: var(--white);
-  --border: var(--grey-400);
+  --border: #dedede;
   --border-soft: rgba(0, 0, 0, 0.1);
   --surface: var(--white);
-  --surface-subtle: var(--grey-100);
+  --surface-subtle: #f9f9f9;
   --surface-raised: var(--white);
   --surface-overlay: rgba(224, 224, 224, 0.6);
   --surface-hover: rgba(0, 0, 0, 0.04);
@@ -85,8 +86,9 @@ body {
   min-height: 100vh;
   background: var(--surface);
   color: var(--text);
-  font-size: 12px;
-  line-height: 1.25;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
 
 .artifact-runtime-page,
@@ -205,8 +207,8 @@ body.agent-viewport-locked {
   align-items: center;
   min-height: 44px;
   color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-sans);
+  font-size: 15px;
   line-height: 1;
   white-space: nowrap;
 }
@@ -242,7 +244,7 @@ body.agent-viewport-locked {
 .wordmark {
   justify-self: start;
   color: var(--text);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-weight: 600;
   letter-spacing: -0.03em;
 }
@@ -275,7 +277,7 @@ body.agent-viewport-locked {
   color: var(--text-muted);
   background: transparent;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1;
   touch-action: manipulation;
 }
@@ -319,6 +321,7 @@ body.agent-viewport-locked {
   padding: 5px;
   background: var(--surface-raised);
   border: 1px solid var(--border);
+  border-radius: 12px;
   box-shadow: 0 14px 36px rgb(0 0 0 / 24%);
 }
 
@@ -329,7 +332,8 @@ body.agent-viewport-locked {
   justify-content: space-between;
   padding: 0 9px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 13px;
+  border-radius: 7px;
   touch-action: manipulation;
 }
 
@@ -391,7 +395,7 @@ body.agent-viewport-locked {
   min-height: 34px;
   padding: 0 8px;
   color: var(--text-muted);
-  font: 600 10px/1 var(--font-mono);
+  font: 500 12px/1 var(--font-sans);
   background: transparent;
   border-radius: var(--radius-small);
   cursor: pointer;
@@ -889,7 +893,7 @@ body.agent-viewport-locked {
   min-height: 34px;
   padding: 0 10px;
   color: var(--text);
-  font: 600 10px/1 var(--font-mono);
+  font: 500 12px/1 var(--font-sans);
   background: transparent;
   border: 0;
   border-radius: var(--radius-small);
@@ -4264,7 +4268,7 @@ html[data-theme="dark"] .tui-syntax .shiki span {
   }
 
   .wordmark {
-    font-size: 10px;
+    font-size: 16px;
   }
 
   .header-install-trigger {

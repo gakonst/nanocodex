@@ -108,8 +108,8 @@ export function ConnectAgentExperience({
     >
       <header className="connect-chat-header">
         <div>
-          <h3 id="connect-chat-title">Nanocodex</h3>
-          <p>Durable agent · scoped by Atlas</p>
+          <h3 id="connect-chat-title">Atlas</h3>
+          <p>Your Nanocodex agent, at home in Atlas</p>
         </div>
         <div className="connect-chat-actions">
           <span className="connect-agent-status">Live</span>
@@ -129,7 +129,7 @@ export function ConnectAgentExperience({
       <div className="nanocodex-demo is-preview">
         <div className="conversation-workspace">
           <div className="conversation-main">
-            <AgentTerminalView
+            <AgentTerminalView composerPlaceholder="Ask your agent anything…"
               agent={terminalAgent}
               agentError={undefined}
               maxEntries={visibility.conversationHistory ? Number.MAX_SAFE_INTEGER : undefined}

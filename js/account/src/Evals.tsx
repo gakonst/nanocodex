@@ -1,6 +1,5 @@
 import {
   QueryClient,
-  QueryClientProvider,
   QueryErrorResetBoundary,
   queryOptions,
   useQueryClient,
@@ -15,7 +14,7 @@ import {
   type EvalSummary,
   type EvalWorksetDetail,
 } from "./evalApi";
-import { createEvalQueryClient } from "./evalQueryClient";
+import { appQueryClient as queryClient } from "./queryClient";
 import {
   LiveEvals,
   type EvalSurfaceStatus,
@@ -28,7 +27,6 @@ const resultStaleMs = 30_000;
 const resultCacheMs = 30 * 60_000;
 const hoverFreshMs = 2_000;
 
-const queryClient = createEvalQueryClient();
 
 export async function preloadEvalOverview(): Promise<void> {
   const [overview, cluster] = overviewQueryOptions();
@@ -263,14 +261,12 @@ export function Evals() {
   const location = useLocation();
   const pathname = useDeferredValue(location.pathname);
   return (
-    <QueryClientProvider client={queryClient}>
-      <QueryErrorResetBoundary>
-        {({ reset }) => (
-          <EvalRouteErrorBoundary key={pathname} onReset={reset}>
-            <EvalsContent route={evalRouteFromPath(pathname)} />
-          </EvalRouteErrorBoundary>
-        )}
-      </QueryErrorResetBoundary>
-    </QueryClientProvider>
+    <QueryErrorResetBoundary>
+      {({ reset }) => (
+        <EvalRouteErrorBoundary key={pathname} onReset={reset}>
+          <EvalsContent route={evalRouteFromPath(pathname)} />
+        </EvalRouteErrorBoundary>
+      )}
+    </QueryErrorResetBoundary>
   );
 }

@@ -6,12 +6,12 @@ use std::{
 
 use nanocodex_oai_api::{
     responses::CustomToolFormat,
-    tools::{Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput, ToolOutputBody},
+    tools::{Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput},
 };
 
 use super::{
-    CodeModeExecution, CodeModeHost, CodeModeNotification, CodeModeObserver, EmbeddedToolMode,
-    NestedToolCall, OwnedToolContext,
+    CodeModeExecution, CodeModeHost, CodeModeHostError, CodeModeObserver, EmbeddedToolMode,
+    OwnedToolContext,
 };
 use crate::{
     ToolExposure, Tools,
@@ -212,6 +212,38 @@ impl EmbeddedToolRuntime {
                 )
             })
             .collect();
+        let resumable = self.host.as_ref().is_some_and(|host| host.supports_cells());
+        if resumable {
+            let visible_definitions = code_mode_definitions
+                .into_iter()
+                .filter(|definition| {
+                    !matches!(
+                        definition,
+                        ToolDefinition::Function {
+                            defer_loading: Some(true),
+                            ..
+                        } | ToolDefinition::Custom {
+                            defer_loading: Some(true),
+                            ..
+                        }
+                    )
+                })
+                .collect::<Vec<_>>();
+            let mut exec = crate::code_mode_spec::exec_spec(
+                &visible_definitions,
+                &[],
+                has_deferred_tools,
+                true,
+            );
+            if let ToolDefinition::Custom { description, .. } = &mut exec {
+                *description = description
+                    .replace("Runs raw JavaScript -- no Node, no file system, no network access, no console.", "Runs JavaScript inside the evaluator supplied by the embedding application.")
+                    .replace("When the JS code is fully evaluated, the isolate's lifetime ends and unawaited promises are silently discarded.", "The cell owns its nested tool calls until they finish or are cancelled. Await every nested tool call before completing the script.").into_boxed_str();
+            }
+            let mut model_definitions = vec![exec, crate::code_mode_spec::wait_spec()];
+            model_definitions.extend(direct_definitions);
+            return (model_definitions, code_mode_tool_names);
+        }
         let mut description = EXEC_DESCRIPTION.to_owned();
         for definition in code_mode_definitions {
             if matches!(
@@ -301,35 +333,39 @@ impl EmbeddedToolRuntime {
         name: &str,
         input: ToolInput,
         context: ToolContext<'_>,
-    ) -> ToolOutput {
+    ) -> Result<ToolOutput, CodeModeHostError> {
         if let Some(tool) = self.local.iter().find(|tool| tool.name.as_ref() == name) {
-            return tool
+            return Ok(tool
                 .handler
                 .execute(input, context)
                 .await
-                .unwrap_or_else(|error| ToolOutput::error(error.to_string()));
+                .unwrap_or_else(|error| ToolOutput::error(error.to_string())));
         }
         let Some(host) = &self.host else {
-            return ToolOutput::error("no embedded tool adapter is configured");
+            return Err(CodeModeHostError::new(
+                "no embedded tool adapter is configured",
+            ));
         };
         if !self.contains(name) {
-            return ToolOutput::error(format!("direct embedded tool `{name}` is unavailable"));
+            return Ok(ToolOutput::error(format!(
+                "direct embedded tool `{name}` is unavailable"
+            )));
         }
-        match host.execute_tool(name, input, context).await {
-            Ok(output) => output,
-            Err(error) => ToolOutput::error(error.to_string()),
-        }
+        host.execute_tool(name, input, context).await
     }
 
     /// Executes one Code Mode cell through the embedding host.
-    pub async fn execute_code(&self, source: &str, context: ToolContext<'_>) -> CodeModeExecution {
+    pub async fn execute_code(
+        &self,
+        source: &str,
+        context: ToolContext<'_>,
+    ) -> Result<CodeModeExecution, CodeModeHostError> {
         let Some(host) = &self.host else {
-            return failed("no embedded Code Mode adapter is configured");
+            return Err(CodeModeHostError::new(
+                "no embedded Code Mode adapter is configured",
+            ));
         };
-        match host.execute(source, context).await {
-            Ok(execution) => execution,
-            Err(error) => failed(&error.to_string()),
-        }
+        host.execute(source, context).await
     }
 
     /// Executes Code Mode from independently owned invocation state.
@@ -337,7 +373,7 @@ impl EmbeddedToolRuntime {
         &self,
         source: &str,
         context: OwnedToolContext,
-    ) -> CodeModeExecution {
+    ) -> Result<CodeModeExecution, CodeModeHostError> {
         self.execute_code(source, context.as_context()).await
     }
 
@@ -348,41 +384,45 @@ impl EmbeddedToolRuntime {
         source: &str,
         context: OwnedToolContext,
         observer: &mut dyn CodeModeObserver,
-    ) -> CodeModeExecution {
+    ) -> Result<CodeModeExecution, CodeModeHostError> {
         let Some(host) = &self.host else {
-            return failed("no embedded Code Mode adapter is configured");
+            return Err(CodeModeHostError::new(
+                "no embedded Code Mode adapter is configured",
+            ));
         };
-        match host
-            .execute_with_updates(source, context.as_context(), observer)
+        host.execute_with_updates(source, context.as_context(), observer)
             .await
-        {
-            Ok(execution) => execution,
-            Err(error) => failed(&error.to_string()),
-        }
     }
 
-    /// Returns a failed result because embedded cells cannot currently yield.
-    #[allow(
-        clippy::unused_async,
-        reason = "matches the native tool-runtime contract"
-    )]
+    /// Observes a yielded cell through a capable embedding host.
     pub async fn wait_for_code(
         &self,
-        _input: &str,
-        _context: ToolContext<'_>,
-    ) -> CodeModeExecution {
-        failed("background code-mode cells are unavailable in an embedded runtime")
+        input: &str,
+        context: ToolContext<'_>,
+    ) -> Result<CodeModeExecution, CodeModeHostError> {
+        self.wait_for_code_with_updates(input, context, &mut IgnoreUpdates)
+            .await
     }
 
-    /// Waits for embedded Code Mode, which cannot currently yield nested work.
+    /// Observes newly completed nested work without repeating previous output.
     pub async fn wait_for_code_with_updates(
         &self,
         input: &str,
         context: ToolContext<'_>,
-        _observer: &mut dyn CodeModeObserver,
-    ) -> CodeModeExecution {
-        self.wait_for_code(input, context).await
+        observer: &mut dyn CodeModeObserver,
+    ) -> Result<CodeModeExecution, CodeModeHostError> {
+        let Some(host) = &self.host else {
+            return Err(CodeModeHostError::new(
+                "no embedded Code Mode adapter is configured",
+            ));
+        };
+        host.wait_with_updates(input, context, observer).await
     }
+}
+
+struct IgnoreUpdates;
+impl CodeModeObserver for IgnoreUpdates {
+    fn update(&mut self, _update: super::CodeModeUpdate<'_>) {}
 }
 
 fn is_standard_workspace_tool(name: &str) -> bool {
@@ -416,11 +456,19 @@ fn normalize_identifier(name: &str) -> String {
 
 impl EmbeddedToolRuntimeControl {
     /// Begins a new logical agent turn.
-    pub const fn begin_turn(&self) {}
+    pub fn begin_turn(&self) {
+        if let (Some(host), Some(session_id)) = (&self.host, &self.session_id) {
+            host.begin_turn(session_id);
+        }
+    }
 
     /// Cancels work owned by the current logical turn.
     pub async fn cancel_turn(&self) {
-        self.cancel().await;
+        if let (Some(host), Some(session_id)) = (&self.host, &self.session_id)
+            && let Err(error) = host.cancel_turn(session_id).await
+        {
+            tracing::warn!(target: "nanocodex_tools", %error, "embedded Code Mode turn cancellation failed");
+        }
     }
 
     /// Cancels active work.
@@ -434,15 +482,6 @@ impl EmbeddedToolRuntimeControl {
                 "embedded Code Mode cancellation failed"
             );
         }
-    }
-}
-
-fn failed(message: &str) -> CodeModeExecution {
-    CodeModeExecution {
-        output: ToolOutputBody::Text(format!("Script failed\nOutput:\n{message}")),
-        success: false,
-        nested_calls: Vec::<NestedToolCall>::new(),
-        notifications: Vec::<CodeModeNotification>::new(),
     }
 }
 
@@ -566,6 +605,7 @@ mod tests {
         ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
             Box::pin(async move {
                 Ok(CodeModeExecution {
+                    cell: None,
                     output: ToolOutputBody::Text(format!(
                         "{source}:{}:{}",
                         context.session_id(),
@@ -843,7 +883,8 @@ mod tests {
                 ToolInput::Function(serde_json::value::to_raw_value(&json!({})).unwrap()),
                 ToolContext::new("gpt-5", "session-1", "call-1", &[], 1_000),
             )
-            .await;
+            .await
+            .unwrap();
         assert!(output.success);
         assert_eq!(output.structured_result()["session_id"], "session-1");
     }
@@ -876,7 +917,8 @@ mod tests {
                 ToolInput::Function(serde_json::value::to_raw_value(&json!({})).unwrap()),
                 ToolContext::new("gpt-5", "session-1", "call-1", &[], 1_000),
             )
-            .await;
+            .await
+            .unwrap();
         assert_eq!(output.structured_result(), json!({"private": true}));
     }
 
@@ -908,7 +950,8 @@ mod tests {
                 ),
                 ToolContext::new("gpt-5", "session-1", "call-1", &[], 1_000),
             )
-            .await;
+            .await
+            .unwrap();
         assert!(output.success);
 
         let output = runtime
@@ -917,7 +960,8 @@ mod tests {
                 ToolInput::Function(serde_json::value::to_raw_value(&json!({})).unwrap()),
                 ToolContext::new("gpt-5", "session-1", "call-2", &[], 1_000),
             )
-            .await;
+            .await
+            .unwrap();
         assert!(output.success);
         assert_eq!(output.structured_result()["name"], "mcp__mercator__search");
     }
@@ -947,7 +991,8 @@ mod tests {
                 ToolInput::Function(serde_json::value::to_raw_value(&json!({})).unwrap()),
                 ToolContext::new("gpt-5", "session-1", "call-1", &[], 1_000),
             )
-            .await;
+            .await
+            .unwrap();
         assert!(output.success);
         assert_eq!(output.structured_result()["name"], "mcp__viem__search_docs");
         assert_eq!(definition_reads.load(Ordering::Relaxed), 3);
@@ -962,7 +1007,8 @@ mod tests {
                 "echo",
                 ToolContext::new("gpt-5", "session-1", "call-1", &[], 1_000),
             )
-            .await;
+            .await
+            .unwrap();
         let ToolOutputBody::Text(output) = execution.output else {
             panic!("expected text output");
         };

@@ -272,6 +272,49 @@ test("overlay keeps cloud fallback but only uses the typed pre-dispatch sentinel
   assert.equal(cloudCalls, 1);
 });
 
+test("browser_execute prefers a live Hand and falls back only before dispatch", async () => {
+  const browser = contract("browser_execute", {
+    strict: false,
+    output_schema: undefined,
+    parameters: {
+      type: "object",
+      properties: { code: { type: "string" } },
+      required: ["code"],
+      additionalProperties: false,
+    },
+  });
+  const calls = [];
+  let handAvailable = true;
+  const router = new ToolRouter([
+    source("cloudflare-browser", [{
+      definition: browser,
+      parallelSafe: false,
+      handler: ({ code }) => { calls.push(["cloudflare", code]); return "cloudflare"; },
+    }], { kind: "cloud" }),
+  ]);
+  await router.attachSource(source("account-hands", [{
+    definition: { ...browser, description: "Run through the attached residential browser." },
+    parallelSafe: false,
+    handler: ({ code }) => {
+      calls.push(["hand", code]);
+      return handAvailable ? "hand" : { [preDispatchUnavailable]: true };
+    },
+  }], { kind: "attached" }));
+  const context = { signal: new AbortController().signal };
+
+  assert.equal(await router.execute("browser_execute", { code: "return 1" }, context), "hand");
+  handAvailable = false;
+  assert.equal(
+    await router.execute("browser_execute", { code: "return 2" }, context),
+    "cloudflare",
+  );
+  assert.deepEqual(calls, [
+    ["hand", "return 1"],
+    ["hand", "return 2"],
+    ["cloudflare", "return 2"],
+  ]);
+});
+
 test("overlay schedules for the least parallel-safe possible placement", async () => {
   let active = 0;
   let maxActive = 0;

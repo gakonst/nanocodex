@@ -11,7 +11,7 @@ test("managed memory sends account-level operations with API-key auth and freeze
   const key = { id: 7, version: 2 };
   const record = {
     key,
-    content: "Deploy on Tuesdays",
+    content: "Deploy on Tuesdays".repeat(100),
     created_at_ms: 10,
     updated_at_ms: 20,
     last_scanned_at_ms: 21,
@@ -20,6 +20,7 @@ test("managed memory sends account-level operations with API-key auth and freeze
     use_count: 0,
     probation_until_ms: 30,
   };
+  const query = "deploy ".repeat(100);
   const operations = [];
   const fetch = async (input, init) => {
     const request = new Request(input, init);
@@ -46,23 +47,23 @@ test("managed memory sends account-level operations with API-key auth and freeze
   };
   const options = { baseUrl: origin, apiKey, fetch };
 
-  const scanned = await Agent.memory({ operation: "scan", query: "deploy", limit: 1 }, options);
+  const scanned = await Agent.memory({ operation: "scan", query, limit: 1 }, options);
   const read = await Agent.memory({ operation: "read", keys: [key] }, options);
   const put = await Agent.memory({
     operation: "put",
-    content: "Deploy on Tuesdays",
+    content: record.content,
     replace: key,
   }, options);
   const deleted = await Agent.memory({ operation: "delete", key }, options);
 
   assert.deepEqual(operations, [
-    { operation: "scan", query: "deploy", limit: 1 },
+    { operation: "scan", query, limit: 1 },
     { operation: "read", keys: [key] },
-    { operation: "put", content: "Deploy on Tuesdays", replace: key },
+    { operation: "put", content: record.content, replace: key },
     { operation: "delete", key },
   ]);
   assert.equal(scanned.candidates[0].key.version, 2);
-  assert.equal(read.memories[0].content, "Deploy on Tuesdays");
+  assert.equal(read.memories[0].content, record.content);
   assert.equal(put.replaced, true);
   assert.deepEqual(deleted.key, key);
   for (const value of [scanned, scanned.candidates, scanned.candidates[0], scanned.candidates[0].key,
@@ -82,7 +83,7 @@ test("managed memory validates operations and rejects malformed server records",
   };
   await assert.rejects(
     Agent.memory({ operation: "scan", query: " ", limit: 1 }, options),
-    /query must be 1-512 UTF-8 bytes/,
+    /query must be a nonempty string/,
   );
   await assert.rejects(
     Agent.memory({ operation: "delete", key: { id: 0, version: 1 } }, options),
@@ -91,9 +92,9 @@ test("managed memory validates operations and rejects malformed server records",
   await assert.rejects(
     Agent.memory({
       operation: "read",
-      keys: Array.from({ length: 21 }, (_, index) => ({ id: index + 1, version: 1 })),
+      keys: [],
     }, options),
-    /from 1 through 20 keys/,
+    /at least one key/,
   );
   await assert.rejects(
     Agent.memory({ operation: "read", keys: [{ id: 1, version: 1 }] }, options),
@@ -511,6 +512,32 @@ test("managed event history requests one bounded chronological page before a cur
   await assert.rejects(() => agent.events.page({ limit: 257 }), /1 through 256/);
 });
 
+test("managed event history pages forward exclusively and validates its boundary", async () => {
+  let requestCount = 0;
+  let responseCursors = ["1", "2"];
+  const agent = await Agent.create({
+    baseUrl: origin,
+    fetch: async (input, init) => {
+      const request = new Request(input, init);
+      if (request.method === "POST") return Response.json({ agent_id: agentId }, { status: 201 });
+      requestCount++;
+      assert.equal(new URL(request.url).search, "?limit=2&after=0");
+      return Response.json({ data: responseCursors.map(eventData), has_more: true, latest_cursor: "9" });
+    },
+  });
+  const page = await agent.events.page({ after: "0", limit: 2 });
+  assert.deepEqual(page.data.map((event) => event.cursor), ["1", "2"]);
+  assert.equal(page.hasMore, true);
+  assert.equal(page.latestCursor, "9");
+  for (const after of ["", "-1", "01", 0]) {
+    await assert.rejects(() => agent.events.page({ after }), /nonnegative decimal/);
+  }
+  await assert.rejects(() => agent.events.page({ before: "9", after: "0" }), /either before or after/);
+  assert.equal(requestCount, 1, "invalid bounds must not reach the server");
+  responseCursors = ["0", "1"];
+  await assert.rejects(() => agent.events.page({ after: "0", limit: 2 }), /ordering is malformed/);
+});
+
 test("managed event history forwards caller cancellation to the fetch boundary", async () => {
   let historySignal;
   const agent = await Agent.create({
@@ -531,6 +558,49 @@ test("managed event history forwards caller cancellation to the fetch boundary",
 
   await assert.rejects(page, { name: "AbortError" });
   assert.equal(historySignal.aborted, true);
+});
+
+test("assistant chunks cross fragmented SSE frames before the response completes", { timeout: 5_000 }, async () => {
+  const connections = [];
+  const agent = await Agent.create({
+    baseUrl: origin,
+    fetch: async (input, init) => {
+      const request = new Request(input, init);
+      if (request.method === "POST") return Response.json({ agent_id: agentId }, { status: 201 });
+      const connection = controlledEventStream(request.signal, () => {});
+      connections.push(connection);
+      return connection.response;
+    },
+  });
+  const events = agent.events.watch({ cursor: "0" });
+  try {
+    const first = events.next();
+    await waitFor(() => connections.length === 1);
+    const delta = (cursor, text) => ({
+      ...eventData(cursor), turn_id: "turn-1",
+      event: { type: "assistant.delta", payload: { model_call_index: 0, item_id: "answer", phase: "final_answer", text } },
+    });
+    const frame = sse("1", "event", delta("1", "1, "));
+    // Split inside a JSON payload, as a real HTTP response may do.
+    const split = frame.indexOf('"payload"') + 4;
+    connections[0].send(frame.slice(0, split));
+    connections[0].send(frame.slice(split));
+    assert.equal((await first).value.data.event.payload.text, "1, ");
+
+    const second = events.next();
+    connections[0].send(sse("2", "event", delta("2", "2, 3")));
+    assert.equal((await second).value.data.event.payload.text, "2, 3");
+
+    // Only send completion after both partial answers have been consumed.
+    const final = events.next();
+    connections[0].send(sse("3", "event", {
+      ...delta("3", "1, 2, 3"),
+      event: { type: "assistant.message", payload: { model_call_index: 0, item_id: "answer", phase: "final_answer", text: "1, 2, 3" } },
+    }));
+    assert.equal((await final).value.data.event.type, "assistant.message");
+  } finally {
+    await events.return();
+  }
 });
 
 test("latest event tails adopt the server cursor before reconnecting", async () => {
@@ -1208,6 +1278,82 @@ test("a result observer can detach without aborting durable prompt or cancel mut
   assert.equal(cancelSignal.aborted, false);
 });
 
+test("rapid steers retain invocation order without delaying cancellation or another turn", async () => {
+  const firstStarted = deferredPromise();
+  const releaseFirst = deferredPromise();
+  const requests = [];
+  const agent = Agent.open(agentId, {
+    baseUrl: origin,
+    fetch: async (input, init) => {
+      const request = new Request(input, init);
+      const path = new URL(request.url).pathname;
+      if (path.endsWith("/turns")) {
+        return Response.json({ turn_id: (await request.json()).id, state: "accepted", accepted_cursor: "1" }, { status: 202 });
+      }
+      if (path.endsWith("/steer")) {
+        const { input: correction } = await request.json();
+        requests.push(correction);
+        if (correction === "first correction") {
+          firstStarted.resolve();
+          await releaseFirst.promise;
+        }
+        return Response.json({ state: "steering" }, { status: 202 });
+      }
+      if (path.endsWith("/cancel")) {
+        requests.push("cancel");
+        return Response.json({ state: "cancelling" }, { status: 202 });
+      }
+      throw new Error(`unexpected request ${path}`);
+    },
+  });
+  const turn = agent.turn.prompt({ id: "ordered", input: "original" });
+  const first = turn.steer({ input: "first correction" });
+  const second = turn.steer({ input: "second correction" });
+  try {
+    await firstStarted.promise;
+    await within(turn.cancel(), 100, "cancellation behind a pending steer");
+    const other = agent.turn.prompt({ id: "independent", input: "another turn" });
+    await within(other.steer({ input: "independent correction" }), 100, "independent steering");
+    assert.deepEqual(requests, ["first correction", "cancel", "independent correction"]);
+  } finally {
+    releaseFirst.resolve();
+    await Promise.all([first, second]);
+  }
+  assert.equal(requests.at(-1), "second correction");
+});
+
+test("a rejected steer does not discard later corrections", async () => {
+  const releaseFirst = deferredPromise();
+  const requests = [];
+  const turn = Agent.open(agentId, {
+    baseUrl: origin,
+    fetch: async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).pathname.endsWith("/turns")) {
+        return Response.json({ turn_id: "retry-steer", state: "accepted", accepted_cursor: "1" }, { status: 202 });
+      }
+      const { input: correction } = await request.json();
+      requests.push(correction);
+      if (correction === "first") {
+        await releaseFirst.promise;
+        return Response.json({ error: "turn_recovering" }, { status: 503 });
+      }
+      return Response.json({ state: "steering" }, { status: 202 });
+    },
+  }).turn.prompt({ id: "retry-steer", input: "original" });
+  const first = turn.steer({ input: "first" });
+  const second = turn.steer({ input: "latest" });
+  const rejected = assert.rejects(first, { status: 503, code: "turn_recovering" });
+  await waitFor(() => requests.length > 0);
+  try {
+    assert.deepEqual(requests, ["first"]);
+  } finally {
+    releaseFirst.resolve();
+    await Promise.all([rejected, second]);
+  }
+  assert.deepEqual(requests, ["first", "latest"]);
+});
+
 test("stable-ID cancellation dispatches after the prompt AbortSignal has fired", async () => {
   const promptStarted = deferredPromise();
   let cancelSignal;
@@ -1418,26 +1564,35 @@ test("an inactive managed SSE reconnects from the exact cursor", async () => {
   }
 });
 
-test("managed SSE rejects an unterminated decoded frame beyond its byte budget", async () => {
+test("managed SSE queues one event beyond 32 MiB and then consumes the following frame", { timeout: 10_000 }, async () => {
   const connections = [];
+  const payload = "x".repeat(33 * 1024 * 1024);
   const agent = Agent.open(agentId, {
     baseUrl: origin,
     fetch: async (input, init) => {
-      const request = new Request(input, init);
-      const connection = controlledEventStream(request.signal, () => {});
+      const connection = controlledEventStream(new Request(input, init).signal, () => {});
       connections.push(connection);
       return connection.response;
     },
   });
   const events = agent.events.watch({ cursor: "0" });
-  const next = events.next();
   await waitFor(() => connections.length === 1);
-  connections[0].send(`data: ${"x".repeat(16 * 1024 * 1024)}`);
-  await assert.rejects(next, (error) => {
-    assert(error instanceof ManagedError);
-    assert.equal(error.code, "event_frame_too_large");
-    return true;
-  });
+  const frame = sse("1", "api.event", { cursor: "1", type: "api.event", payload }).replaceAll("\n", "\r\n");
+  // Split a CRLF and the large JSON body over distinct network reads. There
+  // is deliberately no pending next(), so this also exercises the queue.
+  const firstCR = frame.indexOf("\r");
+  connections[0].send(frame.slice(0, firstCR + 1));
+  await new Promise(setImmediate);
+  connections[0].send(frame.slice(firstCR + 1, 17 * 1024 * 1024));
+  await new Promise(setImmediate);
+  connections[0].send(frame.slice(17 * 1024 * 1024));
+  await new Promise(setImmediate);
+  const event = await events.next();
+  assert.equal(event.value.cursor, "1");
+  assert.equal(event.value.data.payload, payload);
+  connections[0].send(sse("2", "api.event", { cursor: "2", type: "api.event", payload: "next" }));
+  assert.equal((await events.next()).value.data.payload, "next");
+  await events.return();
 });
 
 test("managed SSE accepts one frame just above the old 2 MiB ceiling", async () => {
@@ -1463,7 +1618,7 @@ test("managed SSE accepts one frame just above the old 2 MiB ceiling", async () 
   await events.return();
 });
 
-test("managed SSE bounds coalesced complete frames independently", async () => {
+test("managed SSE consumes coalesced complete frames independently", async () => {
   const payload = "x".repeat(9 * 1024 * 1024);
   const agent = Agent.open(agentId, {
     baseUrl: origin,
@@ -1871,7 +2026,6 @@ function agentState() {
     completed_turns: 0,
     last_active: 1,
     active_turns: [],
-    active_turn_details: [],
     agent_loaded: false,
     connected_clients: 0,
     capabilities: {
@@ -2002,3 +2156,60 @@ async function within(promise, milliseconds, label) {
 function sse(id, event, data) {
   return `id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
+
+
+test("identified steer withdrawal waits for admission and preserves the receipt", async () => {
+  const admitted = deferredPromise();
+  const entered = deferredPromise();
+  const requests = [];
+  const turn = Agent.open(agentId, {
+    baseUrl: origin,
+    fetch: async (input, init) => {
+      const request = new Request(input, init);
+      const path = new URL(request.url).pathname;
+      const body = await request.json();
+      if (path.endsWith("/turns")) return Response.json({ turn_id: "undo", state: "accepted", accepted_cursor: "1" });
+      requests.push([path.split("/").at(-1), body]);
+      if (path.endsWith("/steer")) {
+        entered.resolve();
+        await admitted.promise;
+        return Response.json({ turn_id: "undo", state: "steering" });
+      }
+      return Response.json({ turn_id: "undo", message_id: body.message_id, withdrawn: body.message_id === "pending" });
+    },
+  }).turn.prompt({ id: "undo", input: "original" });
+  const steering = turn.steer({ input: "correction", messageId: "pending" });
+  const withdrawal = turn.withdrawSteer({ messageId: "pending" });
+  await entered.promise;
+  assert.deepEqual(requests, [["steer", { input: "correction", message_id: "pending" }]]);
+  admitted.resolve();
+  await steering;
+  assert.deepEqual(await withdrawal, { turn_id: "undo", message_id: "pending", withdrawn: true });
+  assert.deepEqual(requests.at(-1), ["withdraw-steer", { message_id: "pending" }]);
+  assert.equal((await turn.withdrawSteer({ messageId: "consumed" })).withdrawn, false);
+  await assert.rejects(turn.withdrawSteer({ messageId: "" }), /messageId/);
+});
+
+
+test("managed memory preserves requested scan/read batches above former maxima", async () => {
+  const records = Array.from({ length: 30 }, (_, index) => ({
+    key: { id: index + 1, version: 1 }, content: "Complete record", created_at_ms: 1,
+    updated_at_ms: 1, last_scanned_at_ms: null, scan_count: 0,
+    last_used_at_ms: null, use_count: 0, probation_until_ms: null,
+  }));
+  const options = { baseUrl: origin, apiKey, fetch: async (input, init) => {
+    const body = await new Request(input, init).json();
+    if (body.operation === "scan") {
+      assert.equal(body.limit, 30);
+      return Response.json({ operation: "scan", abstained: false,
+        candidates: records.map(({ key }) => ({ key, preview: "Complete record", score: 1 })) });
+    }
+    assert.equal(body.keys.length, 30);
+    return Response.json({ operation: "read", memories: records });
+  } };
+  const scanned = await Agent.memory({ operation: "scan", query: "complete", limit: 30 }, options);
+  assert.equal(scanned.candidates.length, 30);
+  const read = await Agent.memory({ operation: "read", keys: scanned.candidates.map(({ key }) => key) }, options);
+  assert.equal(read.memories.length, 30);
+  assert.equal(read.memories[29].key.id, 30);
+});

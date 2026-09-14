@@ -107,6 +107,7 @@ struct CachedEntry {
     expanded: bool,
     live_duration_ns: Option<u64>,
     tool_summary_lines: usize,
+    depth: u16,
     lines: Vec<Line<'static>>,
     images: Vec<markdown::ImagePlacement>,
     links: Vec<Vec<markdown::LinkSpan>>,
@@ -813,19 +814,17 @@ impl Transcript {
             .and_then(|selected| self.model.index_of(selected));
         let next = if direction < 0 {
             let end = selected.unwrap_or(entries.len());
-            entries[..end]
-                .iter()
-                .rev()
-                .find(|entry| !entry.hidden && is_expandable(entry))
+            entries[..end].iter().rev().find(|entry| {
+                self.cache.visible_depth(entry, &self.model).is_some() && is_expandable(entry)
+            })
         } else if let Some(selected) = selected {
-            entries[selected.saturating_add(1)..]
-                .iter()
-                .find(|entry| !entry.hidden && is_expandable(entry))
+            entries[selected.saturating_add(1)..].iter().find(|entry| {
+                self.cache.visible_depth(entry, &self.model).is_some() && is_expandable(entry)
+            })
         } else {
-            entries
-                .iter()
-                .rev()
-                .find(|entry| !entry.hidden && is_expandable(entry))
+            entries.iter().rev().find(|entry| {
+                self.cache.visible_depth(entry, &self.model).is_some() && is_expandable(entry)
+            })
         };
         let Some(selected) = next.map(|entry| entry.id) else {
             return ComponentUpdate::none();
@@ -838,9 +837,21 @@ impl Transcript {
     }
 
     fn toggle_selected_expandable(&mut self) -> ComponentUpdate<TranscriptEffect> {
-        let Some(entry_id) = self.selected_expandable else {
+        let Some(mut entry_id) = self.selected_expandable else {
             return ComponentUpdate::none();
         };
+        // A batch may have collapsed since its child was selected, including
+        // when another child arrives and makes a transparent wrapper visible.
+        while let Some(entry) = self.model.entry(entry_id) {
+            if self.cache.visible_depth(entry, &self.model).is_some() {
+                break;
+            }
+            let Some(parent) = entry.parent else {
+                return ComponentUpdate::none();
+            };
+            entry_id = parent;
+        }
+        self.selected_expandable = Some(entry_id);
         let Some(entry_index) = self.model.index_of(entry_id) else {
             return ComponentUpdate::none();
         };
@@ -1036,7 +1047,12 @@ impl Transcript {
     fn first_anchor(&mut self, width: u16, theme: &Theme) -> Option<Anchor> {
         for index in 0..self.model.entries().len() {
             let entry = &self.model.entries()[index];
-            if entry.hidden || self.cache.layout(entry, width, theme).is_empty() {
+            if self.cache.visible_depth(entry, &self.model).is_none()
+                || self
+                    .cache
+                    .layout(entry, &self.model, width, theme)
+                    .is_empty()
+            {
                 continue;
             }
             return Some(Anchor {
@@ -1050,10 +1066,10 @@ impl Transcript {
     fn last_anchor(&mut self, width: u16, theme: &Theme) -> Option<Anchor> {
         for index in (0..self.model.entries().len()).rev() {
             let entry = &self.model.entries()[index];
-            if entry.hidden {
+            if self.cache.visible_depth(entry, &self.model).is_none() {
                 continue;
             }
-            let len = self.cache.layout(entry, width, theme).len();
+            let len = self.cache.layout(entry, &self.model, width, theme).len();
             if len == 0 {
                 continue;
             }
@@ -1067,10 +1083,24 @@ impl Transcript {
 
     fn resolve_anchor(&mut self, anchor: Anchor, width: u16, theme: &Theme) -> Option<Anchor> {
         let entry = self.model.entry(anchor.entry)?;
-        if entry.hidden {
-            return self.next_visible_entry(anchor.entry, width, theme);
+        if self.cache.visible_depth(entry, &self.model).is_none() {
+            // Folding a batch can hide the entire tail while the viewport is
+            // inside one of its children. Keep that group in view.
+            let mut parent = entry.parent;
+            while let Some(id) = parent {
+                let Some(ancestor) = self.model.entry(id) else {
+                    break;
+                };
+                if self.cache.visible_depth(ancestor, &self.model).is_some() {
+                    return self.resolve_anchor(Anchor { entry: id, line: 0 }, width, theme);
+                }
+                parent = ancestor.parent;
+            }
+            return self
+                .next_visible_entry(anchor.entry, width, theme)
+                .or_else(|| self.previous(Anchor { line: 0, ..anchor }, width, theme));
         }
-        let len = self.cache.layout(entry, width, theme).len();
+        let len = self.cache.layout(entry, &self.model, width, theme).len();
         (len > 0).then_some(Anchor {
             entry: anchor.entry,
             line: anchor.line.min(len - 1),
@@ -1112,10 +1142,10 @@ impl Transcript {
         let index = self.model.index_of(anchor.entry)?;
         for previous in (0..index).rev() {
             let entry = &self.model.entries()[previous];
-            if entry.hidden {
+            if self.cache.visible_depth(entry, &self.model).is_none() {
                 continue;
             }
-            let len = self.cache.layout(entry, width, theme).len();
+            let len = self.cache.layout(entry, &self.model, width, theme).len();
             if len > 0 {
                 return Some(Anchor {
                     entry: entry.id,
@@ -1128,7 +1158,7 @@ impl Transcript {
 
     fn next(&mut self, anchor: Anchor, width: u16, theme: &Theme) -> Option<Anchor> {
         let entry = self.model.entry(anchor.entry)?;
-        let len = self.cache.layout(entry, width, theme).len();
+        let len = self.cache.layout(entry, &self.model, width, theme).len();
         if anchor.line + 1 < len {
             return Some(Anchor {
                 line: anchor.line + 1,
@@ -1147,7 +1177,12 @@ impl Transcript {
         let index = self.model.index_of(entry_id)?;
         for next in index + 1..self.model.entries().len() {
             let entry = &self.model.entries()[next];
-            if entry.hidden || self.cache.layout(entry, width, theme).is_empty() {
+            if self.cache.visible_depth(entry, &self.model).is_none()
+                || self
+                    .cache
+                    .layout(entry, &self.model, width, theme)
+                    .is_empty()
+            {
                 continue;
             }
             return Some(Anchor {
@@ -1170,7 +1205,7 @@ impl Transcript {
             let Some(entry) = self.model.entry(anchor.entry) else {
                 break;
             };
-            let layout = self.cache.layout(entry, width, theme);
+            let layout = self.cache.layout(entry, &self.model, width, theme);
             if layout.get(anchor.line).is_some() {
                 anchors.push(anchor);
             }
@@ -1230,6 +1265,34 @@ fn is_expandable(entry: &TranscriptEntry) -> bool {
 }
 
 impl LayoutCache {
+    fn expanded(&self, entry: &TranscriptEntry) -> bool {
+        self.expansion_overrides
+            .get(&entry.id)
+            .copied()
+            .or(self.expand_all)
+            .unwrap_or_else(|| Self::expanded_by_default(entry))
+    }
+
+    // Hidden wrappers are transparent, but every visible ancestor must be open.
+    fn visible_depth(&self, entry: &TranscriptEntry, model: &TranscriptModel) -> Option<u16> {
+        if entry.hidden {
+            return None;
+        }
+        let mut parent = entry.parent;
+        let mut depth: u16 = 0;
+        while let Some(id) = parent {
+            let ancestor = model.entry(id)?;
+            if !ancestor.hidden {
+                if !self.expanded(ancestor) {
+                    return None;
+                }
+                depth = depth.saturating_add(1);
+            }
+            parent = ancestor.parent;
+        }
+        Some(depth)
+    }
+
     fn refresh_terminal_images(&mut self) {
         self.images.advance_terminal_generation();
         self.entries
@@ -1263,15 +1326,19 @@ impl LayoutCache {
         self.expansion_overrides.remove(&id);
     }
 
-    fn layout(&mut self, entry: &TranscriptEntry, width: u16, theme: &Theme) -> &[Line<'static>] {
+    fn layout(
+        &mut self,
+        entry: &TranscriptEntry,
+        model: &TranscriptModel,
+        width: u16,
+        theme: &Theme,
+    ) -> &[Line<'static>] {
+        let Some(depth) = self.visible_depth(entry, model) else {
+            return &[];
+        };
+        let expanded = self.expanded(entry);
         let workspace = &self.workspace;
         let images = &mut self.images;
-        let expanded = self
-            .expansion_overrides
-            .get(&entry.id)
-            .copied()
-            .or(self.expand_all)
-            .unwrap_or_else(|| Self::expanded_by_default(entry));
         let live_duration_ns = self.live_tool_durations.get(&entry.id).copied();
         let cached = match self.entries.entry(entry.id) {
             Entry::Occupied(mut occupied) => {
@@ -1279,9 +1346,11 @@ impl LayoutCache {
                 if cached.revision != entry.revision
                     || cached.width != width
                     || cached.expanded != expanded
+                    || cached.depth != depth
                 {
                     occupied.insert(CachedEntry::new(
                         entry,
+                        depth,
                         live_duration_ns,
                         width,
                         theme,
@@ -1298,6 +1367,7 @@ impl LayoutCache {
             }
             Entry::Vacant(vacant) => vacant.insert(CachedEntry::new(
                 entry,
+                depth,
                 live_duration_ns,
                 width,
                 theme,
@@ -1324,12 +1394,7 @@ impl LayoutCache {
     }
 
     fn toggle(&mut self, entry: &TranscriptEntry) {
-        let expanded = self
-            .expansion_overrides
-            .get(&entry.id)
-            .copied()
-            .or(self.expand_all)
-            .unwrap_or_else(|| Self::expanded_by_default(entry));
+        let expanded = self.expanded(entry);
         self.expansion_overrides.insert(entry.id, !expanded);
         self.entries.remove(&entry.id);
     }
@@ -1427,8 +1492,13 @@ impl LayoutCache {
 }
 
 impl CachedEntry {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep cache inputs aligned with the explicit renderer inputs, including tree depth"
+    )]
     fn new(
         entry: &TranscriptEntry,
+        depth: u16,
         live_duration_ns: Option<u64>,
         width: u16,
         theme: &Theme,
@@ -1438,6 +1508,7 @@ impl CachedEntry {
     ) -> Self {
         let layout = render_entry(
             entry,
+            depth,
             live_duration_ns,
             width,
             theme,
@@ -1447,7 +1518,8 @@ impl CachedEntry {
         );
         let tool_summary_lines = match (&entry.kind, live_duration_ns) {
             (EntryKind::Tool(tool), Some(duration_ns)) => {
-                render_live_tool_summary(entry, tool, duration_ns, width, theme, expanded).len()
+                render_live_tool_summary(entry, depth, tool, duration_ns, width, theme, expanded)
+                    .len()
             }
             _ => 0,
         };
@@ -1457,6 +1529,7 @@ impl CachedEntry {
             expanded,
             live_duration_ns,
             tool_summary_lines,
+            depth,
             lines: layout.lines,
             images: layout.images,
             links: layout.links,
@@ -1476,8 +1549,15 @@ impl CachedEntry {
         let (EntryKind::Tool(tool), Some(duration_ns)) = (&entry.kind, live_duration_ns) else {
             return;
         };
-        let summary =
-            render_live_tool_summary(entry, tool, duration_ns, self.width, theme, self.expanded);
+        let summary = render_live_tool_summary(
+            entry,
+            self.depth,
+            tool,
+            duration_ns,
+            self.width,
+            theme,
+            self.expanded,
+        );
         let summary_len = summary.len();
         self.lines.splice(0..self.tool_summary_lines, summary);
         self.links.splice(
@@ -1600,10 +1680,14 @@ impl Component for Transcript {
                         if tool.state == crate::tui::transcript::ToolState::Running
                 ) && let Some(spinner) = self.tool_spinner
                 {
-                    let spinner_x = transcript_area
-                        .x
-                        .saturating_add(4)
-                        .saturating_add(nested_tool_indent(entry, transcript_area.width));
+                    let spinner_x =
+                        transcript_area
+                            .x
+                            .saturating_add(4)
+                            .saturating_add(nested_tool_indent(
+                                self.cache.visible_depth(entry, &self.model).unwrap_or(0),
+                                transcript_area.width,
+                            ));
                     if spinner_x < transcript_area.right() {
                         frame.buffer_mut().set_string(
                             spinner_x,
@@ -1658,8 +1742,13 @@ fn render_top_right_hint(
     Some(Rect::new(x, area.y, width, 1))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep independent rendering inputs explicit rather than introducing a context wrapper"
+)]
 fn render_entry(
     entry: &TranscriptEntry,
+    depth: u16,
     live_duration_ns: Option<u64>,
     width: u16,
     theme: &Theme,
@@ -1687,7 +1776,7 @@ fn render_entry(
             layout
         }
         EntryKind::Tool(tool) => {
-            let indent = nested_tool_indent(entry, width);
+            let indent = nested_tool_indent(depth, width);
             let tool_width = width.saturating_sub(indent);
             let mut layout =
                 tool::render_layout(tool, live_duration_ns, tool_width, theme, expanded);
@@ -1798,30 +1887,24 @@ fn render_entry(
 
 fn render_live_tool_summary(
     entry: &TranscriptEntry,
+    depth: u16,
     tool: &crate::tui::transcript::ToolEntry,
     duration_ns: u64,
     width: u16,
     theme: &Theme,
     expanded: bool,
 ) -> Vec<Line<'static>> {
-    let indent = nested_tool_indent(entry, width);
+    let indent = nested_tool_indent(depth, width);
     let tool_width = width.saturating_sub(indent);
     let mut lines = tool::render_live_summary(tool, duration_ns, tool_width, theme, expanded);
     indent_nested_tool(indent, &mut lines, theme, expanded, entry.trailing_spacer);
     lines
 }
 
-const fn nested_tool_indent(entry: &TranscriptEntry, width: u16) -> u16 {
-    if entry.parent.is_some() {
-        let available = width.saturating_sub(1);
-        if available < NESTED_TOOL_INDENT {
-            available
-        } else {
-            NESTED_TOOL_INDENT
-        }
-    } else {
-        0
-    }
+fn nested_tool_indent(depth: u16, width: u16) -> u16 {
+    depth
+        .saturating_mul(NESTED_TOOL_INDENT)
+        .min(width.saturating_sub(1))
 }
 
 fn indent_nested_tool(
@@ -1854,8 +1937,16 @@ fn indent_nested_tool(
         } else {
             continuation
         };
-        line.spans
-            .insert(0, Span::styled(marker, Style::default().fg(theme.border())));
+        line.spans.insert(
+            0,
+            Span::styled(
+                format!(
+                    "{}{marker}",
+                    " ".repeat(usize::from(indent.saturating_sub(4)))
+                ),
+                Style::default().fg(theme.border()),
+            ),
+        );
     }
 }
 
@@ -1941,6 +2032,182 @@ mod history_tests {
     };
     use crossterm::event::{Event, KeyModifiers, MouseEvent, MouseEventKind};
     use std::sync::Arc;
+
+    fn tree_call(transcript: &mut Transcript, sequence: u64, id: &str, name: &str) {
+        use nanocodex::agent::events::{AgentEvent, AgentEventKind};
+        let payload = serde_json::json!({"call_id": id, "tool": name, "arguments": {}});
+        transcript.model.apply(&TranscriptRecord::from_agent(
+            sequence,
+            0,
+            AgentEvent {
+                protocol_version: 1,
+                request_id: Arc::from("tree"),
+                seq: sequence,
+                kind: AgentEventKind::ToolCall,
+                payload: serde_json::value::to_raw_value(&payload).unwrap().into(),
+            },
+        ));
+    }
+
+    #[test]
+    fn batch_tree_flattens_single_child_and_invalidates_cached_depth() {
+        let mut t = Transcript::new();
+        tree_call(&mut t, 1, "batch", "exec");
+        tree_call(&mut t, 2, "batch/code-0", "accountInfo");
+        let parent = t.model.entries()[0].id;
+        let child = t.model.entries()[1].id;
+        assert_eq!(t.model.entry(child).unwrap().parent, Some(parent));
+        assert_eq!(
+            t.cache
+                .visible_depth(t.model.entry(child).unwrap(), &t.model),
+            Some(0)
+        );
+        t.cache.layout(
+            t.model.entry(child).unwrap(),
+            &t.model,
+            80,
+            &Theme::default(),
+        );
+        tree_call(&mut t, 3, "batch/code-1", "accountInfo");
+        assert_eq!(
+            t.cache
+                .visible_depth(t.model.entry(child).unwrap(), &t.model),
+            None
+        );
+        t.cache.toggle(t.model.entry(parent).unwrap());
+        assert_eq!(
+            t.cache
+                .visible_depth(t.model.entry(child).unwrap(), &t.model),
+            Some(1)
+        );
+        let lines = t.cache.layout(
+            t.model.entry(child).unwrap(),
+            &t.model,
+            80,
+            &Theme::default(),
+        );
+        assert!(lines[0].to_string().starts_with("  ├─"));
+        t.cache.toggle(t.model.entry(parent).unwrap());
+        assert!(
+            t.cache
+                .layout(
+                    t.model.entry(child).unwrap(),
+                    &t.model,
+                    80,
+                    &Theme::default()
+                )
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn toggling_a_hidden_selection_opens_its_visible_batch_ancestor() {
+        let mut t = Transcript::new();
+        tree_call(&mut t, 1, "batch", "exec");
+        tree_call(&mut t, 2, "batch/code-0", "accountInfo");
+        let parent = t.model.entries()[0].id;
+        let child = t.model.entries()[1].id;
+        t.selected_expandable = Some(child);
+        tree_call(&mut t, 3, "batch/code-1", "accountInfo");
+        t.toggle_selected_expandable();
+        assert_eq!(t.selected_expandable, Some(parent));
+        assert_eq!(
+            t.cache
+                .visible_depth(t.model.entry(child).unwrap(), &t.model),
+            Some(1)
+        );
+        assert!(!t.cache.expanded(t.model.entry(child).unwrap()));
+    }
+
+    #[test]
+    fn collapsed_batch_hides_all_descendants_and_navigation_skips_them() {
+        let mut t = Transcript::new();
+        for (i, id, name) in [
+            (1, "batch", "exec"),
+            (2, "batch/code-0", "exec"),
+            (3, "batch/code-0/code-0", "accountInfo"),
+            (4, "batch/code-0/code-1", "accountInfo"),
+            (5, "batch/code-1", "accountInfo"),
+            (6, "after", "accountInfo"),
+        ] {
+            tree_call(&mut t, i, id, name);
+        }
+        let parent = t.model.entries()[0].id;
+        let nested = t.model.entries()[1].id;
+        let grandchild = t.model.entries()[2].id;
+        let after = t.model.entries()[5].id;
+        t.cache.toggle(t.model.entry(parent).unwrap());
+        t.cache.toggle(t.model.entry(nested).unwrap());
+        assert_eq!(
+            t.cache
+                .visible_depth(t.model.entry(grandchild).unwrap(), &t.model),
+            Some(2)
+        );
+        t.cache.toggle(t.model.entry(parent).unwrap());
+        for entry in &t.model.entries()[1..5] {
+            assert_eq!(t.cache.visible_depth(entry, &t.model), None);
+        }
+        t.selected_expandable = Some(parent);
+        t.select_expandable(1);
+        assert_eq!(t.selected_expandable, Some(after));
+        t.select_expandable(-1);
+        assert_eq!(t.selected_expandable, Some(parent));
+        let plan = t.render_plan(80, 40, &Theme::default());
+        assert!(
+            plan.anchors
+                .iter()
+                .all(|anchor| anchor.entry == parent || anchor.entry == after)
+        );
+        t.cache.toggle(t.model.entry(parent).unwrap());
+        assert_eq!(
+            t.cache
+                .visible_depth(t.model.entry(grandchild).unwrap(), &t.model),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn hidden_tail_anchor_recovers_its_batch_after_folding_or_child_arrival() {
+        for child_arrives in [false, true] {
+            let mut transcript = Transcript::new();
+            tree_call(&mut transcript, 1, "batch", "exec");
+            tree_call(&mut transcript, 2, "batch/code-0", "accountInfo");
+            let parent = transcript.model.entries()[0].id;
+            if !child_arrives {
+                tree_call(&mut transcript, 3, "batch/code-1", "accountInfo");
+                transcript.update(TranscriptEvent::ToggleExpandAll);
+            }
+            let child = transcript.model.entries().last().unwrap().id;
+            transcript.scroll = ScrollState::Detached(Anchor {
+                entry: child,
+                line: 0,
+            });
+            if child_arrives {
+                tree_call(&mut transcript, 3, "batch/code-1", "accountInfo");
+            } else {
+                transcript.update(TranscriptEvent::ToggleExpandAll);
+            }
+            let expected = Anchor {
+                entry: parent,
+                line: 0,
+            };
+            assert_eq!(
+                transcript.resolve_anchor(
+                    Anchor {
+                        entry: child,
+                        line: 0
+                    },
+                    80,
+                    &Theme::default()
+                ),
+                Some(expected),
+                "child_arrives={child_arrives}"
+            );
+            let plan = transcript.render_plan(80, 6, &Theme::default());
+            assert!(!plan.anchors.is_empty(), "child_arrives={child_arrives}");
+            assert!(plan.anchors.iter().all(|anchor| anchor.entry == parent));
+        }
+    }
 
     #[test]
     fn replayed_prefix_preserves_the_detached_viewport_anchor() {

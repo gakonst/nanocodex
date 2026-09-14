@@ -133,7 +133,7 @@ test("the packed package ships and resolves every public entry point", async () 
       assert.equal(new DurabilityImportConflictError("package-state").name, "DurabilityImportConflictError");
       const packageSource = createMemoryDurabilityStore("portable-package-state");
       const packageOwner = packageSource.acquire("portable-package-state", { ownerId: "package-owner" });
-      assert.deepEqual(packageSource.replace("portable-package-state", {
+      assert.deepEqual(packageSource.replace("portable-package-state", { records: [],
         ...packageOwner,
         expectedRevision: "0",
         payload: "portable-package-payload",
@@ -149,7 +149,7 @@ test("the packed package ships and resolves every public entry point", async () 
         limit: 1024,
       });
       const pageDestination = createMemoryDurabilityStore("portable-package-state");
-      assert.deepEqual(await importDurabilityStatePages(pageDestination, [packagePage]), {
+      assert.deepEqual(await importDurabilityStatePages(pageDestination, [packagePage, await exportDurabilityStatePage(packageSource, "portable-package-state", { from: durabilityRevision("0"), to: packagePage.to, cursor: packagePage.nextCursor })]), {
         revision: "1",
         payload: "portable-package-payload",
       });
@@ -175,7 +175,7 @@ test("the packed package ships and resolves every public entry point", async () 
         transactionSync(callback) { return callback(); },
       });
       assert.equal(Object.isFrozen(cloudflareStore), true);
-      assert.equal(cloudflareSchemaStatements, sqliteDurabilitySchema.length + 2);
+      assert.equal(cloudflareSchemaStatements, sqliteDurabilitySchema.length);
       let postgresCalls = 0;
       const postgresStore = createPostgresDurabilityStore({
         connect() {

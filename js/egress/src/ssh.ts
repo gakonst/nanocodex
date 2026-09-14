@@ -10,6 +10,7 @@ const MAX_COMMAND_BYTES = 64 * 1024;
 
 export type BrokeredSshIdentity = Readonly<{
   privateKey: string;
+  publicKey?: string;
   hostname: string;
   port: number;
   username: string;
@@ -22,6 +23,7 @@ export type BrokeredSshRequest = Readonly<{
   port: number;
   username: string;
   command: readonly string[];
+  stdin?: string;
 }>;
 
 type SocketLike = Readonly<{
@@ -37,22 +39,23 @@ type Connect = (
   options: Readonly<{ allowHalfOpen: boolean; secureTransport: "off" }>,
 ) => SocketLike;
 
-export function validateSshIdentity(value: unknown): BrokeredSshIdentity | undefined {
+export function validateSshTarget(value: unknown): Omit<BrokeredSshIdentity, "privateKey" | "publicKey"> | undefined {
   if (!isRecord(value)) return undefined;
+  const hostname = exactString(value.hostname), username = exactString(value.username);
+  const hostKeySha256 = exactString(value.host_key_sha256), port = value.port;
+  if (!hostname || canonicalSshHostname(hostname) !== hostname || !username || !SSH_USERNAME.test(username)
+    || !Number.isInteger(port) || (port as number) < 1 || (port as number) > 65535
+    || !hostKeySha256 || !SSH_HOST_KEY.test(hostKeySha256)) return undefined;
+  return { hostname, username, port: port as number, hostKeySha256 };
+}
+
+export function validateSshIdentity(value: unknown): BrokeredSshIdentity | undefined {
+  const target = validateSshTarget(value);
+  if (!target || !isRecord(value)) return undefined;
   const privateKey = privateKeyString(value.private_key);
-  const hostname = exactString(value.hostname);
-  const username = exactString(value.username);
-  const hostKeySha256 = exactString(value.host_key_sha256);
-  const port = value.port;
   if (!privateKey || privateKey.length < 64 || privateKey.length > 64 * 1024
-    || privateKey.includes("\0") || !/-----BEGIN (?:RSA |EC )?PRIVATE KEY-----/u.test(privateKey)
-    || !hostname || canonicalSshHostname(hostname) !== hostname
-    || !username || !SSH_USERNAME.test(username)
-    || !Number.isInteger(port) || (port as number) < 1 || (port as number) > 65_535
-    || !hostKeySha256 || !SSH_HOST_KEY.test(hostKeySha256)) {
-    return undefined;
-  }
-  return { privateKey, hostname, username, port: port as number, hostKeySha256 };
+    || privateKey.includes("\0") || !/-----BEGIN (?:RSA |EC )?PRIVATE KEY-----/u.test(privateKey)) return undefined;
+  return { ...target, privateKey };
 }
 
 export function validSshIdentityReference(value: string): boolean {
@@ -66,11 +69,13 @@ export function validateBrokeredSshRequest(value: unknown): BrokeredSshRequest |
   const username = exactString(value.username);
   const port = value.port;
   const command = value.command;
+  const stdin = value.stdin;
   if (!identityReference || !validSshIdentityReference(identityReference)
     || !hostname || canonicalSshHostname(hostname) !== hostname
     || !username || !SSH_USERNAME.test(username)
     || !Number.isInteger(port) || (port as number) < 1 || (port as number) > 65_535
-    || !Array.isArray(command) || command.length < 1 || command.length > MAX_COMMAND_ARGUMENTS) {
+    || !Array.isArray(command) || command.length < 1 || command.length > MAX_COMMAND_ARGUMENTS
+    || (stdin !== undefined && (typeof stdin !== "string" || new TextEncoder().encode(stdin).byteLength > 64 * 1024))) {
     return undefined;
   }
   let bytes = 0;
@@ -79,7 +84,8 @@ export function validateBrokeredSshRequest(value: unknown): BrokeredSshRequest |
     bytes += new TextEncoder().encode(argument).byteLength;
     if (bytes > MAX_COMMAND_BYTES) return undefined;
   }
-  return { identityReference, hostname, username, port: port as number, command };
+  return { identityReference, hostname, username, port: port as number, command,
+    ...(typeof stdin === "string" ? { stdin } : {}) };
 }
 
 export async function executeBrokeredSsh(
@@ -119,7 +125,7 @@ export async function executeBrokeredSsh(
     identity.hostname,
     "--",
     ...request.command,
-  ], { cwd: "/", stdin: "", signal: signal ?? new AbortController().signal });
+  ], { cwd: "/", stdin: request.stdin ?? "", signal: signal ?? new AbortController().signal });
 }
 
 export class BrokeredSshError extends Error {

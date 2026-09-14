@@ -33,7 +33,8 @@ fn benchmark_process_output(c: &mut Criterion) {
         benchmark.to_async(&runtime).iter(|| async {
             let output = tools
                 .execute_tool("exec_command", ToolInput::Function(input.clone()), context)
-                .await;
+                .await
+                .unwrap();
             assert!(output.success);
             std::hint::black_box(output);
         });
@@ -55,7 +56,8 @@ fn benchmark_process_output(c: &mut Criterion) {
                     ToolInput::Function(input.clone()),
                     context,
                 )
-                .await;
+                .await
+                .unwrap();
             assert!(output.success);
             std::hint::black_box(output);
         });
@@ -72,7 +74,7 @@ fn benchmark_process_output(c: &mut Criterion) {
             DEFAULT_TOOL_OUTPUT_TOKENS,
         ),
     ));
-    assert!(warmup.success);
+    assert!(warmup.unwrap().success);
     c.bench_function("code_mode_exec/warm_text", |benchmark| {
         benchmark.to_async(&runtime).iter(|| async {
             let execution = code_mode
@@ -86,7 +88,8 @@ fn benchmark_process_output(c: &mut Criterion) {
                         DEFAULT_TOOL_OUTPUT_TOKENS,
                     ),
                 )
-                .await;
+                .await
+                .unwrap();
             assert!(execution.success);
             std::hint::black_box(execution);
         });

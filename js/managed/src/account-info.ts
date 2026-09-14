@@ -1,4 +1,4 @@
-import type { PromptInput } from "nanocodex";
+import type { X_API } from "nanocodex-tools/x";
 import type { HostedMachine } from "./hosted-tools-protocol";
 
 import {
@@ -55,6 +55,8 @@ export type VaultEntry =
 export type AccountMachine = Readonly<HostedMachine & {
   /** Logical namespace root. Native host workspace paths are never projected. */
   mount: string;
+  /** Current attachment presence for user hands; absent when not known. */
+  online?: boolean;
 } & (
   | { kind: "sandbox"; provider: string }
   | { kind: "user"; provider?: never }
@@ -62,6 +64,8 @@ export type AccountMachine = Readonly<HostedMachine & {
 
 export type AccountInfo = Readonly<{
   status: "disabled" | "ready" | "unavailable";
+  /** Native public APIs available independently of account connectors. */
+  apis: readonly (typeof X_API)[];
   /** Legacy capability-level summary retained for existing agents. */
   authenticated: readonly ConnectorCapabilityId[];
   /** Legacy single-account labels retained when a capability has one visible account. */
@@ -70,7 +74,7 @@ export type AccountInfo = Readonly<{
   connectorAccounts: Readonly<
     Partial<Record<ConnectorCapabilityId, readonly ConnectorConnection[]>>
   >;
-  /** Hands currently available to the account-owned agent. */
+  /** Known hands, including retained user hands whose attachment is offline. */
   machines: readonly AccountMachine[];
   identity: Readonly<Record<string, never>>;
   stablecoins: readonly [];
@@ -82,6 +86,7 @@ export type AccountInfoOptions = Readonly<{
   allowedConnectors?: readonly ConnectorCapabilityId[];
   allowedConnections?: ConnectorConnectionSelection;
   enabled: boolean;
+  apis?: readonly (typeof X_API)[];
   machines?: readonly AccountMachine[];
   signal?: AbortSignal;
 }>;
@@ -93,11 +98,12 @@ export async function accountInfo(
     allowedConnectors,
     allowedConnections,
     enabled,
+    apis = [],
     machines = [],
     signal,
   }: AccountInfoOptions,
 ): Promise<AccountInfo> {
-  if (!enabled) return emptyInfo("disabled", machines);
+  if (!enabled) return emptyInfo("disabled", machines, apis);
   signal?.throwIfAborted();
   try {
     const encodedUserId = encodeURIComponent(userId);
@@ -109,7 +115,7 @@ export async function accountInfo(
     ]);
     if (!response.ok) {
       await response.body?.cancel();
-      return emptyInfo("unavailable", machines);
+      return emptyInfo("unavailable", machines, apis);
     }
     const statuses = connectorStatuses(await response.json());
     const allowed = allowedConnectors === undefined ? undefined : new Set(allowedConnectors);
@@ -134,6 +140,7 @@ export async function accountInfo(
     }
     return {
       status: "ready",
+      apis,
       authenticated,
       accounts,
       connectorAccounts,
@@ -145,7 +152,7 @@ export async function accountInfo(
     };
   } catch {
     signal?.throwIfAborted();
-    return emptyInfo("unavailable", machines);
+    return emptyInfo("unavailable", machines, apis);
   }
 }
 
@@ -158,6 +165,7 @@ export function projectAccountInfo(
   if (allowedConnectors === undefined) {
     return {
       ...info,
+      apis: info.apis ?? [],
       connectorAccounts: info.connectorAccounts ?? {},
       machines: info.machines ?? [],
       vault,
@@ -192,6 +200,7 @@ export function projectAccountInfo(
   }
   return {
     ...info,
+    apis: info.apis ?? [],
     authenticated,
     accounts,
     connectorAccounts,
@@ -200,34 +209,14 @@ export function projectAccountInfo(
   };
 }
 
-export function withInitialAccountInfo(input: PromptInput, info: AccountInfo): PromptInput {
-  const explanation = [
-    "The managed runtime already resolved the following non-secret accountInfo snapshot for",
-    "this agent. Use it as the current connected-account context. Do not call accountInfo",
-    "again unless the task requires state refreshed after this first prompt. Machine topology is",
-    "intentionally omitted from this retained snapshot: call accountInfo immediately before choosing",
-    "a hand because user machines can connect or disconnect without restarting the agent. When connectorAccounts",
-    "lists multiple connections for a service, choose the appropriate one by label and pass its id",
-    "as X-Nanocodex-Connector-Connection on that provider request. Never invent a connection id.",
-    "Vault entries are safe references only and never contain passwords, full card numbers, CVVs,",
-    "expiry details,",
-    "or billing ZIPs.",
-  ].join(" ");
-  const context = {
-    type: "text" as const,
-    text: `${explanation}\n\n<account_info>\n${JSON.stringify({ ...info, machines: [] })}\n</account_info>`,
-  };
-  return typeof input === "string"
-    ? [context, { type: "text", text: input }]
-    : [context, ...input];
-}
-
 function emptyInfo(
   status: "disabled" | "unavailable",
   machines: readonly AccountMachine[],
+  apis: readonly (typeof X_API)[],
 ): AccountInfo {
   return {
     status,
+    apis,
     authenticated: [],
     accounts: {},
     connectorAccounts: {},

@@ -5,6 +5,7 @@ import {
   EXEC_COMMAND_PARAMETERS,
   EXECUTION_OUTPUT_SCHEMA,
   namespaceMountRoot,
+  resolveNamespaceCwd,
   PREVIEW_OUTPUT_SCHEMA,
   routeNamespaceCwd,
   WRITE_STDIN_PARAMETERS,
@@ -17,7 +18,7 @@ import {
 const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
 const DEFAULT_CWD = "/brain";
 
-type RoutedTool = Readonly<{
+export type RoutedTool = Readonly<{
   handler(input: unknown, context: ToolContext): unknown | Promise<unknown>;
 }>;
 
@@ -30,6 +31,7 @@ export type NamespaceMachine = Readonly<{
 export type MachineToolResolver = (
   machineId: string,
   name: HostedMachineToolName,
+  context: ToolContext,
 ) => RoutedTool | undefined;
 
 type MountedHand = Readonly<{
@@ -64,22 +66,26 @@ export type NamespaceExecutionRuntime = Readonly<{
  * so a disconnect or reconnect cannot retarget an admitted command.
  */
 export function createNamespaceExecutionRuntime(
-  machines: () => readonly NamespaceMachine[],
+  machines: (context: ToolContext) => readonly NamespaceMachine[],
   resolveMachineTool: MachineToolResolver = () => undefined,
+  brainExec?: RoutedTool,
 ): NamespaceExecutionRuntime {
   const brain = Object.freeze({
     mountId: "mount:brain",
     root: "/brain",
-    workspace: "/workspace",
+    workspace: "/brain",
+    exec: brainExec,
   }) satisfies MountedHand;
   const cells = new Map<string, CellBinding>();
   const sessions = new Map<number, ProcessBinding>();
 
   const cell = (context: ToolContext): CellBinding => {
-    const key = `${context.sessionId}\u0000${context.parentCallId}`;
+    // Direct tools have an empty parentCallId. Pin those to their own call,
+    // while nested Code Mode tools keep sharing their parent's captured lease.
+    const key = `${context.sessionId}\u0000${context.parentCallId || context.callId}`;
     const retained = cells.get(key);
     if (retained !== undefined) return retained;
-    const created = createCellBinding(brain, machines(), resolveMachineTool, key);
+    const created = createCellBinding(brain, machines(context), resolveMachineTool, context, key);
     cells.set(key, created);
     return created;
   };
@@ -100,17 +106,20 @@ export function createNamespaceExecutionRuntime(
 
   const tools: ToolMap = {
     exec_command: {
-      description: "Run a command on the hand that owns the root of workdir. workdir is a logical namespace path returned by mount or listed by accountInfo, such as /repo-test/repo or /laptop/repo. No execution hand is attached by default.",
+      description: "Run a command in durable /brain using bounded Just Bash by default. Use an explicit hand workdir returned by mount or accountInfo only for native binaries, builds, or process sessions. No execution hand is attached by default.",
       parameters: EXEC_COMMAND_PARAMETERS,
       outputSchema: EXECUTION_OUTPUT_SCHEMA,
       supportsParallelToolCalls: true,
       handler: async (input, context) => {
         const value = record(input);
         const workdir = optionalString(value.workdir, "workdir");
-        if (workdir === undefined) {
-          throw new Error(
-            "exec_command.workdir must select an attached hand; call mount when native execution is needed",
-          );
+        if (brainExec !== undefined && isBrainExecution(value)) {
+          // Brain calls must remain independent of hand discovery/readiness,
+          // and do not need to retain a per-cell native mount lease.
+          return brainExec.handler({
+            ...without(value, "workdir"),
+            workdir: resolveNamespaceCwd(DEFAULT_CWD, workdir),
+          }, context);
         }
         const binding = cell(context);
         const route = routeNamespaceCwd(binding.scope, workdir);
@@ -156,7 +165,11 @@ export function createNamespaceExecutionRuntime(
         }, context);
         const structured = executionResult(result);
         if (structured?.session_id === undefined) {
-          sessions.delete(publicSessionId);
+          // A transport/tool error has no execution result. It does not prove that
+          // the process exited; keep the original Hand binding so polling can retry.
+          if (structured !== undefined && (typeof structured.exit_code === "number" || structured.exit_code === null)) {
+            sessions.delete(publicSessionId);
+          }
           return result;
         }
         if (positiveSessionId(structured.session_id) !== binding.providerSessionId) {
@@ -205,7 +218,7 @@ export function createNamespaceExecutionRuntime(
 }
 
 export function createNamespaceExecutionTools(
-  machines: () => readonly NamespaceMachine[],
+  machines: (context: ToolContext) => readonly NamespaceMachine[],
   resolveMachineTool: MachineToolResolver = () => undefined,
 ): ToolMap {
   return createNamespaceExecutionRuntime(machines, resolveMachineTool).tools;
@@ -213,10 +226,17 @@ export function createNamespaceExecutionTools(
 
 export const machineMountRoot = namespaceMountRoot;
 
+export function isBrainExecution(input: unknown): boolean {
+  const value = record(input);
+  const cwd = resolveNamespaceCwd(DEFAULT_CWD, optionalString(value.workdir, "workdir"));
+  return cwd === DEFAULT_CWD || cwd.startsWith(`${DEFAULT_CWD}/`);
+}
+
 function createCellBinding(
   brain: MountedHand,
   sourceMachines: readonly NamespaceMachine[],
   resolveMachineTool: MachineToolResolver,
+  context: ToolContext,
   key: string,
 ): CellBinding {
   const hands: MountedHand[] = [brain];
@@ -231,9 +251,9 @@ function createCellBinding(
       machineId: machine.id,
       root,
       workspace: machine.workspace,
-      exec: resolveMachineTool(machine.id, "exec_command"),
-      writeStdin: resolveMachineTool(machine.id, "write_stdin"),
-      preview: resolveMachineTool(machine.id, "preview"),
+      exec: resolveMachineTool(machine.id, "exec_command", context),
+      writeStdin: resolveMachineTool(machine.id, "write_stdin", context),
+      preview: resolveMachineTool(machine.id, "preview", context),
     }));
   }
   const manifest = createNamespaceManifest({
@@ -282,7 +302,9 @@ function replaceExecutionResult(original: unknown, structured: Record<string, un
   return Object.freeze({
     [TOOL_RESULT]: true,
     metadata: original.metadata,
-    output: original.output,
+    // Direct model calls read output; Code Mode reads structuredResult.
+    // Both must expose the namespace session, never the Hand's local ID.
+    output: JSON.stringify(structured),
     structuredResult: structured,
     success: original.success,
     value: structured,

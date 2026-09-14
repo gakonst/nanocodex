@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<labwc_config>
+  <core><decoration>server</decoration></core>
+  <keyboard><default/></keyboard>
+  <mouse><default/></mouse>
+</labwc_config>

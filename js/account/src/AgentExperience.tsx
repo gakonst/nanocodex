@@ -1,3 +1,6 @@
+import { sessionQueryKey } from "./queryClient";
+import type { BrowserSession } from "./sessionQueries";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   lazy,
   memo,
@@ -11,10 +14,12 @@ import {
 } from "react";
 import type { AgentControllerEvent } from "nanocodex-react/agent";
 import { AccountChooser } from "nanocodex-connect-ui/AccountChooser";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
+import { Moon, PanelLeft, SquarePen, Sun } from "lucide-react";
 import type { AgentStatus, AgentTerminalMode, AgentTerminalState } from "./agentTerminalTypes";
 import { AgentTerminal, ManagedAgentTerminal } from "./AgentTerminal";
-import { ConversationHistoryRail, TerminalTranscriptSurface } from "nanocodex-terminal";
+import { TerminalTranscriptSurface } from "nanocodex-terminal";
+import { AgentSidebar } from "./AgentSidebar";
 import { useAccountSession } from "./AccountSession";
 import { browserAgentCapabilityError } from "./browserAgentCapabilities";
 import { clientFailureMessage } from "./clientFailure";
@@ -24,11 +29,12 @@ import {
   type ModelSessionStatus,
   type CredentialSource,
 } from "./modelSession";
-import { conversationTitle } from "./localConversationRuntime";
 import {
   createManagedConversation,
   loadManagedConversationSelection,
-  type ManagedConversation,
+  managedConversationsQueryOptions,
+  managedConversationQueryOptions,
+  recordManagedConversationActivity,
 } from "./managedAgentRuntime";
 import "nanocodex-connect-ui/styles.css";
 import "./AgentTerminal.css";
@@ -37,7 +43,6 @@ import "./Home.css";
 import { formatDollars } from "./walletFunding";
 import { useWalletFunding } from "./useWalletFunding";
 import { homeTerminalWelcome } from "./homeTerminalWelcome";
-import type { ManagedCreateSettings } from "nanocodex/managed";
 
 /** Ephemeral homepage consumer and managed-durable Agent demo. */
 export const AgentExperience = memo(function AgentExperience({
@@ -45,12 +50,17 @@ export const AgentExperience = memo(function AgentExperience({
   landing,
   mode,
   onAgentChange,
+  theme,
+  onThemeChange,
 }: {
   agentId?: string;
   landing?: boolean;
   mode: AgentTerminalMode;
   onAgentChange?(agentId: string, options?: { replace?: boolean }): void;
+  theme: "light" | "dark";
+  onThemeChange(theme: "light" | "dark"): void;
 }) {
+  const navigate = useNavigate();
   const [ephemeralThreadId, setEphemeralThreadId] = useState(() => crypto.randomUUID());
   const account = useAccountSession();
   const capabilityError = useMemo(() => browserAgentCapabilityError(), []);
@@ -59,7 +69,10 @@ export const AgentExperience = memo(function AgentExperience({
   const credentialSourceRef = useRef<CredentialSource | undefined>(undefined);
   const [runtimeState, setRuntimeState] = useState<AgentTerminalState>();
   const [railOpen, setRailOpen] = useState(false);
-  const [managedConversations, setManagedConversations] = useState<readonly ManagedConversation[]>([]);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => safeGet("nanocodex:sidebar-collapsed") === "true");
+  const toggleDesktopSidebar = () => setSidebarCollapsed((collapsed) => { safeSet("nanocodex:sidebar-collapsed", String(!collapsed)); return !collapsed; });
+  const sidebarTriggerRef = useRef<HTMLButtonElement>(null);
+  const closeSidebar = useCallback(() => setRailOpen(false), []);
   const [managedConversationId, setManagedConversationId] = useState<string>();
   const [managedError, setManagedError] = useState<string>();
   const [managedAttempt, setManagedAttempt] = useState(0);
@@ -69,16 +82,16 @@ export const AgentExperience = memo(function AgentExperience({
   const [sponsoredExhausted, setSponsoredExhausted] = useState(false);
   const hasCredential = credentialSource === "brokered" || credentialSource === "sponsored";
   const hasDurableCredential = credentialSource === "brokered";
-  const managedCreateSettings = useMemo<ManagedCreateSettings | undefined>(() => (
-    authStatus?.state === "ready" && authStatus.astraEntitled
-      ? Object.freeze({
-          model: "gpt-6-astra",
-          thinking: "high",
-          reasoningMode: "standard",
-          fastMode: false,
-        })
-      : undefined
-  ), [authStatus]);
+  const queryClient = useQueryClient();
+  const accountId = account.account?.id;
+  const conversationsQuery = useQuery({
+    ...managedConversationsQueryOptions(accountId ?? ""),
+    enabled: !landing && account.status === "ready" && Boolean(accountId) && hasDurableCredential && authStatus?.state === "ready",
+  });
+  const managedConversations = conversationsQuery.data ?? [];
+  const prefetchConversation = useCallback((id: string) => {
+    if (accountId) void queryClient.prefetchQuery(managedConversationQueryOptions(accountId, id));
+  }, [accountId, queryClient]);
   const showHomepageSms = landing
     && account.status !== "checking"
     && account.account?.persistent !== true;
@@ -97,7 +110,6 @@ export const AgentExperience = memo(function AgentExperience({
     : undefined;
 
   useEffect(() => {
-    setManagedConversations([]);
     setManagedConversationId(undefined);
     setRuntimeState(undefined);
   }, [account.account?.id]);
@@ -126,11 +138,9 @@ export const AgentExperience = memo(function AgentExperience({
       routeAgentId: agentId,
       retainedAgentId: safeGet(managedSelectionKey(accountId)) ?? undefined,
       hasCredential,
-      createSettings: managedCreateSettings,
       refresh,
     }).then((selection) => {
       if (cancelled) return;
-      setManagedConversations(selection.conversations);
       setManagedConversationId(selection.selectedId);
       if (selection.selectedId) {
         safeSet(managedSelectionKey(accountId), selection.selectedId);
@@ -149,7 +159,6 @@ export const AgentExperience = memo(function AgentExperience({
     agentId,
     hasDurableCredential,
     landing,
-    managedCreateSettings,
     managedAttempt,
     onAgentChange,
   ]);
@@ -171,7 +180,8 @@ export const AgentExperience = memo(function AgentExperience({
       : authStatus,
     [authStatus, credentialSource, freePromptsRemaining],
   );
-  const agentStatus: AgentStatus = !canRun || activeCapabilityError
+  const sessionChecking = account.status === "checking" || authStatus === undefined || credentialSource === undefined;
+  const agentStatus: AgentStatus = sessionChecking ? "starting" : !canRun || activeCapabilityError
     ? "idle" : runtimeState?.status ?? "starting";
   const agentError = runtimeState?.error;
   const inactiveMessage = inactiveTerminalMessage({
@@ -180,18 +190,19 @@ export const AgentExperience = memo(function AgentExperience({
   });
 
   const selectManaged = useCallback((id: string) => {
+    setRailOpen(false);
+    if (id === visibleManagedConversationId) return;
     setManagedConversationId(id);
     if (account.account) safeSet(managedSelectionKey(account.account.id), id);
     setRuntimeState(undefined);
-    setRailOpen(false);
     onAgentChange?.(id);
-  }, [account.account, onAgentChange]);
+  }, [account.account, onAgentChange, visibleManagedConversationId]);
   const createConversation = useCallback(() => {
     if (conversationPending || !account.account) return;
     setConversationPending(true);
     setManagedError(undefined);
-    void createManagedConversation(account.account.id, managedCreateSettings).then((conversation) => {
-      setManagedConversations((current) => [conversation, ...current]);
+    void createManagedConversation(account.account.id).then((conversation) => {
+      if (queryClient.getQueryData<BrowserSession>(sessionQueryKey)?.account?.id !== account.account?.id) return;
       setManagedConversationId(conversation.id);
       safeSet(managedSelectionKey(account.account!.id), conversation.id);
       setRuntimeState(undefined);
@@ -199,21 +210,15 @@ export const AgentExperience = memo(function AgentExperience({
       onAgentChange?.(conversation.id);
     }).catch((error) => setManagedError(errorMessage(error)))
       .finally(() => setConversationPending(false));
-  }, [account.account, conversationPending, managedCreateSettings, onAgentChange]);
+  }, [account.account, conversationPending, onAgentChange, queryClient]);
   const retryManagedConversations = useCallback(() => {
     setManagedError(undefined);
     refreshManagedList.current = true;
     setManagedAttempt((value) => value + 1);
   }, []);
   const recordActivity = useCallback((input: string) => {
-    if (!managedConversationId) return;
-    setManagedConversations((current) => current.map((item) => item.id === managedConversationId ? {
-      ...item,
-      title: (item.turnCount ?? 0) === 0 ? conversationTitle(input) : item.title,
-      turnCount: (item.turnCount ?? 0) + 1,
-      updatedAt: Date.now(),
-    } : item).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)));
-  }, [managedConversationId]);
+    if (accountId && managedConversationId) recordManagedConversationActivity(accountId, managedConversationId, input);
+  }, [accountId, managedConversationId]);
   const recordSponsoredActivity = useCallback(() => {
     // The egress reservation, not local submission, owns the allowance.
   }, []);
@@ -230,17 +235,37 @@ export const AgentExperience = memo(function AgentExperience({
     await refreshModelSession();
   }, [refreshModelSession]);
 
-  return <div className={`nanocodex-demo is-${mode}${landing ? " is-landing" : ""}`}>
-    <div className="conversation-workspace">
-      {landing || !hasDurableCredential ? null : <ConversationHistoryRail
-        agentStatus={agentStatus}
-        conversations={managedConversations} error={managedError}
-        mobileOpen={railOpen} pending={conversationPending} runtime="managed" selectedId={visibleManagedConversationId}
-        onClose={() => setRailOpen(false)} onCreate={createConversation} onOpen={() => setRailOpen(true)}
-        onRetry={retryManagedConversations}
-        onSelect={selectManaged}
-      />}
+  const newChat = () => {
+    closeSidebar();
+    if (landing) {
+      setRuntimeState(undefined);
+      setEphemeralThreadId(crypto.randomUUID());
+    } else if (hasDurableCredential) createConversation();
+    else void navigate("/connect");
+  };
+  const selectedConversation = managedConversations.find(({ id }) => id === visibleManagedConversationId);
+  const title = landing ? "New chat" : selectedConversation
+    ? /^Conversation [a-f\d]{8}$/i.test(selectedConversation.title) ? "New agent" : selectedConversation.title
+    : "Your agents";
+
+  return <div className={`nanocodex-demo chat-workspace is-${mode}${landing ? " is-landing" : ""}`}>
+    <div className={`conversation-workspace${sidebarCollapsed ? " is-sidebar-collapsed" : ""}`}>
+      <AgentSidebar key={account.account?.id ?? "anonymous"}
+        conversations={managedConversations} error={managedError ?? conversationsQuery.error?.message} landing={!!landing} active={mode !== "hidden"}
+        open={railOpen && mode !== "hidden"} pending={conversationPending} selectedId={visibleManagedConversationId}
+        onClose={closeSidebar} onCollapse={toggleDesktopSidebar} collapsed={sidebarCollapsed} onCreate={newChat} onRetry={retryManagedConversations} onSelect={selectManaged} onPrefetch={prefetchConversation}
+        persistent={account.account?.persistent === true} triggerRef={sidebarTriggerRef}
+      />
       <div className="conversation-main">
+        <header className="agent-chat-header">
+          <button ref={sidebarTriggerRef} className="agent-sidebar-toggle chat-icon-button" type="button" onClick={() => { if (window.matchMedia("(min-width: 761px)").matches) toggleDesktopSidebar(); else setRailOpen(true); }} aria-label="Open sidebar" aria-expanded={railOpen} aria-controls="agent-navigation"><PanelLeft aria-hidden="true" /></button>
+          <div className="agent-chat-heading"><strong>{landing ? "Nanocodex" : title}</strong></div>
+          <div className="agent-chat-header-actions">
+            {agentStatus === "starting" || agentStatus === "error" ? <span className={`agent-chat-status is-${agentStatus}`} role="status"><i aria-hidden="true" />{agentStatus === "starting" ? "Connecting…" : "Needs attention"}</span> : null}
+            <button className="chat-icon-button" type="button" onClick={() => onThemeChange(theme === "light" ? "dark" : "light")} aria-label={`Use ${theme === "light" ? "dark" : "light"} appearance`} title={`Use ${theme === "light" ? "dark" : "light"} appearance`}>{theme === "light" ? <Moon aria-hidden="true" /> : <Sun aria-hidden="true" />}</button>
+            <button className="chat-icon-button" type="button" disabled={conversationPending} onClick={newChat} aria-label={landing ? "New chat" : "New agent"} title={landing ? "New chat" : "New agent"}><SquarePen aria-hidden="true" /></button>
+          </div>
+        </header>
         {LOCAL_SPONSORED_TRIAL_RESET && showHomepageTrialReset ? (
           <Suspense fallback={null}>
             <LocalSponsoredTrialReset onReset={acceptSponsoredTrialReset} />
@@ -272,12 +297,17 @@ export const AgentExperience = memo(function AgentExperience({
               ? <ReservedTerminal message={managedError} mode={mode} />
               : hasDurableCredential && visibleManagedConversationId
                 ? <ManagedAgentTerminal
-                  key={visibleManagedConversationId} agentId={visibleManagedConversationId} authStatus={authStatus}
+                  key={`${accountId}:${visibleManagedConversationId}`} agentId={visibleManagedConversationId} authStatus={authStatus}
                   mode={mode} onConversationActivity={recordActivity} onStateChange={setRuntimeState}
                   source={credentialSource}
                   voiceEnabled={voiceEnabled}
                 />
-                : <ReservedTerminal message={inactiveMessage} mode={mode} />}
+                : <ReservedTerminal message={inactiveMessage} mode={mode}
+                  welcome={sessionChecking ? undefined : "# What should we work on?"}
+                  composer={sessionChecking ? <p className="agent-connection-loading" role="status">Opening your workspace…</p>
+                    : !hasDurableCredential ? <div className="agent-connect-prompt"><Link to="/connect">Connect your account</Link><span>Connect a model account to start a durable agent.</span></div> : null}
+                />}
+        <p className="agent-chat-footnote">{landing ? "Chats here are temporary. Use Agents to keep your work across sessions." : "Your agent keeps working when you leave. Come back anytime."}</p>
       </div>
     </div>
   </div>;

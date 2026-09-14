@@ -231,7 +231,7 @@ async function previewForUrl(url: URL, env: LinkPreviewEnv): Promise<Preview> {
   if (pathname === "/requests") return fixed(pathname, "Requests", "Track proposed changes to the published Nanocodex source tree.", "REQUESTS");
   if (pathname === "/connect") return fixed(pathname, "Connect", "Manage your Nanocodex identity, connections, and API keys.", "NANOCODEX CONNECT");
   if (pathname === "/connect/device") return fixed(pathname, "Connect device", "Authorize a Nanocodex device with your passkey-backed account.", "NANOCODEX CONNECT");
-  if (pathname === "/connect/vault") return fixed(pathname, "Vault", "Store encrypted SSH keys, logins, cards, addresses, and phone numbers.", "NANOCODEX CONNECT");
+  if (pathname === "/connect/vault") return fixed(pathname, "Vault", "Store encrypted SSH keys, logins, API keys, cards, addresses, and phone numbers.", "NANOCODEX CONNECT");
   if (pathname === "/code") {
     const sourcePath = boundedText(url.searchParams.get("path"), 240);
     const canonical = new URL("https://canonical.invalid/code");

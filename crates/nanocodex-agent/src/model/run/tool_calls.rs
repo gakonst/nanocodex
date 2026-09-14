@@ -38,6 +38,7 @@ impl ActiveNestedToolCall {
 
 #[derive(Deserialize, Serialize)]
 pub(super) struct CompletedToolCall {
+    pub(super) cell: Option<nanocodex_tools::code_mode::CodeModeCell>,
     pub(super) call_id: String,
     pub(super) tool: String,
     pub(super) success: bool,
@@ -98,25 +99,27 @@ impl CodeModeObserver for NestedToolEventObserver<'_> {
             }
             CodeModeUpdate::NestedCallCompleted(call) => {
                 let (call_id, _) = self.event_context(&call.call_id);
-                let active = {
+                {
                     let mut progress = self
                         .progress
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    progress
+                    if let Some(index) = progress
                         .active_nested_tool_calls
                         .iter()
                         .position(|active| active.call_id == call_id)
-                        .map(|index| progress.active_nested_tool_calls.remove(index))
-                };
-                let Some(active) = active else {
-                    return;
-                };
+                    {
+                        progress.active_nested_tool_calls.remove(index);
+                    }
+                }
+                // A yielded cell can finish a tool in a later wait call, whose
+                // progress does not contain the original start. The completion
+                // update still belongs to that original call and must be emitted.
                 self.events.emit(
                     AgentEventKind::ToolResult,
                     ToolResultEvent {
-                        call_id: &active.call_id,
-                        tool: &active.tool,
+                        call_id: &call_id,
+                        tool: &call.name,
                         status: status(call.success),
                         duration_ns: call.duration_ns,
                         started_after_ns: Some(call.started_after_ns),
@@ -156,29 +159,31 @@ async fn execute_code_call(
     tools: &ToolRuntime,
     call: &CodeCall,
     owned_context: Option<OwnedToolContext>,
-    session_id: &str,
-    model: Model,
+    context: ToolContext<'_>,
     observer: &mut dyn CodeModeObserver,
     tool_span: &tracing::Span,
-) -> CodeModeExecution {
+) -> Result<CodeModeExecution> {
     if let Some(context) = owned_context {
         tools
             .execute_code_owned_with_updates(&call.input, context, observer)
             .instrument(tool_span.clone())
             .await
+            .map_err(interrupted_tool_host)
     } else {
-        let context = ToolContext::new(
-            model.as_str(),
-            session_id,
-            &call.call_id,
-            &[],
-            DEFAULT_TOOL_OUTPUT_TOKENS,
-        );
         tools
             .wait_for_code_with_updates(&call.input, context, observer)
             .instrument(tool_span.clone())
             .await
+            .map_err(interrupted_tool_host)
     }
+}
+
+fn interrupted_tool_host(error: nanocodex_tools::embedded::CodeModeHostError) -> NanocodexError {
+    NanocodexError::execution_policy_with_disposition(
+        "tool host interrupted",
+        crate::ExecutionPolicyDisposition::Reopen,
+        error,
+    )
 }
 
 impl<S> ModelRun<S>
@@ -208,6 +213,7 @@ where
         let tool_call_indices = self.tool_call_indices.clone();
         let session_id = events.request_id().to_owned();
         let model = self.model;
+        let host_context = self.host_context.clone();
         let execution_steps = self.execution_steps.clone();
         let mut executions = prepared
             .into_iter()
@@ -217,6 +223,7 @@ where
                 let events = events.clone();
                 let tool_call_indices = tool_call_indices.clone();
                 let session_id = session_id.clone();
+                let host_context = host_context.clone();
                 let execution_steps = execution_steps.clone();
                 async move {
                     let started_at = active.started_at;
@@ -252,6 +259,7 @@ where
                                     history,
                                     &session_id,
                                     model,
+                                    host_context.as_deref(),
                                     started_at,
                                     &active.progress,
                                     &active.span,
@@ -273,6 +281,7 @@ where
                                     history,
                                     &session_id,
                                     model,
+                                    host_context.as_deref(),
                                     started_at,
                                     &active.progress,
                                     &active.span,
@@ -384,6 +393,18 @@ where
         completed: CompletedToolCall,
         progress: &Mutex<ActiveToolProgress>,
     ) -> Result<Vec<ResponseItem>> {
+        if !completed
+            .cell
+            .as_ref()
+            .is_some_and(|cell| cell.running && cell.origin_call_id == completed.call_id)
+        {
+            self.tool_call_indices.remove(completed.call_id.as_str());
+        }
+        if let Some(cell) = &completed.cell
+            && !cell.running
+        {
+            self.tool_call_indices.remove(cell.origin_call_id.as_str());
+        }
         self.stats.tool_work_duration_ns += completed.work_duration_ns;
         let _ = self.finish_active_tool_progress(progress);
         Ok(completed.response_items)
@@ -500,6 +521,7 @@ where
             CodeCallKind::ToolSearch => tool_search_output(active.call_id.clone(), Vec::new()),
         };
         CompletedToolCall {
+            cell: None,
             call_id: active.call_id.clone(),
             tool: active.name.clone(),
             success: false,
@@ -522,6 +544,7 @@ where
         history: Option<Arc<Vec<ResponseItem>>>,
         session_id: &str,
         model: Model,
+        host_context: Option<&str>,
         started_at: Instant,
         progress: &Mutex<ActiveToolProgress>,
         tool_span: &tracing::Span,
@@ -539,6 +562,7 @@ where
                 CodeCallKind::ToolSearch => tool_search_output(call.call_id.clone(), Vec::new()),
             };
             return Ok(CompletedToolCall {
+                cell: None,
                 call_id: call.call_id,
                 tool: qualified_name,
                 success: false,
@@ -561,29 +585,28 @@ where
                 &call.call_id,
                 &[],
                 DEFAULT_TOOL_OUTPUT_TOKENS,
-            );
+            )
+            .with_host_context(host_context);
             let mut execution = match call.kind {
                 CodeCallKind::Function => match RawValue::from_string(call.input.clone()) {
-                    Ok(input) => {
-                        tools
-                            .execute_tool(&qualified_name, ToolInput::Function(input), context)
-                            .instrument(tool_span.clone())
-                            .await
-                    }
+                    Ok(input) => tools
+                        .execute_tool(&qualified_name, ToolInput::Function(input), context)
+                        .instrument(tool_span.clone())
+                        .await
+                        .map_err(interrupted_tool_host)?,
                     Err(error) => ToolOutput::error(format!(
                         "failed to encode {qualified_name} arguments: {error}"
                     )),
                 },
-                CodeCallKind::Custom => {
-                    tools
-                        .execute_tool(
-                            &qualified_name,
-                            ToolInput::Freeform(call.input.clone()),
-                            context,
-                        )
-                        .instrument(tool_span.clone())
-                        .await
-                }
+                CodeCallKind::Custom => tools
+                    .execute_tool(
+                        &qualified_name,
+                        ToolInput::Freeform(call.input.clone()),
+                        context,
+                    )
+                    .instrument(tool_span.clone())
+                    .await
+                    .map_err(interrupted_tool_host)?,
                 CodeCallKind::ToolSearch => {
                     unreachable!("tool search is not an ordinary direct tool")
                 }
@@ -598,6 +621,7 @@ where
             tool_span.record("otel.status_code", otel_status(execution.success));
             tool_span.record("duration_ns", duration_ns);
             return Ok(CompletedToolCall {
+                cell: None,
                 call_id: call.call_id.clone(),
                 tool: qualified_name,
                 success: execution.success,
@@ -627,14 +651,14 @@ where
                 &call.call_id,
                 search_history,
                 DEFAULT_TOOL_OUTPUT_TOKENS,
-            );
+            )
+            .with_host_context(host_context);
             let execution = match RawValue::from_string(call.input.clone()) {
-                Ok(input) => {
-                    tools
-                        .execute_tool("tool_search", ToolInput::Function(input), context)
-                        .instrument(tool_span.clone())
-                        .await
-                }
+                Ok(input) => tools
+                    .execute_tool("tool_search", ToolInput::Function(input), context)
+                    .instrument(tool_span.clone())
+                    .await
+                    .map_err(interrupted_tool_host)?,
                 Err(error) => {
                     ToolOutput::error(format!("failed to encode tool_search arguments: {error}"))
                 }
@@ -656,6 +680,7 @@ where
                 Vec::new()
             };
             return Ok(CompletedToolCall {
+                cell: None,
                 call_id: call.call_id.clone(),
                 tool: qualified_name,
                 success: execution.success,
@@ -667,7 +692,15 @@ where
                 metadata: execution.metadata,
             });
         }
-        let owned_context = owned_code_context(&call, history, session_id, model)?;
+        let owned_context = owned_code_context(&call, history, session_id, model, host_context)?;
+        let context = ToolContext::new(
+            model.as_str(),
+            session_id,
+            &call.call_id,
+            &[],
+            DEFAULT_TOOL_OUTPUT_TOKENS,
+        )
+        .with_host_context(host_context);
         let mut observer = NestedToolEventObserver {
             events,
             tool_call_indices,
@@ -680,12 +713,11 @@ where
             tools,
             &call,
             owned_context,
-            session_id,
-            model,
+            context,
             &mut observer,
             tool_span,
         )
-        .await;
+        .await?;
         let update_error = observer.error.take();
         drop(observer);
         if let Some(error) = update_error {
@@ -719,6 +751,7 @@ where
             }),
         );
         Ok(CompletedToolCall {
+            cell: execution.cell,
             call_id: call.call_id,
             tool: qualified_name,
             success: execution.success,

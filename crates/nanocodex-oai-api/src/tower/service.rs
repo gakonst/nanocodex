@@ -298,7 +298,10 @@ impl ResponsesService {
             self.run_websocket(&mut guard, request, started_at).await
         } else {
             https::run(self, &mut guard, request, started_at).await
-        };
+        }
+        // Resolve provider indices before retry policy can change the input
+        // from an incremental delta to full replay (or back again).
+        .map_err(|error| error.with_request_input(request));
         guard.complete();
         drop(guard);
         tracing::Span::current().record(
@@ -828,7 +831,7 @@ async fn receive_warmup(
     request: &ResponsesAttempt,
 ) -> Result<WarmupResponse, ResponsesServiceError> {
     loop {
-        let received = socket.next_text_or_idle_timeout().await?;
+        let received = socket.next_text().await?;
         let raw_event = parse_raw_json(received.text.as_str())?;
         tracing::trace!(
             target: "nanocodex_oai_api",

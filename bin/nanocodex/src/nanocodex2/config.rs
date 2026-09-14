@@ -6,7 +6,7 @@
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
-pub(crate) const DEFAULT_MAX_SUBAGENTS: usize = 32;
+pub(crate) const DEFAULT_MAX_SUBAGENTS: usize = nanocodex_subagents::DEFAULT_MAX_SUBAGENTS;
 
 /// Reasoning effort displayed by the Tact composer.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
@@ -40,6 +40,23 @@ impl ReasoningEffort {
             Self::High => 2,
             Self::Xhigh => 3,
             Self::Max => 4,
+        }
+    }
+}
+
+impl std::str::FromStr for ReasoningEffort {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            "xhigh" => Ok(Self::Xhigh),
+            "max" => Ok(Self::Max),
+            _ => Err(format!(
+                "invalid thinking level {value:?}; expected low, medium, high, xhigh, or max"
+            )),
         }
     }
 }

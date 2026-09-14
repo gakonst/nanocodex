@@ -10,10 +10,7 @@ const utf8 = new TextEncoder();
 const utf8Decoder = new TextDecoder();
 const diffDecoder = new TextDecoder("utf-8", { fatal: true });
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
-const MAX_EXECUTION_MS = 30_000;
-const MAX_GIT_LOG_DEPTH = 200;
 const MAX_DIFF_FILE_BYTES = 1024 * 1024;
-const MAX_INDEXED_PATHS = 100_000;
 const MAX_PROJECT_INSTRUCTIONS_BYTES = 32 * 1024;
 const PROJECT_INSTRUCTION_FILES = ["AGENTS.override.md", "AGENTS.md"];
 const DIFF_TRUNCATION_NOTICE = "\n[diff truncated by browser git]\n";
@@ -130,7 +127,7 @@ export async function createBrowserBash(rawFs, thread, options = {}) {
     const { createTwoFilesPatch } = await import("diff");
     const filesystem = new OpfsShellFileSystem(rawFs);
     await filesystem.refreshPaths();
-    const executionTimeoutMs = options.executionTimeoutMs ?? MAX_EXECUTION_MS;
+    const executionTimeoutMs = options.executionTimeoutMs;
     const origin = options.origin ?? globalThis.location?.origin;
     const workerEgress = {
         origin,
@@ -194,17 +191,7 @@ export async function createBrowserBash(rawFs, thread, options = {}) {
         executionTimeoutMs,
         defaultMaxOutputTokens: 10_000,
         maxOutputTokens: 100_000,
-        executionLimits: {
-            maxCommandCount: 10_000,
-            maxExecutionTimeMs: executionTimeoutMs,
-            maxFileSystemBytes: 256 * 1024 * 1024,
-            maxInputBytes: 16 * 1024 * 1024,
-            maxLiveBytes: 64 * 1024 * 1024,
-            maxOutputSize: MAX_OUTPUT_BYTES,
-            maxSourceBytes: 1024 * 1024,
-            maxStringLength: 16 * 1024 * 1024,
-            maxTraversalEntries: 100_000,
-        },
+        executionLimits: executionTimeoutMs === undefined ? {} : { maxExecutionTimeMs: executionTimeoutMs },
         supportsParallelToolCalls: true,
         instructions: browserInstructions,
         outputTruncationNotice: "\n[output truncated by browser exec_command]",
@@ -623,8 +610,8 @@ async function gitPull(fs, thread, args) {
 async function gitLog(fs, args) {
     const countArgument = args.find((arg) => /^-\d+$/.test(arg));
     const depth = countArgument ? Number(countArgument.slice(1)) : 20;
-    if (!Number.isSafeInteger(depth) || depth > MAX_GIT_LOG_DEPTH) {
-        throw new Error(`browser git log depth cannot exceed ${MAX_GIT_LOG_DEPTH}`);
+    if (!Number.isSafeInteger(depth) || depth < 1) {
+        throw new Error("browser git log depth must be a positive integer");
     }
     const commits = await git.log({ fs, dir: THREAD_GIT_DIRECTORY, depth }).catch(() => []);
     if (args.includes("--oneline")) {
@@ -990,9 +977,6 @@ class OpfsShellFileSystem {
     #addIndexedPath(paths, path) {
         if (paths.has(path))
             return false;
-        if (paths.size >= MAX_INDEXED_PATHS) {
-            throw fsError("EFBIG", `browser shell path index exceeds ${MAX_INDEXED_PATHS} entries`);
-        }
         paths.add(path);
         return true;
     }

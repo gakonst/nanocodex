@@ -1,6 +1,17 @@
 //! Shared, transport-neutral Codex Realtime adapter policy.
 
 mod browser;
+mod browser_delivery;
+mod managed;
+mod settings;
+mod transcript;
+pub use settings::{VoiceHandoffMode, VoicePace, VoiceSettings, VoiceTextRole, VoiceUpdates};
+
+pub use managed::{
+    ManagedVoiceProtocol, bootstrap_plan, format_delegation, managed_startup_context,
+};
+
+pub use transcript::project_transcript;
 
 /// Exact Codex Realtime side-agent instructions before user-name substitution.
 pub const CHATGPT_REALTIME_BACKEND_PROMPT_TEMPLATE: &str = include_str!("backend_prompt.md");
@@ -8,7 +19,8 @@ pub const CHATGPT_REALTIME_BACKEND_PROMPT_TEMPLATE: &str = include_str!("backend
 pub use browser::{
     BrowserRealtimeCallResult, BrowserVoiceEffects, BrowserVoiceProtocol, BrowserVoiceUpdate,
     CHATGPT_REALTIME_MODEL, CHATGPT_REALTIME_VOICE, CHATGPT_REALTIME_VOICES, VoiceHistoryEntry,
-    build_browser_startup_context, build_chatgpt_realtime_call, decode_chatgpt_realtime_call,
+    VoicePrefetch, build_browser_startup_context, build_chatgpt_realtime_call,
+    build_chatgpt_realtime_call_with_settings, decode_chatgpt_realtime_call,
     preferred_physical_input, realtime_message_requires_agent_admission, valid_realtime_call_id,
 };
 

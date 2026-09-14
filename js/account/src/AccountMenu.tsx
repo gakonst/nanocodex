@@ -1,3 +1,4 @@
+import { useAccountQuery } from "./useAccountQuery";
 import { Check, CircleUserRound, Copy, X } from "lucide-react";
 import {
   useCallback,
@@ -54,109 +55,59 @@ type CredentialStatus = Readonly<{
   };
 }>;
 
-type AccountDataRequest = Readonly<{
-  accountId: string;
-  promise: Promise<void>;
-}>;
-
-type WalletBalanceRequest = Readonly<{
-  accountId: string;
-  controller: AbortController;
-  promise: Promise<boolean>;
-}>;
-
 const API_KEY_ID = /^[A-Za-z0-9_-]{12}$/;
 
 export function AccountMenu({ inline = false }: Readonly<{ inline?: boolean }>) {
+  const accountId = useAccountSession().account?.id;
+  return <AccountMenuContent key={accountId ?? "signed-out"} inline={inline} />;
+}
+
+function AccountMenuContent({ inline }: { inline: boolean }) {
   const session = useAccountSession();
   const refreshSession = session.refresh;
   const accountId = session.account?.id;
   const accountPersistent = session.account?.persistent === true;
   const [open, setOpen] = useState(() => inline || new URL(window.location.href).searchParams.has("connector_result"));
   const walletFunding = useWalletFunding(inline || open);
-  const [keys, setKeys] = useState<ApiKeyMetadata[] | null>(null);
-  const [keyError, setKeyError] = useState<string | null>(null);
+  const [keyOperationError, setKeyError] = useState<string | null>(null);
   const [keyOperation, setKeyOperation] = useState<string | null>(null);
   const [newKey, setNewKey] = useState<NewApiKey | null>(null);
   const [label, setLabel] = useState("");
   const [copied, setCopied] = useState(false);
-  const [walletBalance, setWalletBalance] = useState<WalletBalance | null>(null);
-  const [walletBalanceError, setWalletBalanceError] = useState<string | null>(null);
-  const [credentials, setCredentials] = useState<CredentialStatus | null>(null);
-  const [credentialError, setCredentialError] = useState<string | null>(null);
+  const [chatGptLogin, setChatGptLogin] = useState<CredentialStatus["chatgpt"]["login"]>();
+  const [credentialOperationError, setCredentialError] = useState<string | null>(null);
   const [providerOperation, setProviderOperation] = useState<string | null>(null);
   const [openAiKey, setOpenAiKey] = useState("");
   const [openAiExpanded, setOpenAiExpanded] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  const cachedAccountId = useRef<string | undefined>(undefined);
-  const keyRequest = useRef<AccountDataRequest | undefined>(undefined);
-  const credentialRequest = useRef<AccountDataRequest | undefined>(undefined);
-  const walletBalanceRequest = useRef<WalletBalanceRequest | undefined>(undefined);
+  const enabled = inline || open;
+  const { query: keysQuery, refresh: loadKeys } = useAccountQuery(accountId, "/v1/api-keys", decodeApiKeys, { enabled });
+  const { query: credentialsQuery, refresh: refreshCredentials } = useAccountQuery(accountId, "/v1/credentials", decodeCredentialStatus, { enabled });
+  const address = session.account?.address;
+  const selectBalance = useCallback((value: unknown) => decodeWalletBalance(value, address!), [address]);
+  const { query: balanceQuery } = useAccountQuery(accountId, "/v1/wallet/balance", selectBalance, {
+    enabled: enabled && Boolean(address), staleTime: 30_000, refetchInterval: enabled ? 5 * 60_000 : false,
+  });
+  const keys = keysQuery.data ?? null;
+  const walletBalance = balanceQuery.data ?? null;
+  const walletBalanceError = balanceQuery.error ? failureMessage(balanceQuery.error, "Couldn’t load the Wallet balance.") : null;
+  const keyError = keyOperationError ?? (keysQuery.error ? failureMessage(keysQuery.error, "Couldn’t load API keys.") : null);
+  const credentialError = credentialOperationError ?? (credentialsQuery.error ? failureMessage(credentialsQuery.error, "Couldn’t load model connections.") : null);
+  const credentials = credentialsQuery.data ? {
+    ...credentialsQuery.data,
+    chatgpt: { ...credentialsQuery.data.chatgpt, login: chatGptLogin ?? credentialsQuery.data.chatgpt.login },
+  } : null;
+  const loadCredentials = useCallback(async () => {
+    setCredentialError(null);
+    setChatGptLogin(undefined);
+    await refreshCredentials();
+  }, [refreshCredentials]);
 
   const close = useCallback(() => {
     setOpen(false);
     setNewKey(null);
     setCopied(false);
   }, []);
-
-  const loadKeys = useCallback((): Promise<void> => {
-    if (!accountId) return Promise.resolve();
-    if (keyRequest.current?.accountId === accountId) return keyRequest.current.promise;
-    if (cachedAccountId.current === accountId) setKeyError(null);
-    let current!: Promise<void>;
-    current = (async () => {
-      try {
-        const response = await apiRequest("/v1/api-keys");
-        if (response.status === 401) {
-          await response.body?.cancel();
-          await refreshSession();
-          return;
-        }
-        if (!response.ok) throw await responseFailure(response, "Couldn’t load API keys.");
-        const body: unknown = await response.json();
-        if (!isRecord(body) || !Array.isArray(body.data)) throw new Error("Invalid API key response.");
-        if (cachedAccountId.current === accountId) setKeys(body.data.map(decodeApiKey));
-      } catch (cause) {
-        if (cachedAccountId.current === accountId) {
-          setKeyError(failureMessage(cause, "Couldn’t load API keys."));
-        }
-      }
-    })().finally(() => {
-      if (keyRequest.current?.promise === current) keyRequest.current = undefined;
-    });
-    keyRequest.current = { accountId, promise: current };
-    return current;
-  }, [accountId, refreshSession]);
-
-  const loadCredentials = useCallback((): Promise<void> => {
-    if (!accountId) return Promise.resolve();
-    if (credentialRequest.current?.accountId === accountId) {
-      return credentialRequest.current.promise;
-    }
-    if (cachedAccountId.current === accountId) setCredentialError(null);
-    let current!: Promise<void>;
-    current = (async () => {
-      try {
-        const response = await apiRequest("/v1/credentials");
-        if (response.status === 401) {
-          await response.body?.cancel();
-          await refreshSession();
-          return;
-        }
-        if (!response.ok) throw await responseFailure(response, "Couldn’t load model connections.");
-        const nextCredentials = decodeCredentialStatus(await response.json());
-        if (cachedAccountId.current === accountId) setCredentials(nextCredentials);
-      } catch (cause) {
-        if (cachedAccountId.current === accountId) {
-          setCredentialError(failureMessage(cause, "Couldn’t load model connections."));
-        }
-      }
-    })().finally(() => {
-      if (credentialRequest.current?.promise === current) credentialRequest.current = undefined;
-    });
-    credentialRequest.current = { accountId, promise: current };
-    return current;
-  }, [accountId, refreshSession]);
 
   const pollChatGpt = useCallback(async () => {
     try {
@@ -165,10 +116,7 @@ export function AccountMenu({ inline = false }: Readonly<{ inline?: boolean }>) 
       const value: unknown = await response.json();
       if (isRecord(value) && value.state === "pending") {
         const login = decodeChatGptLogin(value);
-        setCredentials((current) => current ? {
-          ...current,
-          chatgpt: { ...current.chatgpt, login },
-        } : current);
+        setChatGptLogin(login);
         return;
       }
       await loadCredentials();
@@ -178,87 +126,13 @@ export function AccountMenu({ inline = false }: Readonly<{ inline?: boolean }>) 
     }
   }, [loadCredentials]);
 
-  const loadWalletBalance = useCallback((force = false): Promise<boolean> => {
-    const address = session.account?.address;
-    if (!accountId || !address) return Promise.resolve(false);
-    if (!force && walletBalanceRequest.current?.accountId === accountId) {
-      return walletBalanceRequest.current.promise;
-    }
-    if (force) walletBalanceRequest.current?.controller.abort();
-    const controller = new AbortController();
-    setWalletBalanceError(null);
-    let current!: Promise<boolean>;
-    current = (async () => {
-      try {
-        const response = await apiRequest("/v1/wallet/balance", { signal: controller.signal });
-        if (response.status === 401) {
-          await response.body?.cancel();
-          await refreshSession();
-          return false;
-        }
-        if (!response.ok) throw await responseFailure(response, "Couldn’t load the Wallet balance.");
-        const balance = decodeWalletBalance(await response.json(), address);
-        if (cachedAccountId.current === accountId) setWalletBalance(balance);
-        return true;
-      } catch (cause) {
-        if (!controller.signal.aborted && cachedAccountId.current === accountId) {
-          setWalletBalanceError(failureMessage(cause, "Couldn’t load the Wallet balance."));
-        }
-        return false;
-      }
-    })().finally(() => {
-      if (walletBalanceRequest.current?.promise === current) {
-        walletBalanceRequest.current = undefined;
-      }
-    });
-    walletBalanceRequest.current = { accountId, controller, promise: current };
-    return current;
-  }, [accountId, refreshSession, session.account?.address]);
-
   useEffect(() => {
-    if (!accountId) {
-      walletBalanceRequest.current?.controller.abort();
-      walletBalanceRequest.current = undefined;
-      cachedAccountId.current = undefined;
-      setKeys(null);
-      setKeyError(null);
-      setNewKey(null);
-      setWalletBalance(null);
-      setWalletBalanceError(null);
-      setCredentials(null);
-      setCredentialError(null);
-      return;
-    }
-    const accountChanged = cachedAccountId.current !== accountId;
-    if (accountChanged) {
-      walletBalanceRequest.current?.controller.abort();
-      walletBalanceRequest.current = undefined;
-      cachedAccountId.current = accountId;
-      setKeys(null);
-      setKeyError(null);
-      setNewKey(null);
-      setWalletBalance(null);
-      setWalletBalanceError(null);
-      setCredentials(null);
-      setCredentialError(null);
-    }
-    if (!inline && !open) return;
-    const missing: Promise<unknown>[] = [];
-    if (accountChanged || keys === null) missing.push(loadKeys());
-    if (accountChanged || credentials === null) missing.push(loadCredentials());
-    if (accountChanged || walletBalance === null) missing.push(loadWalletBalance());
-    void Promise.all(missing);
-  }, [accountId, credentials, inline, keys, loadCredentials, loadKeys, loadWalletBalance, open, walletBalance]);
-
-  useEffect(() => () => {
-    walletBalanceRequest.current?.controller.abort();
-  }, []);
-
-  useEffect(() => {
-    if (!accountId || !session.account?.address || (!inline && !open)) return;
-    const timer = window.setInterval(() => void loadWalletBalance(), 5 * 60_000);
-    return () => window.clearInterval(timer);
-  }, [accountId, inline, loadWalletBalance, open, session.account?.address]);
+    setKeyError(null);
+    setCredentialError(null);
+    setNewKey(null);
+    setOpenAiKey("");
+    setChatGptLogin(undefined);
+  }, [accountId]);
 
   useEffect(() => {
     const login = credentials?.chatgpt.login;
@@ -309,7 +183,7 @@ export function AccountMenu({ inline = false }: Readonly<{ inline?: boolean }>) 
         throw new Error("Invalid API key response.");
       }
       const metadata = decodeApiKey(body.key);
-      setKeys((current) => [metadata, ...(current ?? []).filter((key) => key.id !== metadata.id)]);
+      await loadKeys();
       setNewKey({ token: body.api_key, metadata });
       setLabel("");
     } catch (cause) {
@@ -334,7 +208,7 @@ export function AccountMenu({ inline = false }: Readonly<{ inline?: boolean }>) 
       }
       if (!response.ok) throw await responseFailure(response, "Couldn’t revoke the API key.");
       await response.body?.cancel();
-      setKeys((current) => current?.filter((candidate) => candidate.id !== key.id) ?? []);
+      await loadKeys();
       if (newKey?.metadata.id === key.id) setNewKey(null);
     } catch (cause) {
       setKeyError(failureMessage(cause, "Couldn’t revoke the API key."));
@@ -401,10 +275,7 @@ export function AccountMenu({ inline = false }: Readonly<{ inline?: boolean }>) 
       const response = await apiRequest("/v1/credentials/chatgpt/login", { method: "POST" });
       if (!response.ok) throw await responseFailure(response, "Couldn’t start ChatGPT sign-in.");
       const login = decodeChatGptLogin(await response.json());
-      setCredentials((current) => current ? {
-        ...current,
-        chatgpt: { ...current.chatgpt, login },
-      } : null);
+      setChatGptLogin(login);
       if (popup) popup.location.href = login.verificationUrl;
       else window.open(login.verificationUrl, "_blank", "noopener,noreferrer");
     } catch (cause) {
@@ -1047,4 +918,9 @@ function failureMessage(cause: unknown, fallback: string): string {
 function notifyModelCredentialChanged(): void {
   deploymentHealth.invalidate();
   window.dispatchEvent(new Event("nanocodex:model-credential-changed"));
+}
+
+function decodeApiKeys(value: unknown): ApiKeyMetadata[] {
+  if (!isRecord(value) || !Array.isArray(value.data)) throw new Error("Invalid API key response.");
+  return value.data.map(decodeApiKey);
 }

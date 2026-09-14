@@ -320,7 +320,7 @@ export function createBrowserHost(options = {}) {
     }
   }
 
-  function next(handle, timeoutMs) {
+  function next(handle) {
     const connection = connections.get(handle);
     if (!connection) {
       return Promise.resolve(JSON.stringify({ kind: "closed", detail: "before the next frame" }));
@@ -332,12 +332,7 @@ export function createBrowserHost(options = {}) {
     }
     if (connection.waiter) return Promise.reject(new Error("concurrent reads are unsupported"));
     return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        connection.waiter = undefined;
-        resolve(JSON.stringify({ kind: "timeout" }));
-      }, timeoutMs);
       connection.waiter = (message) => {
-        clearTimeout(timer);
         connection.waiter = undefined;
         resolve(JSON.stringify(message));
       };
@@ -492,6 +487,9 @@ export function createBrowserHost(options = {}) {
     close,
     sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     executeCode: code.executeCodeObserved,
+    waitCode: code.waitCodeObserved,
+    beginCodeTurn: code.beginTurn,
+    cancelCodeTurn: code.cancelTurn,
     nextCodeUpdate: code.nextCodeUpdate,
     executeTool: code.executeTool,
     bindSubagentSession: code.bindSubagentSession,

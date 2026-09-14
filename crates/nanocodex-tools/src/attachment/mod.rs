@@ -193,7 +193,7 @@ fn valid_capability(value: &str) -> bool {
 }
 
 /// Transport-only destination for an attached tool executor.
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct AttachmentTarget {
     endpoint: Url,
     bearer: Arc<str>,
@@ -243,6 +243,13 @@ impl AttachmentTarget {
     #[must_use]
     pub const fn endpoint(&self) -> &Url {
         &self.endpoint
+    }
+
+    /// Returns the transport credential for a trusted, allocation-owned companion.
+    /// Never include this value in arguments, logs, or model-visible metadata.
+    #[must_use]
+    pub fn bearer(&self) -> &str {
+        &self.bearer
     }
 }
 

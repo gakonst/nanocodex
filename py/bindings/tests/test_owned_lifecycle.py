@@ -11,6 +11,22 @@ from support.websocket import WebSocketConnection
 
 
 class OwnedLifecycleTests(unittest.TestCase):
+    def test_default_model_and_effort_follow_the_catalog(self) -> None:
+        for options, model, effort in [
+            ({}, "gpt-6-astra", "low"),
+            ({"model": "gpt-5.6-luna"}, "gpt-5.6-luna", "medium"),
+            ({"thinking": "high"}, "gpt-6-astra", "high"),
+        ]:
+            with self.subTest(model=model, effort=effort), MockResponsesServer() as server:
+                agent, _ = Nanocodex("test-key", websocket_url=server.endpoint, **options)
+                try:
+                    self.assertEqual(agent.prompt("default policy").result().final_message, "default policy")
+                    request = server.wait_for_requests(2)[1].body
+                    self.assertEqual(request["model"], model)
+                    self.assertEqual(request["reasoning"]["effort"], effort)
+                finally:
+                    agent.shutdown()
+
     def test_prompt_acceptance_result_and_events_are_independent(self) -> None:
         generation_started = threading.Event()
         release_generation = threading.Event()
@@ -30,7 +46,7 @@ class OwnedLifecycleTests(unittest.TestCase):
         with MockResponsesServer(handle) as server:
             agent, events = Nanocodex(
                 "test-key",
-                thinking="none",
+                thinking="low",
                 instructions="Return the exact mock response.",
                 websocket_url=server.endpoint,
             )
@@ -79,7 +95,7 @@ class OwnedLifecycleTests(unittest.TestCase):
         with MockResponsesServer() as server:
             agent, _ = Nanocodex(
                 "test-key",
-                thinking="none",
+                thinking="low",
                 prompt_cache_key="python-stable-cache",
                 websocket_url=server.endpoint,
             )
@@ -125,7 +141,7 @@ class OwnedLifecycleTests(unittest.TestCase):
         with MockResponsesServer(handle) as server:
             agent, _ = Nanocodex(
                 "test-key",
-                thinking="none",
+                thinking="low",
                 prompt_cache_key="python-reconnect-cache",
                 websocket_url=server.endpoint,
             )
@@ -154,7 +170,7 @@ class OwnedLifecycleTests(unittest.TestCase):
         with MockResponsesServer() as server:
             agent, _ = Nanocodex(
                 "test-key",
-                thinking="none",
+                thinking="low",
                 instructions="Preserve exact Python test identifiers.",
                 websocket_url=server.endpoint,
             )
@@ -163,7 +179,7 @@ class OwnedLifecycleTests(unittest.TestCase):
             self.assertEqual(completed.usage()["cached_input_tokens"], 5)
             self.assertEqual(
                 completed.usage()["estimated_cost"]["usd"],
-                "0.000062",
+                "0.000155",
             )
             self.assertEqual(
                 completed.usage()["cost_status"],
@@ -196,7 +212,7 @@ class OwnedLifecycleTests(unittest.TestCase):
 
             resumed, _ = Nanocodex(
                 "test-key",
-                thinking="none",
+                thinking="low",
                 instructions="Preserve exact Python test identifiers.",
                 resume=restored,
                 websocket_url=server.endpoint,
@@ -261,7 +277,7 @@ class OwnedLifecycleTests(unittest.TestCase):
         with MockResponsesServer(handle) as server:
             agent, _ = Nanocodex(
                 "test-key",
-                thinking="none",
+                thinking="low",
                 websocket_url=server.endpoint,
             )
             turn = agent.prompt("initial task")
@@ -311,7 +327,7 @@ class OwnedLifecycleTests(unittest.TestCase):
         with MockResponsesServer(handle) as server:
             agent, events = Nanocodex(
                 "test-key",
-                thinking="none",
+                thinking="low",
                 websocket_url=server.endpoint,
             )
             turn = agent.prompt("wait for explicit shutdown")

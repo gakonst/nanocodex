@@ -3,13 +3,15 @@ import {
   CancellationTokenSource,
   CommandRequestMessage,
   SshAuthenticationType,
+  SshAlgorithms,
   SshClientSession,
   SshSessionConfiguration,
 } from "@microsoft/dev-tunnels-ssh";
-import { importKey } from "@microsoft/dev-tunnels-ssh-keys";
+import { importKey, exportPrivateKey, exportPublicKey } from "@microsoft/dev-tunnels-ssh-keys";
 import { defineCommand } from "just-bash/browser";
 
 const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MAX_INPUT_BYTES = 64 * 1024;
 
 /**
  * Creates non-interactive SSH over a host-owned byte stream. IdentityRef is a
@@ -35,9 +37,9 @@ export function createSshCommand(options) {
     if (args[0] === "--help") return ok(`${usage(options.transport, capabilities)}\n`);
     const parsed = parseArguments(args, options.transport, capabilities);
     if ("error" in parsed) return fail(`${parsed.error}\n`, 2);
-    if (String(context.stdin)) {
-      return fail("ssh: piped stdin is not supported by the non-interactive transport\n", 2);
-    }
+    const stdin = String(context.stdin ?? "");
+    if (Buffer.byteLength(stdin, "utf8") > DEFAULT_MAX_INPUT_BYTES)
+      return fail("ssh: stdin exceeded the 64 KiB byte limit\n", 2);
     try {
       if (parsed.identityReference) {
         return await options.executeWithIdentityReference({
@@ -45,6 +47,7 @@ export function createSshCommand(options) {
           endpoint: parsed.endpoint,
           username: parsed.username,
           commandArgs: parsed.commandArgs,
+          ...(stdin ? { stdin } : {}),
         }, context);
       }
       return await executeSsh(parsed, options, context);
@@ -224,12 +227,22 @@ async function executeSsh(args, options, context) {
       stderr += event.data.toString("utf8");
       channel.adjustWindow(event.data.length);
     });
-    const closed = new Promise((resolve) => channel.onClosed(resolve));
+    let channelClosed = false;
+    const closed = new Promise((resolve) => channel.onClosed(result => { channelClosed = true; resolve(result); }));
     const request = new CommandRequestMessage();
     request.command = args.command;
     request.wantReply = true;
     if (!await channel.request(request, cancellation.token)) {
       throw new Error("remote server rejected the command");
+    }
+    try {
+      const stdin = Buffer.from(String(context.stdin ?? ""), "utf8");
+      if (!channelClosed && stdin.length) await channel.send(stdin, cancellation.token);
+      // The SSH library emits CHANNEL_EOF for an empty send. Input must close
+      // independently of output so commands such as `cat` can finish.
+      if (!channelClosed) await channel.send(Buffer.alloc(0), cancellation.token);
+    } catch (error) {
+      if (!channelClosed) throw error;
     }
     const result = await closed;
     if (outputFailure) throw outputFailure;
@@ -432,7 +445,7 @@ function usage(transport, capabilities) {
     : "Cloudflare Workers can open direct outbound TCP; brokered identities execute inside private egress.";
   return [
     `usage: ssh${port} [-l USER] (${authentication}) ${endpoint} -- COMMAND [ARG...]`,
-    "SSH is non-interactive: PTYs and piped stdin are unavailable.",
+    "SSH is non-interactive: PTYs are unavailable; stdin is bounded to 64 KiB.",
     verification,
     transportNotice,
   ].join("\n");
@@ -472,4 +485,19 @@ function positiveInteger(value, fallback, name) {
   if (value === undefined) return fallback;
   if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${name} must be a positive integer`);
   return value;
+}
+
+/** Generate an identity inside a credential-owning host; never expose its private key in tool output. */
+export async function createSshKeyPair() {
+  const key = await SshAlgorithms.publicKey.ecdsaSha2Nistp256.generateKeyPair();
+  try {
+    return { privateKey: await exportPrivateKey(key, null, 5), publicKey: (await exportPublicKey(key)).trim() };
+  } finally { key.dispose(); }
+}
+
+/** Derive the authorized_keys line from a PEM identity without exporting private material. */
+export async function sshPublicKey(privateKey) {
+  const key = await importKey(privateKey);
+  try { return (await exportPublicKey(key)).trim(); }
+  finally { key.dispose(); }
 }

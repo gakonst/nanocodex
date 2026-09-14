@@ -9,6 +9,11 @@ use crate::{OwnedState, OwnerId, OwnerToken, StateStore, StoreError, StoreFuture
 const COMMAND_CAPACITY: usize = 64;
 
 enum Command {
+    ReadRecord {
+        state_id: String,
+        key: String,
+        result: oneshot::Sender<Result<Option<String>, StoreError>>,
+    },
     AcquireOwner {
         state_id: String,
         owner_id: OwnerId,
@@ -19,6 +24,7 @@ enum Command {
         owner: OwnerToken,
         expected_revision: u64,
         payload: String,
+        records: Vec<crate::StoreRecord>,
         result: oneshot::Sender<Result<u64, StoreError>>,
     },
 }
@@ -38,10 +44,19 @@ impl MemoryStore {
     pub fn new() -> crate::Result<Self> {
         let (commands, mut receiver) = mpsc::channel(COMMAND_CAPACITY);
         let driver = async move {
+            let mut records = HashMap::<(String, String), String>::new();
             let mut states = HashMap::<String, StoredState>::new();
             let mut owners = HashMap::<String, OwnerToken>::new();
             while let Some(command) = receiver.recv().await {
                 match command {
+                    Command::ReadRecord {
+                        state_id,
+                        key,
+                        result,
+                    } => {
+                        drop(result.send(Ok(records.get(&(state_id, key)).cloned())));
+                    }
+
                     Command::AcquireOwner {
                         state_id,
                         owner_id,
@@ -71,12 +86,13 @@ impl MemoryStore {
                         owner,
                         expected_revision,
                         payload,
+                        records: new_records,
                         result,
                     } => {
                         let outcome = if owners.get(&state_id) != Some(&owner) {
                             Err(StoreError::Fenced)
                         } else {
-                            let state = states.entry(state_id).or_default();
+                            let state = states.entry(state_id.clone()).or_default();
                             if state.revision != expected_revision {
                                 Err(StoreError::Conflict {
                                     expected: expected_revision,
@@ -85,6 +101,11 @@ impl MemoryStore {
                             } else {
                                 match state.revision.checked_add(1) {
                                     Some(revision) => {
+                                        for record in new_records {
+                                            records
+                                                .entry((state_id.clone(), record.key))
+                                                .or_insert(record.value);
+                                        }
                                         state.payload = Some(payload);
                                         state.revision = revision;
                                         Ok(revision)
@@ -106,6 +127,25 @@ impl MemoryStore {
 }
 
 impl StateStore for MemoryStore {
+    fn read_record<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        key: &'a str,
+    ) -> StoreFuture<'a, Result<Option<String>, StoreError>> {
+        Box::pin(async move {
+            let (result, receiver) = oneshot::channel();
+            self.commands
+                .send(Command::ReadRecord {
+                    state_id: state_id.to_owned(),
+                    key: key.to_owned(),
+                    result,
+                })
+                .await
+                .map_err(|_| stopped())?;
+            receiver.await.map_err(|_| stopped())?
+        })
+    }
+
     fn acquire<'a>(
         &'a mut self,
         state_id: &'a str,
@@ -131,6 +171,7 @@ impl StateStore for MemoryStore {
         owner: &'a OwnerToken,
         expected_revision: u64,
         payload: &'a str,
+        records: &'a [crate::StoreRecord],
     ) -> StoreFuture<'a, Result<u64, StoreError>> {
         Box::pin(async move {
             let (result, receiver) = oneshot::channel();
@@ -140,6 +181,7 @@ impl StateStore for MemoryStore {
                     owner: owner.clone(),
                     expected_revision,
                     payload: payload.to_owned(),
+                    records: records.to_vec(),
                     result,
                 })
                 .await
@@ -177,7 +219,7 @@ mod tests {
         let first_owned = first.acquire("state", OwnerId::new()).await.unwrap();
         assert_eq!(first_owned.owner.fence(), 1);
         first
-            .replace("state", &first_owned.owner, 0, "first")
+            .replace("state", &first_owned.owner, 0, "first", &[])
             .await
             .unwrap();
 
@@ -187,7 +229,7 @@ mod tests {
         assert_eq!(second_owned.state.payload.as_deref(), Some("first"));
         assert_eq!(
             first
-                .replace("state", &first_owned.owner, u64::MAX, "stale")
+                .replace("state", &first_owned.owner, u64::MAX, "stale", &[])
                 .await,
             Err(StoreError::Fenced)
         );
@@ -198,11 +240,11 @@ mod tests {
         let mut store = MemoryStore::new().unwrap();
         let owned = store.acquire("state", OwnerId::new()).await.unwrap();
         store
-            .replace("state", &owned.owner, 0, "first")
+            .replace("state", &owned.owner, 0, "first", &[])
             .await
             .unwrap();
         store
-            .replace("state", &owned.owner, 1, "second")
+            .replace("state", &owned.owner, 1, "second", &[])
             .await
             .unwrap();
         let reopened = store.acquire("state", OwnerId::new()).await.unwrap();
@@ -210,7 +252,7 @@ mod tests {
         assert_eq!(reopened.state.payload.as_deref(), Some("second"));
         assert_eq!(
             store
-                .replace("state", &owned.owner, u64::MAX, "stale")
+                .replace("state", &owned.owner, u64::MAX, "stale", &[])
                 .await,
             Err(StoreError::Fenced)
         );

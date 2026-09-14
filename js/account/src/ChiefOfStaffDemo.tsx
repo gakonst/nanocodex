@@ -1,5 +1,7 @@
+import { useAccountQuery } from "./useAccountQuery";
+import { useMutation } from "@tanstack/react-query";
 import { Bot, Check, Copy, ExternalLink, MessageCircle, Plus, RefreshCw, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useAccountSession } from "./AccountSession";
 import "./ChiefOfStaffDemo.css";
 
@@ -35,54 +37,24 @@ const docs = {
 
 export function ChiefOfStaffDemo() {
   const account = useAccountSession();
-  const [readiness, setReadiness] = useState<Readiness | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [operation, setOperation] = useState<string | null>(null);
   const [copiedViber, setCopiedViber] = useState(false);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const response = await fetch("/api/chief-of-staff/status", {
-        credentials: "same-origin",
-        headers: { accept: "application/json" },
+  const { query, refresh } = useAccountQuery(account.account?.id, "/api/chief-of-staff/status", decodeReadiness);
+  const readiness = query.data ?? null;
+  const loading = query.isLoading;
+  const remove = useMutation({
+    mutationKey: ["account", account.account?.id, "remove-slack-installation"],
+    mutationFn: async (teamId: string) => {
+      const response = await fetch(`/api/chief-of-staff/slack/installations/${encodeURIComponent(teamId)}`, {
+        method: "DELETE", credentials: "same-origin",
       });
-      if (!response.ok) throw new Error(response.status === 401
-        ? "Your account session is not ready yet."
-        : "The integration Worker is unavailable.");
-      setReadiness(await response.json() as Readiness);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Couldn’t load integration readiness.");
-      setReadiness(null);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (account.status === "checking") return;
-    void refresh();
-  }, [account.status, refresh]);
-
-  const removeInstallation = useCallback(async (teamId: string) => {
-    if (operation) return;
-    setOperation(teamId);
-    setError(null);
-    try {
-      const response = await fetch(
-        `/api/chief-of-staff/slack/installations/${encodeURIComponent(teamId)}`,
-        { method: "DELETE", credentials: "same-origin" },
-      );
       if (!response.ok) throw new Error("Couldn’t remove the Slack app.");
-      await refresh();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Couldn’t remove the Slack app.");
-    } finally {
-      setOperation(null);
-    }
-  }, [operation, refresh]);
+      await response.body?.cancel();
+    },
+    onSuccess: async () => { await refresh(); },
+  });
+  const operation = remove.isPending ? remove.variables : null;
+  const error = remove.error?.message ?? query.error?.message ?? null;
+  const removeInstallation = (teamId: string) => { if (!remove.isPending) remove.mutate(teamId); };
 
   const copyViberWebhook = useCallback(async (webhookUrl: string) => {
     await navigator.clipboard.writeText(webhookUrl);
@@ -267,3 +239,9 @@ const fallbackChannels: readonly Channel[] = [
   { id: "imessage", availability: "not_enabled", contract: "vendor_official", detail: "Chat SDK catalogs vendor adapters; no iMessage provider is connected here." },
   { id: "viber", availability: "setup_required", contract: "first_party", detail: "Connect a commercial Viber chatbot to enable signed inbound messages and durable replies." },
 ];
+
+function decodeReadiness(value: unknown): Readiness {
+  if (!value || typeof value !== "object" || !("channels" in value) || !Array.isArray(value.channels)
+    || !("installations" in value) || !Array.isArray(value.installations)) throw new Error("Invalid integration readiness response.");
+  return value as Readiness;
+}

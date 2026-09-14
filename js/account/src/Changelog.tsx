@@ -1,13 +1,9 @@
+import { useQuery } from "@tanstack/react-query";
+import type { MouseEvent as ReactMouseEvent } from "react";
+import { appQueryClient } from "./queryClient";
+import { changelogQueryOptions } from "./changelogQueries";
 import {
-  startTransition,
-  use,
-  useState,
-  type MouseEvent as ReactMouseEvent,
-} from "react";
-import {
-  loadNightlyChangelog,
   type ChangelogCategory,
-  type NightlyChangelog,
 } from "./changelogData";
 import { pathForCommit } from "./navigation";
 import "./Changelog.css";
@@ -18,16 +14,8 @@ const categories: readonly ChangelogCategory[] = [
   "Bug Fixes",
 ];
 
-type ChangelogResult =
-  | { changelog: NightlyChangelog; state: "ready" }
-  | { state: "failed" };
-
-let changelogRequest: Promise<ChangelogResult> | undefined;
-
-export function preloadChangelog(): Promise<ChangelogResult> {
-  return changelogRequest ??= loadNightlyChangelog()
-    .then((changelog) => ({ changelog, state: "ready" as const }))
-    .catch(() => ({ state: "failed" as const }));
+export function preloadChangelog(): Promise<void> {
+  return appQueryClient.prefetchQuery(changelogQueryOptions());
 }
 
 export function Changelog({
@@ -35,20 +23,17 @@ export function Changelog({
 }: {
   onCommitClick(event: ReactMouseEvent<HTMLAnchorElement>, hash: string): void;
 }) {
-  const [request, setRequest] = useState(preloadChangelog);
-  const result = use(request);
+  const query = useQuery(changelogQueryOptions());
 
-  if (result.state === "failed") {
+  if (query.isPending) return <section className="changelog-page" role="status">Loading changelog…</section>;
+  if (!query.data) {
     return (
       <section className="changelog-error" role="alert">
         <h1>Changelog unavailable.</h1>
         <p>The immutable nightly commit record could not be loaded.</p>
         <button
           type="button"
-          onClick={() => {
-            changelogRequest = undefined;
-            startTransition(() => setRequest(preloadChangelog()));
-          }}
+          onClick={() => void query.refetch()}
         >
           Try again
         </button>
@@ -56,9 +41,10 @@ export function Changelog({
     );
   }
 
-  const { changelog } = result;
+  const changelog = query.data;
   return (
     <div className="changelog-page">
+      {query.isRefetchError && <p role="alert">Couldn’t refresh the changelog. <button type="button" onClick={() => void query.refetch()}>Retry</button></p>}
       <header className="changelog-title">
         <h1>Changelog</h1>
       </header>

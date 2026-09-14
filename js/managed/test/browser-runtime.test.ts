@@ -261,6 +261,59 @@ describe("AI SDK browser tool adapter", () => {
     expect(execute).toHaveBeenCalledOnce();
   });
 
+  it("replaces the foreign codemode prompt with the Rust Code Mode tool contract", async () => {
+    const upstreamDescription = [
+      "Execute JavaScript in a sandbox with access to connector SDKs.",
+      "## Workflow",
+      "Call `codemode.search(query)` before using the `cdp` connector.",
+    ].join("\n");
+    const tools = await adaptAiSdkTools({
+      browser_execute: tool({
+        description: upstreamDescription,
+        inputSchema: jsonSchema({
+          type: "object",
+          properties: { code: { type: "string" } },
+          required: ["code"],
+          additionalProperties: false,
+        }),
+        execute: async () => ({ ok: true }),
+      }),
+      browser_markdown: tool({
+        description: "Read a page as Markdown.",
+        inputSchema: jsonSchema({ type: "object", additionalProperties: false }),
+        execute: async () => "page",
+      }),
+    });
+    const adapted = tools.find(({ name }) => name === "browser_execute");
+    const ordinary = tools.find(({ name }) => name === "browser_markdown");
+
+    expect(adapted?.description).toContain(
+      "Outer contract (Nanocodex Rust/WASM Code Mode)",
+    );
+    expect(adapted?.description).toContain(
+      "nested tools exist only on `tools.*`; `cdp` and `codemode` are not globals",
+    );
+    expect(adapted?.description).toContain("`await tools.browser_execute({ code })`");
+    expect(adapted?.description).toContain(
+      "only host globals are `cdp` and `codemode`",
+    );
+    expect(adapted?.description).toContain(
+      '`await codemode.search("short intent")`',
+    );
+    expect(adapted?.description).toContain(
+      '`await codemode.describe("cdp.method")`',
+    );
+    expect(adapted?.description).toContain(
+      '`await cdp.send({ method: "Target.getTargets" })`',
+    );
+    expect(adapted?.description).toContain("including `Runtime.evaluate`");
+    expect(adapted?.description).toContain("`Target.getTargetInfo` is not available");
+    expect(adapted?.description).toContain("use `tools.web__run(...)`");
+    expect(adapted?.description).not.toContain(upstreamDescription);
+    expect(adapted?.description).not.toContain("## Workflow");
+    expect(ordinary?.description).toBe("Read a page as Markdown.");
+  });
+
   it("redacts provider URLs and scalar cookie material", () => {
     expect(sanitizeBrowserToolResult({
       provider: "https://live.browser.run/session/signed",

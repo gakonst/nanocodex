@@ -13,15 +13,17 @@ export class ReauthenticationRequiredError extends Error {
   }
 }
 
-export function getCurrentUser(fetcher: typeof fetch = fetch): Promise<AuthenticatedAccount | null> {
-  return readCurrentUser(fetcher, true);
+export function getCurrentUser(fetcher: typeof fetch = fetch, signal?: AbortSignal): Promise<AuthenticatedAccount | null> {
+  return readCurrentUser(fetcher, true, signal);
 }
 
 async function readCurrentUser(
   fetcher: typeof fetch,
   recoverInvalidSession: boolean,
+  signal?: AbortSignal,
 ): Promise<AuthenticatedAccount | null> {
   const response = await fetcher("/v1/me", {
+    signal,
     cache: "no-store",
     credentials: "same-origin",
     headers: { accept: "application/json" },
@@ -32,7 +34,7 @@ async function readCurrentUser(
       throw new ReauthenticationRequiredError();
     }
     if (isRecord(body) && body.error === "invalid_session") {
-      if (recoverInvalidSession) return readCurrentUser(fetcher, false);
+      if (recoverInvalidSession) return readCurrentUser(fetcher, false, signal);
       throw new Error("Couldn’t renew your browser session. Reload and try again.");
     }
     return null;
@@ -55,7 +57,7 @@ export async function responseFailure(response: Response, fallback: string): Pro
   const reason = isRecord(body) && typeof body.error === "string"
     ? body.error.replaceAll("_", " ")
     : fallback;
-  return new Error(reason);
+  return Object.assign(new Error(reason), { status: response.status });
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

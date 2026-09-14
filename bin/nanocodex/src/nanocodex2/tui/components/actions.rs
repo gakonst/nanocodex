@@ -4,6 +4,7 @@
 //! Searchable modal menu for actions exposed by the TUI.
 
 use super::{
+    composer::SettingsCommand,
     floating::Floating,
     node::{Component, ComponentUpdate, RenderRequest},
 };
@@ -67,6 +68,7 @@ pub(super) enum Action {
 pub(super) enum ActionsEffect {
     Dismiss,
     Trigger(Action),
+    Settings(SettingsCommand),
 }
 
 pub(super) struct ActionsMenu {
@@ -173,6 +175,12 @@ impl ActionsMenu {
     }
 
     fn trigger_selected(&self) -> ComponentUpdate<ActionsEffect> {
+        if let Some(command) = SettingsCommand::parse(&format!("/{}", self.query)) {
+            return ComponentUpdate {
+                effects: vec![ActionsEffect::Settings(command)],
+                render: RenderRequest::Immediate,
+            };
+        }
         let Some(action) = self.matches.get(self.selected) else {
             return ComponentUpdate::none();
         };
@@ -400,8 +408,13 @@ fn visible_query_tail(query: &str, width: usize) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Action, ActionAvailability, ActionsEffect, ActionsEvent, ActionsMenu, Component};
+    use super::{
+        Action, ActionAvailability, ActionsEffect, ActionsEvent, ActionsMenu, Component,
+        SettingsCommand,
+    };
+    use crate::config::ReasoningEffort;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use nanocodex::Model;
 
     fn availability(fast_mode: bool, model: bool) -> ActionAvailability {
         ActionAvailability {
@@ -457,6 +470,39 @@ mod tests {
             KeyModifiers::NONE,
         ))));
         assert_eq!(update.effects, [ActionsEffect::Trigger(Action::FastMode)]);
+    }
+
+    #[test]
+    fn direct_settings_queries_trigger_even_without_an_action_match() {
+        let mut menu = ActionsMenu::new(availability(false, true));
+        menu.update(ActionsEvent::Terminal(Event::Paste(
+            "model astra".to_owned(),
+        )));
+        let update = menu.update(ActionsEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))));
+        assert_eq!(
+            update.effects,
+            [ActionsEffect::Settings(SettingsCommand::SetModel(
+                Model::Astra
+            ))]
+        );
+
+        let mut menu = ActionsMenu::new(availability(false, true));
+        menu.update(ActionsEvent::Terminal(Event::Paste(
+            "reasoning max".to_owned(),
+        )));
+        let update = menu.update(ActionsEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))));
+        assert_eq!(
+            update.effects,
+            [ActionsEffect::Settings(SettingsCommand::SetEffort(
+                ReasoningEffort::Max
+            ))]
+        );
     }
 
     #[test]

@@ -109,6 +109,46 @@ export class ManagedRealtimeArchive {
     return this.#completedCount() > this.#recentOperations;
   }
 
+  /** Complete a large response without first putting its body in a SQLite row. */
+  async complete(receipt: ManagedRealtimeReceipt): Promise<void> {
+    validateReceipt(receipt);
+    const assertPending = () => {
+      const row = this.#storage.sql.exec<{
+        state: string; kind: string; request_hash: string; created_at: number;
+      }>(
+        `SELECT state, kind, request_hash, created_at FROM managed_realtime_operations
+         WHERE voice_session_id = ? AND operation_id = ?`,
+        receipt.voice_session_id, receipt.operation_id,
+      ).toArray()[0];
+      if (!row || row.state !== "pending" || row.kind !== receipt.kind
+        || row.request_hash !== receipt.request_hash || row.created_at !== receipt.created_at) {
+        throw new Error("managed realtime archive pending receipt changed before completion");
+      }
+    };
+    assertPending();
+    const body = encoder.encode(JSON.stringify({
+      version: VERSION, kind: "managed_realtime_receipt", receipt,
+    } satisfies ReceiptEnvelope));
+    const identity = `${receipt.voice_session_id}\n${receipt.operation_id}`;
+    const key = `${this.#prefix}by-id/${await sha256Hex(encoder.encode(identity))}.json`;
+    await this.#putImmutable(key, body, await sha256Hex(body));
+    // The pending identity remains in SQLite until its exact reply is durable.
+    this.#storage.transactionSync(() => {
+      assertPending();
+      this.#storage.sql.exec(
+        `DELETE FROM managed_realtime_operations WHERE voice_session_id = ? AND operation_id = ?`,
+        receipt.voice_session_id, receipt.operation_id,
+      );
+      this.#storage.sql.exec(
+        `UPDATE managed_realtime_archive_state
+         SET archived_receipts = archived_receipts + 1,
+             archived_bytes = archived_bytes + ?, object_count = object_count + 1
+         WHERE singleton = 1`,
+        body.byteLength,
+      );
+    });
+  }
+
   async find(
     voiceSessionId: string,
     operationId: string,

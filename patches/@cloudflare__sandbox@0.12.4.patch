@@ -1,0 +1,50 @@
+diff --git a/dist/sandbox-CyqG4jca.js b/dist/sandbox-CyqG4jca.js
+index 7acd6e7ce4468e31cd2a4daa429ca5e3b00f8bec..b9f3d7d52d5462028153090c45c590d094c8740a 100644
+--- a/dist/sandbox-CyqG4jca.js
++++ b/dist/sandbox-CyqG4jca.js
+@@ -4766,6 +4766,7 @@ function buildResponseHeaders(obj) {
+ 	if (obj.httpMetadata?.contentEncoding) headers.set("Content-Encoding", obj.httpMetadata.contentEncoding);
+ 	if (obj.httpMetadata?.contentLanguage) headers.set("Content-Language", obj.httpMetadata.contentLanguage);
+ 	if (obj.httpMetadata?.cacheControl) headers.set("Cache-Control", obj.httpMetadata.cacheControl);
++	for (const [name, value] of Object.entries(obj.customMetadata ?? {})) headers.set(`x-amz-meta-${name}`, value);
+ 	return headers;
+ }
+ function buildContentRange(range, totalSize) {
+@@ -4794,6 +4795,13 @@ function extractHttpMetadata(request) {
+ 	if (cc) meta.cacheControl = cc;
+ 	return meta;
+ }
++function extractCustomMetadata(request) {
++	const metadata = {};
++	for (const [name, value] of request.headers) {
++		if (name.startsWith("x-amz-meta-")) metadata[name.slice(11)] = value;
++	}
++	return metadata;
++}
+ function parseCopySource(header) {
+ 	const sourcePath = header.split("?")[0] ?? "";
+ 	if (!sourcePath) return null;
+@@ -4886,12 +4894,12 @@ async function handlePutObject(r2, bucketName, key, request, env$1, permitted, m
+ 		const httpMetadata = request.headers.get("x-amz-metadata-directive")?.toUpperCase() === "REPLACE" ? extractHttpMetadata(request) : sourceObject.httpMetadata;
+ 		const result$1 = await r2.put(key, sourceObject.body, {
+ 			httpMetadata,
+-			customMetadata: sourceObject.customMetadata,
++			customMetadata: request.headers.get("x-amz-metadata-directive")?.toUpperCase() === "REPLACE" ? extractCustomMetadata(request) : sourceObject.customMetadata,
+ 			storageClass: normalizeStorageClass(sourceObject.storageClass)
+ 		});
+ 		return xmlResponse(buildCopyObjectXml(result$1.httpEtag, result$1.uploaded));
+ 	}
+-	const result = await putRequestBody(r2, key, request, { httpMetadata: extractHttpMetadata(request) });
++	const result = await putRequestBody(r2, key, request, { httpMetadata: extractHttpMetadata(request), customMetadata: extractCustomMetadata(request) });
+ 	if (result instanceof Response) return result;
+ 	const headers = new Headers();
+ 	headers.set("ETag", result.httpEtag);
+@@ -4906,7 +4914,7 @@ async function handleDeleteObject(r2, key) {
+ }
+ async function handleCreateMultipartUpload(r2, bucketName, key, request) {
+ 	const httpMetadata = extractHttpMetadata(request);
+-	return xmlResponse(buildInitiateMultipartUploadXml(bucketName, key, (await r2.createMultipartUpload(key, { httpMetadata })).uploadId));
++	return xmlResponse(buildInitiateMultipartUploadXml(bucketName, key, (await r2.createMultipartUpload(key, { httpMetadata, customMetadata: extractCustomMetadata(request) })).uploadId));
+ }
+ async function handleUploadPart(r2, key, url, request) {
+ 	const uploadId = url.searchParams.get("uploadId") ?? "";

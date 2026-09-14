@@ -64,6 +64,9 @@ export function createWorkerEvaluator(options = {}) {
         try {
           if (data.kind === "text") environment.text(data.value);
           else if (data.kind === "image") environment.image(data.value, data.detail);
+          else if (data.kind === "audio") environment.audio(data.value);
+          else if (data.kind === "notify") environment.notify(data.value);
+          else if (data.kind === "yield_control") environment.yield_control();
           else if (data.kind === "generatedImage") environment.generatedImage(data.value);
           else throw new Error(`unknown Code Mode output kind: ${data.kind}`);
         } catch (error) {

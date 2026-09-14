@@ -173,24 +173,37 @@ pub(super) struct ExistingCallConfig<'a> {
 }
 
 pub(super) async fn connect(config: ConnectConfig<'_>) -> Result<WebRtcConnection, RealtimeError> {
+    let started = tokio::time::Instant::now();
     let offer = create_offer().await?;
+    debug!(
+        elapsed_ms = started.elapsed().as_millis(),
+        "prepared GPT Realtime WebRTC offer"
+    );
+    let mut cleanup = PendingPeer(Some(Arc::clone(&offer.peer)));
     let (call, auth) = create_call_with_auth_recovery(&config, &offer.sdp).await?;
+    debug!(
+        elapsed_ms = started.elapsed().as_millis(),
+        "created GPT Realtime WebRTC call"
+    );
     trace!(target: "nanocodex_oai_api::realtime::wire", sdp = %call.sdp, call_id = %call.id, "GPT Realtime WebRTC answer");
     debug!(call_id = %call.id, "applying GPT Realtime WebRTC answer");
-    timeout(
-        CONNECT_TIMEOUT,
-        offer.peer.set_remote_description(
-            RTCSessionDescription::answer(call.sdp)
-                .map_err(|error| RealtimeError::WebRtc(error.to_string()))?,
-        ),
-    )
-    .await
-    .map_err(|_| RealtimeError::ConnectTimeout)?
-    .map_err(|error| RealtimeError::WebRtc(error.to_string()))?;
-    debug!(call_id = %call.id, "applied GPT Realtime WebRTC answer");
-
     let sideband = WebRtcSideband::from_config(&config, auth, &call.id)?;
-    let (mut socket, response) = connect_sideband(&sideband).await?;
+    // ICE/DTLS negotiation and control admission are independent once the
+    // provider has created the call. Do not serialize their network round trips.
+    let apply_answer = async {
+        timeout(
+            CONNECT_TIMEOUT,
+            offer.peer.set_remote_description(
+                RTCSessionDescription::answer(call.sdp)
+                    .map_err(|error| RealtimeError::WebRtc(error.to_string()))?,
+            ),
+        )
+        .await
+        .map_err(|_| RealtimeError::ConnectTimeout)?
+        .map_err(|error| RealtimeError::WebRtc(error.to_string()))
+    };
+    let connected = tokio::try_join!(apply_answer, connect_sideband(&sideband));
+    let ((), (mut socket, response)) = connected?;
     debug!(
         status = response.status().as_u16(),
         "connected GPT Realtime WebRTC sideband"
@@ -198,6 +211,7 @@ pub(super) async fn connect(config: ConnectConfig<'_>) -> Result<WebRtcConnectio
     if config.version == RealtimeVersion::V1 {
         send_v1_session_update(&mut socket, &config).await?;
     }
+    cleanup.0 = None;
     Ok(WebRtcConnection {
         socket,
         sideband,
@@ -398,6 +412,7 @@ async fn create_offer() -> Result<Offer, RealtimeError> {
             .await
             .map_err(|error| RealtimeError::WebRtc(error.to_string()))?,
     );
+    let mut cleanup = PendingPeer(Some(Arc::clone(&peer)));
     let microphone = Arc::new(TrackLocalStaticSample::new(
         RTCRtpCodecCapability {
             mime_type: MIME_TYPE_OPUS.to_owned(),
@@ -546,21 +561,17 @@ async fn create_offer() -> Result<Offer, RealtimeError> {
         .create_offer(None)
         .await
         .map_err(|error| RealtimeError::WebRtc(error.to_string()))?;
-    let mut gathering = peer.gathering_complete_promise().await;
+    // The server answer supplies reachable candidates. Local ICE gathering
+    // continues during call creation; waiting for every interface adds latency.
+    let sdp = offer.sdp.clone();
     peer.set_local_description(offer)
         .await
         .map_err(|error| RealtimeError::WebRtc(error.to_string()))?;
-    timeout(CONNECT_TIMEOUT, gathering.recv())
-        .await
-        .map_err(|_| RealtimeError::ConnectTimeout)?;
-    let offer = peer
-        .local_description()
-        .await
-        .ok_or_else(|| RealtimeError::WebRtc("WebRTC offer was not retained".to_owned()))?;
-    trace!(target: "nanocodex_oai_api::realtime::wire", sdp = %offer.sdp, "GPT Realtime WebRTC offer");
+    trace!(target: "nanocodex_oai_api::realtime::wire", sdp = %sdp, "GPT Realtime WebRTC offer");
+    cleanup.0 = None;
     Ok(Offer {
         peer,
-        sdp: offer.sdp,
+        sdp,
         input: input_tx,
         audio: audio_rx,
     })
@@ -588,6 +599,21 @@ struct Offer {
     sdp: String,
     input: mpsc::Sender<RealtimeAudio>,
     audio: mpsc::Receiver<Result<RealtimeAudio, RealtimeError>>,
+}
+
+/// Close native ICE/DTLS tasks if setup fails or its future is cancelled.
+struct PendingPeer(Option<Arc<RTCPeerConnection>>);
+
+impl Drop for PendingPeer {
+    fn drop(&mut self) {
+        if let Some(peer) = self.0.take()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            runtime.spawn(async move {
+                let _ = peer.close().await;
+            });
+        }
+    }
 }
 
 fn spawn_microphone_encoder(
@@ -776,6 +802,10 @@ async fn create_call(
     let mut builder = realtime_http_client()
         .post(endpoint)
         .bearer_auth(auth.bearer())
+        .header(
+            reqwest::header::USER_AGENT,
+            concat!("nanocodex/", env!("CARGO_PKG_VERSION")),
+        )
         .header("openai-alpha", alpha_header(config.version))
         .header("originator", "nanocodex")
         .header(
@@ -809,7 +839,10 @@ async fn create_call(
     let response = timeout(CONNECT_TIMEOUT, builder.send())
         .await
         .map_err(|_| CallAttemptError::Other(RealtimeError::ConnectTimeout))?
-        .map_err(|error| CallAttemptError::Other(RealtimeError::Http(error.to_string())))?;
+        .map_err(|error| {
+            debug!(?error, "GPT Realtime call request failed");
+            CallAttemptError::Other(RealtimeError::Http(error.to_string()))
+        })?;
     if response.status() == StatusCode::UNAUTHORIZED {
         return Err(CallAttemptError::Unauthorized);
     }
@@ -1201,6 +1234,11 @@ mod tests {
             }
             let request = String::from_utf8(request).unwrap();
             assert!(request.contains("authorization: Bearer chatgpt-token\r\n"));
+            assert!(request.contains(concat!(
+                "user-agent: nanocodex/",
+                env!("CARGO_PKG_VERSION"),
+                "\r\n"
+            )));
             assert!(request.contains("chatgpt-account-id: account-1\r\n"));
             assert!(request.contains("x-session-id: session-1\r\n"));
             assert!(request.contains("session-id: session-1\r\n"));

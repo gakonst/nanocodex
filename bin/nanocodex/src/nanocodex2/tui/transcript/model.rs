@@ -56,6 +56,7 @@ pub(crate) struct TranscriptModel {
     active_assistants: HashMap<(u32, MessagePhase), EntryId>,
     reasoning: HashMap<ReasoningKey, EntryId>,
     tools: HashMap<String, EntryId>,
+    settled_calls: HashSet<String>,
     shell_sessions: HashMap<ShellSessionKey, EntryId>,
     shell_followups: HashMap<String, EntryId>,
     code_children: HashMap<EntryId, Vec<EntryId>>,
@@ -68,6 +69,7 @@ pub(crate) struct TranscriptModel {
     run_started_at_unix_ms: VecDeque<u64>,
     transient: Option<TransientStatus>,
     pending_error: Option<String>,
+    last_run_failure: Option<EntryId>,
     pending_compaction_error: Option<String>,
 }
 
@@ -273,8 +275,18 @@ impl TranscriptModel {
             "user.submitted" => self.decode_local::<UserSubmitted>(record).map(|payload| {
                 self.push(EntryKind::User { text: payload.text });
             }),
+            "user.steer_withdrawn" => self.decode_local::<UserSteered>(record).map(|payload| {
+                self.push(EntryKind::User {
+                    text: format!(
+                        "[steering withdrawn before model received it]\n{}",
+                        payload.text
+                    ),
+                });
+            }),
             "user.steered" => self.decode_local::<UserSteered>(record).map(|payload| {
-                self.push(EntryKind::User { text: payload.text });
+                self.push(EntryKind::User {
+                    text: format!("[steering accepted]\n{}", payload.text),
+                });
             }),
             "reflection.started" => self.decode_local::<ReflectionStarted>(record).map(|_| {
                 self.push(EntryKind::ReflectionStarted);
@@ -301,15 +313,15 @@ impl TranscriptModel {
                         }
                     })
             }
+            "managed.turn_failed" => self.decode_local::<ErrorPayload>(record).map(|payload| {
+                self.managed_turn_failed(payload.error);
+            }),
             "worker.turns_interrupted" => return self.apply_interruption(record),
-            "worker.steer_failed" => {
-                self.decode_local::<WorkerSteerFailed>(record)
-                    .map(|payload| {
-                        self.push(EntryKind::Error {
-                            message: format!("Could not steer response: {}", payload.error),
-                        });
-                    })
-            }
+            "worker.steer_failed" => self.decode_local::<ErrorPayload>(record).map(|payload| {
+                self.push(EntryKind::Error {
+                    message: format!("Could not steer response: {}", payload.error),
+                });
+            }),
             "worker.stopped" => self.decode_local::<WorkerStopped>(record).map(|payload| {
                 if let Some(error) = payload.error {
                     self.pending_error = Some(error);
@@ -373,6 +385,7 @@ impl TranscriptModel {
             execution: ToolEntry::local_execution(),
             substeps: Vec::new(),
             child_count: 0,
+            code_display_result: None,
         }));
         self.local_shells.insert(payload.id, id);
         self.running_tools.insert(id);
@@ -422,6 +435,7 @@ impl TranscriptModel {
             "assistant.message" => self.assistant_message(record),
             "reasoning.summary.delta" => self.reasoning_delta(record),
             "run.started" => {
+                self.last_run_failure = None;
                 self.active_runs = self.active_runs.saturating_add(1);
                 self.run_started_at_unix_ms
                     .push_back(record.recorded_at_unix_ms());
@@ -440,6 +454,9 @@ impl TranscriptModel {
             "run.failed" => {
                 self.run_started_at_unix_ms.pop_front();
                 self.finish_failed(None);
+                self.last_run_failure = self.entries.last().and_then(|entry| {
+                    matches!(entry.kind, EntryKind::Error { .. }).then_some(entry.id)
+                });
                 Ok(true)
             }
             "tool.call" => self.tool_call(record),
@@ -593,6 +610,10 @@ impl TranscriptModel {
             tool,
             arguments,
         } = record.decode_payload::<ToolCallPayload>()?;
+        // Recovery may replay admission for a call whose progress is already visible.
+        if self.tools.contains_key(&call_id) {
+            return Ok(false);
+        }
         let parent = self.code_parent(&call_id);
         if tool == "write_stdin"
             && let Some(session_id) = arguments.get("session_id").and_then(Value::as_i64)
@@ -643,9 +664,10 @@ impl TranscriptModel {
                 execution,
                 substeps: Vec::new(),
                 child_count: 0,
+                code_display_result: None,
             }),
             hidden,
-            None,
+            parent,
         );
         if let Some(parent) = parent {
             self.register_code_child(parent, id);
@@ -658,6 +680,9 @@ impl TranscriptModel {
 
     fn tool_result(&mut self, record: &TranscriptRecord) -> Result<bool, serde_json::Error> {
         let payload = record.decode_payload::<ToolResultPayload>()?;
+        if !self.settled_calls.insert(payload.call_id.clone()) {
+            return Ok(false);
+        }
         let resumed_shell = self.shell_followups.remove(&payload.call_id);
         let shell_followup = payload.tool == "write_stdin";
         let result = preferred_result(payload.structured_result, payload.result);
@@ -694,9 +719,10 @@ impl TranscriptModel {
                         ),
                         substeps: Vec::new(),
                         child_count: 0,
+                        code_display_result: None,
                     }),
                     false,
-                    None,
+                    parent,
                 );
                 if let Some(parent) = parent {
                     self.register_code_child(parent, id);
@@ -735,6 +761,8 @@ impl TranscriptModel {
                     } else {
                         merge_shell_result(tool.result.take(), result)
                     }
+                } else if payload.tool == "exec_command" {
+                    merge_shell_result(None, result)
                 } else {
                     result
                 });
@@ -805,8 +833,54 @@ impl TranscriptModel {
         {
             self.fail_unfinished_code_children(parent);
         }
+        // A child may finish after the exec envelope, or receive shell follow-up
+        // output. Refresh the parent's projection without changing its raw result.
+        let code_parents: Vec<_> = self
+            .code_children
+            .iter()
+            .filter(|(parent, children)| {
+                **parent == id
+                    || children.contains(&id)
+                    || resumed_shell.is_some_and(|shell| children.contains(&shell))
+            })
+            .map(|(parent, _)| *parent)
+            .collect();
+        for parent in code_parents {
+            self.refresh_code_display_result(parent);
+        }
         self.transient = self.is_active().then_some(TransientStatus::Thinking);
         Ok(true)
+    }
+
+    fn refresh_code_display_result(&mut self, parent: EntryId) {
+        let Some(TranscriptEntry {
+            kind: EntryKind::Tool(tool),
+            ..
+        }) = self.entry(parent)
+        else {
+            return;
+        };
+        let Some(result) = tool.result.as_ref() else {
+            return;
+        };
+        let children: Vec<_> = self
+            .code_children
+            .get(&parent)
+            .into_iter()
+            .flatten()
+            .filter_map(|child| match &self.entry(*child)?.kind {
+                EntryKind::Tool(tool) => tool.result.as_ref(),
+                _ => None,
+            })
+            .collect();
+        let display = distinct_code_output(result, &children);
+        if tool.code_display_result.as_ref() != Some(&display) {
+            self.update(parent, |kind| {
+                if let EntryKind::Tool(tool) = kind {
+                    tool.code_display_result = Some(display);
+                }
+            });
+        }
     }
 
     fn compaction_completed(
@@ -877,6 +951,21 @@ impl TranscriptModel {
         self.push(EntryKind::TurnCompleted { duration_ns });
     }
 
+    fn managed_turn_failed(&mut self, error: String) {
+        // A nested run terminal can precede its authoritative managed envelope.
+        // Update that notice even if a local queued prompt was inserted meanwhile;
+        // settling twice would consume the following run's activity/timing.
+        if let Some(id) = self.last_run_failure.take() {
+            self.pending_error = None;
+            self.update(id, |kind| *kind = EntryKind::Error { message: error });
+            return;
+        }
+        if self.active_runs > 0 {
+            self.run_started_at_unix_ms.pop_front();
+        }
+        self.finish_failed(Some(error));
+    }
+
     fn finish_failed(&mut self, error: Option<String>) {
         self.pending_compaction_error = None;
         if error.is_none()
@@ -890,7 +979,7 @@ impl TranscriptModel {
             return;
         }
         let message = error
-            .or_else(|| self.pending_error.take())
+            .or(self.pending_error.take())
             .unwrap_or_else(|| "The agent run failed".to_owned());
         if !self.entries.last().is_some_and(|entry| {
             matches!(&entry.kind, EntryKind::Error { message: existing } if existing == &message)
@@ -1073,7 +1162,7 @@ impl TranscriptModel {
         self.entries[index].revision = self.entries[index].revision.saturating_add(1);
 
         let child_index = self.index_of(child).expect("code child is retained");
-        self.entries[child_index].parent = None;
+        self.entries[child_index].parent = Some(parent);
     }
 
     fn trim_message_history(&mut self) -> Option<EntryId> {
@@ -1138,6 +1227,7 @@ fn visibility(source: &str, kind: &str) -> EventVisibility {
             "user.submitted"
             | "reflection.started"
             | "worker.turns_interrupted"
+            | "managed.turn_failed"
             | "effort.changed"
             | "fast_mode.changed" => EventVisibility::Persistent,
             "worker.turn_finished" | "worker.stopped" | "session.ended" => {
@@ -1259,6 +1349,49 @@ fn code_mode_value_has_output(
     }
 }
 
+// Only remove whole emitted items: additional commentary or discovery output
+// must survive even when another item repeats a child's result.
+fn distinct_code_output(result: &Value, children: &[&Value]) -> Value {
+    // Each child accounts for one echo; additional identical emits are retained.
+    let mut remaining = children.to_vec();
+    let mut duplicate = |item: &Value| {
+        let Some(index) = remaining.iter().position(|child| {
+            values_duplicate(item, child)
+                || item
+                    .as_str()
+                    .or_else(|| {
+                        let fields = item.as_object()?;
+                        let text = fields.get("text")?.as_str()?;
+                        let text_only = fields.len() == 1;
+                        let transport_envelope = fields.len() == 2
+                            && matches!(
+                                fields.get("type").and_then(Value::as_str),
+                                Some("text" | "input_text")
+                            );
+                        (text_only || transport_envelope).then_some(text)
+                    })
+                    .is_some_and(|text| text_duplicates_value(code_mode_output_text(text), child))
+        }) else {
+            return false;
+        };
+        remaining.remove(index);
+        true
+    };
+    if duplicate(result) {
+        return Value::Null;
+    }
+    match result {
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .filter(|item| !duplicate(item))
+                .cloned()
+                .collect(),
+        ),
+        _ => result.clone(),
+    }
+}
+
 fn values_duplicate(candidate: &Value, child: &Value) -> bool {
     candidate == child
         || content_envelope_matches(candidate, child)
@@ -1345,7 +1478,9 @@ fn tool_result_state(tool: &str, status: &str, result: &Value) -> ToolState {
             ToolState::Failed
         };
     }
-    if tool_session_id(result).is_some() && result.get("exit_code").is_none() {
+    if tool_session_id(result).is_some()
+        && result.get("exit_code").and_then(Value::as_i64).is_none()
+    {
         return ToolState::Running;
     }
     ToolState::Failed
@@ -1411,20 +1546,33 @@ fn has_useful_result(result: &Value) -> bool {
 }
 
 fn merge_shell_result(current: Option<Value>, next: Value) -> Value {
-    let Some(Value::Object(mut current)) = current else {
-        return next;
-    };
-    let mut next = match next {
-        Value::Object(next) => next,
-        other => return other,
-    };
     let previous_output = current
-        .remove("output")
-        .and_then(|value| value.as_str().map(str::to_owned))
+        .as_ref()
+        .and_then(|value| value.get("output"))
+        .and_then(Value::as_str)
         .unwrap_or_default();
-    if let Some(Value::String(output)) = next.get_mut("output") {
-        output.insert_str(0, &previous_output);
+    if previous_output.is_empty() && next.get("output").is_none() {
+        return next;
     }
+    let mut next = match next {
+        Value::Object(fields) => fields,
+        other => serde_json::Map::from_iter([("error".to_owned(), other)]),
+    };
+    let output = next
+        .get("output")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let output = format!("{previous_output}{output}");
+    let mut start = output.len().saturating_sub(64 * 1024);
+    while !output.is_char_boundary(start) {
+        start += 1;
+    }
+    let output = if start == 0 {
+        output
+    } else {
+        format!("…\n{}", &output[start..])
+    };
+    next.insert("output".to_owned(), Value::String(output));
     Value::Object(next)
 }
 
@@ -1491,11 +1639,6 @@ struct WorkerTurnsInterrupted {
 }
 
 #[derive(Deserialize)]
-struct WorkerSteerFailed {
-    error: String,
-}
-
-#[derive(Deserialize)]
 struct WorkerStopped {
     error: Option<String>,
 }
@@ -1518,8 +1661,11 @@ struct ToolResultPayload {
     call_id: String,
     tool: String,
     status: String,
+    #[serde(default)]
     duration_ns: u64,
+    #[serde(default)]
     result: Value,
+    #[serde(default)]
     structured_result: Value,
     metadata: Option<Value>,
 }
@@ -1548,10 +1694,64 @@ struct ConnectionPayload {
 
 #[cfg(test)]
 mod tests {
-    use super::{EntryKind, ToolState, TranscriptModel, TranscriptRecord};
+    use super::{EntryKind, ToolState, TranscriptModel, TranscriptRecord, distinct_code_output};
     use nanocodex::agent::events::{AgentEvent, AgentEventKind};
     use serde_json::{Value, json, value::to_raw_value};
     use std::sync::Arc;
+
+    #[test]
+    fn managed_failure_settles_once_with_or_without_nested_terminal() {
+        use crate::tui::transcript::{LocalEvent, TurnId};
+        for nested_terminal in [false, true] {
+            let mut model = TranscriptModel::default();
+            model.apply(&agent_record(1, AgentEventKind::RunStarted, json!({})));
+            if nested_terminal {
+                model.apply(&agent_record(2, AgentEventKind::RunFailed, json!({})));
+            }
+            model.apply(
+                &TranscriptRecord::from_local(
+                    3,
+                    30,
+                    LocalEvent::UserSubmitted {
+                        id: TurnId::new(3),
+                        text: "queued followup".to_owned(),
+                    },
+                )
+                .unwrap(),
+            );
+            model.apply(
+                &TranscriptRecord::from_local(
+                    4,
+                    40,
+                    LocalEvent::ManagedTurnFailed {
+                        error: "authoritative restore failure".to_owned(),
+                    },
+                )
+                .unwrap(),
+            );
+            let errors = model
+                .entries()
+                .iter()
+                .filter_map(|entry| match &entry.kind {
+                    EntryKind::Error { message } => Some(message.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(errors, ["authoritative restore failure"]);
+            assert_eq!(model.active_runs, 0);
+            assert!(model.run_started_at_unix_ms.is_empty());
+            model.apply(&agent_record(5, AgentEventKind::RunStarted, json!({})));
+            assert_eq!(model.active_runs, 1);
+            model.apply(&agent_record(6, AgentEventKind::RunCompleted, json!({})));
+            assert!(matches!(
+                model.entries().last().unwrap().kind,
+                EntryKind::TurnCompleted {
+                    duration_ns: 10_000_000,
+                }
+            ));
+            assert_eq!(model.active_runs, 0);
+        }
+    }
 
     fn agent_record(sequence: u64, kind: AgentEventKind, payload: Value) -> TranscriptRecord {
         TranscriptRecord::from_agent(
@@ -1599,6 +1799,65 @@ mod tests {
     }
 
     #[test]
+    fn command_progress_survives_replayed_calls_and_missing_result_fields() {
+        let mut model = TranscriptModel::default();
+        let start = call(1, "build", "exec_command", json!({"cmd": "cargo test"}));
+        let yielded = result(
+            2,
+            "build",
+            "exec_command",
+            Value::Null,
+            json!({"session_id": 7, "exit_code": null, "output": "Compiling\n"}),
+            Value::Null,
+        );
+        model.apply(&start);
+        model.apply(&yielded);
+        model.apply(&call(3, "poll", "write_stdin", json!({"session_id": 7})));
+        let progress = result(
+            4,
+            "poll",
+            "write_stdin",
+            Value::Null,
+            json!({"session_id": 7, "output": "Testing\n"}),
+            Value::Null,
+        );
+        model.apply(&progress);
+        model.apply(&start);
+        model.apply(&yielded);
+        model.apply(&progress);
+        model.apply(&call(5, "exit", "write_stdin", json!({"session_id": 7})));
+        model.apply(&agent_record(
+            6,
+            AgentEventKind::ToolResult,
+            json!({
+                "call_id": "exit", "tool": "write_stdin", "status": "failed",
+                "result": {"error": "process session unavailable"},
+            }),
+        ));
+        assert_eq!(model.entries().len(), 1);
+        let EntryKind::Tool(tool) = &model.entries()[0].kind else {
+            panic!("expected command")
+        };
+        assert_eq!(tool.state, ToolState::Failed);
+        let output = tool.result.as_ref().unwrap();
+        assert_eq!(output["output"], "Compiling\nTesting\n");
+        assert_eq!(output["error"], "process session unavailable");
+        assert_eq!(tool.duration_ns, Some(50_000_000));
+    }
+
+    #[test]
+    fn long_command_output_retains_the_latest_diagnostics() {
+        let merged = super::merge_shell_result(
+            Some(json!({"output": "α".repeat(40_000)})),
+            json!({"exit_code": 101, "output": "\nlatest failure"}),
+        );
+        let output = merged["output"].as_str().unwrap();
+        assert!(output.starts_with("…\n"));
+        assert!(output.ends_with("latest failure"));
+        assert!(output.len() <= 64 * 1024 + 4);
+    }
+
+    #[test]
     fn semantic_children_hide_single_wrapper_but_keep_multi_tool_batch() {
         let mut model = TranscriptModel::default();
         model.apply(&call(1, "outer", "exec", json!("await tools.one({})")));
@@ -1620,8 +1879,8 @@ mod tests {
         assert!(!model.entries()[0].hidden);
         assert!(!model.entries()[1].hidden);
         assert!(!model.entries()[2].hidden);
-        assert!(model.entries()[1].parent.is_none());
-        assert!(model.entries()[2].parent.is_none());
+        assert_eq!(model.entries()[1].parent, Some(model.entries()[0].id));
+        assert_eq!(model.entries()[2].parent, Some(model.entries()[0].id));
         let EntryKind::Tool(wrapper) = &model.entries()[0].kind else {
             panic!("wrapper should remain a tool entry");
         };
@@ -1896,6 +2155,114 @@ mod tests {
 
         assert!(model.entries()[0].hidden);
         assert!(!model.entries()[1].hidden);
+    }
+
+    #[test]
+    fn batch_display_deduplicates_children_and_preserves_raw_and_unique_output() {
+        let first = json!({"status": "ready"});
+        let second = json!({"image_url": "data:image/png;base64,abc"});
+        let raw = json!([
+            {"type": "input_text", "text": first.to_string()},
+            {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+            {"type": "input_text", "text": "Discovered another tool"},
+            {"status": "ready", "extra": "unique summary"}
+        ]);
+        let mut model = TranscriptModel::default();
+        model.apply(&call(1, "batch", "exec", json!("source")));
+        model.apply(&call(2, "batch/code-0", "accountInfo", json!({})));
+        model.apply(&call(3, "batch/code-1", "other", json!({})));
+        model.apply(&result(
+            4,
+            "batch/code-0",
+            "accountInfo",
+            first.clone(),
+            first,
+            Value::Null,
+        ));
+        model.apply(&result(
+            5,
+            "batch",
+            "exec",
+            raw.clone(),
+            Value::Null,
+            Value::Null,
+        ));
+        let revision = model.entries()[0].revision;
+        model.apply(&result(
+            6,
+            "batch/code-1",
+            "other",
+            second.clone(),
+            second,
+            Value::Null,
+        ));
+        let parent = &model.entries()[0];
+        assert!(parent.revision > revision);
+        assert!(!parent.hidden);
+        let EntryKind::Tool(tool) = &parent.kind else {
+            panic!("expected batch");
+        };
+        assert_eq!(tool.result.as_ref(), Some(&raw));
+        assert_eq!(
+            tool.code_display_result,
+            Some(json!([raw[2].clone(), raw[3].clone()]))
+        );
+    }
+
+    #[test]
+    fn batch_display_preserves_additional_identical_emits() {
+        let child = json!({"ok": true});
+        let output = json!([child, child.to_string(), child]);
+        assert_eq!(
+            distinct_code_output(&output, &[&child]),
+            json!([child.to_string(), child])
+        );
+        assert_eq!(
+            distinct_code_output(&output, &[&child, &child]),
+            json!([child])
+        );
+    }
+
+    #[test]
+    fn batch_display_keeps_nonmatching_and_standalone_outputs() {
+        let child = json!({"ok": true});
+        let output = json!([child, "discovery", {"ok": true, "extra": 1}]);
+        assert_eq!(distinct_code_output(&output, &[]), output);
+        assert_eq!(
+            distinct_code_output(&output, &[&child]),
+            json!(["discovery", {"ok": true, "extra": 1}])
+        );
+        assert_eq!(
+            distinct_code_output(&json!(child.to_string()), &[&child]),
+            Value::Null
+        );
+        assert_eq!(
+            distinct_code_output(&json!("prefix {\"ok\":true}"), &[&child]),
+            json!("prefix {\"ok\":true}")
+        );
+    }
+
+    #[test]
+    fn batch_display_preserves_extra_fields_beside_duplicate_text() {
+        for child in [json!("same"), json!({"ok": true})] {
+            let text = child
+                .as_str()
+                .map_or_else(|| child.to_string(), str::to_owned);
+            for emitted in [
+                json!({"text": text, "extra": "unique application output"}),
+                json!({"type": "summary", "text": text}),
+                json!({"type": "input_text", "text": text, "extra": "unique metadata"}),
+            ] {
+                assert_eq!(distinct_code_output(&emitted, &[&child]), emitted);
+            }
+            for emitted in [
+                json!({"text": text}),
+                json!({"type": "text", "text": text}),
+                json!({"type": "input_text", "text": text}),
+            ] {
+                assert_eq!(distinct_code_output(&emitted, &[&child]), Value::Null);
+            }
+        }
     }
 
     #[test]

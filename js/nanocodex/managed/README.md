@@ -141,6 +141,8 @@ later watcher to resume strictly after the acknowledged event. Network endings
 reconnect automatically from that cursor. Watchers and independently awaitable
 turn results on one agent handle share one replayable event connection; each
 subscriber keeps its own cursor, so consuming one never steals another's events.
+Rapid `turn.steer()` calls on one turn handle are sent in invocation order.
+`turn.cancel()` bypasses pending steering requests, so Stop can interrupt them.
 Pass `cursor: "latest"` to attach atomically at the durable head without
 replaying retained history; a history page can then hydrate independently.
 
@@ -151,3 +153,89 @@ still verifies account ownership at the managed service boundary. Use
 
 The managed API never accepts model-provider credentials, egress bindings,
 runtime environment objects, credential grants, or arbitrary request headers.
+
+## Cron triggers
+
+Schedules belong to an existing managed agent and run without an open client.
+Use a stable trigger ID to create or replace a schedule idempotently:
+
+```js
+const agent = await Agent.get(agentId, { baseUrl, apiKey });
+const morning = {
+  cron: "0 7 * * MON-FRI",
+  timezone: "Europe/Athens",
+  input: "Review my running agents and summarize anything that needs attention.",
+};
+await agent.triggers.put("morning-review", morning);
+await agent.triggers.list();
+await agent.triggers.get("morning-review");
+await agent.triggers.put("morning-review", { ...morning, enabled: false }); // pause
+await agent.triggers.put("morning-review", morning); // resume
+await agent.triggers.delete("morning-review");
+```
+
+| Method | Route | Result |
+| --- | --- | --- |
+| GET | `/v1/agents/:agent/triggers` | `{ data: [...] }` |
+| GET | `/v1/agents/:agent/triggers/:id` | Trigger or 404 |
+| PUT | `/v1/agents/:agent/triggers/:id` | Create (201) or replace (200) |
+| DELETE | `/v1/agents/:agent/triggers/:id` | Idempotent deletion (204) |
+
+The managed-agent web composer also has a **Schedules** button. It opens the
+same account-authenticated API: create or edit a prompt and cron expression,
+choose an IANA time zone, inspect the next dispatch time, pause/resume, or
+delete a schedule. The last-dispatched time is not a completion receipt; read
+the conversation for the result. The ephemeral homepage agent has no schedules.
+
+PUT takes `{ cron, input, timezone?, enabled?, session_mode? }`. Expressions have five fields
+(minute, hour, day of month, month, day of week), supporting numeric values,
+lists, ranges, steps, and month/day names. The time zone defaults to UTC and
+accepts IANA names. Local times follow daylight saving transitions. Seconds,
+macros, and random `H` fields are rejected. Inputs are text up to 64 KiB;
+there can be at most 32 triggers per agent. IDs use 1–64 letters, digits,
+underscores, or hyphens. PUT is a full replacement; an identical retry preserves
+the next occurrence. A changed configuration starts from the next matching time.
+
+`session_mode: "new"` (the default for new configurations) creates a fresh managed
+session for every occurrence. It copies the source agent's model settings at
+dispatch time, but no conversation history or schedules. Account permissions,
+connectors, and account memory still belong to the same account. Fresh sessions
+run independently even when the source conversation is busy, and appear in the
+normal agent list. Choose **New session each time** in the Schedules dialog.
+
+`session_mode: "continue"` submits a turn to the existing conversation, retaining
+its history. Choose **Continue this conversation** in the dialog. Schedules saved
+before modes were introduced retain this behavior. Omitting the mode when
+updating an existing schedule preserves its mode, including for older clients.
+Set `session_mode` explicitly to switch modes.
+
+Durable Object alarms dispatch occurrences. Continued turns advance the schedule
+atomically with turn admission. Fresh runs use a durable outbox and deterministic
+session/turn IDs: delivery retries reuse the same session without duplicating
+its turn. Only one undelivered occurrence per schedule is retained. Inspect
+`last_turn_id` on `last_agent_id` through the normal turn and event APIs, or use
+**Open run** in the UI. Times are Unix milliseconds; `last_run_at` is the scheduled
+time of the last accepted occurrence, and `next_run_at` is null while paused.
+Last dispatched does not mean the model response has completed.
+
+Missed ticks coalesce; they are not replayed individually. In continue mode,
+unfinished work or a failed event stream causes an occurrence to be skipped and
+recorded in `last_skipped_at`. New-session mode does not skip because the source
+is busy. Pausing or deleting prevents future dispatches; a turn already accepted
+or a fresh session already claimed for delivery still completes. Resume does
+not backfill. Deleting the source removes its schedules and pending deliveries;
+sessions already created remain independent conversations.
+
+Read requests require `agents:read`; writes require `agents:write`, and PUT also
+requires `tools:use`. The usual ownership and browser-origin checks apply.
+Triggers are account-owned standing instructions with the creator's capability
+scope, and persist after the creating API key or browser session ends. Connect
+grants and multiplayer rooms cannot create schedules. Delete the trigger to
+revoke its standing instruction. Provider credentials are resolved by the usual
+managed execution path and are never stored in trigger definitions or returned
+by these endpoints.
+
+Deleting an agent removes its triggers. Portable durability export currently
+returns `409 cron_triggers_present` while any trigger or pending delivery exists: delete
+triggers and let claimed deliveries finish before transfer, then recreate schedules at the destination. This avoids
+silently dropping schedules or running the same schedule on two agents.

@@ -8,7 +8,7 @@ export type TurnTerminal = Extract<ServerMessage, {
 
 export type TurnResolution =
   | Readonly<{ kind: "terminal"; terminal: TurnTerminal; reopenAgent: false }>
-  | Readonly<{ kind: "retry"; error: string; reopenAgent: boolean }>;
+  | Readonly<{ kind: "retry"; error: string; reopenAgent: boolean; blockedBy?: string }>;
 
 export type ManagedTurnTransition = TurnTerminal | Extract<ServerMessage, {
   type: "turn_cancelling" | "turn_retryable";
@@ -107,7 +107,8 @@ export async function materializeTurnResolution(
 
 export function classifyTurnFailure(id: string, error: unknown): TurnResolution {
   const selected = selectFailure(errorTree(error));
-  if (selected.code === "cancelled" || /\bturn was cancelled\b/i.test(selected.message)) {
+  if (selected.code === "cancelled"
+    || (selected.code === undefined && /\bturn was cancelled\b/i.test(selected.message))) {
     return {
       kind: "terminal",
       terminal: { type: "turn_cancelled", id },
@@ -118,6 +119,7 @@ export function classifyTurnFailure(id: string, error: unknown): TurnResolution 
     return {
       kind: "retry",
       error: selected.message,
+      ...(selected.blockedBy === undefined ? {} : { blockedBy: selected.blockedBy }),
       reopenAgent: selected.code === "reopen_required"
         || /\bagent (?:has been |was |is )?(?:already )?disposed\b/i.test(selected.message),
     };
@@ -129,7 +131,7 @@ export function classifyTurnFailure(id: string, error: unknown): TurnResolution 
   };
 }
 
-type ClassifiedError = Readonly<{ code: string | undefined; message: string }>;
+type ClassifiedError = Readonly<{ code: string | undefined; message: string; blockedBy?: string }>;
 
 function errorTree(root: unknown): ClassifiedError[] {
   const failures: ClassifiedError[] = [];
@@ -141,7 +143,10 @@ function errorTree(root: unknown): ClassifiedError[] {
       if (seen.has(error)) continue;
       seen.add(error);
     }
-    failures.push({ code: errorCode(error), message: errorMessage(error) });
+    const blockedBy = (error as { blockedBy?: unknown } | null)?.blockedBy;
+    failures.push({ code: errorCode(error), message: errorMessage(error),
+      ...(typeof blockedBy === "string" && blockedBy.length > 0 ? { blockedBy } : {}),
+    });
     if (error instanceof AggregateError) pending.push(...error.errors);
     const cause = (error as { cause?: unknown } | null)?.cause;
     if (cause !== undefined) pending.push(cause);
@@ -154,6 +159,9 @@ function selectFailure(failures: readonly ClassifiedError[]): ClassifiedError {
     const match = failures.find((failure) => failure.code === code);
     if (match) return match;
   }
+  const terminal = failures.find((failure) =>
+    failure.code === "failed" || failure.code === "invalid_request" || failure.code === "conflict");
+  if (terminal) return terminal;
   return failures.find((failure) => isRetryable(failure))
     ?? failures.find((failure) => /\bturn was cancelled\b/i.test(failure.message))
     ?? failures.find((failure) => failure.code === "failed")
@@ -162,9 +170,12 @@ function selectFailure(failures: readonly ClassifiedError[]): ClassifiedError {
 }
 
 function isRetryable(failure: ClassifiedError): boolean {
-  return failure.code === "reopen_required"
-    || failure.code === "retryable"
-    || /\bagent (?:has been |was |is )?(?:already )?disposed\b|already active|agent stopped|turn completed|durability (?:store|driver)|transport|websocket|startup (?:validation )?timed out|connection rejected with HTTP 5\d\d/i.test(failure.message);
+  // Rust's operation settlement is authoritative. Text from a committed
+  // failure may mention a transport, a cancelled tool, or an old retry.
+  if (failure.code !== undefined) {
+    return failure.code === "reopen_required" || failure.code === "retryable";
+  }
+  return /\bagent (?:has been |was |is )?(?:already )?disposed\b|already active|agent stopped|turn completed|durability (?:store|driver)|transport|websocket|startup (?:validation )?timed out|connection rejected with HTTP 5\d\d/i.test(failure.message);
 }
 
 function errorCode(error: unknown): string | undefined {

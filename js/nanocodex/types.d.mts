@@ -18,7 +18,10 @@ export type AgentEvent = {
 };
 
 export type AgentOptions = {
+  /** Replaces the selected model's built-in instructions. */
   instructions?: string | undefined;
+  /** Appends host instructions while retaining the selected model's prompt. */
+  additionalInstructions?: string | undefined;
   model?: Model | undefined;
   reasoningMode?: ReasoningMode | undefined;
   fastMode?: boolean | undefined;
@@ -54,15 +57,16 @@ export type DurabilityStoredState = Readonly<{
 
 /** JSON-safe exact state archive used for an offline provider cutover. */
 export type DurabilityPortableStateArchive = DurabilityStoredState & Readonly<{
-  format: "nanocodex-durability-state-v1";
+  format: "nanocodex-durability-state-v2";
   stateId: string;
+  records: readonly DurabilityRecord[];
 }>;
 
 export type DurabilityExportCursor = string;
 
 /** One deterministic page of the total-state replacement from `from` (exclusive) to `to` (inclusive). */
 export type DurabilityPortableStatePage = Readonly<{
-  format: "nanocodex-durability-state-page-v1";
+  format: "nanocodex-durability-state-page-v2";
   stateId: string;
   from: DurabilityRevision;
   /** SHA-256 over the UTF-8 JSON tuple `[from, fromPayload]`. */
@@ -73,6 +77,7 @@ export type DurabilityPortableStatePage = Readonly<{
   /** Total UTF-16 code units in the opaque state payload. */
   payloadLength: number;
   payload: string;
+  records: readonly DurabilityRecord[];
 }>;
 
 export type DurabilityExportPageRequest = Readonly<{
@@ -95,7 +100,10 @@ export type DurabilityAcquiredState = DurabilityStoredState & Readonly<{
   fence: DurabilityFence;
 }>;
 
+export type DurabilityRecord = Readonly<{ key: string; value: string }>;
+
 export type DurabilityReplaceRequest = Readonly<{
+  records: readonly DurabilityRecord[];
   ownerId: string;
   fence: DurabilityFence;
   expectedRevision: DurabilityRevision;
@@ -110,6 +118,9 @@ export type DurabilityReplaceResult =
 
 /** Host capability consumed by the Rust/WASM durability driver. */
 export type DurabilityStore = Readonly<{
+  readRecord(stateId: string, key: string): string | null | Promise<string | null>;
+  /** Optional single-query implementation; Rust requests at most 16 records. */
+  readRecords?(stateId: string, keys: readonly string[]): readonly (string | null)[] | Promise<readonly (string | null)[]>;
   load(stateId: string): DurabilityStoredState | Promise<DurabilityStoredState>;
   acquire(
     stateId: string,
@@ -123,10 +134,13 @@ export type DurabilityStore = Readonly<{
 
 /** Store that can atomically restore an exact revision into an empty destination. */
 export type DurabilityPortableStore = DurabilityStore & Readonly<{
+  scanRecords(stateId: string, after?: string, limit?: number): readonly DurabilityRecord[] | Promise<readonly DurabilityRecord[]>;
+  importRecords(stateId: string, records: readonly DurabilityRecord[]): void | Promise<void>;
   importState(
     stateId: string,
     state: DurabilityStoredState,
     options?: Readonly<{
+      records?: readonly DurabilityRecord[];
       expectedRevision?: DurabilityRevision | undefined;
       /** When supplied, compare the complete expected state atomically before importing. */
       expectedPayload?: string | null | undefined;
@@ -394,7 +408,9 @@ export type LifecycleTurn = Readonly<{
   }>;
   accepted(): Promise<string | undefined>;
   result(): Promise<LifecycleTurnResult>;
-  steer(options: { input: PromptInput }): Promise<void>;
+  steer(options: { input: PromptInput; messageId?: string }): Promise<void>;
+  /** Removes this identified steer only while it is still pending. */
+  withdrawSteer(options: { messageId: string }): Promise<boolean>;
   cancel(): Promise<void>;
   dispose(): void;
 }>;
@@ -419,7 +435,9 @@ export type Turn<agent extends Agent<object> = Agent<object>> = Readonly<{
    * Agent is stale and the same durable turn may be resumed only on a new Agent.
    */
   result(): Promise<TurnResult>;
-  steer(options: { input: PromptInput }): Promise<void>;
+  steer(options: { input: PromptInput; messageId?: string }): Promise<void>;
+  /** Removes this identified steer only while it is still pending. */
+  withdrawSteer(options: { messageId: string }): Promise<boolean>;
   cancel(): Promise<void>;
   /** Releases this handle without cancelling its accepted turn. */
   dispose(): void;
@@ -456,6 +474,11 @@ export type CodeEvaluatorEnvironment = {
   text(value: unknown): void;
   image(value: unknown, detail?: string): void;
   generatedImage(value: unknown): void;
+  audio(value: unknown): void;
+  notify(value: unknown): void;
+  yield_control(): void;
+  setTimeout(callback: () => void, delayMs?: number): number;
+  clearTimeout(timerId?: number): void;
   store(key: string, value: unknown): void;
   load(key: string): unknown;
   exit(): never;

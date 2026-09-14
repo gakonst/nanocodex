@@ -1,9 +1,11 @@
+mod continuation;
 mod lifecycle;
 mod responses;
 mod state;
 mod tool_calls;
 mod turn;
 
+use continuation::ExecutionPhase;
 use lifecycle::*;
 use responses::*;
 use state::*;
@@ -32,7 +34,7 @@ use nanocodex_oai_api::{
         CodeCall, CodeCallKind, GenerationOutput as TurnResult, ResponsesAttempt, ResponsesClient,
         ResponsesOutput, ResponsesServiceResponse,
     },
-    transport::{ResponsesError, ResponsesTransport, TransportStats},
+    transport::{ResponsesError, ResponsesTransport, TransportStats, TransportStatsSnapshot},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
@@ -81,6 +83,7 @@ pub(crate) struct ModelRun<S> {
     transport_stats: Arc<TransportStats>,
     started_at: Instant,
     stats: RunStats,
+    transport_baseline: TransportStatsSnapshot,
     session: Option<ModelSessionState>,
     active_tools: Option<ToolRuntimeControl>,
     active_tool_calls: Vec<ActiveToolCall>,
@@ -89,6 +92,7 @@ pub(crate) struct ModelRun<S> {
     tools: Tools,
     prompt_cache: ModelPromptCache,
     context_source: ContextSource,
+    host_context: Option<Arc<str>>,
     global_instructions: Option<Arc<str>>,
     force_compaction: bool,
     pending_developer_messages: Vec<ResponseItem>,
@@ -96,7 +100,7 @@ pub(crate) struct ModelRun<S> {
 }
 
 pub(crate) struct TurnSteering {
-    pub(crate) receiver: tokio::sync::mpsc::Receiver<QueuedSteer>,
+    pub(crate) receiver: crate::agent::execution::SteerQueue,
     pub(crate) retained: Vec<QueuedSteer>,
     pub(crate) model_call_index: Arc<tokio::sync::Mutex<u32>>,
 }
@@ -229,6 +233,7 @@ impl<S> ModelRun<S> {
         tools: Tools,
         prompt_cache: ModelPromptCache,
         context_source: ContextSource,
+        host_context: Option<Arc<str>>,
     ) -> Self {
         let model = config.model;
         let thinking = config.thinking;
@@ -245,6 +250,7 @@ impl<S> ModelRun<S> {
             transport_stats,
             started_at: Instant::now(),
             stats: RunStats::default(),
+            transport_baseline: TransportStatsSnapshot::default(),
             session: None,
             active_tools: None,
             active_tool_calls: Vec::new(),
@@ -253,6 +259,7 @@ impl<S> ModelRun<S> {
             tools,
             prompt_cache,
             context_source,
+            host_context,
             global_instructions,
             force_compaction: false,
             pending_developer_messages: Vec::new(),
@@ -260,6 +267,10 @@ impl<S> ModelRun<S> {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the private run owns each injected lifecycle component directly"
+    )]
     pub(crate) fn from_checkpoint(
         events: EventSink,
         config: Arc<ModelConfig>,
@@ -268,6 +279,7 @@ impl<S> ModelRun<S> {
         tools: Tools,
         prompt_cache: ModelPromptCache,
         prepared: PreparedCheckpoint,
+        host_context: Option<Arc<str>>,
     ) -> Self {
         let PreparedCheckpoint {
             checkpoint,
@@ -308,6 +320,7 @@ impl<S> ModelRun<S> {
             transport_stats,
             started_at: Instant::now(),
             stats: RunStats::default(),
+            transport_baseline: TransportStatsSnapshot::default(),
             session: Some(ModelSessionState {
                 workspace: checkpoint.workspace,
                 tools: runtime,
@@ -323,11 +336,16 @@ impl<S> ModelRun<S> {
             tools,
             prompt_cache,
             context_source,
+            host_context,
             global_instructions,
             force_compaction: false,
             pending_developer_messages: Vec::new(),
             execution_steps: None,
         }
+    }
+
+    pub(crate) fn set_host_context(&mut self, host_context: Option<Arc<str>>) {
+        self.host_context = host_context;
     }
 
     pub(crate) fn set_events(&mut self, events: EventSink) {
@@ -424,7 +442,7 @@ impl<S> ModelRun<S> {
             &self.provider_session_id,
             self.prompt_cache.key(),
             tools,
-            self.config.system_prompt(),
+            &self.config.system_prompt(),
         )
     }
 
@@ -477,7 +495,7 @@ pub(crate) fn prepare_resumed_checkpoint(
             checkpoint.prompt_cache_key(),
             tool_specs,
             code_mode_tool_names,
-            config.system_prompt(),
+            &config.system_prompt(),
         )?
         .prefix()
         .to_vec(),
@@ -518,7 +536,7 @@ pub(crate) fn prepare_history_checkpoint(
         prompt_cache_key.as_ref(),
         tool_specs,
         code_mode_tool_names,
-        config.system_prompt(),
+        &config.system_prompt(),
     )?
     .prefix()
     .to_vec();

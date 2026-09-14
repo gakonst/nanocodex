@@ -4,20 +4,23 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, connect_async,
-    tungstenite::{Message, client::IntoClientRequest as _},
+    MaybeTlsStream, WebSocketStream, connect_async_with_config,
+    tungstenite::{Message, client::IntoClientRequest as _, protocol::WebSocketConfig},
 };
 
 use crate::{
-    ActiveTurn, AgentCapabilities, AgentReceipt, AgentSettings, AgentState, EventCursor,
-    ManagedClient, ManagedError, ManagedEvent, ManagedEventData, ManagedEventFuture,
-    ManagedEventSource, PromptInput, TurnState, TurnView,
+    AgentCapabilities, AgentReceipt, AgentSettings, AgentState, EventCursor, ManagedClient,
+    ManagedError, ManagedEvent, ManagedEventData, ManagedEventFuture, ManagedEventSource,
+    PromptInput, TurnState, TurnView,
     client::{agent_path, validate_id, validate_idempotency_key},
 };
 
 const EVENT_CAPACITY: usize = 256;
 const RECONNECT_MIN: Duration = Duration::from_millis(100);
 const RECONNECT_MAX: Duration = Duration::from_secs(5);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -49,7 +52,7 @@ struct PendingSubmit {
     id: String,
     input: PromptInput,
     result: oneshot::Sender<Result<TurnView, ManagedError>>,
-    sent: bool,
+    sent_at: Option<tokio::time::Instant>,
 }
 
 #[derive(Serialize)]
@@ -71,7 +74,6 @@ struct ReadyMessage {
     session_id: String,
     restored: bool,
     active_turns: Vec<String>,
-    active_turn_details: Vec<ActiveTurn>,
     capabilities: AgentCapabilities,
     settings: AgentSettings,
     latest_event_cursor: String,
@@ -114,7 +116,6 @@ impl ManagedSocket {
                     .as_secs_f64()
                     * 1_000.0,
                 active_turns: ready.active_turns,
-                active_turn_details: ready.active_turn_details,
                 agent_loaded: false,
                 connected_clients: 1,
                 capabilities: ready.capabilities,
@@ -123,7 +124,7 @@ impl ManagedSocket {
                 stream_error: None,
             }),
         };
-        let (socket, events) = Self::start(client, agent_id, cursor, connected);
+        let (socket, events) = Self::start(client, agent_id, cursor, Some(connected));
         Ok((receipt, socket, events))
     }
 
@@ -133,15 +134,16 @@ impl ManagedSocket {
         cursor: EventCursor,
     ) -> Result<(Self, ManagedSocketEvents), ManagedError> {
         validate_id("agent", &agent_id)?;
-        let connected = connect(&client, &agent_id, cursor.as_str()).await?;
-        Ok(Self::start(client, agent_id, cursor, connected))
+        // The durable state and history remain usable while the live socket
+        // reconnects. Connection establishment belongs to the background loop.
+        Ok(Self::start(client, agent_id, cursor, None))
     }
 
     fn start(
         client: ManagedClient,
         agent_id: String,
         cursor: EventCursor,
-        connected: ConnectedSocket,
+        connected: Option<ConnectedSocket>,
     ) -> (Self, ManagedSocketEvents) {
         let (commands, command_rx) = mpsc::channel(1);
         let (event_tx, events) = mpsc::channel(EVENT_CAPACITY);
@@ -216,21 +218,42 @@ async fn run(
     client: ManagedClient,
     agent_id: String,
     mut cursor: String,
-    mut connected: ConnectedSocket,
+    mut connected: Option<ConnectedSocket>,
     mut commands: mpsc::Receiver<Command>,
     events: mpsc::Sender<Result<ManagedEvent, ManagedError>>,
 ) {
-    let mut pending = None;
+    let mut pending: Option<PendingSubmit> = None;
     let mut backoff = RECONNECT_MIN;
     loop {
+        if connected.is_none() {
+            let attempt = tokio::select! {
+                attempt = connect(&client, &agent_id, &cursor) => attempt,
+                () = events.closed() => return,
+            };
+            match attempt {
+                Ok(socket) => connected = Some(socket),
+                Err(_) => {
+                    tokio::select! {
+                        () = tokio::time::sleep(backoff) => {},
+                        () = events.closed() => return,
+                    }
+                    backoff = (backoff * 2).min(RECONNECT_MAX);
+                    continue;
+                }
+            }
+        }
+        let mut live = connected.take().expect("socket was connected above");
+        if let Some(pending) = pending.as_mut() {
+            pending.sent_at = None;
+        }
         let connected_at = tokio::time::Instant::now();
         let disconnected = connection(
-            &mut connected.socket,
+            &mut live.socket,
             &mut commands,
             &events,
             &mut pending,
             &mut cursor,
-            &connected.replay_through,
+            &live.replay_through,
         )
         .await;
         if !disconnected || events.is_closed() {
@@ -244,24 +267,6 @@ async fn run(
             () = events.closed() => return,
         }
         backoff = (backoff * 2).min(RECONNECT_MAX);
-        loop {
-            match connect(&client, &agent_id, &cursor).await {
-                Ok(connected_socket) => {
-                    connected = connected_socket;
-                    if let Some(pending) = pending.as_mut() {
-                        pending.sent = false;
-                    }
-                    break;
-                }
-                Err(_) => {
-                    tokio::select! {
-                        () = tokio::time::sleep(backoff) => {}
-                        () = events.closed() => return,
-                    }
-                    backoff = (backoff * 2).min(RECONNECT_MAX);
-                }
-            }
-        }
     }
 }
 
@@ -273,31 +278,62 @@ async fn connection(
     cursor: &mut String,
     replay_through: &str,
 ) -> bool {
+    let mut last_received = tokio::time::Instant::now();
+    let mut heartbeat =
+        tokio::time::interval_at(last_received + HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         if let Some(submission) = pending.as_mut()
-            && !submission.sent
+            && submission.sent_at.is_none()
             && !crate::sse::cursor_before(cursor, replay_through)
         {
-            if send_prompt(socket, submission).await.is_err() {
+            if !matches!(
+                tokio::time::timeout(CONNECT_TIMEOUT, send_prompt(socket, submission)).await,
+                Ok(Ok(()))
+            ) {
                 return true;
             }
-            submission.sent = true;
+            submission.sent_at = Some(tokio::time::Instant::now());
         }
+        let admission_deadline = pending
+            .as_ref()
+            .and_then(|pending| pending.sent_at)
+            .map(|sent| sent + Duration::from_secs(30));
         tokio::select! {
+            () = tokio::time::sleep_until(admission_deadline.unwrap_or_else(tokio::time::Instant::now)), if admission_deadline.is_some() => {
+                // Prompt IDs are durable idempotency keys. A lost admission
+                // acknowledgement is recovered by reconnecting and replaying
+                // the same ID, even when heartbeat traffic still succeeds.
+                return true;
+            },
+            () = events.closed() => return false,
+            _ = heartbeat.tick() => {
+                if last_received.elapsed() >= HEARTBEAT_TIMEOUT {
+                    return true;
+                }
+                // Application-level ping also verifies that the Worker can
+                // process messages, rather than just its WebSocket proxy.
+                if !matches!(tokio::time::timeout(CONNECT_TIMEOUT,
+                    socket.send(Message::Text(r#"{"type":"ping"}"#.into()))).await, Ok(Ok(()))) {
+                    return true;
+                }
+            },
             command = commands.recv(), if pending.is_none() => match command {
                 Some(Command::Submit { id, input, result }) => {
-                    *pending = Some(PendingSubmit { id, input, result, sent: false });
+                    *pending = Some(PendingSubmit { id, input, result, sent_at: None });
                 }
                 None => return false,
             },
             message = socket.next() => match message {
                 Some(Ok(Message::Text(encoded))) => {
+                    last_received = tokio::time::Instant::now();
                     if handle_message(encoded.as_str(), events, pending, cursor).await.is_err() {
                         return false;
                     }
                 }
                 Some(Ok(Message::Ping(payload))) => {
-                    if socket.send(Message::Pong(payload)).await.is_err() {
+                    last_received = tokio::time::Instant::now();
+                    if !matches!(tokio::time::timeout(CONNECT_TIMEOUT, socket.send(Message::Pong(payload))).await, Ok(Ok(()))) {
                         return true;
                     }
                 }
@@ -420,7 +456,7 @@ fn turn_view(event: &ManagedEvent, input: PromptInput) -> TurnView {
     }
 }
 
-fn websocket_turn_id(request_id: &str) -> String {
+pub(crate) fn websocket_turn_id(request_id: &str) -> String {
     if validate_id("turn", request_id).is_ok() {
         return request_id.to_owned();
     }
@@ -479,10 +515,23 @@ async fn connect_endpoint(
         tokio_tungstenite::tungstenite::http::header::AUTHORIZATION,
         authorization,
     );
-    let (mut socket, _) = connect_async(request)
+    // The service's ingress limit applies to client writes, not event reads.
+    // Retain transport backpressure without imposing tungstenite's default
+    // 16 MiB frame / 64 MiB message ceiling on durable event replay.
+    let config = WebSocketConfig::default()
+        .max_message_size(None)
+        .max_frame_size(None);
+    let (mut socket, _) = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        connect_async_with_config(request, Some(config), false),
+    )
+    .await
+    .map_err(|_| live_error("managed WebSocket handshake timed out"))?
+    .map_err(|error| live_error(format!("managed WebSocket handshake failed: {error}")))?;
+    match tokio::time::timeout(CONNECT_TIMEOUT, socket.next())
         .await
-        .map_err(|error| live_error(format!("managed WebSocket handshake failed: {error}")))?;
-    match socket.next().await {
+        .map_err(|_| live_error("managed WebSocket ready timed out"))?
+    {
         Some(Ok(Message::Text(encoded))) => {
             let ready: ReadyMessage = serde_json::from_str(encoded.as_str())
                 .map_err(|_| live_error("managed WebSocket ready frame is malformed"))?;
@@ -529,6 +578,83 @@ mod tests {
     use super::{ReadyMessage, append_create_settings};
     use crate::AgentSettings;
 
+    #[tokio::test]
+    async fn receives_event_above_default_frame_limit_and_the_following_frame() {
+        use crate::{ManagedApiKey, ManagedClient, ManagedEvent};
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+        let payload = "x".repeat(17 * 1024 * 1024);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let output = payload.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let ready = json!({ "type": "ready", "session_id": "agent-1", "restored": true,
+                "active_turns": [], "latest_event_cursor": "0",
+                "capabilities": { "durable_turns": true, "resumable_events": true,
+                    "live_steer": true, "live_cancel": true, "workspace": "cloud",
+                    "execution_environments": true, "execution_namespace": "cwd-root-v1", "native_cross_mounts": false },
+                "settings": { "model": "gpt-6-astra", "thinking": "low", "reasoning_mode": "standard", "fast_mode": false } });
+            socket
+                .send(Message::Text(ready.to_string().into()))
+                .await
+                .unwrap();
+            let event = json!({ "cursor": "1", "type": "turn_completed", "id": "turn-1",
+                "final_message": output, "usage": null, "citations": [] });
+            socket
+                .send(Message::Text(event.to_string().into()))
+                .await
+                .unwrap();
+            socket
+                .send(Message::Text(
+                    json!({ "cursor": "2", "type": "turn_cancelled", "id": "turn-2" })
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+        });
+        let key = format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43));
+        let client = ManagedClient::new(
+            format!("http://{address}"),
+            ManagedApiKey::parse(key).unwrap(),
+        )
+        .unwrap();
+        let endpoint = url::Url::parse(&format!("ws://{address}/v1/agents/agent-1/ws")).unwrap();
+        let (mut connected, _) = super::connect_endpoint(&client, endpoint, Some("agent-1"), "0")
+            .await
+            .unwrap();
+        let event = connected
+            .socket
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_text()
+            .unwrap();
+        let event: ManagedEvent = serde_json::from_str(event.as_str()).unwrap();
+        assert_eq!(
+            event.data.terminal_result("turn-1").unwrap().unwrap(),
+            payload
+        );
+        let next = connected
+            .socket
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_text()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<ManagedEvent>(next.as_str())
+                .unwrap()
+                .cursor,
+            "2"
+        );
+        server.await.unwrap();
+    }
+
     #[test]
     fn create_live_uses_exact_canonical_settings_query() {
         let mut endpoint = url::Url::parse("wss://managed.example/v1/agents/live")
@@ -555,7 +681,6 @@ mod tests {
             "session_id": "agent-1",
             "restored": false,
             "active_turns": [],
-            "active_turn_details": [],
             "capabilities": {
                 "durable_turns": true,
                 "resumable_events": true,

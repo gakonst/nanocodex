@@ -16,6 +16,7 @@ describe("manual credential vault control protocol", () => {
         kind: "login",
         body: { name: "Example", username: "person@example.test", password: "login-secret" },
       },
+      { kind: "api_key", body: { name: "Service", api_key: "api-key-secret" } },
       {
         kind: "card",
         body: {
@@ -79,7 +80,7 @@ describe("manual credential vault control protocol", () => {
         ...(input.kind === "phone" ? { phone_number: input.body.phone_number } : {}),
       });
       expect(JSON.stringify(metadata)).not.toMatch(
-        /login-secret|4111111111111111|"cvv"|"expiry_month"|"billing_zip"/,
+        /api-key-secret|login-secret|4111111111111111|"cvv"|"expiry_month"|"billing_zip"/,
       );
       created.push(metadata);
     }
@@ -96,7 +97,7 @@ describe("manual credential vault control protocol", () => {
     expect(statusBody.vault).toEqual(expected);
     const publicJson = JSON.stringify(statusBody);
     expect(publicJson).not.toMatch(
-      /login-secret|4111111111111111|"cvv"|"expiry_month"|"billing_zip"/,
+      /api-key-secret|login-secret|4111111111111111|"cvv"|"expiry_month"|"billing_zip"/,
     );
     expect(publicJson).toContain("person@example.test");
     expect(publicJson).toContain("1 Private Way");
@@ -109,7 +110,7 @@ describe("manual credential vault control protocol", () => {
       const raw = JSON.stringify(row);
       expect(raw).toContain("ciphertext");
       expect(raw).not.toMatch(
-        /login-secret|person@example|4111111111111111|Private Way|690 000/,
+        /api-key-secret|login-secret|person@example|4111111111111111|Private Way|690 000/,
       );
 
       const vault = new CredentialVault(workerEnv, `user/${state.id.toString()}`);
@@ -126,7 +127,7 @@ describe("manual credential vault control protocol", () => {
         `vault-entry:${created[0]!.id}`,
       );
       expect(entryRow).toBeDefined();
-      expect(JSON.stringify(entryRow)).not.toMatch(/login-secret|person@example/);
+      expect(JSON.stringify(entryRow)).not.toMatch(/api-key-secret|login-secret|person@example/);
       const entryVault = new CredentialVault(
         workerEnv,
         `user/${state.id.toString()}/vault/${created[0]!.id}`,
@@ -171,6 +172,10 @@ describe("manual credential vault control protocol", () => {
 
   it("rejects malformed, non-JSON, oversized, and broker-bypass payloads", async () => {
     const invalid = [
+      { kind: "api_key", body: { name: "Service" } },
+      { kind: "api_key", body: { name: "Service", api_key: "" } },
+      { kind: "api_key", body: { name: "Service", api_key: "key", username: "user" } },
+      { kind: "api_key", body: { name: "Service", api_key: "x".repeat(8193) } },
       { kind: "login", body: { name: "Site", username: "user" } },
       {
         kind: "login",

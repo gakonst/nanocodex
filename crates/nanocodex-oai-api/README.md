@@ -36,8 +36,8 @@ if let Some(cost) = completed.estimated_cost() {
 # }
 ```
 
-This crate supports `gpt-5.6-sol` (the default), `gpt-5.6-terra`,
-`gpt-5.6-luna`, and `gpt-6-astra`. Select a client default with
+This crate supports `gpt-6-astra` (the default, with low reasoning),
+`gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. Select a client default with
 `OpenAi::builder(auth).model(Model::Terra)`. A session keeps that model for its
 lifetime, and each replayable attempt retains it across retries. Changing
 models would invalidate the provider checkpoint and require an inefficient
@@ -170,6 +170,10 @@ The library accepts and emits signed 16-bit little-endian, 24 kHz mono PCM throu
 [`realtime::RealtimeSession`] handle and an independent
 [`realtime::RealtimeEvents`] stream. It does not open audio devices, so callers
 can connect a microphone, files, or ordinary stdin and stdout pipes.
+Owned WebRTC sends its offer while local ICE gathering continues, then applies
+the answer concurrently with joining the control sideband. Cancelling setup
+closes the peer's native tasks. Transcript deltas retain each speaker separately
+when speech overlaps, and replayed delegation IDs are suppressed across reconnects.
 The experimental `nanocodex-voice` crate packages default desktop devices and
 background-agent delegation without moving those policies into this transport
 boundary.

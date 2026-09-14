@@ -391,3 +391,86 @@ async fn compaction_resumes_tool_continuation_before_queued_steering() -> Result
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
+
+#[tokio::test]
+async fn steer_withdrawal_only_removes_latest_unconsumed_input() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let (first_seen, first_seen_rx) = tokio::sync::oneshot::channel();
+    let (release_first, release_first_rx) = tokio::sync::oneshot::channel();
+    let (second_seen, second_seen_rx) = tokio::sync::oneshot::channel();
+    let (release_second, release_second_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+        assert_warmup(&next_json(&mut socket).await?);
+        send_warmup(&mut socket, "resp-warmup").await?;
+        next_json(&mut socket).await?;
+        let _ = first_seen.send(());
+        release_first_rx.await?;
+        send_final(&mut socket, "resp-first").await?;
+        let steered = next_json(&mut socket).await?;
+        assert_eq!(steered["input"].as_array().map(Vec::len), Some(1));
+        assert_eq!(steered["input"][0]["content"][0]["text"], "keep this");
+        let _ = second_seen.send(());
+        release_second_rx.await?;
+        send_final(&mut socket, "resp-second").await
+    });
+    let workspace = temporary_workspace("steer-withdraw")?;
+    let openai = OpenAi::builder("test-key")
+        .websocket_url(endpoint)
+        .build()?;
+    let (agent, mut events) = Nanocodex::builder(openai)
+        .thinking(Thinking::Low)
+        .workspace(&workspace)
+        .session_id(test_session_id())
+        .build()?;
+    let turn = agent.prompt("initial task").await?;
+    first_seen_rx.await?;
+    turn.steer_with_id("keep".into(), "keep this").await?;
+    turn.steer_with_id("undo".into(), "never send this").await?;
+    assert!(!turn.withdraw_steer("keep".into()).await?);
+    assert!(!turn.withdraw_steer("unknown".into()).await?);
+    assert!(turn.withdraw_steer("undo".into()).await?);
+    assert!(!turn.withdraw_steer("undo".into()).await?);
+    assert!(
+        turn.steer_with_id("undo".into(), "duplicate id")
+            .await
+            .is_err()
+    );
+    // Undo frees bounded queue capacity immediately, before a model boundary.
+    for index in 0..7 {
+        turn.steer_with_id(format!("slot-{index}"), format!("temporary {index}"))
+            .await?;
+    }
+    assert!(matches!(
+        turn.steer("overflow").await,
+        Err(NanocodexError::SteerQueueFull)
+    ));
+    assert!(turn.withdraw_steer("slot-6".into()).await?);
+    turn.steer_with_id("replacement".into(), "replacement")
+        .await?;
+    assert!(turn.withdraw_steer("replacement".into()).await?);
+    for index in (0..6).rev() {
+        assert!(turn.withdraw_steer(format!("slot-{index}")).await?);
+    }
+    let _ = release_first.send(());
+    second_seen_rx.await?;
+    assert!(!turn.withdraw_steer("keep".into()).await?);
+    let control = turn.control();
+    let _ = release_second.send(());
+    turn.result().await?;
+    assert!(!control.withdraw_steer("keep".into()).await?);
+    drop(control);
+    drop(agent);
+    let mut delivered = 0;
+    while let Some(event) = events.recv().await {
+        if event.kind == AgentEventKind::RunSteered {
+            delivered += 1;
+        }
+    }
+    assert_eq!(delivered, 1);
+    timeout(std::time::Duration::from_secs(5), server).await???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}

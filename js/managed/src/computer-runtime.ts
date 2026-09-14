@@ -3,12 +3,16 @@ import {
   createWorkspaceFilesystem,
   type ComputerRuntime,
   type ShellFetch,
+  type Workspace,
   type WorkspaceStorageClient,
 } from "nanocodex-tools";
+import { AsyncLocalStorage } from "node:async_hooks";
+import type { ToolContext } from "nanocodex";
 
 import { createCloudflareSshCommand } from "./cloudflare-ssh";
 import {
   handleManagedEgress,
+  VAULT_ID_HEADER,
   type ManagedEgressConnectorAccess,
   type ManagedEgressConnectorId,
 } from "./managed-egress";
@@ -24,31 +28,40 @@ export type ManagedComputerRuntime = ComputerRuntime & Readonly<{
 /** Wires managed persistence, egress, and SSH policy into the generic JS tools. */
 export async function createManagedComputerRuntime(options: Readonly<{
   computer: DisposableComputerWorkspace;
+  filesystem?: Workspace;
   connectorAllowed?: (
     connector: ManagedEgressConnectorId,
     connectionId?: string,
+    context?: ToolContext,
   ) => ManagedEgressConnectorAccess;
   egress: Fetcher;
-  sshIdentityAllowed?: (reference: string) => boolean;
+  sshIdentityAllowed?: (reference: string, context?: ToolContext) => boolean;
+  vaultAllowed?: (context?: ToolContext) => boolean;
   subject?: string;
   sshPassword?: (reference: string) => Promise<string>;
 }>): Promise<ManagedComputerRuntime> {
   let disposed = false;
+  const lifetime = new AbortController();
+  const calls = new AsyncLocalStorage<ToolContext>();
   const dispose = () => {
     if (disposed) return;
     disposed = true;
+    lifetime.abort(new Error("managed computer runtime is disposed"));
     options.computer[Symbol.dispose]();
   };
 
   try {
-    const filesystem = await createWorkspaceFilesystem(options.computer);
+    const filesystem = options.filesystem ?? await createWorkspaceFilesystem(options.computer);
     const fetch = createManagedShellFetch(
       options.egress,
       options.subject,
-      options.connectorAllowed,
+      options.connectorAllowed === undefined ? undefined
+        : (connector, connectionId) => options.connectorAllowed!(connector, connectionId, calls.getStore()),
+      () => options.vaultAllowed?.(calls.getStore()) ?? true,
     );
     const runtime = await createComputerRuntime({
       filesystem,
+      refreshFilesystemBeforeExec: options.filesystem !== undefined,
       fetch,
       networkMode: options.subject === undefined
         ? "public-http-only"
@@ -61,7 +74,7 @@ export async function createManagedComputerRuntime(options: Readonly<{
           ...(options.sshPassword === undefined ? {} : { resolvePassword: options.sshPassword }),
           ...(options.sshIdentityAllowed === undefined
             ? {}
-            : { sshIdentityAllowed: options.sshIdentityAllowed }),
+            : { sshIdentityAllowed: (reference: string) => options.sshIdentityAllowed!(reference, calls.getStore()) }),
           ...(options.subject === undefined ? {} : { subject: options.subject }),
         }),
       }],
@@ -69,7 +82,14 @@ export async function createManagedComputerRuntime(options: Readonly<{
     return Object.freeze({
       ...runtime,
       dispose,
-      tool: Object.freeze({ ...runtime.tool, dispose }),
+      tool: Object.freeze({
+        ...runtime.tool, dispose,
+        handler: (input: unknown, context: ToolContext) => {
+          if (disposed) throw new Error("managed computer runtime is disposed");
+          const scoped = { ...context, signal: AbortSignal.any([context.signal, lifetime.signal]) };
+          return calls.run(scoped, () => runtime.tool.handler(input, scoped));
+        },
+      }),
     });
   } catch (error) {
     dispose();
@@ -84,8 +104,9 @@ function createManagedShellFetch(
     connector: ManagedEgressConnectorId,
     connectionId?: string,
   ) => ManagedEgressConnectorAccess,
+  vaultAllowed: () => boolean = () => true,
 ): ShellFetch {
-  return async (url, options = {}) => {
+  const stream: NonNullable<ShellFetch["stream"]> = async (url, options = {}) => {
     const method = (options.method ?? "GET").toUpperCase();
     const request = new Request(url, {
       method,
@@ -95,6 +116,9 @@ function createManagedShellFetch(
         : { body: options.body }),
       signal: options.signal,
     });
+    if (request.headers.has(VAULT_ID_HEADER) && !vaultAllowed()) {
+      throw new Error("the current authorization cannot use Vault items");
+    }
     const response = await handleManagedEgress(request, binding, subject, connectorAllowed);
     const headers: Record<string, string> = Object.create(null) as Record<string, string>;
     response.headers.forEach((value, name) => { headers[name] = value; });
@@ -102,8 +126,61 @@ function createManagedShellFetch(
       status: response.status,
       statusText: response.statusText,
       headers,
-      body: new Uint8Array(await response.arrayBuffer()),
+      body: shellResponseChunks(response, options.signal),
       url: response.url || request.url,
     };
+  };
+  return Object.assign(async (url: string, options: Parameters<ShellFetch>[1] = {}) => {
+    const response = await stream(url, options);
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for await (const chunk of response.body) { chunks.push(chunk); size += chunk.byteLength; }
+    const body = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+    return { ...response, body };
+  }, { stream });
+}
+
+function shellResponseChunks(response: Response, signal?: AbortSignal): AsyncIterable<Uint8Array> {
+  if (response.body === null) return (async function* () { signal?.throwIfAborted(); })();
+  // Own cancellation as soon as headers arrive, including before the archive
+  // decoder starts reading. A lazy generator would leave that body open.
+  const reader = response.body.getReader();
+  let finished: Promise<void> | undefined;
+  const finish = (complete = false): Promise<void> => finished ??= (async () => {
+    signal?.removeEventListener("abort", abort);
+    try {
+      if (!complete) await reader.cancel(signal?.reason);
+    } finally { reader.releaseLock(); }
+  })();
+  const abort = () => { void finish().catch(() => {}); };
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        async next() {
+          try {
+            signal?.throwIfAborted();
+            if (finished) { await finished; return { done: true, value: undefined } as const; }
+            const next = await reader.read();
+            signal?.throwIfAborted();
+            if (next.done) {
+              await finish(true);
+              return { done: true, value: undefined } as const;
+            }
+            return next;
+          } catch (error) {
+            await finish().catch(() => {});
+            throw error;
+          }
+        },
+        async return() {
+          await finish();
+          return { done: true, value: undefined } as const;
+        },
+      };
+    },
   };
 }

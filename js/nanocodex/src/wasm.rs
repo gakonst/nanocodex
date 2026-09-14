@@ -1,9 +1,9 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     path::PathBuf,
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     time::Duration,
 };
 
@@ -25,7 +25,7 @@ use nanocodex::{
         SubscriptionCommit, SubscriptionFuture, SubscriptionHostError, SubscriptionHttpRequest,
         SubscriptionHttpResponse, SubscriptionStoreValue,
     },
-    oai::responses::{ContentItem, MessageRole, ResponseItem},
+    oai::responses::ResponseItem,
     tools::{
         ToolContext, ToolDefinition, ToolInput, ToolOutput,
         contract::ToolOutputWire,
@@ -49,10 +49,9 @@ use nanocodex_subagents::{
 };
 use nanocodex_voice_protocol::{
     BrowserVoiceEffects, BrowserVoiceProtocol, REALTIME_END_INSTRUCTIONS,
-    REALTIME_START_INSTRUCTIONS, TranscriptEntry, VoiceHistoryEntry, build_browser_startup_context,
-    build_chatgpt_realtime_call, decode_chatgpt_realtime_call, preferred_physical_input,
-    realtime_delegation, realtime_message_requires_agent_admission, realtime_tail_delegation,
-    valid_realtime_call_id,
+    REALTIME_START_INSTRUCTIONS, TranscriptEntry, build_chatgpt_realtime_call_with_settings,
+    decode_chatgpt_realtime_call, preferred_physical_input, realtime_delegation,
+    realtime_message_requires_agent_admission, realtime_tail_delegation, valid_realtime_call_id,
 };
 
 mod transport;
@@ -94,13 +93,13 @@ extern "C" {
     #[wasm_bindgen(catch, js_namespace = console, js_name = error)]
     fn host_console_error(message: &str, error: &JsValue) -> Result<(), JsValue>;
 
-    #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = emitEvent)]
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = emitEvent)]
     fn host_emit_event(
         session_id: &str,
         event: &str,
         encoded_bytes: u32,
         subagent_id: Option<&str>,
-    );
+    ) -> Result<(), JsValue>;
 
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = executeCode)]
     fn host_execute_code(
@@ -109,6 +108,9 @@ extern "C" {
         call_id: &str,
         model: &str,
     ) -> Result<Promise, JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = waitCode)]
+    fn host_wait_code(input: &str, session_id: &str, call_id: &str) -> Result<Promise, JsValue>;
 
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = nextCodeUpdate)]
     fn host_next_code_update(session_id: &str, call_id: &str) -> Result<Promise, JsValue>;
@@ -122,6 +124,12 @@ extern "C" {
         model: &str,
     ) -> Result<Promise, JsValue>;
 
+    #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = beginCodeTurn)]
+    fn host_begin_code_turn(session_id: &str);
+
+    #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = cancelCodeTurn)]
+    fn host_cancel_code_turn(session_id: &str);
+
     #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = cancelCode)]
     fn host_cancel_code(session_id: &str);
 
@@ -130,6 +138,20 @@ extern "C" {
 
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = toolDefinitions)]
     fn host_tool_definitions(definition_host_id: u32, session_id: &str) -> Result<String, JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = durabilityReadRecords)]
+    fn host_durability_read_records(
+        route_id: &str,
+        state_id: &str,
+        keys: &str,
+    ) -> Result<Promise, JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = durabilityReadRecord)]
+    fn host_durability_read_record(
+        route_id: &str,
+        state_id: &str,
+        key: &str,
+    ) -> Result<Promise, JsValue>;
 
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = durabilityAcquire)]
     fn host_durability_acquire(
@@ -146,6 +168,7 @@ extern "C" {
         fence: &str,
         expected_revision: &str,
         payload: &str,
+        records: &str,
     ) -> Result<Promise, JsValue>;
 
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = readWorkspaceFile)]
@@ -183,6 +206,7 @@ extern "C" {
         root_session_id: &str,
         session_id: &str,
         context_json: &str,
+        host_context_ref: Option<&str>,
     ) -> Result<(), JsValue>;
 
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = releaseSubagentSession)]
@@ -225,8 +249,10 @@ struct WasmAgentSessionContext<'a> {
 
 #[derive(Deserialize)]
 struct WasmOwnedAgentSessionContext {
-    workspace: String,
-    history: Vec<ResponseItem>,
+    #[serde(rename = "workspace")]
+    _workspace: String,
+    #[serde(rename = "history")]
+    _history: Vec<ResponseItem>,
 }
 
 #[derive(Deserialize)]
@@ -345,6 +371,67 @@ enum JavaScriptReplaceResult {
 }
 
 impl StateStore for JavaScriptDurabilityStore {
+    fn read_records<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        keys: &'a [String],
+    ) -> StoreFuture<'a, Result<Vec<Option<String>>, StoreError>> {
+        Box::pin(async move {
+            let keys_json = serde_json::to_string(keys)
+                .map_err(|error| StoreError::Backend(error.to_string()))?;
+            let promise = host_durability_read_records(&self.route_id, state_id, &keys_json)
+                .map_err(|error| StoreError::Backend(host_error_message(&error)))?;
+            let value = JsFuture::from(promise)
+                .await
+                .map_err(|error| StoreError::Backend(host_error_message(&error)))?;
+            let values = value
+                .dyn_ref::<js_sys::Array>()
+                .ok_or_else(|| StoreError::Backend("invalid durability record batch".into()))?;
+            if values.length() as usize != keys.len() {
+                return Err(StoreError::Backend(
+                    "durability record batch length mismatch".into(),
+                ));
+            }
+            values
+                .iter()
+                .map(|value| {
+                    if value.is_null() {
+                        return Ok(None);
+                    }
+                    let bytes = value.dyn_ref::<js_sys::Uint8Array>().ok_or_else(|| {
+                        StoreError::Backend("invalid durability record bytes".into())
+                    })?;
+                    String::from_utf8(bytes.to_vec())
+                        .map(Some)
+                        .map_err(|error| StoreError::Backend(error.to_string()))
+                })
+                .collect()
+        })
+    }
+
+    fn read_record<'a>(
+        &'a mut self,
+        state_id: &'a str,
+        key: &'a str,
+    ) -> StoreFuture<'a, Result<Option<String>, StoreError>> {
+        Box::pin(async move {
+            let promise = host_durability_read_record(&self.route_id, state_id, key)
+                .map_err(|error| StoreError::Backend(host_error_message(&error)))?;
+            let value = JsFuture::from(promise)
+                .await
+                .map_err(|error| StoreError::Backend(host_error_message(&error)))?;
+            if value.is_null() {
+                return Ok(None);
+            }
+            let bytes = value
+                .dyn_ref::<js_sys::Uint8Array>()
+                .ok_or_else(|| StoreError::Backend("invalid durability record bytes".into()))?;
+            String::from_utf8(bytes.to_vec())
+                .map(Some)
+                .map_err(|error| StoreError::Backend(error.to_string()))
+        })
+    }
+
     fn acquire<'a>(
         &'a mut self,
         state_id: &'a str,
@@ -356,15 +443,36 @@ impl StateStore for JavaScriptDurabilityStore {
             let value = JsFuture::from(promise)
                 .await
                 .map_err(|error| StoreError::Backend(host_error_message(&error)))?;
-            let encoded = value.as_string().ok_or_else(|| {
-                StoreError::Backend(
-                    "JavaScript durability acquire returned a non-string".to_owned(),
-                )
-            })?;
-            let stored =
-                serde_json::from_str::<JavaScriptOwnedState>(&encoded).map_err(|error| {
-                    StoreError::Backend(format!("invalid durability acquire result: {error}"))
-                })?;
+            let stored = {
+                let field = |name: &str| {
+                    js_sys::Reflect::get(&value, &JsValue::from_str(name))
+                        .map_err(|error| StoreError::Backend(host_error_message(&error)))
+                };
+                let text = |name: &str| {
+                    field(name)?.as_string().ok_or_else(|| {
+                        StoreError::Backend(format!("invalid durability acquire {name}"))
+                    })
+                };
+                let payload = field("payload")?;
+                JavaScriptOwnedState {
+                    owner_id: text("owner_id")?,
+                    fence: text("fence")?,
+                    revision: text("revision")?,
+                    payload: if payload.is_null() {
+                        None
+                    } else if let Some(bytes) = payload.dyn_ref::<js_sys::Uint8Array>() {
+                        Some(String::from_utf8(bytes.to_vec()).map_err(|error| {
+                            StoreError::Backend(format!(
+                                "invalid durability acquire UTF-8: {error}"
+                            ))
+                        })?)
+                    } else {
+                        Some(payload.as_string().ok_or_else(|| {
+                            StoreError::Backend("invalid durability acquire payload".to_owned())
+                        })?)
+                    },
+                }
+            };
             if stored.owner_id != owner_id.as_str() {
                 return Err(StoreError::Backend(
                     "JavaScript durability acquire returned a different owner ID".to_owned(),
@@ -393,6 +501,7 @@ impl StateStore for JavaScriptDurabilityStore {
         owner: &'a OwnerToken,
         expected_revision: u64,
         payload: &'a str,
+        records: &'a [nanocodex::durability::StoreRecord],
     ) -> StoreFuture<'a, Result<u64, StoreError>> {
         Box::pin(async move {
             let fence = owner.fence().to_string();
@@ -404,6 +513,8 @@ impl StateStore for JavaScriptDurabilityStore {
                 &fence,
                 &expected,
                 payload,
+                &serde_json::to_string(records)
+                    .map_err(|error| StoreError::NotCommitted(error.to_string()))?,
             )
             .map_err(|error| StoreError::Backend(host_error_message(&error)))?;
             let value = JsFuture::from(promise)
@@ -464,6 +575,23 @@ impl JavaScriptCodeModeHost {
 }
 
 impl CodeModeHost for JavaScriptCodeModeHost {
+    fn supports_cells(&self) -> bool {
+        true
+    }
+
+    fn wait_with_updates<'a>(
+        &'a self,
+        input: &'a str,
+        context: ToolContext<'a>,
+        observer: &'a mut dyn CodeModeObserver,
+    ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
+        Box::pin(async move {
+            let execution = host_wait_code(input, context.session_id(), context.call_id())
+                .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
+            observe_javascript_code(execution, context, Some(observer)).await
+        })
+    }
+
     fn tool_mode(&self) -> EmbeddedToolMode {
         self.mode
     }
@@ -550,6 +678,20 @@ impl CodeModeHost for JavaScriptCodeModeHost {
         })
     }
 
+    fn begin_turn(&self, session_id: &str) {
+        host_begin_code_turn(session_id);
+    }
+
+    fn cancel_turn<'a>(
+        &'a self,
+        session_id: &'a str,
+    ) -> HostFuture<'a, Result<(), CodeModeHostError>> {
+        Box::pin(async move {
+            host_cancel_code_turn(session_id);
+            Ok(())
+        })
+    }
+
     fn cancel<'a>(&'a self, session_id: &'a str) -> HostFuture<'a, Result<(), CodeModeHostError>> {
         Box::pin(async move {
             host_cancel_code(session_id);
@@ -561,7 +703,7 @@ impl CodeModeHost for JavaScriptCodeModeHost {
 async fn execute_javascript_code(
     source: &str,
     context: ToolContext<'_>,
-    mut observer: Option<&mut dyn CodeModeObserver>,
+    observer: Option<&mut dyn CodeModeObserver>,
 ) -> Result<CodeModeExecution, CodeModeHostError> {
     let execution = host_execute_code(
         source,
@@ -570,6 +712,14 @@ async fn execute_javascript_code(
         context.model(),
     )
     .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
+    observe_javascript_code(execution, context, observer).await
+}
+
+async fn observe_javascript_code(
+    execution: Promise,
+    context: ToolContext<'_>,
+    mut observer: Option<&mut dyn CodeModeObserver>,
+) -> Result<CodeModeExecution, CodeModeHostError> {
     loop {
         let update = host_next_code_update(context.session_id(), context.call_id())
             .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
@@ -714,8 +864,8 @@ struct WasmConfig {
     host_definition_id: u32,
     #[serde(default = "default_model")]
     model: String,
-    #[serde(default = "default_thinking")]
-    thinking: String,
+    #[serde(default)]
+    thinking: Option<Thinking>,
     #[serde(default = "default_reasoning_mode")]
     reasoning_mode: String,
     #[serde(default)]
@@ -728,6 +878,8 @@ struct WasmConfig {
     api_base_url: Option<String>,
     #[serde(default)]
     instructions: Option<String>,
+    #[serde(default)]
+    additional_instructions: Option<String>,
     #[serde(default)]
     session_id: Option<String>,
     #[serde(default)]
@@ -1031,6 +1183,7 @@ impl WasmSubagents {
         let event_forwarders = Rc::new(Cell::new(0));
         forward_subagent_updates(
             host_definition_id,
+            Arc::downgrade(&registry),
             updates,
             Rc::clone(&sessions),
             Rc::clone(&event_forwarders),
@@ -1076,9 +1229,10 @@ impl WasmSubagents {
         &self,
         root_session_id: &str,
         descriptors: Vec<AgentDescriptor>,
+        host_contexts: HashMap<String, Option<Arc<str>>>,
     ) -> Result<(), JsValue> {
         self.registry
-            .restore(root_session_id, descriptors.clone())
+            .restore_with_host_contexts(root_session_id, descriptors.clone(), host_contexts.clone())
             .await
             .map_err(js_error)?;
         for descriptor in &descriptors {
@@ -1087,6 +1241,9 @@ impl WasmSubagents {
                 &self.sessions,
                 root_session_id,
                 descriptor,
+                host_contexts
+                    .get(&descriptor.session_id)
+                    .and_then(|host_context| host_context.as_deref()),
             )?;
         }
         Ok(())
@@ -1139,17 +1296,18 @@ impl WasmNanocodex {
 
         let model = config.model.parse::<Model>().map_err(js_error)?;
         let host_definition_id = config.host_definition_id;
-        let thinking = config.thinking.parse::<Thinking>().map_err(js_error)?;
         let reasoning_mode = config
             .reasoning_mode
             .parse::<ReasoningMode>()
             .map_err(js_error)?;
         let mut openai = OpenAi::builder(auth)
             .model(model)
-            .thinking(thinking)
             .reasoning_mode(reasoning_mode)
             .fast_mode(config.fast_mode)
             .websocket_warmup(config.websocket_warmup);
+        if let Some(thinking) = config.thinking {
+            openai = openai.thinking(thinking);
+        }
         if let Some(websocket_url) = config.websocket_url {
             openai = openai.websocket_url(websocket_url);
         }
@@ -1198,6 +1356,9 @@ impl WasmNanocodex {
         };
         if let Some(instructions) = config.instructions {
             builder = builder.instructions(instructions);
+        }
+        if let Some(instructions) = config.additional_instructions {
+            builder = builder.additional_instructions(instructions);
         }
         if let Some(session_id) = config.session_id {
             builder = builder.session_id(session_id.parse::<SessionId>().map_err(js_error)?);
@@ -1261,18 +1422,49 @@ impl WasmNanocodex {
     /// Rejects malformed descriptors, disabled subagents, duplicate restoration,
     /// or an invalid persisted topology.
     #[wasm_bindgen(js_name = restoreSubagents)]
-    pub async fn restore_subagents(&self, descriptors_json: &str) -> Result<(), JsValue> {
+    pub async fn restore_subagents(
+        &self,
+        descriptors_json: &str,
+        host_contexts_json: Option<String>,
+    ) -> Result<(), JsValue> {
         let descriptors = serde_json::from_str::<Vec<WasmRestoredSubagent>>(descriptors_json)
             .map_err(|error| js_error(format!("invalid restored subagents: {error}")))?
             .into_iter()
             .map(WasmRestoredSubagent::descriptor)
             .collect::<Result<Vec<_>, _>>()?;
+        let host_contexts = host_contexts_json
+            .map(|encoded| {
+                serde_json::from_str::<HashMap<String, Option<String>>>(&encoded).map_err(|error| {
+                    js_error(format!("invalid restored subagent host contexts: {error}"))
+                })
+            })
+            .transpose()?
+            .unwrap_or_default();
+        for (session_id, host_context) in &host_contexts {
+            if host_context.as_ref().is_some_and(String::is_empty) {
+                return Err(js_error(format!(
+                    "restored subagent host context for {session_id} must not be empty"
+                )));
+            }
+            if !descriptors
+                .iter()
+                .any(|descriptor| descriptor.session_id == *session_id)
+            {
+                return Err(js_error(format!(
+                    "restored subagent host context refers to unknown session {session_id}"
+                )));
+            }
+        }
+        let host_contexts = host_contexts
+            .into_iter()
+            .map(|(session_id, host_context)| (session_id, host_context.map(Arc::<str>::from)))
+            .collect();
         let subagents = self
             .subagents
             .as_ref()
             .ok_or_else(|| js_error("this agent was not created with the subagent extension"))?;
         subagents
-            .restore(self.inner.session_id(), descriptors)
+            .restore(self.inner.session_id(), descriptors, host_contexts)
             .await
     }
 
@@ -1781,7 +1973,86 @@ pub struct WasmBrowserVoice {
 
 #[wasm_bindgen(js_class = BrowserVoice)]
 impl WasmBrowserVoice {
-    /// Begins Codex's Realtime lifecycle and builds bounded browser startup context in Rust.
+    /// Fences speech before the embedding submits typed input.
+    ///
+    /// # Errors
+    /// Rejects only when effects cannot be serialized.
+    #[wasm_bindgen(js_name = noteTypedInput)]
+    pub fn note_typed_input(&self) -> Result<String, JsValue> {
+        encode_voice_effects(&self.protocol.borrow_mut().note_typed_input())
+    }
+
+    /// Sets subscription voice preferences before starting a call.
+    ///
+    /// # Errors
+    /// Rejects invalid settings or changes to an active call.
+    pub fn configure(&self, settings_json: &str) -> Result<(), JsValue> {
+        if self.started.get() {
+            return Err(js_error("voice settings require a new call"));
+        }
+        let settings = serde_json::from_str(settings_json).map_err(js_error)?;
+        self.protocol
+            .borrow_mut()
+            .configure(settings)
+            .map_err(js_error)
+    }
+
+    /// Queues explicitly speakable text in the current conversation.
+    ///
+    /// # Errors
+    /// Rejects inactive sessions, invalid text, or a full output queue.
+    #[wasm_bindgen(js_name = appendSpeech)]
+    pub fn append_speech(&self, text: &str) -> Result<String, JsValue> {
+        if !self.started.get() {
+            return Err(js_error("voice has not started"));
+        }
+        encode_voice_effects(
+            &self
+                .protocol
+                .borrow_mut()
+                .append_speech(text)
+                .map_err(js_error)?,
+        )
+    }
+
+    /// Appends text through Codex's subscription context adapter.
+    ///
+    /// # Errors
+    /// Rejects inactive sessions, invalid roles/text, or a full output queue.
+    #[wasm_bindgen(js_name = appendText)]
+    pub fn append_text(&self, role: &str, text: &str) -> Result<String, JsValue> {
+        if !self.started.get() {
+            return Err(js_error("voice has not started"));
+        }
+        let role = serde_json::from_value(serde_json::json!(role)).map_err(js_error)?;
+        encode_voice_effects(
+            &self
+                .protocol
+                .borrow_mut()
+                .append_text(role, text)
+                .map_err(js_error)?,
+        )
+    }
+
+    /// Adds background context without requesting speech or consuming a delegation.
+    ///
+    /// # Errors
+    /// Rejects an inactive session or invalid text.
+    #[wasm_bindgen(js_name = appendContext)]
+    pub fn append_context(&self, text: &str) -> Result<String, JsValue> {
+        if !self.started.get() {
+            return Err(js_error("voice has not started"));
+        }
+        encode_voice_effects(
+            &self
+                .protocol
+                .borrow_mut()
+                .append_context(text)
+                .map_err(js_error)?,
+        )
+    }
+
+    /// Begins Codex's Realtime lifecycle without injecting startup context.
     ///
     /// # Errors
     ///
@@ -1790,18 +2061,10 @@ impl WasmBrowserVoice {
         if self.started.get() {
             return Ok(());
         }
-        let context = self
-            .agent
+        self.agent
             .append_developer_message(REALTIME_START_INSTRUCTIONS)
             .await
             .map_err(js_error)?;
-        let tree = browser_workspace_tree(context.workspace(), self.agent.session_id()).await;
-        let history = browser_voice_history(context.history());
-        self.startup_context.replace(build_browser_startup_context(
-            &history,
-            context.workspace(),
-            &tree,
-        ));
         self.started.set(true);
         Ok(())
     }
@@ -1821,9 +2084,9 @@ impl WasmBrowserVoice {
         }
         let protocol = self.protocol.borrow();
         let thread_id = self.agent.session_id().to_string();
-        let call_body = build_chatgpt_realtime_call(
+        let call_body = build_chatgpt_realtime_call_with_settings(
             sdp,
-            protocol.voice(),
+            protocol.settings(),
             self.startup_context.borrow().as_deref(),
         )
         .map_err(js_error)?;
@@ -1963,7 +2226,7 @@ impl WasmBrowserVoice {
     /// Rejects when the Agent driver stops.
     pub async fn stop(&self) -> Result<String, JsValue> {
         if !self.started.get() {
-            return encode_voice_effects(&self.protocol.borrow().close_effects());
+            return encode_voice_effects(&self.protocol.borrow_mut().close_effects());
         }
         let tail = self.protocol.borrow_mut().take_transcript_tail();
         let routed = if let Some(input) = realtime_tail_delegation(&tail) {
@@ -1982,7 +2245,7 @@ impl WasmBrowserVoice {
             (Err(error), _) | (Ok(()), Err(error)) => return Err(js_error(error)),
             (Ok(()), Ok(())) => {}
         }
-        encode_voice_effects(&self.protocol.borrow().close_effects())
+        encode_voice_effects(&self.protocol.borrow_mut().close_effects())
     }
 
     /// Cancels only the active coding turn, never merely the voice transport.
@@ -2023,9 +2286,11 @@ impl WasmBrowserVoice {
 
 impl WasmBrowserVoice {
     fn new(agent: RustNanocodex, voice: &str) -> Result<Self, String> {
+        let mut protocol = BrowserVoiceProtocol::new(voice)?;
+        protocol.enable_client_managed_handoffs();
         Ok(Self {
             agent,
-            protocol: RefCell::new(BrowserVoiceProtocol::new(voice)?),
+            protocol: RefCell::new(protocol),
             active_turn: Rc::new(RefCell::new(None)),
             next_turn: Rc::new(Cell::new(0)),
             startup_context: RefCell::new(None),
@@ -2067,6 +2332,8 @@ struct WasmManagedBrowserVoiceUpdate {
     effects: BrowserVoiceEffects,
     #[serde(skip_serializing_if = "Option::is_none")]
     delegation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prefetch: Option<nanocodex_voice_protocol::VoicePrefetch>,
 }
 
 /// Standalone Rust-owned browser voice protocol for a remote managed Agent.
@@ -2075,13 +2342,93 @@ struct WasmManagedBrowserVoiceUpdate {
 /// transports, the managed Agent lifecycle, and routing returned delegations.
 #[wasm_bindgen(js_name = ManagedBrowserVoice)]
 pub struct WasmManagedBrowserVoice {
-    protocol: RefCell<BrowserVoiceProtocol>,
+    protocol: RefCell<nanocodex_voice_protocol::ManagedVoiceProtocol>,
     startup_context: RefCell<Option<String>>,
     started: Cell<bool>,
+    call_prepared: Cell<bool>,
 }
 
 #[wasm_bindgen(js_class = ManagedBrowserVoice)]
 impl WasmManagedBrowserVoice {
+    /// Fences speech before the embedding submits typed input.
+    ///
+    /// # Errors
+    /// Rejects only when effects cannot be serialized.
+    #[wasm_bindgen(js_name = noteTypedInput)]
+    pub fn note_typed_input(&self) -> Result<String, JsValue> {
+        encode_voice_effects(&self.protocol.borrow_mut().note_typed_input())
+    }
+
+    /// Sets subscription voice preferences before starting a call.
+    ///
+    /// # Errors
+    /// Rejects invalid settings or changes to an active call.
+    pub fn configure(&self, settings_json: &str) -> Result<(), JsValue> {
+        if self.started.get() || self.call_prepared.get() {
+            return Err(js_error("voice settings require a new call"));
+        }
+        let settings = serde_json::from_str(settings_json).map_err(js_error)?;
+        self.protocol
+            .borrow_mut()
+            .configure(settings)
+            .map_err(js_error)
+    }
+
+    /// Queues explicitly speakable text in the current conversation.
+    ///
+    /// # Errors
+    /// Rejects inactive sessions, invalid text, or a full output queue.
+    #[wasm_bindgen(js_name = appendSpeech)]
+    pub fn append_speech(&self, text: &str) -> Result<String, JsValue> {
+        if !self.started.get() {
+            return Err(js_error("voice has not started"));
+        }
+        encode_voice_effects(
+            &self
+                .protocol
+                .borrow_mut()
+                .append_speech(text)
+                .map_err(js_error)?,
+        )
+    }
+
+    /// Appends text through Codex's subscription context adapter.
+    ///
+    /// # Errors
+    /// Rejects inactive sessions, invalid roles/text, or a full output queue.
+    #[wasm_bindgen(js_name = appendText)]
+    pub fn append_text(&self, role: &str, text: &str) -> Result<String, JsValue> {
+        if !self.started.get() {
+            return Err(js_error("voice has not started"));
+        }
+        let role = serde_json::from_value(serde_json::json!(role)).map_err(js_error)?;
+        encode_voice_effects(
+            &self
+                .protocol
+                .borrow_mut()
+                .append_text(role, text)
+                .map_err(js_error)?,
+        )
+    }
+
+    /// Adds background context without requesting speech or consuming a delegation.
+    ///
+    /// # Errors
+    /// Rejects an inactive session or invalid text.
+    #[wasm_bindgen(js_name = appendContext)]
+    pub fn append_context(&self, text: &str) -> Result<String, JsValue> {
+        if !self.started.get() {
+            return Err(js_error("voice has not started"));
+        }
+        encode_voice_effects(
+            &self
+                .protocol
+                .borrow_mut()
+                .append_context(text)
+                .map_err(js_error)?,
+        )
+    }
+
     /// Creates an idle managed browser voice protocol core.
     ///
     /// # Errors
@@ -2089,10 +2436,14 @@ impl WasmManagedBrowserVoice {
     /// Rejects voices outside Codex's ChatGPT V3 catalog.
     #[wasm_bindgen(constructor)]
     pub fn new(voice: &str) -> Result<Self, JsValue> {
+        let mut protocol =
+            nanocodex_voice_protocol::ManagedVoiceProtocol::new(voice).map_err(js_error)?;
+        protocol.enable_client_managed_handoffs();
         Ok(Self {
-            protocol: RefCell::new(BrowserVoiceProtocol::new(voice).map_err(js_error)?),
+            protocol: RefCell::new(protocol),
             startup_context: RefCell::new(None),
             started: Cell::new(false),
+            call_prepared: Cell::new(false),
         })
     }
 
@@ -2105,14 +2456,8 @@ impl WasmManagedBrowserVoice {
         if self.started.get() {
             return Ok(());
         }
-        let context = serde_json::from_str::<WasmOwnedAgentSessionContext>(context_json)
+        let _context = serde_json::from_str::<WasmOwnedAgentSessionContext>(context_json)
             .map_err(|error| js_error(format!("invalid AgentSessionContext: {error}")))?;
-        let history = browser_voice_history(&context.history);
-        self.startup_context.replace(build_browser_startup_context(
-            &history,
-            &context.workspace,
-            &[],
-        ));
         self.started.set(true);
         Ok(())
     }
@@ -2121,20 +2466,20 @@ impl WasmManagedBrowserVoice {
     ///
     /// # Errors
     ///
-    /// Rejects calls before [`Self::start`], invalid session IDs, or empty SDP offers.
+    /// Rejects invalid session IDs or empty SDP offers. Admission can complete
+    /// after this request; its context is then sent over the control channel.
     #[wasm_bindgen(js_name = callBody)]
     pub fn call_body(&self, sdp: &str, managed_session_id: &str) -> Result<String, JsValue> {
-        if !self.started.get() {
-            return Err(js_error("managed browser voice has not started"));
-        }
         let session_id = managed_voice_session_id(managed_session_id)?;
+        self.protocol.borrow_mut().bind_session(&session_id);
         let protocol = self.protocol.borrow();
-        let call_body = build_chatgpt_realtime_call(
+        let call_body = build_chatgpt_realtime_call_with_settings(
             sdp,
-            protocol.voice(),
+            protocol.settings(),
             self.startup_context.borrow().as_deref(),
         )
         .map_err(js_error)?;
+        self.call_prepared.set(true);
         serde_json::to_string(&serde_json::json!({
             "openai_alpha": "quicksilver=v2",
             "realtime_session_id": session_id,
@@ -2210,7 +2555,7 @@ impl WasmManagedBrowserVoice {
     /// Reports whether one sideband event may produce a managed Agent delegation.
     #[wasm_bindgen(js_name = requiresAgentAdmission)]
     pub fn requires_agent_admission(&self, payload: &str) -> bool {
-        realtime_message_requires_agent_admission(payload)
+        self.protocol.borrow().requires_agent_admission(payload)
     }
 
     /// Applies one sideband event and returns effects plus canonical delegation text.
@@ -2225,8 +2570,8 @@ impl WasmManagedBrowserVoice {
         let update = self.protocol.borrow_mut().realtime_message(payload);
         let delegation = update
             .delegation
-            .map(|delegation| realtime_delegation(&delegation.input, &delegation.transcript));
-        encode_managed_voice_update(update.effects, delegation)
+            .map(|delegation| nanocodex_voice_protocol::format_delegation(&delegation));
+        encode_managed_voice_update(update.effects, delegation, update.prefetch)
     }
 
     /// Applies one canonical raw `AgentEvent` JSON value to the handoff stream.
@@ -2237,6 +2582,16 @@ impl WasmManagedBrowserVoice {
     #[wasm_bindgen(js_name = agentEvent)]
     pub fn agent_event(&self, event_json: &str) -> Result<String, JsValue> {
         encode_voice_effects(&self.protocol.borrow_mut().agent_event(event_json))
+    }
+
+    /// Applies a scoped managed context envelope using the shared Rust queue.
+    ///
+    /// # Errors
+    /// Rejects malformed JSON or effects that cannot be serialized.
+    #[wasm_bindgen(js_name = managedEvent)]
+    pub fn managed_event(&self, envelope_json: &str) -> Result<String, JsValue> {
+        let envelope = serde_json::from_str(envelope_json).map_err(js_error)?;
+        encode_voice_effects(&self.protocol.borrow_mut().managed_event(&envelope))
     }
 
     /// Drains one Codex-paced streamed or final managed Agent handoff chunk.
@@ -2258,7 +2613,7 @@ impl WasmManagedBrowserVoice {
         let delegation = realtime_tail_delegation(&tail);
         self.started.set(false);
         self.startup_context.replace(None);
-        encode_managed_voice_update(self.protocol.borrow().close_effects(), delegation)
+        encode_managed_voice_update(self.protocol.borrow_mut().close_effects(), delegation, None)
     }
 
     /// Selects Codex's preferred physical input from browser device labels.
@@ -2286,139 +2641,23 @@ fn managed_voice_session_id(value: &str) -> Result<String, JsValue> {
         .map_err(|error| js_error(format!("invalid managed session ID: {error}")))
 }
 
+/// Returns the shared bounded first-prompt retrieval plan for a managed host.
+#[wasm_bindgen(js_name = managedBootstrapPlan)]
+pub fn managed_bootstrap_plan(input: &str) -> String {
+    nanocodex_voice_protocol::bootstrap_plan(input).to_string()
+}
+
 fn encode_managed_voice_update(
     effects: BrowserVoiceEffects,
     delegation: Option<String>,
+    prefetch: Option<nanocodex_voice_protocol::VoicePrefetch>,
 ) -> Result<String, JsValue> {
     serde_json::to_string(&WasmManagedBrowserVoiceUpdate {
         effects,
         delegation,
+        prefetch,
     })
     .map_err(js_error)
-}
-
-#[derive(Deserialize)]
-struct WasmWorkspaceEntry {
-    kind: String,
-    path: String,
-}
-
-async fn browser_workspace_tree(_workspace: &str, session_id: &str) -> Vec<String> {
-    const TREE_DEPTH: usize = 2;
-    const TREE_ENTRIES: usize = 20;
-    enum Task {
-        List(String, usize),
-        Render(WasmWorkspaceEntry, usize),
-        Omitted(usize, usize),
-    }
-    let mut output = Vec::new();
-    let mut pending = VecDeque::from([Task::List(String::from("."), 0_usize)]);
-    while let Some(task) = pending.pop_back() {
-        match task {
-            Task::List(path, depth) => {
-                if depth >= TREE_DEPTH {
-                    continue;
-                }
-                let Ok(promise) = host_list_workspace(&path, session_id) else {
-                    continue;
-                };
-                let Ok(value) = JsFuture::from(promise).await else {
-                    continue;
-                };
-                let Some(encoded) = value.as_string() else {
-                    continue;
-                };
-                let Ok(mut entries) = serde_json::from_str::<Vec<WasmWorkspaceEntry>>(&encoded)
-                else {
-                    continue;
-                };
-                entries.retain(|entry| !noisy_workspace_entry(&entry.path));
-                entries.sort_by(|left, right| {
-                    (left.kind == "file")
-                        .cmp(&(right.kind == "file"))
-                        .then_with(|| left.path.cmp(&right.path))
-                });
-                let omitted = entries.len().saturating_sub(TREE_ENTRIES);
-                if omitted > 0 {
-                    pending.push_back(Task::Omitted(omitted, depth));
-                }
-                for entry in entries.into_iter().take(TREE_ENTRIES).rev() {
-                    if entry.kind == "directory" {
-                        pending.push_back(Task::List(entry.path.clone(), depth + 1));
-                    }
-                    pending.push_back(Task::Render(entry, depth));
-                }
-            }
-            Task::Render(entry, depth) => {
-                let name = entry
-                    .path
-                    .rsplit('/')
-                    .find(|part| !part.is_empty())
-                    .unwrap_or(&entry.path);
-                output.push(format!(
-                    "{}- {}{}",
-                    "  ".repeat(depth),
-                    name,
-                    if entry.kind == "directory" { "/" } else { "" }
-                ));
-            }
-            Task::Omitted(omitted, depth) => {
-                output.push(format!(
-                    "{}- ... {omitted} more entries",
-                    "  ".repeat(depth)
-                ));
-            }
-        }
-    }
-    output
-}
-
-fn noisy_workspace_entry(path: &str) -> bool {
-    let name = path
-        .rsplit('/')
-        .find(|part| !part.is_empty())
-        .unwrap_or(path);
-    name.starts_with('.')
-        || [
-            ".git",
-            ".next",
-            ".pytest_cache",
-            ".ruff_cache",
-            "__pycache__",
-            "build",
-            "dist",
-            "node_modules",
-            "out",
-            "target",
-        ]
-        .contains(&name)
-}
-
-fn browser_voice_history(history: &[ResponseItem]) -> Vec<VoiceHistoryEntry> {
-    history
-        .iter()
-        .filter_map(|item| {
-            let ResponseItem::Message { role, content, .. } = item else {
-                return None;
-            };
-            let role = match role {
-                MessageRole::User => "user",
-                MessageRole::Assistant => "assistant",
-                MessageRole::Developer => "developer",
-            };
-            let text = content
-                .iter()
-                .filter_map(|part| match part {
-                    ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
-                        Some(text.as_ref())
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            Some(VoiceHistoryEntry::new(role, text))
-        })
-        .collect()
 }
 
 fn encode_voice_effects(effects: &BrowserVoiceEffects) -> Result<String, JsValue> {
@@ -2436,6 +2675,7 @@ struct TurnState {
 struct TurnFailure {
     code: &'static str,
     message: String,
+    blocked_by: Option<String>,
 }
 
 impl TurnState {
@@ -2471,16 +2711,20 @@ impl WasmTurn {
     /// # Errors
     ///
     /// Rejects if the turn is not active or its driver stopped.
-    pub async fn steer(&self, instruction: &str) -> Result<(), JsValue> {
+    pub async fn steer(
+        &self,
+        instruction: &str,
+        message_id: Option<String>,
+    ) -> Result<(), JsValue> {
         if instruction.trim().is_empty() {
             return Err(js_error("steer instruction must not be empty"));
         }
-        self.control()
-            .await
-            .map_err(js_error)?
-            .steer(Prompt::new(instruction))
-            .await
-            .map_err(js_error)
+        let control = self.control().await.map_err(js_error)?;
+        match message_id {
+            Some(id) => control.steer_with_id(id, Prompt::new(instruction)).await,
+            None => control.steer(Prompt::new(instruction)).await,
+        }
+        .map_err(js_error)
     }
 
     /// Injects browser-safe multimodal input at the active turn's next boundary.
@@ -2489,14 +2733,43 @@ impl WasmTurn {
     ///
     /// Rejects malformed input or a turn that is no longer active.
     #[wasm_bindgen(js_name = steerContent)]
-    pub async fn steer_content(&self, content_json: &str) -> Result<(), JsValue> {
+    pub async fn steer_content(
+        &self,
+        content_json: &str,
+        message_id: Option<String>,
+    ) -> Result<(), JsValue> {
         let prompt = parse_browser_prompt(content_json)?;
-        self.control()
-            .await
-            .map_err(js_error)?
-            .steer(prompt)
-            .await
-            .map_err(js_error)
+        let control = self.control().await.map_err(js_error)?;
+        match message_id {
+            Some(id) => control.steer_with_id(id, prompt).await,
+            None => control.steer(prompt).await,
+        }
+        .map_err(js_error)
+    }
+
+    /// Removes the latest identified steer while it is still pending.
+    /// Returns false after successful turn completion.
+    ///
+    /// # Errors
+    ///
+    /// Rejects if the driver has stopped or withdrawal is unsupported.
+    #[wasm_bindgen(js_name = withdrawSteer)]
+    pub async fn withdraw_steer(&self, message_id: String) -> Result<bool, JsValue> {
+        match self.control().await {
+            Ok(control) => control.withdraw_steer(message_id).await.map_err(js_error),
+            Err(_)
+                if self
+                    .state
+                    .borrow()
+                    .completed
+                    .as_ref()
+                    .is_some_and(Result::is_ok) =>
+            {
+                // A completed turn has already consumed or discarded its pending input.
+                Ok(false)
+            }
+            Err(error) => Err(js_error(error)),
+        }
     }
 
     /// Cancels this exact active or queued turn.
@@ -2605,6 +2878,7 @@ impl WasmTurn {
             notified.await.map_err(|_| TurnFailure {
                 code: "retryable",
                 message: "the turn stopped before it was accepted".to_owned(),
+                blocked_by: None,
             })?;
         }
     }
@@ -2647,6 +2921,7 @@ impl WasmTurn {
             notified.await.map_err(|_| TurnFailure {
                 code: "retryable",
                 message: "the turn stopped before it completed".to_owned(),
+                blocked_by: None,
             })?;
         }
     }
@@ -2687,7 +2962,21 @@ fn turn_failure(error: &NanocodexError) -> TurnFailure {
     TurnFailure {
         code,
         message: error.to_string(),
+        blocked_by: blocked_operation(error),
     }
+}
+
+fn blocked_operation(error: &NanocodexError) -> Option<String> {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(error) = source {
+        if let Some(nanocodex::durability::Error::OperationBlocked { pending_id, .. }) =
+            error.downcast_ref::<nanocodex::durability::Error>()
+        {
+            return Some(pending_id.clone());
+        }
+        source = error.source();
+    }
+    None
 }
 
 const fn execution_policy_failure_code(
@@ -2705,6 +2994,9 @@ const fn execution_policy_failure_code(
 fn js_turn_error(failure: TurnFailure) -> JsValue {
     let error = js_sys::Error::new(&failure.message);
     let _ = js_sys::Reflect::set(&error, &"code".into(), &failure.code.into());
+    if let Some(blocked_by) = failure.blocked_by {
+        let _ = js_sys::Reflect::set(&error, &"blockedBy".into(), &blocked_by.into());
+    }
     error.into()
 }
 
@@ -2772,13 +3064,15 @@ fn forward_events(mut events: AgentEvents, forwarding: Rc<Cell<bool>>) {
             if !forwarding.get() {
                 continue;
             }
-            if let Ok(encoded) = serde_json::to_string(&event) {
-                host_emit_event(
+            if let Ok(encoded) = serde_json::to_string(&event)
+                && let Err(error) = host_emit_event(
                     event.request_id.as_ref(),
                     &encoded,
                     u32::try_from(encoded.len()).unwrap_or(u32::MAX),
                     None,
-                );
+                )
+            {
+                let _ = host_console_error("Nanocodex event forwarding failed", &error);
             }
         }
     });
@@ -2786,6 +3080,7 @@ fn forward_events(mut events: AgentEvents, forwarding: Rc<Cell<bool>>) {
 
 fn forward_subagent_updates(
     host_definition_id: u32,
+    registry: Weak<SubagentRegistry>,
     mut updates: tokio::sync::mpsc::UnboundedReceiver<ScopedAgentUpdate>,
     sessions: Rc<RefCell<HashMap<(String, SubagentId), String>>>,
     event_forwarders: Rc<Cell<usize>>,
@@ -2796,11 +3091,16 @@ fn forward_subagent_updates(
             let root_session_id = scoped.root_session_id;
             match scoped.update {
                 SubagentUpdate::Added(descriptor) => {
+                    let Some(registry) = registry.upgrade() else {
+                        break;
+                    };
+                    let host_context = registry.host_context(&root_session_id, descriptor.id).await;
                     if let Err(error) = bind_subagent_session(
                         host_definition_id,
                         &sessions,
                         &root_session_id,
                         &descriptor,
+                        host_context.as_deref(),
                     ) {
                         report_subagent_host_error("binding a subagent session", &error);
                     }
@@ -2810,12 +3110,16 @@ fn forward_subagent_updates(
                         && let Ok(encoded) = serde_json::to_string(&event)
                     {
                         let id = id.to_string();
-                        host_emit_event(
+                        // A released or failing observer must not unwind this
+                        // task and strand all subsequent registry updates.
+                        if let Err(error) = host_emit_event(
                             event.request_id.as_ref(),
                             &encoded,
                             u32::try_from(encoded.len()).unwrap_or(u32::MAX),
                             Some(&id),
-                        );
+                        ) {
+                            report_subagent_host_error("forwarding a subagent event", &error);
+                        }
                     }
                 }
                 SubagentUpdate::Status {
@@ -2858,6 +3162,7 @@ fn bind_subagent_session(
     sessions: &Rc<RefCell<HashMap<(String, SubagentId), String>>>,
     root_session_id: &str,
     descriptor: &AgentDescriptor,
+    host_context_ref: Option<&str>,
 ) -> Result<(), JsValue> {
     let context = serde_json::json!({
         "agentId": descriptor.id.to_string(),
@@ -2871,6 +3176,7 @@ fn bind_subagent_session(
         root_session_id,
         &descriptor.session_id,
         &context.to_string(),
+        host_context_ref,
     )?;
     sessions.borrow_mut().insert(
         (root_session_id.to_owned(), descriptor.id),
@@ -3006,10 +3312,6 @@ fn parse_revision(revision: &str) -> Result<u64, StoreError> {
     revision.parse::<u64>().map_err(|error| {
         StoreError::Backend(format!("invalid JavaScript durability revision: {error}"))
     })
-}
-
-fn default_thinking() -> String {
-    "high".to_owned()
 }
 
 fn default_model() -> String {

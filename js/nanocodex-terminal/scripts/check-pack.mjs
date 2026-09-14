@@ -12,5 +12,7 @@ const files = manifest.files.map(({ path }) => path);
 assert(files.includes("dist/index.js"));
 assert(files.includes("dist/index.d.ts"));
 assert(files.includes("styles.css"));
+assert(files.includes("generated-output.css"));
+assert(files.includes("dist/GeneratedOutputView.js"));
 assert(!files.some((path) => path.startsWith("scripts/")));
 assert(!files.some((path) => /\.(?:ts|tsx|mts|cts)$/.test(path) && !/\.d\.(?:ts|mts|cts)$/.test(path)));

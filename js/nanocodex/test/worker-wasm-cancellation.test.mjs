@@ -19,6 +19,57 @@ const WASM_URL = new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url);
 const AGENT_WORKER_URL = new URL("../browser/agent.worker.mjs", import.meta.url);
 const TOOL_AGENT_WORKER_URL = new URL("./support/tool-agent.worker.mjs", import.meta.url);
 
+test("compiled Worker Agent replaces an active model call after cancelling its queued successor", async (t) => {
+  const server = await startResponsesServer();
+  const worker = new NodeWebWorker(AGENT_WORKER_URL, { name: "agent-model-cancel-replace" });
+  const agent = await createWorkerAgent({
+    harness: false,
+    module: await readFile(WASM_URL),
+    sessionId: "018f1f9a-7b3c-7a07-8000-000000000014",
+    thinking: "low",
+    transport: Transport.openAi({ apiKey: "test-key", websocketUrl: server.url, websocketWarmup: true }),
+  }, { worker });
+  try {
+    const active = agent.turn.prompt({ input: "Wait for the active model response." });
+    const activeResult = active.result();
+    void activeResult.catch(() => {});
+    const socket = await within(server.nextConnection(), 2_000, "initial connection");
+    const reader = messageReader(socket);
+    await within(reader.next(), 2_000, "warmup request");
+    sendWarmup(socket, "warmup-model-cancel");
+    await within(reader.next(), 2_000, "active model request");
+    const oldClosed = new Promise((resolve) => socket.once("close", resolve));
+
+    const queued = agent.turn.prompt({ input: "This queued turn must be cancelled." });
+    const queuedResult = queued.result();
+    void queuedResult.catch(() => {});
+    const replacement = agent.turn.prompt({ input: "Reply REPLACED." });
+    const replacementResult = replacement.result();
+    void replacementResult.catch(() => {});
+    await within(queued.cancel(), 1_000, "queued cancellation");
+    const cancelledAt = performance.now();
+    await within(active.cancel(), 1_000, "active model cancellation");
+    await assert.rejects(within(activeResult, 1_000, "active result"), /cancel/i);
+    await assert.rejects(within(queuedResult, 1_000, "queued result"), /cancel/i);
+    await within(oldClosed, 1_000, "abandoned socket close");
+
+    const nextSocket = await within(server.nextConnection(), 2_000, "replacement connection");
+    const nextReader = messageReader(nextSocket);
+    const request = await within(nextReader.next(), 2_000, "replacement model request");
+    assert.equal(request.previous_response_id, undefined);
+    assert.match(JSON.stringify(request.input), /Reply REPLACED/);
+    t.diagnostic(`replacement received ${Math.round(performance.now() - cancelledAt)}ms after active cancellation`);
+    sendFinal(nextSocket, "response-replaced", "REPLACED");
+    const result = await within(replacementResult, 2_000, "replacement result");
+    assert.equal(result.finalMessage, "REPLACED");
+    result.dispose();
+  } finally {
+    agent.dispose();
+    for (const socket of server.websocketServer.clients) socket.terminate();
+    await server.close();
+  }
+});
+
 for (const [label, source] of [
   ["CPU loop", "while (true) {}"],
   ["never-settling promise", "await new Promise(() => {});"],

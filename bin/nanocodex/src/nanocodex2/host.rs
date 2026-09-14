@@ -10,7 +10,8 @@ use std::{
 use nanocodex_tools::attachment::{AttachmentMachine, AttachmentMetadata};
 use serde::Deserialize;
 
-const MACHINE_CAPABILITIES: [&str; 5] = ["native", "filesystem", "process", "package", "server"];
+pub(crate) const MACHINE_CAPABILITIES: [&str; 5] =
+    ["native", "filesystem", "process", "package", "server"];
 static MACHINE_ID: OnceLock<String> = OnceLock::new();
 
 #[derive(Debug)]
@@ -82,7 +83,7 @@ impl HostConfig {
     }
 }
 
-fn bounded_display_name(mut name: String) -> String {
+pub(crate) fn bounded_display_name(mut name: String) -> String {
     if name.trim().is_empty() {
         return "Local machine".to_owned();
     }
@@ -111,7 +112,7 @@ impl ConfigFile {
     }
 }
 
-fn config_path() -> Result<PathBuf, HostConfigError> {
+pub(crate) fn config_path() -> Result<PathBuf, HostConfigError> {
     if let Some(home) = env::var_os("NANOCODEX_HOME").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(home).join("config.toml"));
     }

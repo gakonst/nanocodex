@@ -42,7 +42,7 @@ test("prompt acceptance is separate from results and healthy follow-ons reuse on
   const agent = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.lifecycle,
   });
   const watch = agent.events.watch();
@@ -109,7 +109,7 @@ test("durable acceptance exposes its request ID and classifies conflicts", async
   const agent = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.durability,
     durability: createMemoryDurabilityStore(durabilityId),
     durabilityId,
@@ -153,14 +153,14 @@ test("a fenced durability owner requires reopening instead of retrying the stale
   });
   const first = await Agent.create({
     transport,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.durability,
     durability,
     durabilityId,
   });
   const second = await Agent.create({
     transport,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.durabilityFence,
     durability,
     durabilityId,
@@ -194,7 +194,7 @@ test("a duplicate durable session rejects without fencing the live Agent", async
   };
   const options = {
     transport: Transport.openAi({ apiKey: "test-key", websocketUrl: server.url }),
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.durabilityCollision,
     durability,
     durabilityId,
@@ -248,7 +248,7 @@ test("durability store failures preserve reopen and retry-safe dispositions", as
     };
     const agent = await Agent.create({
       transport,
-      thinking: "none",
+      thinking: "low",
       durability,
       durabilityId,
     });
@@ -268,7 +268,7 @@ test("steering joins the active turn at the next model boundary", async () => {
   const agent = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.steer,
   });
   const scenario = (async () => {
@@ -300,13 +300,53 @@ test("steering joins the active turn at the next model boundary", async () => {
   await server.close();
 });
 
+test("durable identified steering withdraws only the latest pending input before the model boundary", async (t) => {
+  const server = await startResponsesServer();
+  const initialSeen = deferred();
+  const releaseInitial = deferred();
+  const agent = await createWarmAgent({
+    apiKey: "test-key", websocketUrl: server.url, thinking: "low",
+    sessionId: "018f1f9a-7b3c-7a21-8000-000000000021",
+    durability: createMemoryDurabilityStore("withdraw-steer"), durabilityId: "withdraw-steer",
+  });
+  t.after(async () => {
+    agent.dispose();
+    await server.close();
+  });
+  const scenario = (async () => {
+    const socket = await server.nextConnection();
+    const reader = messageReader(socket);
+    await reader.next();
+    sendWarmup(socket, "resp-withdraw-warmup");
+    await reader.next();
+    initialSeen.resolve();
+    await releaseInitial.promise;
+    sendFinal(socket, "resp-withdraw-initial", "BOUNDARY");
+    const steered = await reader.next();
+    assert.match(JSON.stringify(steered.input), /retained correction/);
+    assert.doesNotMatch(JSON.stringify(steered.input), /withdrawn correction/);
+    sendFinal(socket, "resp-withdraw-final", "DONE");
+  })();
+  const turn = agent.turn.prompt({ input: "initial task", id: "withdraw-operation" });
+  await initialSeen.promise;
+  await turn.steer({ input: "retained correction", messageId: "first" });
+  await turn.steer({ input: "withdrawn correction", messageId: "last" });
+  assert.equal(await turn.withdrawSteer({ messageId: "first" }), false);
+  assert.equal(await turn.withdrawSteer({ messageId: "last" }), true);
+  assert.equal(await turn.withdrawSteer({ messageId: "last" }), false);
+  releaseInitial.resolve();
+  assert.equal((await turn.result()).finalMessage, "DONE");
+  assert.equal(await turn.withdrawSteer({ messageId: "first" }), false);
+  await scenario;
+});
+
 test("cancellation stops the active socket and replays only committed and aborted input", async () => {
   const server = await startResponsesServer();
   const activeSeen = deferred();
   const agent = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.cancel,
   });
   const scenario = (async () => {
@@ -355,7 +395,7 @@ test("graceful shutdown cancels active work and joins transport cleanup exactly 
   const agent = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.shutdown,
   });
   const scenario = (async () => {
@@ -389,7 +429,7 @@ test("graceful shutdown cancels active work and joins transport cleanup exactly 
   const replacement = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.shutdown,
   });
   replacement.dispose();
@@ -402,7 +442,7 @@ test("a replacement socket drops the remote response ID and replays committed hi
   const agent = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.reconnect,
   });
   const scenario = (async () => {
@@ -447,7 +487,7 @@ test("manual compaction and historical forks preserve exact committed boundaries
   const agent = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.compact,
   });
   const scenario = (async () => {

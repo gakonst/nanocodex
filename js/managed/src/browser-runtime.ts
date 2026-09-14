@@ -38,6 +38,16 @@ const BROWSERBASE_API_ORIGIN = "https://api.browserbase.com";
 const DEFAULT_KEEP_ALIVE_MS = 10 * 60_000;
 const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
 const MAX_BROWSERBASE_RESPONSE_BYTES = 256 * 1024;
+const MANAGED_BROWSER_EXECUTE_DESCRIPTION = [
+  "Run browser automation in the retained managed browser session.",
+  "Outer contract (Nanocodex Rust/WASM Code Mode): nested tools exist only on `tools.*`; `cdp` and `codemode` are not globals. Invoke this tool as the final expression: `await tools.browser_execute({ code })`.",
+  "Inner contract (`code` only): this is a separate Cloudflare Code Mode sandbox whose only host globals are `cdp` and `codemode` (plus standard JavaScript). There is no `tools` or `text`; make the value to return the final expression.",
+  "Inner discovery signatures take strings: `await codemode.search(\"short intent\")`, then `await codemode.describe(\"cdp.method\")`. Search indexes connector methods, not raw Chrome protocol commands; use `await cdp.spec({})` for those. Never guess method names or argument shapes.",
+  "Inner `cdp` methods take one object argument, for example `await cdp.send({ method: \"Target.getTargets\" })`, `await cdp.attachToTarget({ targetId })`, and `await cdp.send({ method: \"Page.navigate\", params: { url }, sessionId })`.",
+  "This managed surface rejects credential-bearing or unrestricted capabilities, including `Runtime.evaluate` and `Runtime.callFunctionOn`; use allowed Target, Page, and DOM commands instead.",
+  "To read a title safely after `Page.navigate`, wait for loading and call `Target.getTargets` again, then select the matching `targetId`; each result contains its URL and title. `Target.getTargetInfo` is not available.",
+  "For ordinary public-web search, use `tools.web__run(...)` in the surrounding Nanocodex Code Mode cell.",
+].join("\n");
 const MODEL_SAFE_CDP_METHODS = new Set([
   "Target.getTargets",
   "Target.createTarget",
@@ -424,9 +434,11 @@ export async function adaptAiSdkTools(
     if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
       throw new TypeError(`AI SDK browser tool ${name} has a non-object input schema`);
     }
-    const description = typeof tool.description === "string"
-      ? tool.description
-      : "Use the managed browser runtime.";
+    const description = name === "browser_execute"
+      ? MANAGED_BROWSER_EXECUTE_DESCRIPTION
+      : typeof tool.description === "string"
+        ? tool.description
+        : "Use the managed browser runtime.";
     return Object.freeze({
       name,
       description,

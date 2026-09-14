@@ -323,6 +323,7 @@ pub struct ToolContext<'a> {
     call_id: &'a str,
     history: &'a [ResponseItem],
     output_token_budget: usize,
+    host_context: Option<&'a str>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -341,7 +342,24 @@ impl<'a> ToolContext<'a> {
             call_id,
             history,
             output_token_budget,
+            host_context: None,
         }
+    }
+
+    /// Attaches embedding-owned invocation context without exposing it to tool
+    /// schemas or serialized model-visible values.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn with_host_context(mut self, host_context: Option<&'a str>) -> Self {
+        self.host_context = host_context;
+        self
+    }
+
+    /// Returns embedding-owned invocation context, when one was supplied.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn host_context(self) -> Option<&'a str> {
+        self.host_context
     }
 
     /// Returns the fixed model contract for this invocation.
@@ -491,7 +509,21 @@ pub trait Tool: Send + Sync + 'static {
 mod tests {
     use serde_json::json;
 
-    use super::ToolOutput;
+    use super::{ToolContext, ToolOutput};
+
+    #[test]
+    fn host_context_is_private_opt_in_invocation_state() {
+        let context = ToolContext::new("gpt-test", "session", "call", &[], 1_024);
+        assert_eq!(context.host_context(), None);
+
+        let context = context.with_host_context(Some("opaque-root-turn"));
+        assert_eq!(context.host_context(), Some("opaque-root-turn"));
+        assert_eq!(context.model(), "gpt-test");
+        assert_eq!(context.session_id(), "session");
+        assert_eq!(context.call_id(), "call");
+        assert!(context.history().is_empty());
+        assert_eq!(context.output_token_budget(), 1_024);
+    }
 
     #[test]
     fn structured_result_preserves_text_and_json_types() {

@@ -1,11 +1,11 @@
 const THREAD_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const VAULT_ID = /^[A-Za-z0-9_-]{22,64}$/;
 const VAULT_ID_HEADER = "x-nanocodex-vault-id";
-const VAULT_PLACEHOLDER = /\{\{NANOCODEX_VAULT_(?:USERNAME|PASSWORD|BASIC|CARD_NUMBER|EXPIRY_MONTH|EXPIRY_YEAR|CVV|BILLING_ZIP)\}\}/;
+const VAULT_PLACEHOLDER = /\{\{NANOCODEX_VAULT_(?:USERNAME|PASSWORD|API_KEY|BASIC|CARD_NUMBER|EXPIRY_MONTH|EXPIRY_YEAR|CVV|BILLING_ZIP)\}\}/;
 const PRIVATE_HEADER = /(?:^|[-_])(?:auth(?:orization)?|cookie|credential|password|proxy|secret|token|api[-_]?key)(?:$|[-_])/i;
 const FORBIDDEN_HEADERS = new Set([
   "connection", "host", "origin", "proxy-connection", "referer", "te", "trailer",
-  "transfer-encoding", "upgrade", "x-nanocodex-subject",
+  "transfer-encoding", "upgrade", "x-nanocodex-subject", "x-nanocodex-target-url",
 ]);
 let installed;
 
@@ -56,7 +56,7 @@ export function createBrowserEgressFetch(options) {
     throw new TypeError("browser egress requires a valid thread id");
   }
   const endpoint = new URL("/v1/egress", options.origin);
-  return async (target, request = {}) => {
+  const responseFetch = async (target, request = {}) => {
     const url = new URL(target);
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
       throw new Error("browser egress supports only credential-free http:// and https:// URLs");
@@ -77,8 +77,9 @@ export function createBrowserEgressFetch(options) {
         throw new Error(`browser egress does not accept credential or routing header '${name}'`);
       }
     }
+    const templateBody = request.body instanceof Uint8Array ? new TextDecoder().decode(request.body) : request.body;
     if (vaultId !== null && ![...headers.values()].some((value) => VAULT_PLACEHOLDER.test(value))
-      && (typeof request.body !== "string" || !VAULT_PLACEHOLDER.test(request.body))) {
+      && (typeof templateBody !== "string" || !VAULT_PLACEHOLDER.test(templateBody))) {
       throw new Error("browser egress Vault requests require a supported placeholder");
     }
     try {
@@ -92,33 +93,49 @@ export function createBrowserEgressFetch(options) {
           url: url.href,
           method: request.method ?? "GET",
           headers: Object.fromEntries(headers.entries()),
-          ...(request.body === undefined ? {} : { body: request.body }),
+          ...encodeRequestBody(vaultId === null ? request.body : templateBody),
         }),
         credentials: "same-origin",
         redirect: "manual",
         signal: request.signal,
       });
-      return {
-        status: response.status,
-        statusText: response.statusText,
-        headers: Object.fromEntries(response.headers.entries()),
-        body: new Uint8Array(await response.arrayBuffer()),
-        url: url.href,
-      };
+      return response;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`browser egress failed (${detail})`);
     }
   };
+  return Object.assign(async (target, request = {}) => {
+    const response = await responseFetch(target, request);
+    return {
+      status: response.status,
+      statusText: response.statusText,
+      headers: Object.fromEntries(response.headers.entries()),
+      body: new Uint8Array(await response.arrayBuffer()),
+      url: new URL(target).href,
+    };
+  }, { response: responseFetch });
+}
+
+function encodeRequestBody(body) {
+  if (body === undefined) return {};
+  if (typeof body === "string") return { body };
+  if (!(body instanceof Uint8Array)) throw new TypeError("browser egress body must be text or bytes");
+  let encoded = "";
+  for (let offset = 0; offset < body.length; offset += 32_768) {
+    encoded += String.fromCharCode(...body.subarray(offset, offset + 32_768));
+  }
+  return { body_base64: btoa(encoded) };
 }
 
 function safeVaultHeaderValue(name, value) {
   if (name === "cookie" || name === "proxy-authorization") return false;
   if (name === "authorization") {
     return value === "Basic {{NANOCODEX_VAULT_BASIC}}"
+      || value === "Bearer {{NANOCODEX_VAULT_API_KEY}}"
       || value === "Bearer {{NANOCODEX_VAULT_PASSWORD}}";
   }
-  return /^\{\{NANOCODEX_VAULT_(?:PASSWORD|BASIC|CARD_NUMBER|EXPIRY_MONTH|EXPIRY_YEAR|CVV|BILLING_ZIP)\}\}$/.test(value);
+  return /^\{\{NANOCODEX_VAULT_(?:PASSWORD|API_KEY|BASIC|CARD_NUMBER|EXPIRY_MONTH|EXPIRY_YEAR|CVV|BILLING_ZIP)\}\}$/.test(value);
 }
 
 /** Adapts the shell result to the standard Fetch API used inside browser Workers. */
@@ -126,12 +143,15 @@ export function standardFetchFromEgress(secureFetch) {
   return async (input, init = {}) => {
     const request = new Request(input, init);
     const method = request.method.toUpperCase();
-    const result = await secureFetch(request.url, {
+    const send = secureFetch.response ?? secureFetch;
+    const textBody = /^(?:text\/|application\/(?:[a-z.+-]*json|x-www-form-urlencoded)(?:;|$))/.test(request.headers.get("content-type") ?? "");
+    const result = await send(request.url, {
       method,
       headers: request.headers,
-      ...(method === "GET" || method === "HEAD" ? {} : { body: await request.text() }),
+      ...(method === "GET" || method === "HEAD" ? {} : { body: textBody ? await request.text() : new Uint8Array(await request.arrayBuffer()) }),
       signal: request.signal,
     });
+    if (result instanceof Response) return result;
     return new Response(result.body, {
       status: result.status,
       statusText: result.statusText,

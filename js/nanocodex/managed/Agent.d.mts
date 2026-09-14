@@ -160,7 +160,6 @@ export type State = Readonly<{
   accepted_turns: number;
   last_active: number;
   active_turns: readonly string[];
-  active_turn_details: readonly Readonly<{ id: string; input: PromptInput }>[];
   agent_loaded: boolean;
   connected_clients: number;
   capabilities: Capabilities;
@@ -247,18 +246,26 @@ export type WatchEventsOptions = Readonly<{
   signal?: AbortSignal | undefined;
 }>;
 
-export type EventHistoryOptions = Readonly<{
-  /** Fetch events strictly before this durable cursor. Omit for the newest page. */
+export type EventHistoryOptions = Readonly<({
+  /** Fetch events strictly before this durable cursor. Omit both boundaries for the newest page. */
   before?: string | undefined;
+  after?: never;
+} | {
+  /** Fetch events strictly after this durable cursor, including `"0"` for the beginning. */
+  after?: string | undefined;
+  before?: never;
+}) & {
   /** Page size from 1 through 256. Defaults to 128. */
   limit?: number | undefined;
   signal?: AbortSignal | undefined;
 }>;
 
 export type EventHistoryPage = Readonly<{
+  /** Events are always in ascending cursor order, for either page direction. */
   data: readonly Event[];
+  /** More events remain in the requested direction (older by default). */
   hasMore: boolean;
-  /** Cursor captured with the page; attach the live watcher strictly after it. */
+  /** Durable head captured with the page. Forward paging must reach it before switching to a watcher. */
   latestCursor: string;
 }>;
 
@@ -289,10 +296,43 @@ export type Turn = Readonly<{
   idempotencyKey: string;
   accepted(): Promise<string>;
   state(): Promise<TurnView>;
-  steer(options: Readonly<{ input: PromptInput }>): Promise<Readonly<{ turn_id: string; state: "steering" }>>;
+  withdrawSteer(options: Readonly<{ messageId: string }>): Promise<Readonly<{ turn_id: string; message_id: string; withdrawn: boolean }>>;
+  steer(options: Readonly<{ input: PromptInput; messageId?: string }>): Promise<Readonly<{ turn_id: string; state: "steering" }>>;
   /** With a caller-supplied prompt ID, cancellation does not wait for the prompt response. */
   cancel(): Promise<TurnView | Readonly<{ turn_id: string; state: "cancelling" }>>;
   result(options?: TurnResultOptions): Promise<TurnResult>;
+}>;
+
+export type CronTriggerConfig = Readonly<{
+  /** A fresh session per occurrence (default on create), or continue this conversation. Omit on update to retain the mode. */
+  session_mode?: "new" | "continue" | undefined;
+  /** Five-field cron expression, with minute precision. */
+  cron: string;
+  /** IANA time zone. Defaults to UTC. */
+  timezone?: string | undefined;
+  /** Text prompt submitted for each occurrence, at most 64 KiB. */
+  input: string;
+  /** Defaults to true; false pauses future occurrences. */
+  enabled?: boolean | undefined;
+}>;
+
+export type CronTrigger = Readonly<{
+  id: string;
+  session_mode: "new" | "continue";
+  /** Session containing last_turn_id; null before a run or on legacy servers. */
+  last_agent_id: string | null;
+  cron: string;
+  timezone: string;
+  input: string;
+  enabled: boolean;
+  /** Unix milliseconds; null while paused. */
+  next_run_at: number | null;
+  /** Scheduled time of the last accepted occurrence, in Unix milliseconds. */
+  last_run_at: number | null;
+  last_turn_id: string | null;
+  last_skipped_at: number | null;
+  created_at: number;
+  updated_at: number;
 }>;
 
 export type Agent = Readonly<{
@@ -304,6 +344,13 @@ export type Agent = Readonly<{
   settings: Readonly<{
     read(): Promise<CreateSettings>;
     update(patch: SettingsPatch): Promise<CreateSettings>;
+  }>;
+  triggers: Readonly<{
+    list(): Promise<readonly CronTrigger[]>;
+    get(id: string): Promise<CronTrigger>;
+    /** Create or replace an account-owned schedule using a stable id. */
+    put(id: string, config: CronTriggerConfig): Promise<CronTrigger>;
+    delete(id: string): Promise<void>;
   }>;
   /** Reverse-tool endpoint with cookie/bearer transport retained in a private closure. */
   toolsTarget(): import("../tools/Tools.mjs").AttachmentTarget;

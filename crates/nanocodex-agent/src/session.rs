@@ -136,6 +136,25 @@ pub struct SessionSnapshot {
     context_snapshot: Option<ContextBaseline>,
 }
 
+/// Session metadata separated from independently persisted conversation items.
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct SessionSnapshotHead(SessionSnapshot);
+
+impl SessionSnapshotHead {
+    /// Reassembles the exact snapshot with its stored context records.
+    #[must_use]
+    pub fn with_context(
+        mut self,
+        history: Vec<ResponseItem>,
+        prefix: Option<Vec<ResponseItem>>,
+    ) -> SessionSnapshot {
+        self.0.history = history;
+        self.0.request_prefix = prefix;
+        self.0
+    }
+}
+
 impl fmt::Debug for SessionSnapshot {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -148,6 +167,20 @@ impl fmt::Debug for SessionSnapshot {
 }
 
 impl SessionSnapshot {
+    /// Separates metadata from conversation bodies for record-based persistence.
+    #[must_use]
+    pub fn into_context_parts(
+        mut self,
+    ) -> (
+        SessionSnapshotHead,
+        Vec<ResponseItem>,
+        Option<Vec<ResponseItem>>,
+    ) {
+        let history = std::mem::take(&mut self.history);
+        let prefix = self.request_prefix.take();
+        (SessionSnapshotHead(self), history, prefix)
+    }
+
     #[cfg(all(feature = "openai", not(target_family = "wasm")))]
     pub(crate) fn from_rollout(
         model: Model,

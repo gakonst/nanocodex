@@ -110,7 +110,7 @@ async fn response_stream_and_future_share_one_completed_operation() {
     let estimated_cost = completed
         .estimated_cost()
         .expect("provider usage should produce an estimate");
-    assert_eq!(estimated_cost.amount().decimal(), "0.000148");
+    assert_eq!(estimated_cost.amount().decimal(), "0.00037");
     assert_eq!(
         completed.cost_status(),
         crate::CostStatus::EstimatedFromUsage

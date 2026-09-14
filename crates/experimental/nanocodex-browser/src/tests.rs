@@ -26,8 +26,34 @@ use super::{
     BrowserPostActionSnapshot, BrowserPseudoClass, BrowserReactEventKind, BrowserReducedMotion,
     BrowserRouteHeader, BrowserRouteResponse, BrowserStorageState, BrowserTarget, BrowserTool,
     BrowserViewport, BrowserWaitForSelectorState, HostPasskeyAuthenticator, IosBrowser,
-    ReactDiagnostics, VirtualAuthenticator, browser_tool_builder,
+    ReactDiagnostics, VirtualAuthenticator, browser_execute_definition, browser_tool_builder,
 };
+
+#[test]
+fn browser_execute_matches_the_managed_cloudflare_callable_contract() {
+    let nanocodex_tools::ToolDefinition::Function {
+        name,
+        strict,
+        parameters,
+        output_schema,
+        ..
+    } = browser_execute_definition()
+    else {
+        panic!("browser_execute must be a function tool");
+    };
+    assert_eq!(name.as_ref(), "browser_execute");
+    assert!(!strict);
+    assert_eq!(
+        parameters.as_value(),
+        &serde_json::json!({
+            "type": "object",
+            "properties": { "code": { "type": "string" } },
+            "required": ["code"],
+            "additionalProperties": false
+        })
+    );
+    assert!(output_schema.is_none());
+}
 
 #[test]
 fn browser_tool_enables_virtual_platform_passkeys() {
@@ -905,7 +931,7 @@ text({ opened, snapshot, clicked, html, elementContext });
 "#,
             context(),
         )
-        .await;
+        .await?;
 
     let calls = execution
         .nested_calls
@@ -1211,6 +1237,7 @@ async fn code_mode_description_exposes_browser_action_schema() -> Result<()> {
     assert!(description.contains(r#"action: "heap_retainers""#));
     assert!(description.contains(r#"action: "heap_inspect""#));
     assert!(description.contains(r#"action: "video_start""#));
+    assert!(description.contains("Defaults to 30 and accepts values from 1 through 60"));
     assert!(description.contains(r#"action: "accessibility_audit""#));
     assert!(description.contains(r#"action: "axe_audit""#));
     assert!(description.contains(r#"action: "lighthouse_audit""#));
@@ -1299,7 +1326,7 @@ text({
 "#,
             context(),
         )
-        .await;
+        .await?;
 
     assert!(execution.success, "{:#?}", execution.output);
     assert_eq!(execution.nested_calls.len(), 1);
@@ -1513,7 +1540,7 @@ async fn managed_browser_executes_code_mode_against_chromium() -> Result<()> {
     let runtime = ToolRuntime::new_with_tools(".", None, None, &tools);
     let execution = runtime
         .execute_code(MANAGED_BROWSER_SOURCE, context())
-        .await;
+        .await?;
 
     if !execution.success {
         let calls = execution
@@ -2166,6 +2193,93 @@ return true;
 }
 
 #[tokio::test]
+#[ignore = "requires local Chromium, ffmpeg with libvpx, and ffprobe"]
+async fn browser_video_records_constant_rate_60_fps_webm() -> Result<()> {
+    let browser = Browser::new()?;
+    browser
+        .execute(BrowserAction::Open {
+            url: "data:text/html,<main>60%20fps%20recording</main>".to_owned(),
+        })
+        .await?;
+    browser
+        .execute(BrowserAction::VideoStart {
+            frames_per_second: Some(60),
+            quality: Some(80),
+        })
+        .await?;
+    browser
+        .execute(BrowserAction::Evaluate {
+            expression: r"globalThis.recordingFrame = 0;
+globalThis.recordingTimer = setInterval(() => {
+  document.body.style.backgroundColor = `hsl(${recordingFrame++ % 360} 70% 60%)`;
+}, 16); true"
+                .to_owned(),
+        })
+        .await?;
+    browser
+        .execute(BrowserAction::WaitForTimeout {
+            milliseconds: 1_100,
+        })
+        .await?;
+    let stopped = browser.execute(BrowserAction::VideoStop).await?;
+    let BrowserActionResult::Video { video, .. } = stopped else {
+        return Err(eyre!("expected browser video"));
+    };
+    assert_eq!(video.frames_per_second, 60);
+    assert!(video.frame_count >= 30, "{video:?}");
+    assert!(video.captured_frame_count > 0, "{video:?}");
+    assert!(video.duration_ms >= 1_000, "{video:?}");
+    assert!(video.path.is_file());
+    assert!(std::fs::metadata(&video.path)?.len() > 0);
+    let probe = tokio::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=avg_frame_rate,width,height:format=duration",
+            "-of",
+            "json",
+        ])
+        .arg(&video.path)
+        .output()
+        .await?;
+    if !probe.status.success() {
+        return Err(eyre!(
+            "ffprobe failed: {}",
+            String::from_utf8_lossy(&probe.stderr)
+        ));
+    }
+    let probe: Value = serde_json::from_slice(&probe.stdout)?;
+    let stream = &probe["streams"][0];
+    assert_eq!(stream["avg_frame_rate"], "60/1", "{probe}");
+    assert_eq!(stream["width"], video.width, "{probe}");
+    assert_eq!(stream["height"], video.height, "{probe}");
+    let encoded_duration = probe["format"]["duration"]
+        .as_str()
+        .ok_or_else(|| eyre!("ffprobe omitted duration: {probe}"))?
+        .parse::<f64>()?;
+    assert!(encoded_duration >= 1.0, "{probe}");
+
+    browser
+        .execute(BrowserAction::VideoStart {
+            frames_per_second: Some(30),
+            quality: Some(80),
+        })
+        .await?;
+    let stopped = browser.execute(BrowserAction::VideoStop).await?;
+    let BrowserActionResult::Video { video, .. } = stopped else {
+        return Err(eyre!("expected immediate browser video"));
+    };
+    assert!(video.frame_count >= 1, "{video:?}");
+    assert!(video.captured_frame_count >= 1, "{video:?}");
+    assert!(video.path.is_file());
+    browser.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
 #[ignore = "requires local Chromium and ffmpeg with libvpx"]
 #[allow(
     clippy::too_many_lines,
@@ -2381,6 +2495,8 @@ globalThis.retainedFixture = Array.from(
     };
     assert!(video.path.is_file());
     assert!(video.frame_count >= 3);
+    assert!(video.captured_frame_count >= 3);
+    assert_eq!(video.frames_per_second, 20);
     assert!(std::fs::metadata(&video.path)?.len() > 0);
 
     browser.close().await?;

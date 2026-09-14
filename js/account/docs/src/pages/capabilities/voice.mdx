@@ -60,12 +60,36 @@ agent turn without necessarily discarding the voice conversation.
 
 ## Browser voice
 
-Browser applications can implement a thin media consumer of the same voice
-protocol. Browser permission prompts, `AudioContext`, device selection, secure
-context requirements, and page lifecycle remain JavaScript concerns. The core
-agent does not acquire media devices or define a voice UI.
+Use `Voice.create(agent)` from `nanocodex/browser` or `useVoice(agent)` from
+`nanocodex-react`. Both local and managed Agents run the shared Rust policy
+through WASM. The browser owns microphone permission, WebRTC media, device
+selection, and page lifecycle.
 
-For production, make transcript retention, microphone indication, interruption
-behavior, and user consent explicit. Do not infer a security sandbox from the
-voice adapter: delegated coding tools still run wherever the underlying agent's
-application configured them to run.
+```js
+const voice = Voice.create(agent);
+await voice.start();
+voice.setMuted(true);
+voice.toggleMuted();
+
+// In a custom composer, fence pending speech before typing into the Agent.
+await voice.noteTypedInput();
+await agent.turn.prompt("Check the tests.");
+await voice.stop();
+```
+
+Mute works during connection setup and an active call. Snapshots expose
+`muted`, `microphoneLevel`, and `speakerLevel`; the shared terminal renders mute
+and level controls. Startup waits for both the media connection and the backend
+session and retries a media connection timeout once after cleanup.
+
+Client-managed handoffs speak completed finals owned by the current spoken
+request. Intermediate commentary stays private. Superseded, oversized, and
+unconfirmed answers are recovered as text, marked `recovered`, and emitted as
+`answer.recovered` events. The latest 200 transcript rows survive stopping the
+call; applications can retain event history separately. Typed input suppresses
+old speech immediately, and a sideband reconnect cannot replay it.
+
+Browser media uses WebRTC echo cancellation, noise suppression, and gain
+control. The native audio helper is used by native clients. Workspace and
+conversation history are not injected at call startup; explicit handoffs still
+route into the retained coding Agent.

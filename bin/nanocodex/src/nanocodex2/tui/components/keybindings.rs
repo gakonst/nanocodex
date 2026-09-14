@@ -19,11 +19,15 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 const FOOTER: [(&str, &str); 2] = [("↑↓", "scroll"), ("esc", "close")];
-const BINDINGS: [(&str, &str); 27] = [
+const BINDINGS: [(&str, &str); 28] = [
     ("ctrl+s", "change reasoning effort"),
     ("ctrl+d", "select model · before first prompt"),
     ("ctrl+g", "edit prompt in $EDITOR"),
     ("ctrl+r", "recent prompts"),
+    (
+        "alt+u",
+        "undo latest queued/steer message · before model receives it",
+    ),
     ("ctrl+z", "restore the last cleared draft"),
     ("ctrl/cmd+v", "paste clipboard image"),
     ("ctrl+o", "expand · collapse all tool calls"),

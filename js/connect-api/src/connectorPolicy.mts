@@ -73,7 +73,8 @@ export function connectorProvider(value: unknown): OAuthConnectorProvider | unde
 }
 
 export function connectorCapabilityForUrl(url: URL): RoutableConnectorCapability | undefined {
-  if (url.origin === "https://api.github.com") return "github";
+  if (url.origin === "https://api.github.com" || (url.origin === "https://github.com"
+    && /^\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+\/(?:info\/refs|git-upload-pack|git-receive-pack)$/.test(url.pathname))) return "github";
   if (url.origin === "https://gmail.googleapis.com") return "gmail";
   if (url.origin === "https://www.googleapis.com"
     && /^(?:\/drive\/v3|\/upload\/drive\/v3)(?:\/|$)/.test(url.pathname)) return "gdrive";

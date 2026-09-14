@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>CFBundleDisplayName</key><string>Nanocodex</string>
+    <key>NSExtension</key><dict>
+        <key>NSExtensionPointIdentifier</key><string>com.apple.share-services</string>
+        <key>NSExtensionPrincipalClass</key><string>$(PRODUCT_MODULE_NAME).ShareViewController</string>
+    <key>NSExtensionAttributes</key><dict>
+            <key>NSExtensionJavaScriptPreprocessingFile</key><string>CaptureWebPage</string>
+            <key>NSExtensionActivationRule</key>
+            <dict>
+                <key>NSExtensionActivationSupportsText</key><true/>
+                <!-- Native activation requires maximum-count keys, including
+                     the webpage key that enables Safari preprocessing. Use the
+                     native 32-bit count range instead of a product admission cap. -->
+                <key>NSExtensionActivationSupportsImageWithMaxCount</key><integer>2147483647</integer>
+                <key>NSExtensionActivationSupportsFileWithMaxCount</key><integer>2147483647</integer>
+                <key>NSExtensionActivationSupportsWebURLWithMaxCount</key><integer>2147483647</integer>
+                <key>NSExtensionActivationSupportsWebPageWithMaxCount</key><integer>2147483647</integer>
+            </dict>
+        </dict>
+    </dict>
+</dict></plist>

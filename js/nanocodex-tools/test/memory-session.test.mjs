@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  MAX_MEMORY_SCAN_RESULTS,
   memoryToolInputSchema,
   parseMemoryResult,
 } from "nanocodex-tools/memory";
@@ -19,7 +18,8 @@ const sessionId = "018f1f9a-7b3c-7a09-8000-000000000009";
 
 test("memory tool contract is closed and allowlist-projects bounded results", () => {
   const schema = memoryToolInputSchema();
-  assert.equal(schema.oneOf[0].properties.limit.maximum, MAX_MEMORY_SCAN_RESULTS);
+  assert.equal(schema.oneOf[0].properties.limit.maximum, undefined);
+  assert.equal(schema.oneOf[1].properties.keys.maxItems, undefined);
   assert.equal(schema.oneOf[0].additionalProperties, false);
 
   const result = parseMemoryResult({
@@ -59,7 +59,7 @@ test("memory tool contract is closed and allowlist-projects bounded results", ()
     () => parseMemoryResult({
       operation: "scan",
       abstained: false,
-      candidates: Array.from({ length: MAX_MEMORY_SCAN_RESULTS + 1 }, () => ({})),
+      candidates: Array.from({ length: 6 }, () => ({})),
     }, "scan"),
     /memory response is malformed/,
   );
@@ -114,4 +114,18 @@ test("session tool contracts bound input and strip host metadata from output", (
   ]);
   assert.ok(new TextEncoder().encode(read.turns[0].user).byteLength
     <= MAX_HISTORY_TOOL_TEXT_BYTES);
+});
+
+
+test("memory result contracts preserve larger scan and read batches", () => {
+  const candidates = Array.from({ length: 30 }, (_, index) => ({
+    key: { id: index + 1, version: 1 }, preview: "Complete result", score: 1,
+  }));
+  assert.equal(parseMemoryResult({ operation: "scan", abstained: false, candidates }, "scan").candidates.length, 30);
+  const memories = candidates.map(({ key }) => ({
+    key, content: "Complete result", created_at_ms: 1, updated_at_ms: 1,
+    last_scanned_at_ms: null, scan_count: 0, last_used_at_ms: null,
+    use_count: 0, probation_until_ms: null,
+  }));
+  assert.equal(parseMemoryResult({ operation: "read", memories }, "read").memories.length, 30);
 });

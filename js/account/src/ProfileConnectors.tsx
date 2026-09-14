@@ -1,3 +1,4 @@
+import { useAccountQuery } from "./useAccountQuery";
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AccountConnectionCard,
@@ -114,17 +115,13 @@ export function ProfileConnectors({
   requiresLogin?: boolean;
   refreshSession(): Promise<void>;
 }) {
-  const [connectors, setConnectors] = useState<AccountConnectorStatuses | null>(null);
-  const [mcpConnections, setMcpConnections] = useState<readonly McpConnection[] | null>(null);
-  const [mcpError, setMcpError] = useState<string | null>(null);
+  const [mcpOperationError, setMcpError] = useState<string | null>(null);
   const [mcpConnectionError, setMcpConnectionError] = useState<Readonly<{
     id: string;
     message: string;
   }> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [operation, setOperation] = useState<string | null>(null);
-  const request = useRef<Promise<void> | undefined>(undefined);
-  const mcpRequest = useRef<Promise<void> | undefined>(undefined);
   const activeConnector = useRef<ConnectorAttempt | undefined>(undefined);
   const activeMcp = useRef<McpAttempt | undefined>(undefined);
   const [result] = useState(readConnectorResult);
@@ -154,77 +151,36 @@ export function ProfileConnectors({
     return true;
   }, [accountId]);
 
+  const { query: connectorsQuery, refresh: reloadConnectors } = useAccountQuery(accountId, "/v1/connectors", decodeConnectorStatus, { enabled: !requiresLogin });
+  const { query: mcpQuery, refresh: reloadMcp } = useAccountQuery(accountId, "/v1/connectors/mcp-connections", decodeMcpConnections, { enabled: !requiresLogin });
+  const connectors = connectorsQuery.data ?? (connectorsQuery.error
+    ? unavailableConnectorStatuses(failureMessage(connectorsQuery.error, "Couldn’t load connectors.")) : null);
+  const mcpConnections = mcpQuery.data ?? null;
+  const mcpError = mcpOperationError ?? (mcpQuery.error ? failureMessage(mcpQuery.error, "Couldn’t load MCP connections.") : null);
+  const load = useCallback(async () => {
+    setError(null);
+    await reloadConnectors();
+  }, [reloadConnectors]);
+  const loadMcpConnections = useCallback(async () => {
+    setMcpError(null);
+    await reloadMcp();
+    announceAccountMcpCatalogChanged();
+  }, [reloadMcp]);
   const refreshConnectors = useCallback(async (signal?: AbortSignal) => {
-    const response = await connectorRequest("/v1/connectors", { signal });
-    if (response.status === 401) {
-      await response.body?.cancel();
-      await refreshSession();
-      return undefined;
-    }
-    if (!response.ok) throw await responseFailure(response, "Couldn’t load connectors.");
-    const statuses = decodeConnectorStatus(await response.json());
-    setConnectors(statuses);
+    signal?.throwIfAborted();
+    const statuses = await reloadConnectors({ throwOnError: true });
+    signal?.throwIfAborted();
     setError(null);
     return statuses;
-  }, [refreshSession]);
-
-  const load = useCallback((): Promise<void> => {
-    if (request.current) return request.current;
-    let current!: Promise<void>;
-    current = (async () => {
-      try {
-        await refreshConnectors();
-      } catch (cause) {
-        const message = failureMessage(cause, "Couldn’t load connectors.");
-        setConnectors(unavailableConnectorStatuses(message));
-        setError(null);
-      }
-    })().finally(() => {
-      if (request.current === current) request.current = undefined;
-    });
-    request.current = current;
-    return current;
-  }, [refreshConnectors]);
-
-  const loadMcpConnections = useCallback((): Promise<void> => {
-    if (mcpRequest.current) return mcpRequest.current;
-    let current!: Promise<void>;
-    current = (async () => {
-      try {
-        const response = await connectorRequest("/v1/connectors/mcp-connections");
-        if (response.status === 401) {
-          await response.body?.cancel();
-          await refreshSession();
-          return;
-        }
-        if (!response.ok) throw await responseFailure(response, "Couldn’t load MCP connections.");
-        setMcpConnections(decodeMcpConnections(await response.json()));
-        announceAccountMcpCatalogChanged();
-        setMcpError(null);
-      } catch (cause) {
-        setMcpError(failureMessage(cause, "Couldn’t load MCP connections."));
-      }
-    })().finally(() => {
-      if (mcpRequest.current === current) mcpRequest.current = undefined;
-    });
-    mcpRequest.current = current;
-    return current;
-  }, [refreshSession]);
-
+  }, [reloadConnectors]);
   const refreshMcpConnections = useCallback(async (signal: AbortSignal) => {
-    const response = await connectorRequest("/v1/connectors/mcp-connections", { signal });
-    if (response.status === 401) {
-      await response.body?.cancel();
-      await refreshSession();
-      return undefined;
-    }
-    if (!response.ok) throw await responseFailure(response, "Couldn’t load MCP connections.");
-    const connections = decodeMcpConnections(await response.json());
-    setMcpConnections(connections);
-    announceAccountMcpCatalogChanged();
+    signal.throwIfAborted();
+    const connections = await reloadMcp({ throwOnError: true });
+    signal.throwIfAborted();
     setMcpError(null);
+    announceAccountMcpCatalogChanged();
     return connections;
-  }, [refreshSession]);
+  }, [reloadMcp]);
 
   const settleMcpAttempt = useCallback((attempt: McpAttempt, completion: CallbackCompletion) => {
     if (activeMcp.current !== attempt || attempt.settling) return;
@@ -266,15 +222,10 @@ export function ProfileConnectors({
     if (previous) finishConnectorAttempt(previous);
     const previousMcp = activeMcp.current;
     if (previousMcp) finishMcpAttempt(previousMcp);
-    setConnectors(null);
-    setMcpConnections(null);
     setMcpError(null);
     setMcpConnectionError(null);
     setError(null);
-    if (requiresLogin) return;
-    void load();
-    void loadMcpConnections();
-  }, [accountId, finishConnectorAttempt, finishMcpAttempt, load, loadMcpConnections, requiresLogin]);
+  }, [accountId, finishConnectorAttempt, finishMcpAttempt, requiresLogin]);
 
   useEffect(() => () => {
     const attempt = activeConnector.current;
@@ -501,10 +452,7 @@ export function ProfileConnectors({
       if (!response.ok) throw await responseFailure(response, "Couldn’t add the MCP connection.");
       const body: unknown = await response.json();
       const connection = mcpConnectionFromResponse(body);
-      setMcpConnections((current) => [
-        connection,
-        ...(current ?? []).filter(({ id }) => id !== connection.id),
-      ]);
+      await loadMcpConnections();
       if (connection.status === "connected") announceAccountMcpCatalogChanged();
       return true;
     } catch (cause) {
@@ -559,7 +507,8 @@ export function ProfileConnectors({
       if (!response.ok) throw await responseFailure(response, `Couldn’t connect ${connection.name}.`);
       const body: unknown = await response.json();
       const updated = mcpConnectionFromResponse(body, connection.id);
-      setMcpConnections((current) => replaceMcpConnection(current ?? [], updated));
+      await loadMcpConnections();
+      if (activeMcp.current !== attempt) return;
       if (updated.status === "connected") {
         announceAccountMcpCatalogChanged();
         finishMcpAttempt(attempt);
@@ -874,13 +823,6 @@ function authorizationUrlFromResponse(value: unknown): URL {
     throw new Error("Invalid MCP authorization URL.");
   }
   return url;
-}
-
-function replaceMcpConnection(
-  connections: readonly McpConnection[],
-  replacement: McpConnection,
-): readonly McpConnection[] {
-  return connections.map((connection) => connection.id === replacement.id ? replacement : connection);
 }
 
 function mcpConnectionCanAuthorize(status: McpConnectionStatus): boolean {

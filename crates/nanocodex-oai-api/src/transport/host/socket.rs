@@ -1,17 +1,9 @@
-use std::time::Duration;
-
 use crate::{OpenAiAuthSnapshot, ResponsesError, monotonic_now_ns};
 
 use super::{HostConnectRequest, HostConnection, HostError, HostMessage, HostTransport};
 use crate::transport::{EncodedRequest, wire::turn_state_from_event};
 
 pub(crate) use crate::transport::wire::{decode_event, parse_raw_json};
-
-const EVENT_IDLE_TIMEOUT: Duration = if cfg!(test) {
-    Duration::from_millis(100)
-} else {
-    Duration::from_mins(5)
-};
 
 pub(crate) struct ConnectionMetadata {
     pub status: u16,
@@ -97,20 +89,14 @@ impl ResponsesSocket {
             })
     }
 
-    pub(crate) async fn next_text_or_idle_timeout(
-        &mut self,
-    ) -> Result<ReceivedText, ResponsesError> {
-        match self
-            .connection
-            .next(EVENT_IDLE_TIMEOUT)
-            .await
-            .map_err(|error| {
-                let reconnectable = error.is_reconnectable();
-                ResponsesError::Receive {
-                    reconnectable,
-                    detail: error.to_string(),
-                }
-            })? {
+    pub(crate) async fn next_text(&mut self) -> Result<ReceivedText, ResponsesError> {
+        match self.connection.next().await.map_err(|error| {
+            let reconnectable = error.is_reconnectable();
+            ResponsesError::Receive {
+                reconnectable,
+                detail: error.to_string(),
+            }
+        })? {
             HostMessage::Text(text) => {
                 self.capture_turn_state(&text);
                 Ok(ReceivedText {
@@ -119,9 +105,6 @@ impl ResponsesSocket {
                 })
             }
             HostMessage::Closed { detail } => Err(ResponsesError::Closed { detail }),
-            HostMessage::Timeout => Err(ResponsesError::IdleTimeout {
-                seconds: EVENT_IDLE_TIMEOUT.as_secs(),
-            }),
             HostMessage::Binary => Err(ResponsesError::UnexpectedBinary),
         }
     }

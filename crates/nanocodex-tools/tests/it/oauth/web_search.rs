@@ -64,7 +64,8 @@ async fn chatgpt_auth_recovers_for_web_search() -> Result<()> {
                 DEFAULT_TOOL_OUTPUT_TOKENS,
             ),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(output.success);
     assert!(matches!(

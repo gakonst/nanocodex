@@ -33,9 +33,11 @@ type ChangelogCommit = Pick<
 export async function loadNightlyChangelog(
   request: Fetch = fetch,
   development = import.meta.env?.DEV ?? false,
+  signal?: AbortSignal,
 ): Promise<NightlyChangelog> {
   const base = "/api/repository";
   const snapshotResponse = await request(`${base}/snapshot`, {
+    signal,
     cache: development ? "no-store" : "default",
   });
   if (!snapshotResponse.ok) {
@@ -53,7 +55,7 @@ export async function loadNightlyChangelog(
   for (let page = 0; page < MAX_CHANGELOG_PAGES; page += 1) {
     const response = await request(
       `${base}/commits?page=${page}&generation=${revision}`,
-      { cache: development ? "no-store" : "force-cache" },
+      { cache: development ? "no-store" : "force-cache", signal },
     );
     if (!response.ok) {
       throw new Error(`Changelog page request failed (${response.status})`);

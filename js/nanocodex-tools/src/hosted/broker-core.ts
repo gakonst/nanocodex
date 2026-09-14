@@ -19,6 +19,7 @@ import {
   PREVIEW_OUTPUT_SCHEMA,
   WRITE_STDIN_PARAMETERS,
 } from "../../tools/execution-contract.mjs";
+import type { ToolContext } from "../../tools/types.mjs";
 
 const SOCKET_TAG = "hosted-tools";
 const INVALID_CONNECT_GRANT_ID = "invalid-connect-grant";
@@ -26,6 +27,7 @@ const DEFAULT_MAX_IN_FLIGHT = 64;
 const OPEN = 1;
 const MAX_RETAINED_RECEIPTS = 512;
 const MAX_CALLS_PER_GENERATION = 512;
+const REVOKED_ROUTE_LEASE_EXPIRES_AT = -1;
 const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
 const LEGACY_ROUTE_ID = "$legacy";
 export const HOSTED_MACHINE_TOOL_NAMES = Object.freeze([
@@ -34,6 +36,11 @@ export const HOSTED_MACHINE_TOOL_NAMES = Object.freeze([
   "preview",
 ] as const);
 const MACHINE_TOOL_NAMES: ReadonlySet<string> = new Set(HOSTED_MACHINE_TOOL_NAMES);
+// Placement overlays deliberately retain their canonical cloud name. The
+// owning ToolRouter admits them only when the callable contract is identical,
+// then prefers the live attachment with the cloud tool as a pre-dispatch-only
+// fallback. Every other machine-local tool remains namespaced by machine ID.
+const ATTACHED_OVERLAY_TOOL_NAMES: ReadonlySet<string> = new Set(["browser_execute"]);
 const encoder = new TextEncoder();
 
 /**
@@ -62,6 +69,7 @@ export type HostedToolsStateRow = {
   lease_id: string | null;
   lease_expires_at: number;
   catalog_json: string | null;
+  machines_json: string | null;
 };
 
 export type HostedToolsCallRow = {
@@ -89,6 +97,10 @@ type HostedToolsSocketAttachment = {
   allowedMcpIds?: readonly string[];
   appToolCatalogDigest?: `0x${string}`;
   connectGrantId?: string;
+  expectedAttachmentId?: string;
+  maximumLeaseExpiresAt?: number;
+  fixedRouteId?: string;
+  renewalToken?: string;
   routeId?: string;
   leaseId?: string;
   generation?: number;
@@ -174,9 +186,16 @@ export type HostedToolsCodeTool = Readonly<{
   routeToken?: string;
   handler(
     input: unknown,
-    context: { sessionId: string; callId: string; model?: string; signal?: AbortSignal },
+    context: HostedToolsInvocationContext,
   ): Promise<unknown>;
 }>;
+
+export type HostedToolsInvocationContext = Readonly<
+  Pick<ToolContext, "sessionId" | "callId">
+  & Partial<Pick<ToolContext, "parentCallId" | "model" | "signal" | "subagent">>
+>;
+
+export type HostedToolsAuthorizationContext = Pick<ToolContext, "sessionId" | "subagent">;
 
 export type HostedMachineToolName = (typeof HOSTED_MACHINE_TOOL_NAMES)[number];
 
@@ -227,7 +246,24 @@ export type HostedToolsBrokerCoreOptions = Readonly<{
     entry: HostedToolCatalogEntry,
     connectGrantId?: string,
     appToolCatalogDigest?: string,
+    context?: HostedToolsAuthorizationContext,
   ) => boolean;
+  renewLeasedAttachment?: (
+    renewal: HostedToolsLeasedAttachmentRenewal,
+  ) => Promise<number | undefined>;
+}>;
+
+export type HostedToolsLeasedAttachmentPolicy = Readonly<{
+  expectedAttachmentId: string;
+  maximumLeaseExpiresAt: number;
+  fixedRouteId: string;
+  renewalToken: string;
+}>;
+
+export type HostedToolsLeasedAttachmentRenewal = Readonly<{
+  expectedAttachmentId: string;
+  fixedRouteId: string;
+  renewalToken: string;
 }>;
 
 /** Owns one reverse-tool attachment over an injected socket and durable ledger. */
@@ -244,7 +280,11 @@ export class HostedToolsBrokerCore {
     entry: HostedToolCatalogEntry,
     connectGrantId?: string,
     appToolCatalogDigest?: string,
+    context?: HostedToolsAuthorizationContext,
   ) => boolean;
+  readonly #renewLeasedAttachment:
+    | ((renewal: HostedToolsLeasedAttachmentRenewal) => Promise<number | undefined>)
+    | undefined;
   #catalogValidator: HostedToolsCatalogValidator | undefined;
   #nextCandidateGeneration: number;
 
@@ -267,6 +307,7 @@ export class HostedToolsBrokerCore {
     this.#persistence = options.persistence;
     this.#onCatalogChanged = options.onCatalogChanged;
     this.#entryAllowed = options.entryAllowed ?? (() => true);
+    this.#renewLeasedAttachment = options.renewLeasedAttachment;
     const now = this.#now();
     const sockets = this.context.sockets();
     const retainHosts = options.resumeRetainedSockets === true && sockets.length > 0;
@@ -338,6 +379,30 @@ export class HostedToolsBrokerCore {
     for (const state of this.#persistence.states()) this.#retireState(state, reason);
   }
 
+  /** Fences one attachment only when its exact durable route is still current. */
+  revokeRoute(routeId: string, reason: string): boolean {
+    const state = this.#persistence.state(routeId) ?? emptyState(routeId);
+    const active = state.lease_id !== null;
+    if (active) {
+      const socket = this.#socketForState(state);
+      if (socket) this.#fence(socket, reason);
+      else this.#retireState(state, reason);
+    }
+    // Revocation can race ahead of catalog publication in another Durable
+    // Object. Retain an exact route tombstone so a previously validated socket
+    // cannot publish after its control-plane fence has completed.
+    const retired = this.#persistence.state(routeId) ?? state;
+    this.#persistence.replaceHost({
+      ...retired,
+      host_id: null,
+      lease_id: null,
+      lease_expires_at: REVOKED_ROUTE_LEASE_EXPIRES_AT,
+      catalog_json: null,
+      machines_json: null,
+    });
+    return active;
+  }
+
   isReady(): boolean { return this.#definitions().length > 0; }
 
   hasPendingCalls(): boolean { return this.#pending.size > 0; }
@@ -345,7 +410,11 @@ export class HostedToolsBrokerCore {
   provider(): HostedToolsDynamicProvider { return this.#provider; }
 
   /** Resolves one canonical machine primitive against its exact admitted attachment generation. */
-  machineTool(machineId: string, name: HostedMachineToolName): HostedToolsCodeTool | undefined {
+  machineTool(
+    machineId: string,
+    name: HostedMachineToolName,
+    context?: HostedToolsAuthorizationContext,
+  ): HostedToolsCodeTool | undefined {
     if (!MACHINE_TOOL_NAMES.has(name)) return undefined;
     const binding = this.#catalogBindings().find((candidate) => (
       candidate.machine?.id === machineId && candidate.wireName === name
@@ -356,29 +425,62 @@ export class HostedToolsBrokerCore {
       prepared.entry,
       prepared.connectGrantId,
       prepared.appToolCatalogDigest,
+      context,
     )) return undefined;
     return this.#codeTool(name, prepared);
   }
 
-  /** Returns the live, non-secret user-machine snapshot for the account-owned host. */
+  /** Resolves one canonical machine primitive only on the named durable route. */
+  machineToolOnRoute(
+    routeId: string,
+    machineId: string,
+    name: HostedMachineToolName,
+    context?: HostedToolsAuthorizationContext,
+  ): HostedToolsCodeTool | undefined {
+    if (!MACHINE_TOOL_NAMES.has(name)) return undefined;
+    const binding = this.#catalogBindings(undefined, true).find((candidate) => (
+      candidate.routeId === routeId
+      && candidate.machine?.id === machineId
+      && candidate.wireName === name
+    ));
+    if (!binding) return undefined;
+    const prepared = this.#preparedTool(binding);
+    if (!this.#entryAllowed(
+      prepared.entry,
+      prepared.connectGrantId,
+      prepared.appToolCatalogDigest,
+      context,
+    )) return undefined;
+    return this.#codeTool(name, prepared);
+  }
+
+  /** Returns one live machine only when its exact durable route still owns it. */
+  machineOnRoute(routeId: string, machineId: string): HostedMachine | undefined {
+    const state = this.#persistence.state(routeId);
+    if (state === undefined) return undefined;
+    const socket = this.#liveRoutingSocketForState(state);
+    if (socket === undefined) return undefined;
+    const attachment = this.#attachment(socket);
+    if (attachment?.connectGrantId !== undefined) return undefined;
+    return attachment?.machines?.find(({ id }) => id === machineId);
+  }
+
+  /** Transport presence is separate from the retained machine identity. */
+  machineOnline(machineId: string): boolean {
+    return this.#sortedStates().some((state) => this.machineOnRoute(state.route_id, machineId) !== undefined);
+  }
+
+  /** Machine identity survives transport loss; dispatch still requires its live route. */
   machines(): readonly HostedMachine[] {
-    const machines: Array<{ routeId: string; machine: HostedMachine }> = [];
-    const ids = new Set<string>();
+    const machines = new Map<string, HostedMachine>();
     for (const state of this.#sortedStates()) {
-      const socket = this.#liveRoutingSocketForState(state);
-      if (socket === undefined) continue;
-      const attachment = this.#attachment(socket);
-      if (attachment?.connectGrantId !== undefined) continue;
-      for (const machine of attachment?.machines ?? []) {
-        if (ids.has(machine.id)) return [];
-        ids.add(machine.id);
-        machines.push({ routeId: state.route_id, machine });
+      if (!state.catalog_json || !state.machines_json) continue;
+      for (const machine of JSON.parse(state.machines_json) as HostedMachine[]) {
+        if (machines.has(machine.id)) return [];
+        machines.set(machine.id, machine);
       }
     }
-    return machines
-      .sort((left, right) => left.machine.id.localeCompare(right.machine.id)
-        || left.routeId.localeCompare(right.routeId))
-      .map(({ machine }) => machine);
+    return [...machines.values()].sort((left, right) => left.id.localeCompare(right.id));
   }
 
   accept(
@@ -387,9 +489,18 @@ export class HostedToolsBrokerCore {
     allowedMcpIds?: readonly string[],
     appToolCatalogDigest?: `0x${string}`,
     connectGrantId?: string,
+    leasedAttachment?: HostedToolsLeasedAttachmentPolicy,
   ): void {
     if (allowedMcpIds !== undefined && !isConnectGrantId(connectGrantId)) {
       throw new TypeError("Connect Hosted Tools requires an exact grant ID");
+    }
+    if (leasedAttachment !== undefined && (connectGrantId !== undefined
+      || leasedAttachment.expectedAttachmentId.length === 0
+      || leasedAttachment.fixedRouteId.length === 0
+      || leasedAttachment.renewalToken.length === 0
+      || leasedAttachment.renewalToken.length > 2_048
+      || !Number.isSafeInteger(leasedAttachment.maximumLeaseExpiresAt))) {
+      throw new TypeError("leased Hosted Tools requires one complete ordinary-route policy");
     }
     this.context.writeAttachment(socket, {
       kind: SOCKET_TAG,
@@ -397,6 +508,12 @@ export class HostedToolsBrokerCore {
       ...(allowedMcpIds === undefined ? {} : { allowedMcpIds: [...allowedMcpIds] }),
       ...(appToolCatalogDigest === undefined ? {} : { appToolCatalogDigest }),
       ...(connectGrantId === undefined ? {} : { connectGrantId }),
+      ...(leasedAttachment === undefined ? {} : {
+        expectedAttachmentId: leasedAttachment.expectedAttachmentId,
+        maximumLeaseExpiresAt: leasedAttachment.maximumLeaseExpiresAt,
+        fixedRouteId: leasedAttachment.fixedRouteId,
+        renewalToken: leasedAttachment.renewalToken,
+      }),
     } satisfies HostedToolsSocketAttachment);
     this.context.accept(socket);
   }
@@ -476,7 +593,7 @@ export class HostedToolsBrokerCore {
 
   async #dispatchHostFrame(socket: HostedToolsSocket, frame: HostedToolsHostFrame): Promise<void> {
     if (frame.type === "catalog") await this.#publishCatalog(socket, frame);
-    else if (frame.type === "ping") this.#heartbeat(socket, frame);
+    else if (frame.type === "ping") await this.#heartbeat(socket, frame);
     else if (frame.type === "drain") this.#drain(socket);
     else this.#completeResult(socket, frame);
   }
@@ -495,12 +612,50 @@ export class HostedToolsBrokerCore {
     return attachment;
   }
 
-  #heartbeat(
+  async #heartbeat(
     socket: HostedToolsSocket,
     frame: Extract<HostedToolsHostFrame, { type: "ping" }>,
-  ): void {
-    const attachment = this.#activeAttachment(socket);
-    const expiresAt = this.#now() + HOSTED_TOOLS_LEASE_MS;
+  ): Promise<void> {
+    let attachment = this.#activeAttachment(socket);
+    if (attachment.renewalToken !== undefined) {
+      const renewal = {
+        expectedAttachmentId: attachment.expectedAttachmentId!,
+        fixedRouteId: attachment.fixedRouteId!,
+        renewalToken: attachment.renewalToken,
+      };
+      let maximumLeaseExpiresAt: number | undefined;
+      try {
+        maximumLeaseExpiresAt = await this.#renewLeasedAttachment?.(renewal);
+      } catch {
+        this.#retire(socket, "leased Hosted Tools validation unavailable");
+        closeSocket(socket, 1011, "leased Hosted Tools validation unavailable");
+        return;
+      }
+      if (!Number.isSafeInteger(maximumLeaseExpiresAt)
+        || Number(maximumLeaseExpiresAt) <= this.#now()) {
+        this.revokeRoute(renewal.fixedRouteId, "leased Hosted Tools validation failed");
+        return;
+      }
+      const renewedExpiry = Number(maximumLeaseExpiresAt);
+      const renewed = this.#activeAttachment(socket);
+      if (renewed.routeId !== attachment.routeId
+        || renewed.leaseId !== attachment.leaseId
+        || renewed.generation !== attachment.generation
+        || renewed.fixedRouteId !== renewal.fixedRouteId
+        || renewed.expectedAttachmentId !== renewal.expectedAttachmentId
+        || renewed.renewalToken !== renewal.renewalToken) {
+        throw new HostedToolsProtocolError(
+          "stale_socket",
+          "socket changed while its leased attachment was being validated",
+        );
+      }
+      attachment = { ...renewed, maximumLeaseExpiresAt: renewedExpiry };
+      this.context.writeAttachment(socket, attachment);
+    }
+    const expiresAt = Math.min(
+      this.#now() + HOSTED_TOOLS_LEASE_MS,
+      attachment.maximumLeaseExpiresAt ?? Number.MAX_SAFE_INTEGER,
+    );
     const state = this.#persistence.state(attachment.routeId!)!;
     this.#persistence.replaceHost({ ...state, lease_expires_at: expiresAt });
     this.#send(socket, {
@@ -520,8 +675,39 @@ export class HostedToolsBrokerCore {
     if (this.#nextCandidateGeneration >= Number.MAX_SAFE_INTEGER) {
       throw new HostedToolsProtocolError("generation_exhausted", "Hosted Tools generation is exhausted");
     }
-    const routeId = scopedRouteId(initial.connectGrantId, frame.attachment_id);
+    const routeId = initial.fixedRouteId ?? scopedRouteId(initial.connectGrantId, frame.attachment_id);
+    let maximumLeaseExpiresAt = initial.maximumLeaseExpiresAt;
+    if (initial.renewalToken !== undefined) {
+      const renewal = {
+        expectedAttachmentId: initial.expectedAttachmentId!,
+        fixedRouteId: routeId,
+        renewalToken: initial.renewalToken,
+      };
+      try {
+        const renewed = await this.#renewLeasedAttachment?.(renewal);
+        if (!Number.isSafeInteger(renewed) || Number(renewed) <= this.#now()) {
+          this.revokeRoute(routeId, "leased Hosted Tools validation failed before admission");
+          throw new HostedToolsProtocolError(
+            "route_revoked",
+            "leased Hosted Tools validation failed before admission",
+          );
+        }
+        maximumLeaseExpiresAt = Number(renewed);
+      } catch (error) {
+        if (error instanceof HostedToolsProtocolError) throw error;
+        throw new HostedToolsProtocolError(
+          "lease_validation_unavailable",
+          "leased Hosted Tools validation was unavailable before admission",
+        );
+      }
+    }
     let state = this.#persistence.state(routeId) ?? emptyState(routeId);
+    if (state.lease_id === null && state.lease_expires_at === REVOKED_ROUTE_LEASE_EXPIRES_AT) {
+      throw new HostedToolsProtocolError(
+        "route_revoked",
+        "tool attachment route was revoked before admission",
+      );
+    }
     if (state.lease_id && state.lease_expires_at <= this.#now()) {
       const expiredSocket = this.#socketForState(state);
       if (expiredSocket) this.#fence(expiredSocket, "Hosted Tools lease expired");
@@ -540,9 +726,13 @@ export class HostedToolsBrokerCore {
     }
     const generation = ++this.#nextCandidateGeneration;
     const leaseId = this.#randomUUID();
-    const expiresAt = this.#now() + HOSTED_TOOLS_LEASE_MS;
+    const expiresAt = Math.min(
+      this.#now() + HOSTED_TOOLS_LEASE_MS,
+      maximumLeaseExpiresAt ?? Number.MAX_SAFE_INTEGER,
+    );
     const candidate = {
       ...initial,
+      ...(maximumLeaseExpiresAt === undefined ? {} : { maximumLeaseExpiresAt }),
       routeId,
       leaseId,
       generation,
@@ -567,6 +757,23 @@ export class HostedToolsBrokerCore {
       if ((frame.machines?.length ?? 0) > 0
         && (frame.machines?.length !== 1 || frame.attachment_id !== frame.machines[0]?.id)) {
         throw new Error("an account machine route requires one machine whose id equals attachment_id");
+      }
+      if (initial.expectedAttachmentId !== undefined
+        && (frame.attachment_id !== initial.expectedAttachmentId
+          || frame.machines?.length !== 1
+          || frame.machines[0]?.id !== initial.expectedAttachmentId)) {
+        throw new Error("leased tool attachment must publish its exact assigned machine ID");
+      }
+      if (initial.expectedAttachmentId !== undefined) {
+        const extra = frame.tools.find((entry) => (
+          !MACHINE_TOOL_NAMES.has(entry.definition.name)
+          && !ATTACHED_OVERLAY_TOOL_NAMES.has(entry.definition.name)
+        ));
+        if (extra !== undefined) {
+          throw new Error(
+            "leased tool attachments may publish only canonical machine primitives or placement overlays",
+          );
+        }
       }
       if (machine !== undefined) validateMachineToolContracts(frame.tools);
       if (initial.allowedMcpIds !== undefined) {
@@ -645,6 +852,7 @@ export class HostedToolsBrokerCore {
         lease_id: leaseId,
         lease_expires_at: expiresAt,
         catalog_json: catalogJson,
+        machines_json: frame.machines?.length ? JSON.stringify(frame.machines) : null,
       });
     });
     if (replaced?.lease_id) {
@@ -798,12 +1006,13 @@ export class HostedToolsBrokerCore {
       timeoutMs: prepared.entry.timeout_ms,
       handler: async (
         input: unknown,
-        context: { sessionId: string; callId: string; model?: string; signal?: AbortSignal },
+        context: HostedToolsInvocationContext,
       ) => {
         if (!this.#entryAllowed(
           prepared.entry,
           prepared.connectGrantId,
           prepared.appToolCatalogDigest,
+          context,
         )) {
           return toolResult("Hosted tool is outside the active grant", {
             status: "unavailable",
@@ -841,6 +1050,10 @@ export class HostedToolsBrokerCore {
     request: HostedToolsInvokeRequest,
   ): Promise<HostedToolsInvocationOutcome> {
     const retained = this.#persistence.callBySource(request.sessionId, request.callId);
+    if (!retained && !this.#routingSocketForState(this.#persistence.state(binding.routeId))) {
+      return Promise.resolve(preAdmissionUnavailable("Hosted machine is reconnecting"));
+    }
+
     const leaseId = binding.leaseId;
     const now = this.#now();
     const deadlineAt = request.deadlineAt === undefined && retained
@@ -1176,10 +1389,11 @@ export class HostedToolsBrokerCore {
   ): HostedToolsCatalogBinding[] {
     const bindings: HostedToolsCatalogBinding[] = [];
     for (const state of this.#sortedStates()) {
-      if (state.route_id === excludeRouteId || !state.host_id || !state.lease_id || !state.catalog_json) continue;
+      if (state.route_id === excludeRouteId || !state.catalog_json) continue;
       const socket = this.#liveRoutingSocketForState(state);
-      if (!socket) continue;
-      const attachment = this.#attachment(socket);
+      const savedMachines = state.machines_json ? JSON.parse(state.machines_json) as HostedMachine[] : [];
+      if (!socket && savedMachines.length === 0) continue;
+      const attachment = socket ? this.#attachment(socket) : undefined;
       const connectGrantId = this.#activeConnectGrantId(state);
       const appToolCatalogDigest = this.#activeAppToolCatalogDigest(state);
       let entries: HostedToolCatalogEntry[];
@@ -1189,11 +1403,11 @@ export class HostedToolsBrokerCore {
         continue;
       }
       for (const entry of entries) {
-        const machine = attachment?.machines?.[0];
+        const machine = attachment?.machines?.[0] ?? savedMachines[0];
         bindings.push(Object.freeze({
           routeId: state.route_id,
-          hostId: state.host_id,
-          leaseId: state.lease_id,
+          hostId: state.host_id ?? "offline",
+          leaseId: state.lease_id ?? "offline",
           generation: state.generation,
           wireName: entry.definition.name,
           ...(machine === undefined ? {} : { machine }),
@@ -1227,8 +1441,9 @@ export class HostedToolsBrokerCore {
     for (const state of this.#sortedStates()) {
       if (state.route_id === excludeRouteId) continue;
       const socket = this.#liveRoutingSocketForState(state);
-      if (!socket) continue;
-      const attachment = this.#attachment(socket);
+      const savedMachines = state.machines_json ? JSON.parse(state.machines_json) as HostedMachine[] : [];
+      if (!socket && savedMachines.length === 0) continue;
+      const attachment = socket ? this.#attachment(socket) : undefined;
       if (attachment?.connectGrantId !== undefined) continue;
       for (const machine of attachment?.machines ?? []) ids.push(machine.id);
     }
@@ -1257,6 +1472,7 @@ function emptyState(routeId: string): HostedToolsStateRow {
     lease_id: null,
     lease_expires_at: 0,
     catalog_json: null,
+    machines_json: null,
   };
 }
 
@@ -1364,7 +1580,7 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
 }
 
 function exposedEntry(entry: HostedToolCatalogEntry, machine: HostedMachine | undefined): HostedToolCatalogEntry {
-  if (machine === undefined) return entry;
+  if (machine === undefined || ATTACHED_OVERLAY_TOOL_NAMES.has(entry.definition.name)) return entry;
   const routeName = `user:${machine.id}:${entry.definition.name}`;
   const candidate = `user_${machine.id}_${entry.definition.name}`;
   const safeCandidate = candidate.replace(/[^A-Za-z0-9_-]/g, "_");

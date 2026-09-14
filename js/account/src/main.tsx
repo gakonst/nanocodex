@@ -1,3 +1,5 @@
+import { QueryClientProvider } from "@tanstack/react-query";
+import { appQueryClient } from "./queryClient";
 import { Suspense, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router";
@@ -60,12 +62,14 @@ function BrowserApplication({ url }: { url: URL }) {
 
   if (!preparedRoute) return null;
   return (
-    <BrowserRouter useTransitions={false}>
-      <Suspense fallback={null}>
-        <AccountSessionProvider>
-          <NanocodexApp preparedRoute={preparedRoute} />
-        </AccountSessionProvider>
-      </Suspense>
-    </BrowserRouter>
+    <QueryClientProvider client={appQueryClient}>
+      <BrowserRouter useTransitions={false}>
+        <Suspense fallback={null}>
+          <AccountSessionProvider>
+            <NanocodexApp preparedRoute={preparedRoute} />
+          </AccountSessionProvider>
+        </Suspense>
+      </BrowserRouter>
+    </QueryClientProvider>
   );
 }

@@ -1,6 +1,8 @@
 import { useId, useState, type ReactNode } from "react";
 import { normalizeSmsPhone } from "./smsPhone.js";
 
+const OTP_REQUEST_TIMEOUT_MS = 25_000;
+
 export type StoredPasskey = Readonly<{
   address: `0x${string}`;
   credentialId: string;
@@ -74,6 +76,7 @@ export function AccountChooser({
         credentials: "include",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ phone: normalized }),
+        signal: AbortSignal.timeout(OTP_REQUEST_TIMEOUT_MS),
       });
       const body: unknown = await response.json().catch(() => undefined);
       if (!response.ok) throw new Error(otpError(body, "Couldn’t send the code."));
@@ -113,6 +116,7 @@ export function AccountChooser({
           code,
           phone: challenge.phone,
         }),
+        signal: AbortSignal.timeout(OTP_REQUEST_TIMEOUT_MS),
       });
       const body: unknown = await response.json().catch(() => undefined);
       if (!response.ok) throw new Error(otpError(body, "That code didn’t work."));
@@ -275,6 +279,9 @@ function otpError(value: unknown, fallback: string): string {
 }
 
 function errorMessage(value: unknown): string {
+  if (value instanceof DOMException && (value.name === "TimeoutError" || value.name === "AbortError")) {
+    return "The account service took too long to respond. Try again.";
+  }
   return value instanceof Error ? value.message : "The account service is unavailable.";
 }
 

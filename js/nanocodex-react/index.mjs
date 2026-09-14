@@ -14,6 +14,7 @@ import {
 import { Actions } from "nanocodex/browser";
 
 export { createConfig } from "nanocodex/browser";
+export * as Voice from "nanocodex/browser/voice";
 
 const NanocodexContext = createContext(null);
 const IDLE_AGENT_SNAPSHOT = Object.freeze({
@@ -22,7 +23,7 @@ const IDLE_AGENT_SNAPSHOT = Object.freeze({
   status: "idle",
 });
 const IDLE_VOICE_SNAPSHOT = Object.freeze({
-  error: undefined,
+  error: undefined, muted: false, microphoneLevel: 0, speakerLevel: 0,
   status: "idle",
   statusText: undefined,
   transcripts: Object.freeze([]),
@@ -106,6 +107,8 @@ export function useVoice(agent, parameters = {}) {
     () => agent && enabled
       ? Actions.voice.create(agent, {
           ...(parameters.voice === undefined ? {} : { voice: parameters.voice }),
+          instructions: parameters.instructions, pace: parameters.pace, updates: parameters.updates,
+          handoffMode: parameters.handoffMode, acknowledgements: parameters.acknowledgements,
           ...(parameters.callUrl === undefined ? {} : { callUrl: parameters.callUrl }),
           ...(parameters.sidebandUrl === undefined ? {} : { sidebandUrl: parameters.sidebandUrl }),
           ...(parameters.captureMicrophone === undefined
@@ -124,6 +127,7 @@ export function useVoice(agent, parameters = {}) {
       parameters.captureMicrophone,
       parameters.sidebandUrl,
       parameters.voice,
+      parameters.instructions, parameters.pace, parameters.updates, parameters.handoffMode, parameters.acknowledgements,
     ],
   );
   useEffect(() => () => {
@@ -145,7 +149,13 @@ export function useVoice(agent, parameters = {}) {
     isConnecting: snapshot.status === "connecting",
     isError: snapshot.status === "error",
     isIdle: snapshot.status === "idle",
+    setMuted: resource?.setMuted ?? (() => {}),
+    toggleMuted: resource?.toggleMuted ?? (() => {}),
+    noteTypedInput: resource?.noteTypedInput ?? (async () => {}),
     cancel: resource?.cancel ?? (async () => false),
+    speak: resource?.speak ?? unavailable,
+    appendText: resource?.appendText ?? unavailable,
+    appendContext: resource?.appendContext ?? unavailable,
     start: resource?.start ?? unavailable,
     stop: resource?.stop ?? (async () => {}),
     toggle: resource?.toggle ?? unavailable,

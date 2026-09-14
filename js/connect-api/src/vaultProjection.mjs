@@ -20,6 +20,7 @@ export function projectVaultEntries(value) {
       created_at: timestamp(entry.created_at),
     };
     switch (common.kind) {
+      case "api_key": return common;
       case "login": return { ...common, username: text(entry.username, 512) };
       case "card": return { ...common, last4: last4(entry.last4) };
       case "address": return {
@@ -39,7 +40,7 @@ export function projectVaultEntries(value) {
 }
 
 function vaultKind(value) {
-  if (value !== "login" && value !== "card" && value !== "address" && value !== "phone") {
+  if (value !== "login" && value !== "api_key" && value !== "card" && value !== "address" && value !== "phone") {
     throw new TypeError("invalid Vault metadata kind");
   }
   return value;

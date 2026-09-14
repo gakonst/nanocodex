@@ -17,6 +17,8 @@ const LOCAL_SPONSORED_CHATGPT_USER_ID = "00000000-0000-4000-8000-000000000001";
 const buildScript = fileURLToPath(new URL("./scripts/build-js-package.sh", import.meta.url));
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const rustBuildFiles = new Set([
+  buildScript,
+  fileURLToPath(new URL("./scripts/wasm-memory-views.mjs", import.meta.url)),
   resolve(repositoryRoot, "Cargo.lock"),
   resolve(repositoryRoot, "Cargo.toml"),
   resolve(repositoryRoot, ".cargo/config.toml"),

@@ -3,7 +3,6 @@ import git from "isomorphic-git";
 const DEFAULT_DIRECTORY = "repository";
 const MARKER_NAME = "nanocodex-repository.json";
 const MARKER_VERSION = 1;
-const MAX_HTTP_REQUEST_BYTES = 16 * 1024 * 1024;
 const MAX_MARKER_BYTES = 16 * 1024;
 const SHA1 = /^[a-f0-9]{40}$/;
 
@@ -213,7 +212,6 @@ async function collectBody(body) {
   for await (const chunk of body) {
     if (!(chunk instanceof Uint8Array)) throw new TypeError("git HTTP body must contain bytes");
     size += chunk.byteLength;
-    if (size > MAX_HTTP_REQUEST_BYTES) throw new RangeError("git HTTP request exceeds its byte bound");
     chunks.push(chunk);
   }
   const joined = new Uint8Array(size);

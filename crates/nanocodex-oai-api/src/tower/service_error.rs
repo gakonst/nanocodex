@@ -91,6 +91,17 @@ impl ResponsesServiceError {
         self
     }
 
+    pub(crate) fn with_request_input(self, request: &crate::ResponsesAttempt) -> Self {
+        match self.source {
+            ResponsesServiceErrorSource::Responses(source) => Self::responses(
+                source.with_request_input(request.input_items()),
+                self.phase,
+                self.connection_generation,
+            ),
+            _ => self,
+        }
+    }
+
     /// Returns a stable low-cardinality error class.
     #[must_use]
     pub const fn error_class(&self) -> &'static str {
@@ -150,16 +161,15 @@ impl std::error::Error for ResponsesServiceError {
 impl From<ResponsesError> for ResponsesServiceError {
     fn from(error: ResponsesError) -> Self {
         let phase = match error {
-            ResponsesError::IdleTimeout { .. } => FailurePhase::Idle,
             ResponsesError::UnexpectedEnd
             | ResponsesError::Closed { .. }
             | ResponsesError::Receive { .. } => FailurePhase::Receive,
             ResponsesError::HttpRequest { .. } | ResponsesError::InvalidSseUtf8 { .. } => {
                 FailurePhase::Receive
             }
-            ResponsesError::Api { .. } | ResponsesError::ContextWindowExceeded { .. } => {
-                FailurePhase::Api
-            }
+            ResponsesError::Api { .. }
+            | ResponsesError::ContextWindowExceeded { .. }
+            | ResponsesError::InvalidToolSchema { .. } => FailurePhase::Api,
             ResponsesError::HttpRejected { .. } => FailurePhase::Api,
             ResponsesError::HostUnavailable
             | ResponsesError::HandshakeTimeout { .. }
@@ -197,7 +207,6 @@ pub(crate) enum FailurePhase {
     Encode,
     Send,
     Receive,
-    Idle,
     Api,
     Protocol,
     Completion,

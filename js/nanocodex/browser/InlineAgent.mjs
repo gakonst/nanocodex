@@ -46,6 +46,7 @@ export async function create(options = {}) {
     reasoningMode,
     fastMode,
     instructions,
+    additionalInstructions,
     sessionId,
     workspace,
     resume,
@@ -77,7 +78,20 @@ export async function create(options = {}) {
     WebSocketImpl,
     createWebSocket,
   } = resolveResponsesTransport(transport ?? defaultHostManagedTransport());
-  const { tools: hostTools, subagents: subagentConfig } = resolveTools(tools);
+  const { tools: hostTools, subagents: configuredSubagents } = resolveTools(tools);
+  const subagentMaxConcurrency = internalRuntime?.subagentMaxConcurrency;
+  if (subagentMaxConcurrency !== undefined
+    && (!Number.isSafeInteger(subagentMaxConcurrency) || subagentMaxConcurrency < 1)) {
+    throw new TypeError("host subagentMaxConcurrency must be a positive safe integer");
+  }
+  // Hosted runtimes own the resource ceiling, including when their tools are
+  // a prepared router rather than a named-tool array. A caller's lower cap wins.
+  const subagentConfig = configuredSubagents === undefined || subagentMaxConcurrency === undefined
+    ? configuredSubagents
+    : {
+      ...configuredSubagents,
+      max_concurrency: Math.min(configuredSubagents.max_concurrency ?? subagentMaxConcurrency, subagentMaxConcurrency),
+    };
   if (filesystem && workspace !== undefined && workspace !== filesystem.root) {
     throw new TypeError("workspace must match filesystem.root when both are provided");
   }
@@ -154,7 +168,16 @@ export async function create(options = {}) {
           activateCloudflareAgentSession(cloudflareReservation);
           const restoredSubagents = subagentSessions?.restore?.() ?? [];
           if (restoredSubagents.length > 0) {
-            await raw.restoreSubagents(JSON.stringify(restoredSubagents));
+            const restoredHostContextRefs = Object.fromEntries(
+              restoredSubagents.map((descriptor) => {
+                const hostContextRef = subagentSessions?.hostContextRef?.(descriptor.sessionId);
+                return [descriptor.sessionId, hostContextRef ?? null];
+              }),
+            );
+            await raw.restoreSubagents(
+              JSON.stringify(restoredSubagents),
+              JSON.stringify(restoredHostContextRefs),
+            );
           }
         }
         return raw;
@@ -210,6 +233,7 @@ export async function create(options = {}) {
       reasoningMode,
       fastMode,
       instructions,
+      additionalInstructions,
       sessionId: stableSessionId,
       workspace: workspace ?? filesystem?.root,
       executionEnvironment,

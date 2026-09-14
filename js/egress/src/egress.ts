@@ -32,6 +32,7 @@ import {
   type BrokeredSshIdentity,
   validateBrokeredSshRequest,
   validateSshIdentity,
+  validateSshTarget,
   validSshIdentityReference,
 } from "./ssh";
 
@@ -40,6 +41,8 @@ export { UserConnectorBroker } from "./connector-broker";
 export { McpConnectionDirectory } from "./mcp-connection-owner";
 
 const SUBJECT_DIRECTORY_PREFIX = "agent-subject-v1:";
+const MANAGED_SESSION_SUBJECT_PREFIX = "managed-session-v1_";
+const MANAGED_SESSION_SUBJECT = /^managed-session-v1_[0-9a-f]{64}$/;
 const READINESS_SUBJECT_DIRECTORY_NAME = "agent-subject-readiness-v1";
 const SUBJECT = /^[A-Za-z0-9_-]{43,128}$/;
 const EPHEMERAL_BROWSER_MODEL_SUBJECT = /^[A-Za-z0-9_-]{43}$/;
@@ -61,7 +64,6 @@ const MAX_CHATGPT_IMPORT_BODY_BYTES = 64 * 1024;
 const MAX_VAULT_BODY_BYTES = 12 * 1024;
 const MAX_BROKER_RESPONSE_BYTES = 4 * 1024;
 const MAX_MODEL_BODY_BYTES = 32 * 1024 * 1024;
-const MAX_MODEL_CATALOG_BYTES = 2 * 1024 * 1024;
 const MAX_SSH_BODY_BYTES = 72 * 1024;
 const MAX_VAULT_EGRESS_ENVELOPE_BYTES = 96 * 1024;
 const MAX_VAULT_EGRESS_TARGET_BYTES = 8 * 1024;
@@ -94,7 +96,6 @@ const VAULT_PROVIDER_HOSTS = new Set([
 const RELAY_CAPABILITY_PATH = /^\/v1\/[A-Za-z0-9_-]{43,}$/;
 const RELAY_HTTP_ROUTES: Readonly<Record<ModelOperation["id"], string | undefined>> = {
   responses: undefined,
-  models: undefined,
   search: "codex-web-search",
   "image-generation": "codex-image-generation",
   "image-edit": "codex-image-edit",
@@ -109,7 +110,7 @@ type ConnectorOperation = Readonly<{
   paths: readonly RegExp[];
 }>;
 
-type VaultPlaceholder = "USERNAME" | "PASSWORD" | "BASIC" | "CARD_NUMBER"
+type VaultPlaceholder = "API_KEY" | "USERNAME" | "PASSWORD" | "BASIC" | "CARD_NUMBER"
   | "EXPIRY_MONTH" | "EXPIRY_YEAR" | "CVV" | "BILLING_ZIP";
 
 type VaultEgressEnvelope = Readonly<{
@@ -122,6 +123,11 @@ type VaultEgressEnvelope = Readonly<{
 }>;
 
 const CONNECTOR_OPERATIONS: readonly ConnectorOperation[] = [
+  {
+    id: "github",
+    origin: "https://github.com",
+    paths: [/^\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+\/(?:info\/refs|git-upload-pack|git-receive-pack)$/],
+  },
   {
     id: "github",
     origin: "https://api.github.com",
@@ -194,6 +200,7 @@ export interface EgressEnv extends BrokerEnv, ConnectorBrokerEnv {
   USER_CREDENTIALS: DurableObjectNamespace<UserCredentialBroker>;
   USER_CONNECTORS: DurableObjectNamespace<UserConnectorBroker>;
   AGENT_SUBJECTS: DurableObjectNamespace<AgentSubjectDirectory>;
+  MANAGED_AGENT_OWNERSHIP?: Fetcher;
   MCP_CONNECTIONS: DurableObjectNamespace<McpConnectionDirectory>;
   CHATGPT_EGRESS?: DurableObjectNamespace;
   CODEX_RELAY_URL?: string;
@@ -220,7 +227,7 @@ export class ChiefOfStaffEgress extends WorkerEntrypoint<EgressEnv> {
 }
 
 type ModelOperation = Readonly<{
-  id: "responses" | "models" | "search" | "image-generation" | "image-edit"
+  id: "responses" | "search" | "image-generation" | "image-edit"
     | "realtime-call" | "realtime-sideband";
   method: "GET" | "POST";
   path: `/v1/${string}`;
@@ -285,16 +292,6 @@ const OPERATIONS: readonly ModelOperation[] = [
   },
 ];
 
-const MODELS_OPERATION: ModelOperation = Object.freeze({
-  id: "models",
-  method: "GET",
-  path: "/v1/models",
-  websocket: false,
-  openai: "https://api.openai.com/v1/models",
-  chatgpt: "https://chatgpt.com/backend-api/codex/models?client_version=0.5.0",
-  chatGptOnly: true,
-});
-
 export default {
   fetch(request: Request, env: EgressEnv, ctx: ExecutionContext): Promise<Response> {
     return handleEgress(request, env, ctx);
@@ -312,6 +309,10 @@ export async function handleEgress(
   let url: URL;
   try { url = new URL(request.url); } catch { return jsonError(400, "invalid_url"); }
   if (url.username || url.password || url.hash) return jsonError(403, "destination_denied");
+
+  if (url.origin === "https://public-egress.internal" && url.pathname === "/v1/request" && !url.search) {
+    return handlePublicEgress(request, env, upstreamFetch);
+  }
 
   if (url.protocol === "https:" && url.hostname === "vault-egress.internal" && !url.port
     && url.pathname === "/v1/request" && !url.search) {
@@ -648,15 +649,16 @@ function validateVaultEgressEnvelope(value: unknown): VaultEgressEnvelope {
 function validVaultPrivateHeader(name: string, value: string): boolean {
   if (name === "authorization") {
     return value === "Basic {{NANOCODEX_VAULT_BASIC}}"
+      || value === "Bearer {{NANOCODEX_VAULT_API_KEY}}"
       || value === "Bearer {{NANOCODEX_VAULT_PASSWORD}}";
   }
-  return /^\{\{NANOCODEX_VAULT_(?:PASSWORD|BASIC|CARD_NUMBER|EXPIRY_MONTH|EXPIRY_YEAR|CVV|BILLING_ZIP)\}\}$/.test(value);
+  return /^\{\{NANOCODEX_VAULT_(?:PASSWORD|API_KEY|BASIC|CARD_NUMBER|EXPIRY_MONTH|EXPIRY_YEAR|CVV|BILLING_ZIP)\}\}$/.test(value);
 }
 
 function vaultTemplatePlaceholders(template: string): Set<VaultPlaceholder> {
   const placeholders = new Set<VaultPlaceholder>();
   const supported = new Set<VaultPlaceholder>([
-    "USERNAME", "PASSWORD", "BASIC", "CARD_NUMBER", "EXPIRY_MONTH", "EXPIRY_YEAR",
+    "API_KEY", "USERNAME", "PASSWORD", "BASIC", "CARD_NUMBER", "EXPIRY_MONTH", "EXPIRY_YEAR",
     "CVV", "BILLING_ZIP",
   ]);
   for (const match of template.matchAll(VAULT_PLACEHOLDER)) {
@@ -669,6 +671,69 @@ function vaultTemplatePlaceholders(template: string): Set<VaultPlaceholder> {
     throw new EgressFailure(400, "invalid_vault_placeholder");
   }
   return placeholders;
+}
+
+/** Public traffic takes the same service binding as credentialed traffic. */
+async function handlePublicEgress(
+  request: Request,
+  env: EgressEnv,
+  upstreamFetch: typeof fetch,
+): Promise<Response> {
+  if (!VAULT_EGRESS_METHODS.has(request.method)) return jsonError(403, "method_denied");
+  const subject = request.headers.get(SUBJECT_HEADER);
+  if (subject !== null) {
+    if (!SUBJECT.test(subject)) return jsonError(403, "agent_subject_required");
+    try { await resolveSubject(env, subject); }
+    catch (error) { const problem = egressFailure(error); return jsonError(problem.status, problem.code); }
+  }
+  let target: URL;
+  try { target = vaultEgressTarget(new URL(request.headers.get("x-nanocodex-target-url") ?? "")); }
+  catch { return jsonError(403, "destination_denied"); }
+  const headers = new Headers(request.headers);
+  headers.delete(SUBJECT_HEADER);
+  headers.delete("x-nanocodex-target-url");
+  for (const name of headers.keys()) {
+    if (VAULT_PRIVATE_HEADER.test(name) || VAULT_FORBIDDEN_HEADERS.has(name)
+      || name.startsWith("x-nanocodex-")) return jsonError(403, "credential_header_denied");
+  }
+  let method = request.method;
+  let body = request.body;
+  const visited = new Set<string>();
+  for (;;) {
+    const key = `${method} ${target.href}`;
+    if (visited.has(key)) return jsonError(502, "redirect_cycle");
+    visited.add(key);
+    let response: Response;
+    try {
+      response = await upstreamFetch(new Request(target, {
+        method,
+        headers,
+        ...(method === "GET" || method === "HEAD" || !body ? {} : { body }),
+        signal: request.signal,
+        redirect: "manual",
+      }));
+    } catch { return jsonError(request.signal.aborted ? 499 : 502, "upstream_unavailable"); }
+    if (![301, 302, 303, 307, 308].includes(response.status)) return sanitizeUpstreamResponse(response);
+    const location = response.headers.get("location");
+    try {
+      if (!location) throw new Error("missing redirect");
+      target = vaultEgressTarget(new URL(location, target));
+    } catch {
+      await response.body?.cancel();
+      return jsonError(502, "redirect_denied");
+    }
+    if (response.status === 303 || ((response.status === 301 || response.status === 302) && method === "POST")) {
+      method = "GET";
+      body = null;
+      headers.delete("content-type");
+      headers.delete("content-length");
+    } else if (body) {
+      // The upload has already streamed. Leave replay to the client's native
+      // redirect handling instead of buffering every upload speculatively.
+      return sanitizeUpstreamResponse(response);
+    }
+    await response.body?.cancel();
+  }
 }
 
 function vaultEgressTarget(url: URL): URL {
@@ -730,7 +795,9 @@ function vaultReplacements(
   requested: ReadonlySet<VaultPlaceholder>,
 ): ReadonlyMap<VaultPlaceholder, string> {
   let replacements: Map<VaultPlaceholder, string>;
-  if (entry.kind === "login") {
+  if (entry.kind === "api_key") {
+    replacements = new Map([["API_KEY", entry.api_key]]);
+  } else if (entry.kind === "login") {
     replacements = new Map([
       ["USERNAME", entry.username],
       ["PASSWORD", entry.password],
@@ -1627,6 +1694,11 @@ function closeSponsoredSocket(socket: WebSocket, code: number, reason: string): 
 async function handleControl(request: Request, url: URL, env: EgressEnv): Promise<Response> {
   const subjectMatch = url.pathname.match(/^\/subjects\/([A-Za-z0-9_-]{43,128})$/);
   if (subjectMatch) {
+    // Versioned subjects are owned and revoked by their Session DO. Never
+    // create a second directory record that could override its tombstone.
+    if (subjectMatch[1]!.startsWith(MANAGED_SESSION_SUBJECT_PREFIX)) {
+      return jsonError(403, "managed_subject_owned_by_session");
+    }
     if (request.method !== "PUT" && request.method !== "DELETE") {
       return jsonError(405, "method_not_allowed");
     }
@@ -1824,7 +1896,7 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
   }
 
   const vaultMatch = url.pathname.match(
-    /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/credentials\/vault\/(login|card|address|phone)(?:\/([A-Za-z0-9_-]{22,64}))?$/,
+    /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/credentials\/vault\/(login|api_key|card|address|phone)(?:\/([A-Za-z0-9_-]{22,64}))?$/,
   );
   if (vaultMatch) {
     const userId = vaultMatch[1]!;
@@ -1874,6 +1946,10 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
       return jsonError(400, "invalid_ssh_identity");
     }
     const body = await readJson(request, MAX_SSH_BODY_BYTES);
+    if (body?.generate === true) {
+      if (body.private_key !== undefined || !validateSshTarget(body)) return jsonError(400, "invalid_ssh_identity");
+      return userBroker(env, userId).fetch(target, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    }
     const identity = validateSshIdentity(body);
     if (!identity) return jsonError(400, "invalid_ssh_identity");
     return userBroker(env, userId).fetch(target, {
@@ -2021,76 +2097,15 @@ async function handleModelStatus(request: Request, env: EgressEnv): Promise<Resp
     const sponsoredPrompts = credential.source === "sponsored"
       ? await sponsoredPromptStatus(env, userId)
       : undefined;
-    const astraEntitled = credential.source === "user" && credential.kind === "chatgpt"
-      ? await accountHasVisibleAstra(env, userId, credential)
-      : false;
     return json({
       ready: true,
       active: credential.kind,
       source: credential.source,
-      astra_entitled: astraEntitled,
       ...(sponsoredPrompts
         ? { free_prompts_remaining: sponsoredPrompts.remaining }
         : {}),
     }, 200);
   } catch { return jsonError(503, "broker_not_ready"); }
-}
-
-async function accountHasVisibleAstra(
-  env: EgressEnv,
-  userId: string,
-  initial: ResolvedModelCredential,
-): Promise<boolean> {
-  let credential = initial;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const request = buildUpstreamRequest(
-        new Request("https://nanocodex.internal/v1/models", {
-          headers: { "user-agent": "nanocodex/0.5.0" },
-        }),
-        env,
-        MODELS_OPERATION,
-        credential,
-        null,
-      );
-      const response = await fetchUpstream(
-        env,
-        userId,
-        credential,
-        MODELS_OPERATION,
-        request,
-        fetch,
-      );
-      if (response.status === 401 && attempt === 0) {
-        await cancelResponseBody(response);
-        const refreshed = await resolveCredential(env, userId, true, credential.revision);
-        if (refreshed.kind !== "chatgpt" || refreshed.source !== "user") return false;
-        credential = refreshed;
-        continue;
-      }
-      if (!response.ok || REDIRECT_STATUS.has(response.status)) {
-        await cancelResponseBody(response);
-        return false;
-      }
-      const encoded = await readBoundedText(response, MAX_MODEL_CATALOG_BYTES);
-      return catalogHasVisibleAstra(JSON.parse(encoded));
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
-
-export function catalogHasVisibleAstra(value: unknown): boolean {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  const models = (value as { models?: unknown }).models;
-  return Array.isArray(models) && models.some((model) => (
-    model !== null
-    && typeof model === "object"
-    && !Array.isArray(model)
-    && (model as { slug?: unknown }).slug === "gpt-6-astra"
-    && (model as { visibility?: unknown }).visibility === "list"
-  ));
 }
 
 async function handleSponsoredTrialReset(request: Request, env: EgressEnv): Promise<Response> {
@@ -2250,11 +2265,24 @@ function validRealtimeCallId(value: string | null): value is string {
 }
 
 async function resolveSubject(env: EgressEnv, subject: string): Promise<string> {
-  const response = await subjectDirectory(env, subject).fetch("https://subjects.internal/v1/resolve", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ subject }),
-  });
+  const direct = subject.startsWith(MANAGED_SESSION_SUBJECT_PREFIX);
+  if (direct && !MANAGED_SESSION_SUBJECT.test(subject)) {
+    throw new EgressFailure(403, "agent_subject_unavailable");
+  }
+  if (direct && !env.MANAGED_AGENT_OWNERSHIP) {
+    throw new EgressFailure(503, "agent_subject_unavailable");
+  }
+  // A Session denial or transport failure is authoritative. Falling back to
+  // the legacy directory could resurrect a deleted or exported capability.
+  const response = direct
+    ? await env.MANAGED_AGENT_OWNERSHIP!.fetch(
+      `https://managed-ownership.internal/v1/resolve?subject=${subject}`,
+    )
+    : await subjectDirectory(env, subject).fetch("https://subjects.internal/v1/resolve", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ subject }),
+    });
   if (!response.ok) {
     await readBoundedText(response, MAX_BROKER_RESPONSE_BYTES);
     throw new EgressFailure(response.status === 404 ? 403 : 503, "agent_subject_unavailable");
@@ -2600,6 +2628,7 @@ function audit(
   const safeDetail = {
     ...(typeof detail.code === "string" ? { code: detail.code } : {}),
     ...(typeof detail.status === "number" ? { status: detail.status } : {}),
+    ...(typeof detail.upstream_status === "number" ? { upstream_status: detail.upstream_status } : {}),
     ...(typeof detail.recovered === "boolean" ? { recovered: detail.recovered } : {}),
     ...(typeof detail.connector === "string" ? { connector: detail.connector } : {}),
     ...(typeof detail.deployment_sha === "string" ? { deployment_sha: detail.deployment_sha } : {}),

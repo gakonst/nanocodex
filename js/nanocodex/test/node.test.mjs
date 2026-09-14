@@ -20,6 +20,7 @@ const SESSION_IDS = Object.freeze({
 });
 
 const createWarmAgent = ({ apiKey, websocketUrl, ...options }) => Agent.create({
+  model: "gpt-5.6-sol", // Legacy fixtures exercise none/pro reasoning and Sol pricing.
   ...options,
   transport: Transport.openAi({ apiKey, websocketUrl, websocketWarmup: true }),
 });
@@ -37,6 +38,25 @@ async function waitForToolDefinition(host, name) {
   throw new Error(`MCP discovery did not publish ${name}`);
 }
 
+test("quiet model reads survive six minutes and release on cancellation", async (t) => {
+  const socket = new ManagedSocket();
+  const host = createNodeHost({ mpp: { async ws() { return socket; } } });
+  await host.connect("wss://paid.test", "mpp-managed", "session");
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let settled = false;
+  const pending = host.next(1).then((value) => { settled = true; return JSON.parse(value); });
+  t.mock.timers.tick(360_000);
+  await Promise.resolve();
+  assert.equal(settled, false);
+  await assert.rejects(host.next(1), /concurrent reads/);
+  socket.message('{"type":"response.completed"}');
+  assert.deepEqual(await pending, { kind: "text", text: '{"type":"response.completed"}' });
+  const cancelled = host.next(1);
+  host.close(1);
+  assert.deepEqual(JSON.parse(await cancelled), { kind: "closed", detail: "by the WASM runtime" });
+  assert.equal(socket.readyState, 3);
+});
+
 test("Node host opens application sockets through MPP", async () => {
   const socket = new ManagedSocket();
   const endpoints = [];
@@ -52,11 +72,11 @@ test("Node host opens application sockets through MPP", async () => {
   assert.equal(JSON.parse(await host.connect("wss://paid.test", "mpp-managed", "session")).status, 101);
   assert.deepEqual(endpoints, ["wss://paid.test"]);
   socket.message('{"type":"paid"}');
-  assert.equal(JSON.parse(await host.next(1, 10)).text, '{"type":"paid"}');
+  assert.equal(JSON.parse(await host.next(1)).text, '{"type":"paid"}');
   assert.equal(JSON.parse(await host.send(1, "request")).ok, true);
   assert.deepEqual(socket.sent.map(JSON.parse), [{ mpp: "message", data: "request" }]);
   socket.close(3008, "requested voucher amount exceeds local maxDeposit");
-  assert.deepEqual(JSON.parse(await host.next(1, 10)), {
+  assert.deepEqual(JSON.parse(await host.next(1)), {
     kind: "error",
     detail: "MPP WebSocket payment flow failed with code 3008: requested voucher amount exceeds local maxDeposit",
     reconnectable: false,
@@ -284,7 +304,7 @@ test("Node-hosted WASM preserves follow-ons, cache identity, events, and custom 
     assert.equal(warmup.reasoning.mode, "pro");
     assert.equal(warmup.reasoning.effort, "none");
     assert.equal(warmup.input[0].tools[0].name, "exec");
-    assert.match(warmup.input[0].tools[0].description, /tools\.multiply/);
+    assert.match(warmup.input[0].tools[0].description, /multiply\(args:/);
     sendWarmup(socket, "resp-warmup");
 
     const generation = await reader.next();
@@ -419,6 +439,7 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
         "send_agent_message",
         "spawn_agent",
         "submit_result",
+        "wait",
         "wait_agent",
       ],
     );
@@ -455,8 +476,8 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
     const childReader = messageReader(childSocket);
     const childWarmup = await childReader.next();
     assert.equal(childWarmup.input[0].tools.some((tool) => tool.name === "send_agent_message"), true);
-    assert.match(childWarmup.input[0].tools[0].description, /tools\.rootOnly/);
-    assert.doesNotMatch(childWarmup.input[0].tools[0].description, /tools\.decoyOnly/);
+    assert.match(childWarmup.input[0].tools[0].description, /rootOnly/);
+    assert.doesNotMatch(childWarmup.input[0].tools[0].description, /decoyOnly/);
     sendWarmup(childSocket, "child-warmup");
 
     const rootSpawned = await rootReader.next();
@@ -575,7 +596,9 @@ test("Node host invokes canonical subagent handlers without a root model turn", 
   const agent = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    model: "gpt-6-astra",
+    thinking: "low",
+    additionalInstructions: "Use the caller's memory tools.",
     sessionId: "018f1f9a-7b3c-7a09-8000-000000000009",
     tools: [{
       name: "find_threads",
@@ -600,7 +623,10 @@ test("Node host invokes canonical subagent handlers without a root model turn", 
     });
     const childSocket = await bounded(server.connection, "child connection");
     const childReader = messageReader(childSocket);
-    await bounded(childReader.next(), "child warmup");
+    const childWarmup = await bounded(childReader.next(), "child warmup");
+    assert.equal(childWarmup.model, "gpt-5.6-luna");
+    assert.doesNotMatch(childWarmup.input[1].content[0].text, /GPT-6 Astra/);
+    assert.match(childWarmup.input[1].content[0].text, /Use the caller's memory tools\.$/);
     sendWarmup(childSocket, "direct-child-warmup");
     const started = await bounded(startedPromise, "direct spawn");
     assert.deepEqual(started, {
@@ -899,6 +925,44 @@ test("Node can load an application-owned web module and resume Codex rollout his
   await server.close();
 });
 
+test("Node Astra sends its model prompt with additive host rules and preserves replacements", async () => {
+  const astraPrompt = await readFile(
+    new URL("../../../crates/nanocodex-oai-api/prompts/astra.md", import.meta.url),
+    "utf8",
+  );
+  for (const instructions of [undefined, "Caller-owned base instructions."]) {
+    const server = await startServer();
+    const agent = await createWarmAgent({
+      apiKey: "test-key",
+      websocketUrl: server.url,
+      model: "gpt-6-astra",
+      thinking: "low",
+      instructions,
+      additionalInstructions: "Use the caller's workspace.",
+    });
+    try {
+      const scenario = (async () => {
+        const socket = await bounded(server.connection, "Astra connection");
+        const reader = messageReader(socket);
+        const warmup = await bounded(reader.next(), "Astra warmup");
+        assert.equal(warmup.model, "gpt-6-astra");
+        assert.equal(warmup.reasoning.summary, undefined);
+        assert.equal(warmup.input[1].content[0].text,
+          `${instructions ?? astraPrompt}\n\nUse the caller's workspace.`);
+        sendWarmup(socket, "astra-warmup");
+        await bounded(reader.next(), "Astra turn");
+        sendFinal(socket, "astra-final", "done");
+      })();
+      const result = await bounded(agent.turn.prompt({ input: "hello" }).result(), "Astra result");
+      assert.equal(result.finalMessage, "done");
+      await scenario;
+    } finally {
+      await agent.session.shutdown();
+      await server.close();
+    }
+  }
+});
+
 test("independent agents keep their host connections isolated", async () => {
   const leftServer = await startServer();
   const rightServer = await startServer();
@@ -934,8 +998,8 @@ test("independent agents keep their host connections isolated", async () => {
     assert.equal(socket.request.headers["session-id"], sessionId);
     const reader = messageReader(socket);
     const warmup = await reader.next();
-    assert.match(warmup.input[0].tools[0].description, new RegExp(`tools\\.${visibleTool}`));
-    assert.doesNotMatch(warmup.input[0].tools[0].description, new RegExp(`tools\\.${hiddenTool}`));
+    assert.match(warmup.input[0].tools[0].description, new RegExp(visibleTool));
+    assert.doesNotMatch(warmup.input[0].tools[0].description, new RegExp(hiddenTool));
     sendWarmup(socket, `${sessionId}-warmup`);
     await reader.next();
     sendFinal(socket, `${sessionId}-final`, message);
@@ -958,6 +1022,86 @@ test("independent agents keep their host connections isolated", async () => {
   left.dispose();
   right.dispose();
   await Promise.all([leftServer.close(), rightServer.close()]);
+});
+
+test("WASM advertises and resumes Code Mode cells through function wait", async () => {
+  const server = await startServer();
+  let release;
+  const blocked = new Promise((resolve) => { release = resolve; });
+  const agent = await Agent.create({
+    transport: Transport.openAi({ apiKey: "test-key", websocketUrl: server.url, websocketWarmup: true }),
+    sessionId: "018f1f9a-7b3c-7a07-8000-000000000007",
+    tools: { delayed: { async handler() { await blocked; return "cell-completed-marker"; } } },
+  });
+  try {
+    const scenario = (async () => {
+      const socket = await server.connection;
+      const reader = messageReader(socket);
+      const warmup = await reader.next();
+      const specs = warmup.input[0].tools;
+      const wait = specs.find((tool) => tool.name === "wait");
+      assert.deepEqual(wait.parameters.required, ["cell_id"]);
+      assert.match(specs.find((tool) => tool.name === "exec").description, /yield_control/);
+      assert.equal(warmup.model, "gpt-6-astra");
+      assert.equal(warmup.reasoning.effort, "low");
+      sendWarmup(socket, "cell-warmup");
+      await reader.next();
+      sendCompleted(socket, "cell-start", [{
+        type: "custom_tool_call", name: "exec", call_id: "exec-cell",
+        input: '// @exec: {"yield_time_ms":0}\ntext("first-cell-chunk"); text(await tools.delayed({}));',
+      }]);
+      const yielded = await reader.next();
+      const output = yielded.input.find((item) => item.type === "custom_tool_call_output");
+      const encoded = JSON.stringify(output);
+      const cellId = encoded.match(/Script running with cell ID ([a-f0-9-]+:\d+)/)[1];
+      assert.match(encoded, /first-cell-chunk/);
+      release();
+      sendCompleted(socket, "cell-wait", [{
+        type: "function_call", name: "wait", call_id: "wait-cell",
+        arguments: JSON.stringify({ cell_id: cellId }),
+      }]);
+      const completed = await reader.next();
+      const result = completed.input.find((item) => item.type === "function_call_output");
+      assert.equal(result.call_id, "wait-cell");
+      assert.match(JSON.stringify(result), /Script completed/);
+      assert.match(JSON.stringify(result), /cell-completed-marker/);
+      assert.doesNotMatch(JSON.stringify(result), /first-cell-chunk/);
+      sendFinal(socket, "cell-final", "done");
+    })();
+    const [turn] = await bounded(Promise.all([
+      agent.turn.prompt({ input: "Run delayed in a yielding cell, then wait for it." }).result(),
+      scenario,
+    ]), "WASM exec/wait continuation");
+    assert.equal(turn.finalMessage, "done");
+  } finally {
+    release();
+    await agent.session.shutdown();
+    await server.close();
+  }
+});
+
+for (const [options, effort] of [
+  [{ model: "gpt-5.6-luna" }, "medium"],
+  [{ model: "gpt-6-astra", thinking: "high" }, "high"],
+]) test(`WASM resolves catalog effort and preserves explicit effort: ${JSON.stringify(options)}`, async () => {
+  const server = await startServer();
+  const agent = await createWarmAgent({ ...options, apiKey: "test-key", websocketUrl: server.url });
+  try {
+    const scenario = (async () => {
+      const socket = await server.connection;
+      const reader = messageReader(socket);
+      const request = await reader.next();
+      assert.equal(request.model, options.model);
+      assert.equal(request.reasoning.effort, effort);
+      sendWarmup(socket, "defaults-warmup");
+      await reader.next();
+      sendFinal(socket, "defaults-final", "done");
+    })();
+    await bounded(Promise.all([agent.turn.prompt({ input: "Reply done." }).result(), scenario]), "model defaults");
+  } finally {
+    await agent.session.shutdown();
+    await server.close();
+  }
 });
 
 async function startServer() {

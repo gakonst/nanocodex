@@ -38,6 +38,15 @@ impl Submission {
         Self { text, images }
     }
 
+    pub(crate) fn into_parts(self) -> (String, impl Iterator<Item = (Range<usize>, String)>) {
+        (
+            self.text,
+            self.images
+                .into_iter()
+                .map(|image| (image.range, image.data_url)),
+        )
+    }
+
     pub(crate) fn join(submissions: Vec<Self>) -> Self {
         let mut text = String::new();
         let mut images = Vec::new();

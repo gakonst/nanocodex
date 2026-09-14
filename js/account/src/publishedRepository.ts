@@ -1,3 +1,5 @@
+import { queryOptions } from "@tanstack/react-query";
+import { appQueryClient } from "./queryClient.ts";
 import type {
   HarnessCommit,
   RepositoryFile,
@@ -83,9 +85,6 @@ const PREFETCHED_PATCH_RETENTION_MS = 30_000;
 const ADOPTED_PATCH_RETENTION_MS = 5 * 60_000;
 const DEPLOYMENT_META_NAME = "nanocodex-deployment-sha";
 
-let snapshotPreload: Promise<PublishedRepositorySnapshot> | undefined;
-let commitIndexPreload: Promise<PublishedCommitIndexDocument> | undefined;
-const commitPagePreloads = new Map<string, Promise<PublishedCommitPage>>();
 const prefetchedPatches = new Map<string, PrefetchedPatch>();
 
 export async function loadPublishedRepositorySnapshot(
@@ -94,25 +93,22 @@ export async function loadPublishedRepositorySnapshot(
   generation = publishedRepositoryGeneration(),
 ): Promise<PublishedRepositorySnapshot> {
   if (request === fetch && !development) {
-    return preloadPublishedRepositorySnapshot();
+    return preloadPublishedRepositorySnapshot(generation);
   }
   return loadPublishedRepositorySnapshotUncached(request, development, generation);
 }
 
-export function preloadPublishedRepositorySnapshot(): Promise<PublishedRepositorySnapshot> {
-  if (snapshotPreload) return snapshotPreload;
-  const loading = loadPublishedRepositorySnapshotUncached(
-    fetch,
-    false,
-    publishedRepositoryGeneration(),
-  ).catch(
-    (error) => {
-      if (snapshotPreload === loading) snapshotPreload = undefined;
-      throw error;
-    },
-  );
-  snapshotPreload = loading;
-  return loading;
+export function publishedSnapshotQueryOptions(generation = publishedRepositoryGeneration()) {
+  return queryOptions({
+    queryKey: ["repository", "snapshot", generation ?? "latest"],
+    queryFn: ({ signal }) => loadPublishedRepositorySnapshotUncached(fetch, false, generation, signal),
+    staleTime: 5 * 60_000,
+    structuralSharing: false,
+  });
+}
+
+export function preloadPublishedRepositorySnapshot(generation = publishedRepositoryGeneration()): Promise<PublishedRepositorySnapshot> {
+  return appQueryClient.fetchQuery(publishedSnapshotQueryOptions(generation));
 }
 
 export function preloadPreferredPublishedFile(
@@ -143,7 +139,7 @@ export async function loadPublishedCommitHistory(
   adopted?: Promise<void>,
 ): Promise<PublishedCommitHistory> {
   const index = request === fetch && !development
-    ? await preloadPublishedCommitIndex()
+    ? await preloadPublishedCommitIndex(generation)
     : await loadPublishedCommitIndexUncached(request, development, generation);
   const base = "/api/repository";
   const pageSize = index.repository.commitPageSize;
@@ -175,18 +171,16 @@ export async function loadPublishedCommitHistory(
     if (!Number.isSafeInteger(page) || page < 0 || page >= pageCount) {
       return Promise.reject(new Error(`Commit page ${page} is out of range`));
     }
-    const cacheKey = `${index.repository.head}:${page}`;
     const useGlobalCache = request === fetch && !development;
-    const existing = useGlobalCache
-      ? commitPagePreloads.get(cacheKey)
-      : localPages.get(page);
+    const existing = useGlobalCache ? undefined : localPages.get(page);
     if (existing) return existing;
 
     const pageUrl = `${base}/commits?${new URLSearchParams({
       generation: index.repository.head,
       page: String(page),
     })}`;
-    const loading = request(pageUrl, {
+    const read = (signal?: AbortSignal) => request(pageUrl, {
+      signal,
       cache: development ? "no-store" : "default",
     }).then(async (response) => {
       if (!response.ok) {
@@ -212,15 +206,16 @@ export async function loadPublishedCommitHistory(
         commits: body,
         patchUrl: `${base}/commits/${index.repository.head}/${String(page).padStart(4, "0")}.diff`,
       } satisfies PublishedCommitPage;
-    }).catch((error) => {
-      if (commitPagePreloads.get(cacheKey) === loading) {
-        commitPagePreloads.delete(cacheKey);
-      }
-      if (localPages.get(page) === loading) localPages.delete(page);
+    });
+    const loading = useGlobalCache ? appQueryClient.fetchQuery({
+      queryKey: ["repository", "commit-page", index.repository.head, page],
+      queryFn: ({ signal }) => read(signal),
+      staleTime: Infinity,
+    }) : read().catch((error) => {
+      localPages.delete(page);
       throw error;
     });
-    if (useGlobalCache) commitPagePreloads.set(cacheKey, loading);
-    else localPages.set(page, loading);
+    if (!useGlobalCache) localPages.set(page, loading);
     return loading;
   };
 
@@ -315,6 +310,7 @@ async function loadPublishedRepositorySnapshotUncached(
   request: Fetch,
   development: boolean,
   generation?: string,
+  signal?: AbortSignal,
 ): Promise<PublishedRepositorySnapshot> {
   const base = "/api/repository";
   markCommitPerformance("repository-request-start");
@@ -324,6 +320,7 @@ async function loadPublishedRepositorySnapshotUncached(
     generation == null ? mutableUrl : `${mutableUrl}?generation=${generation}`,
     mutableUrl,
     development,
+    signal,
   );
   if (!response.ok) {
     throw new Error(`Repository request failed (${response.status})`);
@@ -345,14 +342,21 @@ async function loadPublishedRepositorySnapshotUncached(
       if (published?.contentUrl == null) {
         throw new Error(`${file.path} is not available as published text`);
       }
-      const pending = request(published.contentUrl, {
+      const read = (signal?: AbortSignal) => request(published.contentUrl!, {
+        signal,
         cache: development ? "no-store" : "default",
       }).then((fileResponse) => {
         if (!fileResponse.ok) {
           throw new Error(`File request failed (${fileResponse.status})`);
         }
         return fileResponse.text();
-      }).catch((error) => {
+      });
+      if (request === fetch && !development) return appQueryClient.fetchQuery({
+        queryKey: ["repository", "file", file.objectId, published.contentUrl],
+        queryFn: ({ signal }) => read(signal),
+        staleTime: Infinity,
+      });
+      const pending = read().catch((error) => {
         if (fileContents.get(file.objectId) === pending) {
           fileContents.delete(file.objectId);
         }
@@ -364,24 +368,19 @@ async function loadPublishedRepositorySnapshotUncached(
   };
 }
 
-function preloadPublishedCommitIndex(): Promise<PublishedCommitIndexDocument> {
-  if (commitIndexPreload) return commitIndexPreload;
-  const loading = loadPublishedCommitIndexUncached(
-    fetch,
-    false,
-    publishedRepositoryGeneration(),
-  ).catch((error) => {
-    if (commitIndexPreload === loading) commitIndexPreload = undefined;
-    throw error;
+function preloadPublishedCommitIndex(generation?: string): Promise<PublishedCommitIndexDocument> {
+  return appQueryClient.fetchQuery({
+    queryKey: ["repository", "commit-index", generation ?? "latest"],
+    queryFn: ({ signal }) => loadPublishedCommitIndexUncached(fetch, false, generation, signal),
+    staleTime: 5 * 60_000,
   });
-  commitIndexPreload = loading;
-  return loading;
 }
 
 async function loadPublishedCommitIndexUncached(
   request: Fetch,
   development: boolean,
   generation?: string,
+  signal?: AbortSignal,
 ): Promise<PublishedCommitIndexDocument> {
   const base = "/api/repository";
   markCommitPerformance("repository-commit-index-request-start");
@@ -391,6 +390,7 @@ async function loadPublishedCommitIndexUncached(
     generation == null ? mutableUrl : `${mutableUrl}?generation=${generation}`,
     mutableUrl,
     development,
+    signal,
   );
   if (!response.ok) {
     throw new Error(`Commit index request failed (${response.status})`);
@@ -413,8 +413,10 @@ async function requestPublishedMetadata(
   url: string,
   mutableUrl: string,
   development: boolean,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const init: RequestInit = {
+    signal,
     cache: development ? "no-store" : "default",
   };
   const response = await request(url, init);

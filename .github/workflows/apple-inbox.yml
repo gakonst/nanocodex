@@ -1,0 +1,138 @@
+name: Apple apps
+on:
+  push:
+    branches: [master]
+    paths: ['Cargo.toml', 'Cargo.lock', 'crates/experimental/nanocodex-voice-protocol/**', 'crates/experimental/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml']
+  pull_request:
+    paths: ['Cargo.toml', 'Cargo.lock', 'crates/experimental/nanocodex-voice-protocol/**', 'crates/experimental/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml']
+permissions:
+  contents: read
+concurrency:
+  group: apple-inbox-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  macos:
+    name: Native Mac workspace
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: "1.97"
+          targets: wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
+        with:
+          tool: wasm-bindgen-cli@0.2.126
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Build shared Rust voice core
+        run: pnpm build:voice-core
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.5'
+          cache-dependency-path: hands/remote/go.sum
+      - name: Remote companion protocol
+        run: go test -race ./...
+        working-directory: hands/remote
+      - name: Native remote video, input, and reconnection
+        run: swift test --package-path apple/NanocodexRemote
+      - name: Build shared desktop runtime and dependencies
+        run: pnpm exec turbo run build --filter=@nanocodex/desktop-runtime
+      - name: Prepare bundled Mac runtime
+        run: |
+          curl --fail --location https://nodejs.org/dist/v24.19.0/node-v24.19.0-darwin-arm64.tar.gz --output "$RUNNER_TEMP/nanocodex-node.tar.gz"
+          printf '%s  %s\n' 8294b7aa9b03997481c06babf1e8b270c859358f27da57a11509afe537ac381d "$RUNNER_TEMP/nanocodex-node.tar.gz" | shasum -a 256 --check
+          tar -xOf "$RUNNER_TEMP/nanocodex-node.tar.gz" node-v24.19.0-darwin-arm64/bin/node > macos/Resources/runtime/node
+          tar -xOf "$RUNNER_TEMP/nanocodex-node.tar.gz" node-v24.19.0-darwin-arm64/LICENSE > macos/Resources/runtime/NODE-LICENSE.txt
+          chmod 755 macos/Resources/runtime/node
+      - name: Build native workspace and check tiling and background Hands
+        run: >-
+          xcodebuild -project macos/Nanocodex.xcodeproj -scheme Nanocodex
+          -configuration Debug -destination 'platform=macOS'
+          -derivedDataPath macos/build -resultBundlePath macos/build/background-hands.xcresult
+          -only-testing:NanocodexTests/BackgroundHandTests
+          -only-testing:NanocodexTests/ProtocolTests/testRestoredTiledSelectionIgnoresInboxFiltering
+          -only-testing:NanocodexTests/ProtocolTests/testNativeTiledInboxKeepsEditorsActionsAndReviewIndependent
+          test
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: native-macos-evidence
+          path: |
+            macos/build/background-hands.xcresult
+            macos/build/evidence
+          if-no-files-found: ignore
+  native:
+    name: iPhone and iPad Inbox
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: "1.97"
+          targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - name: Build shared Rust voice core
+        run: bash apple/NanocodexVoice/scripts/build-core.sh
+      - name: Protocol and inbox policy
+        run: swift test --package-path apple/InboxCore
+      - name: Voice protocol
+        run: swift test --package-path apple/NanocodexVoice
+      - name: Context capture boundaries
+        run: swift test --package-path apple/NanocodexContext
+      - name: Native Hand boundaries
+        run: swift test --package-path apple/NanocodexHand
+      - name: Build iPhone app
+        run: xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath apple/build/ios CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build
+      - name: Native iPhone journey
+        run: |
+          device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for ds in json.load(sys.stdin)["devices"].values() for d in ds if d["name"].startswith("iPhone")))')
+          xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination "platform=iOS Simulator,id=$device" -derivedDataPath apple/build/ios CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
+          xcrun simctl boot "$device" || true
+          xcrun simctl bootstatus "$device" -b
+          xcrun simctl status_bar "$device" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 --batteryState charged --batteryLevel 100
+          mkdir -p apple/build/evidence
+          xcrun simctl io "$device" recordVideo --codec=h264 apple/build/evidence/inbox-journey.mp4 &
+          capture_pid=$!
+          trap 'kill -INT "$capture_pid" 2>/dev/null || true; wait "$capture_pid" || true' EXIT
+          xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination "platform=iOS Simulator,id=$device" -parallel-testing-enabled NO -derivedDataPath apple/build/ios -resultBundlePath apple/build/inbox.xcresult CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test-without-building
+      - name: Export native screenshots
+        if: always()
+        run: |
+          if [ -d apple/build/inbox.xcresult ]; then
+            xcrun xcresulttool export attachments --path apple/build/inbox.xcresult --output-path apple/build/evidence/screenshots
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: native-inbox-evidence
+          path: |
+            apple/build/evidence
+            apple/build/inbox.xcresult
+          if-no-files-found: ignore
+  app-intents-sdk27:
+    # The SDK guard must be compiled, not left unchecked by stable Xcode builds.
+    runs-on: xcode-27
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: "1.97"
+          targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - name: Build shared Rust voice core
+        run: bash apple/NanocodexVoice/scripts/build-core.sh
+      - name: Build iOS 27 App Intents
+        run: xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build

@@ -518,7 +518,8 @@ async fn workspace_tool_source_overrides_the_runtime_root_and_retains_shell_sess
                 DEFAULT_TOOL_OUTPUT_TOKENS,
             ),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(output.success);
     assert!(
         output.structured_result()["output"]
@@ -817,7 +818,8 @@ async fn hidden_private_names_remain_dispatchable() {
                 DEFAULT_TOOL_OUTPUT_TOKENS,
             ),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert_eq!(output.structured_result(), json!("private"));
     assert!(
@@ -939,7 +941,8 @@ text(result);
                 DEFAULT_TOOL_OUTPUT_TOKENS,
             ),
         )
-        .await;
+        .await
+        .unwrap();
     assert!(execution.success);
     assert_eq!(execution.nested_calls.len(), 1);
     assert_eq!(execution.nested_calls[0].name, "double");
@@ -1021,7 +1024,8 @@ async fn handler_panics_become_aborted_outputs_without_escaping_the_runtime() {
             ToolInput::Function(to_raw_value(&json!({})).unwrap()),
             context,
         )
-        .await;
+        .await
+        .unwrap();
     assert!(!provider.success);
     assert!(matches!(
         provider.output,
@@ -1055,7 +1059,8 @@ async fn direct_model_calls_reach_activated_dynamic_tools() {
             ToolInput::Function(to_raw_value(&json!({ "query": "echo" })).unwrap()),
             context,
         )
-        .await;
+        .await
+        .unwrap();
     assert!(search.success);
 
     let execution = runtime
@@ -1064,7 +1069,8 @@ async fn direct_model_calls_reach_activated_dynamic_tools() {
             ToolInput::Function(to_raw_value(&json!({ "value": 21 })).unwrap()),
             context,
         )
-        .await;
+        .await
+        .unwrap();
     assert!(execution.success);
     assert_eq!(execution.structured_result(), json!({ "value": 21 }));
 }
@@ -1104,7 +1110,8 @@ text(result.value);
                 DEFAULT_TOOL_OUTPUT_TOKENS,
             ),
         )
-        .await;
+        .await
+        .unwrap();
 
     assert!(execution.success);
     assert_eq!(

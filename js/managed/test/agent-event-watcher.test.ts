@@ -43,7 +43,6 @@ describe("managed agent event watcher", () => {
 
     const root = agentEvent("root-session", 1, "run.started");
     const child = agentEvent("child-session", 1, "tool.call");
-    subscribed!(agentEvent("root-session", 2, "assistant.delta"));
     for (const type of [
       "api.event",
       "model.warmup.started",
@@ -63,11 +62,42 @@ describe("managed agent event watcher", () => {
     }
     subscribed!(root, undefined, undefined, undefined);
     subscribed!(child, undefined, undefined, 1);
+    const rootDelta = {
+      ...agentEvent("root-session", 3, "assistant.delta"),
+      payload: { model_call_index: 0, item_id: "answer", phase: "final_answer", text: "1, " },
+    };
+    const nextDelta = {
+      ...rootDelta,
+      seq: 4,
+      payload: { ...rootDelta.payload, text: "2, 3" },
+    };
+    const childDelta = {
+      ...agentEvent("child-session", 3, "assistant.delta"),
+      payload: { model_call_index: 0, text: "Working" },
+    };
+    subscribed!(rootDelta);
+    subscribed!(nextDelta);
+    subscribed!(childDelta, undefined, undefined, 1);
+    // Chunks must reach replay/broadcast while the answer is still incomplete.
+    expect(replayed.slice(2)).toEqual([
+      { event: rootDelta, agentId: undefined },
+      { event: nextDelta, agentId: undefined },
+      { event: childDelta, agentId: 1 },
+    ]);
+    const message = {
+      ...agentEvent("root-session", 5, "assistant.message"),
+      payload: { ...rootDelta.payload, text: "1, 2, 3" },
+    };
+    subscribed!(message);
     subscribed!(agentEvent("root-session", 3, "future.transport"));
 
     expect(replayed).toEqual([
       { event: root, agentId: undefined },
       { event: child, agentId: 1 },
+      { event: rootDelta, agentId: undefined },
+      { event: nextDelta, agentId: undefined },
+      { event: childDelta, agentId: 1 },
+      { event: message, agentId: undefined },
     ]);
     expect(observed.map((event) => event.type)).toEqual([
       "model.warmup.started",

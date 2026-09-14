@@ -12,6 +12,7 @@ use std::{
 
 mod artifacts;
 mod audits;
+mod cdp_code;
 mod credential_store;
 mod devtools;
 mod har;
@@ -3667,6 +3668,27 @@ impl NativeBrowser {
         .await
     }
 
+    pub(crate) async fn execute_code(
+        &self,
+        source: &str,
+        context: nanocodex_tools::ToolContext<'_>,
+    ) -> Result<nanocodex_tools::ToolOutput, BrowserError> {
+        cdp_code::validate_code(source)?;
+        let mut state = self.state.lock().await;
+        if state.closed {
+            return Err(BrowserError::Closed);
+        }
+        self.ensure_session(&mut state).await?;
+        let websocket_address = state
+            .session
+            .as_ref()
+            .ok_or(BrowserError::SessionUnavailable)?
+            .browser
+            .websocket_address()
+            .to_owned();
+        cdp_code::execute(&websocket_address, source, context).await
+    }
+
     pub(crate) async fn storage_state(&self) -> Result<BrowserStorageState, BrowserError> {
         let span = info_span!(target: "nanocodex_browser", "browser.storage_state");
         async {
@@ -5319,11 +5341,18 @@ return {
             if session.video.is_some() {
                 return Err(BrowserError::VideoActive);
             }
-            let frames_per_second = frames_per_second.unwrap_or(25).clamp(1, 30);
+            let frames_per_second = frames_per_second.unwrap_or(video::DEFAULT_FRAMES_PER_SECOND);
+            if !(1..=video::MAX_FRAMES_PER_SECOND).contains(&frames_per_second) {
+                return Err(BrowserError::InvalidVideoFrameRate {
+                    frames_per_second,
+                    maximum: video::MAX_FRAMES_PER_SECOND,
+                });
+            }
             let quality = quality.unwrap_or(80).clamp(1, 95);
             session.video = Some(
                 video::start(
                     &session.page,
+                    session.browser.websocket_address(),
                     &session.output_dir,
                     sequence,
                     frames_per_second,
@@ -5336,7 +5365,7 @@ return {
         }
         BrowserAction::VideoStop => {
             let state = session.video.take().ok_or(BrowserError::VideoNotActive)?;
-            let video = video::stop(&session.page, state).await?;
+            let video = video::stop(state).await?;
             Ok(BrowserActionResult::Video {
                 sequence,
                 executed: true,
@@ -7872,6 +7901,8 @@ pub enum BrowserError {
     Io(#[from] io::Error),
     #[error("browser JSON boundary failed")]
     Json(#[from] serde_json::Error),
+    #[error("browser code execution failed: {message}")]
+    BrowserExecute { message: String },
     #[error("CrUX request failed: {source}")]
     CruxRequest {
         #[source]
@@ -8122,12 +8153,24 @@ pub enum BrowserError {
     VideoEncoderStart(#[source] io::Error),
     #[error("browser video encoder did not expose standard input")]
     VideoEncoderStdin,
+    #[error("browser video capture protocol failed: {message}")]
+    VideoCaptureProtocol { message: String },
+    #[error("browser video capture setup did not finish before its deadline")]
+    VideoCaptureTimeout,
+    #[error("browser video frame omitted image data")]
+    VideoFrameMissing,
     #[error("browser video frame was not valid base64")]
     VideoFrameDecode(#[source] base64::DecodeError),
     #[error("browser video encoder failed with status {status:?}: {stderr}")]
     VideoEncoderFailed { status: Option<i32>, stderr: String },
+    #[error("browser video recording ended before Chromium produced a frame")]
+    VideoNoFrames,
     #[error("browser video encoder did not stop before its deadline")]
     VideoStopTimeout,
+    #[error(
+        "browser video frame rate {frames_per_second} is invalid; expected 1 through {maximum}"
+    )]
+    InvalidVideoFrameRate { frames_per_second: u8, maximum: u8 },
     #[error("browser video task failed")]
     VideoTask(#[source] tokio::task::JoinError),
     #[error("browser has no pending JavaScript dialog")]

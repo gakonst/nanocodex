@@ -1,0 +1,76 @@
+.ssh-identity-manager .ssh-identity-form select {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  padding: 0 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--text);
+  font: 13px/1.5 var(--font-sans);
+}
+
+.ssh-identity-manager .ssh-identity-form > button {
+  align-self: end;
+  min-height: 40px;
+  max-width: 100%;
+}
+
+.ssh-identity-manager .ssh-identity-list li {
+  align-items: start;
+}
+
+.ssh-identity-manager .ssh-identity-list li > div {
+  flex: 1;
+  gap: 8px;
+}
+
+.ssh-identity-manager .ssh-public-key-field {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.ssh-identity-manager .ssh-public-key-field textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 84px;
+  padding: 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 0;
+  background: var(--surface-subtle);
+  color: var(--text);
+  font: 11px/1.5 var(--font-mono);
+  overflow-wrap: anywhere;
+  resize: vertical;
+}
+
+.ssh-identity-manager .ssh-identity-list .ssh-copy-key {
+  justify-self: start;
+}
+
+.ssh-identity-manager .ssh-public-key-help {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.ssh-identity-manager select:focus-visible,
+.ssh-identity-manager textarea:focus-visible {
+  outline: 2px solid var(--border);
+  outline-offset: 2px;
+}
+
+@media (min-width: 721px) {
+  .vault-ssh .ssh-identity-manager .ssh-key-mode-field {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 720px) {
+  .ssh-identity-manager .ssh-identity-form select {
+    height: 44px;
+    font-size: 16px;
+  }
+}

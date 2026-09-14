@@ -33,6 +33,33 @@ jobs:
           cache-on-failure: true
       - run: cargo test --workspace --locked
 
+  voice-native:
+    name: native voice and relocated runtime
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: "1.97"
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          workspaces: third_party/codex-voice
+      - name: Install native SDK
+        run: brew install gstreamer
+      - name: Test native media and process lifecycle
+        run: cargo test --locked --manifest-path third_party/codex-voice/Cargo.toml -p nanocodex-voice-host -p nanocodex-voice-native
+      - name: Stage private runtime
+        run: python3 scripts/build-voice-native.py
+      - name: Test relocated helper
+        run: cargo test --locked --manifest-path third_party/codex-voice/Cargo.toml -p nanocodex-voice-native --test packaged -- --ignored
+        env:
+          NANOCODEX_TEST_VOICE_RUNTIME: ${{ github.workspace }}/target/debug/nanocodex-resources/voice
+
   quality:
     name: rustfmt, clippy, and docs
     runs-on: ubuntu-latest
@@ -51,6 +78,8 @@ jobs:
         with:
           cache-on-failure: true
       - run: cargo fmt --all -- --check
+      - name: Check Linux Hand installation boundaries
+        run: python3 bin/nanocodex/src/hand_setup/test_install.py
       - name: Clippy workspace targets
         run: |
           cargo clippy --workspace --all-targets --all-features --exclude nanocodex-bin -- -D warnings -A clippy::missing_const_for_fn
@@ -68,9 +97,19 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   vm-guest:
-    name: static Linux VM guest
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    name: static Linux guest and Docker Hand (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -80,7 +119,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: stable
-          targets: x86_64-unknown-linux-musl
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
           cache-on-failure: true
@@ -92,9 +131,46 @@ jobs:
       - name: Build the actual static guest artifact
         run: >-
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
           cargo build --locked --package nanocodex-vm
           --bin nanocodex-vm-guest --no-default-features
-          --features guest-runtime --target x86_64-unknown-linux-musl
+          --features guest-runtime --target ${{ matrix.target }}
+
+      - name: Build the Docker Hand image
+        run: |
+          context=$(mktemp -d)
+          trap 'rm -rf "$context"' EXIT
+          cp target/${{ matrix.target }}/debug/nanocodex-vm-guest "$context/"
+          cp crates/experimental/nanocodex-vm/image/Dockerfile.hand "$context/Dockerfile"
+          cp -R crates/experimental/nanocodex-vm/image/toolkit "$context/toolkit"
+          docker build --tag nanocodex-hand:ci "$context"
+      - name: Exercise offline toolkit with a read-only root and unprivileged user
+        run: >-
+          docker run --rm --network none --read-only --user 1000:1000
+          --cap-drop ALL --security-opt no-new-privileges --pids-limit 512
+          --tmpfs /tmp:rw,nosuid,nodev,size=256m --env HOME=/workspace
+          --tmpfs /workspace:rw,exec,nosuid,nodev,uid=1000,gid=1000,size=2g
+          --env TMPDIR=/workspace --workdir /workspace
+          --entrypoint sh nanocodex-hand:ci -lc nanocodex-check-hand-toolkit
+      - name: Test Docker tools, desktop, persistence, and cleanup without KVM
+        run: |
+          cargo test --locked -p nanocodex-vm --test docker_live -- --ignored --nocapture
+          cargo test --locked -p nanocodex2-bin --test nanocodex2_managed docker_hand_live -- --ignored --nocapture
+        env:
+          NANOCODEX_DOCKER_TEST_IMAGE: nanocodex-hand:ci
+          NANOCODEX_DOCKER_HOST_SENTINEL: must-not-enter-the-container
+      - name: Verify missing KVM is explained before account setup
+        run: |
+          sudo unshare --mount --propagation private sh -eu -c '
+            if test -e /dev/kvm; then mount --bind /dev/null /dev/kvm; fi
+            if target/debug/nanocodex2 hand --vm /nonexistent-root.ext4 > /tmp/hand-kvm-error 2>&1; then
+              cat /tmp/hand-kvm-error
+              exit 1
+            fi
+            cat /tmp/hand-kvm-error
+            grep -F "VM backend is unavailable" /tmp/hand-kvm-error
+            grep -F "hand --docker IMAGE --volume NAME" /tmp/hand-kvm-error
+          '
 
   policy:
     name: dependencies and spelling
@@ -178,6 +254,13 @@ jobs:
           npm run build --prefix examples/privy
           npm test --prefix examples/better-auth
           npm run build --prefix examples/better-auth
+      - name: Check native X integration
+        run: |
+          pnpm --filter @nanocodex/x-api run typecheck
+          pnpm --filter @nanocodex/x-api run test
+          pnpm exec turbo run build --filter nanocodex-connect-protocol
+          pnpm --filter nanocodex-managed-service run prepare:code-evaluator
+          pnpm --filter nanocodex-managed-service exec vitest run test/account-info.test.ts test/default-mcp.test.ts test/startup-context.test.ts
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nanocodex-web-wasm
@@ -266,20 +349,23 @@ jobs:
           name: nanocodex-web-wasm
           path: js/nanocodex/pkg-web
       - name: Install JavaScript workspace
-        run: pnpm install --frozen-lockfile
+        run: |
+          pnpm install --frozen-lockfile
+          npm ci --prefix examples/astra-mpp-trial
       - name: Build account Worker dependencies
         run: pnpm exec turbo run build --filter nanocodex-connect-protocol
       - name: Test the account Worker
         run: pnpm --filter nanocodex-web run test:web
       - name: Build JavaScript apps
-        run: >-
-          pnpm exec turbo run build --only
-          --filter nanocodex-tools
-          --filter nanocodex-connect-ui
-          --filter nanocodex-terminal
-          --filter @nanocodex/connect-dialog
-          --filter @nanocodex/connect-playground
-          --filter nanocodex-web
+        run: |
+          pnpm exec turbo run build --only \
+            --filter nanocodex-tools \
+            --filter nanocodex-connect-ui \
+            --filter nanocodex-terminal \
+            --filter @nanocodex/connect-dialog \
+            --filter @nanocodex/connect-playground \
+            --filter nanocodex-web
+          npm run check --prefix examples/astra-mpp-trial
   codeql:
     name: CodeQL actions
     runs-on: ubuntu-latest

@@ -1,11 +1,13 @@
+import { initializeMemoryContent, memoryIdentityDigest, readMemoryContent, storeMemoryContent } from "./durable-memory-storage";
 import { DurableObject } from "cloudflare:workers";
+import {
+  initializeHistoryStorage, storeHistorySegments, deleteHistorySegments, readHistoryText,
+  type HistorySegment,
+} from "./memory-history-storage";
 
 import {
   DurableMemoryError,
-  MAX_MEMORY_RECORDS,
-  MAX_MEMORY_TOTAL_CONTENT_BYTES,
   MEMORY_PROBATION_DURATION_MS,
-  normalizeMemoryIdentity,
   parseMemoryOperation,
   rankMemories,
   type MemoryDeleteResult,
@@ -44,7 +46,6 @@ const MEMORY_MUTATION_ASSERTION = "x-nanocodex-memory-mutation";
 const MEMORY_SCAN_RECEIPT_MS = 30 * 60 * 1_000;
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[78][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TURN_ID = /^[A-Za-z0-9._:-]{1,128}$/;
-const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_AI_RETRY_DELAY_MS = 60_000;
 const VECTOR_SEARCH_CACHE_MS = 30_000;
 const EMPTY_VECTOR_SEARCH_CACHE_MS = 1_000;
@@ -59,19 +60,15 @@ type MemoryTurnRow = {
   title: string;
   turn_id: string;
   source_cursor: string;
-  user_text: string;
-  assistant_text: string;
-  content: string;
   created_at: number;
-  ai_item_id: string | null;
 };
 
 type DurableMemoryRow = {
   id: number;
   version: number;
   owner_team_id: string;
-  content: string;
-  identity: string;
+  content_json: string;
+  identity_digest: string;
   created_at_ms: number;
   updated_at_ms: number;
   last_scanned_at_ms: number | null;
@@ -81,13 +78,12 @@ type DurableMemoryRow = {
   probation_until_ms: number | null;
 };
 
-type RankedMemoryTurnRow = MemoryTurnRow & { rank: number; semantic_score?: number };
+type RankedMemoryTurnRow = MemoryTurnRow & { content: string; rank: number; semantic_score?: number };
 
 type AiOutboxRow = {
   operation_id: string;
   operation: "upsert" | "delete";
   segment_id: string;
-  payload_json: string | null;
   ai_item_id: string | null;
   attempt_count: number;
   retry_at: number;
@@ -165,74 +161,17 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS memory_turns (
-        segment_id TEXT PRIMARY KEY,
-        thread_id TEXT NOT NULL,
-        turn_id TEXT NOT NULL,
-        source_cursor INTEGER NOT NULL,
-        user_text TEXT NOT NULL,
-        assistant_text TEXT NOT NULL,
-        content TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        ai_item_id TEXT,
-        FOREIGN KEY (thread_id) REFERENCES memory_threads(thread_id) ON DELETE CASCADE,
-        UNIQUE (thread_id, turn_id)
-      );
-      CREATE INDEX IF NOT EXISTS memory_turns_thread_created
-        ON memory_turns(thread_id, created_at);
       CREATE TABLE IF NOT EXISTS memory_tombstones (
         thread_id TEXT PRIMARY KEY,
         deleted_at INTEGER NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS memory_ai_outbox (
-        operation_id TEXT PRIMARY KEY,
-        operation TEXT NOT NULL CHECK (operation IN ('upsert', 'delete')),
-        segment_id TEXT NOT NULL,
-        payload_json TEXT,
-        ai_item_id TEXT,
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        retry_at INTEGER NOT NULL DEFAULT 0
-      );
-      CREATE TABLE IF NOT EXISTS durable_memories (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        version INTEGER NOT NULL CHECK (version > 0),
-        owner_team_id TEXT NOT NULL,
-        content TEXT NOT NULL,
-        identity TEXT NOT NULL,
-        created_at_ms INTEGER NOT NULL,
-        updated_at_ms INTEGER NOT NULL,
-        last_scanned_at_ms INTEGER,
-        scan_count INTEGER NOT NULL DEFAULT 0,
-        last_used_at_ms INTEGER,
-        use_count INTEGER NOT NULL DEFAULT 0,
-        probation_until_ms INTEGER,
-        UNIQUE(identity)
-      );
-      CREATE INDEX IF NOT EXISTS durable_memories_owner_team_id
-        ON durable_memories(owner_team_id, id);
       CREATE TABLE IF NOT EXISTS memory_scan_receipts (
         subject_id TEXT PRIMARY KEY,
         expires_at_ms INTEGER NOT NULL
       );
-      CREATE VIRTUAL TABLE IF NOT EXISTS memory_turns_fts USING fts5(
-        content,
-        content='memory_turns',
-        content_rowid='rowid',
-        tokenize='unicode61'
-      );
-      CREATE TRIGGER IF NOT EXISTS memory_turns_ai AFTER INSERT ON memory_turns BEGIN
-        INSERT INTO memory_turns_fts(rowid, content) VALUES (new.rowid, new.content);
-      END;
-      CREATE TRIGGER IF NOT EXISTS memory_turns_ad AFTER DELETE ON memory_turns BEGIN
-        INSERT INTO memory_turns_fts(memory_turns_fts, rowid, content)
-          VALUES ('delete', old.rowid, old.content);
-      END;
-      CREATE TRIGGER IF NOT EXISTS memory_turns_au AFTER UPDATE OF content ON memory_turns BEGIN
-        INSERT INTO memory_turns_fts(memory_turns_fts, rowid, content)
-          VALUES ('delete', old.rowid, old.content);
-        INSERT INTO memory_turns_fts(rowid, content) VALUES (new.rowid, new.content);
-      END;
     `);
+    initializeHistoryStorage(this.ctx.storage, this.env.HISTORY_AI_SEARCH !== undefined);
+    initializeMemoryContent(this.ctx.storage);
     this.ctx.blockConcurrencyWhile(async () => {
       this.#scheduleAiOutbox();
     });
@@ -281,8 +220,8 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
           title: row.title,
           turn_id: row.turn_id,
           cursor: row.source_cursor,
-          user: row.user_text,
-          assistant: row.assistant_text,
+          user: readHistoryText(this.ctx.storage, row.segment_id, "user"),
+          assistant: readHistoryText(this.ctx.storage, row.segment_id, "assistant"),
         }));
         const citations = groupHistoryCitations(rows.map((row) => ({
           thread_id: row.thread_id,
@@ -293,7 +232,7 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
         return json({ turns, citations } satisfies HistoryReadSessionResponse);
       }
       if (request.method === "GET" && url.pathname === "/memories") {
-        return json({ memories: this.#listMemories(assertedTeam) });
+        return this.#listMemories(assertedTeam);
       }
       if (request.method === "POST" && url.pathname === "/memory") {
         const operation = parseMemoryOperation(await parseJsonBody<unknown>(request));
@@ -314,7 +253,7 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
         return json({ error: error.code, message: error.message }, {
           status: error.code === "memory_conflict" || error.code === "memory_duplicate" ? 409
             : error.code === "memory_not_found" ? 404
-              : error.code === "memory_capacity" || error.code === "memory_secret_rejected" ? 422
+              : error.code === "memory_secret_rejected" ? 422
                 : 400,
         });
       }
@@ -363,69 +302,39 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
       throw new HistorySearchError(400, "invalid_projection", "invalid history projection");
     }
     const userText = promptInputText(projection.input);
-    const content = [`User: ${userText}`, `Assistant: ${projection.final_message}`].join("\n\n");
     const segmentId = `${projection.thread_id}:${projection.turn_id}`;
     this.ctx.storage.transactionSync(() => {
       if (this.ctx.storage.sql.exec(
         "SELECT 1 AS present FROM memory_tombstones WHERE thread_id = ?",
         projection.thread_id,
       ).toArray().length > 0) return;
+      const retained = this.ctx.storage.sql.exec<{ source_cursor: string }>(
+        "SELECT CAST(source_cursor AS TEXT) AS source_cursor FROM memory_turns WHERE segment_id = ?", segmentId,
+      ).toArray()[0];
+      // Replayed/out-of-order projections must not replace content or pending AI
+      // work. Every accepted generation gets immutable segment/upload identities.
+      if (retained && BigInt(retained.source_cursor) >= BigInt(projection.cursor)) return;
+      const owner = this.ctx.storage.sql.exec<{ team_id: string }>(
+        "SELECT team_id FROM memory_threads WHERE thread_id = ?", projection.thread_id,
+      ).toArray()[0];
+      if (owner && owner.team_id !== teamId) throw new HistorySearchError(404, "not_found", "session was not found");
       this.ctx.storage.sql.exec(
         `INSERT INTO memory_threads (thread_id, team_id, title, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(thread_id) DO UPDATE SET
-           team_id = excluded.team_id,
-           title = excluded.title,
+         ON CONFLICT(thread_id) DO UPDATE SET title = excluded.title,
            updated_at = MAX(memory_threads.updated_at, excluded.updated_at)`,
-        projection.thread_id,
-        teamId,
-        projection.title,
-        projection.created_at,
-        projection.created_at,
+        projection.thread_id, teamId, projection.title, projection.created_at, projection.created_at,
       );
+      deleteHistorySegments(this.ctx.storage, segmentId, this.env.HISTORY_AI_SEARCH !== undefined);
       this.ctx.storage.sql.exec(
-        `INSERT INTO memory_turns (
-           segment_id, thread_id, turn_id, source_cursor,
-           user_text, assistant_text, content, created_at
-         ) VALUES (?, ?, ?, CAST(? AS INTEGER), ?, ?, ?, ?)
-         ON CONFLICT(segment_id) DO UPDATE SET
-           source_cursor = excluded.source_cursor,
-           user_text = excluded.user_text,
-           assistant_text = excluded.assistant_text,
-           content = excluded.content,
-           created_at = excluded.created_at
-         WHERE excluded.source_cursor >= memory_turns.source_cursor`,
-        segmentId,
-        projection.thread_id,
-        projection.turn_id,
-        projection.cursor,
-        userText,
-        projection.final_message,
-        content,
-        projection.created_at,
+        `INSERT INTO memory_turns (segment_id, thread_id, turn_id, source_cursor, created_at)
+         VALUES (?, ?, ?, CAST(? AS INTEGER), ?)
+         ON CONFLICT(segment_id) DO UPDATE SET source_cursor = excluded.source_cursor,
+           created_at = excluded.created_at`,
+        segmentId, projection.thread_id, projection.turn_id, projection.cursor, projection.created_at,
       );
-      if (this.env.HISTORY_AI_SEARCH !== undefined) {
-        this.ctx.storage.sql.exec(
-          `INSERT INTO memory_ai_outbox (
-             operation_id, operation, segment_id, payload_json, attempt_count, retry_at
-           ) VALUES (?, 'upsert', ?, ?, 0, 0)
-           ON CONFLICT(operation_id) DO UPDATE SET
-             payload_json = excluded.payload_json,
-             attempt_count = 0,
-             retry_at = 0`,
-          `upsert:${segmentId}`,
-          segmentId,
-          JSON.stringify({
-            name: `${segmentId}.md`,
-            content,
-            metadata: {
-              organization_id: this.#organizationId(),
-              team_id: teamId,
-              segment_id: segmentId,
-            },
-          }),
-        );
-      }
+      storeHistorySegments(this.ctx.storage, segmentId, userText, projection.final_message,
+        this.env.HISTORY_AI_SEARCH !== undefined);
     });
     this.#vectorCache.clear();
   }
@@ -439,31 +348,12 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
       if (owner !== undefined && owner.team_id !== teamId) {
         throw new HistorySearchError(404, "not_found", "session was not found");
       }
-      const indexed = this.ctx.storage.sql.exec<{ segment_id: string; ai_item_id: string | null }>(
-        "SELECT segment_id, ai_item_id FROM memory_turns WHERE thread_id = ?",
-        threadId,
-      ).toArray();
       this.ctx.storage.sql.exec(
-        "INSERT OR REPLACE INTO memory_tombstones (thread_id, deleted_at) VALUES (?, ?)",
-        threadId,
-        Date.now(),
+        "INSERT OR REPLACE INTO memory_tombstones (thread_id, deleted_at) VALUES (?, ?)", threadId, Date.now(),
       );
-      if (this.env.HISTORY_AI_SEARCH !== undefined) {
-        for (const item of indexed) {
-          this.ctx.storage.sql.exec(
-            "DELETE FROM memory_ai_outbox WHERE segment_id = ?",
-            item.segment_id,
-          );
-          this.ctx.storage.sql.exec(
-            `INSERT OR REPLACE INTO memory_ai_outbox (
-               operation_id, operation, segment_id, payload_json, ai_item_id, attempt_count, retry_at
-             ) VALUES (?, 'delete', ?, NULL, ?, 0, 0)`,
-            `delete:${item.segment_id}`,
-            item.segment_id,
-            item.ai_item_id,
-          );
-        }
-      }
+      for (const row of this.ctx.storage.sql.exec<{ segment_id: string }>(
+        "SELECT segment_id FROM memory_turns WHERE thread_id = ?", threadId,
+      )) deleteHistorySegments(this.ctx.storage, row.segment_id, this.env.HISTORY_AI_SEARCH !== undefined);
       this.ctx.storage.sql.exec("DELETE FROM memory_threads WHERE thread_id = ?", threadId);
     });
     this.#vectorCache.clear();
@@ -504,23 +394,66 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
     const match = historyFtsQuery(query);
     if (!match) return [];
     const candidateLimit = Math.min(50, Math.max(limit, limit * 3));
-    return this.ctx.storage.sql.exec<RankedMemoryTurnRow>(
-      `SELECT m.segment_id, m.thread_id, t.title, m.turn_id,
-              CAST(m.source_cursor AS TEXT) AS source_cursor,
-              m.user_text, m.assistant_text, m.content, m.created_at, m.ai_item_id,
-              bm25(memory_turns_fts) AS rank
-       FROM memory_turns_fts
-       JOIN memory_turns m ON m.rowid = memory_turns_fts.rowid
+    const candidates = this.ctx.storage.sql.exec<RankedMemoryTurnRow>(
+      `WITH hits AS MATERIALIZED (
+         SELECT s.turn_segment_id, bm25(memory_segments_fts) AS rank
+         FROM memory_segments_fts JOIN memory_segments s ON s.rowid = memory_segments_fts.rowid
+         JOIN memory_turns m ON m.segment_id = s.turn_segment_id
+         JOIN memory_threads t ON t.thread_id = m.thread_id
+         WHERE memory_segments_fts MATCH ? AND t.team_id = ?
+       )
+       SELECT m.segment_id, m.thread_id, t.title, m.turn_id,
+              CAST(m.source_cursor AS TEXT) AS source_cursor, m.created_at, MIN(h.rank) AS rank
+       FROM hits h JOIN memory_turns m ON m.segment_id = h.turn_segment_id
        JOIN memory_threads t ON t.thread_id = m.thread_id
-       WHERE memory_turns_fts MATCH ? AND t.team_id = ?
-       ORDER BY rank, m.created_at DESC
-       LIMIT ?`,
-      match,
-      teamId,
-      candidateLimit,
-    ).toArray()
-      .filter((row) => isAcceptedHistoryLexicalMatch(query, row.content))
-      .slice(0, limit);
+       GROUP BY m.segment_id ORDER BY rank, m.created_at DESC LIMIT ?`,
+      match, teamId, candidateLimit,
+    ).toArray();
+    const accepted: RankedMemoryTurnRow[] = [];
+    const terms = historySearchTerms(query);
+    for (const candidate of candidates) {
+      const matched = new Set<string>();
+      let phraseAccepted = false;
+      let preview: string | undefined;
+      let adjacentTail = "";
+      let previousField = "";
+      let previousWhitespace = false;
+      for (const segment of this.ctx.storage.sql.exec<Pick<HistorySegment, "content" | "field" | "overlap">>(
+        "SELECT content, field, overlap FROM memory_segments WHERE turn_segment_id = ? ORDER BY field, chunk_index",
+        candidate.segment_id,
+      )) {
+        const content = segment.content;
+        if (preview === undefined && terms.some((term) => content.toLocaleLowerCase().includes(term))) {
+          preview = snippet(content, query);
+        }
+        if (terms.length <= 2 || isExactHistoryIdentifierQuery(query)) {
+          // Preserve phrase matching even when arbitrarily much whitespace spans
+          // storage chunks. Exact identifiers use the overlapping raw content.
+          const original = content.slice(segment.overlap);
+          const normalized = original.normalize("NFKC").replace(/[_-]+/gu, " ").match(/[\p{L}\p{N}]+/gu) ?? [];
+          const boundary = previousField === segment.field && previousWhitespace && /^\s/u.test(original)
+            && !isExactHistoryIdentifierQuery(query)
+            ? `${adjacentTail} ${normalized[0] ?? ""}` : "";
+          if (isAcceptedHistoryLexicalMatch(query, content) || (boundary && isAcceptedHistoryLexicalMatch(query, boundary))) {
+            preview = snippet(content, query);
+            phraseAccepted = true;
+            break;
+          }
+          if (normalized.length) adjacentTail = normalized.at(-1)!;
+          previousField = segment.field;
+          previousWhitespace = /\s$/u.test(original);
+        } else {
+          for (const term of terms) if (!matched.has(term) && isAcceptedHistoryLexicalMatch(term, content)) matched.add(term);
+          if (matched.size >= Math.max(2, Math.ceil(terms.length * 0.6))) break;
+        }
+      }
+      if (phraseAccepted || (terms.length > 2 && !isExactHistoryIdentifierQuery(query)
+        && matched.size >= Math.max(2, Math.ceil(terms.length * 0.6)))) {
+        accepted.push({ ...candidate, content: preview ?? "" });
+        if (accepted.length === limit) break;
+      }
+    }
+    return accepted;
   }
 
   async #sharedVectorSearch(
@@ -604,20 +537,25 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
     const unique = [...bySegment.values()];
     if (unique.length === 0) return [];
     const placeholders = unique.map(() => "?").join(", ");
-    const rows = this.ctx.storage.sql.exec<MemoryTurnRow>(
+    const rows = this.ctx.storage.sql.exec<MemoryTurnRow & { content: string; matched_segment_id: string }>(
       `SELECT m.segment_id, m.thread_id, t.title, m.turn_id,
               CAST(m.source_cursor AS TEXT) AS source_cursor,
-              m.user_text, m.assistant_text, m.content, m.created_at, m.ai_item_id
-       FROM memory_turns m
+              s.content, m.created_at, s.segment_id AS matched_segment_id
+       FROM memory_segments s JOIN memory_turns m ON m.segment_id = s.turn_segment_id
        JOIN memory_threads t ON t.thread_id = m.thread_id
-       WHERE m.segment_id IN (${placeholders}) AND t.team_id = ?`,
+       WHERE s.segment_id IN (${placeholders}) AND t.team_id = ?`,
       ...unique.map(({ segmentId }) => segmentId),
       teamId,
-    ).toArray();
-    const byId = new Map(rows.map((row) => [row.segment_id, row]));
+    );
+    // Retain only display snippets, not up to `limit` full segment bodies.
+    const byId = new Map<string, MemoryTurnRow & { content: string }>();
+    for (const row of rows) byId.set(row.matched_segment_id, { ...row, content: snippet(row.content, query) });
+    const seen = new Set<string>();
     return unique.flatMap(({ segmentId, score }) => {
       const row = byId.get(segmentId);
-      return row === undefined ? [] : [{ ...row, rank: -score, semantic_score: score }];
+      if (row === undefined || seen.has(row.segment_id)) return [];
+      seen.add(row.segment_id);
+      return [{ ...row, content: snippet(row.content, query), rank: -score, semantic_score: score }];
     }).slice(0, limit);
   }
 
@@ -633,7 +571,7 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
       return this.ctx.storage.sql.exec<MemoryTurnRow>(
         `SELECT m.segment_id, m.thread_id, t.title, m.turn_id,
                 CAST(m.source_cursor AS TEXT) AS source_cursor,
-                m.user_text, m.assistant_text, m.content, m.created_at, m.ai_item_id
+                m.created_at
          FROM memory_turns m
          JOIN memory_threads t ON t.thread_id = m.thread_id
          WHERE m.thread_id = ? AND t.team_id = ? AND m.turn_id IN (${placeholders})
@@ -649,7 +587,7 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
       `SELECT * FROM (
          SELECT m.segment_id, m.thread_id, t.title, m.turn_id,
                 CAST(m.source_cursor AS TEXT) AS source_cursor,
-                m.user_text, m.assistant_text, m.content, m.created_at, m.ai_item_id
+                m.created_at
          FROM memory_turns m
          JOIN memory_threads t ON t.thread_id = m.thread_id
          WHERE m.thread_id = ? AND t.team_id = ?
@@ -694,13 +632,12 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
     const now = Date.now();
     return this.ctx.storage.transactionSync(() => {
       this.#pruneMemories(now);
-      const rows = this.ctx.storage.sql.exec<DurableMemoryRow>(
-        `SELECT * FROM durable_memories
-         WHERE owner_team_id = ?
-         ORDER BY id`,
-        teamId,
-      ).toArray();
-      const scan = rankMemories(query, rows.map(memoryRecord), limit);
+      const storage = this.ctx.storage;
+      const scan = rankMemories(query, function* () {
+        for (const row of storage.sql.exec<DurableMemoryRow>(
+          "SELECT * FROM durable_memories WHERE owner_team_id = ? ORDER BY id", teamId,
+        )) yield memoryRecord(row, storage);
+      }, limit);
       for (const candidate of scan.candidates) {
         this.ctx.storage.sql.exec(
           `UPDATE durable_memories
@@ -746,35 +683,61 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
           last_used_at_ms: now,
           use_count: row.use_count + 1,
           probation_until_ms: null,
-        }));
+        }, this.ctx.storage));
       }
       return { operation: "read", memories };
     });
   }
 
-  #listMemories(teamId: string): MemoryRecord[] {
+  #listMemories(teamId: string): Response {
     this.#pruneMemories(Date.now());
-    return this.ctx.storage.sql.exec<DurableMemoryRow>(
-      `SELECT * FROM durable_memories
-       WHERE owner_team_id = ?
-       ORDER BY created_at_ms, id
-       LIMIT ?`,
-      teamId,
-      MAX_MEMORY_RECORDS,
-    ).toArray().map(memoryRecord);
+    const storage = this.ctx.storage;
+    const maxId = storage.sql.exec<{ id: number }>(
+      "SELECT COALESCE(MAX(id), 0) AS id FROM durable_memories WHERE owner_team_id = ?", teamId,
+    ).one().id;
+    const chunks = (function* () {
+      yield '{"memories":[';
+      let created = -1;
+      let id = 0;
+      let first = true;
+      while (true) {
+        const rows = storage.sql.exec<DurableMemoryRow>(
+          `SELECT * FROM durable_memories WHERE owner_team_id = ? AND id <= ?
+           AND (created_at_ms, id) > (?, ?) ORDER BY created_at_ms, id LIMIT 64`,
+          teamId, maxId, created, id,
+        ).toArray();
+        if (rows.length === 0) break;
+        for (const row of rows) {
+          yield `${first ? "" : ","}${JSON.stringify(memoryRecord(row, storage))}`;
+          first = false;
+        }
+        created = rows.at(-1)!.created_at_ms;
+        id = rows.at(-1)!.id;
+      }
+      yield "]}";
+    })();
+    const encoder = new TextEncoder();
+    return new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const next = chunks.next();
+        if (next.done) controller.close();
+        else controller.enqueue(encoder.encode(next.value));
+      },
+      cancel() { chunks.return(); },
+    }), { headers: { "content-type": "application/json", "cache-control": "no-store" } });
   }
 
   #putMemory(content: string, replace: MemoryKey | undefined, teamId: string): MemoryPutResult {
     if (containsLikelySecret(content)) {
       throw new DurableMemoryError("memory_secret_rejected", "memory content was rejected as a likely secret");
     }
-    const identity = normalizeMemoryIdentity(content);
+    const identity = memoryIdentityDigest(content);
     const now = Date.now();
     const probationUntil = now + MEMORY_PROBATION_DURATION_MS;
     return this.ctx.storage.transactionSync(() => {
       this.#pruneMemories(now);
       const duplicate = this.ctx.storage.sql.exec<{ id: number }>(
-        "SELECT id FROM durable_memories WHERE identity = ? AND (? IS NULL OR id != ?)",
+        "SELECT id FROM durable_memories WHERE identity_digest = ? AND (? IS NULL OR id != ?)",
         identity,
         replace?.id ?? null,
         replace?.id ?? null,
@@ -782,13 +745,6 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
       if (duplicate) {
         throw new DurableMemoryError("memory_duplicate", "an equivalent memory already exists");
       }
-      const capacity = this.ctx.storage.sql.exec<{ count: number; content_bytes: number }>(
-        `SELECT COUNT(*) AS count,
-                COALESCE(SUM(length(CAST(content AS BLOB))), 0) AS content_bytes
-         FROM durable_memories`,
-      ).toArray()[0] ?? { count: 0, content_bytes: 0 };
-      const contentBytes = new TextEncoder().encode(content).byteLength;
-
       if (replace) {
         const current = this.ctx.storage.sql.exec<DurableMemoryRow>(
           "SELECT * FROM durable_memories WHERE id = ? AND owner_team_id = ?",
@@ -799,17 +755,12 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
         if (current.version !== replace.version) {
           throw new DurableMemoryError("memory_conflict", "memory changed since it was read");
         }
-        const currentBytes = new TextEncoder().encode(current.content).byteLength;
-        if (capacity.content_bytes - currentBytes + contentBytes > MAX_MEMORY_TOTAL_CONTENT_BYTES) {
-          throw new DurableMemoryError("memory_capacity", "memory content capacity was reached");
-        }
         this.ctx.storage.sql.exec(
           `UPDATE durable_memories
-           SET version = version + 1, content = ?, identity = ?, updated_at_ms = ?,
+           SET version = version + 1, identity_digest = ?, updated_at_ms = ?,
                last_scanned_at_ms = NULL, scan_count = 0,
                last_used_at_ms = NULL, use_count = 0, probation_until_ms = ?
            WHERE id = ? AND version = ? AND owner_team_id = ?`,
-          content,
           identity,
           now,
           probationUntil,
@@ -817,34 +768,32 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
           replace.version,
           teamId,
         );
+        storeMemoryContent(this.ctx.storage, replace.id, content);
         const updated = this.ctx.storage.sql.exec<DurableMemoryRow>(
           "SELECT * FROM durable_memories WHERE id = ?",
           replace.id,
         ).toArray()[0]!;
-        return { operation: "put", memory: memoryRecord(updated), replaced: true };
+        return { operation: "put", memory: memoryRecord(updated, this.ctx.storage, content), replaced: true };
       }
 
-      if (capacity.count >= MAX_MEMORY_RECORDS
-        || capacity.content_bytes + contentBytes > MAX_MEMORY_TOTAL_CONTENT_BYTES) {
-        throw new DurableMemoryError("memory_capacity", "memory storage capacity was reached");
-      }
       this.ctx.storage.sql.exec(
         `INSERT INTO durable_memories (
-           version, owner_team_id, content, identity,
+           version, owner_team_id, content_json, identity_digest,
            created_at_ms, updated_at_ms, probation_until_ms
          ) VALUES (1, ?, ?, ?, ?, ?, ?)`,
         teamId,
-        content,
+        "",
         identity,
         now,
         now,
         probationUntil,
       );
       const inserted = this.ctx.storage.sql.exec<DurableMemoryRow>(
-        "SELECT * FROM durable_memories WHERE identity = ?",
+        "SELECT * FROM durable_memories WHERE identity_digest = ?",
         identity,
       ).toArray()[0]!;
-      return { operation: "put", memory: memoryRecord(inserted), replaced: false };
+      storeMemoryContent(this.ctx.storage, inserted.id, content);
+      return { operation: "put", memory: memoryRecord(inserted, this.ctx.storage, content), replaced: false };
     });
   }
 
@@ -897,7 +846,7 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
     if (this.env.HISTORY_AI_SEARCH === undefined) return;
     while (true) {
       const rows = this.ctx.storage.sql.exec<AiOutboxRow>(
-        `SELECT operation_id, operation, segment_id, payload_json, ai_item_id,
+        `SELECT operation_id, operation, segment_id, ai_item_id,
                 attempt_count, retry_at
          FROM memory_ai_outbox
          WHERE retry_at <= ?
@@ -915,17 +864,14 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
               continue;
             }
           } else {
-            const payload = JSON.parse(row.payload_json ?? "null") as {
-              name: string;
-              content: string;
-              metadata: Record<string, unknown>;
-            };
-            const current = this.ctx.storage.sql.exec<{ ai_item_id: string | null }>(
-              "SELECT ai_item_id FROM memory_turns WHERE segment_id = ?",
-              row.segment_id,
+            const current = this.ctx.storage.sql.exec<HistorySegment & { team_id: string }>(
+              `SELECT s.*, t.team_id FROM memory_segments s
+               JOIN memory_turns m ON m.segment_id = s.turn_segment_id
+               JOIN memory_threads t ON t.thread_id = m.thread_id WHERE s.segment_id = ?`, row.segment_id,
             ).toArray()[0];
+            const name = `${row.segment_id}.md`;
             if (!current) {
-              const deleted = await this.#deleteAiItem(row, payload.name);
+              const deleted = await this.#deleteAiItem(row, name);
               if (!deleted) {
                 this.#deferAiOperation(row);
                 continue;
@@ -937,15 +883,18 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
                   this.env.HISTORY_AI_SEARCH,
                   (items) => withAiSearchResult(
                     items.upload(
-                      payload.name,
-                      payload.content,
-                      { metadata: payload.metadata },
+                      name,
+                      `${current.field === "user" ? "User" : "Assistant"}: ${current.content}`,
+                      { metadata: {
+                        organization_id: this.#organizationId(), team_id: current.team_id,
+                        segment_id: row.segment_id,
+                      } },
                     ),
                     copyAiSearchItemState,
                   ),
                 );
                 this.ctx.storage.sql.exec(
-                  "UPDATE memory_turns SET ai_item_id = ? WHERE segment_id = ?",
+                  "UPDATE memory_segments SET ai_item_id = ? WHERE segment_id = ?",
                   item.id,
                   row.segment_id,
                 );
@@ -965,7 +914,7 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
                 } catch (error) {
                   if (!isAiSearchNotFound(error)) throw error;
                   this.ctx.storage.sql.exec(
-                    "UPDATE memory_turns SET ai_item_id = NULL WHERE segment_id = ?",
+                    "UPDATE memory_segments SET ai_item_id = NULL WHERE segment_id = ?",
                     row.segment_id,
                   );
                   this.#deferAiOperation(row);
@@ -1115,10 +1064,10 @@ function snippet(content: string, query: string): string {
   return `${start > 0 ? "…" : ""}${compact.slice(start, end).trim()}${end < compact.length ? "…" : ""}`;
 }
 
-function memoryRecord(row: DurableMemoryRow): MemoryRecord {
+function memoryRecord(row: DurableMemoryRow, storage: DurableObjectStorage, content = readMemoryContent(storage, row)): MemoryRecord {
   return {
     key: { id: row.id, version: row.version },
-    content: row.content,
+    content,
     created_at_ms: row.created_at_ms,
     updated_at_ms: row.updated_at_ms,
     last_scanned_at_ms: row.last_scanned_at_ms,
@@ -1194,12 +1143,8 @@ function retryDelayMs(attempt: number): number {
 }
 
 async function parseJsonBody<Value>(request: Request): Promise<Value> {
-  const encoded = await request.text();
-  if (new TextEncoder().encode(encoded).byteLength > MAX_BODY_BYTES) {
-    throw new HistorySearchError(413, "request_too_large", "memory request exceeds 2 MiB");
-  }
   try {
-    return JSON.parse(encoded) as Value;
+    return await request.json() as Value;
   } catch {
     throw new HistorySearchError(400, "invalid_json", "request body must be JSON");
   }

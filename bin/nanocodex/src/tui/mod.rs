@@ -15,6 +15,7 @@ mod telemetry;
 mod terminal;
 mod transcript;
 mod view;
+pub(crate) mod voice;
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -49,7 +50,7 @@ use tokio::{
 use tracing::{Instrument, info_span};
 
 use self::{
-    app::{App, EscapeAction, PaneId, ReasoningPickerAction, SubmittedPrompt},
+    app::{App, EscapeAction, ModelPickerAction, PaneId, ReasoningPickerAction, SubmittedPrompt},
     notification::Notifier,
     scheduler::{ANIMATION_TICK_INTERVAL, RenderScheduler, RenderScope, STREAM_FRAME_INTERVAL},
     telemetry::{StreamTelemetry, ViewTelemetry},
@@ -335,12 +336,28 @@ enum WorkerEvent {
         name: String,
         error: String,
     },
+    VoiceScoped {
+        generation: u64,
+        update: Box<Self>,
+    },
+    VoiceLevels {
+        microphone: u16,
+        speaker: u16,
+        muted: bool,
+    },
+    VoiceDelta {
+        speaker: VoiceSpeaker,
+        delta: String,
+    },
     VoiceConnecting,
     VoiceStarted {
         voice: RealtimeVoice,
     },
     VoiceTranscript {
         speaker: VoiceSpeaker,
+        text: String,
+    },
+    VoiceRecovered {
         text: String,
     },
     VoiceInfo {
@@ -596,6 +613,18 @@ impl UiModel {
                 Ok(UiUpdate::Redraw(RedrawPriority::Streaming))
             }
             UiAction::Worker(update) => {
+                let update = match update {
+                    WorkerEvent::VoiceScoped { generation, update } => {
+                        if !self.app.voice.accept_generation(
+                            generation,
+                            matches!(*update, WorkerEvent::VoiceRecovered { .. }),
+                        ) {
+                            return Ok(UiUpdate::Ignore);
+                        }
+                        *update
+                    }
+                    update => update,
+                };
                 match &update {
                     WorkerEvent::VoiceConnecting | WorkerEvent::VoiceStarted { .. } => {
                         self.voice_observing = true;
@@ -659,8 +688,10 @@ enum Submission {
     Cancel,
     Trace,
     Fast(Option<bool>),
+    ModelPicker,
     Model(Model),
     ReasoningPicker,
+    Thinking(Thinking),
     Voice(VoiceControl),
     McpLogin(String),
     McpReload(String),
@@ -669,6 +700,7 @@ enum Submission {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum VoiceControl {
+    Mute,
     Toggle,
     Start(Option<RealtimeVoice>),
     Stop,
@@ -685,6 +717,8 @@ pub(crate) async fn run(
     initial_prompt: Option<InitialPrompt>,
     resume: Option<DurableSession>,
 ) -> Result<()> {
+    let voice_mute_key = config.voice_mute_key.clone();
+    let voice_animations = config.voice_animations;
     let resumed_model = resume.as_ref().map(DurableSession::model);
     let initial_thinking = config.thinking();
     let initial_fast_mode = config.fast_mode();
@@ -745,6 +779,8 @@ pub(crate) async fn run(
         .with_model(initial_model)
         .with_thinking(initial_thinking)
         .with_fast_mode(initial_fast_mode);
+    app.voice.mute_key = voice_mute_key;
+    app.voice.animations = voice_animations;
     app.set_math_renderer(math_renderer.clone());
     app.restore_transcript(restored_transcript);
     let mut ui = UiModel::new(app, Arc::clone(&root_session_id));
@@ -1263,11 +1299,32 @@ fn handle_worker_update(
         WorkerEvent::McpFailed { name, error } => {
             app.push_active_error(format!("MCP server {name}: {error}"));
         }
-        WorkerEvent::VoiceConnecting => app.set_active_status("Connecting voice…"),
+        WorkerEvent::VoiceScoped { .. } => {}
+        WorkerEvent::VoiceLevels {
+            microphone,
+            speaker,
+            muted,
+        } => {
+            app.voice.microphone = microphone;
+            app.voice.speaker = speaker;
+            app.voice.muted = muted;
+        }
+        WorkerEvent::VoiceDelta { speaker, delta } => app.voice.delta(speaker, &delta),
+        WorkerEvent::VoiceConnecting => {
+            app.voice.connecting = true;
+            app.set_active_status("Connecting voice…");
+        }
         WorkerEvent::VoiceStarted { voice } => {
+            app.voice.connecting = false;
+            app.voice.active = true;
             app.set_active_status(format!("Voice active ({voice}) — /voice off to stop"));
         }
         WorkerEvent::VoiceTranscript { speaker, text } => {
+            app.voice.complete(speaker);
+            if matches!(speaker, VoiceSpeaker::Assistant) && !app.voice.record_answer(&text, false)
+            {
+                return Ok(());
+            }
             let label = match speaker {
                 VoiceSpeaker::User => "🎙 You",
                 VoiceSpeaker::Assistant => "🔊 Voice",
@@ -1275,11 +1332,22 @@ fn handle_worker_update(
             app.main
                 .push_output(TranscriptItem::Assistant(format!("**{label}:** {text}")));
         }
+        WorkerEvent::VoiceRecovered { text } => {
+            if app.voice.record_answer(&text, true) {
+                app.main.push_output(TranscriptItem::Assistant(text));
+            }
+        }
         WorkerEvent::VoiceInfo { message } => {
             app.main
                 .push_output(TranscriptItem::Assistant(format!("**Voice:** {message}")));
         }
         WorkerEvent::VoiceFailed { error } => {
+            for (speaker, text) in app.voice.stop() {
+                if !text.is_empty() {
+                    app.main
+                        .push_output(TranscriptItem::Assistant(format!("**{speaker}:** {text}")));
+                }
+            }
             app.push_active_error(format!("Voice: {error}"));
             app.set_active_status("Voice unavailable");
         }
@@ -1287,6 +1355,12 @@ fn handle_worker_update(
             app.push_active_error(format!("Voice: {error}"));
         }
         WorkerEvent::VoiceStopped => {
+            for (speaker, text) in app.voice.stop() {
+                if !text.is_empty() {
+                    app.main
+                        .push_output(TranscriptItem::Assistant(format!("**{speaker}:** {text}")));
+                }
+            }
             app.main
                 .push_output(TranscriptItem::Assistant("**Voice:** Stopped.".to_owned()));
             app.set_active_status("Voice stopped");
@@ -1322,6 +1396,7 @@ fn spawn_agent_worker(
             mcp,
             realtime,
             voice: None,
+            voice_generation: 0,
             voice_shutdown: None,
             voice_agent_control: VoiceAgentControl::default(),
         };
@@ -1351,10 +1426,27 @@ fn voice_names(voices: &[RealtimeVoice]) -> String {
         .join(", ")
 }
 
-fn forward_voice_events(mut events: VoiceEvents, updates: mpsc::UnboundedSender<WorkerEvent>) {
+fn forward_voice_events(
+    mut events: VoiceEvents,
+    updates: mpsc::UnboundedSender<WorkerEvent>,
+    generation: u64,
+) {
     drop(tokio::spawn(async move {
         while let Some(event) = events.recv().await {
             let update = match event {
+                VoiceEvent::AudioLevels {
+                    microphone,
+                    speaker,
+                    muted,
+                } => WorkerEvent::VoiceLevels {
+                    microphone,
+                    speaker,
+                    muted,
+                },
+                VoiceEvent::TranscriptDelta { speaker, delta } => {
+                    WorkerEvent::VoiceDelta { speaker, delta }
+                }
+                VoiceEvent::UndeliveredAnswer { text } => WorkerEvent::VoiceRecovered { text },
                 VoiceEvent::Connecting => WorkerEvent::VoiceConnecting,
                 VoiceEvent::Started { voice } => WorkerEvent::VoiceStarted { voice },
                 VoiceEvent::Transcript { speaker, text } => {
@@ -1365,7 +1457,13 @@ fn forward_voice_events(mut events: VoiceEvents, updates: mpsc::UnboundedSender<
                 },
                 VoiceEvent::Stopped => WorkerEvent::VoiceStopped,
             };
-            if updates.send(update).is_err() {
+            if updates
+                .send(WorkerEvent::VoiceScoped {
+                    generation,
+                    update: Box::new(update),
+                })
+                .is_err()
+            {
                 break;
             }
         }
@@ -1382,6 +1480,7 @@ struct AgentWorker {
     mcp: Option<McpHandle>,
     realtime: Option<OpenAi>,
     voice: Option<VoiceSession>,
+    voice_generation: u64,
     voice_shutdown: Option<tokio::task::JoinHandle<()>>,
     voice_agent_control: VoiceAgentControl,
 }
@@ -1449,6 +1548,20 @@ impl AgentWorker {
     async fn control_voice(&mut self, control: VoiceControl) {
         let running = self.voice_running();
         match control {
+            VoiceControl::Mute => {
+                if let Some(voice) = &self.voice {
+                    if let Err(error) = voice.toggle_muted().await {
+                        drop(self.updates.send(WorkerEvent::VoiceCommandFailed {
+                            error: error.to_string(),
+                        }));
+                    }
+                } else {
+                    drop(self.updates.send(WorkerEvent::VoiceCommandFailed {
+                        error: "Start /voice before muting.".into(),
+                    }));
+                }
+                return;
+            }
             VoiceControl::List => {
                 let chatgpt = voice_names(CHATGPT_REALTIME_VOICES);
                 let platform = voice_names(PLATFORM_REALTIME_VOICES);
@@ -1478,7 +1591,7 @@ impl AgentWorker {
         let voice = match control {
             VoiceControl::Start(voice) => voice,
             VoiceControl::Toggle => None,
-            VoiceControl::Stop | VoiceControl::List => return,
+            VoiceControl::Stop | VoiceControl::List | VoiceControl::Mute => return,
         };
         self.await_voice_shutdown().await;
         if self.btw.is_some() {
@@ -1501,7 +1614,8 @@ impl AgentWorker {
         }
         match builder.spawn() {
             Ok((session, events)) => {
-                forward_voice_events(events, self.updates.clone());
+                self.voice_generation = self.voice_generation.saturating_add(1);
+                forward_voice_events(events, self.updates.clone(), self.voice_generation);
                 self.voice = Some(session);
             }
             Err(error) => drop(self.updates.send(WorkerEvent::VoiceFailed {
@@ -1519,12 +1633,20 @@ impl AgentWorker {
             return;
         };
         voice.stop();
-        drop(self.updates.send(WorkerEvent::VoiceStopped));
+        let retired_generation = self.voice_generation;
+        self.voice_generation = self.voice_generation.saturating_add(1);
+        drop(self.updates.send(WorkerEvent::VoiceScoped {
+            generation: self.voice_generation,
+            update: Box::new(WorkerEvent::VoiceStopped),
+        }));
         let updates = self.updates.clone();
         self.voice_shutdown = Some(tokio::spawn(async move {
             if let Err(error) = voice.shutdown().await {
-                drop(updates.send(WorkerEvent::VoiceFailed {
-                    error: format!("failed to stop voice cleanly: {error}"),
+                drop(updates.send(WorkerEvent::VoiceScoped {
+                    generation: retired_generation,
+                    update: Box::new(WorkerEvent::VoiceCommandFailed {
+                        error: format!("failed to stop voice cleanly: {error}"),
+                    }),
                 }));
             }
         }));
@@ -1668,6 +1790,11 @@ impl AgentWorker {
     }
 
     async fn prompt(&mut self, target: PaneId, prompt_id: u64, prompt: SubmittedPrompt) -> bool {
+        if target == PaneId::Main
+            && let Some(voice) = &self.voice
+        {
+            let _ = voice.note_typed_input().await;
+        }
         match target {
             PaneId::Main => {
                 if let Some(turn) = start_turn(
@@ -1727,6 +1854,11 @@ impl AgentWorker {
     }
 
     async fn steer(&mut self, target: PaneId, steer_id: u64, prompt: SubmittedPrompt) -> bool {
+        if target == PaneId::Main
+            && let Some(voice) = &self.voice
+        {
+            let _ = voice.note_typed_input().await;
+        }
         let outcome = match target {
             PaneId::Main => {
                 steer_turn(
@@ -2647,6 +2779,10 @@ fn handle_key(
         return Ok(TerminalAction::Redraw);
     }
 
+    if let Some(action) = handle_model_picker_key(key, app, commands)? {
+        return Ok(action);
+    }
+
     if let Some(action) = handle_reasoning_picker_key(key, app, commands)? {
         return Ok(action);
     }
@@ -2667,6 +2803,10 @@ fn handle_key(
         return Ok(action);
     }
 
+    if key.kind == KeyEventKind::Press && app.focus == PaneId::Main && app.voice.matches_mute(key) {
+        send_command(commands, WorkerCommand::Voice(VoiceControl::Mute))?;
+        return Ok(TerminalAction::Redraw);
+    }
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         match key.code {
             KeyCode::Char('c') => return Ok(TerminalAction::Quit),
@@ -2745,6 +2885,37 @@ fn handle_key(
         | KeyCode::Modifier(_) => {}
     }
     Ok(TerminalAction::Redraw)
+}
+
+fn handle_model_picker_key(
+    key: KeyEvent,
+    app: &mut App,
+    commands: &mpsc::UnboundedSender<WorkerCommand>,
+) -> Result<Option<TerminalAction>> {
+    if app.model_picker().is_none() {
+        return Ok(None);
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c')) {
+        return Ok(Some(TerminalAction::Quit));
+    }
+    if key.modifiers.is_empty() {
+        match key.code {
+            KeyCode::Up | KeyCode::Left | KeyCode::Char('k' | 'h') => {
+                app.move_model_picker(-1);
+            }
+            KeyCode::Down | KeyCode::Right | KeyCode::Char('j' | 'l') => {
+                app.move_model_picker(1);
+            }
+            KeyCode::Enter => {
+                if let Some(ModelPickerAction::Selected(model)) = app.confirm_model_picker() {
+                    send_command(commands, WorkerCommand::SetModel { model })?;
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('q') => app.close_model_picker(),
+            _ => {}
+        }
+    }
+    Ok(Some(TerminalAction::Redraw))
 }
 
 fn handle_reasoning_picker_key(
@@ -3179,6 +3350,13 @@ fn submit(
             let enabled = enabled.unwrap_or(!app.fast_mode());
             send_command(commands, WorkerCommand::SetFastMode { enabled })?;
         }
+        Submission::ModelPicker => {
+            if !app.can_change_start_settings() {
+                app.push_active_error("The model can only be changed before the first prompt");
+                return Ok(());
+            }
+            app.open_model_picker();
+        }
         Submission::Model(model) => {
             if !app.can_change_start_settings() {
                 app.push_active_error("The model can only be changed before the first prompt");
@@ -3187,6 +3365,9 @@ fn submit(
             send_command(commands, WorkerCommand::SetModel { model })?;
         }
         Submission::ReasoningPicker => app.open_reasoning_picker(),
+        Submission::Thinking(thinking) => {
+            send_command(commands, WorkerCommand::SetThinking { thinking })?;
+        }
         Submission::Voice(control) => {
             send_command(commands, WorkerCommand::Voice(control))?;
         }
@@ -3286,13 +3467,16 @@ fn classify_submission(input: impl Into<SubmittedPrompt>) -> Submission {
             "on" => Submission::Voice(VoiceControl::Start(None)),
             "off" | "stop" => Submission::Voice(VoiceControl::Stop),
             "list" => Submission::Voice(VoiceControl::List),
+            "mute" => Submission::Voice(VoiceControl::Mute),
             _ if argument.split_whitespace().count() == 1 => match argument.parse() {
                 Ok(voice) => Submission::Voice(VoiceControl::Start(Some(voice))),
                 Err(_) => Submission::InvalidCommand(
                     "Unknown voice. Use /voice list to see Codex voices.".to_owned(),
                 ),
             },
-            _ => Submission::InvalidCommand("Usage: /voice [on|off|stop|list|<voice>]".to_owned()),
+            _ => Submission::InvalidCommand(
+                "Usage: /voice [on|off|stop|mute|list|<voice>]".to_owned(),
+            ),
         };
     }
     if trimmed == "/fast" {
@@ -3305,20 +3489,37 @@ fn classify_submission(input: impl Into<SubmittedPrompt>) -> Submission {
             _ => Submission::InvalidCommand("Usage: /fast [on|off]".to_owned()),
         };
     }
-    if trimmed == "/thinking" {
-        return Submission::ReasoningPicker;
-    }
-    if let Some(argument) = trimmed.strip_prefix("/model ") {
-        return match argument.trim().parse() {
-            Ok(model) => Submission::Model(model),
-            Err(error) => Submission::InvalidCommand(error),
-        };
-    }
-    if trimmed == "/model" {
-        return Submission::InvalidCommand("Usage: /model <sol|terra|luna|astra>".to_owned());
-    }
-    if trimmed.starts_with("/thinking ") {
-        return Submission::InvalidCommand("Usage: /thinking".to_owned());
+    let mut settings = trimmed.split_whitespace();
+    match settings.next() {
+        Some("/model") => {
+            let Some(argument) = settings.next() else {
+                return Submission::ModelPicker;
+            };
+            if settings.next().is_some() {
+                return Submission::InvalidCommand(
+                    "Usage: /model [sol|terra|luna|astra]".to_owned(),
+                );
+            }
+            return match argument.parse() {
+                Ok(model) => Submission::Model(model),
+                Err(error) => Submission::InvalidCommand(error),
+            };
+        }
+        Some("/effort" | "/reasoning" | "/thinking") => {
+            let Some(argument) = settings.next() else {
+                return Submission::ReasoningPicker;
+            };
+            if settings.next().is_some() {
+                return Submission::InvalidCommand(
+                    "Usage: /thinking [none|low|medium|high|xhigh|max]".to_owned(),
+                );
+            }
+            return match argument.parse() {
+                Ok(thinking) => Submission::Thinking(thinking),
+                Err(error) => Submission::InvalidCommand(error),
+            };
+        }
+        _ => {}
     }
     if let Some(name) = trimmed.strip_prefix("/mcp login ") {
         let name = name.trim();
@@ -3674,6 +3875,10 @@ mod tests {
             Submission::Voice(VoiceControl::Start(Some(RealtimeVoice::Cove)))
         );
         assert_eq!(
+            classify_submission("/voice mute"),
+            Submission::Voice(VoiceControl::Mute)
+        );
+        assert_eq!(
             classify_submission("/voice list"),
             Submission::Voice(VoiceControl::List)
         );
@@ -3700,22 +3905,18 @@ mod tests {
             classify_submission("/fast turbo"),
             Submission::InvalidCommand("Usage: /fast [on|off]".to_owned())
         );
-        assert_eq!(
-            classify_submission("/model"),
-            Submission::InvalidCommand("Usage: /model <sol|terra|luna|astra>".to_owned())
-        );
+        assert_eq!(classify_submission("/model"), Submission::ModelPicker);
         assert_eq!(
             classify_submission("/model astra"),
             Submission::Model(Model::Astra)
         );
-        assert_eq!(
-            classify_submission(" /thinking "),
-            Submission::ReasoningPicker
-        );
-        assert_eq!(
-            classify_submission("/thinking high"),
-            Submission::InvalidCommand("Usage: /thinking".to_owned())
-        );
+        for alias in ["/effort", "/reasoning", "/thinking"] {
+            assert_eq!(classify_submission(alias), Submission::ReasoningPicker);
+            assert_eq!(
+                classify_submission(format!("{alias} high")),
+                Submission::Thinking(Thinking::High)
+            );
+        }
         assert_eq!(
             classify_submission(" /mcp login centaur-tempo "),
             Submission::McpLogin("centaur-tempo".to_owned())
@@ -3923,7 +4124,7 @@ mod tests {
         app.open_reasoning_picker();
 
         handle_key(
-            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
             &mut app,
             "main-session",
             &commands,
@@ -3944,7 +4145,7 @@ mod tests {
                 thinking: Thinking::Medium
             })
         ));
-        assert_eq!(app.thinking(), Thinking::High);
+        assert_eq!(app.thinking(), Thinking::Low);
 
         handle_worker_update(
             &mut app,
@@ -3955,6 +4156,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(app.thinking(), Thinking::Medium);
+    }
+
+    #[test]
+    fn model_picker_exposes_and_applies_astra_before_the_first_prompt() {
+        let (commands, mut worker) = mpsc::unbounded_channel();
+        let mut app = App::new("/workspace".into());
+        app.open_model_picker();
+
+        handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            &mut app,
+            "main-session",
+            &commands,
+        )
+        .unwrap();
+        handle_key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut app,
+            "main-session",
+            &commands,
+        )
+        .unwrap();
+
+        assert!(app.model_picker().is_none());
+        assert!(matches!(
+            worker.try_recv(),
+            Ok(WorkerCommand::SetModel {
+                model: Model::Astra
+            })
+        ));
     }
 
     #[test]

@@ -160,6 +160,24 @@ workspace or MCP configuration to an Agent that already receives them through
 Browser consumers can attach Codex's ChatGPT Realtime voice lifecycle to the
 same retained Agent. The resource owns microphone, speaker, WebRTC, sideband,
 and delegation cleanup; stopping voice does not cancel an active coding turn.
+Snapshots update each speaker's transcript row as speech arrives, using a stable
+`id` and `isPartial` flag. Completion replaces that row. `transcript.delta` events
+carry the current partial text; `transcript` events retain completed-turn semantics.
+Internal Realtime envelopes are projected into spoken text before publication.
+Transcript updates continue while a delegation waits for durable admission.
+Snapshots retain the latest 200 rows across stop/start. Subscribe to events if
+an application needs its own longer transcript history.
+
+Both local and managed browser Agents use the shared Rust/WASM client-managed
+handoff policy. Only a completed final answer from the current spoken request
+is submitted for speech. Commentary stays private; superseded, oversized, or
+unconfirmed answers remain visible as `recovered` transcript rows and
+`answer.recovered` events. Workspace and conversation history are not injected
+into call startup. Browser media uses WebRTC echo cancellation, noise suppression,
+and gain control; the native audio helper is used by native clients.
+
+`start()` resolves after the media peer and backend session are ready. A media
+connection timeout gets one retry after the first call has been closed.
 
 The one-operation-at-a-time action surface is the canonical imperative API:
 
@@ -169,9 +187,36 @@ import { Actions } from "nanocodex/browser";
 const voice = Actions.voice.create(agent);
 
 await Actions.voice.start(voice); // defaults to Codex's `cove` voice
+Actions.voice.setMuted(voice, true); // also works while connecting
+Actions.voice.toggleMuted(voice);
+const { microphoneLevel, speakerLevel } = Actions.voice.getSnapshot(voice);
+
+// Fence old speech before submitting typed input. The shared terminal does this.
+await Actions.voice.noteTypedInput(voice);
+await agent.turn.prompt("Check the tests.");
 await Actions.voice.stop(voice);
 await Actions.voice.destroy(voice);
 ```
+
+Subscription voice preferences use the same Rust policy in browsers and native
+apps. `start` and `create` accept `voice`, `instructions`, `pace` (`slow`,
+`natural`, `fast`), `updates` (`auto`, `results`, `silent`), and optional
+`acknowledgements`. Pace and style are speaking instructions.
+`updates: "silent"` retains coding results as text without automatic speech.
+`handoffMode` remains accepted for compatibility; browser client-managed
+handoffs deliver completed finals and do not stream intermediate commentary.
+Apply changed settings by stopping and starting a call. The shared terminal provides a saved
+Voice settings panel with an Apply and reconnect action.
+
+During an active call, `Actions.voice.speak(voice, text)` queues explicit speech,
+`appendText(voice, text, { role: "developer" })` adds text using Codex's
+subscription adapter (which treats all roles as context), and
+`appendContext(voice, text)` adds background commentary without
+requesting speech. Context and speech are split into provider-sized messages.
+These commands retain frames until sent and preserve them
+across a sideband reconnect. They are also methods on the resource and on
+`useVoice` from `nanocodex-react`. These settings use ChatGPT subscription voice;
+custom voices and Platform audio configuration are not accepted.
 
 `Voice.create(...)` remains the equivalent namespaced resource constructor, and
 `Voice.voices` is the exact ChatGPT V3 voice catalog. The constructor accepts a
@@ -239,8 +284,8 @@ Subagents are installed by default, including on a durable root. Clean children
 persist independent execution state under their own agent session IDs. The
 Rust task-tree registry remains in memory and is closed with the live root, so
 tree-local IDs and topology are not reconstructed from those agent states. Use
-`Subagents.create({ maxConcurrency })` in `tools` only to override the default
-maximum concurrency of 32.
+`Subagents.create({ maxConcurrency })` in `tools` to set an explicit finite
+concurrency limit. Active subagent turns are unlimited by default.
 
 Each Durable Object persists a private runtime identity in its own SQLite
 storage and derives its state identity from it, so multiple objects in one
@@ -453,6 +498,11 @@ const agent = await Agent.create({
 `browser(...)` runs in a browser Worker because OPFS is a browser capability;
 use the individual factories in server-side Cloudflare Workers. Vite integration
 is provided separately by `nanocodex-vite`.
+
+The browser composition includes native `browseX` public X browsing, advertised
+by `accountInfo().apis` without an X connector. The embedding app serves
+`/api/tools/x/browse` and `/api/tools/x/convert`; Nanocodex's account app forwards
+these requests to the private X Worker.
 
 The browser composition includes `render_artifact` as a normal typed tool. For
 other hosts, compose the same factory with any workspace implementing the
@@ -717,6 +767,20 @@ or an already initialized MCP SDK-compatible `client`. Nanocodex closes clients
 it creates and leaves caller-owned clients open. Connection failures are
 reported by `tool_search` so one unavailable server does not prevent the agent
 from starting.
+
+Code Mode is the default. Model-facing `exec` cells can yield with a first-line
+`// @exec: {"yield_time_ms": 1000, "max_output_tokens": 1000}` directive or
+`yield_control()`. The model resumes the returned cell ID through `wait`, which
+returns only new output and can terminate the cell. Cells belong to their agent
+session and are invalidated when the host shuts down; a persisted `wait` never
+restarts missing work. Embedded cells retain ownership of all nested tool calls
+until they finish or are cancelled.
+
+Custom evaluators receive `audio`, `notify`, `yield_control`, `setTimeout`, and
+`clearTimeout` alongside the existing globals in `CodeEvaluatorEnvironment`.
+Forward those helpers into the guest environment to preserve the model-visible
+contract. `image` accepts individual MCP image blocks and honors explicit detail
+before MCP metadata; `audio` accepts MCP audio blocks. Both accept data URLs.
 
 Runtimes whose content-security policy rejects `eval`/`new Function` can supply
 a Code Mode evaluator. `createQuickJsEvaluator` accepts an asyncified

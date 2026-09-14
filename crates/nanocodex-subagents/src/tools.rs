@@ -179,8 +179,13 @@ pub async fn start_agents_observed(
     let mut startup = registry.batch_startup();
     let capacities = registry.reserve_turns(prepared.len())?;
     let reservations = registry.reserve_many(session_id, prepared.len()).await?;
+    let host_context = registry.host_context_for_session(session_id).await;
     let children = parent
-        .spawn_many_observed(prepared.len(), observe_session)
+        .spawn_many_observed_with_host_context(
+            prepared.len(),
+            observe_session,
+            host_context.as_ref().map(Arc::clone),
+        )
         .await?;
 
     let mut reports = Vec::with_capacity(prepared.len());
@@ -213,6 +218,7 @@ pub async fn start_agents_observed(
             .insert(
                 reservation.root_session_id.clone(),
                 descriptor.clone(),
+                host_context.as_ref().map(Arc::clone),
                 child,
                 event_task,
                 contract,
@@ -278,6 +284,18 @@ pub async fn start_agent_with(
     task: AgentTask,
     options: SpawnOptions,
 ) -> AgentToolResult<AgentStartReport> {
+    let host_context = registry.host_context_for_session(session_id).await;
+    start_agent_with_host_context(parent, registry, session_id, task, options, host_context).await
+}
+
+async fn start_agent_with_host_context(
+    parent: &AgentHandle,
+    registry: &Arc<Registry>,
+    session_id: &str,
+    task: AgentTask,
+    options: SpawnOptions,
+    host_context: Option<Arc<str>>,
+) -> AgentToolResult<AgentStartReport> {
     let AgentTask {
         role,
         task,
@@ -287,7 +305,13 @@ pub async fn start_agent_with(
     let capacity = registry.reserve_turn()?;
     let reservation = registry.reserve(session_id).await?;
     let id = reservation.id;
-    let (child, events) = parent.spawn_with(options).await?;
+    let host_context = match host_context {
+        Some(host_context) => Some(host_context),
+        None => registry.host_context_for_session(session_id).await,
+    };
+    let (child, events) = parent
+        .spawn_with_host_context(options, host_context.as_ref().map(Arc::clone))
+        .await?;
     let session_id = child.session_id().to_string();
     let descriptor = AgentDescriptor {
         id,
@@ -309,6 +333,7 @@ pub async fn start_agent_with(
         .insert(
             reservation.root_session_id.clone(),
             descriptor.clone(),
+            host_context,
             child,
             event_task,
             contract,
@@ -350,12 +375,20 @@ impl Tool for SpawnAgent {
 
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
         let (task, options) = input.decode_json::<SpawnAgentTask>()?.into_parts();
+        let host_context = context.host_context().map(Arc::<str>::from);
         let registry = self
             .registry
             .upgrade()
             .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
-        let report =
-            start_agent_with(&self.parent, &registry, context.session_id(), task, options).await?;
+        let report = start_agent_with_host_context(
+            &self.parent,
+            &registry,
+            context.session_id(),
+            task,
+            options,
+            host_context,
+        )
+        .await?;
         json_output(&report)
     }
 }

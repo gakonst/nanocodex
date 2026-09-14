@@ -2,7 +2,9 @@ mod branch;
 mod control;
 mod telemetry;
 
-use super::execution::{AdmittedExecution, ExecutionTurn, QueuedSteer};
+use super::execution::{
+    AdmittedExecution, ExecutionTurn, SteerDelivery, SteerQueue, SteerReceipt, SteerSender,
+};
 use super::spawn::{validate_model_reasoning_mode, validate_model_thinking};
 use super::*;
 pub(super) use branch::{AgentOrigin, BranchSpawner};
@@ -68,6 +70,7 @@ where
                 self.tools.clone(),
                 prompt_cache.clone(),
                 initial,
+                self.spawner.host_context.as_ref().map(Arc::clone),
             )
         } else {
             ModelRun::new(
@@ -79,6 +82,7 @@ where
                 self.tools.clone(),
                 prompt_cache.clone(),
                 self.spawner.context_source.clone(),
+                self.spawner.host_context.as_ref().map(Arc::clone),
             )
         };
         let mut turn_index = 0_u64;
@@ -109,8 +113,7 @@ where
                             break Command::Prompt {
                                 key,
                                 prompt,
-                                execution_operation: execution_operation
-                                    .map(ExecutionOperation::Admitted),
+                                execution_operation,
                                 accepted: None,
                                 cancel_on_admission: false,
                                 thinking: Some(thinking),
@@ -121,6 +124,7 @@ where
                             };
                         }
                         QueuedTurn::Cancelled {
+                            key,
                             prompt,
                             execution_operation,
                             cancellation_committed,
@@ -130,6 +134,23 @@ where
                             events,
                             result,
                         } => {
+                            if execution_operation
+                                .as_ref()
+                                .is_some_and(ExecutionOperation::is_recovered)
+                            {
+                                break Command::Prompt {
+                                    key,
+                                    prompt,
+                                    execution_operation,
+                                    accepted: None,
+                                    cancel_on_admission: true,
+                                    thinking: Some(thinking),
+                                    fast_mode: Some(fast_mode),
+                                    parent,
+                                    events,
+                                    result,
+                                };
+                            }
                             turn_index += 1;
                             let prompt_content = tracing::enabled!(
                                 target: "nanocodex",
@@ -166,9 +187,9 @@ where
                             let _guard = turn_span.enter();
                             let persisted = if cancellation_committed {
                                 Ok(())
-                            } else if let Some(operation_id) = execution_operation {
+                            } else if let Some(operation) = &execution_operation {
                                 self.execution
-                                    .cancel_operation(&operation_id, &prompt)
+                                    .cancel_operation(operation.id(), &prompt)
                                     .await
                             } else {
                                 Ok(())
@@ -198,6 +219,13 @@ where
                                     emitted.and(Err(error))
                                 }
                             };
+                            let outcome = self
+                                .execution
+                                .recover_failure(
+                                    execution_operation.as_ref().map(ExecutionOperation::id),
+                                    outcome,
+                                )
+                                .await;
                             if !commands_open
                                 && let Err(error) = &outcome
                                 && !matches!(error, NanocodexError::TurnCancelled)
@@ -310,23 +338,36 @@ where
                 result,
             } = command
             else {
-                if let Command::SetModel { model, result } = command {
+                if let Command::SetModel {
+                    model: requested_model,
+                    result,
+                } = command
+                {
                     let outcome = if latest_fork_checkpoint.is_some()
                         || !pending_developer_messages.is_empty()
                     {
                         Err(model_change_locked())
                     } else {
-                        validate_model_thinking(model, default_thinking)
-                            .and_then(|()| {
-                                validate_model_reasoning_mode(
-                                    model,
-                                    self.spawner.config.reasoning_mode,
-                                )
-                            })
-                            .map(|()| {
-                                thread_model = model;
-                            })
+                        validate_model_thinking(requested_model, default_thinking).and_then(|()| {
+                            validate_model_reasoning_mode(
+                                requested_model,
+                                self.spawner.config.reasoning_mode,
+                            )
+                        })
                     };
+                    if outcome.is_ok() && requested_model != thread_model {
+                        model.shutdown().await;
+                        Arc::make_mut(&mut self.spawner.config).model = requested_model;
+                        model = model_from_checkpoint(
+                            &self.events,
+                            &self.transport_stats,
+                            &self.tools,
+                            &self.spawner,
+                            &prompt_cache,
+                            None,
+                        );
+                        thread_model = requested_model;
+                    }
                     drop(result.send(outcome));
                     continue;
                 }
@@ -422,7 +463,7 @@ where
                             self.workspace.as_deref(),
                         )
                         .await;
-                    let (compaction_operation_id, admission) = match admitted {
+                    let (compaction_operation_id, compaction_input, admission) = match admitted {
                         Ok(admitted) => admitted,
                         Err(error) => {
                             let reopen = matches!(
@@ -450,7 +491,10 @@ where
                             continue;
                         }
                     };
-                    if !matches!(admission, AdmittedExecution::Execute) {
+                    if !matches!(
+                        admission,
+                        AdmittedExecution::Execute | AdmittedExecution::Resume
+                    ) {
                         let error = NanocodexError::InvalidExecutionPolicy(
                             "standalone compaction identity resolved to an unexpected terminal operation"
                                 .to_owned(),
@@ -464,9 +508,11 @@ where
                         drop(result.send(Err(error)));
                         continue;
                     }
-                    let execution_turn = self
-                        .execution
-                        .start_compaction(default_thinking, compaction_operation_id.clone());
+                    let execution_turn = self.execution.start_compaction(
+                        default_thinking,
+                        compaction_operation_id.clone(),
+                        compaction_input,
+                    );
                     if let Err(error) = execution_turn.begin().await {
                         if let Some(operation_id) = &compaction_operation_id {
                             self.execution.release_claim(operation_id).await;
@@ -556,8 +602,6 @@ where
                                         events,
                                         result,
                                     }) => {
-                                        let execution_operation =
-                                            execution_operation.map(ExecutionOperation::into_id);
                                         queued_turns.push_back(queued_prompt(
                                             key,
                                             prompt,
@@ -611,7 +655,7 @@ where
                                         queued_turns.push_back(queued_prompt(
                                             key,
                                             prompt,
-                                            execution_operation.map(ExecutionOperation::into_id),
+                                            execution_operation,
                                             cancel_on_admission,
                                             default_thinking,
                                             default_fast_mode,
@@ -633,23 +677,26 @@ where
                                             &queued_turns,
                                             key,
                                         ) {
-                                            Some((operation_id, prompt)) => {
-                                                let persisted = match operation_id {
-                                                    Some(operation_id) => {
+                                            Some((operation, prompt)) => {
+                                                let recovered = operation
+                                                    .as_ref()
+                                                    .is_some_and(ExecutionOperation::is_recovered);
+                                                let persisted = match operation.as_ref() {
+                                                    Some(operation) if !recovered => {
                                                         self.execution
                                                             .cancel_operation(
-                                                                &operation_id,
+                                                                operation.id(),
                                                                 &prompt,
                                                             )
                                                             .await
                                                     }
-                                                    None => Ok(()),
+                                                    Some(_) | None => Ok(()),
                                                 };
                                                 persisted.and_then(|()| {
                                                     if cancel_queued_turn(
                                                         &mut queued_turns,
                                                         key,
-                                                        true,
+                                                        !recovered,
                                                     ) {
                                                         Ok(())
                                                     } else {
@@ -676,7 +723,10 @@ where
                                             break execution.as_mut().await;
                                         }
                                     }
-                                    Some(Command::Steer { result, .. }) => {
+                                    Some(Command::WithdrawSteer { result, .. }) => {
+                                        drop(result.send(Ok(false)));
+                                    }
+                                    Some(Command::SteerWithId { result, .. } | Command::Steer { result, .. }) => {
                                         drop(result.send(Err(NanocodexError::TurnNotSteerable)));
                                     }
                                     Some(command @ (Command::Fork { .. } | Command::Spawn { .. } | Command::SpawnBatch { .. })) => {
@@ -774,14 +824,12 @@ where
                                 thread_model,
                                 checkpoint,
                             ));
+                            let execution_turn = execution_turn.interrupted();
                             let execution_turn = if compact_replaced {
                                 execution_turn.replaced()
                             } else {
-                                execution_turn.interrupted()
-                            }
-                            .retain_pending_attempt(
-                                "standalone compaction was interrupted before durable settlement",
-                            );
+                                execution_turn
+                            };
                             let persisted = self
                                 .execution
                                 .persist(&checkpoint, execution_turn)
@@ -789,6 +837,8 @@ where
                                 .await;
                             match persisted {
                                 Ok(()) => {
+                                    compact_checkpoint_committed = true;
+                                    latest_fork_checkpoint = Some(checkpoint);
                                     model.replace_client(ResponsesClient::new((self
                                         .spawner
                                         .service_factory)(
@@ -809,17 +859,35 @@ where
                                 .execution
                                 .persist(
                                     &checkpoint,
-                                    execution_turn.failed(error.to_string(), true),
+                                    execution_turn.failed(
+                                        error.to_string(),
+                                        matches!(
+                                            error.execution_policy_disposition(),
+                                            Some(crate::ExecutionPolicyDisposition::Retry)
+                                        ),
+                                    ),
                                 )
                                 .instrument(span.clone())
                                 .await;
                             match persisted {
-                                Ok(()) => Err(error),
+                                Ok(()) => {
+                                    if error.execution_policy_disposition()
+                                        != Some(crate::ExecutionPolicyDisposition::Retry)
+                                    {
+                                        compact_checkpoint_committed = true;
+                                        latest_fork_checkpoint = Some(checkpoint);
+                                    }
+                                    Err(error)
+                                }
                                 Err(error) => Err(error),
                             }
                         }
                         Err(error) => Err(error),
                     };
+                    let outcome = self
+                        .execution
+                        .recover_failure(compaction_operation_id.as_deref(), outcome)
+                        .await;
                     if !compact_checkpoint_committed && outcome.is_err() {
                         latest_fork_checkpoint = compact_base_checkpoint;
                         model = model_from_checkpoint(
@@ -932,18 +1000,28 @@ where
                 );
                 continue;
             };
+            let recovered_operation = execution_operation
+                .as_ref()
+                .is_some_and(ExecutionOperation::is_recovered);
             let execution_operation = execution_operation.map(ExecutionOperation::into_id);
             let thinking = thinking.unwrap_or(default_thinking);
             let fast_mode = fast_mode.unwrap_or(default_fast_mode);
             if let Err(error) = validate_model_thinking(thread_model, thinking) {
-                drop(result.send(Err(error)));
+                if let Some(operation_id) = &execution_operation {
+                    self.execution.release_claim(operation_id).await;
+                }
+                let outcome = self
+                    .execution
+                    .recover_failure(execution_operation.as_deref(), Err(error))
+                    .await;
+                drop(result.send(outcome));
                 continue;
             }
-            if cancel_on_admission {
+            if cancel_on_admission && !recovered_operation {
                 queued_turns.push_front(queued_prompt(
                     key,
                     prompt,
-                    execution_operation,
+                    execution_operation.map(ExecutionOperation::Admitted),
                     true,
                     thinking,
                     fast_mode,
@@ -953,6 +1031,13 @@ where
                 ));
                 continue;
             }
+            model.set_host_context(
+                self.spawner
+                    .host_context
+                    .as_ref()
+                    .map(Arc::clone)
+                    .or_else(|| execution_operation.as_deref().map(Arc::from)),
+            );
             turn_index += 1;
             logical_turn_index = logical_turn_index.saturating_add(1);
             let prompt_content = tracing::enabled!(
@@ -991,23 +1076,31 @@ where
             let retained_steers = match execution_turn.begin().await {
                 Ok(steers) => steers,
                 Err(error) => {
-                    let reopen = matches!(
-                        error.execution_policy_disposition(),
-                        Some(crate::ExecutionPolicyDisposition::Reopen)
-                    );
                     if let Some(operation_id) = &execution_operation {
                         self.execution.release_claim(operation_id).await;
                     }
                     model.set_events(events);
-                    let emitted = model.emit_failed_before_start(
-                        &prompt,
-                        self.workspace.as_deref(),
-                        thinking,
-                        fast_mode,
-                        &error,
-                    );
+                    let outcome = self
+                        .execution
+                        .recover_failure(execution_operation.as_deref(), Err(error))
+                        .await;
+                    let emitted = match &outcome {
+                        Err(error) => model.emit_failed_before_start(
+                            &prompt,
+                            self.workspace.as_deref(),
+                            thinking,
+                            fast_mode,
+                            error,
+                        ),
+                        Ok(_) => Ok(()),
+                    };
                     model.set_events(self.events.clone());
-                    drop(result.send(emitted.and(Err(error))));
+                    let outcome = emitted.and(outcome);
+                    let reopen = outcome.as_ref().is_err_and(|error| {
+                        error.execution_policy_disposition()
+                            == Some(crate::ExecutionPolicyDisposition::Reopen)
+                    });
+                    drop(result.send(outcome));
                     if reopen {
                         begin_shutdown(
                             &mut self.commands,
@@ -1025,12 +1118,18 @@ where
                 .as_ref()
                 .map(|_| latest_fork_checkpoint.clone());
             let execution_steps = execution_turn.steps();
-            let (steers, steer_rx) = mpsc::channel(STEER_CAPACITY);
+            let steer_rx: SteerQueue = Arc::new(tokio::sync::Mutex::new(VecDeque::new()));
+            let steers = Arc::downgrade(&steer_rx);
+            let mut accepted_steers = Vec::new();
+            let mut steer_ids = std::collections::HashSet::new();
             let model_call_index = Arc::new(tokio::sync::Mutex::new(1_u32));
             let (cancel, cancel_rx) = oneshot::channel();
             let (fork_snapshots, mut fork_snapshot_rx) = watch::channel(None);
             let mut fork_snapshots_open = true;
             let mut cancel = Some(cancel);
+            if cancel_on_admission && let Some(cancel) = cancel.take() {
+                let _ = cancel.send(());
+            }
             let mut cancel_result = None;
             model.set_events(events);
             let mut execution = Box::pin(
@@ -1112,8 +1211,6 @@ where
                                 events,
                                 result,
                             }) => {
-                                let execution_operation =
-                                    execution_operation.map(ExecutionOperation::into_id);
                                 queued_turns.push_back(queued_prompt(
                                     key,
                                     prompt,
@@ -1133,6 +1230,8 @@ where
                                 }
                                 let outcome = accept_turn_steer(
                                     &steers,
+                                    &mut accepted_steers,
+                                    None,
                                     &execution_turn,
                                     &model_call_index,
                                     prompt,
@@ -1155,6 +1254,47 @@ where
                                     break execution.as_mut().await;
                                 }
                             }
+                            Some(Command::SteerWithId { key: target, id, prompt, result }) => {
+                                if target != key {
+                                    drop(result.send(Err(NanocodexError::TurnNotSteerable)));
+                                    continue;
+                                }
+                                if !steer_ids.insert(id.clone()) {
+                                    drop(result.send(Err(NanocodexError::InvalidRequest("steer identity was already used in this turn".into()))));
+                                    continue;
+                                }
+                                let outcome = accept_turn_steer(&steers, &mut accepted_steers, Some(id), &execution_turn, &model_call_index, prompt).await;
+                                let reopen = outcome_requires_reopen(&outcome);
+                                drop(result.send(outcome));
+                                if reopen {
+                                    if let Some(cancel) = cancel.take() { let _ = cancel.send(()); }
+                                    begin_shutdown(&mut self.commands, &mut queued_turns, default_thinking, default_fast_mode).await;
+                                    commands_open = false;
+                                    break execution.as_mut().await;
+                                }
+                            }
+                            Some(Command::WithdrawSteer { key: target, id, result }) => {
+                                let outcome = if target == key {
+                                    match accepted_steers.last() {
+                                        Some((Some(retained_id), steer)) if *retained_id == id => execution_turn.withdraw_steer(steer).await,
+                                        _ => Ok(false),
+                                    }
+                                } else { Ok(false) };
+                                if matches!(outcome, Ok(true))
+                                    && let Some((_, receipt)) = accepted_steers.pop()
+                                    && let Some(queue) = steers.upgrade()
+                                {
+                                    queue.lock().await.retain(|steer| !Arc::ptr_eq(&steer.delivery, &receipt.delivery));
+                                }
+                                let reopen = outcome_requires_reopen(&outcome);
+                                drop(result.send(outcome));
+                                if reopen {
+                                    if let Some(cancel) = cancel.take() { let _ = cancel.send(()); }
+                                    begin_shutdown(&mut self.commands, &mut queued_turns, default_thinking, default_fast_mode).await;
+                                    commands_open = false;
+                                    break execution.as_mut().await;
+                                }
+                            }
                             Some(Command::RoutePrompt {
                                 prompt,
                                 route_result,
@@ -1162,6 +1302,8 @@ where
                             }) => {
                                 let outcome = accept_turn_steer(
                                     &steers,
+                                    &mut accepted_steers,
+                                    None,
                                     &execution_turn,
                                     &model_call_index,
                                     prompt,
@@ -1191,20 +1333,23 @@ where
                                         &queued_turns,
                                         target,
                                     ) {
-                                        Some((operation_id, prompt)) => {
-                                            let persisted = match operation_id {
-                                                Some(operation_id) => {
+                                        Some((operation, prompt)) => {
+                                            let recovered = operation
+                                                .as_ref()
+                                                .is_some_and(ExecutionOperation::is_recovered);
+                                            let persisted = match operation.as_ref() {
+                                                Some(operation) if !recovered => {
                                                     self.execution
-                                                        .cancel_operation(&operation_id, &prompt)
+                                                        .cancel_operation(operation.id(), &prompt)
                                                         .await
                                                 }
-                                                None => Ok(()),
+                                                Some(_) | None => Ok(()),
                                             };
                                             persisted.and_then(|()| {
                                                 if cancel_queued_turn(
                                                     &mut queued_turns,
                                                     target,
-                                                    true,
+                                                    !recovered,
                                                 ) {
                                                     Ok(())
                                                 } else {
@@ -1365,10 +1510,7 @@ where
                         terminal_failure_committed = true;
                         latest_fork_checkpoint = Some(Arc::clone(&checkpoint));
                     }
-                    let persisted = match committed {
-                        Ok(()) => model.emit_terminal("completed"),
-                        Err(error) => model.emit_terminal("failed").and(Err(error)),
-                    };
+                    let persisted = committed;
                     (
                         persisted.map(|()| TurnResult {
                             request_id: execution_operation.clone(),
@@ -1397,13 +1539,8 @@ where
                         latest_fork_checkpoint = Some(Arc::clone(&checkpoint));
                     }
                     let (persisted, cancellation_persisted) = match committed {
-                        Ok(()) => (model.emit_terminal("cancelled"), Ok(())),
-                        Err(error) => (
-                            model
-                                .emit_terminal("failed")
-                                .and(Err(duplicate_policy_error(&error))),
-                            Err(error),
-                        ),
+                        Ok(()) => (Ok(()), Ok(())),
+                        Err(error) => (Err(duplicate_policy_error(&error)), Err(error)),
                     };
                     model.replace_client(ResponsesClient::new((self.spawner.service_factory)(
                         Arc::clone(&self.spawner.config),
@@ -1423,7 +1560,7 @@ where
                     ));
                     match error.execution_policy_disposition() {
                         Some(crate::ExecutionPolicyDisposition::Reopen) => {
-                            (model.emit_terminal("failed").and(Err(error)), false, None)
+                            (Err(error), false, None)
                         }
                         disposition => {
                             let retryable = error
@@ -1444,10 +1581,7 @@ where
                                 latest_fork_checkpoint = Some(checkpoint);
                                 terminal_failure_committed = true;
                             }
-                            let persisted = match committed {
-                                Ok(()) => model.emit_terminal("failed"),
-                                Err(error) => model.emit_terminal("failed").and(Err(error)),
-                            };
+                            let persisted = committed;
                             (persisted.and(Err(error)), false, None)
                         }
                     }
@@ -1456,7 +1590,7 @@ where
                     provider_requires_stop = error_requires_stop(&error);
                     match error.execution_policy_disposition() {
                         Some(crate::ExecutionPolicyDisposition::Reopen) => {
-                            (model.emit_terminal("failed").and(Err(error)), false, None)
+                            (Err(error), false, None)
                         }
                         _ => {
                             let persisted = self
@@ -1464,14 +1598,37 @@ where
                                 .fail_without_checkpoint(execution_turn)
                                 .instrument(turn_span.clone())
                                 .await;
-                            let persisted = match persisted {
-                                Ok(()) => model.emit_terminal("failed"),
-                                Err(error) => model.emit_terminal("failed").and(Err(error)),
-                            };
                             (persisted.and(Err(error)), false, None)
                         }
                     }
                 }
+            };
+            let outcome = self
+                .execution
+                .recover_failure(execution_operation.as_deref(), outcome)
+                .await;
+            // A run terminal describes durable settlement, never an attempt.
+            // Classify recovery first so consumers cannot mistake a retry/reopen
+            // for a completed turn and abandon its still-running tools.
+            let terminal = match &outcome {
+                Ok(_) => Some("completed"),
+                Err(NanocodexError::TurnCancelled) => Some("cancelled"),
+                Err(error)
+                    if matches!(
+                        error.execution_policy_disposition(),
+                        Some(
+                            crate::ExecutionPolicyDisposition::Retry
+                                | crate::ExecutionPolicyDisposition::Reopen
+                        )
+                    ) =>
+                {
+                    None
+                }
+                Err(_) => Some("failed"),
+            };
+            let outcome = match terminal {
+                Some(status) => model.emit_terminal(status).and(outcome),
+                None => outcome,
             };
             if !commands_open
                 && !terminal_failure_committed
@@ -1631,20 +1788,36 @@ fn error_requires_stop(error: &NanocodexError) -> bool {
 }
 
 async fn accept_turn_steer(
-    steers: &mpsc::Sender<QueuedSteer>,
+    steers: &SteerSender,
+    accepted: &mut Vec<(Option<String>, SteerReceipt)>,
+    id: Option<String>,
     execution_turn: &ExecutionTurn,
     model_call_index: &tokio::sync::Mutex<u32>,
     prompt: Prompt,
 ) -> Result<()> {
-    let permit = steers.try_reserve().map_err(|error| match error {
-        mpsc::error::TrySendError::Full(_) => NanocodexError::SteerQueueFull,
-        mpsc::error::TrySendError::Closed(_) => NanocodexError::TurnNotSteerable,
-    })?;
+    let steers = steers.upgrade().ok_or(NanocodexError::TurnNotSteerable)?;
+    let mut pending = Vec::new();
+    for receipt in accepted.drain(..) {
+        if *receipt.1.delivery.lock().await == SteerDelivery::Pending {
+            pending.push(receipt);
+        }
+    }
+    *accepted = pending;
+    if accepted.len() >= STEER_CAPACITY {
+        return Err(NanocodexError::SteerQueueFull);
+    }
     // Holding the boundary lock through persistence makes acceptance linearize
     // before either this model-call drain or the following one.
     let call_index = model_call_index.lock().await;
     let steer = execution_turn.accept_steer(prompt, *call_index).await?;
-    permit.send(steer);
+    accepted.push((
+        id,
+        SteerReceipt {
+            durable_index: steer.durable_index,
+            delivery: Arc::clone(&steer.delivery),
+        },
+    ));
+    steers.lock().await.push_back(steer);
     Ok(())
 }
 
@@ -1696,6 +1869,7 @@ where
             tools.clone(),
             prompt_cache.clone(),
             prepared,
+            spawner.host_context.as_ref().map(Arc::clone),
         )
     } else {
         ModelRun::new(
@@ -1707,6 +1881,7 @@ where
             tools.clone(),
             prompt_cache.clone(),
             spawner.context_source.clone(),
+            spawner.host_context.as_ref().map(Arc::clone),
         )
     }
 }
@@ -1747,6 +1922,9 @@ async fn accept_execution_command(
         ExecutionOperation::Admitted(operation_id) => {
             Ok((operation_id, AdmittedExecution::Execute))
         }
+        ExecutionOperation::Recovered(operation_id) => {
+            Ok((operation_id, AdmittedExecution::Resume))
+        }
     };
     match admission {
         Ok((operation_id, AdmittedExecution::Execute)) => {
@@ -1758,6 +1936,24 @@ async fn accept_execution_command(
                 key,
                 prompt,
                 execution_operation: Some(ExecutionOperation::Admitted(operation_id)),
+                accepted: None,
+                cancel_on_admission,
+                thinking,
+                fast_mode,
+                parent,
+                events,
+                result,
+            })
+        }
+        Ok((operation_id, AdmittedExecution::Resume)) => {
+            if accepted.send(Ok(operation_id.clone())).is_err() {
+                execution.release_claim(&operation_id).await;
+                return None;
+            }
+            Some(Command::Prompt {
+                key,
+                prompt,
+                execution_operation: Some(ExecutionOperation::Recovered(operation_id)),
                 accepted: None,
                 cancel_on_admission,
                 thinking,
@@ -1882,6 +2078,29 @@ async fn accept_idle_route(
                 key,
                 prompt,
                 execution_operation: Some(ExecutionOperation::Admitted(operation_id)),
+                accepted: None,
+                cancel_on_admission: false,
+                thinking: None,
+                fast_mode: None,
+                parent,
+                events,
+                result: turn_result,
+            })
+        }
+        Ok((operation_id, AdmittedExecution::Resume)) => {
+            if route_result
+                .send(Ok(PromptRouteKind::Started {
+                    request_id: Some(operation_id.clone()),
+                }))
+                .is_err()
+            {
+                execution.release_claim(&operation_id).await;
+                return None;
+            }
+            Some(Command::Prompt {
+                key,
+                prompt,
+                execution_operation: Some(ExecutionOperation::Recovered(operation_id)),
                 accepted: None,
                 cancel_on_admission: false,
                 thinking: None,

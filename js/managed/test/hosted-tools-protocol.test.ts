@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  MAX_HOSTED_TOOL_SCHEMA_BYTES,
   MAX_HOSTED_TOOLS_FRAME_BYTES,
   HostedToolsProtocolError,
   parseHostedToolsHostFrame,
@@ -89,19 +88,6 @@ describe("hosted tools socket protocol", () => {
         },
       }],
     }))).toThrow("object JSON Schema");
-
-    const oversized = {
-      ...oneOfTool,
-      definition: {
-        ...oneOfTool.definition,
-        parameters: {
-          type: "object",
-          description: "x".repeat(MAX_HOSTED_TOOL_SCHEMA_BYTES),
-        },
-      },
-    };
-    expect(() => parseHostedToolsHostFrame(JSON.stringify({ type: "catalog", tools: [oversized] })))
-      .toThrow("limited");
   });
 
   it("parses the exact DO-to-executor frame set", () => {

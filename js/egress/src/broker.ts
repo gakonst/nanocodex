@@ -1,7 +1,8 @@
+import { createSshKeyPair, sshPublicKey } from "nanocodex/tools/ssh";
 import { DurableObject } from "cloudflare:workers";
 import { Provider, ProviderRequest, secp256k1, Storage } from "accounts";
 import { http } from "viem";
-import { Actions } from "viem/tempo";
+import { Account as TempoAccount, Actions } from "viem/tempo";
 import { tempo } from "viem/tempo/chains";
 
 import {
@@ -30,6 +31,7 @@ import {
 import {
   type BrokeredSshIdentity,
   validateSshIdentity,
+  validateSshTarget,
   validSshIdentityReference,
 } from "./ssh";
 
@@ -123,8 +125,9 @@ type RootWallet = {
   address: `0x${string}`;
   createdAt: number;
 };
-export type VaultKind = "login" | "card" | "address" | "phone";
+export type VaultKind = "login" | "api_key" | "card" | "address" | "phone";
 export type VaultEntryPayload =
+  | Readonly<{ kind: "api_key"; name: string; api_key: string }>
   | Readonly<{ kind: "login"; name: string; username: string; password: string }>
   | Readonly<{
       kind: "card";
@@ -148,6 +151,7 @@ export type VaultEntryPayload =
   | Readonly<{ kind: "phone"; name: string; phone_number: string }>;
 export type VaultEntry = VaultEntryPayload & Readonly<{ id: string; createdAt: number }>;
 type VaultEntryMetadata = (
+  | Readonly<{ kind: "api_key"; name: string }>
   | Readonly<{ kind: "login"; name: string; username: string }>
   | Readonly<{ kind: "card"; name: string; last4: string }>
   | Readonly<{
@@ -378,7 +382,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         return json({ ready: true }, 200);
       }
       if (request.method === "GET" && url.pathname === "/v1/status") {
-        return json(this.#publicStatus(), 200);
+        return json(await this.#publicStatus(), 200);
       }
       if (url.pathname === "/v1/sponsored-prompts") {
         if (request.method === "GET") {
@@ -669,7 +673,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         return jsonError(405, "method_not_allowed");
       }
       const vaultMatch = url.pathname.match(
-        /^\/v1\/vault\/(login|card|address|phone)(?:\/([A-Za-z0-9_-]{22,64}))?$/,
+        /^\/v1\/vault\/(login|api_key|card|address|phone)(?:\/([A-Za-z0-9_-]{22,64}))?$/,
       );
       if (vaultMatch) {
         const kind = vaultMatch[1] as VaultKind;
@@ -754,8 +758,20 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       const sshIdentity = url.pathname.match(/^\/v1\/ssh-identities\/([A-Za-z0-9][A-Za-z0-9._-]{0,63})$/)?.[1];
       if (sshIdentity && validSshIdentityReference(sshIdentity)) {
         if (request.method === "PUT") {
-          const identity = validateSshIdentity(await readJson(request, 72 * 1024));
-          if (!identity) return jsonError(400, "invalid_ssh_identity");
+          const body = await readJson(request, 72 * 1024);
+          let identity: BrokeredSshIdentity | undefined;
+          if (body?.generate === true) {
+            const target = validateSshTarget(body);
+            if (!target || body.private_key !== undefined) return jsonError(400, "invalid_ssh_identity");
+            // Generating must never silently rotate an already installed key.
+            if (this.#credentials.ssh?.[sshIdentity]) return jsonError(409, "ssh_identity_already_exists");
+            identity = { ...target, ...await createSshKeyPair() };
+          } else {
+            const parsed = validateSshIdentity(body);
+            if (!parsed) return jsonError(400, "invalid_ssh_identity");
+            try { identity = { ...parsed, publicKey: await sshPublicKey(parsed.privateKey) }; }
+            catch { return jsonError(400, "invalid_ssh_identity"); }
+          }
           this.#credentials.ssh = { ...this.#credentials.ssh, [sshIdentity]: identity };
           await this.#persist();
           return new Response(null, { status: 204, headers: noStoreHeaders() });
@@ -855,7 +871,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
           return jsonError(400, "invalid_request");
         }
         await this.#claimLocalBootstrap(provenance);
-        return json(this.#publicStatus(), 200);
+        return json(await this.#publicStatus(), 200);
       }
       if (request.method === "PUT" && url.pathname === "/v1/chatgpt") {
         const body = await readJson(request, 64 * 1024);
@@ -882,7 +898,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     }
   }
 
-  #publicStatus(): Record<string, unknown> {
+  async #publicStatus(): Promise<Record<string, unknown>> {
     const login = this.#credentials.login;
     return {
       ready: this.#credentials.active !== null,
@@ -895,13 +911,16 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
           : {}),
         ...(login ? { login: publicLogin(login) } : {}),
       },
-      ssh: Object.entries(this.#credentials.ssh ?? {}).map(([reference, identity]) => ({
+      ssh: await Promise.all(Object.entries(this.#credentials.ssh ?? {}).map(async ([reference, identity]) => ({
         reference,
         hostname: identity.hostname,
         port: identity.port,
         username: identity.username,
         host_key_sha256: identity.hostKeySha256,
-      })),
+        // Older stored identities predate public-key metadata. Derive it in
+        // the broker; a malformed legacy key must not break the entire vault.
+        public_key: identity.publicKey ?? await sshPublicKey(identity.privateKey).catch(() => undefined),
+      }))),
       vault: Object.values(this.#credentials.vault ?? {})
         .map(publicVaultEntry)
         .sort((left, right) => right.created_at - left.created_at || compareText(left.id, right.id)),
@@ -1616,13 +1635,8 @@ async function createRootWallet(): Promise<RootWallet> {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const privateKey = randomRootPrivateKey();
     try {
-      const provider = rootWalletProvider({ privateKey, address: "0x0000000000000000000000000000000000000000", createdAt: Date.now() });
-      const result = await provider.request({
-        method: "wallet_connect",
-        params: [{ chainId: TEMPO_CHAIN_ID, capabilities: { method: "login" } }],
-      } as never) as { accounts?: readonly { address?: unknown }[] };
-      const address = result.accounts?.[0]?.address;
-      if (typeof address === "string" && ROOT_WALLET_ADDRESS.test(address)) {
+      const address = TempoAccount.fromSecp256k1(privateKey).address;
+      if (ROOT_WALLET_ADDRESS.test(address)) {
         return {
           privateKey,
           address: address.toLowerCase() as `0x${string}`,
@@ -1964,6 +1978,10 @@ export function validateVaultEntryPayload(
   }
   const name = vaultText(value.name, 120);
   if (!name) return undefined;
+  if (kind === "api_key") {
+    const apiKey = vaultSecret(value.api_key, 8_192);
+    return apiKey ? { kind, name, api_key: apiKey } : undefined;
+  }
   if (kind === "login") {
     const username = vaultText(value.username, 512);
     const password = vaultSecret(value.password, 8_192);
@@ -2017,6 +2035,7 @@ export function validateVaultEntryPayload(
 
 function vaultPayloadKeys(kind: VaultKind, hasAddressLine2 = false): readonly string[] {
   switch (kind) {
+    case "api_key": return ["name", "api_key"];
     case "login": return ["name", "username", "password"];
     case "card": return [
       "name", "card_number", "expiry_month", "expiry_year", "cvv", "billing_zip",
@@ -2033,7 +2052,7 @@ function vaultPayloadKeys(kind: VaultKind, hasAddressLine2 = false): readonly st
 function validateStoredVaultEntry(id: string, value: unknown): VaultEntry | undefined {
   if (!VAULT_ID.test(id) || !isRecord(value) || value.id !== id
     || !Number.isSafeInteger(value.createdAt) || (value.createdAt as number) < 0
-    || !["login", "card", "address", "phone"].includes(String(value.kind))) return undefined;
+    || !["login", "api_key", "card", "address", "phone"].includes(String(value.kind))) return undefined;
   const kind = value.kind as VaultKind;
   const payloadKeys = vaultPayloadKeys(
     kind,
@@ -2062,7 +2081,7 @@ function validateStoredVaultMetadata(
 ): VaultEntryMetadata | undefined {
   if (!VAULT_ID.test(id) || !isRecord(value) || value.id !== id
     || !Number.isSafeInteger(value.createdAt) || (value.createdAt as number) < 0
-    || !["login", "card", "address", "phone"].includes(String(value.kind))) {
+    || !["login", "api_key", "card", "address", "phone"].includes(String(value.kind))) {
     return undefined;
   }
   const kind = value.kind as VaultKind;
@@ -2073,6 +2092,10 @@ function validateStoredVaultMetadata(
     createdAt: value.createdAt as number,
   };
   if (!common.name) return undefined;
+  if (kind === "api_key") {
+    return hasExactKeys(value, ["id", "kind", "name", "createdAt"])
+      ? { ...common, kind, name: common.name } : undefined;
+  }
   if (kind === "login") {
     const username = vaultText(value.username, 512);
     return username && hasExactKeys(value, ["id", "kind", "name", "username", "createdAt"])
@@ -2128,6 +2151,7 @@ function vaultEntryMetadata(entry: VaultEntry): VaultEntryMetadata {
     createdAt: entry.createdAt,
   };
   switch (entry.kind) {
+    case "api_key": return { ...common, kind: entry.kind };
     case "login": return { ...common, kind: entry.kind, username: entry.username };
     case "card": return {
       ...common,
@@ -2155,6 +2179,7 @@ function sameVaultEntryMetadata(
   if (left.id !== right.id || left.kind !== right.kind || left.name !== right.name
     || left.createdAt !== right.createdAt) return false;
   switch (left.kind) {
+    case "api_key": return true;
     case "login": return right.kind === left.kind && left.username === right.username;
     case "card": return right.kind === left.kind && left.last4 === right.last4;
     case "address": return right.kind === left.kind
@@ -2191,7 +2216,7 @@ function publicVaultEntry(entry: VaultEntry | VaultEntryMetadata): Readonly<{
   country?: string;
   phone_number?: string;
 }> {
-  const metadata = "password" in entry || "card_number" in entry
+  const metadata = "password" in entry || "api_key" in entry || "card_number" in entry
     ? vaultEntryMetadata(entry as VaultEntry)
     : entry as VaultEntryMetadata;
   const common = {
@@ -2201,6 +2226,7 @@ function publicVaultEntry(entry: VaultEntry | VaultEntryMetadata): Readonly<{
     created_at: metadata.createdAt,
   };
   switch (metadata.kind) {
+    case "api_key": return common;
     case "login": return { ...common, username: metadata.username };
     case "card": return { ...common, last4: metadata.last4 };
     case "address": return {

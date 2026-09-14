@@ -3,16 +3,23 @@
   background: var(--surface);
 }
 
+.device-connect-route .connect-onboarding {
+  font-family: var(--font-sans);
+  --muted: var(--text-muted);
+  --faint: var(--text-secondary);
+}
+
 .device-connect-route .connect-wizard {
   display: flex;
   min-height: calc(100dvh - var(--header-height));
   flex-direction: column;
-  font: 11px/1.45 var(--font-mono);
+  font: 13px/1.5 var(--font-sans);
 }
 
 .device-connect-route .connect-wizard button,
 .device-connect-route .connect-wizard input {
   font: inherit;
+  border-radius: 8px;
 }
 
 .connect-wizard .wizard-content {
@@ -25,7 +32,7 @@
 .connect-wizard .dialog-error {
   width: min(1000px, calc(100% - (2 * var(--page-margin))));
   margin-right: auto;
-  margin-left: var(--page-margin);
+  margin-left: auto;
 }
 
 .connect-wizard .wizard-page {
@@ -43,9 +50,9 @@
   overflow: hidden;
   padding: 32px;
   border: 1px solid var(--border-soft);
-  border-radius: var(--radius-medium);
-  background: color-mix(in srgb, var(--surface-raised) 88%, var(--surface));
-  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.22);
+  border-radius: 22px;
+  background: var(--surface);
+  box-shadow: none;
 }
 
 .connect-wizard .wizard-review-page {
@@ -77,7 +84,7 @@
 .connect-wizard .wizard-app > span,
 .connect-wizard .wizard-section-title span {
   color: var(--faint);
-  font-size: 8px;
+  font-size: 12px;
   letter-spacing: 0.09em;
   text-transform: uppercase;
 }
@@ -121,7 +128,7 @@
 }
 
 .connect-wizard .sms-auth-panel .sms-otp-form > p {
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.55;
 }
 
@@ -180,7 +187,7 @@
 }
 
 .connect-wizard .sms-auth-panel .account-failure p {
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .connect-wizard .sms-auth-panel .sms-otp-change {
@@ -192,7 +199,7 @@
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 10px;
+  font-size: 12px;
   text-decoration: underline;
   text-underline-offset: 3px;
 }
@@ -216,11 +223,11 @@
   border: 1px solid color-mix(in srgb, var(--positive) 55%, var(--border-soft));
   border-radius: 50%;
   color: var(--positive);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .connect-wizard .sms-auth-security p {
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.45;
 }
 
@@ -296,7 +303,7 @@
 .connect-wizard .wizard-account-copy small {
   overflow: hidden;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -307,7 +314,7 @@
 }
 
 .connect-wizard .wizard-account-choice.is-current .wizard-account-arrow {
-  font-size: 9px;
+  font-size: 12px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -331,7 +338,7 @@
   outline: none;
   background: transparent;
   color: var(--text);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .connect-wizard .wizard-account-create-form input:focus {
@@ -361,7 +368,7 @@
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .connect-wizard .wizard-cancel:hover:not(:disabled) {
@@ -378,7 +385,7 @@
 
 .connect-wizard .wizard-terminal-code span {
   color: var(--faint);
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .connect-wizard .wizard-terminal-code strong {
@@ -419,7 +426,7 @@
 .connect-wizard .wizard-section-title small,
 .connect-wizard .wizard-section-title > strong {
   color: var(--faint);
-  font-size: 8px;
+  font-size: 12px;
   font-weight: 400;
 }
 
@@ -470,20 +477,20 @@
 
 .connect-wizard .wizard-account-options button > span {
   color: var(--faint);
-  font-size: 8px;
+  font-size: 12px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
 }
 
 .connect-wizard .wizard-account-options button > strong {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 500;
 }
 
 .connect-wizard .wizard-account-options button > small,
 .connect-wizard .wizard-account-ready {
   color: var(--muted);
-  font-size: 8px;
+  font-size: 12px;
   line-height: 1.45;
 }
 
@@ -504,7 +511,7 @@
 .account-inline .account-summary {
   min-height: 58px;
   padding: 12px 0;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .account-inline .account-summary button,
@@ -519,7 +526,7 @@
   padding: 0 13px;
   border: 1px solid var(--border-strong);
   background: transparent;
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .account-inline .account-auth-actions {
@@ -544,7 +551,7 @@
   min-width: 180px;
   min-height: 44px;
   padding: 0 18px;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .account-inline .account-auth-actions .account-primary-action {
@@ -571,7 +578,7 @@
 .account-inline .api-key-heading p {
   max-width: 620px;
   margin-top: 6px;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -598,6 +605,7 @@
   color: var(--text);
   background: transparent;
   border: 1px solid var(--border-soft);
+  border-radius: 14px;
   text-align: left;
   gap: 13px;
 }
@@ -631,6 +639,7 @@
   color: var(--text);
   background: var(--surface-raised);
   border: 1px solid var(--border-soft);
+  border-radius: 12px;
 }
 
 .account-inline .connector-logo svg {
@@ -665,7 +674,7 @@
 .account-inline .connection-card-copy > span {
   overflow: hidden;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.45;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -674,7 +683,7 @@
 .account-inline .connection-card-action {
   align-self: end;
   color: var(--faint);
-  font-size: 8px;
+  font-size: 12px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -700,7 +709,7 @@
   background: transparent;
   color: var(--text);
   cursor: pointer;
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .account-inline .mcp-connection-actions button:hover:not(:disabled),
@@ -739,7 +748,7 @@
 .account-inline .ssh-identity-intro {
   max-width: 680px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .account-inline .ssh-identity-form {
@@ -749,15 +758,15 @@
 }
 
 .account-inline .ssh-identity-form label {
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .account-inline .ssh-identity-form input {
   height: 40px;
   padding: 0 12px;
   border-color: var(--border-strong);
-  border-radius: 0;
-  font-size: 11px;
+  border-radius: 8px;
+  font-size: 13px;
 }
 
 .account-inline .ssh-identity-form input[type="file"] {
@@ -779,7 +788,7 @@
   background: transparent;
   color: var(--text);
   cursor: pointer;
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .account-inline .ssh-identity-list li {
@@ -797,13 +806,13 @@
 }
 
 .account-inline .account-provider-row strong {
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 500;
 }
 
 .account-inline .account-provider-row span,
 .account-inline .api-key-create > label {
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .account-inline .api-key-create {
@@ -815,8 +824,8 @@
   height: 40px;
   padding: 0 12px;
   border-color: var(--border-strong);
-  border-radius: 0;
-  font-size: 11px;
+  border-radius: 8px;
+  font-size: 13px;
 }
 
 .account-inline .api-key-list li {
@@ -895,7 +904,7 @@
 .connect-wizard .wizard-connectors .connection-card-copy > span {
   overflow: hidden;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -904,7 +913,7 @@
 .connect-wizard .wizard-connectors .connection-card-action {
   align-self: end;
   color: var(--faint);
-  font-size: 8px;
+  font-size: 12px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -929,12 +938,12 @@
 
 .connect-wizard .tempo-wallet-card .tempo-wallet-balance {
   color: var(--positive);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .connect-wizard .tempo-wallet-message {
   color: var(--faint);
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.4;
   white-space: normal;
 }
@@ -963,7 +972,7 @@
   background: transparent;
   cursor: pointer;
   font: inherit;
-  font-size: 9px;
+  font-size: 12px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -988,7 +997,7 @@
 .connect-wizard .tempo-wallet-payment-status {
   align-self: end;
   color: var(--positive);
-  font-size: 8px;
+  font-size: 12px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -1043,7 +1052,7 @@
 .connect-wizard .mcp-connection-copy small,
 .connect-wizard .mcp-connection-state {
   color: var(--muted);
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .connect-wizard .mcp-connection-card.is-connected .mcp-connection-state {
@@ -1056,7 +1065,7 @@
   border: 1px solid var(--border-strong);
   background: transparent;
   cursor: pointer;
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .connect-wizard .mcp-connection-card button:hover:not(:disabled),
@@ -1082,7 +1091,7 @@
   border: 1px solid var(--text);
   background: var(--text);
   color: var(--surface);
-  font-size: 9px;
+  font-size: 12px;
   text-decoration: none;
 }
 
@@ -1099,7 +1108,7 @@
   justify-content: space-between;
   padding: 10px 0;
   border-bottom: 1px solid var(--border-soft);
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .connect-wizard .wizard-device-code span {
@@ -1108,7 +1117,7 @@
 
 .connect-wizard .wizard-device-code strong {
   color: var(--positive);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.08em;
 }
@@ -1124,12 +1133,12 @@
   padding: 0 10px;
   border: 1px solid var(--border-strong);
   background: transparent;
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .connect-wizard .account-wallet-session > span {
   color: var(--muted);
-  font-size: 8px;
+  font-size: 12px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -1164,7 +1173,7 @@
 
 .connect-wizard .wizard-visibility > div > span {
   color: var(--positive);
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .connect-wizard .wizard-visibility > div > div {
@@ -1172,14 +1181,14 @@
 }
 
 .connect-wizard .wizard-visibility strong {
-  font-size: 8px;
+  font-size: 12px;
   font-weight: 500;
 }
 
 .connect-wizard .wizard-visibility small {
   overflow: hidden;
   color: var(--faint);
-  font-size: 8px;
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1190,7 +1199,7 @@
 
 .connect-wizard .advanced-details summary {
   color: var(--faint);
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .connect-wizard .wizard-actions {
@@ -1211,7 +1220,7 @@
   border: 1px solid var(--border-strong);
   background: transparent;
   cursor: pointer;
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .connect-wizard .wizard-actions button:last-child {
@@ -1427,7 +1436,7 @@
   padding: 0 14px;
   place-items: center;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .connect-home-navigation a:hover,
@@ -1472,7 +1481,7 @@
 .connect-wizard .connect-route-sms-auth .sms-otp-input-row input,
 .connect-wizard .connect-route-sms-auth .sms-otp-input-row button {
   min-height: 44px;
-  border-radius: 0;
+  border-radius: 12px;
 }
 
 .connect-wizard .connect-route-sms-auth .sms-otp-input-row button {
@@ -1486,7 +1495,7 @@
 
 .vault-content {
   width: min(820px, calc(100% - (2 * var(--page-margin))));
-  margin-left: var(--page-margin);
+  margin-left: auto;
   padding: 42px 0 72px;
 }
 
@@ -1506,7 +1515,7 @@
 .vault-heading span,
 .vault-section-heading span {
   color: var(--text-faint);
-  font-size: 8px;
+  font-size: 12px;
   letter-spacing: 0.09em;
   text-transform: uppercase;
 }
@@ -1521,7 +1530,7 @@
 .vault-heading p {
   max-width: 430px;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.55;
 }
 
@@ -1545,7 +1554,7 @@
 
 .vault-ssh .ssh-identity-intro {
   max-width: 680px;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .vault-ssh .ssh-identity-form {
@@ -1558,7 +1567,7 @@
   height: 40px;
   border-color: var(--border-soft);
   border-radius: 0;
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .vault-ssh .ssh-fingerprint-field,
@@ -1574,7 +1583,7 @@
   background: transparent;
   color: var(--text);
   cursor: pointer;
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .vault-ssh .ssh-identity-list li {
@@ -1603,7 +1612,7 @@
 
 .vault-section-heading small {
   color: var(--text-faint);
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .vault-entry-list {
@@ -1648,7 +1657,7 @@
 
 .vault-entry-list strong {
   overflow: hidden;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1656,7 +1665,7 @@
 
 .vault-entry-list span {
   color: var(--text-faint);
-  font-size: 8px;
+  font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -1744,7 +1753,7 @@
 
 .vault-dialog header p {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .vault-dialog header button {
@@ -1793,7 +1802,7 @@
   display: flex;
   align-items: center;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 500;
   gap: 6px;
 }
@@ -1833,7 +1842,7 @@
   width: max-content;
   padding: 5px 0;
   cursor: pointer;
-  font-size: 9px;
+  font-size: 12px;
   list-style: none;
 }
 
@@ -1982,3 +1991,15 @@
     font-size: 16px;
   }
 }
+
+/* Account settings share the native app's grouped surfaces. */
+.device-connect-route { --faint: var(--text-secondary); --muted: var(--text-muted); --border-strong: var(--border-soft); }
+.connect-wizard .wizard-account-chooser { border-radius: 16px; }
+.connect-wizard .wizard-account-avatar, .connect-wizard .connector-logo { border-radius: 12px; }
+.connect-wizard .wizard-connectors .connection-card { padding: 14px; border: 1px solid var(--border-soft); border-radius: 14px; background: var(--surface-subtle); }
+.connect-wizard .wizard-connectors { gap: 12px; }
+.connect-wizard .wizard-connectors .connection-card:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.connect-wizard .wizard-visibility { padding: 16px; border-radius: 14px; background: var(--surface-subtle); }
+.connect-wizard .wizard-review-page { padding-bottom: 32px; }
+.connect-wizard .wizard-actions { padding-bottom: max(24px, env(safe-area-inset-bottom)); }
+.connect-wizard .wizard-actions button { min-height: 46px; border-radius: 12px; }

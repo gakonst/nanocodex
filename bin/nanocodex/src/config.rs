@@ -19,7 +19,6 @@ use nanocodex::{
     },
     oai::{
         auth::{OpenAiAuth, OpenAiAuthMode},
-        tower::ResponsesServiceConfig,
         transport::ResponsesTransport,
     },
     tools::mcp::McpHandle,
@@ -117,6 +116,14 @@ pub(crate) struct EvalAgentArgs {
     reason = "independent CLI feature toggles are not one state machine"
 )]
 pub(crate) struct AgentArgs {
+    /// Voice microphone shortcut, or none to use /voice mute only.
+    #[arg(long, env = "NANOCODEX_VOICE_MUTE_KEY", default_value = "ctrl+x", value_parser = crate::tui::voice::validate_key)]
+    pub(crate) voice_mute_key: String,
+
+    /// Animate live voice captions; set false for reduced motion.
+    #[arg(long, env = "NANOCODEX_VOICE_ANIMATIONS", default_value_t = true, action = clap::ArgAction::Set)]
+    pub(crate) voice_animations: bool,
+
     #[command(flatten)]
     auth: AuthArgs,
 
@@ -173,7 +180,7 @@ pub(crate) struct AgentArgs {
     )]
     subagents: bool,
 
-    /// Maximum number of active subagent turns across one task tree.
+    /// Maximum active subagent turns across one task tree (unlimited by default).
     #[arg(
         long,
         env = "NANOCODEX_MAX_SUBAGENTS",
@@ -288,7 +295,9 @@ impl AgentArgs {
     }
 
     pub(crate) fn thinking(&self) -> Thinking {
-        self.model_policy.thinking.unwrap_or_default()
+        self.model_policy
+            .thinking
+            .unwrap_or_else(|| self.model.unwrap_or_default().default_thinking())
     }
 
     pub(crate) fn web_search(&self) -> bool {
@@ -370,7 +379,7 @@ impl AgentArgs {
         };
         let model = match self.model {
             Some(model) => model,
-            None => connected_account_default_model(&auth).await,
+            None => connected_account_default_model(auth.mode()),
         };
         let direct_websocket_url = direct_websocket_url(self.websocket_url, auth.mode());
         let mpp_adapter = self.mpp.start().await?;
@@ -475,13 +484,18 @@ impl AgentArgs {
         } else {
             builder.tools(tools)
         };
-        let instructions = session_instructions(
-            self.instructions,
+        let additional_instructions = session_instructions(
+            self.instructions.as_deref(),
             generic_subagents,
             managed_memory.is_some(),
         );
-        let builder = if let Some(instructions) = instructions {
+        let builder = if let Some(instructions) = self.instructions {
             builder.instructions(instructions)
+        } else {
+            builder
+        };
+        let builder = if let Some(instructions) = additional_instructions {
+            builder.additional_instructions(instructions)
         } else {
             builder
         };
@@ -563,24 +577,19 @@ const SUBAGENT_INSTRUCTIONS: &str = concat!(
 );
 
 fn session_instructions(
-    custom: Option<String>,
+    custom: Option<&str>,
     subagents_enabled: bool,
     memory_enabled: bool,
 ) -> Option<String> {
-    if !subagents_enabled && !memory_enabled {
-        return custom;
+    let custom = custom.unwrap_or_default();
+    let mut instructions = Vec::new();
+    if subagents_enabled && !custom.contains(SUBAGENT_INSTRUCTIONS) {
+        instructions.push(SUBAGENT_INSTRUCTIONS);
     }
-    let mut instructions =
-        custom.unwrap_or_else(|| ResponsesServiceConfig::default().system_prompt.to_string());
-    if !instructions.contains(SUBAGENT_INSTRUCTIONS) && subagents_enabled {
-        instructions.push_str("\n\n");
-        instructions.push_str(SUBAGENT_INSTRUCTIONS);
+    if memory_enabled && !custom.contains(MEMORY_INSTRUCTIONS) {
+        instructions.push(MEMORY_INSTRUCTIONS);
     }
-    if memory_enabled && !instructions.contains(MEMORY_INSTRUCTIONS) {
-        instructions.push_str("\n\n");
-        instructions.push_str(MEMORY_INSTRUCTIONS);
-    }
-    Some(instructions)
+    (!instructions.is_empty()).then(|| instructions.join("\n\n"))
 }
 
 impl AuthArgs {
@@ -696,95 +705,10 @@ fn direct_websocket_url(explicit: Option<String>, auth_mode: OpenAiAuthMode) -> 
     explicit.unwrap_or_else(|| auth_mode.default_websocket_url().to_owned())
 }
 
-async fn connected_account_default_model(auth: &OpenAiAuth) -> Model {
-    const MAX_CATALOG_BYTES: usize = 2 * 1024 * 1024;
-    if auth.mode() != OpenAiAuthMode::ChatGpt {
-        return Model::Sol;
-    }
-    let client = match reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return Model::Sol,
-    };
-    let mut snapshot = match auth.snapshot().await {
-        Ok(snapshot) => snapshot,
-        Err(_) => return Model::Sol,
-    };
-    for attempt in 0..2 {
-        let mut request = client
-            .get("https://chatgpt.com/backend-api/codex/models?client_version=0.5.0")
-            .bearer_auth(snapshot.bearer())
-            .header(
-                "chatgpt-account-id",
-                snapshot.account_id().unwrap_or_default(),
-            )
-            .header("originator", "codex_cli_rs")
-            .header("user-agent", "nanocodex/0.5.0");
-        if snapshot.is_fedramp() {
-            request = request.header("x-openai-fedramp", "true");
-        }
-        let Ok(mut response) = request.send().await else {
-            return Model::Sol;
-        };
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED && attempt == 0 {
-            if auth.recover_unauthorized(&snapshot).await.is_err() {
-                return Model::Sol;
-            }
-            let Ok(refreshed) = auth.snapshot().await else {
-                return Model::Sol;
-            };
-            snapshot = refreshed;
-            continue;
-        }
-        if !response.status().is_success()
-            || response
-                .content_length()
-                .is_some_and(|length| length > u64::try_from(MAX_CATALOG_BYTES).unwrap_or(u64::MAX))
-        {
-            return Model::Sol;
-        }
-        let mut encoded = Vec::new();
-        loop {
-            match response.chunk().await {
-                Ok(Some(chunk))
-                    if encoded.len().saturating_add(chunk.len()) <= MAX_CATALOG_BYTES =>
-                {
-                    encoded.extend_from_slice(&chunk);
-                }
-                Ok(Some(_)) | Err(_) => return Model::Sol,
-                Ok(None) => break,
-            }
-        }
-        return account_catalog_default_model(&encoded);
-    }
-    Model::Sol
-}
-
-#[derive(serde::Deserialize)]
-struct AccountModelCatalog {
-    models: Vec<AccountModelAvailability>,
-}
-
-#[derive(serde::Deserialize)]
-struct AccountModelAvailability {
-    slug: String,
-    visibility: String,
-}
-
-fn account_catalog_default_model(encoded: &[u8]) -> Model {
-    let Ok(catalog) = serde_json::from_slice::<AccountModelCatalog>(encoded) else {
-        return Model::Sol;
-    };
-    if catalog
-        .models
-        .iter()
-        .any(|model| model.slug == Model::Astra.as_str() && model.visibility == "list")
-    {
-        Model::Astra
-    } else {
-        Model::Sol
+const fn connected_account_default_model(auth_mode: OpenAiAuthMode) -> Model {
+    match auth_mode {
+        OpenAiAuthMode::ChatGpt => Model::Astra,
+        OpenAiAuthMode::ApiKey => Model::Astra,
     }
 }
 
@@ -934,24 +858,19 @@ mod tests {
     use nanocodex::{Model, oai::auth::OpenAiAuthMode};
 
     #[test]
-    fn account_catalog_defaults_to_only_picker_visible_astra() {
+    fn default_model_is_astra_for_every_auth_mode() {
         assert_eq!(
-            account_catalog_default_model(
-                br#"{"models":[{"slug":"gpt-6-astra","visibility":"list"}]}"#,
-            ),
+            connected_account_default_model(OpenAiAuthMode::ChatGpt),
             Model::Astra
         );
         assert_eq!(
-            account_catalog_default_model(
-                br#"{"models":[{"slug":"gpt-6-astra","visibility":"hide"}]}"#,
-            ),
-            Model::Sol
+            connected_account_default_model(OpenAiAuthMode::ApiKey),
+            Model::Astra
         );
-        assert_eq!(account_catalog_default_model(b"not-json"), Model::Sol);
     }
 
     use super::{
-        SUBAGENT_INSTRUCTIONS, account_catalog_default_model, direct_websocket_url, select_auth,
+        SUBAGENT_INSTRUCTIONS, connected_account_default_model, direct_websocket_url, select_auth,
         select_auth_with_default, selected_api_base_url, selected_subagent_tools,
         session_instructions,
     };
@@ -1036,40 +955,39 @@ mod tests {
     }
 
     #[test]
-    fn subagent_concurrency_defaults_to_tacts_limit() {
+    fn subagent_concurrency_defaults_to_unlimited() {
         let command = crate::Cli::command();
         let max_subagents = command
             .get_arguments()
             .find(|argument| argument.get_id() == "max_subagents")
             .expect("the CLI should expose the max-subagents argument");
 
-        assert_eq!(max_subagents.get_default_values(), ["32"]);
+        assert_eq!(
+            max_subagents.get_default_values(),
+            [crate::subagents::DEFAULT_MAX_SUBAGENTS.to_string().as_str()]
+        );
     }
 
     #[test]
     fn subagent_instructions_follow_the_enable_switch() {
-        let custom = "custom instructions".to_owned();
+        assert_eq!(session_instructions(None, false, false), None);
         assert_eq!(
-            session_instructions(Some(custom.clone()), false, false),
-            Some(custom.clone())
+            session_instructions(Some(SUBAGENT_INSTRUCTIONS), true, false),
+            None
         );
-
-        let enabled = session_instructions(Some(custom), true, false).unwrap();
-        assert!(enabled.starts_with("custom instructions\n\n"));
+        let enabled = session_instructions(None, true, false).unwrap();
         assert!(enabled.ends_with(SUBAGENT_INSTRUCTIONS));
         assert_eq!(enabled.matches(SUBAGENT_INSTRUCTIONS).count(), 1);
     }
 
     #[test]
     fn memory_instructions_follow_the_enable_switch() {
-        let custom = "custom instructions".to_owned();
+        assert_eq!(session_instructions(None, false, false), None);
         assert_eq!(
-            session_instructions(Some(custom.clone()), false, false),
-            Some(custom.clone())
+            session_instructions(Some(MEMORY_INSTRUCTIONS), false, true),
+            None
         );
-
-        let enabled = session_instructions(Some(custom), false, true).unwrap();
-        assert!(enabled.starts_with("custom instructions\n\n"));
+        let enabled = session_instructions(None, false, true).unwrap();
         assert!(enabled.ends_with(MEMORY_INSTRUCTIONS));
         assert_eq!(enabled.matches(MEMORY_INSTRUCTIONS).count(), 1);
     }

@@ -8,7 +8,7 @@ use ratatui::{
 use std::time::Instant;
 
 use super::{
-    app::{App, Conversation, PaneId, ReasoningPicker, STANDARD_THINKING_OPTIONS},
+    app::{App, Conversation, MODEL_OPTIONS, PaneId, ReasoningPicker, STANDARD_THINKING_OPTIONS},
     composer::ComposerLayout,
     transcript::InlineEdit,
 };
@@ -26,16 +26,63 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut App) {
         layout.composer,
         &layout.composer_layout,
     ));
+    super::voice::render(frame, &app.voice, layout.voice);
     render_footer(frame, app, layout.footer);
     app.render_mouse_selection(frame.buffer_mut(), selectable_areas.as_slice());
+    render_model_picker(frame, app);
     render_reasoning_picker(frame, app);
 }
 
 pub(super) fn render_animation(frame: &mut Frame<'_>, app: &mut App) {
     let layout = view_layout(frame.area(), app);
     render_composer(frame, app, layout.composer, &layout.composer_layout);
+    super::voice::render(frame, &app.voice, layout.voice);
     render_footer(frame, app, layout.footer);
+    render_model_picker(frame, app);
     render_reasoning_picker(frame, app);
+}
+
+fn render_model_picker(frame: &mut Frame<'_>, app: &App) {
+    let Some(selected) = app.model_picker() else {
+        return;
+    };
+    let area = frame.area();
+    let popup_height = 9.min(area.height);
+    let popup_width = area.width.min(64);
+    let popup = Rect::new(
+        area.x + area.width.saturating_sub(popup_width) / 2,
+        area.y + area.height.saturating_sub(popup_height),
+        popup_width,
+        popup_height,
+    );
+    frame.render_widget(Clear, popup);
+
+    let mut lines = vec![
+        Line::styled(
+            "  Select Model",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Line::default(),
+    ];
+    for (index, (model, label)) in MODEL_OPTIONS.iter().enumerate() {
+        let current = if *model == app.model() {
+            " (current)"
+        } else {
+            ""
+        };
+        lines.push(reasoning_option_line(
+            index == selected,
+            index + 1,
+            &format!("{label}{current}"),
+            model.as_str(),
+        ));
+    }
+    lines.push(Line::default());
+    lines.push(Line::styled(
+        "  Press enter to confirm or esc to cancel",
+        Style::default().fg(Color::DarkGray),
+    ));
+    frame.render_widget(Paragraph::new(lines), popup);
 }
 
 struct ViewLayout {
@@ -43,6 +90,7 @@ struct ViewLayout {
     transcript: Rect,
     pending: Rect,
     composer: Rect,
+    voice: Rect,
     footer: Rect,
     composer_layout: ComposerLayout,
 }
@@ -71,12 +119,14 @@ fn view_layout(area: Rect, app: &mut App) -> ViewLayout {
         header_area,
         transcript_area,
         pending_area,
+        voice_area,
         composer_area,
         footer_area,
     ] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(4),
         Constraint::Length(pending_height),
+        Constraint::Length(if app.voice.visible() { 3 } else { 0 }),
         Constraint::Length(composer_height),
         Constraint::Length(1),
     ])
@@ -86,6 +136,7 @@ fn view_layout(area: Rect, app: &mut App) -> ViewLayout {
         header: header_area,
         transcript: transcript_area,
         pending: pending_area,
+        voice: voice_area,
         composer: composer_area,
         footer: footer_area,
         composer_layout,
@@ -123,7 +174,7 @@ fn render_reasoning_picker(frame: &mut Frame<'_>, app: &App) {
                 STANDARD_THINKING_OPTIONS.iter().enumerate()
             {
                 let mut label = (*label).to_owned();
-                if *thinking == nanocodex::Thinking::default() {
+                if *thinking == app.model().default_thinking() {
                     label.push_str(" (default)");
                 }
                 if *thinking == app.thinking() {
@@ -816,6 +867,20 @@ mod tests {
     }
 
     #[test]
+    fn model_picker_renders_astra_as_a_selectable_option() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
+        let mut app = App::new("/workspace".into());
+        app.open_model_picker();
+
+        terminal.draw(|frame| render(frame, &mut app)).unwrap();
+        let rendered = terminal.backend().to_string();
+
+        assert!(rendered.contains("Select Model"));
+        assert!(rendered.contains("Astra"));
+        assert!(rendered.contains("gpt-6-astra"));
+    }
+
+    #[test]
     fn animation_render_matches_a_full_frame() {
         let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
         let mut app = App::new("/workspace".into());
@@ -851,7 +916,7 @@ mod tests {
             .iter()
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
-        assert!(footer.ends_with("gpt-5.6-sol · high · fast "));
+        assert!(footer.ends_with("gpt-6-astra · low · fast "));
     }
 
     #[test]
@@ -866,7 +931,7 @@ mod tests {
             .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(footer.contains("Ready · $0.012345"));
-        assert!(footer.ends_with("gpt-5.6-sol · high "));
+        assert!(footer.ends_with("gpt-6-astra · low "));
     }
 
     #[test]
@@ -877,14 +942,14 @@ mod tests {
 
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
         let rendered = terminal.backend().to_string();
-        assert!(rendered.contains("Select Reasoning Level for gpt-5.6-sol"));
+        assert!(rendered.contains("Select Reasoning Level for gpt-6-astra"));
         assert!(rendered.contains("Low"));
-        assert!(rendered.contains("High (default) (current)"));
+        assert!(rendered.contains("Low (default) (current)"));
         assert!(rendered.contains("Extra high"));
         assert!(rendered.contains("More reasoning…"));
         assert!(!rendered.contains("Maximum reasoning depth"));
 
-        app.move_reasoning_picker(3);
+        app.move_reasoning_picker(4);
         assert!(matches!(
             app.confirm_reasoning_picker(),
             Some(crate::tui::app::ReasoningPickerAction::OpenedAdvanced)
@@ -902,7 +967,7 @@ mod tests {
 
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
         let rendered = terminal.backend().to_string();
-        assert!(rendered.contains("gpt-5.6-sol"));
+        assert!(rendered.contains("gpt-6-astra"));
     }
 
     #[test]
@@ -1417,7 +1482,7 @@ mod tests {
                 "\"┌ Message → Main ──────────────────────────────┐\"\n",
                 "\"│                                              │\"\n",
                 "\"└──────────────────────────────────────────────┘\"\n",
-                "\" Ready  /simplify [          gpt-5.6-sol · high \"\n",
+                "\" Ready  /simplify [           gpt-6-astra · low \"\n",
             )
         );
     }

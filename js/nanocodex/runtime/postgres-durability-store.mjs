@@ -7,6 +7,10 @@ const MAX_REVISION = "18446744073709551615";
 const PORTABLE_IMPORT_OWNER = "nanocodex-portable-import";
 const VERIFY_ATTEMPTS = 3;
 const SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS nanocodex_durable_records (
+     state_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+     PRIMARY KEY (state_id, key)
+   )`,
   `CREATE TABLE IF NOT EXISTS nanocodex_durable_owners (
      state_id TEXT PRIMARY KEY,
      owner_id TEXT NOT NULL,
@@ -53,6 +57,41 @@ export function createPostgresDurabilityStore(pool) {
     return initialized;
   };
   return Object.freeze({
+    async scanRecords(stateId, after = "", limit = 16) {
+      if (!Number.isInteger(limit) || limit < 1 || limit > 16) throw new TypeError("invalid durability record page size");
+      await ready();
+      const client = await pool.connect();
+      try { return (await client.query("SELECT key, value FROM nanocodex_durable_records WHERE state_id = $1 AND key > $2 ORDER BY key LIMIT $3", [stateId, after, limit])).rows; }
+      finally { client.release(); }
+    },
+    async importRecords(stateId, records) {
+      requireId(stateId);
+      await ready();
+      const client = await pool.connect();
+      let committing = false;
+      let discard = false;
+      try {
+        await client.query("BEGIN");
+        for (const record of records) {
+          await client.query("INSERT INTO nanocodex_durable_records (state_id, key, value) VALUES ($1, $2, $3) ON CONFLICT (state_id, key) DO NOTHING", [stateId, record.key, record.value]);
+        }
+        committing = true;
+        await client.query("COMMIT");
+      } catch (error) {
+        if (committing) discard = true;
+        else {
+          try { await client.query("ROLLBACK"); }
+          catch { discard = true; }
+        }
+        // Staging the same immutable page again is safe after a lost commit.
+        throw error;
+      } finally { client.release(discard); }
+    },
+    async readRecord(stateId, key) {
+      await ready();
+      const result = await pool.query("SELECT value FROM nanocodex_durable_records WHERE state_id = $1 AND key = $2", [stateId, key]);
+      return result.rows[0]?.value ?? null;
+    },
     async load(stateId) {
       requireId(stateId);
       await ready();
@@ -74,6 +113,7 @@ export function createPostgresDurabilityStore(pool) {
         fence,
         expectedRevision: request?.expectedRevision,
         payload: request?.payload,
+        records: request.records,
       });
     },
     async importState(stateId, imported, options) {
@@ -84,7 +124,7 @@ export function createPostgresDurabilityStore(pool) {
         : durabilityRevision(options.expectedRevision);
       const expectedPayload = expectedImportPayload(options, expectedRevision);
       await ready();
-      return restoreState(pool, stateId, state, expectedRevision, expectedPayload);
+      return restoreState(pool, stateId, state, expectedRevision, expectedPayload, options?.records ?? []);
     },
   });
 }
@@ -303,6 +343,10 @@ async function replaceStateOnce(pool, stateId, request) {
     }
     const payload = requestPayload(request.payload);
     const revision = durabilityRevision(BigInt(state.revision) + 1n);
+    for (const record of request.records) {
+      await client.query(`INSERT INTO nanocodex_durable_records (state_id, key, value) VALUES ($1, $2, $3)
+        ON CONFLICT (state_id, key) DO NOTHING`, [stateId, record.key, record.value]);
+    }
     await client.query(
       `INSERT INTO nanocodex_durable_states (state_id, revision, payload)
        VALUES ($1, $2::numeric, $3)
@@ -337,7 +381,7 @@ async function replaceStateOnce(pool, stateId, request) {
   }
 }
 
-async function restoreState(pool, stateId, state, expectedRevision, expectedPayload) {
+async function restoreState(pool, stateId, state, expectedRevision, expectedPayload, records) {
   return verifyCommit(
     stateId,
     (attempt) => restoreStateOnce(
@@ -346,6 +390,7 @@ async function restoreState(pool, stateId, state, expectedRevision, expectedPayl
       state,
       expectedRevision,
       expectedPayload,
+      records,
       attempt > 0,
     ),
   );
@@ -357,6 +402,7 @@ async function restoreStateOnce(
   state,
   expectedRevision,
   expectedPayload,
+  records,
   reconciling,
 ) {
   const client = await pool.connect();
@@ -402,6 +448,9 @@ async function restoreStateOnce(
       [stateId, PORTABLE_IMPORT_OWNER],
     );
     if (claimed.rows.length !== 1) throw new RangeError("PostgreSQL durability fence overflow");
+    for (const record of records) await client.query(
+      "INSERT INTO nanocodex_durable_records (state_id, key, value) VALUES ($1, $2, $3) ON CONFLICT (state_id, key) DO NOTHING", [stateId, record.key, record.value],
+    );
     if (state.revision !== "0") {
       await client.query(
         `INSERT INTO nanocodex_durable_states (state_id, revision, payload)

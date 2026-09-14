@@ -12,7 +12,7 @@
     "predeploy": "npm run prepare:code-evaluator",
     "deploy": "wrangler deploy --env=\"\" --config wrangler.jsonc",
     "prebuild": "npm run prepare:code-evaluator",
-    "prepare:code-evaluator": "node scripts/prepare-code-evaluator.mjs",
+    "prepare:code-evaluator": "node scripts/prepare-code-evaluator.mjs && node scripts/prepare-hand-image.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -24,6 +24,7 @@
     "accounts": "0.16.2",
     "agents": "0.22.0",
     "ai": "7.0.90",
+    "cron-parser": "5.6.0",
     "nanocodex": "workspace:*",
     "nanocodex-connect-protocol": "workspace:*",
     "nanocodex-tools": "workspace:*",
@@ -36,6 +37,7 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.19.0",
     "@cloudflare/workers-types": "^5.20260730.1",
+    "@types/node": "^22.20.1",
     "typescript": "5.9.3",
     "vitest": "^4.0.18",
     "wrangler": "4.127.1",

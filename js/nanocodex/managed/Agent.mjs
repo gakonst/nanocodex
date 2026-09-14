@@ -18,9 +18,6 @@ const TERMINAL_CACHE_CAPACITY = 256;
 const TERMINAL_CACHE_BYTES = 8 * 1024 * 1024;
 const SUBSCRIBER_QUEUE_CAPACITY = 4_096;
 const SUBSCRIBER_QUEUE_BYTES = 32 * 1024 * 1024;
-// Managed logical events are bounded to 14 MiB; retain envelope allowance for
-// cursor, turn, SSE, and JSON framing on the client boundary.
-const EVENT_STREAM_FRAME_BYTES = 16 * 1024 * 1024;
 const EVENT_STREAM_INACTIVITY_TIMEOUT_MS = 45_000;
 const TURN_SUBMISSION_TIMEOUT_MS = 10_000;
 const TURN_STATE_POLL_INITIAL_MS = 1_000;
@@ -240,6 +237,18 @@ function agentHandle(client, id, summary) {
         body: managedSettingsPatch(patch),
       })).settings),
     }),
+    triggers: Object.freeze({
+      list: async () => {
+        const body = await client.json(`${agentPath(id)}/triggers`);
+        if (!body || !Array.isArray(body.data)) throw new ManagedError("invalid_response", "managed triggers are malformed");
+        return Object.freeze(body.data.map(managedCronTrigger));
+      },
+      get: async (triggerId) => managedCronTrigger(await client.json(cronTriggerPath(id, triggerId))),
+      put: async (triggerId, config) => managedCronTrigger(await client.json(cronTriggerPath(id, triggerId), {
+        method: "PUT", body: cronTriggerBody(config),
+      })),
+      delete: async (triggerId) => { await client.empty(cronTriggerPath(id, triggerId), { method: "DELETE" }); },
+    }),
     toolsTarget: () => client.toolsTarget(id),
     state: () => client.json(agentPath(id)),
     delete: async () => {
@@ -251,6 +260,47 @@ function agentHandle(client, id, summary) {
     voiceTransport: managedVoiceTransport(client, id),
   });
   return agent;
+}
+
+function cronTriggerPath(agentId, triggerId) {
+  if (typeof triggerId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(triggerId)) {
+    throw new TypeError("trigger id must be 1-64 letters, digits, underscores or hyphens");
+  }
+  return `${agentPath(agentId)}/triggers/${triggerId}`;
+}
+
+function cronTriggerBody(config) {
+  if (!config || typeof config !== "object" || Array.isArray(config)
+    || Object.keys(config).some((key) => !["cron", "timezone", "input", "enabled", "session_mode"].includes(key))
+    || typeof config.cron !== "string" || config.cron.length > 256
+    || config.cron.trim().split(/\s+/).length !== 5
+    || typeof config.input !== "string" || config.input.trim().length === 0
+    || (config.session_mode !== undefined && config.session_mode !== "new" && config.session_mode !== "continue")
+    || (config.timezone !== undefined && typeof config.timezone !== "string")
+    || (config.enabled !== undefined && typeof config.enabled !== "boolean")) {
+    throw new TypeError("invalid cron trigger configuration");
+  }
+  return JSON.stringify(config);
+}
+
+function managedCronTrigger(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || typeof value.id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(value.id)
+    || typeof value.cron !== "string" || typeof value.timezone !== "string"
+    || typeof value.input !== "string" || typeof value.enabled !== "boolean"
+    || (value.session_mode !== undefined && value.session_mode !== "new" && value.session_mode !== "continue")
+    || (value.last_agent_id != null && (typeof value.last_agent_id !== "string" || !UUID.test(value.last_agent_id)))
+    || ![value.created_at, value.updated_at].every((n) => Number.isSafeInteger(n) && n >= 0)
+    || ![value.next_run_at, value.last_run_at, value.last_skipped_at].every((n) => n === null || (Number.isSafeInteger(n) && n >= 0))
+    || (value.last_turn_id !== null && (typeof value.last_turn_id !== "string" || !TURN_ID.test(value.last_turn_id)))) {
+    throw new ManagedError("invalid_response", "managed cron trigger is malformed");
+  }
+  return Object.freeze({
+    id: value.id, cron: value.cron, timezone: value.timezone, input: value.input, enabled: value.enabled,
+    session_mode: value.session_mode ?? "continue", last_agent_id: value.last_agent_id ?? null,
+    next_run_at: value.next_run_at, last_run_at: value.last_run_at, last_turn_id: value.last_turn_id,
+    last_skipped_at: value.last_skipped_at, created_at: value.created_at, updated_at: value.updated_at,
+  });
 }
 
 function managedSettingsPatch(patch) {
@@ -356,8 +406,15 @@ async function eventHistoryPage(client, agentId, options) {
     throw new TypeError("managed event history options must be an object");
   }
   const before = options.before;
+  const after = options.after;
+  if (before !== undefined && after !== undefined) {
+    throw new TypeError("managed event history accepts either before or after, not both");
+  }
   if (before !== undefined && (typeof before !== "string" || !CURSOR.test(before) || before === "0")) {
     throw new TypeError("managed event history cursor must be a positive decimal string");
+  }
+  if (after !== undefined && (typeof after !== "string" || !CURSOR.test(after))) {
+    throw new TypeError("managed event history after cursor must be a nonnegative decimal string");
   }
   const limit = options.limit ?? 128;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 256) {
@@ -365,6 +422,7 @@ async function eventHistoryPage(client, agentId, options) {
   }
   const query = new URLSearchParams({ limit: String(limit) });
   if (before !== undefined) query.set("before", before);
+  if (after !== undefined) query.set("after", after);
   const body = await client.json(`${agentPath(agentId)}/events/history?${query}`, {
     signal: options.signal,
   });
@@ -375,7 +433,8 @@ async function eventHistoryPage(client, agentId, options) {
   const data = body.data.map((event) => managedEvent(event));
   if (data.length > limit || data.some((event, index) =>
     (index > 0 && !cursorBefore(data[index - 1].cursor, event.cursor))
-    || (before !== undefined && !cursorBefore(event.cursor, before)))) {
+    || (before !== undefined && !cursorBefore(event.cursor, before))
+    || (after !== undefined && !cursorBefore(after, event.cursor)))) {
     throw new ManagedError("invalid_response", "managed event history ordering is malformed");
   }
   return Object.freeze({ data: Object.freeze(data), hasMore: body.has_more, latestCursor });
@@ -402,6 +461,7 @@ function managedTurn(client, agentId, eventStream, options) {
   });
   void submission.catch(() => {});
   let result;
+  let steeringTail = Promise.resolve();
   const turn = {
     idempotencyKey,
     accepted: async () => requiredString(await submission, "turn_id"),
@@ -409,13 +469,39 @@ function managedTurn(client, agentId, eventStream, options) {
       const accepted = await submission;
       return client.json(turnPath(agentId, requiredString(accepted, "turn_id")), { signal });
     },
-    steer: async ({ input }) => {
-      const accepted = await submission;
-      return client.json(`${turnPath(agentId, requiredString(accepted, "turn_id"))}/steer`, {
-        method: "POST",
-        body: JSON.stringify({ input }),
-        signal,
+    steer: async ({ input, messageId }) => {
+      const body = JSON.stringify({ input, message_id: messageId });
+      // Preserve this turn's correction order across concurrent HTTP requests.
+      // Cancellation deliberately bypasses this queue.
+      const steering = steeringTail.then(async () => {
+        const accepted = await submission;
+        return client.json(`${turnPath(agentId, requiredString(accepted, "turn_id"))}/steer`, {
+          method: "POST",
+          body,
+          signal,
+        });
       });
+      steeringTail = steering.then(() => {}, () => {});
+      return steering;
+    },
+    withdrawSteer: async ({ messageId }) => {
+      if (typeof messageId !== "string" || !messageId) throw new TypeError("messageId must be a non-empty string");
+      // Await admission of earlier steers so withdrawal cannot overtake them.
+      const withdrawal = steeringTail.then(async () => {
+        const accepted = await submission;
+        const turnId = requiredString(accepted, "turn_id");
+        const receipt = await client.json(`${turnPath(agentId, turnId)}/withdraw-steer`, {
+          method: "POST",
+          body: JSON.stringify({ message_id: messageId }),
+          signal,
+        });
+        if (receipt?.turn_id !== turnId || receipt?.message_id !== messageId || typeof receipt?.withdrawn !== "boolean") {
+          throw new TypeError("managed withdrawal returned an invalid receipt");
+        }
+        return receipt;
+      });
+      steeringTail = withdrawal.then(() => {}, () => {});
+      return withdrawal;
     },
     cancel: async () => {
       const turnId = id ?? requiredString(await submission, "turn_id");
@@ -741,7 +827,6 @@ function managedMemoryResponse(value, expectedOperation) {
   }
   if (value.operation === "scan") {
     if (typeof value.abstained !== "boolean" || !Array.isArray(value.candidates)
-      || value.candidates.length > 5
       || value.abstained !== (value.candidates.length === 0)) {
       throw new ManagedError("invalid_response", "managed memory scan response is malformed");
     }
@@ -793,7 +878,6 @@ function managedMemoryCandidate(value) {
 function managedMemoryRecord(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)
     || typeof value.content !== "string" || !value.content.trim()
-    || UTF8.encode(value.content).byteLength > 1_024
     || !nonnegativeSafeInteger(value.created_at_ms)
     || !nonnegativeSafeInteger(value.updated_at_ms)
     || !nullableNonnegativeSafeInteger(value.last_scanned_at_ms)
@@ -1000,7 +1084,7 @@ function replayableEventStream(client, agentId) {
               const bytes = encodedBytes(event.data);
               if (
                 subscriber.queue.length >= SUBSCRIBER_QUEUE_CAPACITY
-                || subscriber.bufferedBytes + bytes > SUBSCRIBER_QUEUE_BYTES
+                || (subscriber.queue.length > 0 && subscriber.bufferedBytes + bytes > SUBSCRIBER_QUEUE_BYTES)
               ) {
                 subscriber.overflowed = true;
                 subscriber.done = true;
@@ -1190,6 +1274,8 @@ async function* readEvents(client, agentId, initialCursor, signal, onControlCurs
 
     const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
     let buffer = "";
+    let searchFrom = 0;
+    let skipLeadingLF = false;
     try {
       while (!signal?.aborted) {
         let chunk;
@@ -1200,14 +1286,17 @@ async function* readEvents(client, agentId, initialCursor, signal, onControlCurs
           break;
         }
         if (chunk.done) break;
-        buffer += chunk.value.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+        let text = chunk.value;
+        if (skipLeadingLF && text.startsWith("\n")) text = text.slice(1);
+        if (chunk.value.length > 0) skipLeadingLF = chunk.value.endsWith("\r");
+        buffer += text.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
         while (true) {
-          const boundary = buffer.indexOf("\n\n");
-          if (boundary < 0) break;
+          const boundary = buffer.indexOf("\n\n", searchFrom);
+          if (boundary < 0) { searchFrom = Math.max(0, buffer.length - 1); break; }
           const frame = buffer.slice(0, boundary);
-          assertEventFrameSize(frame);
           const parsed = parseEventFrame(frame);
           buffer = buffer.slice(boundary + 2);
+          searchFrom = 0;
           if (!parsed) continue;
           if (parsed.retry !== undefined) reconnectDelay = parsed.retry;
           if (parsed.controlCursor !== undefined) {
@@ -1221,24 +1310,13 @@ async function* readEvents(client, agentId, initialCursor, signal, onControlCurs
           cursor = eventCursor;
           yield managedEvent(data, eventCursor, parsed.event);
         }
-        // Only the incomplete trailing frame remains here. Complete frames are
-        // bounded independently above because one network read may coalesce
-        // several valid SSE frames.
-        assertEventFrameSize(buffer);
+
       }
     } finally {
       void reader.cancel().catch(() => {});
     }
     if (!signal?.aborted) await delay(reconnectDelay, signal);
   }
-}
-
-function assertEventFrameSize(frame) {
-  if (encodedBytes(frame) <= EVENT_STREAM_FRAME_BYTES) return;
-  throw new ManagedError(
-    "event_frame_too_large",
-    `managed event frame exceeds ${EVENT_STREAM_FRAME_BYTES} decoded bytes`,
-  );
 }
 
 function encodedBytes(value) {
@@ -1511,29 +1589,27 @@ function validateMemoryOperation(value) {
   }
   if (value.operation === "scan") {
     assertOnlyFields(value, ["operation", "query", "limit"], "managed memory scan");
-    if (typeof value.query !== "string" || !value.query.trim()
-      || UTF8.encode(value.query).byteLength > 512) {
-      throw new TypeError("managed memory scan query must be 1-512 UTF-8 bytes");
+    if (typeof value.query !== "string" || !value.query.trim()) {
+      throw new TypeError("managed memory scan query must be a nonempty string");
     }
     if (value.limit !== undefined
-      && (!Number.isSafeInteger(value.limit) || value.limit < 1 || value.limit > 5)) {
-      throw new TypeError("managed memory scan limit must be an integer from 1 through 5");
+      && (!Number.isSafeInteger(value.limit) || value.limit < 1)) {
+      throw new TypeError("managed memory scan limit must be a positive safe integer");
     }
     return;
   }
   if (value.operation === "read") {
     assertOnlyFields(value, ["operation", "keys"], "managed memory read");
-    if (!Array.isArray(value.keys) || value.keys.length === 0 || value.keys.length > 20) {
-      throw new TypeError("managed memory read requires from 1 through 20 keys");
+    if (!Array.isArray(value.keys) || value.keys.length === 0) {
+      throw new TypeError("managed memory read requires at least one key");
     }
     value.keys.forEach(validateMemoryKey);
     return;
   }
   if (value.operation === "put") {
     assertOnlyFields(value, ["operation", "content", "replace"], "managed memory put");
-    if (typeof value.content !== "string" || !value.content.trim()
-      || UTF8.encode(value.content).byteLength > 1_024) {
-      throw new TypeError("managed memory content must be 1-1024 UTF-8 bytes");
+    if (typeof value.content !== "string" || !value.content.trim()) {
+      throw new TypeError("managed memory content must be a nonempty string");
     }
     if (value.replace !== undefined) validateMemoryKey(value.replace);
     return;

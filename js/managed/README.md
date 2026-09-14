@@ -4,6 +4,11 @@ This Worker is Nanocodex's account-owned hosted-agent surface on Cloudflare. It
 authenticates public requests, projects the caller's authority, and routes work
 to durable, account-scoped services.
 
+Managed agents have a native `browseX` tool for public X posts, profiles, search,
+followers, and following. `accountInfo().apis` advertises the tool independently
+of connector authentication. It calls the private [X Worker](../x-api/README.md)
+through `NANOCODEX_X`; deploy it with `pnpm deploy:x` before `pnpm deploy:managed`.
+
 ## Ownership and security
 
 `DurableAgentSession` exclusively owns an agent's mutable runtime: retained
@@ -17,6 +22,39 @@ state, or tool configuration. Model and connector access crosses the private
 `NANOCODEX` Service Binding to `nanocodex-egress`, which owns credential routing
 and injection.
 
+### Session-owned credential subjects
+
+The `MANAGED_AGENT_DIRECT_CREDENTIALS=true` setting makes each new
+managed agent retain credential ownership in its existing Session DO. Its
+private egress subject is `managed-session-v1_<Session DO id>`; credentials
+remain in the broker. This removes the additional per-agent
+`AgentSubjectDirectory` creation/binding. HTTP and live creation, models,
+tools, and voice use the same retained strategy. Existing sessions keep their
+directory subjects when the setting changes.
+
+Wrangler enables this strategy in production and development. Before the first
+deployment into an environment that predates the private ownership entrypoint,
+bootstrap in this order using the existing build/deploy tooling:
+
+1. Deploy compatible managed code with direct creation disabled using
+   `--var MANAGED_AGENT_DIRECT_CREDENTIALS:false --containers-rollout none`.
+   This exposes the private `ManagedAgentOwnership` entrypoint.
+2. Deploy egress with its `MANAGED_AGENT_OWNERSHIP` service binding to
+   `nanocodex-durable-agent`, entrypoint `ManagedAgentOwnership`.
+3. Deploy managed with the checked-in setting enabled. Development uses the
+   same entrypoint through a local service binding.
+
+The normal CI order (egress before managed) works after bootstrap. Code-only
+manual deployments should use `--containers-rollout none` when the image has
+not changed. Do not deploy an older experiment checkout over newer production
+code. To stop new direct sessions, disable the setting while retaining both
+Workers' direct-subject support: reverting to code predating that support
+would break already-created sessions.
+
+The resolver reads retained ownership without constructing the agent runtime.
+Deleted, exported, or pending-import sessions deny resolution; egress never
+falls back to a directory entry after a direct-subject denial.
+
 Reusable Hosted Tools protocol, broker-state, and durable-memory policy live in
 `nanocodex-tools`. This Worker supplies their Durable Object SQL/WebSocket
 adapters and retains account scope, Connect authorization, bindings, and
@@ -29,16 +67,111 @@ storage ownership.
 - `/v1/agents` lists or creates agents. Agent routes create turns, read state,
   cancel or steer work, delete an agent, and support explicit durability import
   and export. Stable `Idempotency-Key` values make create and turn retries safe.
-- Managed agents begin with no sandbox hand. The provider-neutral `mount` model
-  tool provisions and attaches named execution hands on demand; Cloudflare
-  Sandbox is the first provider, and repeated names resolve idempotently.
+- `GET /v1/agents/:id/capacity` requires `agents:read` for that agent and returns
+  storage byte counts, hot receipt counts, and archive counts without loading
+  the runtime or returning conversation contents.
+- Managed agents execute Just Bash in durable `/brain` without a hand.
+  `exec_command` defaults there; `/brain` and `.` also select the brain. File
+  metadata and small bodies live in the owning agent's SQLite storage. Bodies
+  above 1 MiB and streaming uploads remain in R2; this selects storage and does
+  not reject larger files. Existing R2 trees are indexed without copying their
+  bodies. Native hand mounts use the SDK's S3 protocol through trusted RPC to
+  that same actor, preserving prefix and read-only fences without a remote R2
+  request for every filesystem stat. Listings refresh between commands. Local
+  Sandbox SDK replication continues using its existing R2 binding. Text/file
+  processing, HTTP, and supported Git/GitHub commands run
+  here; native binaries, package installs, builds, and process sessions need a
+  hand. The agent reuses a suitable attached hand or mounts one when needed.
+  Known native work such as `cargo test` can go directly to a hand; an
+  unsupported brain capability can also trigger that choice after a probe.
+  `exec_command` always honors its selected cwd; the agent owns the fallback.
+  Brain execution requires `tools:use`, with connector authority taken
+  from the exact calling root or subagent.
+  Shell and Git transfers stream through the account's egress broker without an
+  application byte ceiling. Browser runtime and Cloudflare Sandbox HTTP traffic
+  use the same broker; native `gh` receives a public marker so authentication is
+  injected only at the provider boundary. Exact Connect identities and revocation
+  apply to both GitHub API calls and Git smart HTTP. Connect grants cannot use
+  Vault-backed shell requests or SSH identities.
+  The pnpm patch for Sandbox SDK 0.12.4 preserves S3FS `x-amz-meta-*` metadata
+  through R2 uploads, metadata-replacing copies, multipart uploads, and reads.
+  Without it, native permissions and timestamps disappear after revalidation.
+  `sandbox-r2-metadata.test.ts` exercises the SDK proxy against the Worker R2
+  binding; remove the patch when an SDK release passes that contract unpatched.
+  Shell execution, workspace traversal, and subagent admission have no implicit
+  application quota; caller-specified limits, cancellation, and platform capacity
+  still apply.
+  The provider-neutral `mount` model
+  tool provisions and attaches named execution hands on demand. `cf_sandbox`
+  names the built-in Cloudflare Sandbox factory (`cloudflare` remains a legacy
+  input alias); any other provider value is the exact name of a connected VM
+  factory. Several agent-, account-, or system-scoped factories may coexist,
+  and repeated mount names resolve idempotently.
+- Code Mode routes each command from the root of its `cwd`: mounted roots may
+  live on different factories while remaining visible in one namespace.
+  Subagents inherit the spawning turn's exact namespace authorization, so a
+  long-lived child cannot borrow capabilities from a later root turn.
+- Turn input has no application byte ceiling. HTTP uses native JSON parsing;
+  incoming WebSockets use Cloudflare's platform limit. SQLite stores large raw
+  inputs and frozen dispatch inputs in Unicode-safe chunks below its row limit.
+  Coordination scans load metadata; a receipt or dispatch hydrates its own turn.
+  Terminal receipts archive sequentially to R2 before their local chunks are
+  deleted. `/state.first_prompt` and the portability session's `first_prompt`
+  are display previews, not prompt content. Accepted events and turn receipts
+  retain the exact full input. Subagent authorization keeps task/role identity
+  digests instead of duplicate content. Inline JSON still requires memory for
+  the individual request; Cloudflare's shared 128 MB isolate heap applies.
+  Cron schedules likewise have no prompt-size or schedule-count admission cap.
+  Their input and frozen delivery snapshots use the same chunk placement; alarm
+  scans page through indexed metadata and hydrate one occurrence at a time.
+  Replacing a schedule releases its old input while queued deliveries retain
+  their original payload until delivery is acknowledged.
 - Agent events are a durable, ordered cursor stream. SSE resumes with `cursor`
   or `Last-Event-ID`; same-origin browser WebSockets carry the typed
   prompt/steer/cancel protocol. Realtime calls and sideband transport have
   separate agent-scoped WebSocket routes.
+- Voice admission does not wait for the independent Responses preconnection.
+  The shared Rust protocol delegates the first spoken question and gates reply
+  playback until durable output is delivered. Its WASM plan searches memory and
+  prior sessions using that question, including new calls in existing chats.
+  Durable receipts retain each call's bounded lookups across retries. Existing
+  first-turn environment and account context remains developer context.
+  Voice start and stop retain the full session context without a conversation
+  size rejection. Replies above 512 KiB are archived directly in R2 for exact
+  replay instead of being inserted into a SQLite row.
+  Successful memory puts and deletes emit authorized `managed.voice.context`
+  events; Rust validates call scope, deduplicates cursors, and queues background
+  context through reconnects. Retrieved context is data, never instructions.
 - `/v1/history/*` and `/v1/memory` expose organization- and team-scoped
   retained context. `/v1/credentials` and `/v1/connectors` manage brokered
   credentials, OAuth connections, and MCP connections without exposing secrets.
+- Managed agents can search completed team conversations with `find_session`
+  (`find_sessions` remains available) and verify exact turns with `read_session`.
+  Each call requires its own agent's `history:read` capability.
+- The first admitted prompt automatically calls `find_session` and `memory`
+  (`operation: "scan"`) before the model starts, using a bounded query from
+  that prompt. The normal tool handlers enforce the caller's capabilities.
+  Retrieval runs in parallel with runtime and account discovery. A durable
+  developer message injects the results and the safe `accountInfo` snapshot,
+  including known hands, logical mounts, and capabilities, before the first
+  model request. Retrieved content is explicitly untrusted data. Bootstrap emits
+  no tool events and leaves the user prompt unchanged. Stable instructions stay
+  first; the snapshot is appended once, preserving the cached conversation prefix.
+  Durable receipts and checkpoint reconciliation prevent duplicate injection on
+  recovery or reconnect. Later connection changes are available through `accountInfo`.
+  User hands include `online` attachment status. Offline hands remain in the
+  namespace so admitted calls can recover their receipts. A broker-confirmed
+  unstarted call returns an unavailable-hand result for the agent to handle;
+  transport failures with unknown admission retain the existing call identity.
+  Subsequent turns use `memory` to scan, read, put/replace, and delete team facts;
+  mutations require root-agent `memory:write` authority and puts require a scan.
+- `create_cron` saves a recurring prompt through the same durable scheduler as
+  `/v1/agents/:id/triggers/:triggerId`. Supply a stable `id`, five-field `cron`,
+  and `input`; optional `timezone`, `enabled`, and `session_mode` default to UTC,
+  true, and `new`. Identical retries return the saved schedule; conflicting IDs
+  fail without replacement. Creation requires account `agents:write` and
+  `tools:use` authority; Connect grants and shared rooms cannot create schedules.
+  Use the triggers API or UI to edit, pause, or delete a saved schedule.
 - `/v1/rooms` creates, joins, observes, and deletes multiplayer rooms. A
   `MultiplayerRoom` owns room chat and its private agent; `MultiplayerQuota`
   enforces deployment-wide room and turn limits. Room WebSockets use their own
@@ -163,3 +296,60 @@ running as an independent product surface. Use the repository operator commands,
 deployment order, secret handling, and required browser evidence in
 [`../../AGENTS.md`](../../AGENTS.md). The package scripts provide its focused
 typecheck, test, and Wrangler dry-run build when that boundary changes.
+
+### Sandbox development tools
+
+New Cloudflare Sandbox images include Swift 6.3.3 (Ubuntu 22.04), Go 1.26.5,
+Node 24.19.0, pnpm 11.25.0, and Rust 1.97.0 with rustfmt, Clippy, the
+`wasm32-unknown-unknown` and `x86_64-unknown-linux-musl` targets, and
+wasm-bindgen-cli 0.2.126. Rust, Go, Node, pnpm, and wasm-bindgen versions align
+with the repository CI configuration; Swift is a pinned Linux toolchain, while
+Apple CI uses the Swift bundled with its Xcode runner. Python, uv, C/C++ build
+tools, CMake, Ninja, and musl-tools are also available.
+
+Run `sh /usr/local/bin/nanocodex-check-dev-stack` in a sandbox to check the
+installed tools and compile small Swift/Foundation, Go, Rust, musl, and WASM
+programs without fetching package dependencies. The image build runs the same
+check and fails if a compiler or required runtime library is missing.
+
+Linux Swift supports portable Swift packages. AppKit, SwiftUI, iOS simulators,
+Apple SDKs, and `xcodebuild` still require a Mac Hand or Apple CI; installing
+Swift does not make all `apple/` packages Linux compatible.
+
+These tools become available after the managed container image is built and
+rolled out. Existing running sandboxes need recreation with the updated image.
+When changing tool versions in CI, update the corresponding image pins too.
+
+### Original media attachments
+
+The authenticated `/v1/agents/:id/attachments/:uuid` route stores original
+image or MP4/MOV bytes in the agent's existing `/brain/attachments/:uuid/original.*`
+filesystem. `POST` accepts `{name, media_type, size}` and returns the file path,
+part size, next part number, and completion state. Parts are normally 8 MiB and scale up to 100 MB to fit R2’s 10,000-part limit. The current Free/Pro 100 MB request ingress limit therefore permits files up to 1 TB. Parts stream through hashing to R2 with backpressure, and the service serializes ingestion across attachments. `PUT .../parts/:number`
+accepts exact binary chunks in order; identical retries are safe and conflicting
+bytes are rejected. `POST .../complete` finalizes the file idempotently. `GET`
+returns private, uncached bytes and supports ranges. Multipart upload IDs remain
+server-side. Image previews use a separate immutable authenticated endpoint; original bytes remain unchanged.
+
+Account ownership, organization, team, authorization epoch, and capabilities
+are checked before filesystem access. Connect grants cannot use this route.
+Session deletion fences new work, cancels body readers, drains pending writes,
+and aborts incomplete uploads before the existing `/brain` cleanup. The
+`attachments.test.ts` Worker tests exercise real local R2 multipart behavior,
+reconstruction, retries, filesystem reads, deletion fencing, and account isolation.
+
+## Browser on the Cloudflare sandbox desktop
+
+The AMD64 Sandbox image includes Google Chrome. From the remote desktop's
+terminal, open a visible browser with:
+
+```sh
+google-chrome --no-sandbox --ozone-platform=wayland --disable-dev-shm-usage \
+  --no-first-run --start-maximized about:blank
+```
+
+The terminal inherits the running desktop's Wayland environment. A separate
+shell execution does not automatically inherit that environment. The Sandbox
+runs as root, so this command disables Chrome's process sandbox; use it only
+inside the isolated Sandbox container. It does not disable TLS verification.
+The Debian server Hand image separately provides `chromium`.

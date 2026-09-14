@@ -1,11 +1,10 @@
 import { toolRouterBrand, toolRouterRuntime } from "./tool-router.mjs";
 
 export const subagentsBrand = Symbol("nanocodex.subagents");
-export const defaultSubagentMaxConcurrency = 32;
+// Omit the wire limit to use the runtime's unlimited default.
+export const defaultSubagentMaxConcurrency = undefined;
 
-const DEFAULT_SUBAGENTS = Object.freeze({
-  max_concurrency: defaultSubagentMaxConcurrency,
-});
+const DEFAULT_SUBAGENTS = Object.freeze({});
 
 export function resolveTools(configuration, { defaultSubagents = true } = {}) {
   const subagentsByDefault = defaultSubagents ? DEFAULT_SUBAGENTS : undefined;
@@ -34,7 +33,9 @@ export function resolveTools(configuration, { defaultSubagents = true } = {}) {
     if (extension) {
       if (configuredSubagents) throw new Error("Subagents.create() may only be included once");
       configuredSubagents = true;
-      subagents = Object.freeze({ max_concurrency: extension.maxConcurrency });
+      subagents = extension.maxConcurrency === undefined
+        ? DEFAULT_SUBAGENTS
+        : Object.freeze({ max_concurrency: extension.maxConcurrency });
       continue;
     }
     if (!entry || typeof entry !== "object" || Array.isArray(entry)

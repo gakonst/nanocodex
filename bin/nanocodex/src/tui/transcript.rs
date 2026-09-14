@@ -454,10 +454,19 @@ impl Transcript {
         let parent_id = call_id
             .split_once("/code-")
             .map_or(call_id, |(parent, _)| parent);
-        if let Some(entry) = self.entries.iter_mut().rev().find(
-            |entry| matches!(&entry.kind, EntryKind::Tool { call_id } if call_id == parent_id),
-        ) {
-            Arc::make_mut(entry).set_tool_result(
+        // A nested call that starts after exec yields can be rendered before its
+        // parent exists. Prefer that standalone row over a later parent row.
+        let index = self
+            .entries
+            .iter()
+            .rposition(|entry| matches!(&entry.kind, EntryKind::Tool { call_id: id } if id == call_id))
+            .or_else(|| {
+                self.entries.iter().rposition(
+                    |entry| matches!(&entry.kind, EntryKind::Tool { call_id } if call_id == parent_id),
+                )
+            });
+        if let Some(index) = index {
+            Arc::make_mut(&mut self.entries[index]).set_tool_result(
                 call_id,
                 status,
                 started_after_ns,
@@ -1405,14 +1414,22 @@ impl ToolActivity {
 
     fn refresh_plain_detail(&mut self) {
         self.plain_detail = (self.children.is_empty()
-            && self.name != "exec"
             && self.patch.is_none()
             && (!self.arguments.is_empty()
                 || self
                     .result
                     .as_deref()
                     .is_some_and(|result| !result.is_empty())))
-        .then(|| StreamingText::tool_detail(&self.arguments, self.result.as_deref()));
+        .then(|| {
+            StreamingText::tool_detail(
+                if self.name == "exec" {
+                    ""
+                } else {
+                    &self.arguments
+                },
+                self.result.as_deref(),
+            )
+        });
     }
 
     fn uses_plain_detail(&self) -> bool {
@@ -1512,7 +1529,15 @@ impl ToolActivity {
         let (icon, color) = tool_style(self.status);
         let display_name = if self.name == "exec" {
             if self.children.is_empty() {
-                "Working"
+                if self
+                    .result
+                    .as_deref()
+                    .is_some_and(|result| !result.is_empty())
+                {
+                    "Output"
+                } else {
+                    "Working"
+                }
             } else {
                 "Tools"
             }
@@ -1543,7 +1568,15 @@ impl ToolActivity {
         let (icon, color) = tool_style(self.status);
         let display_name = if self.name == "exec" {
             if self.children.is_empty() {
-                "Working"
+                if self
+                    .result
+                    .as_deref()
+                    .is_some_and(|result| !result.is_empty())
+                {
+                    "Output"
+                } else {
+                    "Working"
+                }
             } else {
                 "Tools"
             }
@@ -1564,7 +1597,7 @@ impl ToolActivity {
         if !self.children.is_empty()
             && let Some(result) = self.result.as_deref().filter(|result| !result.is_empty())
         {
-            details.push(result.to_owned());
+            details.push(result.lines().next().unwrap_or_default().to_owned());
         }
 
         if !details_expanded {
@@ -1573,8 +1606,12 @@ impl ToolActivity {
 
         let mut lines = vec![tool_header_line(icon, color, display_name, &details)];
 
-        if self.children.is_empty() && self.name != "exec" {
-            let mut activity_detail = self.arguments.clone();
+        if self.children.is_empty() {
+            let mut activity_detail = if self.name == "exec" {
+                String::new()
+            } else {
+                self.arguments.clone()
+            };
             if let Some(result) = self.result.as_deref().filter(|result| !result.is_empty()) {
                 push_detail(&mut activity_detail, result);
             }
@@ -1601,6 +1638,18 @@ impl ToolActivity {
                     lines.extend(child_lines(child, connector, continuation, width));
                 }
             }
+        }
+        if !self.children.is_empty()
+            && let Some(result) = self
+                .result
+                .as_deref()
+                .filter(|result| result.contains('\n'))
+        {
+            lines.extend(
+                result.lines().skip(1).map(|line| {
+                    Line::styled(format!("  {line}"), Style::default().fg(Color::Gray))
+                }),
+            );
         }
         lines.push(Line::raw(""));
         Text::from(lines)
@@ -1670,7 +1719,11 @@ fn child_lines(
         push_styled_detail(&mut detail, format_duration(duration_ns), detail_style);
     }
     if let Some(result) = child.result.as_deref().filter(|result| !result.is_empty()) {
-        push_styled_detail(&mut detail, result.to_owned(), detail_style);
+        push_styled_detail(
+            &mut detail,
+            result.lines().next().unwrap_or_default().to_owned(),
+            detail_style,
+        );
     }
     let child_name = match (child.name.as_str(), child.status) {
         ("exec_command", ToolStatus::Running) => "Running",
@@ -1697,6 +1750,14 @@ fn child_lines(
                 Span::styled(format!("  {argument}"), Style::default().fg(Color::Gray)),
             ]));
         }
+    }
+    if let Some(result) = &child.result {
+        lines.extend(result.lines().skip(1).map(|line| {
+            Line::from(vec![
+                Span::styled(continuation, Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("  {line}"), Style::default().fg(Color::Gray)),
+            ])
+        }));
     }
     lines
 }
@@ -3650,6 +3711,43 @@ R_{\mu\nu}-\frac12R\,g_{\mu\nu}+\Lambda g_{\mu\nu}
             })
             .unwrap();
         assert!(narrow.backend().to_string().contains("┌─ row 1"));
+    }
+
+    #[test]
+    fn standalone_nested_tool_finishes_even_when_parent_is_materialized_later() {
+        for materialize_parent in [false, true] {
+            let mut transcript = Transcript::default();
+            transcript.push(TranscriptItem::Tool {
+                call_id: "call-1/code-1".to_owned(),
+                name: "exec_command".to_owned(),
+                arguments: "printf deferred".to_owned(),
+                status: ToolStatus::Running,
+            });
+            if materialize_parent {
+                transcript.push(TranscriptItem::Tool {
+                    call_id: "call-1".to_owned(),
+                    name: "exec".to_owned(),
+                    arguments: "text(await pending);".to_owned(),
+                    status: ToolStatus::Completed,
+                });
+            }
+            assert!(transcript.set_tool_result_timing(
+                "call-1/code-1",
+                ToolStatus::Completed,
+                Some(1_000_000),
+                Some(2_000_000),
+                Some("deferred output".to_owned()),
+            ));
+            let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+            terminal
+                .draw(|frame| {
+                    frame.render_widget(transcript.widget(0, None, None, "empty"), frame.area());
+                })
+                .unwrap();
+            let rendered = terminal.backend().to_string();
+            assert!(rendered.contains("deferred output"), "{rendered}");
+            assert!(!rendered.contains('◌'), "{rendered}");
+        }
     }
 
     #[test]

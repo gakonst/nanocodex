@@ -96,29 +96,68 @@ a complete task tree requires a separate durable registry.
 
 ## Store contract
 
-The live store protocol implements two operations:
+The live store protocol implements three operations:
 
 1. `acquire(state_id, owner_id)` atomically advances the owner fence and
    returns the new token with one coherent state value.
-2. `replace(state_id, owner_token, expected_revision, payload)` first checks
+2. `read_record(state_id, key)` loads one immutable record; the optional batch
+   implementation reads up to 16 records per storage call.
+3. `replace(state_id, owner_token, expected_revision, payload, records)` first checks
    the owner token, then the expected revision, and atomically replaces the old
-   opaque Rust payload with the complete new value while advancing the revision.
+   opaque Rust head and publishes every new record in the same transaction.
 
-There is exactly zero or one retained payload. Multiple historical batches are
-corruption and are rejected. Receipt retention is a normal state transition,
+There is exactly zero or one execution head and an immutable record table. Receipt retention is a normal state transition,
 not log-prefix compaction. Hosts never deserialize state.
 
-This is a hard cutover. State format 2 uses the
-`nanocodex_durable_state` envelope; format 1, the former
-`nanocodex_journal_state` envelope, and individual event batches are rejected.
-There is no adoption, migration, or compatibility reader for old durable data.
+With bounded receipt retention, terminal operations retain their exact input,
+checkpoint, and result, but discard intermediate step and steer payloads. These
+payloads are recovery scratch data and cannot be used after settlement. Pending
+agent operations retain one current conversation and execution phase, plus only
+the current batch of effect records. A single replacement saves the next
+conversation and retires settled effects; advancing past an unfinished effect is
+rejected. Recovery resumes this batch, with original request settings and token
+usage, without replaying earlier batches or storing historical request copies. Encoded payloads share immutable storage
+inside the Rust owner so preparing a replacement does not deep-copy every receipt.
+Managed sessions keep 16 inner terminal receipts; their managed inbox and archive
+continue to own public exact-ID replay beyond that tail.
+
+State format 4 uses the `nanocodex_durable_state` head envelope and SHA-256
+addressed payload records. Bodies over 256,000 UTF-8 bytes are split into records.
+Persistent 64-message context pages share prior records. Each boundary publishes
+only new messages and changed pages, with its head in one atomic transaction.
+The old inline/compressed storage formats are rejected.
+
+Cold acquisition reads the head only. Execution resolves current model context
+and active effects in batches of at most 16 records. Current-context hashes are
+primed on recovery so continuing an old thread does not rewrite old messages.
+Resident memory is O(current model context + active tool working memory + bounded
+I/O); historical storage grows with completed work. No turn duration or step
+count cap is imposed. Arbitrary allocations inside user tools are outside this
+bound and belong on an appropriate execution host.
+
+Model event reads have no silence deadline: a reasoning call can remain quiet
+without being failed or replayed. Rust owns cancellation and releases the
+connection when the response is dropped. Native HTTP, native WebSocket, and
+WASM hosts follow the same rule. Connection setup and sends retain their own
+deadlines; explicit connection failures still enter normal recovery.
+
+A run terminal is emitted only after settlement and recovery classification.
+An interrupted attempt classified as retry or reopen emits no `run.failed` or
+`run.completed`. A later attempt or exact receipt replay emits the committed
+terminal. Otherwise a streaming consumer can exit on a failed attempt while its
+server continues the same durable turn, disconnecting resources it still needs.
+This rule belongs to the Rust driver, before any WASM or host event projection.
 
 ## Provider portability
 
 The JavaScript memory, SQLite, Cloudflare Durable Object SQLite, and PostgreSQL
 adapters also implement an offline transfer extension. `exportDurabilityState`
 acquires a fresh owner fence at the source and returns one JSON-safe archive
-containing the stable state ID, exact revision, and opaque total-state payload.
+containing the stable state ID, exact revision, execution head, and immutable records.
+This full archive materializes all records; large histories use the asynchronous
+paged export/import APIs. Pages stage immutable records before publishing the
+head. Managed exports seal at most 16 records per R2 object and copy bounded
+batches, with resumable progress in SQLite and the head published last.
 `importDurabilityState` installs that exact revision into an empty destination
 and creates a fence before any destination agent can acquire it.
 
@@ -225,6 +264,12 @@ Standalone compaction follows the same rule. A committed resulting checkpoint
 replays; otherwise a later request runs compaction again. It cannot run while an
 accepted operation is pending.
 
+Each new standalone compaction gets a fresh candidate identity; automatic
+admission can reclaim a matching pending compaction. Graceful interruption
+commits cancellation and its checkpoint, and a committed failure is terminal.
+A later prompt therefore cannot be stranded behind abandoned maintenance work.
+An uncommitted or ambiguous replacement still requires recovery.
+
 ## Checkpoints and terminals
 
 The checkpoint inside `OperationCompleted` or `OperationFailed` and that
@@ -261,6 +306,24 @@ Transient infrastructure failure does not create another state. The row stays
 `accepted` or `cancelling` with `error`, `attempt_count`, and an absolute
 `retry_at`. `turn_retryable` is a control event describing that schedule, not a
 terminal or a separate source of truth.
+
+After a turn error, the Rust owner resolves the outcome from authoritative
+operation state. A pending operation requires retry; a completed operation whose
+delivery failed requires exact-ID replay; a committed failure or cancellation is
+terminal. An ambiguous store result requires reopening. Typed dispositions take
+precedence over diagnostic text, including text mentioning cancellation or a
+transport failure.
+
+Recovery copies retain provider item IDs whenever opaque encrypted content is
+cryptographically bound to the ID. Ordinary copied item IDs may be regenerated;
+encrypted compaction, reasoning, and function-argument IDs remain exact across
+step retry, checkpoint reload, and full-history replay.
+
+An ordering rejection carries the exact pending operation ID through WASM and
+Worker errors as `blockedBy`. If an older managed terminal projection disagrees
+with that Rust fact and its frozen dispatch is retained, managed recovery restores
+that row to the ordered recovery queue. It never reconstructs input or authority
+from error strings. Missing dispatch or archived receipts are not guessed.
 
 The Durable Object commits the turn row and `turn_accepted` cursor before
 returning HTTP 202. It commits a terminal row and terminal event cursor in the
@@ -319,3 +382,34 @@ total-state replacement as its step status. Therefore its minimal equivalent
 is the single `effect_pending -> completed(output)` settlement above. This
 preserves the crash boundary while removing one full payload serialization and
 one backend transaction from every successful external effect.
+
+History observation does not instantiate the execution runtime. WebSocket and SSE
+observers follow durable cursors independently; only accepted work or an active
+realtime session keeps execution resident past its idle timeout.
+
+History page limits are maxima, not requested fill counts. SQLite selects event
+sizes before loading payloads and returns up to 4 MiB per page (always allowing
+one event to make progress). Archive reads retain one immutable segment per page.
+Readers continue from the returned cursor/`has_more`; a short page is not EOF.
+Archive sealing embeds stored JSON directly instead of decoding another complete
+copy of the segment. Working memory scales with the page or largest individual
+event, not with total thread history.
+
+History HTTP responses use private, revalidated caching. Their ETag covers the
+session, page boundary, limit, latest event cursor and archive ownership fence.
+A matching validator returns 304 before loading event payloads; the owner and
+scope checks still run first. Responses observed across a concurrent append or
+archive movement are not cached. Content-addressed archive segments also use
+Cloudflare's named Cache API, scoped by the destination agent object ID and
+content hash. Cache hits are size/checksum verified and misses or cache failures
+fall back to R2. Only immutable segments enter that cache: ordinal index objects
+and the mutable transcript tip never receive an immutable cache lifetime. No
+cache entry is a public route or an authorization decision.
+
+Background archival owns one persisted retry deadline, separate from turn
+recovery. It records a 60-second recovery deadline before external storage I/O,
+seals one bounded batch per archive sequentially, and clears the deadline only
+after success. Failed uploads retain their SQLite source and deadline across
+object reconstruction. Alarms and new events cannot bypass that backoff, and
+archival never blocks admission or cancellation recovery. Explicit export and
+seal requests still report their own storage failures to their caller.

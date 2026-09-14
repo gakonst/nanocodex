@@ -46,8 +46,11 @@ pub trait HostConnection: Send + 'static {
     /// Sends one complete text frame.
     fn send<'a>(&'a self, message: &'a str) -> HostFuture<'a, Result<(), HostError>>;
 
-    /// Waits for the next data, closure, or timeout result.
-    fn next(&mut self, idle_timeout: Duration) -> HostFuture<'_, Result<HostMessage, HostError>>;
+    /// Waits for the next data or closure result, without a silence deadline.
+    ///
+    /// Model reasoning may be silent for an unbounded duration. The runtime owns
+    /// cancellation and calls `close` when it releases this connection.
+    fn next(&mut self) -> HostFuture<'_, Result<HostMessage, HostError>>;
 
     /// Releases the environment's connection handle synchronously.
     fn close(&mut self);
@@ -275,8 +278,6 @@ pub enum HostMessage {
         /// Close code and reason formatted by the host.
         detail: String,
     },
-    /// The idle deadline elapsed without an event.
-    Timeout,
     /// A binary frame arrived where the protocol requires JSON text.
     Binary,
 }

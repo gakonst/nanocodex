@@ -32,8 +32,8 @@ export type ManagedAgentCreateBody = Readonly<{
 }>;
 
 export const DEFAULT_AGENT_SETTINGS: ManagedAgentSettings = Object.freeze({
-  model: "gpt-5.6-sol",
-  thinking: "high",
+  model: "gpt-6-astra",
+  thinking: "low",
   reasoning_mode: "standard",
   fast_mode: false,
 });

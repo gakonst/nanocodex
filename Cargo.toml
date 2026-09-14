@@ -1,17 +1,21 @@
 [workspace]
+exclude = ["third_party/codex-voice"]
 members = [
     "bin/nanocodex",
     "bin/nanocodex/nanocodex2",
+    "bin/nanocodex/account-auth",
     "bin/nanousd",
     "bin/nanousd-api",
     "crates/nanocodex",
     "crates/nanocodex-agent",
     "crates/nanocodex-managed",
+    "crates/experimental/nanocodex-hand",
     "crates/nanocodex-durability",
     "crates/experimental/nanocodex-browser",
     "crates/experimental/nanocodex-egress",
     "crates/experimental/nanocodex-voice",
     "crates/experimental/nanocodex-voice-protocol",
+    "crates/experimental/nanocodex-voice-ffi",
     "crates/experimental/nanocodex-eval",
     "crates/experimental/nanocodex-eval-adapters",
     "crates/experimental/nanocodex-vm",
@@ -84,6 +88,7 @@ mpp = { version = "=0.11.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "
 nanocodex = { version = "0.5.0", path = "crates/nanocodex" }
 nanocodex-agent = { version = "0.5.0", path = "crates/nanocodex-agent" }
 nanocodex-managed = { version = "0.5.0", path = "crates/nanocodex-managed" }
+nanocodex-cli-auth = { version = "0.5.0", path = "bin/nanocodex/account-auth" }
 nanocodex-durability = { version = "0.5.0", path = "crates/nanocodex-durability" }
 nanocodex-browser = { version = "0.5.0", path = "crates/experimental/nanocodex-browser" }
 nanocodex-egress = { version = "0.5.0", path = "crates/experimental/nanocodex-egress" }
@@ -106,6 +111,7 @@ iana-time-zone = "0.1.64"
 js-sys = "0.3.82"
 nix = { version = "0.31.3", default-features = false, features = ["process", "resource", "signal", "socket", "user"] }
 portable-pty = "0.9.0"
+vt100 = "0.15.2"
 pulldown-cmark = { version = "0.10", default-features = false }
 syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
 two-face = { version = "0.5.1", default-features = false, features = ["syntect-fancy"] }

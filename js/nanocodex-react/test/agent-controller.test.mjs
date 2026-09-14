@@ -161,8 +161,9 @@ test("tool activities retain bounded input, successful output, duration, images,
     assert.equal(JSON.parse(completed[3].tool.output).status, "ready");
     assert.deepEqual(completed[4].tool.images, ["data:image/png;base64,AA=="]);
     assert.deepEqual(JSON.parse(completed[4].tool.output), [
-      { type: "input_image", image_url: "data:image/png;base64,AA==" },
+      { type: "input_image", image_url: "[Embedded attachment]" },
     ]);
+    assert.equal(completed[4].tool.generatedOutput[0].url, "data:image/png;base64,AA==");
     assert.deepEqual(completed[4].tool.metadata, {
       machine_name: "Machine A",
       tool_name: "exec_command",
@@ -253,6 +254,147 @@ test("prompt controls steer active work, queue roots, cancel the latest turn, an
   }
 });
 
+for (const completion of ["cancelled", "completed"]) {
+  test(`Stop fences a pending correction even when the old turn ${completion}`, async () => {
+    const frames = fakeAnimationFrames();
+    const source = fakeAgent();
+    let controller, root;
+    function Consumer() {
+      controller = useAgentController(source.agent);
+      return null;
+    }
+    const steering = Promise.withResolvers();
+    const cancellation = Promise.withResolvers();
+    try {
+      await act(async () => { root = create(createElement(Consumer)); });
+      await act(async () => { await controller.submit("original"); });
+      let cancelCalls = 0;
+      source.turns[0].steer = () => steering.promise;
+      source.turns[0].cancel = () => { cancelCalls++; return cancellation.promise; };
+      let correction, firstStop, secondStop, newMessage;
+      await act(async () => {
+        correction = controller.submit("older correction");
+        firstStop = controller.cancel();
+        secondStop = controller.cancel();
+        newMessage = controller.submit("new message after Stop");
+      });
+      assert.equal(source.turns.length, 2, "a new message must not steer the cancelling turn");
+      assert.equal(cancelCalls, 1, "repeated Stop clicks share one cancellation");
+      await act(async () => {
+        cancellation.resolve();
+        await Promise.all([firstStop, secondStop, newMessage]);
+        if (completion === "cancelled") {
+          source.turns[0].fail(Object.assign(new Error("managed turn cancelled"), { code: "turn_cancelled" }));
+        } else source.turns[0].complete("finished before cancellation arrived");
+        steering.reject(Object.assign(new Error(`turn is ${completion}`), {
+          status: 409, code: "turn_not_steerable", state: completion,
+        }));
+        await correction;
+        source.turns[1].complete("new message completed");
+      });
+      await flushFrames(frames);
+      assert.equal(source.turns.length, 2, "the old correction must never restart after Stop");
+      assert.equal(controller.pendingTurns, 0);
+      assert.equal(controller.entries.some((entry) => entry.kind === "error"), false);
+      assert.ok(controller.entries.some((entry) => entry.text === "new message completed"));
+    } finally {
+      cancellation.resolve();
+      steering.resolve();
+      if (root) await act(async () => root.unmount());
+      frames.restore();
+    }
+  });
+}
+
+test("a failed Stop can be retried without reviving an older correction", async () => {
+  const frames = fakeAnimationFrames();
+  const source = fakeAgent();
+  let controller, root;
+  function Consumer() { controller = useAgentController(source.agent); return null; }
+  const steering = Promise.withResolvers();
+  try {
+    await act(async () => { root = create(createElement(Consumer)); });
+    await act(async () => { await controller.submit("original"); });
+    source.turns[0].steer = () => steering.promise;
+    let calls = 0;
+    source.turns[0].cancel = async () => {
+      if (++calls === 1) throw new Error("temporary cancellation failure");
+    };
+    let correction;
+    await act(async () => {
+      correction = controller.submit("correction before Stop");
+      assert.equal(await controller.cancel(), false);
+      assert.equal(await controller.cancel(), true);
+      source.turns[0].fail(Object.assign(new Error("managed turn cancelled"), { code: "turn_cancelled" }));
+      steering.reject(Object.assign(new Error("turn cancelled"), { status: 409, code: "turn_not_steerable" }));
+      await correction;
+    });
+    await flushFrames(frames);
+    assert.equal(calls, 2);
+    assert.equal(source.turns.length, 1);
+    assert.equal(controller.pendingTurns, 0);
+    assert.equal(controller.status, "Cancelled");
+    assert.deepEqual(controller.entries.filter((entry) => entry.kind === "error").map((entry) => entry.text),
+      ["temporary cancellation failure"]);
+  } finally {
+    steering.resolve();
+    if (root) await act(async () => root.unmount());
+    frames.restore();
+  }
+});
+
+test("a correction still becomes a new turn when its target completes naturally", async () => {
+  const frames = fakeAnimationFrames();
+  const source = fakeAgent();
+  let controller, root;
+  function Consumer() { controller = useAgentController(source.agent); return null; }
+  const steering = Promise.withResolvers();
+  try {
+    await act(async () => { root = create(createElement(Consumer)); });
+    await act(async () => { await controller.submit("original"); });
+    source.turns[0].steer = () => steering.promise;
+    let correction;
+    await act(async () => { correction = controller.submit("correction after completion"); });
+    await act(async () => {
+      source.turns[0].complete("original completed");
+      steering.reject(Object.assign(new Error("turn completed"), { status: 409, code: "turn_not_steerable" }));
+      await correction;
+    });
+    assert.equal(source.turns.length, 2);
+    assert.equal(source.turns[1].input, "correction after completion");
+  } finally {
+    steering.resolve();
+    if (root) await act(async () => root.unmount());
+    frames.restore();
+  }
+});
+
+test("a delayed steer rejection cannot start work after the controller detaches", async () => {
+  const frames = fakeAnimationFrames();
+  const source = fakeAgent();
+  let controller, root;
+  function Consumer() { controller = useAgentController(source.agent); return null; }
+  const steering = Promise.withResolvers();
+  try {
+    await act(async () => { root = create(createElement(Consumer)); });
+    await act(async () => { await controller.submit("original"); });
+    source.turns[0].steer = () => steering.promise;
+    let correction;
+    await act(async () => { correction = controller.submit("correction before navigation"); });
+    await act(async () => root.unmount());
+    root = undefined;
+    await act(async () => {
+      steering.reject(Object.assign(new Error("turn completed"), { status: 409, code: "turn_not_steerable" }));
+      await correction;
+    });
+    assert.equal(source.turns.length, 1);
+  } finally {
+    steering.resolve();
+    if (root) await act(async () => root.unmount());
+    frames.restore();
+  }
+});
+
 test("retained history merges older pages by durable turn and exposes load state", async () => {
   const frames = fakeAnimationFrames();
   const source = fakeAgent();
@@ -334,6 +476,36 @@ test("retained history projects a repeated tool call once", async () => {
   } finally {
     frames.restore();
   }
+});
+
+test("a poll started in retained history updates its command when its live result arrives", async () => {
+  const frames = fakeAnimationFrames();
+  const source = fakeAgent();
+  source.history = [
+    event(1, "tool.call", { call_id: "cargo", tool: "exec_command", arguments: { cmd: "cargo test" }, turn_id: "turn-1" }),
+    event(2, "tool.result", { call_id: "cargo", status: "completed", structured_result: { session_id: 42, output: "Compiling\n" }, turn_id: "turn-1" }),
+    event(3, "tool.call", { call_id: "poll", tool: "write_stdin", arguments: { session_id: 42 }, turn_id: "turn-1" }),
+  ];
+  let controller;
+  let root;
+  try {
+    await act(async () => {
+      root = create(createElement(AgentController, {
+        agent: source.agent,
+        children(snapshot) { controller = snapshot; return null; },
+      }));
+    });
+    await flushFrames(frames);
+    assert.equal(controller.entries[0].tool.status, "running");
+    await act(async () => source.emit(event(4, "tool.result", {
+      call_id: "poll", status: "completed", structured_result: { exit_code: 0, output: "Passed\n" }, turn_id: "turn-1",
+    })));
+    await flushFrames(frames);
+    assert.equal(controller.entries.length, 1);
+    assert.equal(controller.entries[0].tool.status, "completed");
+    assert.equal(JSON.parse(controller.entries[0].tool.output).output, "Compiling\nPassed\n");
+    await act(async () => root.unmount());
+  } finally { frames.restore(); }
 });
 
 test("hidden controllers reduce bursts and publish one visible catch-up snapshot", async () => {
@@ -519,3 +691,123 @@ function fakeAnimationFrames() {
 async function flushFrames(frames) {
   await act(async () => { frames.flush(); });
 }
+
+
+test("live assistant chunks publish before completion and reconcile without a duplicate", async () => {
+  const frames = fakeAnimationFrames();
+  const source = fakeAgent();
+  let controller;
+  function Consumer() {
+    controller = useAgentController(source.agent);
+    return createElement("output", null, controller.entries.filter(e => e.kind === "assistant").map(e => e.text).join("|"));
+  }
+  let root;
+  try {
+    await act(async () => { root = create(createElement(Consumer)); });
+    await flushFrames(frames);
+    await act(async () => { await controller.submit("Hello"); });
+    await act(async () => {
+      source.emit(event(1, "run.started", { turn_id: "turn-1" }));
+      source.emit(event(2, "assistant.delta", { text: "Hell", turn_id: "turn-1" }));
+    });
+    await flushFrames(frames);
+    assert.equal(root.toJSON().children[0], "Hell");
+    assert.equal(controller.running, true);
+    assert.equal(controller.entries.at(-1).streaming, true);
+    const id = controller.entries.at(-1).id;
+    await act(async () => source.emit(event(3, "assistant.delta", { text: "o", turn_id: "turn-1" })));
+    await flushFrames(frames);
+    assert.equal(root.toJSON().children[0], "Hello");
+    assert.equal(controller.entries.at(-1).id, id);
+    await act(async () => {
+      source.emit(event(4, "assistant.message", { text: "Hello!", turn_id: "turn-1" }));
+      source.emit(event(5, "run.completed", { turn_id: "turn-1" }));
+      source.turns[0].complete("Hello!");
+    });
+    await flushFrames(frames);
+    assert.equal(root.toJSON().children[0], "Hello!");
+    assert.equal(controller.entries.filter(e => e.kind === "assistant").length, 1);
+    assert.equal(controller.entries.at(-1).id, id);
+    assert.equal(controller.entries.at(-1).streaming, false);
+    assert.equal(controller.running, false);
+  } finally {
+    if (root) await act(async () => root.unmount());
+    frames.restore();
+  }
+});
+
+test("delta reduction keeps adjacent managed turns separate in live and history batches", async () => {
+  const { applyAgentEvents, initialState } = await import("../agent/transcript.mjs");
+  const events = [
+    event(1, "assistant.delta", { text: "First", turn_id: "one" }),
+    event(2, "assistant.delta", { text: "Second", turn_id: "two" }),
+    event(3, "assistant.message", { text: "Second!", turn_id: "two" }),
+  ];
+  for (const state of [applyAgentEvents(initialState(), events), events.reduce((s, e) => applyAgentEvents(s, [e]), initialState())]) {
+    assert.deepEqual(state.entries.map(({ text, turnId, streaming }) => ({ text, turnId, streaming })), [
+      { text: "First", turnId: "one", streaming: false },
+      { text: "Second!", turnId: "two", streaming: false },
+    ]);
+  }
+});
+
+test("interleaved helper and response items reconcile independently by agent, phase, and model call", async () => {
+  const { applyAgentEvents, initialState, turnFinished } = await import("../agent/transcript.mjs");
+  let state = initialState();
+  let seq = 0;
+  const push = (type, text, identity = {}) => {
+    state = applyAgentEvents(state, [event(++seq, type, { turn_id: "turn", text, ...identity })]);
+  };
+  const commentary = { item_id: "comment", phase: "commentary", model_call_index: 0 };
+  const final = { item_id: "answer", phase: "final_answer", model_call_index: 1 };
+  const helper = { ...final, managed_agent_id: 1 };
+  push("assistant.delta", "Working", commentary);
+  push("assistant.message", "Working now", commentary);
+  push("assistant.delta", "Root", final);
+  push("assistant.delta", "Helper", helper);
+  push("reasoning.summary.delta", "Checking", { item_id: "reason" });
+  push("tool.call", undefined, { call_id: "tool", tool: "exec_command", arguments: { cmd: "pwd" } });
+  push("assistant.delta", " answer", final);
+  push("assistant.message", "Helper done", helper);
+  push("assistant.message", "Root answer!", final);
+  assert.deepEqual(state.entries.filter(e => e.kind === "assistant").map(e => e.text), ["Working now", "Root answer!", "Helper done"]);
+  assert.ok(state.entries.filter(e => e.kind === "assistant").every(e => !e.streaming));
+  state = turnFinished(state, undefined, "Authoritative root", undefined, "managed-user-turn");
+  assert.deepEqual(state.entries.filter(e => e.kind === "assistant").map(e => e.text), ["Working now", "Authoritative root", "Helper done"]);
+});
+
+
+test("late chunks cannot reopen canonical items and child lifecycle cannot end the root run", async () => {
+  const { applyAgentEvents, initialState } = await import("../agent/transcript.mjs");
+  const item = { turn_id: "turn", item_id: "answer", phase: "final_answer", model_call_index: 0 };
+  let state = applyAgentEvents(initialState(), [
+    event(1, "run.started", { turn_id: "turn" }),
+    event(2, "assistant.delta", { ...item, text: "Draft" }),
+    event(3, "assistant.message", { ...item, text: "Final" }),
+  ]);
+  state = applyAgentEvents(state, [
+    event(4, "assistant.delta", { ...item, text: " stale" }),
+    event(5, "run.started", { turn_id: "turn", managed_agent_id: 1 }),
+    event(6, "run.error", { turn_id: "turn", managed_agent_id: 1, message: "helper error" }),
+    event(7, "run.failed", { turn_id: "turn", managed_agent_id: 1 }),
+    event(8, "run.completed", { turn_id: "turn", managed_agent_id: 1 }),
+  ]);
+  assert.equal(state.running, true);
+  assert.equal(state.pendingRunError, undefined);
+  assert.equal(state.entries.length, 1);
+  assert.equal(state.entries[0].text, "Final");
+  assert.equal(state.entries[0].streaming, false);
+  state = applyAgentEvents(state, [event(9, "run.completed", { turn_id: "turn" })]);
+  assert.equal(state.running, false);
+});
+
+
+test("null provider identity fields reconcile with omitted final fields", async () => {
+  const { applyAgentEvents, initialState } = await import("../agent/transcript.mjs");
+  const state = applyAgentEvents(initialState(), [
+    event(1, "assistant.delta", { turn_id: "turn", text: "Hell", item_id: null, phase: null }),
+    event(2, "assistant.delta", { turn_id: "turn", text: "o" }),
+    event(3, "assistant.message", { turn_id: "turn", text: "Hello!", item_id: null, phase: null }),
+  ]);
+  assert.deepEqual(state.entries.map(({ text, streaming }) => ({ text, streaming })), [{ text: "Hello!", streaming: false }]);
+});

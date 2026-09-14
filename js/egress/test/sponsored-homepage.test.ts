@@ -4,7 +4,6 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   handleEgress,
-  catalogHasVisibleAstra,
   isLegacyLocalBootstrapCredential,
   sponsoredResponsesFrame,
   type EgressEnv,
@@ -54,18 +53,6 @@ beforeAll(async () => {
 });
 
 describe("sponsored homepage model access", () => {
-  it("treats only picker-visible Astra as entitlement", () => {
-    expect(catalogHasVisibleAstra({
-      models: [{ slug: "gpt-6-astra", visibility: "list" }],
-    })).toBe(true);
-    expect(catalogHasVisibleAstra({
-      models: [{ slug: "gpt-6-astra", visibility: "hide" }],
-    })).toBe(false);
-    expect(catalogHasVisibleAstra({ models: [{ slug: "gpt-5.6-sol", visibility: "list" }] }))
-      .toBe(false);
-    expect(catalogHasVisibleAstra({ models: "not-an-array" })).toBe(false);
-  });
-
   it("treats only an unmarked local bootstrap account as a legacy auto-claim", () => {
     const legacy = {
       kind: "chatgpt" as const,
@@ -108,7 +95,6 @@ describe("sponsored homepage model access", () => {
       ready: true,
       active: "chatgpt",
       source: "sponsored",
-      astra_entitled: false,
       free_prompts_remaining: 3,
     });
 
@@ -636,7 +622,6 @@ describe("sponsored homepage model access", () => {
         ready: true,
         active: "openai",
         source: "user",
-        astra_entitled: false,
       });
     }
   });
