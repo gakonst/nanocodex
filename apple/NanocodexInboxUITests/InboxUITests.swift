@@ -1453,36 +1453,9 @@ final class InboxUITests: XCTestCase {
         let tab = app.buttons["browser-tab:" + id]
         let strip = app.scrollViews["browser-tabs"]
         XCTAssertTrue(strip.waitForExistence(timeout: 5))
-        for direction in 0..<2 {
-            for _ in 0..<5 {
-                if tab.exists && tab.isHittable { break }
-                // The top scroll view includes the status-bar safe area. Swipe
-                // through the visible tab row, not its covered geometric center.
-                // At large text sizes the target may not be realized yet by the
-                // lazy stack, so do not require its frame before scrolling.
-                let y = strip.frame.height - 22
-                let start = strip.coordinate(withNormalizedOffset: CGVector(dx: direction == 0 ? 0.85 : 0.15, dy: 0))
-                    .withOffset(CGVector(dx: 0, dy: y))
-                let end = strip.coordinate(withNormalizedOffset: CGVector(dx: direction == 0 ? 0.15 : 0.85, dy: 0))
-                    .withOffset(CGVector(dx: 0, dy: y))
-                start.press(forDuration: 0.05, thenDragTo: end)
-            }
-            if tab.exists && tab.isHittable { break }
-        }
-        // XCTest can occasionally route coordinate drags to a tab button
-        // instead of the enclosing lazy strip. Fall back to semantic swipes.
-        if !tab.exists || !tab.isHittable {
-            for _ in 0..<6 {
-                if tab.exists && tab.isHittable { break }
-                strip.swipeLeft(velocity: .fast)
-            }
-        }
-        if !tab.exists || !tab.isHittable {
-            for _ in 0..<6 {
-                if tab.exists && tab.isHittable { break }
-                strip.swipeRight(velocity: .fast)
-            }
-        }
+        // Distant lazy tabs are selected through the searchable overview. This
+        // avoids XCTest routing a drag through a tab button or hanging while an
+        // accessibility-sized horizontal scroll view is synthesizing gestures.
         if !tab.exists || !tab.isHittable {
             selectAgentFromOverview(app, title: title, id: id)
             return

@@ -151,6 +151,10 @@ final class ContextUITests: XCTestCase {
         app.buttons["retry-pending"].tap()
         // A restored demo intentionally fails once again, then succeeds.
         if app.buttons["retry-pending"].waitForExistence(timeout: 3) { app.buttons["retry-pending"].tap() }
+        // Admission preserves the follow-up behind the active demo turn. Steer
+        // it into that turn before asserting its transcript representation.
+        XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 10))
+        app.buttons["steer-now"].tap()
         let conversation = app.scrollViews["conversation"]
         let request = conversation.staticTexts["Help me plan Friday"]
         for _ in 0..<12 {
