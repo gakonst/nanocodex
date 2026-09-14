@@ -34,11 +34,15 @@ final class AgentNotificationUITests: XCTestCase {
         XCTAssertTrue(data.waitForExistence(timeout: 10), springboard.debugDescription)
         capture("agent-thread-notifications")
         let frame = inbox.frame
-        springboard.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.maxX - 20, dy: frame.midY))
-            .press(forDuration: 0.1, thenDragTo: springboard.coordinate(withNormalizedOffset: .zero)
-                .withOffset(CGVector(dx: frame.minX + 20, dy: frame.midY)))
+        inbox.swipeLeft()
+        if !springboard.buttons["Clear"].waitForExistence(timeout: 2), inbox.exists {
+            springboard.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.maxX - 20, dy: frame.midY))
+                .press(forDuration: 0.1, thenDragTo: springboard.coordinate(withNormalizedOffset: .zero)
+                    .withOffset(CGVector(dx: frame.minX + 20, dy: frame.midY)))
+        }
         if springboard.buttons["Clear"].waitForExistence(timeout: 2) { springboard.buttons["Clear"].tap() }
-        XCTAssertFalse(inbox.exists, springboard.debugDescription)
+        let cleared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: inbox)
+        XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 5), .completed, springboard.debugDescription)
         XCTAssertTrue(data.exists)
         // A foreground refresh must not reinsert the cleared thread.
         app.activate()

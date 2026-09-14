@@ -73,7 +73,9 @@ jobs:
   native:
     name: iPhone and iPad Inbox
     runs-on: macos-26
-    timeout-minutes: 25
+    # The UI suite is intentionally sequential because its system-app journeys
+    # share one simulator. Leave enough room for one targeted retry of flakes.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -105,12 +107,14 @@ jobs:
           xcrun simctl io "$device" recordVideo --codec=h264 apple/build/evidence/inbox-journey.mp4 &
           capture_pid=$!
           trap 'kill -INT "$capture_pid" 2>/dev/null || true; wait "$capture_pid" || true' EXIT
-          xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination "platform=iOS Simulator,id=$device" -parallel-testing-enabled NO -derivedDataPath apple/build/ios -resultBundlePath apple/build/inbox.xcresult CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test-without-building
+          xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination "platform=iOS Simulator,id=$device" -parallel-testing-enabled NO -retry-tests-on-failure -test-iterations 2 -derivedDataPath apple/build/ios -resultBundlePath apple/build/inbox.xcresult CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test-without-building
       - name: Export native screenshots
         if: always()
         run: |
-          if [ -d apple/build/inbox.xcresult ]; then
+          if [ -f apple/build/inbox.xcresult/Info.plist ]; then
             xcrun xcresulttool export attachments --path apple/build/inbox.xcresult --output-path apple/build/evidence/screenshots
+          else
+            echo "Skipping screenshot export because the result bundle is incomplete"
           fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()

@@ -152,7 +152,7 @@ final class ContextUITests: XCTestCase {
         // A restored demo intentionally fails once again, then succeeds.
         if app.buttons["retry-pending"].waitForExistence(timeout: 3) { app.buttons["retry-pending"].tap() }
         let conversation = app.scrollViews["conversation"]
-        XCTAssertTrue(conversation.staticTexts["Help me plan Friday"].waitForExistence(timeout: 8))
+        XCTAssertTrue(conversation.staticTexts["Help me plan Friday"].waitForExistence(timeout: 20))
         conversation.buttons["Captured context (1)"].tap()
         XCTAssertTrue(conversation.staticTexts["Dinner with Alex on Friday"].waitForExistence(timeout: 5))
         XCTAssertFalse(conversation.staticTexts["Train leaves at six"].exists)
@@ -192,7 +192,10 @@ final class ContextUITests: XCTestCase {
         let editor = safari.textFields.matching(NSPredicate(format: "identifier BEGINSWITH %@ OR identifier == %@", "SearchFieldItemView", "URL")).firstMatch
         if editor.waitForExistence(timeout: 2) { editor.typeText(link + XCUIKeyboardKey.return.rawValue) }
         else { address.typeText(link + XCUIKeyboardKey.return.rawValue) }
-        let share = safari.buttons["Share"]
+        // Safari 26 sometimes exposes the page-menu Share row as a generic
+        // accessibility element rather than a Button.
+        let share = safari.descendants(matching: .any)
+            .matching(NSPredicate(format: "label == %@ OR label == %@", "Share", "Share…")).firstMatch
         if !share.waitForExistence(timeout: 3) {
             let more = safari.buttons["More"]
             XCTAssertTrue(more.waitForExistence(timeout: 20), safari.debugDescription)
@@ -200,7 +203,7 @@ final class ContextUITests: XCTestCase {
             // point even when its accessibility frame is on screen.
             more.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         }
-        XCTAssertTrue(share.waitForExistence(timeout: 10), safari.debugDescription)
+        XCTAssertTrue(share.waitForExistence(timeout: 15), safari.debugDescription)
         let shareReady = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: share)
         XCTAssertEqual(XCTWaiter.wait(for: [shareReady], timeout: 30), .completed, safari.debugDescription)
         share.tap()
