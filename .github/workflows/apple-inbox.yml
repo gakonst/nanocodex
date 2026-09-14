@@ -107,7 +107,7 @@ jobs:
           xcrun simctl io "$device" recordVideo --codec=h264 apple/build/evidence/inbox-journey.mp4 &
           capture_pid=$!
           trap 'kill -INT "$capture_pid" 2>/dev/null || true; wait "$capture_pid" || true' EXIT
-          xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination "platform=iOS Simulator,id=$device" -parallel-testing-enabled NO -retry-tests-on-failure -test-iterations 2 -derivedDataPath apple/build/ios -resultBundlePath apple/build/inbox.xcresult CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test-without-building
+          xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination "platform=iOS Simulator,id=$device" -parallel-testing-enabled NO -retry-tests-on-failure -test-iterations 2 -test-timeouts-enabled YES -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 300 -derivedDataPath apple/build/ios -resultBundlePath apple/build/inbox.xcresult CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test-without-building
       - name: Export native screenshots
         if: always()
         run: |

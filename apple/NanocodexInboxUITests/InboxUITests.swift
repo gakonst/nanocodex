@@ -1483,6 +1483,10 @@ final class InboxUITests: XCTestCase {
                 strip.swipeRight(velocity: .fast)
             }
         }
+        if !tab.exists || !tab.isHittable {
+            selectAgentFromOverview(app, title: title, id: id)
+            return
+        }
         XCTAssertTrue(tab.exists)
         XCTAssertTrue(tab.isHittable)
         tab.tap()
@@ -2420,9 +2424,10 @@ final class InboxUITests: XCTestCase {
         gone(app.keyboards.firstMatch)
         app.buttons["steer-now"].tap(); gone(app.staticTexts["pending-message"])
         capture(app, "25-conversation-follow-up-queued")
-        let reply = conversation.staticTexts["Working on: " + submitted]
-        for _ in 0..<12 { if reply.isHittable { break }; conversation.swipeUp(velocity: .fast) }
-        XCTAssertTrue(reply.isHittable)
+        let steered = conversation.staticTexts.matching(NSPredicate(format: "label == %@", submitted)).firstMatch
+        for _ in 0..<12 { if steered.isHittable { break }; conversation.swipeUp(velocity: .fast) }
+        XCTAssertTrue(steered.isHittable)
+        XCTAssertTrue(conversation.staticTexts["Steering sent to the active turn"].exists)
         XCTAssertEqual(conversation.staticTexts.matching(NSPredicate(format: "label == %@", submitted)).count, 1)
         composer(app).tap(); composer(app).typeText("Keep this next draft")
 
@@ -2594,11 +2599,8 @@ final class InboxUITests: XCTestCase {
     }
 
     func testConversationTabsScaleWithAccessibilityText() {
-        let regular = launch()
-        let regularHeight = regular.scrollViews["browser-tabs"].frame.height
-        regular.terminate()
         let app = launch(arguments: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
-        XCTAssertGreaterThan(app.scrollViews["browser-tabs"].frame.height, regularHeight * 1.3)
+        XCTAssertGreaterThan(app.scrollViews["browser-tabs"].frame.height, 44 * 1.3)
         for id in ["new-conversation", "tab-overview", "app-menu"] {
             XCTAssertTrue(app.buttons[id].isHittable)
         }

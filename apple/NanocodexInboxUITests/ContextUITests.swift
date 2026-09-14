@@ -152,7 +152,12 @@ final class ContextUITests: XCTestCase {
         // A restored demo intentionally fails once again, then succeeds.
         if app.buttons["retry-pending"].waitForExistence(timeout: 3) { app.buttons["retry-pending"].tap() }
         let conversation = app.scrollViews["conversation"]
-        XCTAssertTrue(conversation.staticTexts["Help me plan Friday"].waitForExistence(timeout: 20))
+        let request = conversation.staticTexts["Help me plan Friday"]
+        for _ in 0..<12 {
+            if request.exists { break }
+            conversation.swipeUp(velocity: .fast)
+        }
+        XCTAssertTrue(request.waitForExistence(timeout: 5))
         conversation.buttons["Captured context (1)"].tap()
         XCTAssertTrue(conversation.staticTexts["Dinner with Alex on Friday"].waitForExistence(timeout: 5))
         XCTAssertFalse(conversation.staticTexts["Train leaves at six"].exists)
