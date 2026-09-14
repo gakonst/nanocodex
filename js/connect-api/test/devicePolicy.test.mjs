@@ -8,6 +8,7 @@ import {
   parseCliRegisterBody,
   sanitizeCliWalletResult,
   managedMemoryCapability,
+  managedUserDataCapability,
   requestedConnectorsSatisfied,
 } from "../src/devicePolicy.mts";
 import { formatCliBrowserCookieSyncResource } from "../src/appToolPolicy.mts";
@@ -66,6 +67,8 @@ test("CLI device registration accepts exact hosted capabilities without implicit
     ...base,
     "urn:nanocodex:agent:output:final",
     "urn:nanocodex:history:read",
+    "urn:nanocodex:data:read",
+    "urn:nanocodex:data:write",
     "urn:nanocodex:memory:read",
     "urn:nanocodex:memory:write",
     "urn:nanocodex:connectors:chatgpt,github",
@@ -320,6 +323,17 @@ test("hosted history and memory paths map to narrow grant capabilities", () => {
   assert.strictEqual(managedMemoryCapability("/v1/memory/7", "delete"), "memory:write");
   assert.strictEqual(managedMemoryCapability("/v1/memory", "admin"), undefined);
   assert.strictEqual(managedMemoryCapability("/v1/agents/other", "read"), undefined);
+});
+
+test("hosted user data operations map to narrow grant capabilities", () => {
+  for (const operation of [
+    "document_get", "document_list", "timeseries_list", "timeseries_query", "timeseries_aggregate",
+    "object_get", "object_list",
+  ]) assert.strictEqual(managedUserDataCapability(operation), "data:read");
+  for (const operation of [
+    "document_put", "document_delete", "timeseries_write", "object_put", "object_delete",
+  ]) assert.strictEqual(managedUserDataCapability(operation), "data:write");
+  assert.strictEqual(managedUserDataCapability("raw_sql"), undefined);
 });
 
 test("connector grants require an exact live requested set", () => {

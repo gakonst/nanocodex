@@ -93,6 +93,8 @@ export type VisibilityPermission = Readonly<{
     | "Traces"
     | "Thinking & traces"
     | "Hosted history"
+    | "Personal data read"
+    | "Personal data write"
     | "Memory read"
     | "Memory write"
     | "Conversation"
@@ -194,6 +196,18 @@ const signedAppVisibility = Object.freeze([
     name: "hosted-history",
     label: "Hosted history",
     detail: "Account and team conversation history",
+  }),
+  Object.freeze({
+    resource: "urn:nanocodex:data:read",
+    name: "data-read",
+    label: "Personal data read",
+    detail: "Read private documents, objects, and time series",
+  }),
+  Object.freeze({
+    resource: "urn:nanocodex:data:write",
+    name: "data-write",
+    label: "Personal data write",
+    detail: "Save private documents, objects, and time series",
   }),
   Object.freeze({
     resource: "urn:nanocodex:memory:read",

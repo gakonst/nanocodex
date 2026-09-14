@@ -42,6 +42,10 @@
       "types": "./dist/session.d.ts",
       "import": "./dist/session.js"
     },
+    "./user-data": {
+      "types": "./dist/user-data.d.ts",
+      "import": "./dist/user-data.js"
+    },
     "./named-tool": {
       "types": "./tools/namedTool.d.mts",
       "import": "./tools/namedTool.mjs"

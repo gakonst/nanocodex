@@ -23,6 +23,7 @@ import {
   parseCliWalletRequest,
   sanitizeCliWalletResult,
   managedMemoryCapability,
+  managedUserDataCapability,
 } from "./devicePolicy.mts";
 import {
   allowsHeadlessConnectAuth,
@@ -218,6 +219,8 @@ const AGENT_VISIBILITY_RESOURCE_PREFIX = "urn:nanocodex:agent:visibility:";
 const AGENT_CONVERSATION_RESOURCE_PREFIX = "urn:nanocodex:agent:conversation:";
 const AGENT_CONVERSATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HOSTED_HISTORY_RESOURCE = "urn:nanocodex:history:read";
+const HOSTED_DATA_READ_RESOURCE = "urn:nanocodex:data:read";
+const HOSTED_DATA_WRITE_RESOURCE = "urn:nanocodex:data:write";
 const HOSTED_MEMORY_READ_RESOURCE = "urn:nanocodex:memory:read";
 const HOSTED_MEMORY_WRITE_RESOURCE = "urn:nanocodex:memory:write";
 const HOSTED_AUTHORIZATION_RESOURCE = "urn:nanocodex:authorization:hosted";
@@ -246,6 +249,8 @@ const MAX_BROKER_CREDENTIALS_BODY_BYTES = 256 * 1024;
 const MAX_AGENT_TOOL_BODY_BYTES = 20 * 1024 * 1024;
 const MAX_MANAGED_MEMORY_REQUEST_BYTES = 16 * 1024;
 const MAX_MANAGED_MEMORY_RESPONSE_BYTES = 1024 * 1024;
+const MAX_MANAGED_DATA_REQUEST_BYTES = 48 * 1024 * 1024;
+const MAX_MANAGED_DATA_RESPONSE_BYTES = 48 * 1024 * 1024;
 const MAX_ACCOUNT_AUTHORIZATIONS = 64;
 const MAX_DEVICE_REGISTER_BYTES = 64 * 1024;
 const MAX_CONNECTION_REQUEST_BYTES = 128 * 1024;
@@ -672,6 +677,9 @@ export default {
 
       const managedMemoryResponse = await handleManagedMemoryRoute(request, env, url);
       if (managedMemoryResponse) return cors(managedMemoryResponse, request);
+
+      const managedDataResponse = await handleManagedDataRoute(request, env, url);
+      if (managedDataResponse) return cors(managedDataResponse, request);
 
       const browserCookieResponse = await handleBrowserCookieJarRoute(request, env, url);
       if (browserCookieResponse) return cors(browserCookieResponse, request);
@@ -1154,6 +1162,49 @@ async function browserCookieJsonResponse(
   }
 }
 
+async function handleManagedDataRoute(
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<Response | undefined> {
+  if (url.pathname !== "/v1/data") return undefined;
+  if (request.method !== "POST") {
+    throw new ApiFailure(405, "method_not_allowed", "User data operations require POST.");
+  }
+  if (url.search !== "") {
+    throw new ApiFailure(400, "invalid_managed_request", "User data operations do not accept query parameters.");
+  }
+  const app = requireCallerApp(request);
+  const { grant } = await authenticatedGrant(request, env);
+  if (grant.appId !== app.appId || grant.appOrigin !== app.origin) {
+    throw new ApiFailure(403, "app_identity_mismatch", "The Connect grant is not bound to this app.");
+  }
+  if (grant.status !== "active") throw new ApiFailure(403, "grant_inactive", "The Connect grant is not active.");
+  remainingGrantTtl(grant);
+  const body = await boundedJson(request, MAX_MANAGED_DATA_REQUEST_BYTES, "hosted user data");
+  const requiredCapability = managedUserDataCapability(body.operation);
+  if (!requiredCapability) {
+    throw new ApiFailure(400, "invalid_data_operation", "The hosted user data operation is invalid.");
+  }
+  if (!grant.capabilities.includes(requiredCapability)) {
+    throw new ApiFailure(
+      403,
+      requiredCapability === "data:write" ? "data_write_not_granted" : "data_read_not_granted",
+      `This Connect grant does not include ${requiredCapability} access.`,
+    );
+  }
+  const headers = new Headers(managedGrantHeaders(managedGrantAssertion(grant)));
+  headers.set("content-type", "application/json");
+  const upstream = await env.ACCOUNTS.fetch(new Request("https://nanocodex.internal/v1/data", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    redirect: "manual",
+    signal: request.signal,
+  }));
+  return safeManagedJsonResponse(upstream, MAX_MANAGED_DATA_RESPONSE_BYTES);
+}
+
 async function handleManagedMemoryRoute(
   request: Request,
   env: Env,
@@ -1227,7 +1278,10 @@ async function handleManagedMemoryRoute(
   return safeManagedJsonResponse(upstream);
 }
 
-async function safeManagedJsonResponse(upstream: Response): Promise<Response> {
+async function safeManagedJsonResponse(
+  upstream: Response,
+  maxBytes = MAX_MANAGED_MEMORY_RESPONSE_BYTES,
+): Promise<Response> {
   if (upstream.status >= 300 && upstream.status < 400) {
     await upstream.body?.cancel();
     throw new ApiFailure(502, "managed_upstream_redirect", "The hosted service returned an unexpected redirect.");
@@ -1240,7 +1294,7 @@ async function safeManagedJsonResponse(upstream: Response): Promise<Response> {
     await upstream.body?.cancel();
     throw new ApiFailure(502, "managed_response_invalid", "The hosted service returned a non-JSON response.");
   }
-  const bytes = new Uint8Array(await boundedResponseBytes(upstream, MAX_MANAGED_MEMORY_RESPONSE_BYTES));
+  const bytes = new Uint8Array(await boundedResponseBytes(upstream, maxBytes));
   let value: unknown;
   try {
     value = JSON.parse(new TextDecoder().decode(bytes));
@@ -5750,6 +5804,8 @@ function approvedHostedCapabilities(resources: readonly string[]): string[] {
     ...(approved.has("urn:nanocodex:capability:mercator:boost") ? ["mercator.boost"] : []),
     ...(approved.has("urn:nanocodex:mpp:machusd:spend") ? ["mpp.mach"] : []),
     ...(approved.has(HOSTED_HISTORY_RESOURCE) ? ["history:read"] : []),
+    ...(approved.has(HOSTED_DATA_READ_RESOURCE) ? ["data:read"] : []),
+    ...(approved.has(HOSTED_DATA_WRITE_RESOURCE) ? ["data:write"] : []),
     ...(approved.has(HOSTED_MEMORY_READ_RESOURCE) ? ["memory:read"] : []),
     ...(approved.has(HOSTED_MEMORY_WRITE_RESOURCE) ? ["memory:write"] : []),
     ...(approved.has(BROWSER_COOKIE_SYNC_RESOURCE) ? [BROWSER_COOKIE_SYNC_RESOURCE] : []),

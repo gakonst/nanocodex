@@ -55,6 +55,19 @@ test("managed grant assertions retain the private host session fence", () => {
   assert.deepEqual(JSON.parse(headers["x-nanocodex-connect-host-principal"]), hostPrincipal);
 });
 
+test("managed grants forward only explicitly approved user data scopes", () => {
+  const headers = managedGrantHeaders({
+    brokerUserId: "00000000-0000-4000-8000-000000000000",
+    capabilities: ["data:read"],
+    connectors: [],
+    grantId: `0x${"a".repeat(64)}`,
+    mcpIds: [],
+  });
+  assert.deepEqual(JSON.parse(headers["x-nanocodex-connect-capabilities"]), [
+    "agents:read", "agents:write", "tools:use", "data:read",
+  ]);
+});
+
 test("managed reads use the internal GET boundary while mutations remain POST", () => {
   assert.equal(managedGrantUpstreamMethod("POST", ""), "GET");
   assert.equal(managedGrantUpstreamMethod("POST", "/events"), "GET");
