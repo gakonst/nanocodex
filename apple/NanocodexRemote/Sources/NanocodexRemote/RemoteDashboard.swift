@@ -53,6 +53,7 @@ public struct RemoteDashboard: View {
 #endif
     public var body: some View {
         VStack(spacing: embedded ? 6 : 12) {
+#if os(macOS)
             HStack(spacing: 8) {
                 if let hand = viewer.hand {
                     Button { viewer.close() } label: { Label("Screens", systemImage: "chevron.left") }
@@ -78,6 +79,7 @@ public struct RemoteDashboard: View {
                         .accessibilityLabel("Close screen pane").accessibilityIdentifier("close-screen-pane")
                 }
             }
+#endif
             if viewer.hand != nil {
                 RemoteCanvas(viewer: viewer).accessibilityIdentifier("remote-canvas")
                     .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
@@ -96,6 +98,11 @@ public struct RemoteDashboard: View {
                     Text("⌘⇧Esc releases control").font(.caption).foregroundStyle(.secondary)
 #else
                     if viewer.controlling {
+                        Button("Release control") { viewer.releaseControl() }
+                    } else if viewer.hand?.controllable == true {
+                        Button("Take control") { viewer.takeControl() }.disabled(!viewer.connected)
+                    }
+                    if viewer.controlling {
                         Button { showKeyboard.toggle() } label: { Image(systemName: "keyboard") }
                             .accessibilityLabel("Remote keyboard")
                             .accessibilityValue(showKeyboard ? "Visible" : "Hidden")
@@ -104,6 +111,9 @@ public struct RemoteDashboard: View {
                     }
 #endif
                 }
+#if os(iOS)
+                .padding(.horizontal)
+#endif
                 if viewer.controlling && (!embedded || showKeyboard) {
                     VStack(spacing: 8) {
                         HStack {
@@ -135,16 +145,13 @@ public struct RemoteDashboard: View {
                             .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    List(hands, id: \.identity) { hand in
-                        Button { Task { await viewer.connect(service: service, hand: hand) } } label: {
-                            HStack {
-                                Image(systemName: hand.kind == .phone ? "iphone" : "display")
-                                VStack(alignment: .leading) { Text(hand.machineName); Text(hand.name).font(.caption).foregroundStyle(.secondary) }
-                                Spacer(); Text(hand.controllable ? "View and control" : "View only").font(.caption)
-                            }.padding(.vertical, 4).contentShape(Rectangle())
-                        }.buttonStyle(.plain)
-                            .accessibilityIdentifier("remote-screen:\(hand.machineID):\(hand.id)")
-                    }
+#if os(iOS)
+                    List(hands, id: \.identity) { hand in screenRow(hand) }
+                    .listStyle(.plain)
+                    .refreshable { await refresh() }
+#else
+                    List(hands, id: \.identity) { hand in screenRow(hand) }
+#endif
                 }
                 if viewer.status != "Disconnected" { Text(viewer.status).font(.callout).foregroundStyle(.secondary) }
             }
@@ -226,7 +233,28 @@ public struct RemoteDashboard: View {
             }
 #endif
         }
+#if os(macOS)
         .padding(embedded ? 8 : 16)
+#else
+        .padding(.bottom, 8)
+        .navigationTitle(viewer.hand?.name ?? "Screens")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                if viewer.hand != nil {
+                    Button { viewer.close() } label: { Label("Screens", systemImage: "chevron.left") }
+                } else {
+                    Button { Task { await refresh() } } label: { Label("Refresh screens", systemImage: "arrow.clockwise") }
+                }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                if let onClose {
+                    Button("Done", action: onClose)
+                        .accessibilityIdentifier("close-screen-pane")
+                }
+            }
+        }
+#endif
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             while !Task.isCancelled {
@@ -249,6 +277,31 @@ public struct RemoteDashboard: View {
 #endif
         }
     }
+    private func screenRow(_ hand: RemoteHand) -> some View {
+        Button { Task { await viewer.connect(service: service, hand: hand) } } label: {
+            HStack(spacing: 12) {
+                Image(systemName: hand.kind == .phone ? "iphone" : "display")
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(hand.machineName)
+                    Text(hand.name).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(hand.controllable ? "View and control" : "View only")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+        .listRowBackground(Color.clear)
+        .accessibilityIdentifier("remote-screen:\(hand.machineID):\(hand.id)")
+    }
+
     private func refresh() async {
         do { let values = try await service.list(); guard !Task.isCancelled else { return }; hands = values; discoveryError = nil; discoveryLoaded = true }
         catch { if !Task.isCancelled { discoveryError = error.localizedDescription; discoveryLoaded = true } }

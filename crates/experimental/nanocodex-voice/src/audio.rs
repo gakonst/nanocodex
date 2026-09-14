@@ -91,6 +91,14 @@ impl VoiceAudio {
         ))
     }
 
+    pub(crate) fn set_muted(&mut self, muted: bool) {
+        if muted {
+            let _ = self._input.pause();
+        } else {
+            let _ = self._input.play();
+        }
+    }
+
     pub(crate) fn play(&mut self, audio: &RealtimeAudio) {
         self.playback.push(audio);
     }

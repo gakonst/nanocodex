@@ -11,7 +11,7 @@ use tokio::process::Command;
 
 use crate::{
     command::GuestCommand,
-    config::{BlockDevice, Network, VmConfig},
+    config::{BlockDevice, Gpu, Network, VmConfig},
     egress::EgressLease,
     image::{host_resolver_configuration, reflink_or_sparse_copy},
     tools::{
@@ -46,6 +46,7 @@ pub struct VmWorkspaceBuilder {
     environment: BTreeMap<String, String>,
     cpus: u8,
     memory_mib: u32,
+    gpu: Gpu,
     egress: EgressLease,
     startup_timeout: Duration,
     shutdown_timeout: Duration,
@@ -184,6 +185,7 @@ impl VmWorkspaceBuilder {
             environment: BTreeMap::new(),
             cpus: DEFAULT_CPUS,
             memory_mib: DEFAULT_MEMORY_MIB,
+            gpu: Gpu::Disabled,
             egress: EgressLease::internet(),
             startup_timeout: DEFAULT_STARTUP_TIMEOUT,
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
@@ -279,6 +281,13 @@ impl VmWorkspaceBuilder {
     #[must_use]
     pub const fn cpus(mut self, cpus: u8) -> Self {
         self.cpus = cpus;
+        self
+    }
+
+    /// Selects a shared GPU transport for this workspace.
+    #[must_use]
+    pub const fn gpu(mut self, gpu: Gpu) -> Self {
+        self.gpu = gpu;
         self
     }
 
@@ -384,6 +393,7 @@ impl VmWorkspaceBuilder {
                 reason: "private root is neither a raw ext4 image nor a directory",
             });
         };
+        let config = config.gpu(self.gpu);
         for (name, value) in &self.environment {
             guest = guest.env(name, value);
         }
@@ -434,10 +444,15 @@ impl VmWorkspaceBuilder {
 }
 
 fn ext4_bootstrap(workspace: &str, resolver: Option<&str>) -> String {
+    // The root disk survives process/host crashes; runtime sockets, ready
+    // files and X11 locks must belong to this boot, not the previous one.
     let workspace = shell_word(workspace);
     let resolver = resolver_bootstrap(resolver);
     format!(
-        "set -eu; {resolver}mkdir -p -- {workspace} {RUNTIME_MOUNT}; \
+        "set -eu; mkdir -p /run /tmp; \
+         mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run; \
+         mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /tmp; \
+         {resolver}mkdir -p -- {workspace} {RUNTIME_MOUNT}; \
          mount -t ext4 -o ro {RUNTIME_DEVICE} {RUNTIME_MOUNT}; \
          exec {RUNTIME_EXECUTABLE} {workspace}"
     )

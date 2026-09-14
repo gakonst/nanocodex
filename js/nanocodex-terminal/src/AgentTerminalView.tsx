@@ -89,7 +89,6 @@ export function AgentTerminalView({
   const submittedPrompts = useRef<Array<{ input: string; submittedAt: number }>>([]);
   const pendingRootPrompts = useRef<PromptTiming[]>([]);
   const currentRootPrompt = useRef<PromptTiming | undefined>(undefined);
-  const consumedVoiceTranscripts = useRef(0);
   const voiceEntrySequence = useRef(0);
   const handleControllerEvent = useCallback((event: AgentControllerEvent) => {
     const observedEvent = observeControllerTiming({
@@ -156,35 +155,26 @@ export function AgentTerminalView({
 
   useEffect(() => {
     setVoiceEntries([]);
-    consumedVoiceTranscripts.current = 0;
     voiceEntrySequence.current = 0;
   }, [agent?.sessionId]);
 
   useEffect(() => {
     const transcripts = voiceState.transcripts;
-    if (transcripts.length === 0) {
-      consumedVoiceTranscripts.current = 0;
-      return;
-    }
-    const start = Math.min(consumedVoiceTranscripts.current, transcripts.length);
-    consumedVoiceTranscripts.current = transcripts.length;
-    if (start === transcripts.length) return;
-
+    if (transcripts.length === 0) return;
     const afterEntryId = controller.entries.at(-1)?.id;
-    const appended = transcripts.slice(start).map((transcript: Readonly<{
-      speaker: "user" | "assistant";
-      text: string;
-    }>): VoiceTerminalEntry => ({
-      afterEntryId,
-      id: `voice-${agent?.sessionId ?? "detached"}-${voiceEntrySequence.current++}`,
-      kind: transcript.speaker,
-      source: "voice",
-      streaming: false,
-      text: transcript.text,
-    }));
-    setVoiceEntries((current) => [...current, ...appended].slice(-maxVoiceEntries));
+    setVoiceEntries((current) => {
+      const rows = [...current];
+      for (const transcript of transcripts) {
+        const id = `voice-${agent?.sessionId ?? "detached"}-${transcript.id ?? voiceEntrySequence.current++}`;
+        const index = rows.findIndex((entry) => entry.id === id);
+        const entry: VoiceTerminalEntry = { afterEntryId: index < 0 ? afterEntryId : rows[index]!.afterEntryId,
+          id, kind: transcript.speaker, source: "voice", streaming: transcript.isPartial === true, text: transcript.text };
+        if (index < 0) rows.push(entry); else rows[index] = entry;
+      }
+      return rows.slice(-maxVoiceEntries);
+    });
     setFollowTailRequest((current) => current + 1);
-  }, [agent?.sessionId, controller.entries, maxVoiceEntries, voiceState.transcripts]);
+  }, [agent?.sessionId, maxVoiceEntries, voiceState.transcripts]);
 
   useEffect(() => {
     onStateChange({ error: agentError, retry: retryAgent, status: agentStatus });
@@ -199,31 +189,31 @@ export function AgentTerminalView({
       setPendingTouchSubmission({ input, submittedAt });
       return;
     }
-    submitPrompt(controller, submittedPrompts.current, input, submittedAt, promptIntent);
+    void voiceState.noteTypedInput().then(() => submitPrompt(controller, submittedPrompts.current, input, submittedAt, promptIntent));
     setTouchDraft("");
-  }, [agentStatus, controller, promptIntent]);
+  }, [agentStatus, controller, promptIntent, voiceState.noteTypedInput]);
   useEffect(() => {
     if (agentStatus !== "ready" || !pendingTouchSubmission) return;
-    submitPrompt(
+    void voiceState.noteTypedInput().then(() => submitPrompt(
       controller,
       submittedPrompts.current,
       pendingTouchSubmission.input,
       pendingTouchSubmission.submittedAt,
       promptIntent,
-    );
+    ));
     setPendingTouchSubmission(undefined);
     setTouchDraft("");
-  }, [agentStatus, controller, pendingTouchSubmission, promptIntent]);
+  }, [agentStatus, controller, pendingTouchSubmission, promptIntent, voiceState.noteTypedInput]);
   const cancelTouchTurn = useCallback(() => {
-    if (agentStatus === "ready") void controller.cancel();
-  }, [agentStatus, controller]);
+    if (agentStatus === "ready") void voiceState.noteTypedInput().then(() => controller.cancel());
+  }, [agentStatus, controller, voiceState.noteTypedInput]);
   const submitAccessoryPrompt = useCallback((input: string) => {
     if (agentStatus !== "ready") return;
     const submittedAt = performance.now();
     setFollowTailRequest((current) => current + 1);
     retainSubmittedPrompt(submittedPrompts.current, input, submittedAt);
-    void controller.submit(input, { intent: "queue" });
-  }, [agentStatus, controller]);
+    void voiceState.noteTypedInput().then(() => controller.submit(input, { intent: "queue" }));
+  }, [agentStatus, controller, voiceState.noteTypedInput]);
 
   const terminal = (
     <TerminalTranscriptSurface
@@ -318,6 +308,12 @@ export function VoiceControl({
       </svg>
       <span className="agent-terminal-sr-only">Voice</span>
     </button>
+    {engaged ? <>
+      <button type="button" className="agent-voice-mute-button" aria-label={voice.muted ? "Unmute microphone" : "Mute microphone"}
+        aria-pressed={voice.muted} onClick={() => voice.toggleMuted()}>{voice.muted ? "Unmute" : "Mute"}</button>
+      <meter className="agent-voice-level" aria-label="Microphone level" min={0} max={1} value={voice.microphoneLevel} />
+      <meter className="agent-voice-level" aria-label="Speaker level" min={0} max={1} value={voice.speakerLevel} />
+    </> : null}
     <select
       aria-label="Voice"
       className="agent-voice-select"

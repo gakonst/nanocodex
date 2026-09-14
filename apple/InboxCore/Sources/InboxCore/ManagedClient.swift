@@ -347,6 +347,23 @@ public final class ManagedClient: @unchecked Sendable {
         return data
     }
 
+    /// The native previewer receives a local file, never an account credential or bearer URL.
+    public func downloadAttachment(agentID: String, attachment: MessageAttachment) async throws -> URL {
+        var request = try request(path: Self.agentPath(agentID) + "/attachments/" + attachment.id.lowercased())
+        request.timeoutInterval = 120
+        request.setValue(attachment.mediaType, forHTTPHeaderField: "Accept")
+        let (download, response) = try await session.download(for: request)
+        defer { try? FileManager.default.removeItem(at: download) }
+        guard let response = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+        guard response.statusCode == 200 else { throw APIError.http(response.statusCode) }
+        guard try download.resourceValues(forKeys: [.fileSizeKey]).fileSize == attachment.byteCount else { throw APIError.invalidResponse }
+        let suffix = URL(fileURLWithPath: attachment.originalPath).pathExtension
+        let local = FileManager.default.temporaryDirectory.appendingPathComponent("attachment-" + UUID().uuidString).appendingPathExtension(suffix)
+        try FileManager.default.moveItem(at: download, to: local)
+        if Task.isCancelled { try? FileManager.default.removeItem(at: local); throw CancellationError() }
+        return local
+    }
+
     /// AVPlayer receives a local file, never an account credential or bearer URL.
     /// The caller removes this temporary copy when playback closes.
     public func downloadVideo(agentID: String, video: TranscriptVideo) async throws -> URL {
@@ -493,11 +510,12 @@ public struct EventPage: Sendable {
 
 /// Capture agent and turn identity at the button press, before any await or swipe.
 public struct AgentCommand: Equatable, Sendable {
-    public enum Kind: Equatable, Sendable { case followUp, steer, stop }
+    public enum Kind: Equatable, Sendable { case followUp, steer, withdrawSteer, stop }
     public let agentID: String
     public let turnID: String
     public let input: String
     public var images: [JSON] = []
+    public var rawInput: JSON?
     public let kind: Kind
     public let requestID: String
     public init(agentID: String, turnID: String = "", input: String = "", kind: Kind, requestID: String = UUID().uuidString) {
@@ -505,13 +523,14 @@ public struct AgentCommand: Equatable, Sendable {
     }
     public func requestSpec() throws -> (path: String, body: JSON?, key: String?) {
         let path = try ManagedClient.agentPath(agentID) + "/turns"
-        let content: JSON = images.isEmpty ? .string(input) : .array(
+        let content: JSON = rawInput ?? (images.isEmpty ? .string(input) : .array(
             (input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [] : [.object(["type": .string("text"), "text": .string(input)])]) + images
-        )
-        let body: JSON = .object(kind == .followUp ? ["id": .string(requestID), "input": content] : ["input": content])
+        ))
+        let body: JSON = .object(kind == .followUp ? ["id": .string(requestID), "input": content] : ["input": content, "message_id": .string(requestID)])
         if kind == .followUp { return (path, body, "inbox:" + requestID) }
         guard !turnID.isEmpty, turnID.range(of: #"^[A-Za-z0-9._:-]{1,128}$"#, options: .regularExpression) != nil,
               let segment = turnID.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else { throw APIError.invalidResponse }
+        if kind == .withdrawSteer { return (path + "/" + segment + "/withdraw-steer", .object(["message_id": .string(requestID)]), nil) }
         return (path + "/" + segment + (kind == .steer ? "/steer" : "/cancel"), kind == .steer ? body : nil, nil)
     }
 }

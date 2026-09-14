@@ -23,7 +23,7 @@ export type VoiceTerminalEntry = Readonly<{
   id: string;
   kind: "user" | "assistant";
   source: "voice";
-  streaming: false;
+  streaming: boolean;
   text: string;
 }>;
 

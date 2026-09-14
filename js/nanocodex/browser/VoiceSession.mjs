@@ -2,6 +2,7 @@ export const MICROPHONE_CAPTURE_TIMEOUT_MS = 15_000;
 export const ICE_GATHERING_TIMEOUT_MS = 15_000;
 export const REALTIME_CALL_TIMEOUT_MS = 15_000;
 export const SIDEBAND_OPEN_TIMEOUT_MS = 15_000;
+export const PEER_CONNECTION_TIMEOUT_MS = 15_000;
 
 export class VoiceError extends Error {
   constructor(code, message, options = {}) {
@@ -83,6 +84,11 @@ export class BrowserVoiceSession {
   #microphone;
   #speaker;
   #playbackEnabled = false;
+  #muted = false;
+  #inputGeneration = 0;
+  #meterTimer;
+  #backendReady;
+  #resolveBackendReady;
   #call;
   #flushTimer;
   #reconnectTimer;
@@ -95,6 +101,7 @@ export class BrowserVoiceSession {
 
   constructor(options) {
     this.#options = options;
+    this.#backendReady = new Promise((resolve) => { this.#resolveBackendReady = resolve; });
   }
 
   start() {
@@ -139,7 +146,8 @@ export class BrowserVoiceSession {
       await Promise.all([coreStartup, connection]);
     } catch (cause) {
       this.#closing.abort();
-      this.#stopBrowserIo();
+      if (cause?.code === "peer_connection_timeout") this.#stopBrowserMedia();
+      else this.#stopBrowserIo();
       // Neither late admission nor negotiation can revive disposed resources.
       await Promise.allSettled([coreStartup, connection]);
       if (this.#closed) return;
@@ -189,7 +197,7 @@ export class BrowserVoiceSession {
       });
     } catch (cause) {
       if (this.#closed) return;
-      this.#stopBrowserIo();
+      this.#stopBrowserMedia();
       throw cause;
     }
     const completed = JSON.parse(await core.completeCall(callResponse.body, callResponse.location));
@@ -201,16 +209,24 @@ export class BrowserVoiceSession {
     if (this.#closed) return;
     try {
       await Promise.all([
-        peer.setRemoteDescription({ type: "answer", sdp: completed.sdp }),
-        this.#openSideband(),
+        withStartupDeadline(async () => {
+          await peer.setRemoteDescription({ type: "answer", sdp: completed.sdp });
+          await waitForPeerConnected(peer, this.#closing.signal);
+        }, { signal: this.#closing.signal, timeoutMs: PEER_CONNECTION_TIMEOUT_MS,
+          timeoutError: new VoiceError("peer_connection_timeout", "Voice media did not connect in time."),
+          onTimeout: () => { peer.close(); } }),
+        this.#openSideband().then(() => withStartupDeadline(() => this.#backendReady, { signal: this.#closing.signal,
+          timeoutMs: SIDEBAND_OPEN_TIMEOUT_MS,
+          timeoutError: new VoiceError("session_ready_timeout", "The Realtime session did not become ready in time.") })),
       ]);
     } catch (cause) {
       if (this.#closed) return;
-      this.#stopBrowserIo();
+      this.#stopBrowserMedia();
       throw cause;
     }
     if (this.#closed) return;
-    this.#status(`Voice active (${this.#options.voice}) — /voice off to stop`);
+    this.#sampleLevels();
+    this.#status(`Voice active (${this.#options.voice})`);
   }
 
   async #prepareMedia(capture) {
@@ -221,6 +237,7 @@ export class BrowserVoiceSession {
     }
     for (const track of microphone.getAudioTracks()) {
       track.contentHint = "speech";
+      track.enabled = !this.#muted;
       track.addEventListener("mute", () => this.#status("Voice paused — microphone interrupted"));
       track.addEventListener("unmute", () => this.#status(`Voice active (${this.#options.voice})`));
       track.addEventListener("ended", () => {
@@ -261,6 +278,38 @@ export class BrowserVoiceSession {
     return { peer, sdp };
   }
 
+  setMuted(muted) {
+    this.#muted = muted;
+    for (const track of this.#microphone?.getAudioTracks() ?? []) track.enabled = !muted;
+    this.#options.onLevels?.({ microphone: 0, speaker: 0, muted });
+  }
+
+  noteTypedInput() {
+    this.#playbackEnabled = false;
+    this.#speaker?.setEnabled(false);
+    return this.#applyLive(async () => {
+      const core = await this.#options.core;
+      if (!this.#closed) return core.noteTypedInput();
+    });
+  }
+
+  #sampleLevels() {
+    if (this.#closed || !this.#peer?.getStats) return;
+    const peer = this.#peer;
+    void peer.getStats().then((stats) => {
+      if (this.#closed || this.#peer !== peer) return;
+      let microphone = 0, speaker = 0;
+      stats.forEach((report) => {
+        if (report.type === "media-source" && report.kind === "audio") microphone = Math.max(microphone, report.audioLevel ?? 0);
+        if (report.type === "inbound-rtp" && report.kind === "audio") speaker = Math.max(speaker, report.audioLevel ?? 0);
+      });
+      this.#options.onLevels?.({ microphone: this.#muted ? 0 : Math.max(0, Math.min(1, microphone)),
+        speaker: this.#playbackEnabled ? Math.max(0, Math.min(1, speaker)) : 0, muted: this.#muted });
+    }).catch(() => {}).finally(() => {
+      if (!this.#closed && this.#peer === peer) this.#meterTimer = window.setTimeout(() => this.#sampleLevels(), 100);
+    });
+  }
+
   observe(envelope) {
     if (!this.#closed && this.#core) {
       this.#applyLive(() => this.#core.agentEvent(JSON.stringify(envelope)));
@@ -278,8 +327,9 @@ export class BrowserVoiceSession {
     return next;
   }
 
-  cancel() {
-    return this.#core?.cancel() ?? Promise.resolve(false);
+  async cancel() {
+    await this.noteTypedInput();
+    return this.#core?.cancel() ?? false;
   }
 
   close() {
@@ -310,6 +360,8 @@ export class BrowserVoiceSession {
 
   async #finishClose() {
     try {
+      // Recover accepted answers before remote lifecycle cleanup can fail.
+      if (this.#core) await this.#apply(await this.#core.noteTypedInput());
       await this.#starting?.catch(() => {});
       await Promise.all(this.#liveUpdates);
       await this.#inbound;
@@ -346,6 +398,12 @@ export class BrowserVoiceSession {
   async #apply(encoded) {
     const effects = typeof encoded === "string" ? JSON.parse(encoded) : encoded;
     if (!effects || typeof effects !== "object") return;
+    if (effects.ready === true) this.#resolveBackendReady();
+    for (const text of effects.undelivered_answers ?? []) this.#options.onUndeliveredAnswer?.(text);
+    if (effects.input_generation !== undefined) {
+      if (effects.input_generation < this.#inputGeneration) return;
+      this.#inputGeneration = effects.input_generation;
+    }
     if (effects.playback_enabled === false) {
       this.#playbackEnabled = false;
       this.#speaker?.setEnabled(false);
@@ -358,7 +416,7 @@ export class BrowserVoiceSession {
       }
     }
     if (effects.acknowledge_frames && sent > 0) await this.#core?.framesSent(sent);
-    if (effects.playback_enabled === true && sent === (effects.frames?.length ?? 0)) {
+    if (!this.#closed && effects.playback_enabled === true && sent === (effects.frames?.length ?? 0)) {
       this.#playbackEnabled = true;
       this.#speaker?.setEnabled(true);
     }
@@ -446,6 +504,8 @@ export class BrowserVoiceSession {
   }
 
   #stopBrowserMedia() {
+    if (this.#meterTimer !== undefined) window.clearTimeout(this.#meterTimer);
+    this.#meterTimer = undefined;
     this.#call?.abort();
     this.#call = undefined;
     if (this.#flushTimer !== undefined) window.clearTimeout(this.#flushTimer);
@@ -486,7 +546,7 @@ export async function capturePreferredMicrophone(selectPhysicalInput) {
     const physical = index === undefined ? undefined : inputs[index];
     if (physical?.deviceId && physical.deviceId !== current.getSettings?.().deviceId) {
       try {
-        const replacement = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: physical.deviceId } } });
+        const replacement = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: physical.deviceId }, autoGainControl: true, channelCount: 1, echoCancellation: true, noiseSuppression: true } });
         stopStream(microphone);
         microphone = replacement;
       } catch {
@@ -579,6 +639,21 @@ function realtimeSidebandUrl(callId, sessionId) {
   url.searchParams.set("call_id", callId);
   url.searchParams.set("session_id", sessionId);
   return url;
+}
+
+function waitForPeerConnected(peer, signal) {
+  if (peer.connectionState === "connected") return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const cleanup = () => { peer.removeEventListener("connectionstatechange", changed); signal.removeEventListener("abort", stopped); };
+    const stopped = () => { cleanup(); reject(new Error("voice connection stopped")); };
+    const changed = () => {
+      if (peer.connectionState === "connected") { cleanup(); resolve(); }
+      else if (["failed", "closed"].includes(peer.connectionState)) { cleanup(); reject(new VoiceError("peer_connection_failed", "Voice media connection failed.")); }
+    };
+    peer.addEventListener("connectionstatechange", changed);
+    signal.addEventListener("abort", stopped, { once: true });
+    if (signal.aborted) stopped(); else changed();
+  });
 }
 
 function waitForWebSocket(socket, signal) {

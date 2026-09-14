@@ -40,16 +40,8 @@ final class VoiceIntegrationTests: XCTestCase {
             XCTAssertEqual(AVCaptureDevice.authorizationStatus(for: .audio), microphoneBefore)
             voice.toggleMute(); XCTAssertTrue(voice.isMuted)
             voice.toggleMute(); XCTAssertFalse(voice.isMuted)
-            // Exercise the startup background-context frame against OpenAI,
-            // including a nonempty conversation, before checking its reply.
-            let context: JSON = .object(["history": .array([.object([
-                "role": .string("user"), "content": .array([.object([
-                    "text": .string("The sample project is called Juniper. Wait for me to speak before replying.")
-                ])])
-            ])])])
-            for frame in ManagedVoiceProtocol.startupContextFrames(context) {
-                try voice.sendRealtimeForTesting(frame)
-            }
+            // Explicit context remains supported independently of startup.
+            try voice.appendContext("The sample project is Juniper. Wait for me to speak before replying.")
             // A no-op update proves the control channel accepts writes and
             // returns protocol acknowledgements without changing call behavior.
             try voice.sendRealtimeForTesting(.object(["type": .string("session.update"), "session": .object([:])]))
@@ -61,8 +53,18 @@ final class VoiceIntegrationTests: XCTestCase {
             XCTAssertTrue(voice.receivedRealtimeTypesForTesting.contains("session.updated"), "Control writes and acknowledgements must use the same WebRTC data channel")
             XCTAssertEqual(voice.phase, .active)
             try await Task.sleep(for: .seconds(2))
-            XCTAssertEqual(voice.phase, .active, "Startup background context must be accepted by the real provider")
+            XCTAssertEqual(voice.phase, .active, "Explicit background context must be accepted by the real provider")
             XCTAssertFalse(voice.receivedRealtimeTypesForTesting.contains("output_transcript.added"), "Background context must not prompt unsolicited speech")
+
+            let bytesBeforeSpeech = voice.audioBytesReceived
+            let speechBegan = ContinuousClock.now
+            try voice.speak("Voice is ready.")
+            let speechDeadline = speechBegan.advanced(by: .seconds(15))
+            while voice.audioBytesReceived == bytesBeforeSpeech, voice.isEngaged, ContinuousClock.now < speechDeadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            XCTAssertGreaterThan(voice.audioBytesReceived, bytesBeforeSpeech, "Explicit speech must reach native WebRTC")
+            print("Native speech request to first observed audio bytes: \(speechBegan.duration(to: .now)).")
 
             let stoppedAt = ContinuousClock.now
             voice.stop()

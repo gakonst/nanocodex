@@ -20,3 +20,7 @@ export function onEvent(voice: Voice, listener: (event: Event) => void): () => v
 export function speak(voice: Voice, text: string): Promise<void>;
 export function appendText(voice: Voice, text: string, options?: { role?: "user" | "developer" | "assistant" }): Promise<void>;
 export function appendContext(voice: Voice, text: string): Promise<void>;
+
+export function setMuted(voice: Voice, muted: boolean): void;
+export function toggleMuted(voice: Voice): void;
+export function noteTypedInput(voice: Voice): Promise<void>;

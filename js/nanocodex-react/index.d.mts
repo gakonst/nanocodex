@@ -99,6 +99,9 @@ export type UseVoiceParameters = VoiceOptions & Readonly<{
   enabled?: boolean | undefined;
 }>;
 export type UseVoiceReturnType = VoiceSnapshot & Readonly<{
+  setMuted(muted: boolean): void;
+  toggleMuted(): void;
+  noteTypedInput(): Promise<void>;
   isActive: boolean;
   isConnecting: boolean;
   isError: boolean;

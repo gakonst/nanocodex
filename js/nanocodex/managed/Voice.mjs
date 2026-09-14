@@ -45,6 +45,7 @@ export async function createManagedBrowserVoice(agent, voice, options = {}) {
 
   return {
     configure: (settings) => raw.configure(settings),
+    noteTypedInput: () => raw.noteTypedInput(),
     appendSpeech: (text) => raw.appendSpeech(text),
     appendText: (role, text) => raw.appendText(role, text),
     appendContext: (text) => raw.appendContext(text),
@@ -108,6 +109,7 @@ export async function createManagedBrowserVoice(agent, voice, options = {}) {
         return raw.managedEvent(JSON.stringify(value));
       }
       if (routePending && value?.turnId !== activeTurnId) {
+        if (pendingEvents.length >= 256) throw new Error("Voice event backlog is full. Please reconnect.");
         pendingEvents.push(value);
         return undefined;
       }
@@ -187,16 +189,21 @@ function isTerminalAgentEvent(event) {
 }
 
 function mergeVoiceEffects(base, encoded) {
-  const effects = [base, ...encoded.map((value) => (
+  const allEffects = [base, ...encoded.map((value) => (
     typeof value === "string" ? JSON.parse(value) : value
   ))].filter((value) => value && typeof value === "object");
-  if (effects.length === 0) return base;
+  if (allEffects.length === 0) return base;
+  const generation = Math.max(...allEffects.map((value) => value.input_generation ?? 0));
+  const effects = allEffects.filter((value) => value.input_generation === undefined || value.input_generation === generation);
   return {
     ...effects[0],
+    input_generation: generation,
     playback_enabled: effects.findLast((value) => value.playback_enabled !== undefined)?.playback_enabled,
     acknowledge_frames: effects.some((value) => value.acknowledge_frames),
     frames: effects.flatMap((value) => value.frames ?? []),
     transcripts: effects.flatMap((value) => value.transcripts ?? []),
+    undelivered_answers: allEffects.flatMap((value) => value.undelivered_answers ?? []),
+    ready: effects.some((value) => value.ready === true) || undefined,
     schedule_flush: effects.some((value) => value.schedule_flush),
   };
 }

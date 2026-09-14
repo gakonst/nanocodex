@@ -163,6 +163,7 @@ struct HandSetupView: View {
     @State private var cpus = 2
     @State private var memory = 2048
     @State private var network = true
+    @State private var gpu = false
     @State private var saving = false
     private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !workspace.isEmpty && (kind == "local" || (!binary.isEmpty && !rootfs.isEmpty && !guestRuntime.isEmpty)) }
     var body: some View {
@@ -189,6 +190,7 @@ struct HandSetupView: View {
                         Stepper("\(cpus) CPU cores", value: $cpus, in: 1...32)
                         Picker("Memory", selection: $memory) { Text("2 GB").tag(2048); Text("4 GB").tag(4096); Text("8 GB").tag(8192); Text("16 GB").tag(16384) }
                         Toggle("Allow network access", isOn: $network)
+                        Toggle("Share Mac GPU (Vulkan)", isOn: $gpu)
                     }
                 }
             }.formStyle(.grouped)
@@ -198,7 +200,7 @@ struct HandSetupView: View {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(saving ? "Saving…" : hand == nil ? "Enable Hand" : "Save") {
                     saving = true
-                    let config = Hand(id: hand?.id ?? "mac-\(UUID().uuidString.prefix(8).lowercased())", name: name, kind: kind, workspace: workspace, agentId: thisThreadOnly ? model.activeTab?.threadId : nil, rootfs: kind == "vm" ? rootfs : nil, guestRuntime: kind == "vm" ? guestRuntime : nil, binary: kind == "vm" ? binary : nil, cpus: cpus, memoryMiB: memory, network: network)
+                    let config = Hand(id: hand?.id ?? "mac-\(UUID().uuidString.prefix(8).lowercased())", name: name, kind: kind, workspace: workspace, agentId: thisThreadOnly ? model.activeTab?.threadId : nil, rootfs: kind == "vm" ? rootfs : nil, guestRuntime: kind == "vm" ? guestRuntime : nil, binary: kind == "vm" ? binary : nil, cpus: cpus, memoryMiB: memory, network: network, gpu: kind == "vm" ? gpu : nil)
                     Task { await model.saveHand(config, start: hand == nil); saving = false }
                 }.buttonStyle(.borderedProminent).tint(.primary).disabled(!valid || saving).keyboardShortcut(.defaultAction).accessibilityIdentifier("save-hand")
             }
@@ -209,6 +211,7 @@ struct HandSetupView: View {
             binary = hand?.binary ?? model.state.defaults["binary"].string
             rootfs = hand?.rootfs ?? model.state.defaults["rootfs"].string
             guestRuntime = hand?.guestRuntime ?? model.state.defaults["guestRuntime"].string
+            gpu = hand?.gpu ?? (hand == nil && model.state.defaults["gpu"] == .bool(true))
             cpus = hand?.cpus ?? 2; memory = hand?.memoryMiB ?? 2048; network = hand?.network ?? true
         }
     }

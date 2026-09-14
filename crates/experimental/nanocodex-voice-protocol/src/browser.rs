@@ -210,6 +210,12 @@ pub struct BrowserVoiceEffects {
     pub schedule_flush: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub playback_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub undelivered_answers: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ready: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_generation: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -235,6 +241,7 @@ pub struct VoicePrefetch {
 
 pub struct BrowserVoiceProtocol {
     settings: VoiceSettings,
+    client_delivery: Option<crate::browser_delivery::BrowserSpeechDelivery>,
     output_phase: Option<String>,
     transcript: Vec<super::TranscriptEntry>,
     new_input_entry: bool,
@@ -266,6 +273,7 @@ impl BrowserVoiceProtocol {
             return Err(format!("unsupported ChatGPT voice: {voice}"));
         }
         Ok(Self {
+            client_delivery: None,
             settings: VoiceSettings {
                 voice: voice.to_owned(),
                 ..VoiceSettings::default()
@@ -287,6 +295,31 @@ impl BrowserVoiceProtocol {
         })
     }
 
+    /// Select the current desktop handoff contract while keeping media browser-owned.
+    pub fn enable_client_managed_handoffs(&mut self) {
+        self.client_delivery = Some(crate::browser_delivery::BrowserSpeechDelivery::new());
+    }
+
+    pub fn note_typed_input(&mut self) -> BrowserVoiceEffects {
+        let effects = self
+            .client_delivery
+            .as_mut()
+            .map(|delivery| delivery.invalidate())
+            .unwrap_or_default();
+        self.discard_superseded_speech(&effects);
+        effects
+    }
+
+    fn discard_superseded_speech(&mut self, effects: &BrowserVoiceEffects) {
+        if effects.playback_enabled == Some(false) {
+            self.pending_frames.retain(|frame| {
+                serde_json::from_str::<Value>(frame)
+                    .ok()
+                    .is_none_or(|value| value["channel"] != "speakable")
+            });
+        }
+    }
+
     #[must_use]
     pub fn voice(&self) -> &str {
         &self.settings.voice
@@ -306,12 +339,17 @@ impl BrowserVoiceProtocol {
     /// Explicit speech is independent of background narration preferences.
     pub fn append_speech(&mut self, text: &str) -> Result<BrowserVoiceEffects, String> {
         validate_text(text)?;
-        self.enqueue_frames(
+        let mut effects = self.enqueue_frames(
             session_context_frames(text, "speakable")
                 .into_iter()
                 .map(|frame| frame.to_string())
                 .collect(),
-        )
+        )?;
+        if let Some(delivery) = &mut self.client_delivery {
+            delivery.allow_explicit_speech();
+            effects.playback_enabled = Some(true);
+        }
+        Ok(effects)
     }
 
     /// Adds validated background context without requesting speech.
@@ -342,6 +380,10 @@ impl BrowserVoiceProtocol {
         }
         self.pending_frames.extend(frames.iter().cloned());
         Ok(BrowserVoiceEffects {
+            input_generation: self
+                .client_delivery
+                .as_ref()
+                .map(|delivery| delivery.generation()),
             frames,
             acknowledge_frames: true,
             ..BrowserVoiceEffects::default()
@@ -355,7 +397,16 @@ impl BrowserVoiceProtocol {
         let Some(kind) = event.get("type").and_then(Value::as_str) else {
             return BrowserVoiceUpdate::default();
         };
+        let accepts_output = self
+            .client_delivery
+            .as_ref()
+            .is_none_or(|delivery| delivery.accepts_caption());
         let mut update = BrowserVoiceUpdate::default();
+        if let Some(delivery) = &mut self.client_delivery {
+            update.effects = delivery.realtime(&event);
+            update.effects.input_generation = Some(delivery.generation());
+        }
+        self.discard_superseded_speech(&update.effects);
         match kind {
             "error" => {
                 let status = event
@@ -376,8 +427,10 @@ impl BrowserVoiceProtocol {
                 update.effects.terminate = Some(status);
             }
             "session.started" | "session.updated" => {
+                update.effects.ready = Some(true);
                 update.effects.status = Some(format!("Voice active ({})", self.settings.voice));
             }
+            "output_transcript.added" if !accepts_output => {}
             "input_transcript.added" | "output_transcript.added" => {
                 let speaker = if kind == "input_transcript.added" {
                     "user"
@@ -421,6 +474,16 @@ impl BrowserVoiceProtocol {
                     .pointer("/turn/transcript")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
+                if role == Some("assistant") && !accepts_output {
+                    self.new_output_entry = true;
+                    if !self.output_transcript.complete && !self.output_transcript.text.is_empty() {
+                        update
+                            .effects
+                            .transcripts
+                            .push(self.output_transcript.update("assistant", "", false));
+                    }
+                    return update;
+                }
                 if matches!(role, Some("user" | "assistant")) {
                     let role = role.unwrap_or_default();
                     let force_new = if role == "user" {
@@ -459,6 +522,9 @@ impl BrowserVoiceProtocol {
                     self.seen_delegations.pop_front();
                 }
                 self.active_delegation = Some(id.clone());
+                if let Some(delivery) = &mut self.client_delivery {
+                    delivery.delegate();
+                }
                 if !self
                     .transcript
                     .iter()
@@ -490,6 +556,24 @@ impl BrowserVoiceProtocol {
         let Some(kind) = event.get("type").and_then(Value::as_str) else {
             return BrowserVoiceEffects::default();
         };
+        if let Some(delivery) = &mut self.client_delivery {
+            let mut effects =
+                delivery.agent(&event, self.settings.updates == crate::VoiceUpdates::Silent);
+            self.discard_superseded_speech(&effects);
+            if self.pending_frames.len() + effects.frames.len() > 128 {
+                effects.frames.clear();
+                effects.terminate = Some("Voice fell behind. Please reconnect.".into());
+            } else {
+                self.pending_frames.extend(effects.frames.iter().cloned());
+            }
+            if matches!(
+                kind,
+                "run.completed" | "run.failed" | "run.cancelled" | "turn_failed"
+            ) {
+                self.active_delegation = None;
+            }
+            return effects;
+        }
         match kind {
             "turn_failed" => {
                 // The managed host can fail admission before run.started. Only
@@ -598,11 +682,16 @@ impl BrowserVoiceProtocol {
     }
 
     #[must_use]
-    pub fn close_effects(&self) -> BrowserVoiceEffects {
+    pub fn close_effects(&mut self) -> BrowserVoiceEffects {
+        let recovery = self
+            .client_delivery
+            .as_mut()
+            .map(|delivery| delivery.close())
+            .unwrap_or_default();
         BrowserVoiceEffects {
             frames: vec![json!({ "type": "session.close" }).to_string()],
             status: Some("Voice stopped".to_owned()),
-            ..BrowserVoiceEffects::default()
+            ..recovery
         }
     }
 
@@ -612,7 +701,15 @@ impl BrowserVoiceProtocol {
         BrowserVoiceEffects {
             acknowledge_frames: !frames.is_empty(),
             frames,
-            playback_enabled: Some(true),
+            input_generation: self
+                .client_delivery
+                .as_ref()
+                .map(|delivery| delivery.generation()),
+            playback_enabled: Some(
+                self.client_delivery
+                    .as_ref()
+                    .is_none_or(|delivery| delivery.playback_enabled()),
+            ),
             ..BrowserVoiceEffects::default()
         }
     }

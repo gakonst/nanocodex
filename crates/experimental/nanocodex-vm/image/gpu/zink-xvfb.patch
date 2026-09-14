@@ -1,0 +1,59 @@
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -38,6 +38,8 @@
+ #include "zink_state.h"
+ #include "nir_to_spirv/nir_to_spirv.h" // for SPIRV_VERSION
+ 
++#include "frontend/sw_winsys.h"
++#include "util/u_inlines.h"
+ #include "util/u_debug.h"
+ #include "util/u_dl.h"
+ #include "util/os_file.h"
+@@ -1758,9 +1760,27 @@
+    struct zink_resource *res = zink_resource(pres);
+    struct zink_context *ctx = zink_context(pctx);
+ 
+-   /* if the surface is no longer a swapchain, this is a no-op */
+-   if (!zink_is_swapchain(res))
++   /* Xvfb has no Vulkan surface. Read back into its existing software loader. */
++   if (!zink_is_swapchain(res)) {
++      struct sw_winsys *ws = screen->sw_winsys;
++      if (!pctx || !winsys_drawable_handle || !ws || !ws->displaytarget_create_mapped)
++         return;
++      struct pipe_transfer *transfer = NULL;
++      unsigned width = u_minify(pres->width0, level);
++      unsigned height = u_minify(pres->height0, level);
++      void *map = pipe_texture_map(pctx, pres, level, layer, PIPE_MAP_READ,
++                                   0, 0, width, height, &transfer);
++      if (!map)
++         return;
++      struct sw_displaytarget *dt = ws->displaytarget_create_mapped(
++         ws, pres->bind, pres->format, width, height, transfer->stride, map);
++      if (dt) {
++         ws->displaytarget_display(ws, dt, winsys_drawable_handle, nboxes, sub_box);
++         ws->displaytarget_destroy(ws, dt);
++      }
++      pipe_texture_unmap(pctx, transfer);
+       return;
++   }
+ 
+    ctx = zink_tc_context_unwrap(pctx);
+ 
+@@ -3701,6 +3721,7 @@
+    struct zink_screen *ret = zink_internal_create_screen(config, -1, -1, 0);
+    if (ret) {
+       ret->drm_fd = -1;
++      ret->sw_winsys = winsys;
+    }
+ 
+    return &ret->base;
+--- a/src/gallium/drivers/zink/zink_types.h
++++ b/src/gallium/drivers/zink/zink_types.h
+@@ -1394,6 +1394,7 @@
+ 
+ struct zink_screen {
+    struct pipe_screen base;
++   struct sw_winsys *sw_winsys; /* borrowed from the pipe loader */
+ 
+    const char *vendor_name;
+    const char *device_name;

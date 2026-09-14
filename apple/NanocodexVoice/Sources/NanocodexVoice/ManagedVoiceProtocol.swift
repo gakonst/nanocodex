@@ -19,6 +19,9 @@ public struct ManagedVoiceEffects: Equatable, Sendable {
     public var acknowledgeFrames = false
     public var scheduleFlush = false
     public var playbackEnabled: Bool?
+    public var ready = false
+    public var inputGeneration: UInt64?
+    public var undeliveredAnswers: [String] = []
     public init() {}
 }
 public struct ManagedVoiceDelegation: Equatable, Sendable {
@@ -106,6 +109,7 @@ public final class ManagedVoiceProtocol: @unchecked Sendable {
         guard let tail = try? command(["op": .string("tail")]), tail != .null else { return nil }
         return tail.string
     }
+    public func noteTypedInput() -> ManagedVoiceEffects { apply(["op": .string("typed_input")]) }
     public func closeEffects() -> ManagedVoiceEffects { apply(["op": .string("close")]) }
     public func sidebandOpened() -> ManagedVoiceEffects { apply(["op": .string("opened")]) }
     public func sidebandClosed(connectedMS: Int) -> ManagedVoiceEffects { apply(["op": .string("closed"), "connected_ms": .number(Double(max(0, connectedMS)))]) }
@@ -131,6 +135,9 @@ public final class ManagedVoiceProtocol: @unchecked Sendable {
         var effects = ManagedVoiceEffects()
         effects.frames = try value["frames"].array.map { try JSONDecoder().decode(JSON.self, from: Data($0.string.utf8)) }
         effects.transcripts = value["transcripts"].array.map { .init(speaker: $0["speaker"].string, text: $0["text"].string, isFinal: !$0["is_partial"].bool) }
+        effects.ready = value["ready"].bool
+        effects.inputGeneration = value["input_generation"] == .null ? nil : UInt64(value["input_generation"].number)
+        effects.undeliveredAnswers = value["undelivered_answers"].array.map(\.string)
         effects.status = value["status"] == .null ? nil : value["status"].string
         effects.terminate = value["terminate"] == .null ? nil : value["terminate"].string
         effects.reconnectAfterMS = value["reconnect_after_ms"] == .null ? nil : Int(value["reconnect_after_ms"].number)

@@ -84,6 +84,12 @@ function VoiceConsumer(agent: DefaultAgent | ManagedAgent | ConnectAgent | undef
   void voice.start({ voice: "juniper" });
   void voice.stop();
   void voice.cancel();
+  voice.setMuted(true);
+  voice.toggleMuted();
+  const fence: Promise<void> = voice.noteTypedInput();
+  const muted: boolean = voice.muted;
+  const level: number = voice.microphoneLevel;
+  void fence; void muted; void level;
   void voice.start({ voice: "maple", pace: "fast", updates: "results", acknowledgements: false, instructions: "Speak Greek.", handoffMode: "bem_tags" });
   const speech: Promise<void> = voice.speak("Read this aloud.");
   void speech;

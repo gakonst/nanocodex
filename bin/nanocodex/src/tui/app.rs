@@ -1281,6 +1281,7 @@ fn append_branch_tree(
 }
 
 pub(super) struct App {
+    pub(super) voice: super::voice::VoiceUi,
     pub(super) cwd: PathBuf,
     pub(super) main: Conversation,
     main_branch_id: u64,
@@ -1337,6 +1338,7 @@ impl App {
         Self {
             cwd,
             main: Conversation::new("Ready"),
+            voice: super::voice::VoiceUi::default(),
             main_branch_id: 0,
             main_branch_parent_id: None,
             main_branch_request_id: None,

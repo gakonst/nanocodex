@@ -16,6 +16,10 @@ linker = "x86_64-linux-musl-gcc"
 # The guest runtime is a standalone release artifact and must have no interpreter.
 rustflags = [
   "--cfg=libc_unstable_musl_v1_2_3",
+  # Match -static with the non-PIE CRT. Mixing Rust's PIE startup object
+  # with musl-gcc's -static output crashes before main.
+  "-C",
+  "relocation-model=static",
   "-C",
   "link-arg=-static",
 ]

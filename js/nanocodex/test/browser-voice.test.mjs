@@ -26,6 +26,68 @@ test("browser voice exposes Codex's ChatGPT V3 catalog and default", () => {
   assert.throws(() => Voice.create({}), /Nanocodex Agent/);
 });
 
+test("mute applies before capture resolves and is exposed through the public resource", async () => {
+  const fixture = installBrowserVoiceFixture();
+  const calls = [];
+  const { agent } = await testAgent(fakeVoiceCore(calls), calls);
+  let capture;
+  const track = { enabled: true, contentHint: "", addEventListener() {}, stop() { calls.push(["track.stop"]); } };
+  const voice = Voice.create(agent, { captureMicrophone: () => new Promise((resolve) => { capture = resolve; }) });
+  try {
+    const starting = voice.start();
+    voice.setMuted(true);
+    assert.equal(voice.getSnapshot().muted, true);
+    capture({ getAudioTracks: () => [track], getTracks: () => [track] });
+    await starting;
+    assert.equal(track.enabled, false);
+    Actions.voice.toggleMuted(voice);
+    assert.equal(track.enabled, true);
+    assert.equal(voice.getSnapshot().muted, false);
+    await voice.stop();
+    assert.ok(calls.some(([kind]) => kind === "track.stop"));
+  } finally { await voice.destroy(); agent.dispose(); fixture.restore(); }
+});
+
+test("startup requires backend readiness and a connected media peer", async () => {
+  for (const boundary of ["backend", "peer"]) {
+    const fixture = installBrowserVoiceFixture({ boundary, backendReady: boundary !== "backend" });
+    const calls = [];
+    const session = new BrowserVoiceSession({ core: fakeVoiceCore(calls), voice: "cove",
+      captureMicrophone: async () => fakeMicrophone(calls), onStatus() {}, onTranscript() {}, onTerminated() {} });
+    let ready = false;
+    const starting = session.start().then(() => { ready = true; });
+    try {
+      await waitFor(() => calls.some(([kind]) => kind === "sidebandOpened"));
+      assert.equal(ready, false);
+      if (boundary === "backend") fixture.sideband.message({ type: "session.started" });
+      else { fixture.peer.connectionState = "connected"; fixture.peer.emit("connectionstatechange", {}); }
+      await starting;
+      assert.equal(ready, true);
+    } finally { await session.close(); fixture.restore(); }
+  }
+});
+
+test("stopping preserves partial captions and recovers unconfirmed final answers", async () => {
+  const fixture = installBrowserVoiceFixture();
+  const calls = [];
+  const core = fakeVoiceCore(calls, { async stop() { return JSON.stringify({ frames: ['{"type":"session.close"}'], undelivered_answers: ["Saved final answer"] }); } });
+  const { agent } = await testAgent(core, calls);
+  const voice = Voice.create(agent, { captureMicrophone: async () => fakeMicrophone(calls) });
+  const events = [];
+  voice.onEvent((event) => events.push(event));
+  try {
+    await voice.start();
+    fixture.sideband.message({ type: "input_transcript.added", item: { text: "partial" } });
+    await waitFor(() => voice.getSnapshot().transcripts.length > 0);
+    const before = voice.getSnapshot().transcripts[0].text;
+    await voice.stop();
+    assert.equal(voice.getSnapshot().status, "idle");
+    assert.equal(voice.getSnapshot().transcripts[0].text, before);
+    assert.equal(voice.getSnapshot().transcripts.at(-1).text, "Saved final answer");
+    assert.ok(events.some((event) => event.type === "answer.recovered"));
+  } finally { await voice.destroy(); agent.dispose(); fixture.restore(); }
+});
+
 test("starts the call while local ICE gathering is still in progress", async () => {
   const fixture = installBrowserVoiceFixture({ boundary: "ice" });
   const calls = [];
@@ -197,10 +259,8 @@ test("the public managed voice forwards memory updates and durable admission fai
     } });
     await waitFor(() => delegated);
     events.enqueue(new TextEncoder().encode('id: 9007199254740994\nevent: turn_failed\ndata: {"type":"turn_failed","id":"failed-voice-turn","turn_id":"failed-voice-turn","error":"private backend error","cursor":"9007199254740994","created_at":2}\n\n'));
-    await waitFor(() => fixture.sideband.sent.some((encoded) => {
-      const frame = JSON.parse(encoded);
-      return frame.delegation_item_id === "failed-handoff" && frame.content[0].text === "I couldn't complete that request. Please try again.";
-    }));
+    await waitFor(() => voice.getSnapshot().transcripts.some((entry) => entry.recovered && entry.text === "The coding agent could not complete the request."));
+    assert.ok(!fixture.sideband.sent.some((frame) => frame.includes("private backend error")));
   } finally {
     await voice.destroy();
     fixture.restore();
@@ -219,6 +279,7 @@ test("both transcript rows stream while delegation admission is blocked", async 
     },
     async realtimeMessage(payload) {
       const event = JSON.parse(payload);
+      if (event.type === "session.started") return JSON.stringify({ ready: true });
       calls.push(["realtimeMessage", event.type]);
       return JSON.stringify({ frames: [], transcripts: event.transcripts ?? [] });
     },
@@ -840,9 +901,148 @@ test("Rust playback permission follows successful frame delivery and reconnect r
   }
 });
 
+test("audio levels are normalized, muted immediately, and cleared after stop", async () => {
+  const fixture = installBrowserVoiceFixture();
+  let sample;
+  RTCPeerConnection.prototype.getStats = () => new Promise((resolve) => { sample = resolve; });
+  const calls = [];
+  const core = fakeVoiceCore(calls, { sidebandOpened: () => JSON.stringify({ playback_enabled: true }) });
+  const { agent } = await testAgent(core, calls);
+  const voice = Voice.create(agent, { captureMicrophone: async () => fakeMicrophone(calls) });
+  try {
+    await voice.start();
+    sample(new Map([[1, { type: "media-source", kind: "audio", audioLevel: 1.5 }],
+      [2, { type: "inbound-rtp", kind: "audio", audioLevel: 0.4 }]]));
+    await waitFor(() => voice.getSnapshot().microphoneLevel === 1);
+    assert.equal(voice.getSnapshot().speakerLevel, 0.4);
+    voice.setMuted(true);
+    assert.equal(voice.getSnapshot().microphoneLevel, 0);
+    await voice.stop();
+    assert.equal(voice.getSnapshot().speakerLevel, 0);
+    assert.equal(voice.getSnapshot().microphoneLevel, 0);
+  } finally { await voice.destroy(); agent.dispose(); fixture.restore(); }
+});
+
+test("answer recovery promotes an existing caption instead of duplicating it", async () => {
+  const fixture = installBrowserVoiceFixture();
+  const calls = [];
+  const core = fakeVoiceCore(calls, {
+    async realtimeMessage(payload) {
+      if (JSON.parse(payload).type === "session.started") return JSON.stringify({ ready: true });
+      return JSON.stringify({ transcripts: [{ speaker: "assistant", text: "Same answer", id: 0, is_partial: true }] });
+    },
+    async stop() { return JSON.stringify({ undelivered_answers: ["Same answer"] }); },
+  });
+  const { agent } = await testAgent(core, calls);
+  const voice = Voice.create(agent, { captureMicrophone: async () => fakeMicrophone(calls) });
+  try {
+    await voice.start();
+    fixture.sideband.message({ type: "output_transcript.added" });
+    await waitFor(() => voice.getSnapshot().transcripts.length === 1);
+    const id = voice.getSnapshot().transcripts[0].id;
+    await voice.stop();
+    assert.equal(voice.getSnapshot().transcripts.length, 1);
+    assert.equal(voice.getSnapshot().transcripts[0].id, id);
+    assert.equal(voice.getSnapshot().transcripts[0].recovered, true);
+    assert.equal(voice.getSnapshot().transcripts[0].isPartial, false);
+  } finally { await voice.destroy(); agent.dispose(); fixture.restore(); }
+});
+
+test("media timeout retries once after session.close and preserves startup mute", async (t) => {
+  const fixture = installBrowserVoiceFixture({ boundary: "peer" });
+  const timers = new Map();
+  let sequence = 0;
+  t.mock.method(window, "setTimeout", (callback, delay) => {
+    const id = ++sequence; timers.set(id, { callback, delay }); return id;
+  });
+  t.mock.method(window, "clearTimeout", (id) => timers.delete(id));
+  const calls = [];
+  const microphones = [];
+  let firstSideband;
+  const core = fakeVoiceCore(calls, {
+    async callBody(sdp) {
+      if (firstSideband) {
+        assert.ok(firstSideband.sent.some((frame) => JSON.parse(frame).type === "session.close"));
+        assert.equal(firstSideband.readyState, WebSocket.CLOSED);
+      }
+      calls.push(["callBody", sdp]);
+      return JSON.stringify({ sdp });
+    },
+  });
+  const { agent } = await testAgent(core, calls);
+  const voice = Voice.create(agent, { captureMicrophone: async () => {
+    const track = { enabled: true, addEventListener() {}, stop() {} };
+    microphones.push(track);
+    return { getAudioTracks: () => [track], getTracks: () => [track] };
+  } });
+  try {
+    const starting = voice.start();
+    voice.setMuted(true);
+    await waitFor(() => fixture.sideband?.readyState === WebSocket.OPEN && timers.size === 1);
+    firstSideband = fixture.sideband;
+    const firstPeer = fixture.peer;
+    const [id, timer] = [...timers][0];
+    timers.delete(id); timer.callback();
+    await waitFor(() => fixture.peer !== firstPeer);
+    await waitFor(() => fixture.sideband !== firstSideband);
+    assert.equal(microphones.length, 2);
+    assert.equal(microphones[1].enabled, false);
+    fixture.peer.connectionState = "connected";
+    fixture.peer.emit("connectionstatechange", {});
+    await starting;
+    assert.equal(voice.getSnapshot().status, "active");
+    assert.equal(voice.getSnapshot().muted, true);
+    assert.equal(calls.filter(([name]) => name === "callBody").length, 2);
+    await voice.stop();
+    assert.equal(timers.size, 0);
+  } finally { await voice.destroy(); agent.dispose(); fixture.restore(); }
+});
+
+test("a delayed old generation cannot restore playback after typed input", async () => {
+  const fixture = installBrowserVoiceFixture();
+  const calls = [];
+  let release;
+  const core = fakeVoiceCore(calls, {
+    agentEvent: () => new Promise((resolve) => { release = resolve; }),
+    noteTypedInput: () => JSON.stringify({ input_generation: 2, playback_enabled: false }),
+  });
+  const { agent, emitAgentEvent } = await testAgent(core, calls);
+  const voice = Voice.create(agent, { captureMicrophone: async () => fakeMicrophone(calls) });
+  try {
+    await voice.start();
+    emitAgentEvent({ type: "run.completed" });
+    await waitFor(() => release !== undefined);
+    await voice.noteTypedInput();
+    const stale = JSON.stringify({ type: "session.context.append", channel: "speakable" });
+    release(JSON.stringify({ input_generation: 1, playback_enabled: true, frames: [stale] }));
+    await voice.stop();
+    assert.equal(fixture.sideband.sent.includes(stale), false);
+  } finally { await voice.destroy(); agent.dispose(); fixture.restore(); }
+});
+
+test("pending answers are recovered even when remote stop fails", async () => {
+  const fixture = installBrowserVoiceFixture();
+  const calls = [];
+  const core = fakeVoiceCore(calls, {
+    noteTypedInput: () => JSON.stringify({ undelivered_answers: ["Completed result"], playback_enabled: false }),
+    async stop() { throw new Error("remote cleanup failed"); },
+  });
+  const { agent } = await testAgent(core, calls);
+  const voice = Voice.create(agent, { captureMicrophone: async () => fakeMicrophone(calls) });
+  try {
+    await voice.start();
+    await assert.rejects(voice.stop(), /remote cleanup failed/);
+    assert.equal(voice.getSnapshot().transcripts[0].text, "Completed result");
+    assert.equal(voice.getSnapshot().transcripts[0].recovered, true);
+    assert.equal(fixture.peer.connectionState, "closed");
+    assert.equal(fixture.sideband.readyState, WebSocket.CLOSED);
+  } finally { await voice.destroy(); agent.dispose(); fixture.restore(); }
+});
+
 function fakeVoiceCore(calls, overrides = {}) {
   return {
     async configure(settings) { calls.push(["configure", JSON.parse(settings)]); },
+    noteTypedInput() { calls.push(["noteTypedInput"]); return JSON.stringify({ playback_enabled: false }); },
     async start() { calls.push(["start"]); },
     async callBody(sdp) {
       calls.push(["callBody", sdp]);
@@ -878,6 +1078,7 @@ function fakeVoiceCore(calls, overrides = {}) {
       return JSON.parse(payload).type === "delegation.created";
     },
     async realtimeMessage(payload) {
+      if (JSON.parse(payload).type === "session.started") return JSON.stringify({ ready: true });
       calls.push(["realtimeMessage", payload]);
       return JSON.stringify({
         frames: ['{"type":"rust.frame"}'],
@@ -936,7 +1137,7 @@ function fakeMicrophone(calls) {
   };
 }
 
-function installBrowserVoiceFixture({ boundary } = {}) {
+function installBrowserVoiceFixture({ boundary, backendReady = true } = {}) {
   const previous = {
     RTCPeerConnection: globalThis.RTCPeerConnection,
     WebSocket: globalThis.WebSocket,
@@ -952,7 +1153,7 @@ function installBrowserVoiceFixture({ boundary } = {}) {
     sidebandUrls: [],
   };
   class FakePeer {
-    connectionState = "connected";
+    connectionState = boundary === "peer" ? "connecting" : "connected";
     iceGatheringState = boundary === "ice" ? "gathering" : "complete";
     localDescription;
     signalingState = "stable";
@@ -965,7 +1166,7 @@ function installBrowserVoiceFixture({ boundary } = {}) {
     removeEventListener(type, listener) { this.listeners.get(type)?.delete(listener); }
     emit(type, event) { for (const listener of this.listeners.get(type) ?? []) listener(event); }
     addTrack() {}
-    close() { this.signalingState = "closed"; }
+    close() { this.signalingState = "closed"; this.connectionState = "closed"; this.emit("connectionstatechange", {}); }
     createDataChannel() { return { close() {} }; }
     async createOffer() { return { type: "offer", sdp: "v=offer" }; }
     async setLocalDescription(description) { this.localDescription = description; }
@@ -993,7 +1194,10 @@ function installBrowserVoiceFixture({ boundary } = {}) {
       this.listeners.set(type, listeners);
     }
     removeEventListener(type, listener) { this.listeners.get(type)?.delete(listener); }
-    emit(type, event) { for (const listener of this.listeners.get(type) ?? []) listener(event); }
+    emit(type, event) {
+      for (const listener of this.listeners.get(type) ?? []) listener(event);
+      if (type === "open" && backendReady) queueMicrotask(() => this.message({ type: "session.started" }));
+    }
     message(value) { this.emit("message", { data: JSON.stringify(value) }); }
     send(value) { this.sent.push(value); }
     close() {

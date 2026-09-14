@@ -1,6 +1,11 @@
 use criterion::{criterion_group, criterion_main};
 
+#[allow(dead_code, unused_imports)]
+#[path = "../src/tui/voice.rs"]
+mod voice;
+
 mod tui {
+    use super::voice;
     use std::{
         cell::Cell,
         fmt::Write as _,

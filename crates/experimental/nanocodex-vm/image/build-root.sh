@@ -2,7 +2,7 @@
 set -euo pipefail
 image=${1:?Usage: build-root.sh IMAGE OUTPUT.ext4 [SIZE_MIB]}
 output=${2:?Usage: build-root.sh IMAGE OUTPUT.ext4 [SIZE_MIB]}
-size_mib=${3:-2048}
+size_mib=${3:-16384}
 case "$size_mib" in ''|*[!0-9]*) echo 'Expected disk size in MiB' >&2; exit 2 ;; esac
 test "$size_mib" -ge 512
 # Refuse replacement of existing images and evidence, including dangling symlinks.
@@ -22,6 +22,7 @@ trap cleanup EXIT
 packager=$(docker build --quiet --file "$script_dir/Dockerfile.ext4" "$script_dir")
 container=$(docker create "$image")
 docker export "$container" | docker run --rm --interactive --network none \
+  --env "OUTPUT_UID=$(id -u)" --env "OUTPUT_GID=$(id -g)" \
   --mount "type=bind,source=$work,target=/out" "$packager" "$size_mib"
 printf '%s\n' "$(docker image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}}' "$image")" > "$work/source.txt"
 printf '%s  %s\n' "$(awk '{print $1}' "$work/desktop.sha256")" "$output" > "$work/image.sha256"

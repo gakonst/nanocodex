@@ -1,5 +1,15 @@
 import Foundation
 
+public enum ToolOutputVisibility {
+    /// Opening source media supplies model context, not a new user deliverable.
+    public static func isInspection(name: String, arguments: String) -> Bool {
+        let family = name.components(separatedBy: "__").last?.components(separatedBy: ".").last ?? name
+        if ["view_image", "read_image", "open_image", "read_file", "read_session"].contains(family) { return true }
+        guard family == "exec", arguments.range(of: #"\bgeneratedImage\s*\("#, options: .regularExpression) == nil else { return false }
+        return arguments.range(of: #"\b(?:view_image|read_image|open_image)\s*\("#, options: .regularExpression) != nil
+    }
+}
+
 /// Presentation of arbitrary tool payloads. Keep the wire envelope out of the conversation.
 public struct ToolField: Codable, Equatable, Sendable {
     public var label: String
@@ -18,6 +28,14 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
     /// Optional fields keep previously persisted transcripts decodable.
     public var generatedResults: [String]?
     public var generatedIncludesText: Bool?
+    public var generatedIsInspection: Bool?
+    public var isInspectionOutput: Bool {
+        if generatedIsInspection == true { return true }
+        // Old cached rows predate the provenance flag. Their existing title
+        // and retained arguments still identify image inspection on first paint.
+        let name = title == "Run code" ? "exec" : title.lowercased().replacingOccurrences(of: " ", with: "_")
+        return ToolOutputVisibility.isInspection(name: name, arguments: input.map(\.value).joined(separator: "\n"))
+    }
 
     public init(name: String, arguments: JSON, metadata: JSON = .null) {
         var family = metadata["tool_name"].string
@@ -27,6 +45,7 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
         if family.hasPrefix("functions.") { family = String(family.dropFirst(10)) }
         terminalCommand = ["exec_command", "write_stdin"].contains(family)
         generatedIncludesText = ["exec", "wait"].contains(family)
+        generatedIsInspection = ToolOutputVisibility.isInspection(name: family, arguments: arguments.string.isEmpty ? arguments.pretty : arguments.string)
         let names = [
             "exec": "Run code", "exec_command": "Run command", "sandbox_exec": "Run command",
             "write_stdin": "Command progress",
@@ -67,6 +86,7 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
         if !metadata["tool_name"].string.isEmpty || !metadata["toolName"].string.isEmpty {
             let presentation = ToolPresentation(name: "", arguments: .null, metadata: metadata)
             title = presentation.title; generatedIncludesText = presentation.generatedIncludesText
+            generatedIsInspection = generatedIsInspection == true || presentation.generatedIsInspection == true
         }
         var displayedResult = result
         if terminalCommand == true, case .object(var fields) = result {
@@ -84,6 +104,7 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
     mutating func applyCompletion(_ result: Self, metadata: JSON) {
         status = result.status; output = result.output; generatedResults = result.generatedResults
         generatedIncludesText = generatedIncludesText == true || result.generatedIncludesText == true
+        generatedIsInspection = generatedIsInspection == true || result.generatedIsInspection == true
         if !metadata["tool_name"].string.isEmpty || !metadata["toolName"].string.isEmpty { title = result.title }
     }
 

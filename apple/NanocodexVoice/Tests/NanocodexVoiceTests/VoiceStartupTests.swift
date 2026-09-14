@@ -15,10 +15,62 @@ final class VoiceStartupTests: XCTestCase {
             "voice_session_id": request.json["voice_session_id"]!, "operation_id": request.json["operation_id"]!, "context": []
         ]), encoding: .utf8)!, delay: delay)
     }
+    @MainActor func testBackendReadinessIsRequiredEvenAfterPeerAndControlConnect() throws {
+        let voice = VoiceSession()
+        voice.prepareReadinessForTesting(agentID: agent)
+        voice.toggleMute()
+        voice.receivePeerSignalForTesting(.connected)
+        voice.receivePeerSignalForTesting(.controlReady)
+        XCTAssertEqual(voice.phase, .connecting)
+        try voice.receiveRealtimeForTesting(.object(["type": .string("session.started")]))
+        XCTAssertEqual(voice.phase, .active)
+        XCTAssertTrue(voice.isMuted)
+        voice.stop()
+    }
+
+    @MainActor func testTypedInputIsScopedAndSupersededEffectsCannotPublishCaptions() {
+        let voice = VoiceSession()
+        voice.startTranscriptPreview(agentID: agent)
+        voice.noteTypedInput(conversationID: "another-conversation")
+        var first = ManagedVoiceEffects(); first.inputGeneration = 0
+        first.transcripts = [.init(speaker: "assistant", text: "Current caption")]
+        voice.applyEffectsForTesting(first)
+        XCTAssertEqual(voice.transcripts.count, 1)
+        voice.noteTypedInput(conversationID: agent)
+        first.transcripts = [.init(speaker: "assistant", text: "Obsolete caption")]
+        voice.applyEffectsForTesting(first)
+        XCTAssertEqual(voice.transcripts.map(\.text), ["Current caption"])
+        voice.stop()
+    }
+
     @MainActor private func settles(_ voice: VoiceSession, within seconds: Double) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
         while voice.phase == .connecting, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         XCTAssertEqual(voice.phase, .failed)
+    }
+
+    @MainActor func testRetryWaitsForCleanupAndKeepsStartupMute() async throws {
+        var stopSent = false
+        let fixture = try HTTPFixture { request in
+            XCTAssertTrue(request.path.hasSuffix("/stop"))
+            stopSent = true
+            return self.receipt(request, delay: 0.1)
+        }
+        defer { fixture.close() }
+        let transport = try ManagedVoiceTransport(credential: .init(origin: fixture.origin, apiKey: fixtureKey), agentID: agent, configuration: fixture.configuration)
+        let voice = VoiceSession()
+        voice.prepareRoutingForTesting(transport: transport, agentID: agent)
+        voice.toggleMute()
+        let began = ContinuousClock.now
+        voice.retryPreparingForTesting {
+            XCTAssertTrue(stopSent)
+            XCTAssertGreaterThanOrEqual(began.duration(to: .now), .milliseconds(100))
+            XCTAssertTrue(voice.isMuted)
+            throw ManagedError(code: "fixture", message: "Retry prepared after cleanup")
+        }
+        try await settles(voice, within: 1)
+        XCTAssertEqual(voice.errorMessage, "Retry prepared after cleanup")
+        await voice.finishStopping()
     }
 
     @MainActor func testWholeDeadlinePublishesFailureWithoutWaitingForUncooperativeConfiguration() async throws {

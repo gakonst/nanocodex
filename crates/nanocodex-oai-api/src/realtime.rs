@@ -813,6 +813,7 @@ impl RealtimeSession {
 }
 
 /// Builder for one independent GPT Realtime conversation.
+#[derive(Clone)]
 pub struct RealtimeSessionBuilder {
     auth: OpenAiAuth,
     api_base_url: String,

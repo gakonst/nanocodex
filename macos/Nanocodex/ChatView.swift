@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import NanocodexVoice
 import NanocodexUI
+import InboxCore
 
 private struct WorkspaceTabKey: EnvironmentKey { static let defaultValue: String? = nil }
 extension EnvironmentValues {
@@ -170,8 +171,9 @@ struct TranscriptView: View {
                 .overlay(alignment: .bottomTrailing) {
                     if !nearBottom {
                         Button { proxy.scrollTo("bottom", anchor: .bottom) } label: {
-                            Label("Latest", systemImage: "arrow.down").font(.system(size: 12, weight: .medium)).padding(.horizontal, 12).padding(.vertical, 8)
-                        }.buttonStyle(.plain).background(.regularMaterial, in: Capsule()).overlay(Capsule().strokeBorder(Color.primary.opacity(0.08))).padding(15).help("Jump to the latest response")
+                            Label("Latest", systemImage: "arrow.down").labelStyle(.iconOnly)
+                        }.buttonStyle(.bordered).buttonBorderShape(.circle).controlSize(.large)
+                            .padding(15).help("Jump to the latest response")
                     }
                 }
             }
@@ -186,10 +188,19 @@ struct TranscriptView: View {
     }
     private func message(_ entry: MessageEntry) -> some View {
         let id = paneID ?? model.activeTabID
-        return MessageView(entry: entry, isExpanded: model.expandedMessages[id]?.contains(entry.id) == true) { expanded in
-            if expanded { model.expandedMessages[id, default: []].insert(entry.id) }
-            else { model.expandedMessages[id]?.remove(entry.id) }
-        }.equatable()
+        return VStack(alignment: .trailing, spacing: 8) {
+            MessageView(entry: entry, isExpanded: model.expandedMessages[id]?.contains(entry.id) == true) { expanded in
+                if expanded { model.expandedMessages[id, default: []].insert(entry.id) }
+                else { model.expandedMessages[id]?.remove(entry.id) }
+            }.equatable()
+            if entry.kind == .user, let delivery = model.pendingMessages(paneID).first(where: { $0.id == entry.turnId && $0.predecessor.isEmpty && $0.phase == .failed }) {
+                HStack {
+                    Label("Couldn’t confirm delivery", systemImage: "exclamationmark.circle").foregroundStyle(.secondary)
+                    Button("Retry") { Task { await model.retryPending(delivery.id) } }.accessibilityIdentifier("retry-" + delivery.id)
+                    Button("Cancel") { Task { await model.cancelPending(delivery.id) } }.accessibilityIdentifier("cancel-queued-" + delivery.id)
+                }.font(.caption).buttonStyle(.bordered).controlSize(.small).disabled(model.isBusy(paneID))
+            }
+        }
     }
 }
 
@@ -365,46 +376,32 @@ struct NativeActivityView: View {
     let item: NativeConversationItem
     let expandedIDs: Set<String>
     var toggle: (String) -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private var expanded: Bool { expandedIDs.contains(item.id) }
-    private var failures: Int { item.activity.filter { $0.status == "failed" }.count }
-    private var title: String {
-        guard item.isRunning else { return "Activity" }
-        return item.activity.last.map { ($0.kind == .tool && $0.status == "running") || $0.kind == .reasoning ? $0.activityTitle : "Working" } ?? "Working"
+    private var expanded: Binding<Bool> {
+        Binding(get: { expandedIDs.contains(item.id) }, set: { if $0 != expandedIDs.contains(item.id) { toggle(item.id) } })
     }
+    private var failures: Int { item.activity.filter { $0.status == "failed" }.count }
     var body: some View {
-        VStack(spacing: 0) {
-            Button {
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) { toggle(item.id) }
-            } label: {
-                HStack(spacing: 10) {
-                    Group {
+        Group {
+            if item.activity.isEmpty {
+                ProgressView().controlSize(.small).accessibilityLabel("Activity")
+            } else {
+                DisclosureGroup(isExpanded: expanded) {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(item.activity) { entry in
+                                NativeActivityStep(entry: entry, live: item.isRunning && (entry.streaming || entry.status == "running"), expanded: expandedIDs.contains(entry.id)) { toggle(entry.id) }
+                            }
+                        }.padding(.vertical, 8)
+                    }.frame(maxHeight: 300).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("activity-timeline")
+                } label: {
+                    HStack(spacing: 10) {
                         if item.isRunning { ProgressView().controlSize(.mini) }
-                        else { Image(systemName: failures > 0 ? "exclamationmark.circle" : "checkmark").font(.system(size: 11, weight: .medium)) }
-                    }.frame(width: 18, height: 18)
-                    Text(title).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                    Spacer(minLength: 4)
-                    if failures > 0 { Text("\(failures) issue\(failures == 1 ? "" : "s")").foregroundStyle(.orange).font(.system(size: 11)) }
-                    if !item.activity.isEmpty { Text("\(item.activity.count) step\(item.activity.count == 1 ? "" : "s")").font(.system(size: 11)).monospacedDigit() }
-                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).rotationEffect(.degrees(expanded ? 90 : 0))
-                }.foregroundStyle(.secondary).padding(.horizontal, 12).frame(height: 40).contentShape(Rectangle())
-            }.buttonStyle(.plain).help(expanded ? "Hide activity" : "Show thinking and tool activity")
-                .accessibilityIdentifier("activity-disclosure").accessibilityLabel(title)
-                .accessibilityValue("\(item.activity.count) step\(item.activity.count == 1 ? "" : "s"), \(failures) issue\(failures == 1 ? "" : "s"), " + (expanded ? "Expanded" : "Collapsed"))
-            if expanded {
-                Divider().opacity(0.45).padding(.horizontal, 12)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(item.activity) { entry in
-                            NativeActivityStep(entry: entry, live: item.isRunning && (entry.streaming || entry.status == "running"), expanded: expandedIDs.contains(entry.id)) { toggle(entry.id) }
-                        }
-                        if item.activity.isEmpty { Text("Waiting for the first update…").font(.system(size: 12)).foregroundStyle(.secondary).padding(12) }
-                    }.padding(6)
-                }.frame(maxHeight: 300).fixedSize(horizontal: false, vertical: true).accessibilityIdentifier("activity-timeline")
+                        Text("Activity").font(.subheadline)
+                    }.foregroundStyle(.secondary).frame(minHeight: 28)
+                }.accessibilityIdentifier("activity-disclosure").accessibilityLabel("Activity")
+                    .accessibilityHint("\(item.activity.count) steps, \(failures) issues")
             }
-        }.background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.5))
-            .accessibilityElement(children: .contain).accessibilityIdentifier("activity-group")
+        }.accessibilityElement(children: .contain).accessibilityIdentifier("activity-group")
     }
 }
 
@@ -414,42 +411,36 @@ private struct NativeActivityStep: View {
     let expanded: Bool
     var toggle: () -> Void
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button(action: toggle) {
-                HStack(alignment: .top, spacing: 9) {
-                    Image(systemName: entry.status == "failed" ? "exclamationmark.circle" : entry.kind == .tool ? "terminal" : "text.alignleft")
-                        .font(.system(size: 11)).frame(width: 18, height: 18).foregroundStyle(entry.status == "failed" ? Color.orange : .secondary)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(entry.activityTitle).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                        if !entry.activitySubject.isEmpty { Text(entry.activitySubject).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1) }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                    if live { ProgressView().controlSize(.mini) }
-                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(expanded ? 90 : 0)).padding(.top, 3)
-                }.padding(9).contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityIdentifier("activity-step-" + entry.id).accessibilityValue(expanded ? "Expanded" : "Collapsed")
-            if expanded {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
-                        if entry.kind == .tool {
-                            if !entry.text.isEmpty { field("Input", entry.text) }
-                            if !entry.output.isEmpty { field("Result", entry.output) }
-                            if !live, entry.output.isEmpty { Text(entry.status == "cancelled" ? "Stopped" : "Result unavailable").font(.system(size: 12)).foregroundStyle(.secondary) }
-                        } else {
-                            Text(entry.text).font(.system(size: 13)).lineSpacing(4).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }.padding(12)
-                }.frame(maxHeight: 240).fixedSize(horizontal: false, vertical: true)
-                    .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
-                    .padding(.leading, 27).padding(.horizontal, 6).padding(.bottom, 8)
-                    .accessibilityIdentifier("activity-detail-" + entry.id)
-            }
-        }
+        let subject = entry.activitySubject
+        DisclosureGroup(isExpanded: Binding(get: { expanded }, set: { if $0 != expanded { toggle() } })) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if entry.kind == .tool {
+                        if !entry.text.isEmpty { field("Input", entry.text) }
+                        if !entry.output.isEmpty { field("Result", entry.output) }
+                        if !live, entry.output.isEmpty { Text(entry.status == "cancelled" ? "Stopped" : "Result unavailable").font(.subheadline).foregroundStyle(.secondary) }
+                    } else {
+                        Text(entry.text).font(.body).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }.padding(.vertical, 8)
+            }.frame(maxHeight: 240).fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("activity-detail-" + entry.id)
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: entry.status == "failed" ? "exclamationmark.circle" : entry.kind == .tool ? "terminal" : "text.alignleft")
+                    .foregroundStyle(entry.status == "failed" ? Color.orange : .secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(entry.activityTitle).font(.subheadline).lineLimit(1)
+                    if !subject.isEmpty { Text(subject).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                if live { ProgressView().controlSize(.mini) }
+            }.frame(minHeight: 28)
+        }.accessibilityIdentifier("activity-step-" + entry.id)
     }
     private func field(_ title: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-            Text(value).font(.system(size: 12, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text(value).font(.system(.body, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -466,7 +457,14 @@ struct MessageView: View, Equatable {
         Group {
             switch entry.kind {
             case .user:
-                HStack { Spacer(minLength: 80); Text(entry.displayText).font(.system(size: 16)).lineSpacing(5).textSelection(.enabled).padding(.horizontal, 17).padding(.vertical, 12).background(ChatPalette.userBubble, in: RoundedRectangle(cornerRadius: 24)) }.accessibilityIdentifier("user-message")
+                HStack {
+                    Spacer(minLength: 80)
+                    VStack(alignment: .leading, spacing: 10) {
+                        if !entry.displayText.isEmpty { Text(entry.displayText).font(.system(size: 16)).lineSpacing(5).textSelection(.enabled) }
+                        if let attachments = entry.attachments { NativeUserAttachments(input: attachments) }
+                    }.padding(.horizontal, 17).padding(.vertical, 12)
+                        .background(ChatPalette.userBubble, in: RoundedRectangle(cornerRadius: 24))
+                }.accessibilityIdentifier("user-message")
             case .assistant:
                 VStack(alignment: .leading, spacing: 12) {
                     NativeMarkdown(text: entry.text)
@@ -475,7 +473,12 @@ struct MessageView: View, Equatable {
                     }
                 }.accessibilityIdentifier("assistant-message")
             case .reasoning:
-                DisclosureGroup(isExpanded: expanded) { Text(entry.text).font(.system(size: 13)).foregroundStyle(.secondary).textSelection(.enabled).padding(.top, 8) } label: { Label(entry.streaming ? "Thinking…" : "Thought process", systemImage: "sparkle").font(.system(size: 12)).foregroundStyle(.secondary) }
+                DisclosureGroup(isExpanded: expanded) {
+                    Text(entry.text).font(.system(size: 13)).foregroundStyle(.secondary).textSelection(.enabled).padding(.top, 8)
+                } label: {
+                    if entry.streaming { ProgressView().controlSize(.mini).accessibilityLabel("Thinking") }
+                    else { Label("Thought process", systemImage: "sparkle").font(.system(size: 12)).foregroundStyle(.secondary) }
+                }
             case .tool:
                 DisclosureGroup(isExpanded: expanded) {
                     VStack(alignment: .leading, spacing: 12) {
@@ -487,7 +490,7 @@ struct MessageView: View, Equatable {
                         if entry.status == "running" { ProgressView().controlSize(.mini) }
                         else { Image(systemName: entry.status == "completed" ? "checkmark" : "exclamationmark.circle").font(.system(size: 11)) }
                         Text(friendlyTool(entry.name)).font(.system(size: 12, weight: .medium))
-                        Spacer(); Text(entry.status == "running" ? "Running" : "").font(.caption).foregroundStyle(.tertiary)
+                        Spacer()
                     }.foregroundStyle(.secondary)
                 }.padding(12).background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 9))
             case .notice:
@@ -509,12 +512,8 @@ struct MessageView: View, Equatable {
 /// Static placeholders avoid a spinner or shimmer flashing during a quick load.
 private struct ThreadLoadingView: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.045)).frame(width: 210, height: 42).frame(maxWidth: .infinity, alignment: .trailing)
-            ForEach([0.9, 0.75, 0.5], id: \.self) { width in
-                GeometryReader { geometry in Capsule().fill(Color.primary.opacity(0.04)).frame(width: geometry.size.width * width) }.frame(height: 10)
-            }
-        }.padding(.vertical, 12).accessibilityElement(children: .ignore).accessibilityLabel("Loading conversation")
+        ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding(.vertical, 12)
+            .accessibilityLabel("Loading conversation")
             .accessibilityIdentifier("thread-loading")
     }
 }
@@ -531,7 +530,7 @@ struct ComposerView: View {
     @State private var editorFocused = false
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if model.pendingMessages(paneID).contains(where: { !$0.predecessor.isEmpty || $0.phase == .failed }) { PendingMessagesView() }
+            if model.pendingMessages(paneID).contains(where: { !$0.predecessor.isEmpty }) { PendingMessagesView() }
             if let folder = model.tab(paneID)?.folder, !folder.isEmpty {
                 HStack(spacing: 6) { Image(systemName: "folder"); Text(URL(fileURLWithPath: folder).lastPathComponent); Button { model.updateTab(tabID: paneID) { $0.folder = "" } } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }.buttonStyle(.plain) }.font(.system(size: 11)).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.top, 12).help("Shared with this thread when you send")
             }
@@ -592,7 +591,7 @@ struct ComposerView: View {
 struct PendingMessagesView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.workspaceTabID) private var paneID
-    private var messages: [PendingMessage] { model.pendingMessages(paneID).filter { !$0.predecessor.isEmpty || $0.phase == .failed } }
+    private var messages: [PendingMessage] { model.pendingMessages(paneID).filter { !$0.predecessor.isEmpty } }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
@@ -746,5 +745,60 @@ final class ComposerTextView: NSTextView {
         }
         if [36, 76].contains(event.keyCode), !event.modifierFlags.contains(.shift), !hasMarkedText() { submit?(); return }
         super.keyDown(with: event)
+    }
+}
+
+private struct NativeUserAttachments: View {
+    let input: TranscriptInput
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.workspaceTabID) private var paneID
+    @State private var inline: [ChatGeneratedOutput] = []
+    var body: some View {
+        let agentID = model.tab(paneID)?.threadId ?? ""
+        VStack(alignment: .leading, spacing: 10) {
+            ChatGeneratedOutputs(outputs: inline)
+            ForEach(input.imageFiles) { attachment in
+                NativeUserImage(attachment: attachment, agentID: agentID)
+            }
+            ForEach(input.videos) { video in
+                ChatMediaPreview(load: {
+                    if video.path != nil { return [try await model.videoFile(video, agentID: agentID)] }
+                    var urls: [URL] = []
+                    do {
+                        for image in video.images { urls.append(try await ChatMediaFile.inline(image)) }
+                        return urls
+                    } catch { for url in urls { try? FileManager.default.removeItem(at: url) }; throw error }
+                }) {
+                    Label(video.name, systemImage: "play.rectangle").frame(minHeight: 32)
+                }.accessibilityIdentifier("message-video")
+            }
+        }.task(id: input.images) {
+            let images = input.images
+            let parsed = await Task.detached(priority: .utility) {
+                let content = images.map { ["type": "image", "image_url": $0, "title": "Photo"] }
+                guard let data = try? JSONSerialization.data(withJSONObject: content), let text = String(data: data, encoding: .utf8) else { return [ChatGeneratedOutput]() }
+                return ChatGeneratedOutput.parse(results: [text])
+            }.value
+            guard !Task.isCancelled else { return }; inline = parsed
+        }
+    }
+}
+
+private struct NativeUserImage: View {
+    let attachment: MessageAttachment
+    let agentID: String
+    @EnvironmentObject private var model: AppModel
+    @State private var image: NSImage?
+    var body: some View {
+        ChatMediaPreview(load: { [try await model.attachmentFile(attachment, agentID: agentID)] }) {
+            Group {
+                if let image { Image(nsImage: image).resizable().aspectRatio(contentMode: .fit).frame(maxWidth: 320, maxHeight: 220) }
+                else { Label(attachment.name, systemImage: "photo").frame(minHeight: 32) }
+            }.accessibilityLabel("Open " + attachment.name)
+        }.accessibilityIdentifier("message-image")
+            .task(id: attachment.id) {
+                image = nil
+                if let bytes = try? await model.attachmentPreview(attachment, agentID: agentID), !Task.isCancelled { image = NSImage(data: bytes) }
+            }
     }
 }

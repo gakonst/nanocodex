@@ -536,6 +536,9 @@
 
 .agent-touch-actions button svg { width: 17px; height: 17px; stroke-width: 2; }
 .agent-touch-actions .agent-voice-button svg { fill: currentColor; }
+.agent-touch-actions .agent-voice-mute-button { width: auto; padding: 0 8px; font: inherit; }
+.agent-voice-mute-button[aria-pressed="true"] { color: var(--terminal-negative, #b42318); }
+.agent-voice-level { align-self: center; width: 28px; min-width: 20px; height: 8px; margin: 0 3px; }
 .agent-voice-select {
   max-width: 90px;
   min-height: 36px;

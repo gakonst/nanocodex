@@ -23,6 +23,9 @@ extend-ignore-re = ['\b(?:req|resp|sess)_[0-9a-f]+\b', '\b[0-9a-f]{16}-[A-Z]{3}\
 extend-ignore-re = ['\bwaymote-streamd\b']
 
 [default.extend-words]
+# Mesa's OpenGL-over-Vulkan driver.
+zink = "zink"
+Zink = "Zink"
 # The Rust and Swift voice transcript parsers recognize this legacy XML tag.
 soruce = "soruce"
 ratatui = "ratatui"

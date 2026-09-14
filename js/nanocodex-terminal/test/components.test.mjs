@@ -168,6 +168,8 @@ function voiceSnapshot(overrides = {}) {
     error: undefined,
     status: "idle",
     statusText: undefined,
+    muted: false, microphoneLevel: 0, speakerLevel: 0,
+    setMuted() {}, toggleMuted() {}, noteTypedInput: async () => {},
     transcripts: [],
     voice: undefined,
     isActive: false,
@@ -181,6 +183,20 @@ function voiceSnapshot(overrides = {}) {
     ...overrides,
   };
 }
+
+test("voice exposes microphone mute and independent audio meters while connecting", async () => {
+  let toggles = 0;
+  let renderer;
+  await act(async () => { renderer = TestRenderer.create(React.createElement(VoiceControl, { agentReady: true,
+    voice: voiceSnapshot({ isConnecting: true, status: "connecting", muted: true, microphoneLevel: 0, speakerLevel: 0.4,
+      toggleMuted() { toggles += 1; } }) })); });
+  const mute = renderer.root.findByProps({ "aria-label": "Unmute microphone" });
+  assert.equal(mute.props["aria-pressed"], true);
+  await act(async () => mute.props.onClick());
+  assert.equal(toggles, 1);
+  assert.equal(renderer.root.findByProps({ "aria-label": "Speaker level" }).props.value, 0.4);
+  await act(async () => renderer.unmount());
+});
 
 test("ready voice control separates transport, coding-turn cancel, status, and failure actions", async () => {
   const calls = [];

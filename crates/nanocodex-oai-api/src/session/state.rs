@@ -215,7 +215,7 @@ impl ManagedSessionState {
     /// Usage baseline needed to preserve compaction decisions across recovery.
     #[doc(hidden)]
     #[must_use]
-    pub fn context_usage(&self) -> (Option<&Usage>, bool) {
+    pub const fn context_usage(&self) -> (Option<&Usage>, bool) {
         (
             self.context.last_token_usage.as_ref(),
             self.server_reasoning_included,

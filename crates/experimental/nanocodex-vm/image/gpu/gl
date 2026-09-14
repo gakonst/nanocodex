@@ -1,0 +1,23 @@
+#!/bin/sh
+# Opt-in hardware OpenGL. Keep newer applications on the ordinary GL driver
+# when they require features this Vulkan portability device cannot implement.
+set -eu
+if [ "$#" = 0 ]; then
+  echo 'Usage: nanocodex-gpu-gl PROGRAM [ARGUMENTS...]' >&2
+  exit 2
+fi
+runtime=/run/nanocodex-hand-desktop
+if [ -z "${DISPLAY:-}" ] && [ -f "$runtime/ready" ]; then
+  DISPLAY=$(sed -n 's/.*"display":"\([^"]*\)".*/\1/p' "$runtime/ready")
+  export DISPLAY
+fi
+if [ -z "${XAUTHORITY:-}" ] && [ -f "$runtime/Xauthority" ]; then
+  XAUTHORITY=$runtime/Xauthority
+  export XAUTHORITY
+fi
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-$runtime}
+unset LIBGL_ALWAYS_SOFTWARE MESA_LOADER_DRIVER_OVERRIDE
+export LD_LIBRARY_PATH=/opt/nanocodex-gpu-gl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+export LIBGL_DRIVERS_PATH=/opt/nanocodex-gpu-gl/lib/dri
+export GALLIUM_DRIVER=zink LIBGL_KOPPER_DISABLE=true
+exec "$@"

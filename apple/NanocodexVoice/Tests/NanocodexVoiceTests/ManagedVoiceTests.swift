@@ -5,6 +5,58 @@ import InboxCore
 final class ManagedVoiceTests: XCTestCase {
     private let agent = "019d2f5d-7491-8000-8000-000000000001"
 
+    func testNativeHandoffsUseCompletedFinalsAndRecoverUnconfirmedSpeech() throws {
+        let voice = try ManagedVoiceProtocol()
+        _ = voice.realtimeMessage(.object(["type": .string("delegation.created"), "item": .object([
+            "type": .string("delegation"), "target": .string("client"), "id": .string("native-final"),
+            "content": .array([.object(["type": .string("input_text"), "text": .string("Check the build")])])])]))
+        XCTAssertTrue(voice.agentEvent(.object(["type": .string("assistant.message"), "payload": .object([
+            "text": .string("Private progress"), "phase": .string("commentary")])])).frames.isEmpty)
+        XCTAssertTrue(voice.agentEvent(.object(["type": .string("assistant.message"), "payload": .object([
+            "text": .string("Build passed"), "phase": .string("final_answer")])])).frames.isEmpty)
+        let final = voice.agentEvent(.object(["type": .string("run.completed")]))
+        XCTAssertEqual(final.frames.first?["channel"].string, "speakable")
+        voice.framesSent(final.frames.count)
+        let typed = voice.noteTypedInput()
+        XCTAssertEqual(typed.undeliveredAnswers, ["Build passed"])
+        XCTAssertEqual(typed.playbackEnabled, false)
+        XCTAssertNotNil(typed.inputGeneration)
+        XCTAssertTrue(voice.sidebandOpened().frames.isEmpty)
+        XCTAssertEqual(voice.sidebandOpened().playbackEnabled, false)
+        XCTAssertTrue(voice.closeEffects().undeliveredAnswers.isEmpty)
+    }
+
+    @MainActor func testRecoverySurvivesStopAndPromotesTheMatchingCaption() {
+        let voice = VoiceSession()
+        voice.startTranscriptPreview(agentID: agent)
+        voice.receiveTranscriptPreview(.object(["type": .string("output_transcript.added"), "item": .object(["text": .string("Completed answer")])]))
+        let id = voice.transcripts.first?.id
+        var effects = ManagedVoiceEffects(); effects.undeliveredAnswers = ["Completed answer"]
+        voice.applyEffectsForTesting(effects)
+        voice.stop()
+        XCTAssertEqual(voice.transcripts.count, 1)
+        XCTAssertEqual(voice.transcripts.first?.id, id)
+        XCTAssertEqual(voice.transcripts.first?.isPartial, false)
+        XCTAssertEqual(voice.transcripts.first?.recovered, true)
+        XCTAssertEqual(voice.transcriptFeed.conversations[agent]?.first?.text, "Completed answer")
+    }
+
+    func testKnownEventCursorOpensStreamWithoutAStateRoundTrip() async throws {
+        let opened = expectation(description: "Events opened from existing cursor")
+        let fixture = try HTTPFixture { request in
+            XCTAssertTrue(request.path.contains("/events"), "Known cursors do not need a state GET")
+            XCTAssertEqual(request.query, "cursor=42")
+            opened.fulfill()
+            return .init(headers: ["Content-Type": "text/event-stream"], body: ": keepalive\n\n", delay: 1)
+        }
+        defer { fixture.close() }
+        let transport = try ManagedVoiceTransport(credential: .init(origin: fixture.origin, apiKey: fixtureKey), agentID: agent, configuration: fixture.configuration)
+        let stream = try await transport.events(after: "42")
+        await fulfillment(of: [opened], timeout: 1)
+        await transport.close()
+        _ = stream
+    }
+
     func testPrefetchUsesTheBoundedReadEndpointWithoutTurnAdmission() async throws {
         let session = ManagedVoiceProtocol.sessionID()
         var requests: [FixtureRequest] = []
@@ -49,10 +101,11 @@ final class ManagedVoiceTests: XCTestCase {
         XCTAssertFalse(input.contains("voice_bootstrap"))
         XCTAssertTrue(input.contains("Search saved memory for the birthday"))
         XCTAssertTrue(input.contains("Elena's birthday?"))
-        let result = voice.agentEvent(.object(["type": .string("assistant.message"), "payload": .object([
+        let intermediate = voice.agentEvent(.object(["type": .string("assistant.message"), "payload": .object([
             "text": .string("The saved date is December 22.")
         ])]))
-        XCTAssertEqual(voice.sidebandOpened().playbackEnabled, true)
+        XCTAssertTrue(intermediate.frames.isEmpty)
+        let result = voice.agentEvent(.object(["type": .string("run.completed")]))
         XCTAssertFalse(result.frames.isEmpty)
         XCTAssertEqual(voice.sidebandOpened().frames, result.frames)
         voice.framesSent(result.frames.count)
@@ -73,8 +126,10 @@ final class ManagedVoiceTests: XCTestCase {
         voice.framesSent(1)
         XCTAssertTrue(voice.sidebandOpened().frames.isEmpty)
         let reply = voice.agentEvent(.object(["type": .string("assistant.message"), "payload": .object(["text": .string("Saved it.")])]))
-        XCTAssertEqual(reply.frames.first?["type"].string, "delegation.context.append")
-        XCTAssertEqual(reply.frames.first?["delegation_item_id"].string, "lookup")
+        XCTAssertTrue(reply.frames.isEmpty)
+        let completed = voice.agentEvent(.object(["type": .string("run.completed")]))
+        XCTAssertEqual(completed.frames.first?["type"].string, "session.context.append")
+        XCTAssertEqual(completed.frames.first?["channel"].string, "speakable")
         let longContext = String(repeating: "🦊", count: 4096)
         XCTAssertEqual(voice.context(longContext).frames.map { $0["content"].array[0]["text"].string }.joined(), longContext)
     }
@@ -392,7 +447,7 @@ final class ManagedVoiceTests: XCTestCase {
     func testUTF8ChunksHeadTailBoundsAndReconnectReplay() throws {
         let voice = try ManagedVoiceProtocol()
         let unicode = String(repeating: "a", count: 499) + String(repeating: "e\u{301}🦀", count: 200)
-        let frames = voice.agentEvent(.object(["type": .string("assistant.message"), "payload": .object(["text": .string(unicode)])])).frames
+        let frames = try voice.appendSpeech(unicode).frames
         let chunks = frames.map { $0["content"].array[0]["text"].string }
         XCTAssertTrue(chunks.allSatisfy { $0.utf8.count <= 500 }); XCTAssertEqual(chunks.joined(), unicode)
         XCTAssertEqual(voice.sidebandOpened().frames, frames); voice.framesSent(frames.count)
@@ -402,7 +457,7 @@ final class ManagedVoiceTests: XCTestCase {
         _ = voice.agentEvent(.object(["type": .string("run.started")]))
         _ = voice.agentEvent(.object(["type": .string("assistant.delta"), "payload": .object(["text": .string("START" + String(repeating: "x", count: 10_000) + "END")])]))
         let output = (voice.flush().frames + voice.flush(final: true).frames).map { $0["content"].array[0]["text"].string }.joined()
-        XCTAssertLessThanOrEqual(output.utf8.count, 4_000); XCTAssertTrue(output.hasPrefix("START")); XCTAssertTrue(output.hasSuffix("END")); XCTAssertTrue(output.contains("output truncated"))
+        XCTAssertTrue(output.isEmpty, "Intermediate coding output never becomes automatic speech")
         let context: JSON = .object(["history": .array([.object(["role": .string("user"), "content": .array([.object(["text": .string("Continue this durable task")])])]), .object(["role": .string("system"), "content": .array([.object(["text": .string("private non-chat metadata")])])])])])
         let instructions = ManagedVoiceProtocol.instructions(context: context)
         XCTAssertTrue(instructions.contains("Continue this durable task")); XCTAssertFalse(instructions.contains("private non-chat metadata"))
@@ -526,10 +581,12 @@ final class ManagedVoiceTests: XCTestCase {
         try voice.receiveRealtimeForTesting(.object(["type": .string("delegation.created"), "item": .object([
             "type": .string("delegation"), "target": .string("client"), "id": .string("next-delegation"),
             "content": .array([.object(["type": .string("input_text"), "text": .string("Then save this note")])])])]))
-        voice.stop(); await voice.finishStopping()
+        voice.stop()
+        let stopped = voice.transcripts
+        await voice.finishStopping()
         await fulfillment(of: [queued], timeout: 2)
         XCTAssertEqual(voice.phase, .ended)
-        XCTAssertTrue(voice.transcripts.isEmpty, "A late admission must not restore the ended conversation")
+        XCTAssertEqual(voice.transcripts, stopped, "A late admission cannot alter retained captions")
     }
 }
 

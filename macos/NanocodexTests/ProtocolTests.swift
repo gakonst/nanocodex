@@ -1316,7 +1316,7 @@ final class ProtocolTests: XCTestCase {
         let outputs = items.flatMap(\.generatedOutputs)
         XCTAssertEqual(outputs.filter { $0.kind == .image }.count, 1, "The inner MCP image and outer exec input_image must render only once")
         XCTAssertEqual(outputs.filter { $0.kind == .file }.count, 1, "The structured result's file survives alongside the raw result's media")
-        XCTAssertTrue(outputs.contains { $0.kind == .text && $0.text.contains("Generated preview") })
+        XCTAssertFalse(outputs.contains { $0.kind == .text }, "Tool text stays in Activity instead of becoming assistant prose")
         XCTAssertTrue(items.contains { !$0.activity.isEmpty }, "Tool diagnostics remain available in Activity")
         XCTAssertTrue(items.filter { !$0.generatedOutputs.isEmpty }.allSatisfy { $0.activity.isEmpty }, "Emitted content must remain visible outside the collapsed Activity group")
         XCTAssertTrue(rows.filter { $0.kind == .tool }.allSatisfy { !$0.output.contains(png) }, "Binary media must never be printed as diagnostics")
@@ -1330,6 +1330,24 @@ final class ProtocolTests: XCTestCase {
         let trimmed = [events[0], delta]
         XCTAssertEqual(cache.project(trimmed), projectTimeline(trimmed), "Trimming history releases obsolete tool outputs")
         XCTAssertTrue(cache.project(trimmed).allSatisfy { $0.generatedOutputs.isEmpty })
+    }
+
+    func testUserMediaAndInspectedFramesStayOutOfGeneratedReplies() {
+        let source = "data:image/png;base64,aGVsbG8="
+        let input: JSONValue = .array([
+            .object(["type": .string("input_text"), "text": .string("Please inspect this")]),
+            .object(["type": .string("input_image"), "image_url": .string(source)])
+        ])
+        let events: [ManagedEvent] = [
+            .init(cursor: "1", turnId: "media", data: .object(["type": .string("turn_accepted"), "input": input])),
+            .init(cursor: "2", turnId: "media", data: .object(["type": .string("event"), "event": .object(["type": .string("tool.call"), "payload": .object(["call_id": .string("inspect"), "tool": .string("view_image"), "arguments": .object(["path": .string("frame.png")])])])])),
+            .init(cursor: "3", turnId: "media", data: .object(["type": .string("event"), "event": .object(["type": .string("tool.result"), "payload": .object(["call_id": .string("inspect"), "result": .object(["type": .string("image"), "image_url": .string(source)])])])]))
+        ]
+        let rows = projectTimeline(events)
+        XCTAssertEqual(rows.first?.text, "Please inspect this")
+        XCTAssertEqual(rows.first?.attachments?.images, [source])
+        XCTAssertTrue(rows.flatMap(\.generatedOutputs).isEmpty)
+        XCTAssertEqual(rows.filter { $0.kind == .tool }.count, 1)
     }
 
     private static func generatedOutputEvents(png: String) throws -> [ManagedEvent] {

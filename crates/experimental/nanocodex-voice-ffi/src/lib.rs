@@ -34,9 +34,10 @@ pub unsafe extern "C" fn nc_voice_create(bytes: *const u8, length: usize) -> u64
     let Some(voice) = (unsafe { input(bytes, length) }) else {
         return 0;
     };
-    let Ok(protocol) = ManagedVoiceProtocol::new(voice) else {
+    let Ok(mut protocol) = ManagedVoiceProtocol::new(voice) else {
         return 0;
     };
+    protocol.enable_client_managed_handoffs();
     let Ok(mut voices) = VOICES.lock() else {
         return 0;
     };

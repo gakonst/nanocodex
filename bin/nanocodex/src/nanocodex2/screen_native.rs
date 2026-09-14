@@ -173,7 +173,7 @@ pub(crate) async fn serve(
     )
     .await?;
     eprintln!("Hand screen is ready");
-    let result = super::native_hand::shutdown_signal().await;
+    let result = super::service::shutdown_signal().await;
     let stopped = screen.shutdown().await;
     result.and(stopped)
 }

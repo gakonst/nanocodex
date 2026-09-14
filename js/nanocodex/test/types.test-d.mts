@@ -43,9 +43,13 @@ import {
 } from "../index.mjs";
 import type { WorkspaceEntry as BrowserWorkspaceEntry } from "../browser/workspace.mjs";
 import type { WorkspaceEntry as NodeWorkspaceEntry } from "../node/workspace.mjs";
-import type { Event as VoiceEvent, Transcript as VoiceTranscript } from "../browser/Voice.mjs";
+import type { Event as VoiceEvent, Transcript as VoiceTranscript, Voice as VoiceResource } from "../browser/Voice.mjs";
 
 function checkVoiceTranscript(event: VoiceEvent, transcript: VoiceTranscript) {
+  if (event.type === "answer.recovered") {
+    const recovered: true = event.recovered;
+    void recovered;
+  }
   const speaker: "user" | "assistant" = transcript.speaker;
   if (event.type === "transcript.delta") {
     const id: string = event.id;
@@ -665,3 +669,12 @@ async function check() {
 }
 
 void check;
+
+function checkVoiceControls(voice: VoiceResource) {
+  voice.setMuted(true);
+  voice.toggleMuted();
+  const muted: boolean = voice.getSnapshot().muted;
+  const level: number = voice.getSnapshot().microphoneLevel;
+  const fence: Promise<void> = voice.noteTypedInput();
+  void muted; void level; void fence;
+}

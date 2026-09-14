@@ -25,15 +25,15 @@ final class PendingMessageTests: XCTestCase {
         XCTAssertEqual(try restored.submission.requestSpec().body?["input"].string, original.input)
         XCTAssertEqual(restored.contextIDs, ["capture-a"])
     }
-    func testForceOnlyCancelsCapturedPredecessor() throws {
+    func testSteeringCapturesPredecessorWithoutStoppingIt() throws {
         var message = PendingMessage(agentID: "agent-a", input: "New direction", predecessor: "old", id: "queued")
         XCTAssertNil(message.interruption)
         message.phase = .queued
         let spec = try XCTUnwrap(message.interruption).requestSpec()
-        XCTAssertEqual(spec.path, "/v1/agents/agent-a/turns/old/cancel")
-        XCTAssertNil(spec.body)
+        XCTAssertEqual(spec.path, "/v1/agents/agent-a/turns/old/steer")
+        XCTAssertEqual(spec.body, .object(["input": .string("New direction"), "message_id": .string("queued")]))
         message.phase = .starting
-        XCTAssertNil(message.interruption, "Repeated force taps cannot start another cancellation")
+        XCTAssertNil(message.interruption, "Repeated taps cannot dispatch another steer")
         message.restore()
         XCTAssertNil(message.interruption, "Relaunch must not turn an in-flight control into a fresh steer")
         XCTAssertEqual(message.phase, .starting)
@@ -42,7 +42,7 @@ final class PendingMessageTests: XCTestCase {
         var selfTarget = PendingMessage(agentID: "a", input: "x", predecessor: "same", id: "same")
         selfTarget.phase = .queued; XCTAssertNil(selfTarget.interruption)
     }
-    func testSteeringUsesQueueOrderAndNeverCancelsItsOwnOrNewerTurn() throws {
+    func testSteeringUsesQueueOrderAndNeverTargetsItsOwnOrNewerTurn() throws {
         var message = PendingMessage(agentID: "a", input: "Correction", predecessor: "finished", id: "queued")
         message.phase = .queued
         XCTAssertEqual(message.interruption(activeTurns: ["current", "queued"])?.turnID, "current")

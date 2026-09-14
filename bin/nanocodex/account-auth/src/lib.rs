@@ -325,7 +325,16 @@ pub fn managed_url_from_environment(fallback: Option<&str>) -> Result<String> {
 pub fn client_from_environment(
     fallback: Option<&str>,
 ) -> std::result::Result<ManagedClient, ManagedError> {
-    let resolve = || -> Result<(String, ManagedApiKey)> {
+    let (origin, key) = enrollment_credentials(fallback)?;
+    ManagedClient::new(origin, ManagedApiKey::parse(key.to_string())?)
+}
+
+/// Resolve credentials for an explicitly requested host enrollment over SSH.
+/// The returned secret must travel over stdin, never argv, logs, or a transcript.
+pub fn enrollment_credentials(
+    fallback: Option<&str>,
+) -> std::result::Result<(String, zeroize::Zeroizing<String>), ManagedError> {
+    let resolve = || -> Result<(String, zeroize::Zeroizing<String>)> {
         let origin = managed_url_from_environment(fallback)?;
         // An explicit environment key never requires a local credential file.
         let key = if let Some((key, _)) = env_key()? {
@@ -334,13 +343,10 @@ pub fn client_from_environment(
             resolve_key(&origin, &store::default_path()?)?.map(|(key, _)| key)
                 .ok_or_else(|| Error::message("No account login for this origin; run nanocodex2 login (or nanocodex account login), or set NANOCODEX_API_KEY / NC_API_KEY to an account-issued ncx_live key"))?
         };
-        let key = ManagedApiKey::parse(key.to_string())
-            .map_err(|_| Error::message("Invalid account API key"))?;
+        validate_key(&key)?;
         Ok((origin, key))
     };
-    let (origin, key) =
-        resolve().map_err(|error| ManagedError::Configuration(error.to_string()))?;
-    ManagedClient::new(origin, key)
+    resolve().map_err(|error| ManagedError::Configuration(error.to_string()))
 }
 
 fn resolve_key(

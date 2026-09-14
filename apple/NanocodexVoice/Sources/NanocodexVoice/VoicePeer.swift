@@ -96,6 +96,9 @@ final class VoicePeer: NSObject, RTCPeerConnectionDelegate, RTCDataChannelDelega
 
     private func prepare() throws -> RTCPeerConnection {
         guard !isClosed else { throw CancellationError() }
+        #if os(iOS)
+        try configureAudioSession()
+        #endif
         let configuration = RTCConfiguration()
         configuration.sdpSemantics = .unifiedPlan
         configuration.bundlePolicy = .maxBundle
@@ -123,18 +126,25 @@ final class VoicePeer: NSObject, RTCPeerConnectionDelegate, RTCDataChannelDelega
             return true
         }
         guard accepted else { connection.close(); throw CancellationError() }
-        #if os(iOS)
+        return connection
+    }
+
+    #if os(iOS)
+    /// Configure before creating tracks so device startup uses the intended
+    /// voice processing rate and 10 ms device blocks from its first callback.
+    private func configureAudioSession() throws {
         let session = RTCAudioSession.sharedInstance()
         session.lockForConfiguration()
         defer { session.unlockForConfiguration() }
         let audio = RTCAudioSessionConfiguration.webRTC()
+        audio.sampleRate = 48_000
+        audio.ioBufferDuration = 0.010
         audio.category = AVAudioSession.Category.playAndRecord.rawValue
         audio.mode = AVAudioSession.Mode.voiceChat.rawValue
         audio.categoryOptions = [.defaultToSpeaker, .allowBluetooth]
         try session.setConfiguration(audio)
-        #endif
-        return connection
     }
+    #endif
 
     func answer(_ sdp: String) async throws {
         guard let connection = lock.withLock({ closed ? nil : peer }) else { throw CancellationError() }
@@ -293,11 +303,12 @@ final class VoicePeer: NSObject, RTCPeerConnectionDelegate, RTCDataChannelDelega
 }
 
 enum VoiceFailure: LocalizedError {
-    case microphone, connection, interrupted
+    case microphone, connection, interrupted, mediaTimeout
     var errorDescription: String? {
         switch self {
         case .microphone: "Allow Microphone access in Settings to talk with Nanocodex."
         case .connection: "Voice could not connect. Check your connection and try again."
+        case .mediaTimeout: "Voice media did not connect in time. Please try again."
         case .interrupted: "Voice was interrupted. Tap Start voice when you’re ready."
         }
     }
