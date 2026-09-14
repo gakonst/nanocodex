@@ -11,7 +11,7 @@ final class FlipperRPCWireTests: XCTestCase {
         XCTAssertEqual(requests.count, 3)
 
         var stream = requests.reduce(into: Data()) { $0.append($1) }
-        let tail = stream.suffix(7)
+        let tail = Data(stream.suffix(7))
         stream.removeLast(7)
         let first = try FlipperRPCWire.takeMessages(from: &stream)
         XCTAssertEqual(first.count, 2)

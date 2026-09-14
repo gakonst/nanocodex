@@ -150,7 +150,7 @@ enum FlipperRPCWire {
             guard let (length, prefixBytes) = try lengthPrefix(in: buffer) else { break }
             guard length <= maximumFrameBytes else { throw FlipperRPCWireError.oversized }
             guard buffer.count >= prefixBytes + length else { break }
-            result.append(buffer.subdata(in: prefixBytes..<(prefixBytes + length)))
+            result.append(Data(buffer.dropFirst(prefixBytes).prefix(length)))
             buffer.removeFirst(prefixBytes + length)
         }
         return result
