@@ -98,6 +98,16 @@ document, series field, or object. Pagination plus object reads is also the port
 export path: logical keys and content are exposed, while physical Durable Object IDs,
 R2 keys, and broker secrets are not.
 
+Before the first managed deployment, create the R2 bucket referenced by the checked-in
+Worker configuration:
+
+```sh
+pnpm --dir js/managed exec wrangler r2 bucket create nanocodex-user-data
+```
+
+The `v9` Worker migration creates the `UserDataScope` Durable Object class during the
+normal managed deployment.
+
 ## WHOOP case study
 
 [`gakonst/life`](https://github.com/gakonst/life) demonstrates a device integration.
