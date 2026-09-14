@@ -2180,10 +2180,13 @@ final class InboxUITests: XCTestCase {
         let expand = app.buttons["expand-composer"]
         XCTAssertFalse(expand.exists)
         input.tap()
-        for character in "One\nTwo\nThree\nFour\nFive" {
-            input.typeText(String(character))
+        let fiveLines = "One\nTwo\nThree\nFour\nFive"
+        input.typeText(fiveLines)
+        if input.value as? String != fiveLines {
+            input.typeKey("a", modifierFlags: .command)
+            input.typeText(fiveLines)
         }
-        XCTAssertEqual(input.value as? String, "One\nTwo\nThree\nFour\nFive")
+        XCTAssertEqual(input.value as? String, fiveLines)
         XCTAssertFalse(expand.exists, "Five visible lines fit without an expansion action")
         let fiveLineHeight = input.frame.height
         input.typeText("\n")

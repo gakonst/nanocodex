@@ -210,9 +210,12 @@ final class ContextUITests: XCTestCase {
             XCTAssertTrue(more.waitForExistence(timeout: 20), safari.debugDescription)
             // Safari's floating toolbar can report an invalid automatic hit
             // point even when its accessibility frame is on screen.
-            more.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            for _ in 0..<3 {
+                more.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+                if share.waitForExistence(timeout: 8) { break }
+            }
         }
-        XCTAssertTrue(share.waitForExistence(timeout: 15), safari.debugDescription)
+        XCTAssertTrue(share.exists, safari.debugDescription)
         let shareReady = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: share)
         XCTAssertEqual(XCTWaiter.wait(for: [shareReady], timeout: 30), .completed, safari.debugDescription)
         share.tap()
