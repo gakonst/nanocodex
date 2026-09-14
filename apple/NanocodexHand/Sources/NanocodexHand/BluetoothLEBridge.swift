@@ -125,7 +125,7 @@ public final class BluetoothLEBridge: NSObject {
         try Task.checkCancellation()
         return discoveries.values.map(\.device).filter { device in
             guard let namePrefix, !namePrefix.isEmpty else { return true }
-            return device.name.localizedCaseInsensitiveHasPrefix(namePrefix)
+            return device.name.range(of: namePrefix, options: [.anchored, .caseInsensitive, .diacriticInsensitive]) != nil
         }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
