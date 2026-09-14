@@ -1,4 +1,5 @@
 import Foundation
+import InboxCore
 import XCTest
 @testable import NanocodexHand
 
