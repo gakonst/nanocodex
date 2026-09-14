@@ -131,7 +131,7 @@ reqwest = { version = "0.13.4", default-features = false, features = ["json", "r
 reqwest-middleware = "0.5.2"
 rtnetlink = "0.21.0"
 rustix = { version = "1.1.4", features = ["thread"] }
-rustls = { version = "0.23.42", default-features = false, features = ["ring"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring"] }
 regex = "1"
 rusqlite = { version = "0.38", features = ["bundled"] }
 seccompiler = "0.5.0"
