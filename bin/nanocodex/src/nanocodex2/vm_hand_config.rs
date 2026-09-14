@@ -175,17 +175,22 @@ mod tests {
             "/opt/chrome",
         ]);
         assert!(browser.browser);
-        assert_eq!(browser.browser_executable, Some(PathBuf::from("/opt/chrome")));
-        assert!(crate::Cli::try_parse_from([
-            "nanocodex2",
-            "hand",
-            "--docker",
-            "image",
-            "--volume",
-            "work",
-            "--browser-executable",
-            "/opt/chrome",
-        ])
-        .is_err());
+        assert_eq!(
+            browser.browser_executable,
+            Some(PathBuf::from("/opt/chrome"))
+        );
+        assert!(
+            crate::Cli::try_parse_from([
+                "nanocodex2",
+                "hand",
+                "--docker",
+                "image",
+                "--volume",
+                "work",
+                "--browser-executable",
+                "/opt/chrome",
+            ])
+            .is_err()
+        );
     }
 }

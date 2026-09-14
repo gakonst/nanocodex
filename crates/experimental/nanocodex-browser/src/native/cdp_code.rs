@@ -285,10 +285,16 @@ impl Tool for CdpSearchTool {
     }
 
     async fn execute(&self, input: ToolInput, _context: ToolContext<'_>) -> ToolResult {
-        let query = input.decode_json::<QueryInput>()?.query.to_ascii_lowercase();
+        let query = input
+            .decode_json::<QueryInput>()?
+            .query
+            .to_ascii_lowercase();
         let methods = [
             ("cdp.send", "Send one allowlisted raw CDP command."),
-            ("cdp.attachToTarget", "Attach to a target returned by Target.getTargets."),
+            (
+                "cdp.attachToTarget",
+                "Attach to a target returned by Target.getTargets.",
+            ),
             ("cdp.spec", "List the allowlisted CDP domains and commands."),
         ]
         .into_iter()
@@ -375,8 +381,9 @@ pub(super) fn validate_code(code: &str) -> Result<(), BrowserError> {
     ];
     if forbidden.iter().any(|term| normalized.contains(term)) {
         return Err(BrowserError::BrowserExecute {
-            message: "browser code requested a credential-bearing or unrestricted runtime capability"
-                .to_owned(),
+            message:
+                "browser code requested a credential-bearing or unrestricted runtime capability"
+                    .to_owned(),
         });
     }
     Ok(())
@@ -484,7 +491,11 @@ text(__browserResult);
 
 fn return_last_expression(source: &str) -> String {
     let trimmed = source.trim_end();
-    if trimmed.is_empty() || trimmed.lines().any(|line| line.trim_start().starts_with("return ")) {
+    if trimmed.is_empty()
+        || trimmed
+            .lines()
+            .any(|line| line.trim_start().starts_with("return "))
+    {
         return source.to_owned();
     }
     let Some((prefix, last)) = trimmed.rsplit_once('\n') else {
@@ -493,8 +504,23 @@ fn return_last_expression(source: &str) -> String {
     };
     let expression = last.trim().trim_end_matches(';').trim();
     let declaration = [
-        "const ", "let ", "var ", "if ", "if(", "for ", "for(", "while ", "while(",
-        "switch ", "switch(", "try ", "throw ", "class ", "function ", "{", "}",
+        "const ",
+        "let ",
+        "var ",
+        "if ",
+        "if(",
+        "for ",
+        "for(",
+        "while ",
+        "while(",
+        "switch ",
+        "switch(",
+        "try ",
+        "throw ",
+        "class ",
+        "function ",
+        "{",
+        "}",
     ]
     .iter()
     .any(|prefix| expression.starts_with(prefix));
@@ -633,7 +659,9 @@ mod tests {
         assert!(validate_code("return cdp.getLiveViewUrl()").is_err());
         assert!(validate_command("DOM.getDocument", &json!({})).is_ok());
         assert!(validate_command("Network.getAllCookies", &json!({})).is_err());
-        assert!(validate_command("Page.navigate", &json!({ "url": "file:///etc/passwd" })).is_err());
+        assert!(
+            validate_command("Page.navigate", &json!({ "url": "file:///etc/passwd" })).is_err()
+        );
     }
 
     #[test]

@@ -216,12 +216,8 @@ pub(crate) async fn serve(client: &ManagedClient, command: NativeHand) -> Result
     } else {
         None
     };
-    let state = NativeState::open_with_browser(
-        &command.workspace,
-        &directory,
-        name,
-        browser.is_some(),
-    )?;
+    let state =
+        NativeState::open_with_browser(&command.workspace, &directory, name, browser.is_some())?;
     let target = client.account_attachment_target()?;
     let screen = match super::screen_native::NativeScreen::start(
         &target,
@@ -277,9 +273,7 @@ async fn run_with_browser(
     if let Some(browser) = browser {
         tools = tools.tool(BrowserExecuteTool::from_browser(browser));
     }
-    let tools = tools
-        .build()
-        .map_err(configuration)?;
+    let tools = tools.build().map_err(configuration)?;
     let (attachment, mut events) = tools
         .attach(target)
         .metadata(AttachmentMetadata::machine(state.machine.clone()))
@@ -361,15 +355,17 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(cli.command, Some(crate::Command::NativeHand(_))));
-        assert!(crate::Cli::try_parse_from([
-            "nanocodex2",
-            "native-hand",
-            "--workspace",
-            ".",
-            "--browser-executable",
-            "/opt/chrome",
-        ])
-        .is_err());
+        assert!(
+            crate::Cli::try_parse_from([
+                "nanocodex2",
+                "native-hand",
+                "--workspace",
+                ".",
+                "--browser-executable",
+                "/opt/chrome",
+            ])
+            .is_err()
+        );
         let cli = crate::Cli::try_parse_from([
             "nanocodex2",
             "native-hand",
@@ -384,7 +380,10 @@ mod tests {
             panic!("expected native Hand");
         };
         assert!(command.browser);
-        assert_eq!(command.browser_executable, Some(PathBuf::from("/opt/chrome")));
+        assert_eq!(
+            command.browser_executable,
+            Some(PathBuf::from("/opt/chrome"))
+        );
     }
 
     #[test]
@@ -399,7 +398,12 @@ mod tests {
         )
         .unwrap();
         let machine = serde_json::to_value(&state.machine).unwrap();
-        assert!(machine["capabilities"].as_array().unwrap().contains(&json!("browser")));
+        assert!(
+            machine["capabilities"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("browser"))
+        );
         assert!(
             machine["capabilities"]
                 .as_array()

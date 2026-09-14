@@ -392,9 +392,10 @@ impl VmHand {
         }
         drop(self.tools);
         let browser = match self.browser.take() {
-            Some(browser) => browser.close().await.map_err(|error| {
-                configuration(format!("failed to close Hand browser: {error}"))
-            }),
+            Some(browser) => browser
+                .close()
+                .await
+                .map_err(|error| configuration(format!("failed to close Hand browser: {error}"))),
             None => Ok(()),
         };
         let started_at = Instant::now();
@@ -416,9 +417,7 @@ impl VmHand {
         match (browser, workspace) {
             (Ok(()), Ok(())) => Ok(()),
             (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-            (Err(browser), Err(workspace)) => Err(configuration(format!(
-                "{browser}; {workspace}"
-            ))),
+            (Err(browser), Err(workspace)) => Err(configuration(format!("{browser}; {workspace}"))),
         }
     }
 }
