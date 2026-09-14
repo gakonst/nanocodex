@@ -451,7 +451,7 @@ public final class FlipperZeroBridge: NSObject {
     }
 }
 
-extension FlipperZeroBridge: CBCentralManagerDelegate {
+extension FlipperZeroBridge: @preconcurrency CBCentralManagerDelegate {
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
         if central.state != .poweredOn, peripheral != nil {
             failConnection(FlipperZeroBridgeError.bluetoothUnavailable("CoreBluetooth state changed"))
@@ -487,7 +487,7 @@ extension FlipperZeroBridge: CBCentralManagerDelegate {
     }
 }
 
-extension FlipperZeroBridge: CBPeripheralDelegate {
+extension FlipperZeroBridge: @preconcurrency CBPeripheralDelegate {
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard error == nil else { return failConnection(FlipperZeroBridgeError.connectionFailed(error!.localizedDescription)) }
         peripheral.services?.forEach { peripheral.discoverCharacteristics(nil, for: $0) }
