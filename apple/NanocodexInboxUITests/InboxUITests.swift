@@ -76,6 +76,37 @@ final class InboxUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Loaded saved conversation."].exists)
         XCTAssertTrue(app.buttons["browser-tab:other"].isSelected)
     }
+    func testConnectorCenterShowsMultipleAccountsAndSearchesAvailableProviders() {
+        let app = startupFixture()
+        XCTAssertTrue(app.buttons["browser-tab:saved"].waitForExistence(timeout: 15))
+        app.buttons["app-menu"].tap()
+        app.buttons["Account settings"].tap()
+        let connectors = app.buttons["account-connectors"]
+        XCTAssertTrue(connectors.waitForExistence(timeout: 5))
+        connectors.tap()
+
+        XCTAssertTrue(app.descendants(matching: .any)["connectors-list"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["connector-connected:google"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["2 accounts"].exists)
+        XCTAssertTrue(app.buttons["connector-available:slack"].exists)
+        capture(app, "mobile-connectors-multiple-accounts")
+
+        app.buttons["connector-connected:google"].tap()
+        XCTAssertTrue(app.staticTexts["georgios@paradigm.xyz"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["me@gakonst.com"].exists)
+        XCTAssertTrue(app.buttons["connector-add-account"].exists)
+        app.buttons["Revoke"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["Revoke account"].waitForExistence(timeout: 3))
+        app.buttons["Cancel"].tap()
+        capture(app, "mobile-connector-account-detail")
+
+        app.navigationBars.buttons.firstMatch.tap()
+        let search = app.searchFields["Search connectors"]
+        XCTAssertTrue(search.waitForExistence(timeout: 3))
+        search.tap(); search.typeText("Slack")
+        XCTAssertTrue(app.buttons["connector-available:slack"].exists)
+        XCTAssertFalse(app.buttons["connector-connected:google"].exists)
+    }
     func testOverviewClosesAndReopensTabWithoutDeletingConversation() {
         let app = startupFixture()
         XCTAssertTrue(app.buttons["browser-tab:saved"].waitForExistence(timeout: 20))

@@ -61,7 +61,10 @@ export function buildGoogleAuthorizationUrl(input: AuthorizationInput): URL {
     code_challenge: input.codeChallenge,
     code_challenge_method: "S256",
     access_type: "offline",
-    prompt: "consent",
+    // Always expose Google's account chooser. Re-running Connect is the native
+    // and web "Add another account" path, so silently reusing the last browser
+    // identity would make multi-account connection unreliable.
+    prompt: "consent select_account",
     include_granted_scopes: "true",
     enable_granular_consent: "true",
     ...(input.loginHint === undefined ? {} : {

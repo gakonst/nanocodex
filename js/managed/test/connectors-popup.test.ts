@@ -4,7 +4,13 @@ import {
   verifyLocalMcpOAuthRelayState,
 } from "nanocodex-vite/oauth-relay";
 
-import { mcpCallbackCompletionPage, publicMcpStartResponse } from "../src/connectors";
+import {
+  connectorCompletionPage,
+  connectorMobileCompletion,
+  connectorResultReturnTo,
+  mcpCallbackCompletionPage,
+  publicMcpStartResponse,
+} from "../src/connectors";
 
 const connectionId = "m".repeat(43);
 const state = "s".repeat(43);
@@ -78,4 +84,54 @@ describe("managed MCP OAuth popup completion", () => {
       expect(html).not.toContain("window.close();");
     },
   );
+});
+
+describe("native connector OAuth completion", () => {
+  it("correlates the HTTPS callback without projecting OAuth material", async () => {
+    const returnTo = connectorResultReturnTo(
+      "/v1/connectors/mobile-complete?attempt=6f3eec23-8a1a-4de4-b498-1689a2829ca0",
+      new URL("https://nanocodex.example/v1/connectors/google/callback?code=private&state=private"),
+      "google",
+      "connected",
+    );
+    const response = connectorCompletionPage(requestUrl, "google", "connected", returnTo);
+    const html = await response.text();
+
+    expect(returnTo).toBe(
+      "/v1/connectors/mobile-complete?attempt=6f3eec23-8a1a-4de4-b498-1689a2829ca0&connector=google&connector_result=connected",
+    );
+    expect(html).toContain("https://nanocodex.example/v1/connectors/mobile-complete?");
+    expect(html).not.toMatch(/code=private|state=private|access_token|refresh_token/);
+  });
+
+  it("keeps callback destinations on the managed origin", () => {
+    expect(connectorResultReturnTo(
+      "https://evil.example/steal",
+      new URL("https://nanocodex.example/v1/connectors/google/callback"),
+      "google",
+      "failed",
+    )).toBe("/");
+  });
+
+  it("bridges a validated, secret-free result to the native app scheme", () => {
+    const attempt = "6f3eec23-8a1a-4de4-b498-1689a2829ca0";
+    const response = connectorMobileCompletion(new URL(
+      `https://nanocodex.example/v1/connectors/mobile-complete?attempt=${attempt}&connector=google&connector_result=connected`,
+    ));
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(
+      `nanocodex://connectors/complete?attempt=${attempt}&connector=google&connector_result=connected`,
+    );
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("rejects extra OAuth material and malformed native results", () => {
+    expect(connectorMobileCompletion(new URL(
+      "https://nanocodex.example/v1/connectors/mobile-complete?attempt=bad&connector=google&connector_result=connected",
+    )).status).toBe(400);
+    expect(connectorMobileCompletion(new URL(
+      "https://nanocodex.example/v1/connectors/mobile-complete?attempt=6f3eec23-8a1a-4de4-b498-1689a2829ca0&connector=google&connector_result=connected&code=private",
+    )).status).toBe(400);
+  });
 });

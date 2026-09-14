@@ -368,6 +368,14 @@ struct InboxView: View {
             Section("Account") {
                 Text(model.isDemo ? "Demo · sample agents" : model.connection == "Sign in again" ? "Sign in again to reconnect your account." : "Nanocodex account connected")
                 Text("Agents keep running when you switch conversations or close the app.").foregroundStyle(.secondary)
+                if !model.isDemo {
+                    NavigationLink {
+                        ConnectorsView(model: model)
+                    } label: {
+                        Label("Connectors", systemImage: "link")
+                    }
+                    .accessibilityIdentifier("account-connectors")
+                }
                 Button(model.isDemo ? "Connect account" : model.connection == "Sign in again" ? "Sign in again" : "Disconnect account") {
                     do { try model.disconnect(); showSettings = false } catch { model.error = error.localizedDescription }
                 }

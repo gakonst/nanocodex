@@ -87,6 +87,7 @@ describe("provider-neutral connector identities", () => {
       clientId: "client", redirectUri, state: "state", codeChallenge: "A".repeat(43),
     });
     expect(authorization.searchParams.get("scope")?.split(" ")).toEqual(GOOGLE_PROVIDER.scopes);
+    expect(authorization.searchParams.get("prompt")?.split(" ")).toEqual(["consent", "select_account"]);
     expect(Object.keys(GOOGLE_CAPABILITIES)).toEqual([
       "gmail", "gdrive", "gcalendar", "gtasks", "gdocs", "gsheets", "gslides", "gcontacts",
     ]);

@@ -20,6 +20,7 @@ import {
 import { canonicalRemoteMcpTarget } from "../../mcp-target.mjs";
 import {
   connectorConnectionId,
+  CONNECTOR_PROVIDER_CATALOG,
   connectorProviderId,
   type ConnectorProviderId,
 } from "./connector-status";
@@ -84,6 +85,11 @@ export async function routeConnectorRequest(
   env: ConnectorEnv,
   url: URL,
 ): Promise<Response | undefined> {
+  if (url.pathname === "/v1/connectors/mobile-complete") {
+    if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
+    return connectorMobileCompletion(url);
+  }
+
   if (url.pathname === "/v1/connectors/mcp-connections") {
     if ((request.method !== "GET" && request.method !== "POST") || url.search) {
       return json({ error: "method_not_allowed" }, 405);
@@ -213,6 +219,13 @@ export async function routeConnectorRequest(
     });
   }
 
+  if (url.pathname === "/v1/connectors/catalog") {
+    if (request.method !== "GET" || url.search) return json({ error: "method_not_allowed" }, 405);
+    const principal = await authenticatePersistentAccount(request, env, url);
+    if (!principal) return json({ error: "unauthorized" }, 401);
+    return json({ providers: CONNECTOR_PROVIDER_CATALOG }, 200);
+  }
+
   if (url.pathname === "/v1/connectors") {
     if (request.method !== "GET" || url.search) return json({ error: "method_not_allowed" }, 405);
     const principal = await authenticatePersistentAccount(request, env, url);
@@ -316,11 +329,12 @@ async function finishCallback(
     return connectorCompletionPage(requestUrl, connector, "failed");
   }
   const returnTo = safeReturnTo(value.return_to, requestUrl);
+  const result = response.ok ? value.connected === true ? "connected" : "cancelled" : "failed";
   return connectorCompletionPage(
     requestUrl,
     connector,
-    response.ok ? value.connected === true ? "connected" : "cancelled" : "failed",
-    returnTo,
+    result,
+    returnTo === undefined ? undefined : connectorResultReturnTo(returnTo, requestUrl, connector, result),
   );
 }
 
@@ -342,7 +356,7 @@ function safeReturnTo(value: string, requestUrl: URL): string | undefined {
   return resolved.origin === requestUrl.origin ? `${resolved.pathname}${resolved.search}` : undefined;
 }
 
-function connectorCompletionPage(
+export function connectorCompletionPage(
   requestUrl: URL,
   connector: ConnectorRouteId,
   result: "connected" | "cancelled" | "failed",
@@ -373,6 +387,46 @@ function connectorCompletionPage(
       "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
       "content-type": "text/html; charset=utf-8",
       "cross-origin-opener-policy": "unsafe-none",
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
+
+export function connectorResultReturnTo(
+  returnTo: string,
+  requestUrl: URL,
+  connector: ConnectorRouteId,
+  result: "connected" | "cancelled" | "failed",
+): string {
+  const safe = safeReturnTo(returnTo, requestUrl);
+  if (!safe) return "/";
+  const destination = new URL(safe, requestUrl.origin);
+  destination.searchParams.set("connector", connector);
+  destination.searchParams.set("connector_result", result);
+  return `${destination.pathname}${destination.search}`;
+}
+
+export function connectorMobileCompletion(url: URL): Response {
+  const attempt = url.searchParams.get("attempt");
+  const connector = url.searchParams.get("connector");
+  const provider = connectorProviderId(connector);
+  const result = url.searchParams.get("connector_result");
+  if ([...url.searchParams].length !== 3
+    || !attempt || !UUID.test(attempt)
+    || !connector || provider !== connector
+    || (result !== "connected" && result !== "cancelled" && result !== "failed")) {
+    return json({ error: "invalid_request" }, 400);
+  }
+  const callback = new URL("nanocodex://connectors/complete");
+  callback.searchParams.set("attempt", attempt);
+  callback.searchParams.set("connector", connector);
+  callback.searchParams.set("connector_result", result);
+  return new Response(null, {
+    status: 303,
+    headers: {
+      "cache-control": "no-store",
+      location: callback.href,
       "referrer-policy": "no-referrer",
       "x-content-type-options": "nosniff",
     },

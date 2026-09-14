@@ -14,6 +14,47 @@ export const CONNECTOR_CAPABILITY_IDS = [
 
 export const CONNECTOR_PROVIDER_IDS = ["github", "google", "slack", "x"] as const;
 
+export const CONNECTOR_PROVIDER_CATALOG = Object.freeze([
+  {
+    id: "github",
+    name: "GitHub",
+    description: "Repositories, issues, pull requests, and workflows",
+    capabilities: Object.freeze([{ id: "github", name: "GitHub" }]),
+  },
+  {
+    id: "google",
+    name: "Google Workspace",
+    description: "Mail, files, calendars, tasks, documents, and contacts",
+    capabilities: Object.freeze([
+      { id: "gmail", name: "Gmail" },
+      { id: "gcalendar", name: "Google Calendar" },
+      { id: "gcontacts", name: "Google Contacts" },
+      { id: "gdocs", name: "Google Docs" },
+      { id: "gdrive", name: "Google Drive" },
+      { id: "gsheets", name: "Google Sheets" },
+      { id: "gslides", name: "Google Slides" },
+      { id: "gtasks", name: "Google Tasks" },
+    ]),
+  },
+  {
+    id: "slack",
+    name: "Slack",
+    description: "Messages, channels, search, and connected workspaces",
+    capabilities: Object.freeze([{ id: "slack", name: "Slack" }]),
+  },
+  {
+    id: "x",
+    name: "X",
+    description: "Posts, messages, follows, likes, bookmarks, and lists",
+    capabilities: Object.freeze([{ id: "x", name: "X" }]),
+  },
+] as const satisfies ReadonlyArray<Readonly<{
+  id: ConnectorProviderId;
+  name: string;
+  description: string;
+  capabilities: readonly Readonly<{ id: ConnectorCapabilityId; name: string }>[];
+}>>);
+
 export type ConnectorCapabilityId = typeof CONNECTOR_CAPABILITY_IDS[number];
 export type ConnectorProviderId = typeof CONNECTOR_PROVIDER_IDS[number];
 export type ConnectorConnection = Readonly<{

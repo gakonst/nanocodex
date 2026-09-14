@@ -703,6 +703,18 @@ final class InboxModel: ObservableObject {
         agentNotifications.update(account: "", threads: [], foreground: false)
         reset()
     }
+    func connectorOverview() async throws -> ConnectorOverview {
+        guard let client, connected, !isDemo else { throw APIError.invalidResponse }
+        return try await client.connectorOverview()
+    }
+    func beginConnectorAuthorization(_ provider: String) async throws -> ConnectorAuthorization {
+        guard let client, connected, !isDemo else { throw APIError.invalidResponse }
+        return try await client.beginConnectorAuthorization(provider: provider)
+    }
+    func disconnectConnector(_ provider: String, connectionID: String) async throws {
+        guard let client, connected, !isDemo else { throw APIError.invalidResponse }
+        try await client.disconnectConnector(provider: provider, connectionID: connectionID)
+    }
     private func reset() {
         agentNotificationUpdate?.cancel(); agentNotificationUpdate = nil
         stopOverview()
