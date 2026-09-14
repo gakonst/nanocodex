@@ -72,6 +72,7 @@ impl Drop for NativeStateLock {
 }
 
 impl NativeState {
+    #[cfg(test)]
     fn open(workspace: &Path, directory: &Path, name: String) -> Result<Self, ManagedError> {
         Self::open_with_browser(workspace, directory, name, false)
     }
@@ -251,6 +252,7 @@ pub(crate) async fn serve(client: &ManagedClient, command: NativeHand) -> Result
     result.and(stopped).and(browser_stopped)
 }
 
+#[cfg(test)]
 async fn run(
     target: AttachmentTarget,
     state: NativeState,
