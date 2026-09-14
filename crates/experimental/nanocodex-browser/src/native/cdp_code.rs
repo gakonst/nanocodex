@@ -2,9 +2,8 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use chromiumoxide::{
-    Connection,
-    cdp::{EventMessage, Method, MethodId},
-    types::{CallId, Message},
+    Connection, Method,
+    types::{CallId, EventMessage, Message, MethodId},
 };
 use futures_util::StreamExt as _;
 use nanocodex_tools::{
