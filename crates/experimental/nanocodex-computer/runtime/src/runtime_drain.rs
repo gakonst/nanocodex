@@ -4,7 +4,6 @@
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-const LIMIT: usize = 1024;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Proof {
@@ -12,12 +11,7 @@ pub(crate) struct Proof {
 }
 impl Proof {
     pub fn validate(&self) -> Result<()> {
-        if self.continuations.len() > LIMIT
-            || self
-                .continuations
-                .iter()
-                .any(|v| v.is_empty() || v.len() > 256)
-        {
+        if self.continuations.iter().any(String::is_empty) {
             return Err(Error::invalid("Invalid native drain proof"));
         }
         Ok(())
@@ -61,10 +55,8 @@ impl Registry {
         Ok(self.next)
     }
     pub fn request(&mut self) -> Result<u32> {
-        if self.cell.is_none() || self.requests.len() >= LIMIT {
-            return Err(Error::action(
-                "Native continuation budget exceeded or cell ended",
-            ));
+        if self.cell.is_none() {
+            return Err(Error::action("Native cell ended"));
         }
         let id = self.id()?;
         self.requests.insert(
@@ -80,10 +72,8 @@ impl Registry {
         self.requests.contains_key(&request)
     }
     pub fn register(&mut self, cell: u64, request: Option<u32>) -> Result<u32> {
-        if self.cell != Some(cell) || self.obligations.len() >= LIMIT {
-            return Err(Error::action(
-                "Native obligation budget exceeded or cell ended",
-            ));
+        if self.cell != Some(cell) {
+            return Err(Error::action("Native cell ended"));
         }
         let id = self.id()?;
         let request = request.filter(|id| self.requests.contains_key(id));

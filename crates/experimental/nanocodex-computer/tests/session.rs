@@ -55,7 +55,7 @@ fn validates_code_and_timeout_at_the_transport_boundary() {
             timeout_ms: 1
         }
         .validate()
-        .is_err()
+        .is_ok()
     );
 }
 
@@ -167,6 +167,39 @@ async fn conversation_state_reset_and_screenshots_cross_the_real_process_boundar
         .await
         .unwrap();
     assert!(reset.structured_result().to_string().contains("undefined"));
+}
+
+#[tokio::test]
+#[ignore = "requires built CUA companion; pnpm test:computer runs this"]
+async fn independent_conversations_execute_in_parallel() {
+    let computer = fixture();
+    let js = computer.js();
+    let left = js.clone();
+    let right = js.clone();
+    left.execute(input("nodeRepl.write('warm');"), context("parallel-left"))
+        .await
+        .unwrap();
+    right
+        .execute(input("nodeRepl.write('warm');"), context("parallel-right"))
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    let (left, right) = tokio::join!(
+        left.execute(
+            input("await new Promise(resolve=>setTimeout(resolve,1000));nodeRepl.write('left');"),
+            context("parallel-left"),
+        ),
+        right.execute(
+            input("await new Promise(resolve=>setTimeout(resolve,1000));nodeRepl.write('right');"),
+            context("parallel-right"),
+        ),
+    );
+    assert!(left.unwrap().success);
+    assert!(right.unwrap().success);
+    assert!(
+        started.elapsed() < Duration::from_millis(1750),
+        "independent CUA conversations were serialized"
+    );
 }
 
 #[tokio::test]

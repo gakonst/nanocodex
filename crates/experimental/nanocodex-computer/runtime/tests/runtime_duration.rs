@@ -159,25 +159,20 @@ fn queued_host_requests_yield_to_submitted_microtasks_and_remain_fifo() {
 }
 
 #[test]
-fn queued_calls_are_bounded_before_dispatch_and_timeout_discards_pending_actions() {
+fn queued_calls_accept_large_inputs_and_timeout_discards_pending_actions() {
     for backend in RuntimeBackend::available() {
         let calls = Rc::new(RefCell::new(vec![]));
         let mut host = host(backend, calls.clone());
         host.evaluate("0", Duration::from_secs(3)).unwrap();
         calls.borrow_mut().clear();
-        let result=host.evaluate("let tooLarge;try{await nodeRepl.rpc('owned',{text:'x'.repeat(4*1024*1024)})}catch(error){tooLarge=error.message};tooLarge",Duration::from_secs(3)).unwrap();
-        assert_eq!(
-            result["value"], "Pending host requests exceed the 1024 call / 4 MiB budget",
-            "{backend:?}: {result}"
-        );
-        assert!(calls.borrow().is_empty());
-        let result=host.evaluate("let refusals=0;for(let i=0;i<1100;i++){nodeRepl.rpc('owned',{delay:0}).catch(()=>{refusals++})}",Duration::from_secs(10)).unwrap();
-        assert!(result.get("error").is_none(), "{backend:?}: {result}");
-        assert_eq!(calls.borrow().len(), 1024);
-        assert_eq!(
-            host.evaluate("refusals", Duration::from_secs(3)).unwrap()["value"],
-            76
-        );
+        let result = host
+            .evaluate(
+                "await nodeRepl.rpc('owned',{text:'x'.repeat(4*1024*1024)})",
+                Duration::from_secs(3),
+            )
+            .unwrap();
+        assert_eq!(result["value"], 42, "{backend:?}: {result}");
+        assert_eq!(calls.borrow().as_slice(), ["owned.rpc"]);
         calls.borrow_mut().clear();
         let result = host
             .evaluate(

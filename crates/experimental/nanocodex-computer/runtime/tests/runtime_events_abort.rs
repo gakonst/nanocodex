@@ -269,8 +269,8 @@ var closed=registrationKind==='interval'?(await iterator.next()).done:null;
                     "before":1024,"afterRegistration":1024,"afterCount":1024,
                     "list":1024,"sameListeners":true,"maximum":0,
                     "outcome":{"status":"rejected","name":"Error","message":"Abort listener budget exceeded"},
-                    "beforeSettlement":{"allocatedCount":1024,"capacityError":"Invalid timeout or too many timers"},
-                    "afterSettlement":{"allocatedCount":1024,"capacityError":"Invalid timeout or too many timers"},
+                    "beforeSettlement":{"allocatedCount":1025,"capacityError":Value::Null},
+                    "afterSettlement":{"allocatedCount":1025,"capacityError":Value::Null},
                     "callbackCalls":0,"closed":if kind == "interval" {json!(true)} else {Value::Null},
                     "aborted":false
                 }),

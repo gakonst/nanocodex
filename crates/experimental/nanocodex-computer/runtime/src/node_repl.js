@@ -17,7 +17,6 @@
     const suspend = cellActive() && suspensionDepth > 0 && suspensionCell === cell;
     // Queueing captures authority; only the Rust dispatcher suspends its actual
     // blocking provider call. No user JavaScript executes in a suspended phase.
-    ensureOperationCapacity();
     const raw=rawHostRpc(method,request,suspend);
     return deriveOperation(raw,apply(promiseResolve,promiseConstructor,[trackOperation(raw)]));
   };
@@ -33,8 +32,7 @@
     let parentCount = 0;
     const copy = (value, depth) => {
       if (value === null || typeof value !== 'object') return value;
-      if (depth > 128) throw new TypeError('Private host record is cyclic or exceeds the nesting limit');
-      for (let i = 0; i < parentCount; i++) if (parents[i] === value) throw new TypeError('Private host record is cyclic or exceeds the nesting limit');
+      for (let i = 0; i < parentCount; i++) if (parents[i] === value) throw new TypeError('Private host record is cyclic');
       parents[parentCount++] = value;
       const fields = descriptors(value), result = isArray(value) ? [] : createObject(null);
       if (isArray(value)) setPrototypeOf(result, null);
@@ -76,7 +74,6 @@
   function packet(bytes, mimeType) {
     if (!bytes.byteLength) throw new Error('nodeRepl.emitImage expected non-empty bytes');
     if (typeof mimeType !== 'string' || !mimeType) throw new Error('nodeRepl.emitImage expected a non-empty mimeType');
-    if (bytes.byteLength > 3 * 1024 * 1024) throw new Error('Image exceeds the bounded 3 MiB image budget');
     return {data: encode(bytes), mime_type: mimeType};
   }
   const unwrap = (value, parser = parseJson) => {
@@ -203,12 +200,10 @@
   });
   const pending = createObject(null);
   let nextOperation = 0;
-  const ensureOperationCapacity=()=>{if(ownKeys(pending).length>=1024)throw new Error('Too many pending runtime operations');};
   const trackOperation = value => {
     const operation = apply(promiseResolve, promiseConstructor, [value]);
     const observation = {observed:false};
     const id = ++nextOperation;
-    ensureOperationCapacity();
     const nativeId = registerOperation(operation);
     pending[id] = apply(promiseThen, operation, [()=>{finishOperation(nativeId);return {ok:true,observation};},error=>{finishOperation(nativeId);return {ok:false,error,observation};}]);
     return {
@@ -265,7 +260,6 @@
       try { serialized = JSON.stringify(request); } catch { return rejectedThenable(new Error('nodeRepl.rpc expected a JSON-serializable request')); }
       if (serialized === undefined) return rejectedThenable(new Error('nodeRepl.rpc expected a JSON-serializable request'));
       try {
-        ensureOperationCapacity();
         return trackOperation(apply(promiseThen,apply(promiseResolve,promiseConstructor,[rawHostRpc(service+'.rpc',serialized,false)]),[unwrap]));
       } catch(error) { return rejectedThenable(error); }
     }

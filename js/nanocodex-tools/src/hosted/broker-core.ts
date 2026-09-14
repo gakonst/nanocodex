@@ -1,7 +1,5 @@
 import {
-  HOSTED_TOOL_CALL_TIMEOUT_MS,
   HOSTED_TOOLS_LEASE_MS,
-  MAX_HOSTED_TOOL_OUTPUT_BYTES,
   HostedToolsProtocolError,
   parseHostedToolsHostFrame,
   parseHostedToolsManagedFrame,
@@ -23,10 +21,7 @@ import type { ToolContext } from "../../tools/types.mjs";
 
 const SOCKET_TAG = "hosted-tools";
 const INVALID_CONNECT_GRANT_ID = "invalid-connect-grant";
-const DEFAULT_MAX_IN_FLIGHT = 64;
 const OPEN = 1;
-const MAX_RETAINED_RECEIPTS = 512;
-const MAX_CALLS_PER_GENERATION = 512;
 const REVOKED_ROUTE_LEASE_EXPIRES_AT = -1;
 const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
 const LEGACY_ROUTE_ID = "$legacy";
@@ -227,7 +222,6 @@ export interface HostedToolsBrokerPersistence {
   markGenerationAmbiguous(leaseId: string, generation: number, resultJson: string, now: number): void;
   activeCallCount(leaseId: string, generation: number): number;
   generationCallCount(leaseId: string, generation: number): number;
-  pruneReceipts(limit: number): void;
 }
 
 export type HostedToolsBrokerCoreOptions = Readonly<{
@@ -291,15 +285,13 @@ export class HostedToolsBrokerCore {
   ) {
     this.#now = options.now ?? Date.now;
     this.#randomUUID = options.randomUUID ?? (() => crypto.randomUUID());
-    this.#maxInFlight = options.maxInFlight ?? DEFAULT_MAX_IN_FLIGHT;
-    if (!Number.isSafeInteger(this.#maxInFlight) || this.#maxInFlight < 1
-      || this.#maxInFlight > DEFAULT_MAX_IN_FLIGHT) {
-      throw new TypeError(`maxInFlight must be an integer from 1 through ${DEFAULT_MAX_IN_FLIGHT}`);
+    this.#maxInFlight = options.maxInFlight ?? Number.MAX_SAFE_INTEGER;
+    if (!Number.isSafeInteger(this.#maxInFlight) || this.#maxInFlight < 1) {
+      throw new TypeError("maxInFlight must be a positive safe integer");
     }
-    this.#maxCallsPerGeneration = options.maxCallsPerGeneration ?? MAX_CALLS_PER_GENERATION;
-    if (!Number.isSafeInteger(this.#maxCallsPerGeneration) || this.#maxCallsPerGeneration < 1
-      || this.#maxCallsPerGeneration > MAX_CALLS_PER_GENERATION) {
-      throw new TypeError(`maxCallsPerGeneration must be an integer from 1 through ${MAX_CALLS_PER_GENERATION}`);
+    this.#maxCallsPerGeneration = options.maxCallsPerGeneration ?? Number.MAX_SAFE_INTEGER;
+    if (!Number.isSafeInteger(this.#maxCallsPerGeneration) || this.#maxCallsPerGeneration < 1) {
+      throw new TypeError("maxCallsPerGeneration must be a positive safe integer");
     }
     this.#persistence = options.persistence;
     this.#onCatalogChanged = options.onCatalogChanged;
@@ -940,7 +932,6 @@ export class HostedToolsBrokerCore {
       throw new HostedToolsProtocolError("result_conflict", "call result lost durable ownership");
     }
     const pending = this.#takePending(row.call_id);
-    this.#pruneReceipts();
     this.#ackResult(socket, frame);
     pending?.resolve(frame.outcome);
   }
@@ -1052,9 +1043,9 @@ export class HostedToolsBrokerCore {
       ? retained.deadline_at
       : Math.min(
         request.deadlineAt ?? Number.MAX_SAFE_INTEGER,
-        now + Math.min(binding.entry.timeout_ms, HOSTED_TOOL_CALL_TIMEOUT_MS),
+        Math.min(Number.MAX_SAFE_INTEGER, now + binding.entry.timeout_ms),
       );
-    const outputByteBudget = request.outputByteBudget ?? MAX_HOSTED_TOOL_OUTPUT_BYTES;
+    const outputByteBudget = request.outputByteBudget ?? Number.MAX_SAFE_INTEGER;
     const transportCallId = retained?.call_id ?? this.#randomUUID();
     const hostId = retained?.host_id ?? binding.hostId;
     const pinnedLeaseId = retained?.lease_id ?? binding.leaseId;
@@ -1220,7 +1211,6 @@ export class HostedToolsBrokerCore {
     outcome: HostedToolCallOutcome,
   ): HostedToolCallOutcome {
     this.#persistence.transitionCall(row.call_id, ["admitted"], state, JSON.stringify(outcome), this.#now());
-    this.#pruneReceipts();
     return outcome;
   }
 
@@ -1263,7 +1253,6 @@ export class HostedToolsBrokerCore {
       JSON.stringify(outcome),
       this.#now(),
     );
-    this.#pruneReceipts();
     this.#takePending(row.call_id)?.resolve(outcome);
   }
 
@@ -1288,7 +1277,6 @@ export class HostedToolsBrokerCore {
       this.#persistence.markGenerationAmbiguous(leaseId, generation, JSON.stringify(outcome), this.#now());
       this.#persistence.clearHost(leaseId, generation);
     });
-    this.#pruneReceipts();
     this.#resolveGeneration(leaseId, generation, outcome);
     this.#notifyCatalogChanged();
   }
@@ -1298,10 +1286,6 @@ export class HostedToolsBrokerCore {
       if (pending.leaseId !== leaseId || pending.generation !== generation) continue;
       this.#takePending(callId)?.resolve(outcome);
     }
-  }
-
-  #pruneReceipts(): void {
-    this.#persistence.pruneReceipts(MAX_RETAINED_RECEIPTS);
   }
 
   #takePending(callId: string): PendingCall | undefined {

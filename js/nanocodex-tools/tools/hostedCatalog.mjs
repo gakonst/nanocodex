@@ -1,7 +1,7 @@
 import { resolveTools } from "../runtime/tool-configuration.mjs";
 import { ToolRouter, toolMapSource } from "../runtime/tool-router.mjs";
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = Number.MAX_SAFE_INTEGER;
 const CATALOG_DIGEST_DOMAIN = "nanocodex-app-tool-catalog-v1\0";
 
 /** Materializes the exact reverse-tool catalog emitted for app-local named tools. */
@@ -17,9 +17,7 @@ export function hostedAppToolCatalog(tools, provider = "javascript") {
 
 /** Normalizes an admitted router catalog to the socket-owned wire contract. */
 export function hostedCatalog(catalog) {
-  if (!Array.isArray(catalog) || catalog.length > 256) {
-    throw new RangeError("tool attachment catalogs contain at most 256 tools");
-  }
+  if (!Array.isArray(catalog)) throw new TypeError("tool attachment catalog must be an array");
   return Object.freeze(catalog.map((entry) => Object.freeze({
     provider: entry.provider,
     remote_name: entry.remote_name,

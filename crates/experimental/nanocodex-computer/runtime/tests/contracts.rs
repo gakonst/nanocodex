@@ -244,12 +244,6 @@ fn framing_every_split_and_coalesced_unicode() {
     }
     decoder.finish().unwrap();
     let mut decoder = protocol::Decoder::default();
-    assert!(
-        decoder
-            .feed(&((protocol::MAX_FRAME + 1) as u32).to_le_bytes())
-            .is_err()
-    );
-    let mut decoder = protocol::Decoder::default();
     decoder.feed(&bytes[..3]).unwrap();
     assert!(decoder.finish().is_err());
     let mut input = &bytes[..];
@@ -562,7 +556,7 @@ fn rich_text_is_resource_free_and_preserves_unicode_and_styles() {
     assert!(representations(&"a".repeat(1024 * 1024 + 1), "html").is_err());
 }
 #[test]
-fn runtime_images_are_bytes_and_emission_is_bounded() {
+fn runtime_images_are_bytes_and_output_count_is_not_artificially_bounded() {
     let (_, mut h) = host();
     eval(&mut h, "let app = await cua.getApp('fixture://native');");
     let r = eval(
@@ -572,15 +566,13 @@ fn runtime_images_are_bytes_and_emission_is_bounded() {
     assert_eq!(r["outputs"][0]["value"], "[ true, 137, 80 ]");
     assert_eq!(r["outputs"][1]["channel"], "image");
     assert_eq!(r["outputs"][1]["value"]["mime_type"], "image/png");
-    assert!(
-        h.evaluate(
-            "for(let i=0;i<300;i++)nodeRepl.write(i)",
-            Duration::from_secs(1)
+    let many_outputs = h
+        .evaluate(
+            "for(let i=0;i<300;i++)nodeRepl.write({i})",
+            Duration::from_secs(1),
         )
-        .unwrap()
-        .get("error")
-        .is_some()
-    );
+        .unwrap();
+    assert!(many_outputs.get("error").is_none(), "{many_outputs}");
     assert_eq!(
         eval(&mut h, "nodeRepl.write('next cell')")["outputs"][0]["value"],
         "next cell"

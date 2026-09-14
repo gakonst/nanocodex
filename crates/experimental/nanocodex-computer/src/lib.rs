@@ -1,9 +1,10 @@
 //! Persistent CUA tools over the independent computer runtime.
 //!
-//! Each conversation owns its JavaScript process. Native input is serialized
-//! across the attachment, while protocol, timeout and cancellation failures
-//! discard the affected process. Model arguments cannot choose an executable,
-//! inherit credentials, or change trusted runtime configuration.
+//! Each conversation owns its JavaScript process. Conversations execute in
+//! parallel; calls within one persistent JavaScript scope remain ordered.
+//! Protocol, timeout and cancellation failures discard only the affected
+//! process. Model arguments cannot choose an executable, inherit credentials,
+//! or change trusted runtime configuration.
 
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -22,12 +23,9 @@ use std::{
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
-    sync::Mutex,
+    sync::{mpsc, oneshot},
 };
 
-const MAX_FRAME: usize = 8 * 1024 * 1024;
-const MAX_CODE: usize = 1024 * 1024;
-const MAX_SESSIONS: usize = 32;
 // The shared JSON contract cannot represent integers above JavaScript's range.
 const MAX_TIMEOUT_MS: u64 = 9_007_199_254_740_991;
 
@@ -107,7 +105,7 @@ impl ComputerConfig {
     }
 }
 
-/// Bounded, serializable invocation shared by native and VM transports.
+/// Serializable invocation shared by native and VM transports.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ComputerRequest {
@@ -126,9 +124,6 @@ fn default_timeout() -> u64 {
 
 impl ComputerRequest {
     pub fn validate(&self) -> Result<(), ToolError> {
-        if self.code.len() > MAX_CODE {
-            return Err("CUA code exceeds 1 MiB".into());
-        }
         if !(1..=MAX_TIMEOUT_MS).contains(&self.timeout_ms) {
             return Err("CUA timeout must be a positive safe integer in milliseconds".into());
         }
@@ -159,10 +154,9 @@ pub struct ComputerTools {
 }
 impl ComputerTools {
     pub fn local(config: ComputerConfig) -> Self {
-        Self::new(LocalComputer {
-            config,
-            sessions: Mutex::new(BTreeMap::new()),
-        })
+        let (dispatch, requests) = mpsc::unbounded_channel();
+        tokio::spawn(route_sessions(config, requests));
+        Self::new(LocalComputer { dispatch })
     }
     pub fn new(executor: impl ComputerExecutor) -> Self {
         Self {
@@ -191,6 +185,10 @@ pub struct ComputerTool {
 
 #[async_trait]
 impl Tool for ComputerTool {
+    fn supports_parallel_tool_calls(&self) -> bool {
+        true
+    }
+
     fn definition(&self) -> ToolDefinition {
         if self.reset {
             ToolDefinition::function(
@@ -224,8 +222,15 @@ impl Tool for ComputerTool {
 }
 
 struct LocalComputer {
-    config: ComputerConfig,
-    sessions: Mutex<BTreeMap<String, Option<Process>>>,
+    dispatch: mpsc::UnboundedSender<SessionRequest>,
+}
+
+struct SessionRequest {
+    session: String,
+    call_id: String,
+    model: String,
+    request: Option<ComputerRequest>,
+    response: oneshot::Sender<ToolResult>,
 }
 
 #[async_trait]
@@ -238,43 +243,119 @@ impl ComputerExecutor for LocalComputer {
         if let Some(request) = &request {
             request.validate()?;
         }
-        let mut sessions = self.sessions.lock().await;
         let session = context.session_id().to_owned();
-        if sessions.get(&session).is_some_and(Option::is_none) && request.is_some() {
-            return Err("CUA session ended during cancellation or transport failure. Call cua_repl.js_reset, then select the surface again.".into());
+        let (response, result) = oneshot::channel();
+        self.dispatch
+            .send(SessionRequest {
+                session,
+                call_id: context.call_id().to_owned(),
+                model: context.model().to_owned(),
+                request,
+                response,
+            })
+            .map_err(|_| "CUA attachment is closed")?;
+        result.await.map_err(|_| "CUA attachment is closed")?
+    }
+}
+
+/// Route only by conversation identity. Each spawned owner has its own process
+/// and queue, so an unrelated long-running cell never blocks this map or any
+/// other conversation.
+async fn route_sessions(
+    config: ComputerConfig,
+    mut requests: mpsc::UnboundedReceiver<SessionRequest>,
+) {
+    let mut sessions = BTreeMap::<String, mpsc::UnboundedSender<SessionRequest>>::new();
+    while let Some(request) = requests.recv().await {
+        let session = request.session.clone();
+        let owner = sessions
+            .entry(session.clone())
+            .or_insert_with(|| {
+                let (sender, receiver) = mpsc::unbounded_channel();
+                tokio::spawn(run_session(config.clone(), session.clone(), receiver));
+                sender
+            })
+            .clone();
+        if let Err(error) = owner.send(request) {
+            // A panicked owner must not permanently poison the route. Replace
+            // the dead mailbox and let the request observe a fresh owner.
+            let (sender, receiver) = mpsc::unbounded_channel();
+            tokio::spawn(run_session(config.clone(), session.clone(), receiver));
+            let _ = sender.send(error.0);
+            sessions.insert(session, sender);
         }
-        if !sessions.contains_key(&session) && sessions.len() >= MAX_SESSIONS {
-            return Err(
-                "CUA attachment has reached its 32-conversation limit; close an unused attachment."
-                    .into(),
-            );
+    }
+}
+
+async fn run_session(
+    config: ComputerConfig,
+    session: String,
+    mut requests: mpsc::UnboundedReceiver<SessionRequest>,
+) {
+    let mut process = None;
+    let mut interrupted = false;
+    while let Some(request) = requests.recv().await {
+        let SessionRequest {
+            call_id,
+            model,
+            request,
+            mut response,
+            ..
+        } = request;
+        if interrupted && request.is_some() {
+            let _ = response.send(Err("CUA session ended during cancellation or transport failure. Call cua_repl.js_reset, then select the surface again.".into()));
+            continue;
         }
-        // Taking ownership ensures dropping an in-flight invocation kills its
-        // runtime. The map's tombstone prevents accidental continuation in a
-        // fresh JS context after cancellation.
-        let previous = sessions.entry(session.clone()).or_default().take();
         let timeout = Duration::from_millis(
             request
                 .as_ref()
                 .map_or(30_000, |request| request.timeout_ms)
                 + 5_000,
         );
-        let outcome = tokio::time::timeout(timeout, async {
+        // Taking ownership ensures cancellation drops and kills the process.
+        // The interrupted flag prevents continuation in a silently fresh scope.
+        let previous = process.take();
+        let execution = async {
             let mut process = match previous {
                 Some(process) => process,
-                None => Process::start(&self.config).await?,
+                None => Process::start(&config).await?,
             };
             let (name, args) = match request {
                 Some(request) => ("js", serde_json::to_value(request)?),
                 None => ("js_reset", json!({})),
             };
             let value = process.rpc("tools/call", json!({"name":name,"arguments":args,
-                "_meta":{"x-codex-turn-metadata":{"thread_id":session,"call_id":context.call_id(),"model":context.model()}}})).await?;
+                "_meta":{"x-codex-turn-metadata":{"thread_id":session,"call_id":call_id,"model":model}}})).await?;
             let output = output(value)?;
             Ok::<_, ToolError>((process, output))
-        }).await.map_err(|_| "CUA runtime timed out; its process was stopped. Call cua_repl.js_reset before continuing.")??;
-        sessions.insert(session, Some(outcome.0));
-        Ok(outcome.1)
+        };
+        let outcome = tokio::select! {
+            biased;
+            () = response.closed() => {
+                interrupted = true;
+                continue;
+            }
+            outcome = tokio::time::timeout(timeout, execution) => {
+                outcome.map_err(|_| "CUA runtime timed out; its process was stopped. Call cua_repl.js_reset before continuing.".into()).and_then(|result| result)
+            }
+        };
+        match outcome {
+            Ok((owned, output)) => {
+                process = Some(owned);
+                interrupted = false;
+                if response.send(Ok(output)).is_err() {
+                    // The caller disappeared at the completion boundary. Its
+                    // state transition is ambiguous, so discard the process
+                    // instead of silently retaining a mutated realm.
+                    process = None;
+                    interrupted = true;
+                }
+            }
+            Err(error) => {
+                interrupted = true;
+                let _ = response.send(Err(error));
+            }
+        }
     }
 }
 
@@ -357,9 +438,6 @@ impl Process {
     }
     async fn send(&mut self, value: Value) -> Result<(), ToolError> {
         let mut bytes = serde_json::to_vec(&value)?;
-        if bytes.len() > MAX_FRAME {
-            return Err("CUA request exceeds protocol limit".into());
-        }
         bytes.push(b'\n');
         self.input.write_all(&bytes).await?;
         self.input.flush().await?;
@@ -372,23 +450,8 @@ impl Process {
             .await?;
         loop {
             let mut line = Vec::new();
-            loop {
-                let chunk = self.output.fill_buf().await?;
-                if chunk.is_empty() {
-                    return Err("CUA runtime closed its output".into());
-                }
-                let length = chunk
-                    .iter()
-                    .position(|byte| *byte == b'\n')
-                    .map_or(chunk.len(), |index| index + 1);
-                if line.len() + length > MAX_FRAME {
-                    return Err("CUA response exceeds protocol limit".into());
-                }
-                line.extend_from_slice(&chunk[..length]);
-                self.output.consume(length);
-                if line.last() == Some(&b'\n') {
-                    break;
-                }
+            if self.output.read_until(b'\n', &mut line).await? == 0 {
+                return Err("CUA runtime closed its output".into());
             }
             let value: Value = serde_json::from_slice(&line)?;
             if value.get("method").is_some() {

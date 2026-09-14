@@ -7,13 +7,13 @@ import { validateInput } from "../contract.mjs";
 const executable = process.env.NANOCODEX_TEST_COMPUTER ?? fileURLToPath(new URL("../../../crates/experimental/nanocodex-computer/runtime/target/debug/nanocodex-computer", import.meta.url));
 const context = (sessionId, signal = new AbortController().signal) => ({ sessionId, signal, callId: "test", parentCallId: "", model: "gpt-6-astra" });
 
-test("CUA input bounds match the Rust transport", () => {
+test("CUA input validation matches the Rust transport without artificial size caps", () => {
   for (const timeout_ms of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) assert.throws(() => validateInput({ code: "1", timeout_ms }));
   assert.equal(validateInput({ code: "1", timeout_ms: 300000 }).timeout_ms, 300000);
   assert.equal(validateInput({ code: "1", title: null, timeout_ms: null }).timeout_ms, 30000);
   assert.throws(() => validateInput({ code: "1", executable: "/bin/sh" }));
   assert.throws(() => validateInput({ code: "1" }, true));
-  assert.throws(() => validateInput({ code: "🧪".repeat(262145) }));
+  assert.equal(validateInput({ code: "🧪".repeat(262145) }).code.length, 524290);
   assert.deepEqual(validateInput({ code: "1" }), { code: "1", timeout_ms: 30000 });
 });
 
@@ -92,6 +92,64 @@ test("queued cancellation rejects immediately and only release discards the scop
     const fresh = await js.handler({ code: "nodeRepl.write(typeof marker);" }, context("queued"));
     assert.equal(fresh.output.at(-1).text, release ? "undefined" : "string");
   }
+});
+
+test("independent conversations execute in parallel", { timeout: 10_000 }, async t => {
+  const computer = createComputerTools({ executable, args: ["--fixture"] });
+  t.after(computer.close);
+  const [js] = computer.tools;
+  await Promise.all([
+    js.handler({ code: "nodeRepl.write('warm');" }, context("parallel-left")),
+    js.handler({ code: "nodeRepl.write('warm');" }, context("parallel-right")),
+  ]);
+  const started = performance.now();
+  const [left, right] = await Promise.all([
+    js.handler({ code: "await new Promise(resolve=>setTimeout(resolve,1000)); nodeRepl.write('left');" }, context("parallel-left")),
+    js.handler({ code: "await new Promise(resolve=>setTimeout(resolve,1000)); nodeRepl.write('right');" }, context("parallel-right")),
+  ]);
+  assert.equal(left.output.at(-1).text, "left");
+  assert.equal(right.output.at(-1).text, "right");
+  assert(performance.now() - started < 1750, "independent sessions were serialized");
+});
+
+test("a persistent Sky-style CUA realm orders concurrent calls without a global lock", async t => {
+  const computer = createComputerTools({ executable, args: ["--fixture"] });
+  t.after(computer.close);
+  const [js] = computer.tools;
+  await js.handler({ code: "globalThis.order = [];" }, context("ordered"));
+  const [first, second, observed] = await Promise.all([
+    js.handler({ code: "await new Promise(resolve=>setTimeout(resolve,150)); order.push('first'); nodeRepl.write('first');" }, context("ordered")),
+    js.handler({ code: "order.push('second'); nodeRepl.write('second');" }, context("ordered")),
+    js.handler({ code: "nodeRepl.write(JSON.stringify(order));" }, context("ordered")),
+  ]);
+  assert.equal(first.output.at(-1).text, "first");
+  assert.equal(second.output.at(-1).text, "second");
+  assert.equal(observed.output.at(-1).text, '["first","second"]');
+});
+
+test("many persistent CUA realms run concurrently", { timeout: 15_000 }, async t => {
+  const computer = createComputerTools({ executable, args: ["--fixture"] });
+  t.after(computer.close);
+  const [js] = computer.tools;
+  const sessions = Array.from({ length: 12 }, (_, index) => `saturation-${index}`);
+  await Promise.all(sessions.map(session => js.handler({ code: "nodeRepl.write('warm');" }, context(session))));
+  const started = performance.now();
+  const results = await Promise.all(sessions.map(session => js.handler({
+    code: `await new Promise(resolve=>setTimeout(resolve,250)); nodeRepl.write(${JSON.stringify(session)});`,
+  }, context(session))));
+  assert.deepEqual(results.map(result => result.output.at(-1).text), sessions);
+  assert(performance.now() - started < 1800, "independent CUA realms saturated a shared serial queue");
+});
+
+test("large source and fragmented output cross the real stdio transport", { timeout: 30_000 }, async t => {
+  const computer = createComputerTools({ executable, args: ["--fixture"] });
+  t.after(computer.close);
+  const [js] = computer.tools;
+  const source = `nodeRepl.write('input-ok');/*${"🧪".repeat(300_000)}*/`;
+  assert.equal((await js.handler({ code: source }, context("large"))).output.at(-1).text, "input-ok");
+  const bytes = 9 * 1024 * 1024;
+  const output = await js.handler({ code: `nodeRepl.write('x'.repeat(${bytes}));` }, context("large"));
+  assert.equal(output.output.at(-1).text.length, bytes);
 });
 
 test("releasing an executing conversation interrupts its owned process", async t => {

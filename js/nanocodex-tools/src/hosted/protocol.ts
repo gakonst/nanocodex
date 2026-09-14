@@ -4,20 +4,8 @@ import {
 } from "../../tools/hostedMachine.mjs";
 
 export const HOSTED_TOOLS_LEASE_MS = 60_000;
-export const HOSTED_TOOL_CALL_TIMEOUT_MS = 120_000;
-export const MAX_HOSTED_TOOLS_FRAME_BYTES = 256 * 1024;
-export const MAX_HOSTED_TOOL_CATALOG_ENTRIES = 256;
 export const MAX_HOSTED_TOOL_NAME_BYTES = 128;
-export const MAX_HOSTED_TOOL_SCHEMA_BYTES = 64 * 1024;
-export const MAX_HOSTED_TOOL_INPUT_BYTES = 128 * 1024;
-export const MAX_HOSTED_TOOL_OUTPUT_BYTES = 128 * 1024;
-
-const MAX_DESCRIPTION_BYTES = 8 * 1024;
-const MAX_SUMMARY_BYTES = 2 * 1024;
-const MAX_MESSAGE_BYTES = 2 * 1024;
 const MAX_NONCE_BYTES = 128;
-const MAX_OUTPUT_CONTENT_ITEMS = 64;
-const MAX_OUTPUT_TOKEN_BUDGET = 1_000_000;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const RESERVED_TOOL_NAMES = new Set(["exec", "tool_search", "wait"]);
 const encoder = new TextEncoder();
@@ -153,12 +141,6 @@ export function parseHostedToolsManagedFrame(encoded: string): HostedToolsManage
 }
 
 export function parseHostedToolsFrame(encoded: string): HostedToolsFrame {
-  if (encoder.encode(encoded).byteLength > MAX_HOSTED_TOOLS_FRAME_BYTES) {
-    throw new HostedToolsProtocolError(
-      "message_too_large",
-      `Hosted Tools frames are limited to ${MAX_HOSTED_TOOLS_FRAME_BYTES} bytes`,
-    );
-  }
   let value: unknown;
   try {
     value = JSON.parse(encoded);
@@ -199,10 +181,10 @@ function parseCatalog(
   frame: Record<string, unknown>,
 ): Extract<HostedToolsHostFrame, { type: "catalog" }> {
   exactKeys(frame, ["type", "tools", "machines", "attachment_id"]);
-  if (!Array.isArray(frame.tools) || frame.tools.length > MAX_HOSTED_TOOL_CATALOG_ENTRIES) {
+  if (!Array.isArray(frame.tools)) {
     throw new HostedToolsProtocolError(
       "invalid_catalog",
-      `tools must be an array of at most ${MAX_HOSTED_TOOL_CATALOG_ENTRIES} entries`,
+      "tools must be an array",
     );
   }
   const tools = frame.tools.map((entry, index) => catalogEntry(entry, index));
@@ -278,7 +260,6 @@ function parseCall(frame: Record<string, unknown>): Extract<HostedToolsManagedFr
   const input = typeof frame.input === "string"
     ? frame.input
     : objectValue(frame.input, "call input");
-  boundedJson(input, MAX_HOSTED_TOOL_INPUT_BYTES, "input_too_large", "call input");
   return {
     type: "call",
     session_id: identifier(frame.session_id, "session_id"),
@@ -289,13 +270,13 @@ function parseCall(frame: Record<string, unknown>): Extract<HostedToolsManagedFr
     output_token_budget: boundedInteger(
       frame.output_token_budget,
       1,
-      MAX_OUTPUT_TOKEN_BUDGET,
+      Number.MAX_SAFE_INTEGER,
       "output_token_budget",
     ),
     output_byte_budget: boundedInteger(
       frame.output_byte_budget,
       1,
-      MAX_HOSTED_TOOL_OUTPUT_BYTES,
+      Number.MAX_SAFE_INTEGER,
       "output_byte_budget",
     ),
     deadline_at: timestamp(frame.deadline_at, "deadline_at"),
@@ -342,11 +323,11 @@ function catalogEntry(value: unknown, index: number): HostedToolCatalogEntry {
     parallel_safe: entry.parallel_safe,
     ...(entry.summary === undefined
       ? {}
-      : { summary: boundedText(entry.summary, 1, MAX_SUMMARY_BYTES, `tools[${index}].summary`) }),
+      : { summary: requiredText(entry.summary, `tools[${index}].summary`) }),
     timeout_ms: boundedInteger(
       entry.timeout_ms,
       1,
-      HOSTED_TOOL_CALL_TIMEOUT_MS,
+      Number.MAX_SAFE_INTEGER,
       `tools[${index}].timeout_ms`,
     ),
   };
@@ -355,10 +336,8 @@ function catalogEntry(value: unknown, index: number): HostedToolCatalogEntry {
 function toolDefinition(value: unknown, index: number): HostedToolDefinition {
   const definition = objectValue(value, `tools[${index}].definition`);
   const name = toolName(definition.name);
-  const description = boundedText(
+  const description = requiredText(
     definition.description,
-    1,
-    MAX_DESCRIPTION_BYTES,
     `tools[${index}].definition.description`,
   );
   if (definition.type === "function") {
@@ -376,23 +355,9 @@ function toolDefinition(value: unknown, index: number): HostedToolDefinition {
         `tools[${index}].definition.parameters must be an object JSON Schema`,
       );
     }
-    boundedJson(
-      parameters,
-      MAX_HOSTED_TOOL_SCHEMA_BYTES,
-      "schema_too_large",
-      `tools[${index}].definition.parameters`,
-    );
     const outputSchema = definition.output_schema === undefined
       ? undefined
       : objectValue(definition.output_schema, `tools[${index}].definition.output_schema`);
-    if (outputSchema !== undefined) {
-      boundedJson(
-        outputSchema,
-        MAX_HOSTED_TOOL_SCHEMA_BYTES,
-        "schema_too_large",
-        `tools[${index}].definition.output_schema`,
-      );
-    }
     return {
       type: "function",
       name,
@@ -410,10 +375,8 @@ function toolDefinition(value: unknown, index: number): HostedToolDefinition {
       throw new HostedToolsProtocolError("invalid_schema", "custom tool format must be grammar");
     }
     const syntax = identifier(format.syntax, `tools[${index}].definition.format.syntax`);
-    const grammar = boundedText(
+    const grammar = requiredText(
       format.definition,
-      1,
-      MAX_HOSTED_TOOL_SCHEMA_BYTES,
       `tools[${index}].definition.format.definition`,
     );
     return {
@@ -454,7 +417,7 @@ function callOutcome(value: unknown): HostedToolCallOutcome {
       exactKeys(outcome, ["status", "message"]);
       return {
         status: outcome.status,
-        message: boundedText(outcome.message, 1, MAX_MESSAGE_BYTES, "outcome message"),
+        message: requiredText(outcome.message, "outcome message"),
       };
     default:
       throw new HostedToolsProtocolError(
@@ -486,15 +449,14 @@ function toolOutput(value: unknown): HostedToolOutputWire {
     metadata: output.metadata,
     process_trace: output.process_trace === null ? null : processTrace(output.process_trace),
   };
-  boundedJson(wire, MAX_HOSTED_TOOL_OUTPUT_BYTES, "output_too_large", "completed output");
   return wire;
 }
 
 function outputContent(value: unknown): HostedToolOutputContent[] {
-  if (!Array.isArray(value) || value.length > MAX_OUTPUT_CONTENT_ITEMS) {
+  if (!Array.isArray(value)) {
     throw new HostedToolsProtocolError(
       "invalid_output",
-      `completed output content must have at most ${MAX_OUTPUT_CONTENT_ITEMS} items`,
+      "completed output content must be an array",
     );
   }
   return value.map((item, index) => {
@@ -503,7 +465,7 @@ function outputContent(value: unknown): HostedToolOutputContent[] {
       exactKeys(content, ["type", "text"]);
       return {
         type: "input_text" as const,
-        text: boundedText(content.text, 0, MAX_HOSTED_TOOL_OUTPUT_BYTES, `content[${index}].text`),
+        text: text(content.text, `content[${index}].text`),
       };
     }
     if (content.type === "input_image") {
@@ -514,12 +476,7 @@ function outputContent(value: unknown): HostedToolOutputContent[] {
       }
       return {
         type: "input_image" as const,
-        image_url: boundedText(
-          content.image_url,
-          1,
-          MAX_HOSTED_TOOL_OUTPUT_BYTES,
-          `content[${index}].image_url`,
-        ),
+        image_url: requiredText(content.image_url, `content[${index}].image_url`),
         detail: content.detail,
       };
     }
@@ -527,12 +484,7 @@ function outputContent(value: unknown): HostedToolOutputContent[] {
       exactKeys(content, ["type", "audio_url"]);
       return {
         type: "input_audio" as const,
-        audio_url: boundedText(
-          content.audio_url,
-          1,
-          MAX_HOSTED_TOOL_OUTPUT_BYTES,
-          `content[${index}].audio_url`,
-        ),
+        audio_url: requiredText(content.audio_url, `content[${index}].audio_url`),
       };
     }
     throw new HostedToolsProtocolError("invalid_output", `content[${index}].type is invalid`);
@@ -629,11 +581,19 @@ function boundedText(value: unknown, minimum: number, maximum: number, name: str
   return value;
 }
 
-function boundedJson(value: unknown, maximum: number, code: string, name: string): void {
-  const bytes = encoder.encode(JSON.stringify(value)).byteLength;
-  if (bytes > maximum) {
-    throw new HostedToolsProtocolError(code, `${name} is limited to ${maximum} encoded bytes`);
+function text(value: unknown, name: string): string {
+  if (typeof value !== "string") {
+    throw new HostedToolsProtocolError("invalid_string", `${name} must be text`);
   }
+  return value;
+}
+
+function requiredText(value: unknown, name: string): string {
+  const result = text(value, name);
+  if (result.length === 0) {
+    throw new HostedToolsProtocolError("invalid_string", `${name} must be non-empty text`);
+  }
+  return result;
 }
 
 function objectValue(value: unknown, name: string): Record<string, unknown> {

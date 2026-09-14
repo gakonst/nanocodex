@@ -300,19 +300,4 @@ class SqlHostedToolsPersistence implements HostedToolsBrokerPersistence {
     ).toArray()[0]?.count ?? 0);
   }
 
-  pruneReceipts(limit: number): void {
-    this.storage.sql.exec(
-      `DELETE FROM hosted_tool_calls WHERE call_id IN (
-         SELECT call_id FROM hosted_tool_calls
-         WHERE state NOT IN ('admitted', 'dispatched')
-           AND NOT EXISTS (
-             SELECT 1 FROM hosted_tool_routes
-             WHERE hosted_tool_routes.lease_id = hosted_tool_calls.lease_id
-               AND hosted_tool_routes.generation = hosted_tool_calls.generation
-           )
-         ORDER BY updated_at DESC, call_id DESC LIMIT -1 OFFSET ?
-       )`,
-      limit,
-    );
-  }
 }

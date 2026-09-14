@@ -3,10 +3,6 @@ use serde_json::Value;
 
 use super::AttachmentMachine;
 
-pub(crate) const MAX_FRAME_BYTES: usize = 256 * 1024;
-pub(crate) const MAX_OUTPUT_BYTES: u64 = 128 * 1024;
-pub(crate) const MAX_IN_FLIGHT: usize = 64;
-pub(crate) const MAX_RECEIPTS: usize = 512;
 #[cfg(not(test))]
 pub(crate) const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
 #[cfg(test)]
@@ -71,9 +67,6 @@ impl RemoteFrame {
     }
 
     pub(crate) fn parse(text: &str) -> Result<Self, &'static str> {
-        if text.len() > MAX_FRAME_BYTES {
-            return Err("frame exceeds 256 KiB");
-        }
         let frame: Self = serde_json::from_str(text).map_err(|_| "invalid attachment frame")?;
         frame.validate()?;
         Ok(frame)
@@ -97,9 +90,8 @@ impl RemoteFrame {
                     || !valid_identifier(model)
                     || !valid_tool_name(name)
                     || !(input.is_object() || input.is_string())
-                    || serde_json::to_vec(input).map_or(true, |value| value.len() > 128 * 1024)
-                    || !(1..=1_000_000).contains(output_token_budget)
-                    || !(1..=MAX_OUTPUT_BYTES).contains(output_byte_budget)
+                    || !positive(*output_token_budget)
+                    || !positive(*output_byte_budget)
                     || !positive(*deadline_at)
                 {
                     return Err("invalid call");

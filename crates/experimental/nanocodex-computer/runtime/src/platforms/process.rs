@@ -12,31 +12,20 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
-pub const MAX_OUTPUT: usize = 8 * 1024 * 1024;
-fn bounded_read(mut input: impl Read) -> std::io::Result<Vec<u8>> {
+fn read_all(mut input: impl Read) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    input
-        .by_ref()
-        .take((MAX_OUTPUT + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_OUTPUT {
-        Err(std::io::Error::other("Helper output exceeds 8MiB"))
-    } else {
-        Ok(bytes)
-    }
+    input.read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 /// One process per command, concurrent pipe drains and a hard execution deadline.
 pub fn run(executable: &Path, args: &[String], input: &[u8], timeout: Duration) -> Result<Vec<u8>> {
-    if input.len() > MAX_OUTPUT {
-        return Err(Error::invalid("Helper input exceeds 8MiB"));
-    }
     let mut child = spawn(executable, args)?;
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
     let mut stdin = child.stdin.take().unwrap();
     let bytes = input.to_vec();
-    let output = thread::spawn(move || bounded_read(stdout));
-    let error = thread::spawn(move || bounded_read(stderr));
+    let output = thread::spawn(move || read_all(stdout));
+    let error = thread::spawn(move || read_all(stderr));
     let writer = thread::spawn(move || stdin.write_all(&bytes));
     let start = Instant::now();
     let mut timed_out = false;
@@ -106,19 +95,9 @@ impl Lines {
             let mut input = BufReader::new(stdout);
             loop {
                 let mut line = Vec::new();
-                let result = match input
-                    .by_ref()
-                    .take((MAX_OUTPUT + 1) as u64)
-                    .read_until(b'\n', &mut line)
-                {
+                let result = match input.read_until(b'\n', &mut line) {
                     Ok(0) => break,
-                    Ok(_) => {
-                        if line.len() > MAX_OUTPUT {
-                            Err(Error::action("Helper JSON line exceeds 8MiB"))
-                        } else {
-                            serde_json::from_slice(&line).map_err(Error::from)
-                        }
-                    }
+                    Ok(_) => serde_json::from_slice(&line).map_err(Error::from),
                     Err(e) => Err(e.into()),
                 };
                 let fatal = result.is_err();
@@ -164,9 +143,6 @@ impl Lines {
     }
     pub fn send(&mut self, request: &Value, timeout: Duration) -> Result<()> {
         let mut bytes = serde_json::to_vec(request)?;
-        if bytes.len() > MAX_OUTPUT {
-            return Err(Error::invalid("Helper request exceeds 8MiB"));
-        }
         bytes.push(b'\n');
         let (reply, answer) = mpsc::sync_channel(1);
         self.stdin

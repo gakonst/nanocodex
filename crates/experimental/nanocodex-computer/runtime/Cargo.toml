@@ -15,7 +15,8 @@ name = "skyre"
 name = "nanocodex-computer"
 path = "src/main.rs"
 
-# Keep the runtime's audited QuickJS patch isolated from the agent's JS engine.
+# Keep the companion build independent from the main workspace while using the
+# ordinary published QuickJS crate.
 [workspace]
 
 [profile.dev]
@@ -83,9 +84,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Wind
 [dev-dependencies]
 qrcode = { version = "0.14.1", default-features = false }
 tempfile = "3"
-
-[patch.crates-io]
-rquickjs-sys = { path = "vendor/rquickjs-sys" }
 
 [[test]]
 name = "parity"

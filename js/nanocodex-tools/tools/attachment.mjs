@@ -278,11 +278,6 @@ function createClient(endpoint, transport, options, admission, machines, attachm
       if (active.identity !== identity) throw new Error("active call ID was reused with different immutable fields");
       return;
     }
-    if (state.calls.size >= 64) {
-      retainAndSend(callId, identity, { status: "unavailable", message: "tool attachment has 64 active calls" }, socket);
-      return;
-    }
-    if (state.receipts.size >= 512) throw new Error("tool attachment retained receipt bound is exhausted");
     if (frame.deadline_at <= Date.now()) {
       retainAndSend(callId, identity, { status: "unavailable", message: "tool attachment call deadline elapsed before dispatch" }, socket);
       return;
@@ -352,7 +347,6 @@ function createClient(endpoint, transport, options, admission, machines, attachm
       state.calls.delete(callId);
       call.controller.abort(new Error("tool attachment call was cancelled"));
     }
-    if (state.receipts.size >= 512) throw new Error("tool attachment retained receipt bound is exhausted");
     retainAndSend(callId, call?.identity, call
       ? { status: "ambiguous", message: "tool execution was cancelled after dispatch" }
       : { status: "cancelled", message: "tool attachment call was cancelled before dispatch" }, socket);
@@ -528,7 +522,6 @@ function send(socket, frame) {
 }
 function parseFrame(encoded) {
   if (typeof encoded !== "string") throw new TypeError("tool attachments require text frames");
-  if (utf8ByteLength(encoded) > 256 * 1024) throw new Error("tool attachment frame exceeds 262144 bytes");
   const frame = JSON.parse(encoded);
   if (!frame || typeof frame !== "object" || Array.isArray(frame)) throw new TypeError("tool attachment frame must be an object");
   const keys = DO_KEYS[frame.type];
@@ -538,9 +531,8 @@ function parseFrame(encoded) {
     requiredIdentifier(frame.session_id, "session_id"); requiredIdentifier(frame.call_id, "call_id");
     requiredIdentifier(frame.model, "model"); requiredIdentifier(frame.name, "name");
     if (typeof frame.input !== "string" && (!frame.input || typeof frame.input !== "object" || Array.isArray(frame.input))) throw new Error("call input must be an object or string");
-    if (utf8ByteLength(JSON.stringify(frame.input)) > 128 * 1024) throw new Error("call input exceeds 131072 bytes");
-    if (positiveInteger(frame.output_token_budget, "output_token_budget") > 1_000_000) throw new Error("output_token_budget exceeds protocol bound");
-    if (positiveInteger(frame.output_byte_budget, "output_byte_budget") > 128 * 1024) throw new Error("output_byte_budget exceeds protocol bound");
+    positiveInteger(frame.output_token_budget, "output_token_budget");
+    positiveInteger(frame.output_byte_budget, "output_byte_budget");
     positiveInteger(frame.deadline_at, "deadline_at");
   } else if (frame.type === "cancel" || frame.type === "ack") requiredIdentifier(frame.call_id, "call_id");
   else if (frame.type === "pong") {

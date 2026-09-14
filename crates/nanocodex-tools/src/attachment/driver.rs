@@ -328,9 +328,9 @@ fn start_ready_calls(
     runtime: &Arc<PreparedToolRuntime>,
     pending: &mut VecDeque<PendingCall>,
     in_flight: &mut HashMap<Box<str>, InFlight>,
-    completed: &mpsc::Sender<Completion>,
+    completed: &mpsc::UnboundedSender<Completion>,
 ) {
-    while in_flight.len() < protocol::MAX_IN_FLIGHT {
+    loop {
         if in_flight.values().any(|call| !call.parallel_safe) {
             break;
         }
@@ -406,13 +406,11 @@ fn start_ready_calls(
                         ),
                     }
                 };
-                let _ = tx
-                    .send(Completion::Result {
-                        call_id: id_for_task,
-                        outcome,
-                        observed,
-                    })
-                    .await;
+                let _ = tx.send(Completion::Result {
+                    call_id: id_for_task,
+                    outcome,
+                    observed,
+                });
             }
             .instrument(task_span),
         );
@@ -492,7 +490,7 @@ where
         },
     );
 
-    let (completed_tx, mut completed_rx) = mpsc::channel::<Completion>(protocol::MAX_IN_FLIGHT);
+    let (completed_tx, mut completed_rx) = mpsc::unbounded_channel::<Completion>();
     let mut in_flight = HashMap::<Box<str>, InFlight>::new();
     let mut pending = VecDeque::<PendingCall>::new();
     let mut receipts = HashMap::<Box<str>, Receipt>::new();
@@ -544,7 +542,6 @@ where
                 let Some(call) = in_flight.remove(&call_id) else { continue };
                 let _ = call.task.await;
                 call.events.complete(events, observed);
-                if receipts.len() >= protocol::MAX_RECEIPTS { break ConnectionEnd::Rejected("result receipt capacity exceeded".into()); }
                 receipts.insert(call_id.clone(), Receipt { identity: call.identity, outcome: outcome.clone() });
                 if let Err(error) = send_result(&mut socket, &call_id, &outcome).await {
                     break if detaching { ConnectionEnd::DetachFailed(error) } else { ConnectionEnd::Failed(error) };
@@ -576,17 +573,6 @@ where
                             name.clone().into(),
                             config.metadata.as_ref().map(AttachmentMetadata::attachment_id),
                         );
-                        if receipts.len().saturating_add(in_flight.len()).saturating_add(pending.len()) >= protocol::MAX_RECEIPTS {
-                            call_events.complete(events, AttachmentCallOutcome::Unavailable);
-                            break ConnectionEnd::Rejected("result receipt capacity exhausted".into());
-                        }
-                        if in_flight.len().saturating_add(pending.len()) >= protocol::MAX_IN_FLIGHT {
-                            let outcome = unavailable("attachment execution capacity is exhausted");
-                            call_events.complete(events, AttachmentCallOutcome::Unavailable);
-                            if let Err(error) = send_result(&mut socket, &call_id, &outcome).await { break ConnectionEnd::Failed(error); }
-                            receipts.insert(call_id.into(), Receipt { identity, outcome });
-                            continue;
-                        }
                         let tool_timeout = runtime.timeout_ms(&name).unwrap_or(0);
                         if deadline_at <= now_ms() || tool_timeout == 0 {
                             let outcome = unavailable(if tool_timeout == 0 { "tool is not in the pinned catalog" } else { "tool deadline elapsed before execution" });
@@ -789,11 +775,6 @@ where
 {
     let text = serde_json::to_string(frame)
         .map_err(|error| AttachmentError::Transport(error.to_string().into()))?;
-    if text.len() > protocol::MAX_FRAME_BYTES {
-        return Err(AttachmentError::Transport(
-            "outbound frame exceeds 256 KiB".into(),
-        ));
-    }
     socket
         .send(Message::Text(text.into()))
         .await

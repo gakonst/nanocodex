@@ -9,7 +9,8 @@ use tracing::Instrument;
 use super::PreparedTools;
 use crate::{Tool, ToolContext, ToolDefinition, ToolInput, ToolOutput};
 
-const HOSTED_TOOL_CALL_TIMEOUT_MS: u64 = 120_000;
+const DEFAULT_TOOL_TIMEOUT_MS: u64 = 9_007_199_254_740_991;
+const MCP_DISCOVERY_TIMEOUT_MS: u64 = 120_000;
 
 enum PreparedToolHandler {
     Fixed(Arc<dyn Tool>),
@@ -49,7 +50,7 @@ impl PreparedToolEntry {
             remote_name,
             definition,
             supports_parallel_tool_calls,
-            timeout_ms: HOSTED_TOOL_CALL_TIMEOUT_MS,
+            timeout_ms: DEFAULT_TOOL_TIMEOUT_MS,
             _effect_domain: None,
             handler: PreparedToolHandler::Fixed(tool),
         }
@@ -66,7 +67,7 @@ impl PreparedToolEntry {
             remote_name,
             definition,
             supports_parallel_tool_calls: false,
-            timeout_ms: HOSTED_TOOL_CALL_TIMEOUT_MS,
+            timeout_ms: DEFAULT_TOOL_TIMEOUT_MS,
             _effect_domain: None,
             handler: PreparedToolHandler::Workspace(workspace),
         }
@@ -193,9 +194,7 @@ impl PreparedToolRuntime {
         #[cfg(feature = "native")]
         for mcp in mcps {
             let tools = mcp
-                .prepared_snapshot(std::time::Duration::from_millis(
-                    HOSTED_TOOL_CALL_TIMEOUT_MS,
-                ))
+                .prepared_snapshot(std::time::Duration::from_millis(MCP_DISCOVERY_TIMEOUT_MS))
                 .await
                 .map_err(PreparedToolError::McpInitialization)?;
             entries.extend(tools.into_iter().map(PreparedToolEntry::mcp));

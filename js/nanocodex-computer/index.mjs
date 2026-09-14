@@ -8,8 +8,6 @@ import { namedTool } from "nanocodex-tools/named-tool";
 import { toolResult } from "nanocodex-tools/runtime/code-runtime";
 import { CUA_JS_NAME, CUA_RESET_NAME, CUA_DESCRIPTION, CUA_PARAMETERS, CUA_RESET_DESCRIPTION, CUA_RESET_PARAMETERS, validateInput } from "./contract.mjs";
 
-const MAX_FRAME = 8 * 1024 * 1024;
-
 /** Discover only the trusted installed companion; no app or browser is started. */
 export async function discoverComputer({ binary } = {}) {
   const explicit = process.env.NANOCODEX_COMPUTER;
@@ -38,7 +36,6 @@ export function createComputerTools({ executable, args = [], environment = {}, d
     if (process.env[name]) launchArgs.push(flag, process.env[name]);
   }
   const sessions = new Map();
-  let serial = Promise.resolve();
   let disposed = false;
   const releaseSession = id => {
     const session = sessions.get(id);
@@ -53,14 +50,17 @@ export function createComputerTools({ executable, args = [], environment = {}, d
     if (!id) throw new Error("CUA requires a conversation identity");
     if (disposed) throw new Error("CUA attachment is closed");
     if (!sessions.has(id)) {
-      if (sessions.size >= 32) throw new Error("CUA attachment has reached its 32-conversation limit");
-      sessions.set(id, { lifetime: new AbortController(), process: undefined, interrupted: false });
+      sessions.set(id, {
+        lifetime: new AbortController(), process: undefined, interrupted: false,
+        tail: Promise.resolve(),
+      });
     }
     const session = sessions.get(id);
     const signal = AbortSignal.any([session.lifetime.signal, ...(context.signal ? [context.signal] : [])]);
     const run = async () => {
       signal.throwIfAborted();
       if (disposed) throw new Error("CUA attachment is closed");
+      if (sessions.get(id) !== session) throw new Error("CUA conversation was released");
       if (session.interrupted && !reset) throw new Error("CUA session was interrupted. Call cua_repl.js_reset, then select the surface again.");
       const deadline = new AbortController();
       const operation = AbortSignal.any([signal, deadline.signal]);
@@ -93,18 +93,19 @@ export function createComputerTools({ executable, args = [], environment = {}, d
         session.process?.close(); session.process = undefined; session.interrupted = true; throw error;
       } finally { cancelTimeout(); operation.removeEventListener("abort", abort); }
     };
-    const result = serial.then(run);
-    serial = result.catch(() => {});
-    // A queued cancellation must reach the caller immediately, even while an
-    // unrelated conversation owns the native input queue. The queued run still
-    // checks this signal before touching its process.
+    // A QuickJS scope is ordered, but every conversation owns an independent
+    // chain and process. Long work in one conversation never blocks another.
+    const result = session.tail.then(run);
+    session.tail = result.catch(() => {});
+    // A queued cancellation reaches the caller immediately. The queued run
+    // still checks the signal and session identity before touching its process.
     return interruptible(result, signal);
   };
   return Object.freeze({
     close,
     tools: [
-      namedTool(CUA_JS_NAME, { description: CUA_DESCRIPTION, parameters: CUA_PARAMETERS, handler: (input, context) => invoke(false, input, context), releaseSession, dispose: close }),
-      namedTool(CUA_RESET_NAME, { description: CUA_RESET_DESCRIPTION, parameters: CUA_RESET_PARAMETERS, handler: (input, context) => invoke(true, input, context), releaseSession, dispose: close }),
+      namedTool(CUA_JS_NAME, { description: CUA_DESCRIPTION, parameters: CUA_PARAMETERS, supportsParallelToolCalls: true, handler: (input, context) => invoke(false, input, context), releaseSession, dispose: close }),
+      namedTool(CUA_RESET_NAME, { description: CUA_RESET_DESCRIPTION, parameters: CUA_RESET_PARAMETERS, supportsParallelToolCalls: true, handler: (input, context) => invoke(true, input, context), releaseSession, dispose: close }),
     ],
   });
 }
@@ -137,17 +138,14 @@ class ComputerProcess {
     const env = Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "SystemRoot", "LOCALAPPDATA", "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "LANG", "SKY_ENABLE_AUDIO"]
       .filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
     this.child = spawn(executable, [...args, "--allow-native-control", "serve"], { env: { ...env, ...environment }, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
-    this.pending = new Map(); this.sequence = 0; this.buffer = Buffer.alloc(0);
+    this.pending = new Map(); this.sequence = 0; this.lines = new LineBuffer();
     this.child.stdout.on("data", chunk => {
       try {
-        this.buffer = Buffer.concat([this.buffer, chunk]);
-        let end;
-        while ((end = this.buffer.indexOf(10)) !== -1) {
-          if (end > MAX_FRAME) throw new Error("CUA response exceeds protocol limit");
-          const value = JSON.parse(this.buffer.subarray(0, end).toString("utf8"));
-          this.buffer = this.buffer.subarray(end + 1);
+        this.lines.push(chunk);
+        for (let line; (line = this.lines.shift()) !== undefined;) {
+          const value = JSON.parse(line.toString("utf8"));
           if (value.method) {
-            if (value.id !== undefined) this.send({ jsonrpc: "2.0", id: value.id, error: { code: -32601, message: "No interactive approval channel; configure host-approved surfaces." } });
+            if (value.id !== undefined) void this.send({ jsonrpc: "2.0", id: value.id, error: { code: -32601, message: "No interactive approval channel; configure host-approved surfaces." } }).catch(error => this.close(error));
             continue;
           }
           const pending = this.pending.get(value.id);
@@ -156,7 +154,6 @@ class ComputerProcess {
           if (value.error) pending.reject(new Error(value.error.message ?? "CUA runtime error"));
           else pending.resolve(value.result);
         }
-        if (this.buffer.length > MAX_FRAME) throw new Error("CUA response exceeds protocol limit");
       } catch (error) { this.close(error); }
     });
     this.child.once("error", error => this.close(error));
@@ -165,21 +162,23 @@ class ComputerProcess {
   }
   async initialize() {
     await this.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "nanocodex-computer", version: "0.1.0" } });
-    this.send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    await this.send({ jsonrpc: "2.0", method: "notifications/initialized" });
   }
   send(value) {
     if (this.closed) throw this.closed;
     const data = JSON.stringify(value) + "\n";
-    if (Buffer.byteLength(data) > MAX_FRAME) throw new Error("CUA request exceeds protocol limit");
-    this.child.stdin.write(data);
-  }
-  rpc(method, params) {
     return new Promise((resolve, reject) => {
-      const id = ++this.sequence;
-      this.pending.set(id, { resolve, reject });
-      try { this.send({ jsonrpc: "2.0", id, method, params }); }
-      catch (error) { this.pending.delete(id); reject(error); }
+      this.child.stdin.write(data, error => error ? reject(error) : resolve());
     });
+  }
+  async rpc(method, params) {
+    const id = ++this.sequence;
+    const response = new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+    });
+    try { await this.send({ jsonrpc: "2.0", id, method, params }); }
+    catch (error) { this.pending.delete(id); throw error; }
+    return response;
   }
   close(error = new Error("CUA session stopped")) {
     if (this.closed) return;
@@ -187,8 +186,38 @@ class ComputerProcess {
     this.child.kill("SIGKILL");
     this.child.stdin.destroy(); this.child.stdout.destroy();
     for (const pending of this.pending.values()) pending.reject(error);
-    this.pending.clear(); this.buffer = Buffer.alloc(0);
+    this.pending.clear(); this.lines.clear();
   }
+}
+
+// stdout can carry multi-megabyte screenshots or text in one JSONL record.
+// Keep incoming chunks as a queue and copy each completed record exactly once;
+// repeatedly concatenating the full prefix makes fragmented large results O(n²).
+class LineBuffer {
+  chunks = [];
+  push(chunk) { if (chunk.length) this.chunks.push(chunk); }
+  shift() {
+    let length = 0;
+    for (let index = 0; index < this.chunks.length; index++) {
+      const chunk = this.chunks[index];
+      const newline = chunk.indexOf(10);
+      if (newline === -1) { length += chunk.length; continue; }
+      const line = Buffer.allocUnsafe(length + newline);
+      let offset = 0;
+      for (let part = 0; part < index; part++) {
+        this.chunks[part].copy(line, offset);
+        offset += this.chunks[part].length;
+      }
+      chunk.copy(line, offset, 0, newline);
+      const remainder = chunk.subarray(newline + 1);
+      this.chunks = [
+        ...(remainder.length ? [remainder] : []),
+        ...this.chunks.slice(index + 1),
+      ];
+      return line;
+    }
+  }
+  clear() { this.chunks = []; }
 }
 
 export function outputContent(result) {

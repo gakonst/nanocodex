@@ -146,19 +146,6 @@ fn callback(
                 raise(scope, "node_repl exec context not found");
                 return;
             }
-            if state.writes >= 256
-                || text.len()
-                    + state
-                        .outputs
-                        .iter()
-                        .map(|value| value.to_string().len())
-                        .sum::<usize>()
-                    > 4 * 1024 * 1024
-            {
-                raise(scope, "Cell output budget exceeded (256 items / 4 MiB)");
-                return;
-            }
-            state.writes += 1;
             let value: Value = serde_json::from_str(&text).unwrap_or(json!(text));
             let named = kind == "named";
             if kind != "image"
@@ -188,11 +175,8 @@ fn callback(
                 return;
             };
             let delay = args.get(1).number_value(scope).unwrap_or(f64::NAN);
-            if !delay.is_finite()
-                || !(0.0..=2147483647.0).contains(&delay)
-                || state.borrow().timers.len() >= 1024
-            {
-                raise(scope, "Invalid timeout or too many timers");
+            if !delay.is_finite() || !(0.0..=2147483647.0).contains(&delay) {
+                raise(scope, "Invalid timeout");
                 return;
             }
             let function = v8::Global::new(scope, function);
@@ -238,10 +222,6 @@ fn callback(
                 return;
             };
             let mut state = state.borrow_mut();
-            if state.microtasks.len() >= 1024 {
-                raise(scope, "Microtask budget exceeded");
-                return;
-            }
             let Some(id) = state.next_microtask.checked_add(1) else {
                 raise(scope, "Microtask ID exhausted");
                 return;
@@ -316,10 +296,6 @@ fn callback(
             };
             let mut merged = state.meta.clone();
             merged.extend(meta);
-            if serde_json::to_vec(&merged).unwrap().len() > 65536 {
-                raise(scope, "Response metadata exceeds 64 KiB");
-                return;
-            }
             state.meta = merged;
         }
         _ => raise(scope, "Unknown Rust host callback"),

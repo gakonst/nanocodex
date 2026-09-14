@@ -105,7 +105,7 @@ fn node_repl_image_inputs_and_errors_match_installed_worker_oracle() {
     }
 }
 #[test]
-fn node_repl_images_drain_unawaited_operations_and_keep_file_reads_bounded() {
+fn node_repl_images_drain_unawaited_operations_and_accept_large_file_reads() {
     let mut host = host(HostOptions::default());
     let result = eval(
         &mut host,
@@ -132,20 +132,14 @@ fn node_repl_images_drain_unawaited_operations_and_keep_file_reads_bounded() {
         &format!("await nodeRepl.emitImage({});", json!(url)),
     );
     assert_eq!(output(&result, "image")["mime_type"], "image/png");
-    std::fs::File::create(&path)
-        .unwrap()
-        .set_len(3 * 1024 * 1024 + 1)
-        .unwrap();
+    let mut large = vec![0; 3 * 1024 * 1024 + 1];
+    large[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+    std::fs::write(&path, large).unwrap();
     let result = eval(
         &mut host,
         &format!("await nodeRepl.emitImage({});", json!(url)),
     );
-    assert!(
-        result["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("3 MiB")
-    );
+    assert_eq!(output(&result, "image")["mime_type"], "image/png");
     assert_eq!(eval(&mut host, "6*7")["value"], 42);
 }
 #[test]

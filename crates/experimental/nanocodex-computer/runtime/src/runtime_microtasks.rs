@@ -1,4 +1,4 @@
-//! Bounded native microtasks retain their originating execution context.
+//! Native microtasks retain their originating execution context.
 use super::tasks;
 use rquickjs::{Ctx, Function, Persistent, prelude::Func};
 use std::{
@@ -32,12 +32,6 @@ pub(super) fn install(
         "__skyre_microtask",
         Func::from(move |function: Function<'_>| -> rquickjs::Result<()> {
             let ctx = function.ctx().clone();
-            if queue.pending.borrow().len() >= 1024 {
-                return Err(rquickjs::Exception::throw_message(
-                    &ctx,
-                    "Microtask budget exceeded",
-                ));
-            }
             let id = queue.next.get().checked_add(1).ok_or_else(|| {
                 rquickjs::Exception::throw_message(&ctx, "Microtask ID exhausted")
             })?;

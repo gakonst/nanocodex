@@ -75,7 +75,6 @@ struct State {
     cell: u64,
     request_meta: Value,
     outputs: Vec<Value>,
-    writes: usize,
     meta: serde_json::Map<String, Value>,
     timers: BTreeMap<u32, Timer>,
     event_clock_origin: Instant,
@@ -210,7 +209,6 @@ impl Host {
             cell: 0,
             request_meta: options.snapshot()["requestMeta"].clone(),
             outputs: vec![],
-            writes: 0,
             meta: Default::default(),
             timers: BTreeMap::new(),
             event_clock_origin: Instant::now(),
@@ -344,9 +342,6 @@ impl Host {
         if self.poisoned {
             self.reset()?;
         }
-        if code.len() > 1024 * 1024 {
-            return Err(Error::invalid("JavaScript cell exceeds 1 MiB"));
-        }
         let started = Instant::now();
         let deadline = started
             .checked_add(timeout)
@@ -359,7 +354,6 @@ impl Host {
             state.active = true;
             state.outputs.clear();
             state.exception_message = None;
-            state.writes = 0;
             state.meta.clear();
         }
         {
@@ -565,7 +559,7 @@ impl Host {
             let scope = &mut v8::ContextScope::new(scope, context);
             v8::tc_scope!(let scope,scope);
             (|| -> Result<()> {
-                for iteration in 0..=1024 {
+                loop {
                     check_execution(scope, &self.control)
                         .map_err(|_| Error::action("Background execution timed out"))?;
                     scope.perform_microtask_checkpoint();
@@ -574,9 +568,6 @@ impl Host {
                     }
                     check_execution(scope, &self.control)
                         .map_err(|_| Error::action("Background execution timed out"))?;
-                    if iteration == 1024 {
-                        break;
-                    }
                     let due = {
                         let mut s = state.borrow_mut();
                         let State {

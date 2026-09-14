@@ -21,7 +21,6 @@ const CANONICAL: &str = "/owned/Fixture.app";
 const BUNDLE: &str = "owned.app.state";
 const TREE: &str = "fixture tree";
 const GUIDANCE: &str = "Fixture instructions";
-const OUTPUT_ERROR: &str = "Cell output budget exceeded (256 items / 4 MiB)";
 
 fn original_first() -> String {
     assert_eq!(
@@ -459,32 +458,35 @@ fn native_app_instruction_prefix_and_key_precedence_survive_cells_and_reset() {
 }
 
 #[test]
-fn native_app_instruction_cache_commits_before_output_failure() {
+fn native_app_instruction_cache_survives_many_prior_outputs() {
     let first = original_first();
     for runtime in RuntimeBackend::available() {
         for supervised in [false, true] {
             let mut owner = Owner::new(runtime, supervised);
             let child = owner.child();
             owner.enqueue("Owned", Some(true), ordinary_state());
-            let failure = owner.evaluate(
+            let result = owner.evaluate(
                 r#"
 for(let i=0;i<256;i++)nodeRepl.write('', 'owned-app-state-'+i);
-var appStateFailure;try{await cua.getApp('Owned')}catch(error){appStateFailure=error.message}
-({failure:appStateFailure,sameOwner:appStateOwner===cua.computer})
+await cua.getApp('Owned');
+({sameOwner:appStateOwner===cua.computer})
 "#,
             );
-            assert_eq!(
-                failure["value"],
-                json!({"failure":OUTPUT_ERROR,"sameOwner":true})
-            );
-            let outputs = failure["outputs"].as_array().unwrap();
-            assert_eq!(outputs.len(), 256);
-            for (i, output) in outputs.iter().enumerate() {
+            assert_eq!(result["value"], json!({"sameOwner":true}));
+            let outputs = result["outputs"].as_array().unwrap();
+            assert!(outputs.len() > 256);
+            for (i, output) in outputs.iter().take(256).enumerate() {
                 assert_eq!(output["channel"], format!("owned-app-state-{i}"));
                 assert_eq!(output["value"], "");
             }
+            assert!(
+                outputs
+                    .iter()
+                    .skip(256)
+                    .any(|output| output["channel"] == "cua.state")
+            );
             assert_eq!(owner.child(), child);
-            // The output budget is fresh, but the installed cache is retained.
+            // A later cell retains the installed cache.
             owner.enqueue("Owned", Some(true), ordinary_state());
             let retry = owner
                 .evaluate("await cua.getApp('Owned');({sameOwner:appStateOwner===cua.computer})");

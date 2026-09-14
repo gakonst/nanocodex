@@ -387,7 +387,6 @@ struct QuickJsHost {
     cancellation: Arc<AtomicBool>,
     active: Rc<Cell<bool>>,
     cell_id: Rc<Cell<u64>>,
-    writes: Rc<Cell<usize>>,
     suspended: Arc<Mutex<(u32, Option<Instant>)>>,
     response_meta: Rc<RefCell<serde_json::Map<String, Value>>>,
     binding_salt: String,
@@ -429,8 +428,6 @@ impl QuickJsHost {
         let pending_rpc = Rc::new(RefCell::new(rpc::Queue::default()));
         let enqueue_rpc = pending_rpc.clone();
         let runtime = Runtime::new().map_err(js_error)?;
-        runtime.set_memory_limit(128 * 1024 * 1024);
-        runtime.set_max_stack_size(1024 * 1024);
         runtime.set_loader(
             modules::Resolver,
             modules::loader().with_module("skyre:kernel", kernel::MODULE),
@@ -461,7 +458,7 @@ impl QuickJsHost {
         let microtasks = Rc::new(microtasks::Queue::default());
         let next_timer = Rc::new(Cell::new(0u32));
         let event_clock_origin = Instant::now();
-        let outputs = Rc::new(RefCell::new(Vec::new()));
+        let outputs = Rc::new(RefCell::new(Vec::<Value>::new()));
         let writer = outputs.clone();
         let active = Rc::new(Cell::new(false));
         let cell_id = Rc::new(Cell::new(0u64));
@@ -482,8 +479,6 @@ impl QuickJsHost {
         let rpc_active = active.clone();
         let rpc_cell = cell_id.clone();
         let timer_context = tasks.clone();
-        let writes = Rc::new(Cell::new(0usize));
-        let write_count = writes.clone();
         let suspend = suspended.clone();
         let suspend_deadline = deadline.clone();
         let suspend_active = active.clone();
@@ -528,7 +523,6 @@ impl QuickJsHost {
                     let object=value.as_object().ok_or_else(||Exception::throw_type(&ctx,"Response metadata must be an object"))?;
                     let mut merged=meta_writer.borrow().clone();
                     merged.extend(object.clone());
-                    if serde_json::to_vec(&merged).map_or(true,|v|v.len()>65536) {return Err(Exception::throw_message(&ctx,"Response metadata exceeds 64 KiB"));}
                     *meta_writer.borrow_mut()=merged; Ok(())
                 }))?;
                 ctx.globals().set("__skyre_url_parse", Func::from(move |request:String| -> String { helper_response(parse_url(&request)) }))?;
@@ -561,20 +555,6 @@ impl QuickJsHost {
                               -> rquickjs::Result<()> {
                             let mut output = writer.borrow_mut();
                             if !write_active.get() || origin_write.poisoned.get() || origin_write.current.borrow().id!=write_cell.get() { if kind.0.as_deref()==Some("line"){return Ok(());}return Err(Exception::throw_message(&ctx,"node_repl exec context not found")); }
-                            if write_count.get() >= 256
-                                || text.len()
-                                    + output
-                                        .iter()
-                                        .map(|v: &Value| v.to_string().len())
-                                        .sum::<usize>()
-                                    > 4 * 1024 * 1024
-                            {
-                                return Err(Exception::throw_message(
-                                    &ctx,
-                                    "Cell output budget exceeded (256 items / 4 MiB)",
-                                ));
-                            }
-                            write_count.set(write_count.get() + 1);
                             let value = serde_json::from_str::<Value>(&text).unwrap_or(json!(text));
                             let kind = kind.0.unwrap_or_else(|| if channel == "image" {"image"} else if channel == "output" {"write"} else {"named"}.into());
                             let named = kind == "named";
@@ -593,7 +573,7 @@ impl QuickJsHost {
                 ctx.globals().set("__skyre_event_now", Func::from(move || event_clock_origin.elapsed().as_secs_f64() * 1000.0))?;
                 ctx.globals().set("__skyre_timer_schedule",Func::from(move |function:Function<'_>,delay:f64,kind:Opt<u8>|->rquickjs::Result<u32>{
                     let ctx=function.ctx().clone();
-                    if !delay.is_finite()||!(0.0..=2147483647.0).contains(&delay)||create_timer.borrow().len()>=1024{return Err(Exception::throw_message(&ctx,"Invalid timeout or too many timers"));}
+                    if !delay.is_finite()||!(0.0..=2147483647.0).contains(&delay){return Err(Exception::throw_message(&ctx,"Invalid timeout"));}
                     let id=next_timer.get().checked_add(1).ok_or_else(||Exception::throw_message(&ctx,"Timer ID exhausted"))?;next_timer.set(id);
                     create_timer.borrow_mut().insert(id,Timer{immediate:kind.0==Some(1),when:Instant::now()+Duration::from_secs_f64(delay/1000.0),function:Persistent::save(&ctx,function),context:timer_context.current.borrow().clone()});Ok(id)
                 }))?;
@@ -632,7 +612,6 @@ impl QuickJsHost {
             cancellation,
             active,
             cell_id,
-            writes,
             suspended,
             response_meta,
             binding_salt,
@@ -640,16 +619,12 @@ impl QuickJsHost {
         })
     }
     pub fn evaluate(&mut self, code: &str, timeout: Duration, completion: bool) -> Result<Value> {
-        if code.len() > 1024 * 1024 {
-            return Err(Error::invalid("JavaScript cell exceeds 1 MiB"));
-        }
         *self.deadline.lock().unwrap() = Instant::now()
             .checked_add(timeout)
             .ok_or_else(|| Error::invalid("Evaluation timeout exceeds the clock range"))?;
         self.outputs.borrow_mut().clear();
         self.response_meta.borrow_mut().clear();
         *self.suspended.lock().unwrap() = (0, None);
-        self.writes.set(0);
         self.cell_id.set(self.cell_id.get().saturating_add(1));
         self.drain.finish();
         self.drain.registry.borrow_mut().begin(self.cell_id.get());
@@ -993,12 +968,11 @@ impl QuickJsHost {
             );
             if let Some(id) = due {
                 let timer = self.timers.borrow_mut().remove(&id).unwrap();
-                self.tasks.enter(timer.context);
+                let _scope = self.tasks.scope(timer.context);
                 let result = timer
                     .function
                     .restore(ctx)
                     .and_then(|function| function.call::<_, ()>(()));
-                self.tasks.leave();
                 if result.is_err() {
                     let error = ctx.catch();
                     let detail = error
@@ -1012,6 +986,7 @@ impl QuickJsHost {
                         &tasks::fatal("uncaught exception", &detail),
                     ));
                 }
+                while ctx.execute_pending_job() {}
                 continue;
             }
             let wait = self
@@ -1036,7 +1011,7 @@ impl QuickJsHost {
             .checked_add(budget)
             .ok_or_else(|| Error::invalid("Background deadline exceeds clock range"))?;
         let result = self.context.with(|ctx| -> rquickjs::Result<()> {
-            for _ in 0..1024 {
+            loop {
                 if self.cancellation.load(Ordering::Acquire)
                     || Instant::now() >= *self.deadline.lock().unwrap()
                 {
@@ -1059,13 +1034,13 @@ impl QuickJsHost {
                 );
                 let Some(id) = due else { break };
                 let timer = self.timers.borrow_mut().remove(&id).unwrap();
-                self.tasks.enter(timer.context);
+                let _scope = self.tasks.scope(timer.context);
                 let result = timer
                     .function
                     .restore(&ctx)
                     .and_then(|function| function.call::<_, ()>(()));
-                self.tasks.leave();
                 result?;
+                while ctx.execute_pending_job() {}
             }
             Ok(())
         });

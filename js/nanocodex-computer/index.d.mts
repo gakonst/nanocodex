@@ -1,4 +1,5 @@
 import type { NamedTool } from "nanocodex-tools";
+export type * from "./api.d.mts";
 export function discoverComputer(options?: { binary?: string }): Promise<string | undefined>;
 export function createComputerTools(options: {
   executable: string;

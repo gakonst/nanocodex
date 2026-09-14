@@ -81,11 +81,7 @@ pub(super) extern "C" fn rejected(message: v8::PromiseRejectMessage) {
             });
         }
         v8::PromiseRejectEvent::PromiseRejectWithNoHandler => {
-            if state.rejections.len() >= 1024 {
-                state.tasks.poisoned.set(true);
-            } else {
-                state.rejections.push(v8::Global::new(scope, promise));
-            }
+            state.rejections.push(v8::Global::new(scope, promise));
         }
         _ => {}
     }

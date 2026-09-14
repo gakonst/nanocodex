@@ -1,5 +1,6 @@
-//! Engine-native Promise hooks retain task identity without patching Promise.
+//! Runtime-owned Promise hooks retain task identity without patching QuickJS.
 use super::tasks::{Context as TaskContext, Tasks};
+use rquickjs::prelude::Func;
 use rquickjs::{
     Context, Function, Object, Persistent, Runtime, Value, prelude::This, promise::PromiseHookType,
 };
@@ -67,12 +68,66 @@ pub(super) fn install(
         if handled {
             records.borrow_mut().remove(&promise);
         } else {
-            if records.borrow().len() >= 1024 {
-                tasks.poisoned.set(true);
-            } else {
-                records.borrow_mut().insert(promise);
-            }
+            records.borrow_mut().insert(promise);
         }
     })));
+    let capture_tasks = tasks.clone();
+    let enter_tasks = tasks.clone();
+    let leave_tasks = tasks.clone();
+    context.with(|ctx| {
+        ctx.globals().set(
+            "__skyre_task_capture",
+            Func::from(move || {
+                let task = capture_tasks.current.borrow();
+                serde_json::json!([task.id, task.metadata.as_ref()]).to_string()
+            }),
+        )?;
+        ctx.globals().set(
+            "__skyre_task_enter",
+            Func::from(move |id: f64, metadata: String| {
+                enter_tasks.enter(TaskContext {
+                    id: id as u64,
+                    metadata: Rc::from(metadata),
+                });
+            }),
+        )?;
+        ctx.globals().set(
+            "__skyre_task_leave",
+            Func::from(move || leave_tasks.leave()),
+        )?;
+        // QuickJS's published crate hooks promise creation and thenable jobs,
+        // but not ordinary Promise reactions. Wrap explicit reactions so they
+        // retain registration context; async/await jobs are drained inside the
+        // native timer scope in runtime.rs.
+        ctx.eval::<(), _>(
+            r#"(()=>{
+                const capture = __skyre_task_capture;
+                const enter = __skyre_task_enter;
+                const leave = __skyre_task_leave;
+                delete globalThis.__skyre_task_capture;
+                delete globalThis.__skyre_task_enter;
+                delete globalThis.__skyre_task_leave;
+                const then = Promise.prototype.then;
+                const wrap = fn => {
+                    const task = JSON.parse(capture());
+                    return function(...args) {
+                        enter(task[0], task[1]);
+                        try { return Reflect.apply(fn, this, args); }
+                        finally { leave(); }
+                    };
+                };
+                Object.defineProperty(Promise.prototype, "then", {
+                    configurable: true,
+                    writable: true,
+                    value(onFulfilled, onRejected) {
+                        return Reflect.apply(then, this, [
+                            typeof onFulfilled === "function" ? wrap(onFulfilled) : onFulfilled,
+                            typeof onRejected === "function" ? wrap(onRejected) : onRejected,
+                        ]);
+                    },
+                });
+            })()"#,
+        )
+    })?;
     Ok(rejected)
 }

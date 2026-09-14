@@ -10,9 +10,6 @@ pub(crate) fn helper_response(result: Result<Value>) -> String {
     .to_string()
 }
 pub(crate) fn parse_url(request: &str) -> Result<Value> {
-    if request.len() > 128 * 1024 {
-        return Err(Error::invalid("URL input exceeds 128 KiB"));
-    }
     let args: Value = serde_json::from_str(request)?;
     let input = args["input"]
         .as_str()
@@ -77,7 +74,6 @@ pub(crate) fn parse_url(request: &str) -> Result<Value> {
         json!({"href":url.as_str(),"origin":url.origin().ascii_serialization(),"protocol":format!("{}:",url.scheme()),"username":url.username(),"password":url.password().unwrap_or(""),"host":host,"hostname":hostname,"port":url.port().map(|n|n.to_string()).unwrap_or_default(),"pathname":url.path(),"search":url.query().filter(|s|!s.is_empty()).map(|s|format!("?{s}")).unwrap_or_default(),"hash":url.fragment().filter(|s|!s.is_empty()).map(|s|format!("#{s}")).unwrap_or_default()}),
     )
 }
-const MAX_IMAGE_BYTES: usize = 3 * 1024 * 1024;
 fn image_mime(bytes: &[u8]) -> Result<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Ok("image/png")
@@ -92,9 +88,6 @@ fn image_mime(bytes: &[u8]) -> Result<&'static str> {
     }
 }
 pub(crate) fn read_image_file(value: &str) -> Result<Value> {
-    if value.len() > 128 * 1024 {
-        return Err(Error::invalid("Image file URL exceeds 128 KiB"));
-    }
     let url = url::Url::parse(value).map_err(|_| Error::invalid("Invalid image file URL"))?;
     let path = url
         .to_file_path()
@@ -111,26 +104,12 @@ pub(crate) fn read_image_file(value: &str) -> Result<Value> {
     if !metadata.is_file() {
         return Err(Error::invalid("Image file must be a regular file"));
     }
-    if metadata.len() > MAX_IMAGE_BYTES as u64 {
-        return Err(Error::invalid(
-            "Image exceeds the bounded 3 MiB image budget",
-        ));
-    }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    file.take(MAX_IMAGE_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_IMAGE_BYTES {
-        return Err(Error::invalid(
-            "Image exceeds the bounded 3 MiB image budget",
-        ));
-    }
+    file.take(u64::MAX).read_to_end(&mut bytes)?;
     let mime = image_mime(&bytes)?;
     Ok(json!({"data":base64::engine::general_purpose::STANDARD.encode(bytes),"mime_type":mime}))
 }
 pub(crate) fn image_data_url(value: &str) -> Result<Value> {
-    if value.len() > 4 * 1024 * 1024 {
-        return Err(Error::invalid("Image exceeds the bounded data URL budget"));
-    }
     let (metadata, data) = value
         .get(5..)
         .and_then(|s| s.split_once(','))
@@ -169,10 +148,5 @@ pub(crate) fn image_data_url(value: &str) -> Result<Value> {
         }
         bytes
     };
-    if bytes.len() > MAX_IMAGE_BYTES {
-        return Err(Error::invalid(
-            "Image exceeds the bounded 3 MiB image budget",
-        ));
-    }
     Ok(json!({"data":base64::engine::general_purpose::STANDARD.encode(bytes),"mime_type":mime}))
 }

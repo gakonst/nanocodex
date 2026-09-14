@@ -5,7 +5,7 @@ the recovered CUA JavaScript interface through JSON-RPC/MCP. Nanocodex owns the
 launcher and attachment adapters; this workspace owns OS and browser operations.
 
 The import contains authored Rust/JavaScript implementation, synthetic fixtures,
-behavioral oracle data and the existing QuickJS patch. It does not load the
+and behavioral oracle data. It uses the normal published `rquickjs` crate and does not load the
 original Sky executable, service bundle, signing identity or private service
 socket. Interface documentation and app guidance are adapted from the research
 contract. This is experimental compatibility work, not a claim of complete Sky
@@ -25,9 +25,9 @@ embedding application already authorized its native tool capability; configured
 app/origin restrictions and OS grants remain enforced. Standalone execution
 without that flag retains the runtime's explicit app approval flow.
 
-The nested workspace isolates `vendor/rquickjs-sys` from the agent's JavaScript
-engine. Preserve that vendor's license files and patch when updating QuickJS.
-Production builds do not depend on the research checkout or original binaries.
+The nested workspace keeps the companion build independent from the agent's
+JavaScript engine. Production builds do not depend on vendored QuickJS sources,
+the research checkout, or original binaries.
 
 Build and test from the repository root with `pnpm build:computer` and
 `pnpm test:computer`. See the [adapter README](../README.md) for installation,

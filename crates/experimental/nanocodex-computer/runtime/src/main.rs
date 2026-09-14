@@ -1012,29 +1012,9 @@ impl Server {
 }
 fn read_line(input: &mut impl BufRead) -> Result<Option<Value>> {
     let mut line = Vec::new();
-    let count = (&mut *input)
-        .take((protocol::MAX_FRAME + 2) as u64)
-        .read_until(b'\n', &mut line)?;
+    let count = input.read_until(b'\n', &mut line)?;
     if count == 0 {
         return Ok(None);
-    }
-    if count > protocol::MAX_FRAME {
-        // Discard the remainder without allocating an unbounded input line.
-        if !line.ends_with(b"\n") {
-            loop {
-                let buf = input.fill_buf()?;
-                if buf.is_empty() {
-                    break;
-                }
-                let end = buf.iter().position(|b| *b == b'\n');
-                let len = end.map_or(buf.len(), |i| i + 1);
-                input.consume(len);
-                if end.is_some() {
-                    break;
-                }
-            }
-        }
-        return Err(Error::invalid("JSON line exceeds 8 MiB"));
     }
     Ok(Some(serde_json::from_slice(&line)?))
 }
@@ -1104,7 +1084,7 @@ fn cua_tools() -> Value {
     json!({"tools":[
         {"name":"js","description":include_str!("cua_tool_description.md"),"inputSchema":{"additionalProperties":false,"type":"object","properties":{
             "code":{"description":"JavaScript to execute using the initialized CUA runtime.","type":"string"},
-            "title":{"description":"Short user-facing description of what the code does.","type":"string","minLength":1,"maxLength":80},
+            "title":{"description":"Short user-facing description of what the code does.","type":"string","minLength":1},
             "timeout_ms":{"description":"Optional execution timeout in milliseconds. Defaults to 30000 (30 seconds) when omitted.","type":"integer","minimum":1}
         },"required":["code"]}},
         {"name":"js_reset","description":include_str!("cua_reset_description.md"),"inputSchema":{"additionalProperties":false,"type":"object","properties":{}},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}}

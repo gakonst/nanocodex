@@ -7,7 +7,6 @@ use std::{fs, io::Write, path::PathBuf};
 #[derive(Default)]
 pub struct MediaStore {
     directory: Option<PathBuf>,
-    bytes: usize,
     sequence: u64,
 }
 impl MediaStore {
@@ -19,17 +18,11 @@ impl MediaStore {
             "audio/wav" => "wav",
             _ => return Err(Error::invalid("Unsupported result media type")),
         };
-        if data.len() > 88 * 1024 * 1024 {
-            return Err(Error::action("Result media exceeds 64 MiB"));
-        }
         let bytes = STANDARD
             .decode(data)
             .map_err(|_| Error::action("Invalid result media encoding"))?;
-        if bytes.is_empty() || bytes.len() > 64 * 1024 * 1024 {
-            return Err(Error::action("Result media is empty or exceeds 64 MiB"));
-        }
-        if self.bytes.saturating_add(bytes.len()) > 512 * 1024 * 1024 || self.sequence >= 4096 {
-            return Err(Error::action("Session result media storage limit reached"));
+        if bytes.is_empty() {
+            return Err(Error::action("Result media is empty"));
         }
         if self.directory.is_none() {
             let mut nonce = [0u8; 24];
@@ -63,12 +56,22 @@ impl MediaStore {
             let _ = fs::remove_file(&path);
             return Err(error.into());
         }
-        self.sequence += 1;
-        self.bytes += bytes.len();
+        self.sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::action("Result media sequence exhausted"))?;
         let url = url::Url::from_file_path(&path)
             .map_err(|_| Error::action("Invalid result media path"))?;
         Ok(
             json!({"filepath":path,"url":url.as_str(),"data_url":format!("data:{mime};base64,{data}")}),
         )
+    }
+}
+
+impl Drop for MediaStore {
+    fn drop(&mut self) {
+        if let Some(directory) = self.directory.take() {
+            let _ = fs::remove_dir_all(directory);
+        }
     }
 }

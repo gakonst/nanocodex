@@ -7,8 +7,8 @@ by the companion executable, `nanocodex-computer`.
 
 This imports the independent Rust implementation from the Sky research rebuild.
 It replaces the earlier macOS-only proposal in PR #102. The companion is a
-separate process and Cargo workspace so its patched QuickJS engine does not
-change Nanocodex's agent engine. See [runtime provenance](runtime/README.md).
+separate process and Cargo workspace and uses the published `rquickjs` crate.
+See [runtime provenance](runtime/README.md).
 
 ## Install and run
 
@@ -56,6 +56,13 @@ Linux desktop hosts require `libpulse` and `libxkbcommon` (Debian/Ubuntu package
 Browser-only Linux sessions do not require `DISPLAY`; the X11 connection opens
 on the first native desktop operation.
 The separate legacy Wayland screen-only service is not a CUA tool host.
+
+| Surface | Platforms | Operations |
+| --- | --- | --- |
+| Native apps | macOS, Linux/X11 | discover apps, accessibility state, screenshots, click, drag, scroll, key input, text entry/paste, selection and secondary AX actions |
+| Browser tabs | Any host with a configured Chromium CDP or bundled extension bridge | tab discovery/creation/navigation, DOM and accessibility state, screenshots, input, downloads, history, CDP and advertised WebMCP capabilities |
+| Low-level desktop | Linux/X11 today; Windows provider implementation is experimental | screen capture, pointer movement/click/drag, scrolling and keyboard/text input |
+| Optional audio | Platform provider dependent | start, stop and return captured audio through the same multimodal result path |
 
 ## Tool contract
 
@@ -165,19 +172,38 @@ let computer = ComputerTools::local(ComputerConfig::new("/usr/local/bin/nanocode
 that path without exposing a guest executable or command string to the model.
 The Node attachment adapter is [js/nanocodex-computer](../../../js/nanocodex-computer).
 
-Each conversation owns a process and persistent scope. Calls are serialized
-within an attachment. Cancellation, timeouts or malformed protocol output stop
-the affected process and require an explicit reset. Detaching drops the owned
-processes. Attachments permit up to 32 retained conversations; Node hosts also
-release scopes through the existing tool lifecycle hooks, cancelling both active
-and queued calls without reviving the released scope. Account credentials
-are omitted from the companion's environment. The runtime's browser, app and
-OS permission checks still apply.
+Each conversation owns a process and persistent scope. Calls remain ordered
+inside that scope because a single QuickJS realm is stateful; independent
+conversations are actors with separate processes and execute concurrently. No
+attachment-wide mutex or promise chain serializes them. Cancellation, timeouts
+or malformed protocol output stop only the affected process and require an
+explicit reset. Detaching drops the owned processes. Node hosts release scopes
+through the existing tool lifecycle hooks, cancelling both active and queued
+calls without reviving the released scope. The adapters do not impose arbitrary
+session, source, result or hosted-frame caps; caller-provided deadlines and
+output budgets remain effective. Account credentials are omitted from the
+companion's environment. The runtime's browser, app and OS permission checks
+still apply.
 The adapters accept positive safe-integer millisecond timeouts, including calls
 longer than 120 seconds. Omission or `null` uses a 30-second default; hosted
 transport deadlines can end a call sooner. Per-call Codex metadata reaches the
 running REPL, and MCP result metadata survives both adapters. Tool metadata cannot
 replace trusted confirmation policies or an authenticated host's route and turn.
+
+## TypeScript API
+
+The package publishes the runtime globals and the generated browser manifest as
+types without introducing a second JavaScript implementation:
+
+```ts
+import type { Cua, CuaGlobals, Target, Tab } from "nanocodex-computer/api";
+import type { Browsers } from "nanocodex-computer/browser-api";
+```
+
+`Cua` describes discovery and selection, `Target` covers the shared app/tab
+observation and input surface, and the generated browser declarations cover
+provider-specific tab capabilities. `Screenshot`/`Uint8Array` results remain
+binary until the adapter converts them to an MCP image block.
 
 ## Validation
 

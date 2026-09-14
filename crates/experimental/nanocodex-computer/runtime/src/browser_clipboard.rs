@@ -23,16 +23,6 @@ fn valid_base64(encoded: &str) -> bool {
 
 const STYLES: [&str; 3] = ["unspecified", "inline", "attachment"];
 const STYLE_EXPECTED: &str = "'unspecified' | 'inline' | 'attachment'";
-// Bound diagnostic amplification as well as stored bytes. This intentional
-// resource limit is narrower than the original unbounded schema diagnostics.
-const MAX_SCHEMA_ISSUES: usize = 1024;
-fn bounded(value: &Value) -> Result<()> {
-    if value.to_string().len() > crate::protocol::MAX_FRAME {
-        Err(Error::invalid("Clipboard exceeds byte limit"))
-    } else {
-        Ok(())
-    }
-}
 fn value_type(value: Option<&Value>) -> &'static str {
     match value {
         None => "undefined",
@@ -90,15 +80,7 @@ impl SchemaIssue {
         }
     }
 }
-fn issue_bound(issues: &[SchemaIssue]) -> Result<()> {
-    if issues.len() > MAX_SCHEMA_ISSUES {
-        Err(Error::invalid("Clipboard validation exceeds issue limit"))
-    } else {
-        Ok(())
-    }
-}
 fn schema_result(issues: Vec<SchemaIssue>) -> Result<()> {
-    issue_bound(&issues)?;
     if issues.is_empty() {
         Ok(())
     } else {
@@ -121,7 +103,6 @@ impl Clipboard {
             .as_array()
             .filter(|items| !items.is_empty())
             .ok_or_else(|| invalid("items"))?;
-        bounded(value)?;
         items
             .iter()
             .map(|item| {
@@ -171,13 +152,9 @@ impl Clipboard {
     // Public command schemas run over the entire payload before the store's
     // content checks. Page binding writes retain the distinct store domain.
     pub fn validate_public(value: Option<&Value>) -> Result<Vec<Value>> {
-        if let Some(value) = value {
-            bounded(value)?;
-        }
         let mut issues = Vec::new();
         if let Some(items) = value.and_then(Value::as_array) {
             for (item_index, item) in items.iter().enumerate() {
-                issue_bound(&issues)?;
                 let path = vec![json!("items"), json!(item_index)];
                 if !item.is_object() {
                     issues.push(SchemaIssue::invalid_type("object", Some(item), path));
@@ -187,7 +164,6 @@ impl Clipboard {
                 entry_path.push(json!("entries"));
                 if let Some(entries) = item.get("entries").and_then(Value::as_array) {
                     for (entry_index, entry) in entries.iter().enumerate() {
-                        issue_bound(&issues)?;
                         let mut path = entry_path.clone();
                         path.push(json!(entry_index));
                         if !entry.is_object() {
@@ -416,26 +392,8 @@ mod tests {
         let mut clipboard = Clipboard::default();
         let baseline = json!([{"entries":[{"mimeType":"text/plain","text":"baseline"}]}]);
         clipboard.write(&baseline).unwrap();
-        let oversized = json!([{"entries":[{"mimeType":"text/plain","text":"x".repeat(crate::protocol::MAX_FRAME)}]}]);
-        assert_eq!(
-            Clipboard::validate_public(Some(&oversized))
-                .unwrap_err()
-                .message,
-            "Clipboard exceeds byte limit"
-        );
-        assert_eq!(
-            Clipboard::validate_text(Some(&json!("x".repeat(crate::protocol::MAX_FRAME))))
-                .unwrap_err()
-                .message,
-            "Clipboard exceeds byte limit"
-        );
-        let many_errors = json!([{"entries":vec![Value::Null; MAX_SCHEMA_ISSUES + 1]}]);
-        assert_eq!(
-            Clipboard::validate_public(Some(&many_errors))
-                .unwrap_err()
-                .message,
-            "Clipboard validation exceeds issue limit"
-        );
+        let invalid = json!([{"entries":[Value::Null]}]);
+        assert!(Clipboard::validate_public(Some(&invalid)).is_err());
         assert_eq!(json!(clipboard.items), baseline);
         clipboard
             .write(&json!([{"entries":[{"mimeType":"text/plain","text":"after rejection"}]}]))

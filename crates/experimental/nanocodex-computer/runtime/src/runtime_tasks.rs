@@ -39,10 +39,6 @@ impl Tasks {
         }
     }
     pub fn enter(&self, context: Context) {
-        if self.stack.borrow().len() >= 4096 {
-            self.poisoned.set(true);
-            return;
-        }
         self.stack.borrow_mut().push(self.current.replace(context));
     }
     pub fn leave(&self) {

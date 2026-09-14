@@ -139,12 +139,6 @@ pub fn compile(code: &str, prior: &[(String, String)], cell: u64, salt: &str) ->
             _ => (),
         }
     }
-    if current.len() + prior.len() > 4096 {
-        return Err(Error::new(
-            -32004,
-            "Persistent binding budget exceeded (4096 names)",
-        ));
-    }
     let scoping = semantic.semantic.scoping();
     let mut reassigned = BTreeSet::new();
     for (name, kind) in prior {

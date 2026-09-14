@@ -686,7 +686,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
       name: "fixture__lookup",
       input: { id: "42" },
       output_token_budget: 10_000,
-      output_byte_budget: 128 * 1024,
+      output_byte_budget: Number.MAX_SAFE_INTEGER,
       deadline_at: NOW + 30_000,
     });
     await fixture.broker.message(host.webSocket, result(IDS[1]!, "done"));
@@ -1215,7 +1215,6 @@ class MemoryPersistence implements HostedToolsBrokerPersistence {
     return [...this.calls.values()].filter((row) => row.lease_id === leaseId
       && row.generation === generation).length;
   }
-  pruneReceipts(_limit: number): void {}
 }
 
 async function catalog(broker: HostedToolsBroker, host: FakeSocket): Promise<void> {

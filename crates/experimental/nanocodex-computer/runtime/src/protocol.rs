@@ -2,7 +2,8 @@ use crate::{Error, Result};
 use serde_json::{Value, json};
 use std::io::{Read, Write};
 
-pub const MAX_FRAME: usize = 8 * 1024 * 1024;
+/// The binary IPC prefix is a `u32`; this is the wire format's only size bound.
+pub const MAX_FRAME: usize = u32::MAX as usize;
 pub const IPC_VERSION: &str = "CodexComputerUseIPC-5";
 
 #[derive(Default)]
@@ -12,7 +13,7 @@ pub struct Decoder {
 impl Decoder {
     pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<Value>> {
         let mut messages = vec![];
-        // Incremental bounded storage even when the caller supplies many frames.
+        // Incremental storage even when the caller supplies many frames.
         for part in bytes.chunks(8192) {
             self.buffer.extend_from_slice(part);
             loop {
@@ -20,14 +21,14 @@ impl Decoder {
                     break;
                 }
                 let len = u32::from_le_bytes(self.buffer[..4].try_into().unwrap()) as usize;
-                if len > MAX_FRAME {
-                    return Err(Error::invalid("Frame exceeds 8 MiB"));
-                }
-                if self.buffer.len() < len + 4 {
+                let frame_len = len
+                    .checked_add(4)
+                    .ok_or_else(|| Error::invalid("Frame length exceeds address space"))?;
+                if self.buffer.len() < frame_len {
                     break;
                 }
-                messages.push(serde_json::from_slice(&self.buffer[4..len + 4])?);
-                self.buffer.drain(..len + 4);
+                messages.push(serde_json::from_slice(&self.buffer[4..frame_len])?);
+                self.buffer.drain(..frame_len);
             }
         }
         Ok(messages)
@@ -42,10 +43,9 @@ impl Decoder {
 }
 pub fn encode(value: &Value) -> Result<Vec<u8>> {
     let bytes = serde_json::to_vec(value)?;
-    if bytes.len() > MAX_FRAME {
-        return Err(Error::invalid("Frame exceeds 8 MiB"));
-    }
-    let mut result = (bytes.len() as u32).to_le_bytes().to_vec();
+    let len = u32::try_from(bytes.len())
+        .map_err(|_| Error::invalid("Frame exceeds the u32 wire length"))?;
+    let mut result = len.to_le_bytes().to_vec();
     result.extend(bytes);
     Ok(result)
 }
@@ -58,9 +58,6 @@ pub fn read_frame(input: &mut impl Read) -> Result<Option<Value>> {
     };
     input.read_exact(&mut header[1..])?;
     let len = u32::from_le_bytes(header) as usize;
-    if len > MAX_FRAME {
-        return Err(Error::invalid("Frame exceeds 8 MiB"));
-    }
     let mut data = vec![0; len];
     input.read_exact(&mut data)?;
     Ok(Some(serde_json::from_slice(&data)?))
