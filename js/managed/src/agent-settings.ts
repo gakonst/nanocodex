@@ -35,6 +35,11 @@ export type ManagedAgentCreateBody = Readonly<{
   settingsProvided: boolean;
 }>;
 
+export type ManagedAgentRunBody = Readonly<{
+  creationBody: string;
+  input: unknown;
+}>;
+
 export const DEFAULT_AGENT_SETTINGS: ManagedAgentSettings = Object.freeze({
   model: "gpt-6-astra",
   thinking: "low",
@@ -173,6 +178,27 @@ export function parseAgentCreateBody(encoded: string): ManagedAgentCreateBody {
     ...(body.environment_template_id === undefined ? {} : { environment_template_id: body.environment_template_id as string }),
     settingsProvided,
   };
+}
+
+/** Split one combined create-and-prompt request before either mutation starts. */
+export function parseAgentRunBody(encoded: string): ManagedAgentRunBody {
+  if (!encoded.trim()) {
+    throw new TypeError("agent run body must be a JSON object");
+  }
+  const value = JSON.parse(encoded) as unknown;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("agent run body must be a JSON object");
+  }
+  const { input, ...creation } = value as Record<string, unknown>;
+  if (!Object.hasOwn(value, "input")) {
+    throw new TypeError("agent run body requires input");
+  }
+  const creationBody = Object.keys(creation).length === 0
+    ? ""
+    : JSON.stringify(creation);
+  // Validate every creation field before the caller can create an empty agent.
+  parseAgentCreateBody(creationBody);
+  return { creationBody, input };
 }
 
 export function isAgentModel(value: unknown): value is ManagedAgentSettings["model"] {

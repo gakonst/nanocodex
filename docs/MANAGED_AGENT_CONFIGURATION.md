@@ -75,7 +75,32 @@ no explicit cache write. Provider validation, minimum eligible prefix length,
 cache pricing and expiry still apply. Provider controls are applied to every
 managed Responses socket, including reopened connections and child sessions.
 
-## Recovering session creation
+## Creating and starting in one durable mutation
+
+Use `Agent.createAndPrompt` for a new session whose first task is already known.
+The required account-scoped key identifies both resources, so a retry after a
+lost response returns handles for the same session and first turn instead of
+creating or prompting twice.
+
+```js
+const { agent, turn } = await Agent.createAndPrompt({
+  ...client,
+  idempotencyKey: `run:${job.id}`,
+  settings: { model: "gpt-5.6-luna", thinking: "low", reasoningMode: "standard", fastMode: false },
+  configuration: { tools: [], multi_agent: { enabled: false } },
+  input: job.prompt,
+});
+console.log(agent.id, await turn.accepted(), await turn.result());
+```
+
+The endpoint validates the complete creation body and prompt before mutation.
+It composes the existing durable creation and turn-admission owners with stable
+derived identities; aborting the caller only stops observation and never deletes
+or cancels admitted work. The first call returns `201`; an exact replay returns
+`200`. A changed creation policy or prompt under the same key returns `409`.
+Later turns remain explicit through `agent.turn.prompt(...)`.
+
+## Recovering session creation separately
 
 `Agent.create({ idempotencyKey, ...options })` accepts an account-scoped key of
 1–256 printable ASCII characters, excluding spaces. Persist the key and the
@@ -108,8 +133,8 @@ replay. Once you have persisted the session ID, resume with `Agent.open(id, clie
 instead of recreating it. A deleted session is not resurrected by reusing its key.
 There is no claim of exactly-once model execution or external tool side effects.
 
-The [second API design exercise](MANAGED_AGENT_START_DESIGN.md) proposes a future
-combined create-and-prompt operation. That operation is not implemented here.
+The [first-turn API design](MANAGED_AGENT_START_DESIGN.md) records the alternatives,
+failure cases, and rationale for the combined operation.
 
 ## Environment execution and limits
 

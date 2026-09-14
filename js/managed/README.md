@@ -64,7 +64,9 @@ storage ownership.
 
 - SMS OTP/account and API-key routes establish the account identity that owns
   agents, organizations, connectors, memory, and history.
-- `/v1/agents` lists or creates agents. Agent routes create turns, read state,
+- `/v1/agents` lists or creates agents. `/v1/agent-runs` creates an agent and
+  admits its first turn under one required stable key and one client request.
+  Agent routes create later turns, read state,
   cancel or steer work, delete an agent, and support explicit durability import
   and export. Stable `Idempotency-Key` values make create and turn retries safe.
 - `GET /v1/agents/:id/capacity` requires `agents:read` for that agent and returns
@@ -153,12 +155,16 @@ storage ownership.
   that prompt. The normal tool handlers enforce the caller's capabilities.
   Retrieval runs in parallel with runtime and account discovery. A durable
   developer message injects the results and the safe `accountInfo` snapshot,
-  including connected hands, logical mounts, and capabilities, before the first
+  including known hands, logical mounts, and capabilities, before the first
   model request. Retrieved content is explicitly untrusted data. Bootstrap emits
   no tool events and leaves the user prompt unchanged. Stable instructions stay
   first; the snapshot is appended once, preserving the cached conversation prefix.
   Durable receipts and checkpoint reconciliation prevent duplicate injection on
   recovery or reconnect. Later connection changes are available through `accountInfo`.
+  User hands include `online` attachment status. Offline hands remain in the
+  namespace so admitted calls can recover their receipts. A broker-confirmed
+  unstarted call returns an unavailable-hand result for the agent to handle;
+  transport failures with unknown admission retain the existing call identity.
   Subsequent turns use `memory` to scan, read, put/replace, and delete team facts;
   mutations require root-agent `memory:write` authority and puts require a scan.
 - `create_cron` saves a recurring prompt through the same durable scheduler as

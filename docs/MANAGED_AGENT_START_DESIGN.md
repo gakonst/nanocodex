@@ -2,14 +2,15 @@
 
 11 September 2026. This is a second design pass for PR #307, grounded in the
 deployed [600-trial comparison](../output/cloudflare-agents-2026-09-11/README.md).
-The combined operation below is a proposal, not a callable SDK method. This pass
-implements only caller-owned `Agent.create` idempotency keys and fixes the existing
-JavaScript examples to supply all four required settings fields.
+The selected operation is now exported as `Agent.createAndPrompt` and served by
+`POST /v1/agent-runs`. The branch also implements caller-owned `Agent.create`
+idempotency keys and fixes the existing JavaScript examples to supply all four
+required settings fields.
 
 ## Decision
 
-Keep the explicit session and `Turn` handles. Add a separate `Agent.createAndPrompt`
-operation in a follow-up once durable recovery is implemented. Its first response
+Keep the explicit session and `Turn` handles. The separate `Agent.createAndPrompt`
+operation composes the existing durable creation and admission owners. Its response
 should acknowledge admission and return both handles; observing or cancelling the
 turn remains a separate operation. Do not overload `Agent.create` to sometimes
 return a different type or silently run work.
@@ -83,15 +84,16 @@ This is not a permanent lookup API. The current server resolves templates before
 checking session initialization, and compares retained configuration and current
 settings. Deleting/replacing a template or changing session settings can prevent
 creation replay. Persist the session ID once known and use `Agent.open`. The
-combined proposal needs a stronger immutable operation receipt described below.
+combined endpoint inherits this template-replay limitation. A separate account
+operation journal would be required to pin resolved snapshots permanently.
 See [SDK creation](../js/nanocodex/managed/Agent.mjs),
 [public types](../js/nanocodex/managed/Agent.d.mts), and
 [server creation/initialization](../js/managed/src/index.ts).
 
-## Proposed TypeScript and JavaScript contract
+## TypeScript and JavaScript contract
 
-Names in this section are proposed, not exported today. Reuse existing types
-without adding another settings vocabulary or a provider-universal `Agent` type.
+The exported names reuse existing types without adding another settings vocabulary
+or a provider-universal `Agent` type.
 
 ```ts
 type CreateAndPromptOptions = Omit<CreateOptions, "idempotencyKey"> & Readonly<{
@@ -106,7 +108,6 @@ declare function createAndPrompt(options: CreateAndPromptOptions): Promise<
 ```
 
 ```js
-// PROPOSAL: this method is not implemented by this PR.
 const { agent, turn } = await Agent.createAndPrompt({
   ...client,
   idempotencyKey: "invoice-42:first-run",
@@ -133,57 +134,45 @@ its handles, then explicitly cancel or delete if that is the application's inten
 
 ## Durable workflow, not a cross-object transaction
 
-Propose `POST /v1/agent-runs` with `Idempotency-Key`, the existing creation body,
-and `input`. A successful admission returns 201 with `agent_id`, `turn_id`,
-`turn_idempotency_key` and `accepted_cursor`; replay returns 200 with the same
-immutable receipt. Add an authenticated operation lookup by key for recovery
-without resending a large prompt. It returns pending state or the retained receipt,
-never a different session. No prompt text or credential belongs in a lookup URL.
+`POST /v1/agent-runs` accepts `Idempotency-Key`, the existing creation body, and
+`input`. A successful admission returns 201 with `agent_id`, `turn_id`,
+`turn_idempotency_key` and `accepted_cursor`; exact replay returns 200 with the
+same receipt.
 
 1. Authenticate and authorize through the existing route policy. Validate the
-   whole request before mutation, including model policy and input bounds.
-2. On the account owner, atomically reserve the key with a canonical request hash
-   and a snapshot of resolved definition/environment configuration. Same key and
-   changed request is 409. Persist defaults explicitly. Concurrent reservations
-   with the same request converge on one snapshot; a retry must not reread a
-   template that was replaced or deleted after reservation.
-3. Drive existing session ownership, credential provisioning, memory and
-   initialization stages using that snapshot and stable identities. Store progress
-   durably and arrange an alarm/reconciler so a disconnected client is not required
-   to finish or clean up provisioning. There is no distributed SQL transaction
-   spanning the account, session, memory and credential owners.
-4. Once creation is committed, submit the first input through normal durable turn
-   admission with its fixed ID/key. Store the accepted receipt before replying.
-   Retry admission after a crash; existing conflict/deduplication rules apply.
-5. Recover observation from the stored cursor and turn ID. An admission receipt
-   does not promise successful environment setup, inference or tool execution.
-   Those failures settle the accepted turn through normal terminal events.
+   complete creation body and prompt before mutation.
+2. Derive stable, account-scoped session, turn and turn-key identities from the
+   caller's operation key. Prompt contents and credentials are never identities.
+3. Drive the existing idempotent session creation workflow. Its persisted
+   preparation and cleanup watchdog recover interrupted credential provisioning;
+   retained settings and configuration reject changed same-key requests.
+4. Submit the first input through normal durable turn admission with the derived
+   ID and key. Its retained request hash rejects a changed prompt and its durable
+   turn view reconstructs an admission receipt after a lost response.
+5. Return the existing Agent and Turn handles over that receipt. An admission does
+   not promise successful setup, inference or tool execution; those settle through
+   normal terminal events.
 
-Hash the validated caller request separately from the resolved snapshot. Hashing
-only the resolved configuration would make retry behavior depend on later template
-changes. Omitted defaults must have a pinned interpretation for that operation.
-Do not hash ephemeral credentials, base URL, fetch implementations or observers.
-Once admitted, return the original receipt even if session settings subsequently
-change. Execution must capture first-turn settings at admission; current mutable
-session settings are insufficient for that guarantee.
+There is no distributed transaction across the session, memory and credential
+owners. Keyed replay resumes at the first unfinished idempotent stage. Session
+deletion retains the existing creation tombstone and returns 409 on reuse, so it
+cannot resurrect work. Every retry reauthenticates and rechecks current authority.
 
-Retain an operation tombstone after session deletion so a retry cannot resurrect
-work. A replay of a deleted operation returns 410. Scope keys to the authenticated
-account and recheck current permissions on every request. Bound the journal per
-account with an explicit quota and reject new reservations when full; never evict
-an active operation silently. Define retention before release rather than claiming
-unlimited deduplication. Expiry must leave enough identity information to reject
-late reuse rather than unexpectedly launch another job.
+The remaining hardening opportunity is an account-owned operation journal with
+an immutable resolved template snapshot and lookup-by-key endpoint. The current
+implementation resolves named templates again during creation replay, just like
+`Agent.create`; callers should persist the returned session ID and use `Agent.open`
+after admission. There is no claim of unlimited idempotency retention.
 
 | Failure point | Required observable result |
 | --- | --- |
-| Before reservation | No retained operation; retry normally. |
-| After reservation, before committed creation | Pending operation; retry or reconciler resumes the same session. |
+| Before session preparation | No retained operation; retry normally. |
+| After preparation, before committed creation | Retry or the cleanup watchdog resolves the same session. |
 | After creation, before first admission | Same retained session, exactly one eventual durable admission. No second session. |
 | After admission, before the client receives its receipt | Recover the same turn ID/cursor; do not send the prompt as a new turn or steer. |
 | During setup/model execution | Normal terminal failure tied to the accepted turn, with partial usage if available. |
 | Duplicate key with different input/configuration | 409, with no replacement session or extra admission. |
-| After deletion | 410 from the operation tombstone; no resurrection. |
+| After deletion | 409 from the creation tombstone; no resurrection. |
 | Client aborts or its event stream disconnects | Work continues; explicit cancellation remains necessary. |
 
 Exactly one durable admission is the target. Exactly-once model requests or
@@ -223,11 +212,11 @@ regression. This document contains no new live measurements or claimed speedup.
 
 ## Scope of this PR update
 
-- Implement optional creation keys using the existing server contract; preserve
-  default random keys and explicit two-step turn submission.
-- Verify retries, separate SDK calls, invalid keys, body isolation, conflict
-  propagation and public types. Existing server ownership tests remain relevant.
+- Implement optional creation keys and combined `createAndPrompt`; preserve
+  default random keys and explicit later-turn submission.
+- Verify retries, lost receipts, exact replay, changed-input conflicts, invalid
+  requests, authority checks, body isolation, public types and accepted-handle reuse.
 - Correct incomplete settings examples and ignore only opaque provider/ray IDs
   in the JSON spelling check, preserving measured data byte-for-byte.
-- Leave the combined endpoint, operation journal, immutable admission snapshots
-  and stronger replay guarantees for the follow-up described above.
+- Leave the separate operation journal, immutable template snapshots and lookup by
+  key for future hardening; the shipped endpoint composes existing durable owners.

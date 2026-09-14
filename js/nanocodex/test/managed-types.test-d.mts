@@ -48,6 +48,18 @@ async function checkManaged() {
       fastMode: false,
     },
   });
+  const combined = await Agent.createAndPrompt({
+    idempotencyKey: "run:job-42",
+    input: "Start the durable job",
+    configuration: { tools: [], multi_agent: { enabled: false } },
+  });
+  const combinedAgent: ManagedAgent = combined.agent;
+  const combinedResult: ManagedTurnResult = await combined.turn.result();
+  void combinedAgent; void combinedResult;
+  // @ts-expect-error combined creation requires a durable caller key.
+  await Agent.createAndPrompt({ input: "missing key" });
+  // @ts-expect-error combined creation requires prompt input.
+  await Agent.createAndPrompt({ idempotencyKey: "run:missing-input" });
   await Agent.create({
     // @ts-expect-error managed creation settings must be complete.
     settings: { model: "gpt-6-astra", thinking: "high" },

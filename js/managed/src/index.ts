@@ -193,6 +193,7 @@ import {
   isAgentModel,
   agentSettingsQuery,
   parseAgentCreateBody,
+  parseAgentRunBody,
   parseAgentSettingsPatch,
   parseAgentSettingsQuery,
   parseCompleteAgentSettings,
@@ -1604,6 +1605,101 @@ async function managedFetch(
         );
       }
       return json({ error: "method_not_allowed" }, { status: 405 });
+    }
+    if (request.method === "POST" && url.pathname === "/v1/agent-runs") {
+      if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
+      const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
+      if (!principal) return json({ error: "unauthorized" }, { status: 401 });
+      if (!principal.capabilities.includes("agents:write")
+        || !principal.capabilities.includes("tools:use")) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      if (principal.connectGrant
+        && !principal.connectGrant.connectors.includes("chatgpt")) {
+        return json({ error: "connector_forbidden" }, { status: 403 });
+      }
+      const originFailure = requireSameOriginMutation(request, url, principal);
+      if (originFailure) return originFailure;
+      const requestKey = request.headers.get("idempotency-key");
+      if (requestKey === null) {
+        return json({
+          error: "idempotency_required",
+          message: "combined agent creation requires Idempotency-Key",
+        }, { status: 400 });
+      }
+      if (!IDEMPOTENCY_KEY.test(requestKey)) {
+        return json({ error: "invalid_idempotency_key" }, { status: 400 });
+      }
+      let run: ReturnType<typeof parseAgentRunBody>;
+      try {
+        run = parseAgentRunBody(await request.text());
+        validatePromptInput(run.input);
+      } catch (error) {
+        const protocol = error instanceof ProtocolError
+          ? error
+          : new ProtocolError("invalid_request", errorMessage(error));
+        return json({ error: protocol.code, message: protocol.message }, { status: 400 });
+      }
+
+      // Reuse the existing independently durable creation and turn-admission
+      // owners. The stable outer key converges retries on both resources while
+      // keeping this public request to one client round trip.
+      const innerHeaders = new Headers({
+        "content-type": "application/json",
+        "idempotency-key": requestKey,
+        origin: url.origin,
+      });
+      const created = await managedFetch(new Request(new URL("/v1/agents", url), {
+        method: "POST",
+        headers: innerHeaders,
+        body: run.creationBody,
+      }), env, ctx, principal);
+      if (!created.ok) return created;
+      let creationReceipt: { agent_id?: unknown };
+      try {
+        creationReceipt = await created.json<{ agent_id?: unknown }>();
+      } catch {
+        return json({ error: "agent_creation_invalid_response" }, { status: 502 });
+      }
+      const expectedAgentId = await idempotentAgentId(principal.userId, requestKey);
+      if (creationReceipt.agent_id !== expectedAgentId) {
+        return json({ error: "agent_creation_invalid_response" }, { status: 502 });
+      }
+
+      const turnId = await idempotentAgentId(
+        principal.userId,
+        `agent-run-turn\0${requestKey}`,
+      );
+      const turnKey = `agent-run:${await hashText(
+        `${principal.userId}\0${requestKey}\0first-turn`,
+      )}`;
+      innerHeaders.set("idempotency-key", turnKey);
+      const admitted = await managedFetch(new Request(
+        new URL(`/v1/agents/${expectedAgentId}/turns`, url),
+        {
+          method: "POST",
+          headers: innerHeaders,
+          body: JSON.stringify({ id: turnId, input: run.input }),
+        },
+      ), env, ctx, principal);
+      if (!admitted.ok) return admitted;
+      let turnReceipt: Record<string, unknown>;
+      try {
+        turnReceipt = await admitted.json<Record<string, unknown>>();
+      } catch {
+        return json({ error: "turn_admission_invalid_response" }, { status: 502 });
+      }
+      if (turnReceipt.turn_id !== turnId
+        || typeof turnReceipt.accepted_cursor !== "string"
+        || !/^[1-9][0-9]*$/.test(turnReceipt.accepted_cursor)) {
+        return json({ error: "turn_admission_invalid_response" }, { status: 502 });
+      }
+      return json({
+        agent_id: expectedAgentId,
+        session_id: expectedAgentId,
+        turn_idempotency_key: turnKey,
+        ...turnReceipt,
+      }, { status: admitted.status === 202 ? 201 : 200 });
     }
     if (request.method === "POST" && url.pathname === "/v1/agents") {
       if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
@@ -7944,6 +8040,8 @@ export class DurableAgentSession extends DurableComputerSession {
             id: `user:${machine.id}`,
             name: machine.name,
             kind: "user" as const,
+            online: this.#hostedTools.machineOnline(machine.id)
+              || this.#accountHostedTools?.machineOnline(machine.id, context) === true,
             mount,
             workspace: mount,
             capabilities: machine.capabilities,

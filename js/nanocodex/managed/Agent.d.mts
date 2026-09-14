@@ -179,6 +179,14 @@ export type CreateOptions = Options & Readonly<{
   settings?: CreateSettings | undefined;
 }>;
 
+export type CreateAndPromptOptions = CreateOptions & Readonly<{
+  /** Required durable identity for both the new session and its first turn. */
+  idempotencyKey: string;
+  input: PromptInput;
+  /** Stops waiting for admission; it does not cancel or delete durable work. */
+  signal?: AbortSignal | undefined;
+}>;
+
 export type Capabilities = Readonly<{
   durable_turns: true;
   resumable_events: true;
@@ -344,6 +352,11 @@ export type Turn = Readonly<{
   result(options?: TurnResultOptions): Promise<TurnResult>;
 }>;
 
+export type CreateAndPromptResult = Readonly<{
+  agent: Agent;
+  turn: Turn;
+}>;
+
 export type CronTriggerConfig = Readonly<{
   /** A fresh session per occurrence (default on create), or continue this conversation. Omit on update to retain the mode. */
   session_mode?: "new" | "continue" | undefined;
@@ -420,6 +433,8 @@ export type Agent = Readonly<{
 }>;
 
 export function create(options?: CreateOptions): Promise<Agent>;
+/** Create a session and admit its first turn with one durable client mutation. */
+export function createAndPrompt(options: CreateAndPromptOptions): Promise<CreateAndPromptResult>;
 export function list(options?: Options): Promise<readonly Agent[]>;
 export function get(id: string, options?: Options): Promise<Agent>;
 /** Open a handle immediately; each subsequent operation verifies ownership server-side. */

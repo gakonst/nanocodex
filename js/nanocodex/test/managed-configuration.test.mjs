@@ -44,6 +44,67 @@ test("creation conflicts are surfaced without generating a replacement key", asy
   } }), error => error.status === 409 && error.code === "agent_initialization_conflict");
   assert.equal(requests, 1);
 });
+test("combined creation durably admits the first turn in one client mutation", async () => {
+  const requests = [];
+  const turnId = "0198d3f0-8844-8000-8000-000000000042";
+  const turnKey = `agent-run:${"a".repeat(64)}`;
+  const options = {
+    baseUrl: "https://managed.example",
+    idempotencyKey: "run:job-42",
+    input: "Compute 17 * 19.",
+    configuration: { tools: [], multi_agent: { enabled: false } },
+    fetch: async (url, init) => {
+      const request = new Request(url, init);
+      requests.push(request);
+      if (requests.length === 1) throw new Error("lost combined receipt");
+      return Response.json({
+        agent_id: id,
+        session_id: id,
+        turn_id: turnId,
+        turn_idempotency_key: turnKey,
+        accepted_cursor: "2",
+        terminal_cursor: null,
+        state: "accepted",
+      }, { status: 201 });
+    },
+  };
+  const { agent, turn } = await Agent.createAndPrompt(options);
+  assert.equal(agent.id, id);
+  assert.equal(await turn.accepted(), turnId);
+  assert.equal(turn.idempotencyKey, turnKey);
+  assert.equal(requests.length, 2, "the accepted Turn handle must not resubmit the prompt");
+  for (const request of requests) {
+    assert.equal(new URL(request.url).pathname, "/v1/agent-runs");
+    assert.equal(request.headers.get("idempotency-key"), "run:job-42");
+    assert.deepEqual(await request.clone().json(), {
+      configuration: { tools: [], multi_agent: { enabled: false } },
+      input: "Compute 17 * 19.",
+    });
+  }
+  assert.equal(Object.isFrozen(agent), true);
+  assert.equal(Object.isFrozen(turn), true);
+});
+test("combined creation requires a durable caller key and validates its receipt", async () => {
+  let requests = 0;
+  const fetch = async () => {
+    requests += 1;
+    return Response.json({ agent_id: id, turn_id: "turn", accepted_cursor: "2" });
+  };
+  await assert.rejects(
+    Agent.createAndPrompt({ baseUrl: "https://managed.example", fetch, input: "hello" }),
+    /requires an idempotency key/,
+  );
+  await assert.rejects(
+    Agent.createAndPrompt({
+      baseUrl: "https://managed.example",
+      fetch,
+      idempotencyKey: "run:job-42",
+      input: "hello",
+    }),
+    /turn_idempotency_key/,
+  );
+  assert.equal(requests, 1);
+});
 test("configuration, template and operational calls use the existing authenticated client", async () => {
   const requests = [];
   const options = { baseUrl: "https://managed.example", fetch: async (url, init) => {

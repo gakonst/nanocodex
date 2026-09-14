@@ -36,19 +36,71 @@ export async function create(options = {}) {
   const { clientOptions, requestBody, creationKey } = managedCreateOptions(options);
   const client = managedClient(clientOptions);
   const idempotencyKey = creationKey ?? `managed-create:${globalThis.crypto.randomUUID()}`;
+  const receipt = await retryCreateMutation(
+    client,
+    "/v1/agents",
+    idempotencyKey,
+    requestBody,
+  );
+  return agentHandle(client, requiredString(receipt, "agent_id"));
+}
+
+/** Create a managed agent and durably admit its first turn in one request. */
+export async function createAndPrompt(options) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("managed create-and-prompt options must be an object");
+  }
+  const { input, signal, ...createOptions } = options;
+  if (signal !== undefined && !(signal instanceof AbortSignal)) {
+    throw new TypeError("managed create-and-prompt signal must be an AbortSignal");
+  }
+  const { clientOptions, requestBody, creationKey } = managedCreateOptions(createOptions);
+  if (creationKey === undefined) {
+    throw new TypeError("managed create-and-prompt requires an idempotency key");
+  }
+  const client = managedClient(clientOptions);
+  const creation = requestBody === undefined ? {} : JSON.parse(requestBody);
+  const receipt = await retryCreateMutation(
+    client,
+    "/v1/agent-runs",
+    creationKey,
+    JSON.stringify({ ...creation, input }),
+    signal,
+  );
+  const agentId = requiredString(receipt, "agent_id");
+  const turnId = requiredString(receipt, "turn_id");
+  const turnKey = requiredString(receipt, "turn_idempotency_key");
+  requiredCursor(receipt, "accepted_cursor");
+  if (!TURN_ID.test(turnId) || !IDEMPOTENCY_KEY.test(turnKey)) {
+    throw new ManagedError("invalid_response", "managed create-and-prompt receipt is malformed");
+  }
+  const eventStream = replayableEventStream(client, agentId);
+  const agent = agentHandle(client, agentId, undefined, eventStream);
+  const turn = managedTurn(client, agentId, eventStream, {
+    id: turnId,
+    idempotencyKey: turnKey,
+    input,
+    signal,
+  }, Promise.resolve(receipt));
+  return Object.freeze({ agent, turn });
+}
+
+async function retryCreateMutation(client, path, idempotencyKey, requestBody, signal) {
   let receipt;
   let failure;
   for (let attempt = 0; attempt < 8; attempt += 1) {
     try {
-      receipt = await client.json("/v1/agents", {
+      receipt = await client.json(path, {
         method: "POST",
         idempotencyKey,
         ...(requestBody === undefined ? {} : { body: requestBody }),
+        ...(signal === undefined ? {} : { signal }),
       });
       break;
     } catch (error) {
       failure = error;
-      if (!(error instanceof ManagedError)
+      if (signal?.aborted
+        || !(error instanceof ManagedError)
         || (error.code !== "network_error"
           && error.status !== 408
           && error.status !== 429
@@ -56,14 +108,11 @@ export async function create(options = {}) {
         || attempt === 7) {
         throw error;
       }
-      await new Promise((resolve) => setTimeout(
-        resolve,
-        createRetryDelayMs(attempt),
-      ));
+      await delay(createRetryDelayMs(attempt), signal);
     }
   }
   if (!receipt) throw failure;
-  return agentHandle(client, requiredString(receipt, "agent_id"));
+  return receipt;
 }
 
 function managedCreateOptions(options) {
@@ -241,9 +290,9 @@ export async function updateOrganization(request, options = {}) {
   return managedOrganization(body);
 }
 
-function agentHandle(client, id, summary) {
+function agentHandle(client, id, summary, retainedEventStream) {
   validateAgentId(id);
-  const eventStream = replayableEventStream(client, id);
+  const eventStream = retainedEventStream ?? replayableEventStream(client, id);
   const events = Object.freeze({
     page: (options = {}) => eventHistoryPage(client, id, options),
     watch: (options = {}) => eventStream.subscribe(options),
@@ -491,7 +540,7 @@ async function eventHistoryPage(client, agentId, options) {
   return Object.freeze({ data: Object.freeze(data), hasMore: body.has_more, latestCursor });
 }
 
-function managedTurn(client, agentId, eventStream, options) {
+function managedTurn(client, agentId, eventStream, options, acceptedSubmission) {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw new TypeError("managed prompt options must be an object");
   }
@@ -504,7 +553,7 @@ function managedTurn(client, agentId, eventStream, options) {
     throw new TypeError("managed idempotency key must be 1-256 visible ASCII characters");
   }
 
-  const submission = retrySubmission(client, agentId, {
+  const submission = acceptedSubmission ?? retrySubmission(client, agentId, {
     id,
     idempotencyKey,
     input,
