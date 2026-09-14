@@ -12,6 +12,7 @@ workspace, agent activity menu bar, and automatic background Mac Hand. This
 project targets iPhone and iPad only; Mac Catalyst and the Designed for iPad
 Mac destination are disabled. It connects directly to the managed HTTP/SSE
 contract without a bundled Node runtime.
+Its authenticated native Hand can also bridge a [Flipper Zero over Bluetooth LE](../docs/flipper-zero.md), exposing typed device RPC tools without custom Flipper firmware.
 
 The local `apple/NanocodexUI` package owns the shared chat palette, Markdown
 block rendering, and copy feedback. Both Apple apps render headings, lists,
