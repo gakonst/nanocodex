@@ -24,10 +24,16 @@ test("owned Chromium navigation, form input and screenshot through public CUA", 
   t.after(async () => {
     await computer?.close();
     const closed = once(browser, "exit").catch(() => {});
-    if (browser.exitCode === null) { browser.kill(); await Promise.race([closed, delay(2000)]); }
-    if (browser.exitCode === null && browser.signalCode === null) browser.kill("SIGKILL");
+    if (browser.exitCode === null && browser.signalCode === null) {
+      browser.kill();
+      await Promise.race([closed, delay(2000)]);
+    }
+    if (browser.exitCode === null && browser.signalCode === null) {
+      browser.kill("SIGKILL");
+      await Promise.race([closed, delay(2000)]);
+    }
     server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
-    await rm(profile, { recursive: true, force: true });
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
   let endpoint;
   for (let attempt = 0; attempt < 100; attempt++) {
