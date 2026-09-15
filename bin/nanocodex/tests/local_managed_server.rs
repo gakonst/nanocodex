@@ -226,6 +226,7 @@ async fn http_steer_withdrawal_removes_only_latest_unconsumed_input() -> Result<
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "manual compiled-binary E2E for the loopback managed server and nanocodex2"]
 async fn nanocodex2_drives_durable_replay_detach_steer_and_cancel() -> Result<()> {
+    nanocodex::oai::transport::install_default_rustls_crypto_provider();
     let fixture = tempfile::tempdir()?;
     let workspace = fixture.path().join("workspace");
     let client_home = fixture.path().join("nanocodex2-home");
@@ -415,6 +416,23 @@ async fn nanocodex2_drives_durable_replay_detach_steer_and_cancel() -> Result<()
     let steer_receipt: Value = serde_json::from_slice(&steer.stdout)?;
     assert_eq!(steer_receipt["turn_id"], steer_turn);
     assert_eq!(steer_receipt["state"], "steered");
+    let http = reqwest::Client::new();
+    let control_url = format!("{}/v1/agents/{agent_id}/turns/{steer_turn}", client.origin);
+    http.post(format!("{control_url}/steer"))
+        .bearer_auth(&client.bearer)
+        .json(&json!({"message_id": "undo-this-steer", "input": "WITHDRAWN_STEER_MUST_NOT_REACH_MODEL"}))
+        .send().await?.error_for_status()?;
+    let withdrawn: Value = http
+        .post(format!("{control_url}/withdraw-steer"))
+        .bearer_auth(&client.bearer)
+        .json(&json!({"message_id": "undo-this-steer"}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(withdrawn["withdrawn"], true);
+    assert_eq!(withdrawn["message_id"], "undo-this-steer");
     steer_release
         .send(())
         .map_err(|()| eyre!("steer provider gate was already closed"))?;
@@ -1121,13 +1139,13 @@ async fn cold_replay_deduplicates_nested_and_managed_terminal_projection() -> Re
     let mut provider_socket = accept_async(provider_stream).await?;
     let generation = next_generation(&mut provider_socket, &AtomicUsize::new(0)).await?;
     assert_request_contains(&generation, PROMPT)?;
+    let turn_id = wait_for_active_turn(&client, &agent_id, PROMPT).await?;
     send_completed(
         &mut provider_socket,
         "resp-terminal-projection",
         "terminal projection answer",
     )
     .await?;
-    let turn_id = wait_for_active_turn(&client, &agent_id, PROMPT).await?;
     wait_for_nested_terminal_count(&managed_sqlite, &turn_id, 1).await?;
     wait_for_terminal_transaction_barrier(&managed_sqlite, &turn_id).await?;
 
@@ -1463,6 +1481,11 @@ async fn serve_provider(
 
     let steered = next_generation(&mut socket, &calls).await?;
     assert_request_contains(&steered, STEER_INPUT)?;
+    assert!(
+        !steered
+            .to_string()
+            .contains("WITHDRAWN_STEER_MUST_NOT_REACH_MODEL")
+    );
     assert_eq!(
         steered["previous_response_id"], "resp-managed-steer-boundary",
         "steered generation did not continue from the provider boundary: {steered}"
