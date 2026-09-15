@@ -69,12 +69,14 @@ jobs:
           IOS_DISTRIBUTION_P12_BASE64: ${{ secrets.IOS_DISTRIBUTION_P12_BASE64 }}
           IOS_DISTRIBUTION_P12_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_P12_PASSWORD }}
           IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          IOS_SHARE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_SHARE_PROVISIONING_PROFILE_BASE64 }}
+          IOS_WIDGETS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_WIDGETS_PROVISIONING_PROFILE_BASE64 }}
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
         run: |
           missing=0
-          for name in IOS_DISTRIBUTION_P12_BASE64 IOS_DISTRIBUTION_P12_PASSWORD IOS_PROVISIONING_PROFILE_BASE64 APP_STORE_CONNECT_KEY_ID APP_STORE_CONNECT_ISSUER_ID APP_STORE_CONNECT_PRIVATE_KEY; do
+          for name in IOS_DISTRIBUTION_P12_BASE64 IOS_DISTRIBUTION_P12_PASSWORD IOS_PROVISIONING_PROFILE_BASE64 IOS_SHARE_PROVISIONING_PROFILE_BASE64 IOS_WIDGETS_PROVISIONING_PROFILE_BASE64 APP_STORE_CONNECT_KEY_ID APP_STORE_CONNECT_ISSUER_ID APP_STORE_CONNECT_PRIVATE_KEY; do
             if [ -z "${!name}" ]; then echo "::error::Missing Actions secret: $name"; missing=1; fi
           done
           [ "$missing" -eq 0 ]
@@ -83,29 +85,44 @@ jobs:
           mkdir -p "$signing"
           printf '%s' "$IOS_DISTRIBUTION_P12_BASE64" | base64 --decode > "$signing/distribution.p12"
           printf '%s' "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$signing/app.mobileprovision"
+          printf '%s' "$IOS_SHARE_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$signing/share.mobileprovision"
+          printf '%s' "$IOS_WIDGETS_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$signing/widgets.mobileprovision"
           printf '%s' "$APP_STORE_CONNECT_PRIVATE_KEY" > "$signing/AuthKey.p8"
-          security cms -D -i "$signing/app.mobileprovision" > "$signing/profile.plist"
+          for name in app share widgets; do
+            security cms -D -i "$signing/$name.mobileprovision" > "$signing/$name.plist"
+          done
           python3 - <<'PY'
           import datetime, os, pathlib, plistlib
           root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "nanocodex-signing"
-          profile = plistlib.loads((root / "profile.plist").read_bytes())
-          entitlements = profile["Entitlements"]
-          prefix = profile["ApplicationIdentifierPrefix"][0]
-          bundle = os.environ["BUNDLE_ID"]
-          assert entitlements["application-identifier"] == f"{prefix}.{bundle}", "profile bundle ID mismatch"
-          assert not entitlements.get("get-task-allow", False), "use an App Store distribution profile"
-          assert "ProvisionedDevices" not in profile and not profile.get("ProvisionsAllDevices"), "use an App Store profile"
-          assert profile["ExpirationDate"] > datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None), "profile expired"
-          uuid, team = profile["UUID"], profile["TeamIdentifier"][0]
           destination = pathlib.Path.home() / "Library/Developer/Xcode/UserData/Provisioning Profiles"
           destination.mkdir(parents=True, exist_ok=True)
-          (destination / f"{uuid}.mobileprovision").write_bytes((root / "app.mobileprovision").read_bytes())
+          bundles = {
+              "app": os.environ["BUNDLE_ID"],
+              "share": os.environ["BUNDLE_ID"] + ".share",
+              "widgets": os.environ["BUNDLE_ID"] + ".widgets",
+          }
+          profiles, team = {}, None
+          for name, bundle in bundles.items():
+              source = root / f"{name}.mobileprovision"
+              profile = plistlib.loads((root / f"{name}.plist").read_bytes())
+              entitlements = profile["Entitlements"]
+              prefix = profile["ApplicationIdentifierPrefix"][0]
+              assert entitlements["application-identifier"] == f"{prefix}.{bundle}", f"{name} profile bundle ID mismatch"
+              assert not entitlements.get("get-task-allow", False), f"{name}: use an App Store distribution profile"
+              assert "ProvisionedDevices" not in profile and not profile.get("ProvisionsAllDevices"), f"{name}: use an App Store profile"
+              assert profile["ExpirationDate"] > datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None), f"{name} profile expired"
+              candidate_team = profile["TeamIdentifier"][0]
+              assert team in (None, candidate_team), "profiles use different Apple teams"
+              team = candidate_team
+              uuid = profile["UUID"]
+              profiles[bundle] = uuid
+              (destination / f"{uuid}.mobileprovision").write_bytes(source.read_bytes())
           options = dict(method="app-store-connect", destination="upload", signingStyle="manual",
-              teamID=team, signingCertificate="Apple Distribution", provisioningProfiles={bundle: uuid},
+              teamID=team, signingCertificate="Apple Distribution", provisioningProfiles=profiles,
               uploadSymbols=True, manageAppVersionAndBuildNumber=False, testFlightInternalTestingOnly=True)
           (root / "ExportOptions.plist").write_bytes(plistlib.dumps(options))
           with open(os.environ["GITHUB_ENV"], "a") as output:
-              output.write(f"IOS_PROFILE_UUID={uuid}\nIOS_TEAM_ID={team}\n")
+              output.write(f"IOS_PROFILE_UUIDS={' '.join(profiles.values())}\nIOS_TEAM_ID={team}\n")
           PY
           password=$(openssl rand -hex 24)
           keychain="$signing/build.keychain-db"
@@ -122,7 +139,7 @@ jobs:
         run: |
           signing=(CODE_SIGNING_ALLOWED=NO)
           if [ "$UPLOAD" = true ]; then
-            signing=(CODE_SIGN_STYLE=Manual "DEVELOPMENT_TEAM=$IOS_TEAM_ID" "PROVISIONING_PROFILE_SPECIFIER=$IOS_PROFILE_UUID" "CODE_SIGN_IDENTITY=Apple Distribution")
+            signing=(CODE_SIGN_STYLE=Manual "DEVELOPMENT_TEAM=$IOS_TEAM_ID" "CODE_SIGN_IDENTITY=Apple Distribution")
           fi
           xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox \
             -configuration Release -destination 'generic/platform=iOS' \
@@ -150,7 +167,7 @@ jobs:
         if: always() && env.UPLOAD == 'true'
         run: |
           security delete-keychain "$RUNNER_TEMP/nanocodex-signing/build.keychain-db" 2>/dev/null || true
-          if [ -n "${IOS_PROFILE_UUID:-}" ]; then
-            rm -f "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$IOS_PROFILE_UUID.mobileprovision"
-          fi
+          for uuid in ${IOS_PROFILE_UUIDS:-}; do
+            rm -f "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$uuid.mobileprovision"
+          done
           rm -rf "$RUNNER_TEMP/nanocodex-signing"

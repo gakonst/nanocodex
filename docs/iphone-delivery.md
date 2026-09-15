@@ -36,6 +36,8 @@ TestFlight group with automatic distribution. Configure these Actions secrets:
 | `IOS_DISTRIBUTION_P12_BASE64` | Password-protected distribution certificate and private key |
 | `IOS_DISTRIBUTION_P12_PASSWORD` | Password for that p12 |
 | `IOS_PROVISIONING_PROFILE_BASE64` | App Store profile for `xyz.paradigm.centaur` |
+| `IOS_SHARE_PROVISIONING_PROFILE_BASE64` | App Store profile for `xyz.paradigm.centaur.share` |
+| `IOS_WIDGETS_PROVISIONING_PROFILE_BASE64` | App Store profile for `xyz.paradigm.centaur.widgets` |
 | `APP_STORE_CONNECT_KEY_ID` | API key ID |
 | `APP_STORE_CONNECT_ISSUER_ID` | API issuer ID |
 | `APP_STORE_CONNECT_PRIVATE_KEY` | Complete p8 contents |
