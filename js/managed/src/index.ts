@@ -273,13 +273,11 @@ import {
 } from "./durable-memory";
 import { memorySessionTools } from "./memory-session-tools";
 import {
-  UserDataError,
-  isUserDataMutation,
-  parseUserDataOperation,
   type UserDataOperation,
 } from "nanocodex-tools/user-data";
 import { userDataTool } from "./user-data-tool";
 import { UserDataScope } from "./user-data-scope";
+import { routeUserDataRequest } from "./user-data-route";
 import { ManagedStartupContext } from "./startup-context";
 import { MemoryScope } from "./memory-scope";
 export { MemoryScope } from "./memory-scope";
@@ -9898,43 +9896,6 @@ async function parseHistoryRequestBody(request: Request): Promise<unknown> {
     throw new HistorySearchError(400, "invalid_json", "request body must be JSON");
   }
   return value;
-}
-
-async function routeUserDataRequest(
-  request: Request,
-  env: Env,
-  url: URL,
-): Promise<Response | undefined> {
-  if (url.pathname !== "/v1/data") return undefined;
-  if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405 });
-  if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
-  const principal = await authenticate(request, env, url);
-  if (!principal) return json({ error: "unauthorized" }, { status: 401 });
-  try {
-    const operation = parseUserDataOperation(await request.json());
-    const capability = isUserDataMutation(operation) ? "data:write" : "data:read";
-    if (!principal.capabilities.includes(capability)) {
-      return json({ error: "forbidden", message: `request lacks ${capability} capability` }, { status: 403 });
-    }
-    const originFailure = requireSameOriginMutation(request, url, principal);
-    if (originFailure) return originFailure;
-    const data = env.NANOCODEX_USER_DATA.getByName(principal.userId);
-    const initialized = await initializeUserDataScope(data, principal.userId);
-    if (!initialized.ok) return initialized;
-    return data.fetch("https://user-data.internal/operations", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        [USER_DATA_USER_ASSERTION]: principal.userId,
-      },
-      body: JSON.stringify(operation),
-    });
-  } catch (error) {
-    if (error instanceof UserDataError) {
-      return json({ error: error.code, message: error.message }, { status: 400 });
-    }
-    return json({ error: "invalid_json", message: "request body must be JSON" }, { status: 400 });
-  }
 }
 
 async function routeHistoryRequest(
