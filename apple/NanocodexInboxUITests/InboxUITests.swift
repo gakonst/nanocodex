@@ -2182,6 +2182,9 @@ final class InboxUITests: XCTestCase {
         for _ in 0..<6 { if activity.isHittable { break }; conversation.swipeDown() }
         activity.tap()
         assertNoInternalOutput(conversation)
+        app.buttons["tab-overview"].tap()
+        XCTAssertTrue(app.scrollViews["conversation-overview"].waitForExistence(timeout: 5))
+        capture(app, "generated-output-readable-overview")
     }
 
     func testThinkingRendersMarkdownAndHighlightedCode() {
@@ -2623,6 +2626,14 @@ final class InboxUITests: XCTestCase {
             XCTAssertLessThanOrEqual(app.buttons[id].frame.maxY, app.frame.maxY)
         }
         capture(app, "accessibility-text-scaled-tabs")
+        app.buttons["tab-overview"].tap()
+        let overview = app.scrollViews["conversation-overview"]
+        XCTAssertTrue(overview.waitForExistence(timeout: 5))
+        let first = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "overview-card:")).firstMatch
+        XCTAssertTrue(first.waitForExistence(timeout: 5))
+        XCTAssertLessThanOrEqual(first.frame.maxX, app.frame.maxX)
+        XCTAssertGreaterThanOrEqual(first.frame.minX, app.frame.minX)
+        capture(app, "accessibility-readable-overview")
     }
 
     func testBrowserBackRestoresDraftAndOverviewUsesLatestActivity() {

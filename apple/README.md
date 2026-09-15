@@ -2,9 +2,11 @@
 
 A native SwiftUI app for iPhone and iPad. One managed agent per tab:
 review the latest update, steer its current turn, and switch between agents.
-The interface uses ChatGPT-style neutral surfaces, native typography, a rounded
-composer, and right-aligned user message bubbles, with Nanocodex naming and
-agent tabs, a live overview, and steering controls.
+The interface uses native typography, neutral system surfaces, a rounded
+composer, and right-aligned user message bubbles. Selected conversation tabs
+have a filled capsule and underline; running tabs use a waveform symbol.
+A floating navigation toolbar groups Back, Screens, new conversation, overview,
+and the app menu, with Liquid Glass on iOS 26 and a material fallback on iOS 18.
 Appearance follows the system light/dark setting, including conversations, the composer,
 and voice controls.
 The native Mac app lives in [`macos/`](../macos/README.md). It owns the tiled
@@ -32,13 +34,16 @@ The composer grows up to six lines, then scrolls; its expand button opens a larg
 editor sharing the same draft and attachments.
 
 Each tab opens the full conversation directly. The full-screen overview shows
-searchable cards with miniature transcripts and an outline around the selected tab.
+searchable cards with readable reply excerpts, explicit status labels, and a
+checkmark and outline around the selected conversation. Cards form one column
+on iPhone and at accessibility text sizes, and an adaptive grid on iPad.
 Close a card with its × button or a horizontal swipe; the overview stays open while
 the remaining cards rearrange. Closing the selected tab selects its neighbor.
 Closed tabs remain closed across launches on this device and can be reopened from
 **More → Closed tabs**. Closing preserves conversation history, drafts, and running work.
-Overview cards render miniature transcripts with the same message components and
-latest available content.
+Overview cards show the latest message at native text sizes, pending-message
+counts, and bounded generated-media previews. Search, the All/Running filter,
+and the live-update subscription follow the visible cards.
 Unchanged Markdown stays behind an equality boundary, so typing, scrolling, and
 another row's streamed updates do not reparse completed messages. Parsing runs on
 a background actor with a bounded cache; streamed changes coalesce for 32 ms,

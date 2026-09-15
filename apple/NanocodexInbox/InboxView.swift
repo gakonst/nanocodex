@@ -133,9 +133,8 @@ struct InboxView: View {
     }
     private var inboxContent: some View {
         VStack(spacing: 0) {
-            browserTabs.padding(.vertical, 4)
-                .modifier(InboxHeaderGlass())
-                .padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 6)
+            browserTabs
+                .padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 8)
             GeometryReader { geometry in
                 VStack(spacing: 0) {
                     if showScreens, let service = model.remoteService {
@@ -195,10 +194,21 @@ struct InboxView: View {
                         ForEach(cards) { card in
                             Button { selectConversation(card.id) } label: {
                                 HStack(spacing: 6) {
+                                    if card.isRunning {
+                                        Image(systemName: "waveform").font(.caption.weight(.semibold))
+                                            .accessibilityHidden(true)
+                                    }
                                     Text(card.title).font(.subheadline.weight(highlightedID == card.id ? .semibold : .regular))
-                                        .lineLimit(1).frame(maxWidth: width - 24)
+                                        .lineLimit(1)
                                 }
-                                .padding(.horizontal, 12).frame(height: tabHeight - 8)
+                                .padding(.horizontal, 12).frame(maxWidth: .infinity).frame(height: tabHeight)
+                                .background(highlightedID == card.id ? Ink.surface : Color.clear, in: Capsule())
+                                .overlay(alignment: .bottom) {
+                                    if highlightedID == card.id {
+                                        Capsule().fill(Ink.text).frame(width: 18, height: 3).padding(.bottom, 4)
+                                    }
+                                }
+                                .foregroundStyle(highlightedID == card.id ? Ink.text : Ink.muted)
                                 .contentShape(Rectangle())
                             }
                             // Stable widths keep distant selections accurate in a lazy strip.
@@ -220,7 +230,7 @@ struct InboxView: View {
             }
             .accessibilityIdentifier("browser-tabs")
         }
-        .buttonStyle(.plain).padding(.horizontal, 8)
+        .buttonStyle(.plain)
         .frame(height: tabHeight)
     }
 
@@ -259,6 +269,7 @@ struct InboxView: View {
             Spacer(minLength: 0)
             Button(action: createAgent) {
                 Image(systemName: "plus").frame(width: 44, height: 44)
+                    .background(Color(uiColor: .label), in: Circle()).foregroundStyle(Ink.background)
             }
             .accessibilityLabel("New conversation").accessibilityIdentifier("new-conversation")
             .keyboardShortcut("n", modifiers: .command)
@@ -267,10 +278,11 @@ struct InboxView: View {
                 guard !draggingTabs else { return }
                 composerFocused = false; showOverview = true
             } label: {
-                Text(String(model.tabCards.count)).font(.system(size: 13, weight: .semibold)).monospacedDigit()
-                    .frame(minWidth: 23, minHeight: 25)
-                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Ink.text, lineWidth: 1.5))
-                    .frame(width: 44, height: 44)
+                ZStack {
+                    Image(systemName: "rectangle.stack").font(.system(size: 24))
+                    Text(String(model.tabCards.count)).font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                        .offset(y: 3)
+                }.frame(width: 44, height: 44).accessibilityElement(children: .ignore)
             }
             .accessibilityLabel("Conversation overview").accessibilityValue("\(model.tabCards.count) active conversations")
             .accessibilityHint("Tap to show windows. Drag left or right to move through tabs; hold at an edge to keep scrolling.")
@@ -300,9 +312,10 @@ struct InboxView: View {
             }.accessibilityLabel("App menu").accessibilityIdentifier("app-menu")
         }
         .font(.system(size: 20, weight: .medium)).buttonStyle(.plain)
-        .padding(.horizontal, 16).padding(.bottom, 2).frame(maxWidth: 620)
-        .frame(maxWidth: .infinity).background(Ink.background)
-        .overlay(alignment: .top) { Rectangle().fill(Ink.border.opacity(0.35)).frame(height: 0.5) }
+        .padding(.horizontal, 12).padding(.vertical, 6).frame(maxWidth: 596)
+        .modifier(InboxToolbarGlass())
+        .padding(.horizontal, 12).padding(.bottom, 4)
+        .frame(maxWidth: .infinity)
         .background(GeometryReader { geometry in
             Color.clear.onAppear { toolbarBounds = geometry.frame(in: .global) }
                 .onChange(of: geometry.frame(in: .global)) { _, frame in toolbarBounds = frame }
@@ -410,7 +423,7 @@ struct InboxView: View {
             }
             Section("Controls") {
                 Text("Tap a tab at the top to switch conversations. The bottom bar has Back, Screens, + for a new conversation, the tab selector, and the app menu. Tap the tab selector to see all windows, or drag it to switch tabs.")
-                Text("The overview shows the latest conversation history. A green border identifies running agents. Drafts and reading positions stay with each conversation.").font(.caption)
+                Text("The overview shows recent replies and a status label for each conversation. A checkmark identifies the selected conversation. Drafts and reading positions stay with each conversation.").font(.caption)
                 Text("Scroll up to read earlier messages. Send queues a message; Steer now updates the current turn without stopping it. ⌘Return sends your message.").font(.caption)
             }
         }
@@ -429,7 +442,7 @@ struct InboxView: View {
 
 }
 
-private struct InboxHeaderGlass: ViewModifier {
+private struct InboxToolbarGlass: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     func body(content: Content) -> some View {
         if reduceTransparency {
@@ -447,6 +460,7 @@ private struct ConversationOverview: View {
     var select: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var query = ""
     @State private var runningOnly = false
     @State private var showingClosed = false
@@ -472,10 +486,12 @@ private struct ConversationOverview: View {
 
     private func overviewDescription(_ card: AgentCard) -> String {
         let latest = model.overviewRows(for: card.id).last {
-            ($0.role == "You" || ($0.role == "Agent" && $0.agentID == nil && $0.phase != "commentary")) && !$0.text.isEmpty
+            ($0.role == "You" || ($0.role == "Agent" && $0.agentID == nil && $0.phase != "commentary"))
+                && (!$0.text.isEmpty || $0.images?.isEmpty == false || $0.imageFiles?.isEmpty == false || $0.videos?.isEmpty == false)
         }
         let text = latest.map { String((ContextPrompt.separate($0.text)?.request ?? $0.text).suffix(600)) } ?? ""
-        return card.status + (text.isEmpty ? "" : ". " + text)
+        let hasAttachments = latest?.images?.isEmpty == false || latest?.imageFiles?.isEmpty == false || latest?.videos?.isEmpty == false
+        return card.status + (text.isEmpty ? "" : ". " + text) + (hasAttachments ? ". Attachments" : "")
     }
 
     var body: some View {
@@ -487,7 +503,8 @@ private struct ConversationOverview: View {
                 }.pickerStyle(.segmented).padding(.horizontal, 16).padding(.top, 8)
                     .accessibilityIdentifier("overview-filter")
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 280 : 155), spacing: 14)], spacing: 18) {
+                LazyVGrid(columns: horizontalSizeClass == .compact || dynamicTypeSize.isAccessibilitySize
+                          ? [GridItem(.flexible())] : [GridItem(.adaptive(minimum: 320), spacing: 16, alignment: .top)], spacing: 12) {
                     ForEach(visibleCards) { card in
                         ConversationOverviewCard(model: model, card: card,
                             description: overviewDescription(card), canClose: !showingClosed,
@@ -515,10 +532,13 @@ private struct ConversationOverview: View {
             }.scrollDismissesKeyboard(.interactively).accessibilityIdentifier("conversation-overview")
             }
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search conversations")
-            .background(Ink.background)
+            .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle(showingClosed ? "Closed tabs" : "Conversations")
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(.large)
             .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
                 ToolbarItemGroup(placement: .bottomBar) {
                     Menu {
                         Button(showingClosed ? "Show open tabs" : "Closed tabs", systemImage: "clock") {
@@ -530,10 +550,8 @@ private struct ConversationOverview: View {
                     Button {
                         model.newAgent()
                         dismiss()
-                    } label: { Image(systemName: "plus") }
+                    } label: { Label("New conversation", systemImage: "square.and.pencil") }
                     .accessibilityLabel("New conversation").accessibilityIdentifier("new-conversation-overview")
-                    Spacer()
-                    Button("Done") { dismiss() }
                 }
             }
         }
@@ -556,54 +574,61 @@ private struct ConversationOverviewCard: View {
     var select: () -> Void
     var close: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @GestureState private var swipe: CGFloat = 0
 
     private var selected: Bool { model.deck.focusedID == card.id }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Image(systemName: "bubble.left.fill")
-                    .foregroundStyle(card.isRunning ? Color.green : Color.secondary)
-                    .accessibilityHidden(true)
-                Text(card.title).font(.subheadline.weight(.medium)).lineLimit(1)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .onTapGesture(perform: select)
-                    .accessibilityRepresentation { Button("Open " + card.title, action: select) }
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(card.title).font(.headline).lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 6) {
+                        Label(card.status, systemImage: card.isRunning ? "waveform" : card.status == "Failed" ? "exclamationmark.circle" : "bubble.left")
+                            .foregroundStyle(Ink.muted)
+                        if selected {
+                            Text("·").foregroundStyle(Ink.muted)
+                            Label("Selected", systemImage: "checkmark.circle.fill")
+                        }
+                    }.font(.caption.weight(.medium))
+                }
+                .padding(.top, 14)
+                .contentShape(Rectangle())
+                .onTapGesture(perform: select)
+                .accessibilityRepresentation { Button("Open " + card.title, action: select) }
                 if canClose {
                     Button(action: close) {
-                        Image(systemName: "xmark").font(.system(size: 12, weight: .medium))
+                        Image(systemName: "xmark").font(.caption.weight(.semibold))
+                            .foregroundStyle(Ink.muted)
                             .frame(width: 44, height: 44).contentShape(Rectangle())
                     }
                     .accessibilityLabel("Close " + card.title)
                     .accessibilityHint("Keeps the conversation and any running work")
                     .accessibilityIdentifier("overview-close:" + card.id)
                 }
-            }.padding(.leading, 12)
+            }.padding(.leading, 16).padding(.trailing, 4)
             let queue = model.queuePresentation(agentID: card.id, rows: model.overviewRows(for: card.id))
-            ConversationMiniature(model: model, card: card, rows: queue.rows, pendingCount: queue.queuedMessages.count).equatable()
-                    .frame(height: 230)
-                    .frame(maxWidth: .infinity)
-                    .background(Ink.background)
-                    .contentShape(Rectangle())
-                    // A tap recognizer fails when dragging; a plain Button can
-                    // activate on release after a simultaneous swipe gesture.
-                    .onTapGesture(perform: select)
-                    .accessibilityRepresentation {
-                        Button(card.title, action: select)
-                            .accessibilityValue(description)
-                            .accessibilityHint("Open conversation")
-                            .accessibilityAddTraits(selected ? [.isSelected] : [])
-                            .accessibilityIdentifier("overview-card:" + card.id)
-                    }
+            ConversationPreview(card: card, rows: queue.rows, pendingCount: queue.queuedMessages.count).equatable()
+                .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                // A tap recognizer fails when dragging; a plain Button can
+                // activate on release after a simultaneous swipe gesture.
+                .onTapGesture(perform: select)
+                .accessibilityRepresentation {
+                    Button(card.title, action: select)
+                        .accessibilityValue(description)
+                        .accessibilityHint("Open conversation")
+                        .accessibilityAddTraits(selected ? [.isSelected] : [])
+                        .accessibilityIdentifier("overview-card:" + card.id)
+                }
         }
         .buttonStyle(.plain)
-        .background(Ink.card)
-        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .background(Ink.card, in: RoundedRectangle(cornerRadius: 20))
         .overlay {
-            RoundedRectangle(cornerRadius: 18)
-                .strokeBorder(selected ? Color.accentColor : Ink.border, lineWidth: selected ? 2 : 0.5)
+            RoundedRectangle(cornerRadius: 20)
+                .strokeBorder(selected ? Ink.text.opacity(0.5) : Color.clear, lineWidth: 1.5)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("overview-preview:" + card.id)
@@ -622,62 +647,51 @@ private struct ConversationOverviewCard: View {
     }
 }
 
-private struct ConversationMiniature: View, Equatable {
-    let model: InboxModel
+private struct ConversationPreview: View, Equatable {
     let card: AgentCard
     let rows: [TranscriptRow]
     let pendingCount: Int
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.card.id == rhs.card.id && lhs.card.activeTurns == rhs.card.activeTurns
-            && lhs.card.error == rhs.card.error && lhs.card.checked == rhs.card.checked
-            && lhs.card.turnCount == rhs.card.turnCount && lhs.rows == rhs.rows && lhs.pendingCount == rhs.pendingCount
+        lhs.card == rhs.card && lhs.rows == rhs.rows && lhs.pendingCount == rhs.pendingCount
     }
-    private let scale: CGFloat = 0.48
+
+    private var latestMessage: TranscriptRow? {
+        rows.last {
+            ($0.role == "You" || ($0.role == "Agent" && $0.agentID == nil && $0.phase != "commentary"))
+                && (!$0.text.isEmpty || $0.images?.isEmpty == false || $0.imageFiles?.isEmpty == false || $0.videos?.isEmpty == false)
+        }
+    }
 
     var body: some View {
-        GeometryReader { viewport in
-            let items = Array(ConversationItem.group(rows, activeTurns: card.activeTurns).suffix(4))
-            VStack(alignment: .leading, spacing: 18) {
-                if items.isEmpty && pendingCount == 0 {
-                    if let error = card.error {
-                        Text(error).font(.system(size: 17)).foregroundStyle(Ink.muted)
-                    } else if card.checked, card.turnCount == 0, card.previewRows.isEmpty {
-                        Text("Send a message to begin.").font(.system(size: 17)).foregroundStyle(Ink.muted)
-                    } else {
-                        ProgressView().frame(maxWidth: .infinity)
-                    }
+        VStack(alignment: .leading, spacing: 10) {
+            if let row = latestMessage {
+                let text = ContextPrompt.separate(row.text)?.request ?? row.text
+                let snippet = (row.role == "You" ? "You: " : "") + String(text.prefix(400))
+                if !text.isEmpty {
+                    Text((try? AttributedString(markdown: snippet, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(snippet))
+                        .font(.subheadline).foregroundStyle(Ink.muted).lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                ForEach(items) { item in
-                    if let row = item.message {
-                        ConversationMessageView(row: row, model: model, agentID: card.id)
-                    } else {
-                        VStack(alignment: .leading, spacing: 14) {
-                            HStack(spacing: 10) {
-                                if item.isRunning { ProgressView().controlSize(.mini) }
-                                else {
-                                    Image(systemName: "checkmark").font(.system(size: 12))
-                                    Text("Activity").font(.system(size: 13, weight: .medium))
-                                }
-                                Spacer(minLength: 4)
-                            }.foregroundStyle(Ink.muted).padding(13)
-                                .background(Ink.surface, in: RoundedRectangle(cornerRadius: 14))
-                            InboxGeneratedOutputView(rows: item.activity).equatable()
-                        }
-                    }
+                if row.images?.isEmpty == false || row.imageFiles?.isEmpty == false || row.videos?.isEmpty == false {
+                    Label("Attachments", systemImage: "paperclip").font(.caption).foregroundStyle(Ink.muted)
                 }
-                if pendingCount > 0 {
-                    Label("\(pendingCount) pending message\(pendingCount == 1 ? "" : "s")", systemImage: "clock")
-                        .font(.system(size: 14)).foregroundStyle(Ink.muted)
-                }
+            } else if let error = card.error {
+                Text(error).font(.subheadline).foregroundStyle(Ink.muted).lineLimit(3)
+            } else if card.checked, card.turnCount == 0, card.previewRows.isEmpty {
+                Text("Send a message to begin.").font(.subheadline).foregroundStyle(Ink.muted)
+            } else {
+                ProgressView().accessibilityLabel("Loading preview")
             }
-            .padding(20)
-            .frame(width: viewport.size.width / scale, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .scaleEffect(scale, anchor: .bottomLeading)
-            .frame(width: viewport.size.width, height: viewport.size.height, alignment: .bottomLeading)
+            // Keep generated media discoverable without shrinking the reply text.
+            let items = Array(ConversationItem.group(rows, activeTurns: card.activeTurns).suffix(4))
+            InboxGeneratedOutputView(rows: items.flatMap(\.activity), preview: true).equatable()
+            if pendingCount > 0 {
+                Label("\(pendingCount) pending message\(pendingCount == 1 ? "" : "s")", systemImage: "clock")
+                    .font(.caption).foregroundStyle(Ink.muted)
+            }
         }
-        .clipped().allowsHitTesting(false).accessibilityHidden(true)
-        // Preview updates stay steady even while a running transcript grows.
+        .allowsHitTesting(false).accessibilityHidden(true)
         .transaction { $0.animation = nil; $0.disablesAnimations = true }
     }
 }
@@ -1839,14 +1853,42 @@ private struct ConversationContentView: View {
 
 private struct InboxGeneratedOutputView: View, Equatable {
     private let results: [[String]]
+    private let preview: Bool
     @State private var outputs: [ChatGeneratedOutput] = []
 
-    init(rows: [TranscriptRow]) {
+    init(rows: [TranscriptRow], preview: Bool = false) {
         results = rows.compactMap { $0.tool?.isInspectionOutput == true ? nil : $0.tool?.generatedResults }
+        self.preview = preview
     }
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.results == rhs.results }
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.results == rhs.results && lhs.preview == rhs.preview }
     var body: some View {
-        Group { if !outputs.isEmpty { ChatGeneratedOutputs(outputs: outputs) } }
+        Group {
+            if !outputs.isEmpty {
+                if preview {
+                    HStack(alignment: .top, spacing: 12) {
+                        if let image = outputs.first(where: { $0.kind == .image }) {
+                            // The shared renderer owns a 360-point image slot.
+                            // Scale the entire thumbnail into its preview slot;
+                            // clipping its top would hide most of the image.
+                            ChatGeneratedOutputView(output: image)
+                                .frame(width: 360, height: 360)
+                                .scaleEffect(1.0 / 3.0, anchor: .topLeading)
+                                .frame(width: 120, height: 120, alignment: .topLeading)
+                                .clipped()
+                        }
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(Array(outputs.prefix(3))) { output in
+                                Label(output.title, systemImage: output.kind == .image ? "photo" : output.kind == .audio ? "waveform" : output.kind == .video ? "film" : "doc")
+                                    .font(.caption).lineLimit(2)
+                            }
+                            if outputs.count > 3 {
+                                Text("\(outputs.count - 3) more attachments").font(.caption)
+                            }
+                        }.foregroundStyle(Ink.muted).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else { ChatGeneratedOutputs(outputs: outputs) }
+            }
+        }
             .task(id: results) {
                 let captured = results
                 let parsed = await Task.detached(priority: .utility) {
