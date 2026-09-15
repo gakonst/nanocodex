@@ -1,6 +1,6 @@
-import AVKit
 import ImageIO
 import SwiftUI
+import UniformTypeIdentifiers
 
 public struct ChatGeneratedOutputs: View {
     public let outputs: [ChatGeneratedOutput]
@@ -9,43 +9,88 @@ public struct ChatGeneratedOutputs: View {
     public var body: some View {
         LazyVStack(alignment: .leading, spacing: 14) {
             ForEach(outputs) { output in
-                switch output.kind {
-                case .text: ChatMarkdown(text: output.text)
-                case .image: GeneratedImage(output: output)
-                case .audio, .video: GeneratedMedia(output: output)
-                case .file: GeneratedFile(output: output)
-                case .unsupported:
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label(output.title, systemImage: "doc").font(.subheadline.weight(.medium))
-                        Text(output.text).font(.caption).foregroundStyle(.secondary)
-                    }.accessibilityIdentifier("generated-unavailable")
-                }
+                ChatGeneratedOutputView(output: output)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .contain).accessibilityIdentifier("generated-outputs")
     }
 }
 
+/// A single transcript row whose parent owns layout and scroll identity.
+public struct ChatGeneratedOutputView: View {
+    public let output: ChatGeneratedOutput
+    public let loadsThumbnail: Bool
+    public init(output: ChatGeneratedOutput, loadsThumbnail: Bool = true) {
+        self.output = output; self.loadsThumbnail = loadsThumbnail
+    }
+    public var body: some View {
+        Group {
+            switch output.kind {
+            case .text: ChatMarkdown(text: output.text)
+            case .image: GeneratedImage(output: output, loadsThumbnail: loadsThumbnail)
+            case .audio, .video: GeneratedMedia(output: output)
+            case .file: GeneratedFile(output: output)
+            case .unsupported:
+                VStack(alignment: .leading, spacing: 4) {
+                    Label(output.title, systemImage: "doc").font(.subheadline.weight(.medium))
+                    Text(output.text).font(.caption).foregroundStyle(.secondary)
+                }.accessibilityIdentifier("generated-unavailable")
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// User images use the same bounded thumbnail and original-file preview as outputs.
+public struct ChatImageAttachment: View {
+    let source: String
+    @State private var output: ChatGeneratedOutput?
+    @State private var loaded = false
+    public init(source: String) { self.source = source }
+    public var body: some View {
+        Group {
+            if let output { GeneratedImage(output: output) }
+            else if loaded { Label("Image unavailable", systemImage: "photo").foregroundStyle(.secondary) }
+            else { ProgressView() }
+        }.frame(height: 360, alignment: .topLeading)
+        .task(id: source) {
+            loaded = false; output = nil
+            let source = source
+            let parsed = await Task.detached(priority: .utility) {
+                ChatGeneratedOutput.image(source: source)
+            }.value
+            guard !Task.isCancelled else { return }
+            output = parsed; loaded = true
+        }
+    }
+}
+
 private struct GeneratedImage: View {
     let output: ChatGeneratedOutput
+    var loadsThumbnail = true
     @State private var thumbnail: CGImage?
     @State private var failed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let thumbnail {
-                Image(decorative: thumbnail, scale: 1).resizable().aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: 640, maxHeight: 360, alignment: .leading)
-                    .accessibilityLabel(output.title).accessibilityIdentifier("generated-image-loaded")
+                ChatMediaPreview(title: output.title, load: { [try await GeneratedAsset.previewURL(output)] }) {
+                    Image(decorative: thumbnail, scale: 1).resizable().aspectRatio(contentMode: .fit)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .frame(maxWidth: 640, maxHeight: 360, alignment: .leading)
+                        .accessibilityLabel("Open " + output.title).accessibilityIdentifier("generated-image-loaded")
+                }
             } else if failed {
                 Label("Image unavailable", systemImage: "photo").foregroundStyle(.secondary)
             } else {
-                ProgressView("Loading image…").frame(minHeight: 100)
+                ProgressView().accessibilityLabel("Loading image").frame(minHeight: 100)
             }
-        }.clipShape(RoundedRectangle(cornerRadius: 12))
+        // A thumbnail owns a stable slot while decoding or downloading. Its
+        // original remains available in Quick Look without moving nearby rows.
+        }.frame(height: 360, alignment: .topLeading)
             .accessibilityElement(children: .contain).accessibilityIdentifier("generated-image")
-            .task(id: output.id) {
+            .task(id: loadsThumbnail ? output.id : nil) {
                 thumbnail = nil; failed = false
+                guard loadsThumbnail else { return }
                 do {
                     let decoded = try await GeneratedAsset.thumbnail(output)
                     guard !Task.isCancelled else { return }
@@ -57,44 +102,13 @@ private struct GeneratedImage: View {
 
 private struct GeneratedMedia: View {
     let output: ChatGeneratedOutput
-    @Environment(\.scenePhase) private var scenePhase
-    @State private var player: AVPlayer?
-    @State private var playing = false
-    @State private var failed = false
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(output.title).font(.subheadline.weight(.medium))
-            if let player {
-                if output.kind == .video {
-                    VideoPlayer(player: player).frame(height: 240).clipShape(RoundedRectangle(cornerRadius: 12))
-                } else {
-                    Button {
-                        if playing { player.pause() } else { player.seek(to: .zero); player.play() }
-                        playing.toggle()
-                    } label: { Label(playing ? "Pause audio" : "Play audio", systemImage: playing ? "pause.fill" : "play.fill") }
-                        .buttonStyle(.bordered).accessibilityIdentifier("generated-audio-play")
-                }
-            } else if failed { Text("Media unavailable").font(.caption).foregroundStyle(.secondary) }
-            else { ProgressView("Loading media…") }
+        ChatMediaPreview(title: output.title, load: { [try await GeneratedAsset.previewURL(output)] }) {
+            Label(output.title, systemImage: output.kind == .video ? "play.rectangle" : "play.circle")
+                .font(.subheadline).frame(minHeight: 44)
+                .accessibilityLabel(output.kind == .video ? "Play video" : "Play audio")
+                .accessibilityIdentifier("generated-" + output.kind.rawValue + "-play")
         }.accessibilityElement(children: .contain).accessibilityIdentifier("generated-" + output.kind.rawValue)
-            .task(id: output.id) {
-                player?.pause(); player = nil; playing = false; failed = false
-                do {
-                    let url = try await GeneratedAsset.playableURL(output)
-                    let asset = AVURLAsset(url: url)
-                    guard try await asset.load(.isPlayable) else { throw GeneratedAsset.Failure.unavailable }
-                    guard !Task.isCancelled else { return }
-                    player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
-                } catch { if !Task.isCancelled { failed = true } }
-            }
-            .onDisappear { player?.pause(); playing = false }
-            .onChange(of: scenePhase) { _, phase in
-                if phase != .active { player?.pause(); playing = false }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { event in
-                if let item = event.object as? AVPlayerItem, item === player?.currentItem { playing = false }
-            }
     }
 }
 
@@ -173,6 +187,23 @@ enum GeneratedAsset {
         return image
     }
 
+    static func previewURL(_ output: ChatGeneratedOutput) async throws -> URL {
+        let source = try await playableURL(output)
+        let suffix = UTType(mimeType: output.mimeType ?? "")?.preferredFilenameExtension
+            ?? (source.pathExtension.isEmpty ? "bin" : source.pathExtension)
+        let target = FileManager.default.temporaryDirectory
+            .appendingPathComponent("attachment-" + UUID().uuidString).appendingPathExtension(suffix)
+        if source.isFileURL { try FileManager.default.copyItem(at: source, to: target) }
+        else {
+            let (download, response) = try await session.download(from: source)
+            defer { try? FileManager.default.removeItem(at: download) }
+            guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else { throw Failure.unavailable }
+            try FileManager.default.moveItem(at: download, to: target)
+        }
+        if Task.isCancelled { try? FileManager.default.removeItem(at: target); throw CancellationError() }
+        return target
+    }
+
     static func playableURL(_ output: ChatGeneratedOutput) async throws -> URL {
         guard let source = output.source else { throw Failure.unavailable }
         if !source.hasPrefix("data:"), let url = URL(string: source), ["https", "http"].contains(url.scheme) { return url }
@@ -188,7 +219,7 @@ enum GeneratedAsset {
         let folder = directory.appendingPathComponent(output.id, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let extensions = ["audio/wav": "wav", "audio/mpeg": "mp3", "audio/mp4": "m4a", "video/mp4": "mp4", "text/html": "html", "text/csv": "csv", "application/pdf": "pdf", "application/json": "json", "image/svg+xml": "svg", "text/plain": "txt", "text/markdown": "md"]
-        let suffix = extensions[output.mimeType ?? ""] ?? "bin"
+        let suffix = extensions[output.mimeType ?? ""] ?? UTType(mimeType: output.mimeType ?? "")?.preferredFilenameExtension ?? "bin"
         // The content hash is filesystem-safe regardless of title length.
         // The original title remains the visible/share label.
         let url = folder.appendingPathComponent(output.id).appendingPathExtension(suffix)

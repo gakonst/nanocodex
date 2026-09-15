@@ -22,7 +22,7 @@ public struct PendingMessage: Identifiable, Codable, Equatable, Sendable {
     public var queueTitle: String {
         switch phase {
         case .submitting: return "Sending…"
-        case .queued: return predecessor.isEmpty ? (remoteAdmission == true ? "Waiting for execution update" : "Waiting to start") : "Queued · runs after current turn"
+        case .queued: return predecessor.isEmpty ? "Sent" : "Queued · runs after current turn"
         case .starting: return "Stopping current turn…"
         case .cancelling: return "Cancelling…"
         case .failed: return "Delivery unconfirmed"

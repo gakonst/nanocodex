@@ -306,6 +306,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   #definitions: readonly HostedToolsCodeDefinition[] = [];
   #candidates: readonly HostedToolsCatalogCandidate[] = [];
   #machines: readonly HostedMachine[] = [];
+  #onlineMachineIds = new Set<string>();
   #tools = new Map<string, RoutedHostedTool>();
   #machineTools = new Map<string, HostedToolsCodeTool>();
   #validator: HostedToolsCatalogValidator | undefined;
@@ -332,6 +333,10 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
 
   machines(context?: AuthorizationContext): readonly HostedMachine[] {
     return this.#allowed(context) ? this.#machines : [];
+  }
+
+  machineOnline(machineId: string, context?: AuthorizationContext): boolean {
+    return this.#allowed(context) && this.#onlineMachineIds.has(machineId);
   }
 
   machineTool(
@@ -441,6 +446,9 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       }
     }
     this.#machines = Object.freeze(snapshot.machines.map(({ machine }) => machine));
+    this.#onlineMachineIds = new Set(snapshot.machines
+      .filter(({ online }) => online === true)
+      .map(({ machine }) => machine.id));
     this.#tools = tools;
     this.#machineTools = machineTools;
   }
@@ -488,34 +496,44 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       }
       return failedToolResult("Account hand is unavailable", "unavailable", preAdmission);
     }
+    let result: InvocationResult;
     try {
-      const result = await response.json<InvocationResult>();
+      result = await response.json<InvocationResult>();
       if (!result || typeof result !== "object" || typeof result.success !== "boolean"
         || !Object.hasOwn(result, "output") || !Object.hasOwn(result, "structured_result")
         || !Object.hasOwn(result, "metadata") || !Object.hasOwn(result, "value")) {
         throw new Error("invalid account hand result");
       }
-      if (machineId !== undefined && result.pre_admission_unavailable === true) {
-        throw Object.assign(new Error("Account hand is reconnecting"), { code: "host_interrupted" });
-      }
-      const branded = {
-        [TOOL_RESULT]: true,
-        output: result.output,
-        structuredResult: result.structured_result,
-        success: result.success,
-        metadata: result.metadata,
-        value: result.value,
-        ...(result.pre_admission_unavailable === true
-          ? { [HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE]: true as const }
-          : {}),
-      };
-      return Object.freeze(branded);
     } catch (error) {
-      if (machineId !== undefined) throw Object.assign(new Error("Account hand transport interrupted", { cause: error }), {
+      if (machineId !== undefined) throw Object.assign(new Error("Account hand response could not be decoded; invocation outcome is unknown", { cause: error }), {
         code: "host_interrupted",
       });
       return failedToolResult("Account hand invocation outcome is unknown", "ambiguous");
     }
+    if (machineId !== undefined && result.pre_admission_unavailable === true) {
+      // The broker checked its call ledger: this invocation was never admitted.
+      // Let the agent recover the hand instead of indefinitely replaying the turn.
+      // Do not infer this from discovery or HTTP errors: an earlier attempt may
+      // have been admitted and must retain its identity for receipt recovery.
+      const reason = typeof result.output === "string" ? result.output : "hand unavailable";
+      return failedToolResult(
+        `Account hand ${machineId} did not start tool execution: ${reason}. Reconnect or restart this hand, or select another available hand.`,
+        "unavailable",
+        true,
+      );
+    }
+    const branded = {
+      [TOOL_RESULT]: true,
+      output: result.output,
+      structuredResult: result.structured_result,
+      success: result.success,
+      metadata: result.metadata,
+      value: result.value,
+      ...(result.pre_admission_unavailable === true
+        ? { [HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE]: true as const }
+        : {}),
+    };
+    return Object.freeze(branded);
   }
 }
 

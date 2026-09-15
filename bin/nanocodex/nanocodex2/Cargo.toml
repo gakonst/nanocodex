@@ -24,6 +24,7 @@ futures-util.workspace = true
 image.workspace = true
 nanocodex = { path = "../../../crates/nanocodex", version = "0.5.0", default-features = false }
 nanocodex-agent = { path = "../../../crates/nanocodex-agent", version = "0.5.0", default-features = false }
+nanocodex-browser.workspace = true
 nanocodex-managed = { path = "../../../crates/nanocodex-managed", version = "0.5.0", default-features = false, features = ["tools"] }
 nanocodex-cli-auth.workspace = true
 nanocodex-observability = { workspace = true, features = ["cli"] }

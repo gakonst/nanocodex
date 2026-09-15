@@ -256,6 +256,37 @@ before account setup. If KVM is unavailable, the error explains how to enable
 it and shows `hand --docker IMAGE --volume NAME` as the explicit alternative.
 No backend is selected automatically.
 
+## Browser egress through a connected Hand
+
+Add `--browser` to a native, VM, or Docker Hand to publish a private Chromium
+session whose public requests leave through that machine's network connection:
+
+```bash
+nanocodex2 native-hand --workspace /path/to/workspace --browser
+
+nanocodex2 hand \
+  --docker nanocodex-hand:local \
+  --volume personal-hand-workspace \
+  --browser
+```
+
+`NANOCODEX_BROWSER_EXECUTABLE` or `--browser-executable PATH` selects an exact
+Chrome or Chromium binary. The default uses the dedicated automation browser;
+it never attaches to the person's normal browser profile.
+
+The Hand publishes the same `browser_execute({ code })` callable contract as
+the managed Cloudflare browser. While exactly one compatible browser Hand is
+live, the tool router sends new browser calls to it. If it is unavailable
+before dispatch, the existing Cloudflare browser handles the call. An admitted
+or dispatched call stays pinned to its selected placement: disconnects and
+ambiguous outcomes are never replayed through the other browser.
+
+Both placements expose the same bounded `cdp`/`codemode` surface. Only the
+allowlisted Target, Page, DOM, and Input commands are accepted; cookie,
+authorization, unrestricted runtime evaluation, provider connection URLs, and
+Live View access are rejected or redacted. Run only one browser-enabled Hand
+per account when deterministic residential placement is required.
+
 The on-demand `host` pool remains libkrun-only; Docker is available through the
 single `hand` command and the `nanocodex_vm::docker` library API.
 

@@ -12,6 +12,7 @@ use std::{
 
 mod artifacts;
 mod audits;
+mod cdp_code;
 mod credential_store;
 mod devtools;
 mod har;
@@ -3665,6 +3666,27 @@ impl NativeBrowser {
         }
         .instrument(span)
         .await
+    }
+
+    pub(crate) async fn execute_code(
+        &self,
+        source: &str,
+        context: nanocodex_tools::ToolContext<'_>,
+    ) -> Result<nanocodex_tools::ToolOutput, BrowserError> {
+        cdp_code::validate_code(source)?;
+        let mut state = self.state.lock().await;
+        if state.closed {
+            return Err(BrowserError::Closed);
+        }
+        self.ensure_session(&mut state).await?;
+        let websocket_address = state
+            .session
+            .as_ref()
+            .ok_or(BrowserError::SessionUnavailable)?
+            .browser
+            .websocket_address()
+            .to_owned();
+        cdp_code::execute(&websocket_address, source, context).await
     }
 
     pub(crate) async fn storage_state(&self) -> Result<BrowserStorageState, BrowserError> {
@@ -7879,6 +7901,8 @@ pub enum BrowserError {
     Io(#[from] io::Error),
     #[error("browser JSON boundary failed")]
     Json(#[from] serde_json::Error),
+    #[error("browser code execution failed: {message}")]
+    BrowserExecute { message: String },
     #[error("CrUX request failed: {source}")]
     CruxRequest {
         #[source]

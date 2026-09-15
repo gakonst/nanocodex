@@ -237,6 +237,20 @@ struct Hand {
     #[arg(long, help_heading = "Identity")]
     machine_name: Option<String>,
 
+    /// Route managed browser work through this host alongside the VM or container Hand.
+    #[arg(long, help_heading = "Browser")]
+    browser: bool,
+
+    /// Exact Chrome or Chromium executable used by this Hand's private browser.
+    #[arg(
+        long,
+        value_name = "PATH",
+        env = "NANOCODEX_BROWSER_EXECUTABLE",
+        requires = "browser",
+        help_heading = "Browser"
+    )]
+    browser_executable: Option<PathBuf>,
+
     /// Static Linux guest executable for an ext4 VM (or NANOCODEX_VM_GUEST_RUNTIME).
     #[arg(
         long = "guest-runtime",

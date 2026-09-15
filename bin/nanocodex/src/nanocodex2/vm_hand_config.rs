@@ -18,6 +18,8 @@ pub(crate) struct VmHandConfig {
     pub(crate) vm_no_network: bool,
     pub(crate) machine_id: String,
     pub(crate) machine_name: String,
+    pub(crate) browser: bool,
+    pub(crate) browser_executable: Option<PathBuf>,
 }
 
 impl From<&Hand> for VmHandConfig {
@@ -64,6 +66,8 @@ impl From<&Hand> for VmHandConfig {
                 }
                 .to_owned()
             }),
+            browser: config.browser,
+            browser_executable: config.browser_executable.clone(),
         }
     }
 }
@@ -157,5 +161,36 @@ mod tests {
             let args = [vec!["--vm", "root.ext4"], flag].concat();
             assert!(config(&args).vm_no_network);
         }
+    }
+
+    #[test]
+    fn browser_egress_is_an_explicit_hand_add_on() {
+        let browser = config(&[
+            "--docker",
+            "image",
+            "--volume",
+            "work",
+            "--browser",
+            "--browser-executable",
+            "/opt/chrome",
+        ]);
+        assert!(browser.browser);
+        assert_eq!(
+            browser.browser_executable,
+            Some(PathBuf::from("/opt/chrome"))
+        );
+        assert!(
+            crate::Cli::try_parse_from([
+                "nanocodex2",
+                "hand",
+                "--docker",
+                "image",
+                "--volume",
+                "work",
+                "--browser-executable",
+                "/opt/chrome",
+            ])
+            .is_err()
+        );
     }
 }

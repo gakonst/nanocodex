@@ -6259,6 +6259,7 @@ dependencies = [
  "kvm-ioctls",
  "nanocodex",
  "nanocodex-agent",
+ "nanocodex-browser",
  "nanocodex-cli-auth",
  "nanocodex-computer",
  "nanocodex-hand",
