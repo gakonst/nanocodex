@@ -1,0 +1,16 @@
+{
+  "adjacent_node_sha256": "a2f397892a25f0c0e2b6e764395be935d30c974c2c85e814acacb1bed6d2f42a",
+  "case_count": 20,
+  "claims_added": 0,
+  "copy_sha256": "89e737afe02308b57f691f56bd5513b061a9f4fd5ec632f5d71157d0db79743c",
+  "original_binary_sha256": "0d6f59d5aff9db38d3bf1cad78f3b2d71daaedaefddbc00c65fa3241ce83ad7c",
+  "original_case_definitions": "original-audit/cases.json",
+  "original_command": "original-audit/attempt-001/command.json",
+  "original_external_roots": "original-audit/external-evidence-roots.json",
+  "original_raw_request_stream": "original-audit/attempt-001/stdin.raw",
+  "original_raw_response_stream": "original-audit/attempt-001/stdout.raw",
+  "scope": "Twenty actual inert installed-kernel observations; exact copied code/expected values. This proposal has no native conformance execution.",
+  "source_audit": "/private/tmp/skyre-events-once-source-g3gdekma/original-audit",
+  "source_audit_manifest_sha256": "ec51637375b55b31f7f09adb066021eca1174b59be576a6e14dc686219447c5b",
+  "source_oracle_sha256": "89e737afe02308b57f691f56bd5513b061a9f4fd5ec632f5d71157d0db79743c"
+}

@@ -1,0 +1,1548 @@
+{
+  "source_seal": "evidence/runtime-timer-surface/20260907T024109036351Z/manifest.json",
+  "cases": [
+    {
+      "name": "public-method-metadata",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const names=['setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','queueMicrotask'];return names.map(n=>[n,globalThis[n].name,globalThis[n].length,Object.getOwnPropertyDescriptor(globalThis,n).writable,Object.getOwnPropertyDescriptor(globalThis,n).enumerable]);})()));",
+      "expected": [
+        [
+          "setTimeout",
+          "setTimeout",
+          2,
+          true,
+          true
+        ],
+        [
+          "clearTimeout",
+          "clearTimeout",
+          1,
+          true,
+          true
+        ],
+        [
+          "setInterval",
+          "setInterval",
+          2,
+          true,
+          true
+        ],
+        [
+          "clearInterval",
+          "clearInterval",
+          1,
+          true,
+          true
+        ],
+        [
+          "setImmediate",
+          "setImmediate",
+          1,
+          true,
+          true
+        ],
+        [
+          "clearImmediate",
+          "clearImmediate",
+          1,
+          true,
+          true
+        ],
+        [
+          "queueMicrotask",
+          "queueMicrotask",
+          1,
+          true,
+          true
+        ]
+      ]
+    },
+    {
+      "name": "module-identity",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const t=await import('node:timers'),p=await import('timers/promises');return [Object.keys(t),Object.keys(p),t.default.setTimeout===setTimeout,t.promises===p.default,p.default.scheduler===p.scheduler,Object.keys(p.default),Object.getPrototypeOf(p.scheduler).constructor.name];})()));",
+      "expected": [
+        [
+          "clearImmediate",
+          "clearInterval",
+          "clearTimeout",
+          "default",
+          "promises",
+          "setImmediate",
+          "setInterval",
+          "setTimeout"
+        ],
+        [
+          "default",
+          "scheduler",
+          "setImmediate",
+          "setInterval",
+          "setTimeout"
+        ],
+        true,
+        true,
+        true,
+        [
+          "setTimeout",
+          "setImmediate",
+          "setInterval",
+          "scheduler"
+        ],
+        "Scheduler"
+      ]
+    },
+    {
+      "name": "timeout-handle-ref-primitive-close",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const t=setTimeout(()=>{},1000);const n=+t;const out=[typeof t,t.constructor.name,Object.prototype.toString.call(t),Number.isInteger(n),n>0,n===+t,String(t)===String(n),t.hasRef(),t.unref()===t,t.hasRef(),t.ref()===t,t.hasRef(),t.refresh()===t,t.close()===t,t.hasRef(),t._destroyed,t._idleTimeout,t._onTimeout];return out;})()));",
+      "expected": [
+        "object",
+        "Timeout",
+        "[object Object]",
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        true,
+        true,
+        true,
+        true,
+        true,
+        -1,
+        null
+      ]
+    },
+    {
+      "name": "immediate-handle-ref-dispose",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const t=setImmediate(()=>{});const out=[typeof t,t.constructor.name,Object.prototype.toString.call(t),Number.isNaN(+t),String(t),t.hasRef(),t.unref()===t,t.hasRef(),t.ref()===t,t.hasRef(),typeof t.refresh,typeof t.close];clearImmediate(t);out.push(t.hasRef(),t._destroyed,t._onImmediate,t.ref()===t,t.hasRef());return out;})()));",
+      "expected": [
+        "object",
+        "Immediate",
+        "[object Object]",
+        true,
+        "[object Object]",
+        true,
+        true,
+        false,
+        true,
+        true,
+        "undefined",
+        "undefined",
+        false,
+        true,
+        null,
+        true,
+        false
+      ]
+    },
+    {
+      "name": "timer-prototypes",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const t=setTimeout(()=>{},1000),i=setImmediate(()=>{});const out=[Object.getOwnPropertyNames(Object.getPrototypeOf(t)),Object.getOwnPropertySymbols(Object.getPrototypeOf(t)).map(String),Object.getOwnPropertyNames(Object.getPrototypeOf(i)),Object.getOwnPropertySymbols(Object.getPrototypeOf(i)).map(String)];clearTimeout(t);clearImmediate(i);return out;})()));",
+      "expected": [
+        [
+          "constructor",
+          "refresh",
+          "unref",
+          "ref",
+          "hasRef",
+          "close"
+        ],
+        [
+          "Symbol(nodejs.util.inspect.custom)",
+          "Symbol(Symbol.dispose)",
+          "Symbol(Symbol.toPrimitive)"
+        ],
+        [
+          "constructor",
+          "ref",
+          "unref",
+          "hasRef"
+        ],
+        [
+          "Symbol(Symbol.dispose)"
+        ]
+      ]
+    },
+    {
+      "name": "timeout-callback-this-args",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});let t;return await new Promise(resolve=>{t=setTimeout(function(a,b){resolve([this===t,a,b,this._destroyed]);},3,'alpha',{x:1})});})()));",
+      "expected": [
+        true,
+        "alpha",
+        {
+          "x": 1
+        },
+        false
+      ]
+    },
+    {
+      "name": "immediate-callback-this-args",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});let t;return await new Promise(resolve=>{t=setImmediate(function(a){resolve([this===t,a,this._destroyed,this.hasRef()]);},7)});})()));",
+      "expected": [
+        true,
+        7,
+        true,
+        false
+      ]
+    },
+    {
+      "name": "interval-three-and-cross-clear",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});let rows=[];await new Promise(resolve=>{const t=setInterval(function(a){rows.push([this===t,a]);if(rows.length===3){clearTimeout(t);resolve()}},2,9)});await new Promise(r=>setTimeout(r,8));return rows;})()));",
+      "expected": [
+        [
+          true,
+          9
+        ],
+        [
+          true,
+          9
+        ],
+        [
+          true,
+          9
+        ]
+      ]
+    },
+    {
+      "name": "numeric-string-and-cross-clear",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const out=[];const a=setTimeout(()=>out.push('number'),2),b=setInterval(()=>out.push('string'),2),c=setTimeout(()=>out.push('cross'),2);clearTimeout(+a);clearTimeout(String(b));clearInterval(c);await new Promise(r=>setTimeout(r,12));return out;})()));",
+      "expected": []
+    },
+    {
+      "name": "cleared-refresh-does-not-revive",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});let count=0;const t=setTimeout(()=>count++,4);clearTimeout(t);const same=t.refresh()===t;await new Promise(r=>setTimeout(r,12));return [same,count,t._destroyed,t._idleTimeout];})()));",
+      "expected": [
+        true,
+        0,
+        true,
+        -1
+      ]
+    },
+    {
+      "name": "refresh-after-fire-reuses-handle",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});let count=0;const t=setTimeout(()=>count++,3);await new Promise(r=>setTimeout(r,10));const before=t._destroyed;const same=t.refresh()===t;await new Promise(r=>setTimeout(r,10));return [before,same,count,t._destroyed];})()));",
+      "expected": [
+        true,
+        true,
+        2,
+        true
+      ]
+    },
+    {
+      "name": "immediate-and-microtask-order",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const out=[];await new Promise(resolve=>{setTimeout(()=>out.push('timeout'),10);setImmediate(()=>{out.push('first');queueMicrotask(()=>out.push('micro'));setImmediate(()=>out.push('nested'))});setImmediate(()=>out.push('second'));setTimeout(resolve,25)});return out;})()));",
+      "expected": [
+        "first",
+        "micro",
+        "second",
+        "nested",
+        "timeout"
+      ]
+    },
+    {
+      "name": "microtask-promise-fifo",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const out=[];const result=queueMicrotask(function(){out.push(['queued',this===undefined]);Promise.resolve().then(()=>out.push('inner'))});Promise.resolve().then(()=>out.push('promise'));out.push(['result',typeof result]);await new Promise(r=>setTimeout(r,5));return out;})()));",
+      "expected": [
+        [
+          "result",
+          "undefined"
+        ],
+        [
+          "queued",
+          true
+        ],
+        "promise",
+        "inner"
+      ]
+    },
+    {
+      "name": "setTimeout-invalid-undefined",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{setTimeout(undefined);return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received undefined",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "setTimeout-invalid-null",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{setTimeout(null);return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received null",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "setTimeout-invalid-42",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{setTimeout(42);return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received type number (42)",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "setTimeout-invalid-'owned'",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{setTimeout('owned');return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received type string ('owned')",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "setTimeout-invalid-{}",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{setTimeout({});return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received an instance of Object",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "setTimeout-invalid-[]",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{setTimeout([]);return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received an instance of Array",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "setInterval-invalid-undefined",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{setInterval(undefined);return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received undefined",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "setInterval-invalid-null",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{setInterval(null);return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received null",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "setInterval-invalid-42",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{setInterval(42);return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received type number (42)",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "setInterval-invalid-'owned'",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{setInterval('owned');return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received type string ('owned')",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "setInterval-invalid-{}",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{setInterval({});return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received an instance of Object",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "setInterval-invalid-[]",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{setInterval([]);return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received an instance of Array",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "setImmediate-invalid-undefined",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{setImmediate(undefined);return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received undefined",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "setImmediate-invalid-null",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{setImmediate(null);return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received null",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "setImmediate-invalid-42",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{setImmediate(42);return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received type number (42)",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "setImmediate-invalid-'owned'",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{setImmediate('owned');return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received type string ('owned')",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "setImmediate-invalid-{}",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{setImmediate({});return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received an instance of Object",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "setImmediate-invalid-[]",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{setImmediate([]);return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received an instance of Array",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "queueMicrotask-invalid-undefined",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{queueMicrotask(undefined);return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received undefined",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "queueMicrotask-invalid-null",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{queueMicrotask(null);return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received null",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "queueMicrotask-invalid-42",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{queueMicrotask(42);return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received type number (42)",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "queueMicrotask-invalid-'owned'",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{queueMicrotask('owned');return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received type string ('owned')",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "queueMicrotask-invalid-{}",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{queueMicrotask({});return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received an instance of Object",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "queueMicrotask-invalid-[]",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{queueMicrotask([]);return 'accepted'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"callback\" argument must be of type function. Received an instance of Array",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "delay-undefined",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{const t=setTimeout(()=>{},undefined);const out=[t._idleTimeout,t._repeat];clearTimeout(t);return out}catch(error){return err(error)}})()));",
+      "expected": [
+        1,
+        null
+      ]
+    },
+    {
+      "name": "delay-null",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{const t=setTimeout(()=>{},null);const out=[t._idleTimeout,t._repeat];clearTimeout(t);return out}catch(error){return err(error)}})()));",
+      "expected": [
+        1,
+        null
+      ]
+    },
+    {
+      "name": "delay-false",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{const t=setTimeout(()=>{},false);const out=[t._idleTimeout,t._repeat];clearTimeout(t);return out}catch(error){return err(error)}})()));",
+      "expected": [
+        1,
+        null
+      ]
+    },
+    {
+      "name": "delay--5",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{const t=setTimeout(()=>{},-5);const out=[t._idleTimeout,t._repeat];clearTimeout(t);return out}catch(error){return err(error)}})()));",
+      "expected": [
+        1,
+        null
+      ]
+    },
+    {
+      "name": "delay-0",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{const t=setTimeout(()=>{},0);const out=[t._idleTimeout,t._repeat];clearTimeout(t);return out}catch(error){return err(error)}})()));",
+      "expected": [
+        1,
+        null
+      ]
+    },
+    {
+      "name": "delay-0.5",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{const t=setTimeout(()=>{},0.5);const out=[t._idleTimeout,t._repeat];clearTimeout(t);return out}catch(error){return err(error)}})()));",
+      "expected": [
+        1,
+        null
+      ]
+    },
+    {
+      "name": "delay-1.8",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{const t=setTimeout(()=>{},1.8);const out=[t._idleTimeout,t._repeat];clearTimeout(t);return out}catch(error){return err(error)}})()));",
+      "expected": [
+        1.8,
+        null
+      ]
+    },
+    {
+      "name": "delay-NaN",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{const t=setTimeout(()=>{},NaN);const out=[t._idleTimeout,t._repeat];clearTimeout(t);return out}catch(error){return err(error)}})()));",
+      "expected": [
+        1,
+        null
+      ]
+    },
+    {
+      "name": "delay-Infinity",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{const t=setTimeout(()=>{},Infinity);const out=[t._idleTimeout,t._repeat];clearTimeout(t);return out}catch(error){return err(error)}})()));",
+      "expected": [
+        1,
+        null
+      ]
+    },
+    {
+      "name": "delay-2147483648",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{const t=setTimeout(()=>{},2147483648);const out=[t._idleTimeout,t._repeat];clearTimeout(t);return out}catch(error){return err(error)}})()));",
+      "expected": [
+        1,
+        null
+      ]
+    },
+    {
+      "name": "delay-'2'",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{const t=setTimeout(()=>{},'2');const out=[t._idleTimeout,t._repeat];clearTimeout(t);return out}catch(error){return err(error)}})()));",
+      "expected": [
+        2,
+        null
+      ]
+    },
+    {
+      "name": "delay-2n",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{const t=setTimeout(()=>{},2n);const out=[t._idleTimeout,t._repeat];clearTimeout(t);return out}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "Cannot mix BigInt and other types, use explicit conversions",
+        "code": null
+      }
+    },
+    {
+      "name": "delay-Symbol('x')",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});try{const t=setTimeout(()=>{},Symbol('x'));const out=[t._idleTimeout,t._repeat];clearTimeout(t);return out}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "Cannot convert a Symbol value to a number",
+        "code": null
+      }
+    },
+    {
+      "name": "delay-coercion-order",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const rows=[];const d={valueOf(){rows.push('number');return 2},toString(){rows.push('string');return '4'}};const t=setTimeout(()=>{},d);clearTimeout(t);try{setTimeout(null,d)}catch(e){rows.push(e.code)}return rows;})()));",
+      "expected": [
+        "number",
+        "ERR_INVALID_ARG_TYPE"
+      ]
+    },
+    {
+      "name": "promise-results-and-scheduler",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');const value={owned:1};const first=p.setTimeout(2,value);const second=p.setImmediate(value);return [Object.prototype.toString.call(first),await first===value,await second===value,await p.scheduler.wait(1)===undefined,await p.scheduler.yield()===undefined];})()));",
+      "expected": [
+        "[object Promise]",
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "name": "setTimeout-options-null",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{const result=p.setTimeout(2,undefined,null);const brand=Object.prototype.toString.call(result);try{await result;return ['accepted',brand]}catch(error){return [brand,err(error)]}}catch(error){return ['sync',err(error)]}})()));",
+      "expected": [
+        "[object Promise]",
+        {
+          "name": "TypeError",
+          "message": "The \"options\" argument must be of type object. Received null",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "setTimeout-options-42",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{const result=p.setTimeout(2,undefined,42);const brand=Object.prototype.toString.call(result);try{await result;return ['accepted',brand]}catch(error){return [brand,err(error)]}}catch(error){return ['sync',err(error)]}})()));",
+      "expected": [
+        "[object Promise]",
+        {
+          "name": "TypeError",
+          "message": "The \"options\" argument must be of type object. Received type number (42)",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "setTimeout-options-[]",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{const result=p.setTimeout(2,undefined,[]);const brand=Object.prototype.toString.call(result);try{await result;return ['accepted',brand]}catch(error){return [brand,err(error)]}}catch(error){return ['sync',err(error)]}})()));",
+      "expected": [
+        "[object Promise]",
+        {
+          "name": "TypeError",
+          "message": "The \"options\" argument must be of type object. Received an instance of Array",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "setTimeout-options-{ref:1}",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{const result=p.setTimeout(2,undefined,{ref:1});const brand=Object.prototype.toString.call(result);try{await result;return ['accepted',brand]}catch(error){return [brand,err(error)]}}catch(error){return ['sync',err(error)]}})()));",
+      "expected": [
+        "[object Promise]",
+        {
+          "name": "TypeError",
+          "message": "The \"options.ref\" property must be of type boolean. Received type number (1)",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "setTimeout-options-{signal:null}",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{const result=p.setTimeout(2,undefined,{signal:null});const brand=Object.prototype.toString.call(result);try{await result;return ['accepted',brand]}catch(error){return [brand,err(error)]}}catch(error){return ['sync',err(error)]}})()));",
+      "expected": [
+        "[object Promise]",
+        {
+          "name": "TypeError",
+          "message": "The \"options.signal\" property must be an instance of AbortSignal. Received null",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "setTimeout-options-{signal:{}}",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{const result=p.setTimeout(2,undefined,{signal:{}});const brand=Object.prototype.toString.call(result);try{await result;return ['accepted',brand]}catch(error){return [brand,err(error)]}}catch(error){return ['sync',err(error)]}})()));",
+      "expected": [
+        "[object Promise]",
+        {
+          "name": "TypeError",
+          "message": "The \"options.signal\" property must be an instance of AbortSignal. Received an instance of Object",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "setImmediate-options-null",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{const result=p.setImmediate(undefined,null);const brand=Object.prototype.toString.call(result);try{await result;return ['accepted',brand]}catch(error){return [brand,err(error)]}}catch(error){return ['sync',err(error)]}})()));",
+      "expected": [
+        "[object Promise]",
+        {
+          "name": "TypeError",
+          "message": "The \"options\" argument must be of type object. Received null",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "setImmediate-options-42",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{const result=p.setImmediate(undefined,42);const brand=Object.prototype.toString.call(result);try{await result;return ['accepted',brand]}catch(error){return [brand,err(error)]}}catch(error){return ['sync',err(error)]}})()));",
+      "expected": [
+        "[object Promise]",
+        {
+          "name": "TypeError",
+          "message": "The \"options\" argument must be of type object. Received type number (42)",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "setImmediate-options-[]",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{const result=p.setImmediate(undefined,[]);const brand=Object.prototype.toString.call(result);try{await result;return ['accepted',brand]}catch(error){return [brand,err(error)]}}catch(error){return ['sync',err(error)]}})()));",
+      "expected": [
+        "[object Promise]",
+        {
+          "name": "TypeError",
+          "message": "The \"options\" argument must be of type object. Received an instance of Array",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "setImmediate-options-{ref:1}",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{const result=p.setImmediate(undefined,{ref:1});const brand=Object.prototype.toString.call(result);try{await result;return ['accepted',brand]}catch(error){return [brand,err(error)]}}catch(error){return ['sync',err(error)]}})()));",
+      "expected": [
+        "[object Promise]",
+        {
+          "name": "TypeError",
+          "message": "The \"options.ref\" property must be of type boolean. Received type number (1)",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "setImmediate-options-{signal:null}",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{const result=p.setImmediate(undefined,{signal:null});const brand=Object.prototype.toString.call(result);try{await result;return ['accepted',brand]}catch(error){return [brand,err(error)]}}catch(error){return ['sync',err(error)]}})()));",
+      "expected": [
+        "[object Promise]",
+        {
+          "name": "TypeError",
+          "message": "The \"options.signal\" property must be an instance of AbortSignal. Received null",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "setImmediate-options-{signal:{}}",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{const result=p.setImmediate(undefined,{signal:{}});const brand=Object.prototype.toString.call(result);try{await result;return ['accepted',brand]}catch(error){return [brand,err(error)]}}catch(error){return ['sync',err(error)]}})()));",
+      "expected": [
+        "[object Promise]",
+        {
+          "name": "TypeError",
+          "message": "The \"options.signal\" property must be an instance of AbortSignal. Received an instance of Object",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "setInterval-options-null",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{const result=p.setInterval(2,undefined,null) .next();const brand=Object.prototype.toString.call(result);try{await result;return ['accepted',brand]}catch(error){return [brand,err(error)]}}catch(error){return ['sync',err(error)]}})()));",
+      "expected": [
+        "[object Promise]",
+        {
+          "name": "TypeError",
+          "message": "The \"options\" argument must be of type object. Received null",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "setInterval-options-42",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{const result=p.setInterval(2,undefined,42) .next();const brand=Object.prototype.toString.call(result);try{await result;return ['accepted',brand]}catch(error){return [brand,err(error)]}}catch(error){return ['sync',err(error)]}})()));",
+      "expected": [
+        "[object Promise]",
+        {
+          "name": "TypeError",
+          "message": "The \"options\" argument must be of type object. Received type number (42)",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "setInterval-options-[]",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{const result=p.setInterval(2,undefined,[]) .next();const brand=Object.prototype.toString.call(result);try{await result;return ['accepted',brand]}catch(error){return [brand,err(error)]}}catch(error){return ['sync',err(error)]}})()));",
+      "expected": [
+        "[object Promise]",
+        {
+          "name": "TypeError",
+          "message": "The \"options\" argument must be of type object. Received an instance of Array",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "setInterval-options-{ref:1}",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{const result=p.setInterval(2,undefined,{ref:1}) .next();const brand=Object.prototype.toString.call(result);try{await result;return ['accepted',brand]}catch(error){return [brand,err(error)]}}catch(error){return ['sync',err(error)]}})()));",
+      "expected": [
+        "[object Promise]",
+        {
+          "name": "TypeError",
+          "message": "The \"options.ref\" property must be of type boolean. Received type number (1)",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "setInterval-options-{signal:null}",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{const result=p.setInterval(2,undefined,{signal:null}) .next();const brand=Object.prototype.toString.call(result);try{await result;return ['accepted',brand]}catch(error){return [brand,err(error)]}}catch(error){return ['sync',err(error)]}})()));",
+      "expected": [
+        "[object Promise]",
+        {
+          "name": "TypeError",
+          "message": "The \"options.signal\" property must be an instance of AbortSignal. Received null",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "setInterval-options-{signal:{}}",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{const result=p.setInterval(2,undefined,{signal:{}}) .next();const brand=Object.prototype.toString.call(result);try{await result;return ['accepted',brand]}catch(error){return [brand,err(error)]}}catch(error){return ['sync',err(error)]}})()));",
+      "expected": [
+        "[object Promise]",
+        {
+          "name": "TypeError",
+          "message": "The \"options.signal\" property must be an instance of AbortSignal. Received an instance of Object",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "promise-delay-'2'",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{await p.setTimeout('2');return 'resolved'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"delay\" argument must be of type number. Received type string ('2')",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "promise-delay-null",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{await p.setTimeout(null);return 'resolved'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"delay\" argument must be of type number. Received null",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "promise-delay-2n",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{await p.setTimeout(2n);return 'resolved'}catch(error){return err(error)}})()));",
+      "expected": {
+        "name": "TypeError",
+        "message": "The \"delay\" argument must be of type number. Received type bigint (2n)",
+        "code": "ERR_INVALID_ARG_TYPE"
+      }
+    },
+    {
+      "name": "promise-delay-NaN",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{await p.setTimeout(NaN);return 'resolved'}catch(error){return err(error)}})()));",
+      "expected": "resolved"
+    },
+    {
+      "name": "promise-delay--2",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{await p.setTimeout(-2);return 'resolved'}catch(error){return err(error)}})()));",
+      "expected": "resolved"
+    },
+    {
+      "name": "promise-delay-Infinity",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{await p.setTimeout(Infinity);return 'resolved'}catch(error){return err(error)}})()));",
+      "expected": "resolved"
+    },
+    {
+      "name": "promise-abort-preexisting",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');const ac=new AbortController();const reason={owned:1};ac.abort(reason);const out=[];for(const call of [()=>p.setTimeout(3,7,{signal:ac.signal}),()=>p.setImmediate(7,{signal:ac.signal}),()=>p.setInterval(3,7,{signal:ac.signal}).next()])try{await call()}catch(e){out.push([e.name,e.code,e.message,e.cause===reason])}return out;})()));",
+      "expected": [
+        [
+          "AbortError",
+          "ABORT_ERR",
+          "The operation was aborted",
+          true
+        ],
+        [
+          "AbortError",
+          "ABORT_ERR",
+          "The operation was aborted",
+          true
+        ],
+        [
+          "AbortError",
+          "ABORT_ERR",
+          "The operation was aborted",
+          true
+        ]
+      ]
+    },
+    {
+      "name": "promise-abort-active",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');const ac=new AbortController();const result=p.setTimeout(100,7,{signal:ac.signal});setTimeout(()=>ac.abort('owned reason'),2);try{await result;return 'resolved'}catch(e){return err(e)}})()));",
+      "expected": {
+        "name": "AbortError",
+        "message": "The operation was aborted",
+        "code": "ABORT_ERR",
+        "cause": "owned reason"
+      }
+    },
+    {
+      "name": "promise-interval-iterator-return",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');const iter=p.setInterval(2,'owned');const rows=[Object.prototype.toString.call(iter),iter[Symbol.asyncIterator]()===iter];rows.push(await iter.next(),await iter.next(),await iter.return('end'),await iter.next());return rows;})()));",
+      "expected": [
+        "[object AsyncGenerator]",
+        true,
+        {
+          "value": "owned",
+          "done": false
+        },
+        {
+          "value": "owned",
+          "done": false
+        },
+        {
+          "value": "end",
+          "done": true
+        },
+        {
+          "done": true
+        }
+      ]
+    },
+    {
+      "name": "promise-interval-abort-after-yield",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');const ac=new AbortController();const iter=p.setInterval(2,7,{signal:ac.signal});const first=await iter.next();ac.abort('stop');try{await iter.next();return 'resolved'}catch(e){return [first,err(e),await iter.next()]}})()));",
+      "expected": [
+        {
+          "value": 7,
+          "done": false
+        },
+        {
+          "name": "AbortError",
+          "message": "The operation was aborted",
+          "code": "ABORT_ERR",
+          "cause": "stop"
+        },
+        {
+          "done": true
+        }
+      ]
+    },
+    {
+      "name": "scheduler-invalid-receiver",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');const out=[];for(const name of ['wait','yield'])try{p.scheduler[name].call({},1)}catch(e){out.push(err(e))}try{new p.scheduler.constructor()}catch(e){out.push(err(e))}return out;})()));",
+      "expected": [
+        {
+          "name": "TypeError",
+          "message": "Value of \"this\" must be of type Scheduler",
+          "code": "ERR_INVALID_THIS"
+        },
+        {
+          "name": "TypeError",
+          "message": "Value of \"this\" must be of type Scheduler",
+          "code": "ERR_INVALID_THIS"
+        },
+        {
+          "name": "TypeError",
+          "message": "Illegal constructor",
+          "code": "ERR_ILLEGAL_CONSTRUCTOR"
+        }
+      ]
+    },
+    {
+      "name": "abort-basic-events",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const ac=new AbortController();const s=ac.signal;const rows=[s===ac.signal,s.aborted,typeof s.reason,Object.prototype.toString.call(s),s.constructor.name];const reason={owned:1};s.addEventListener('abort',function(e){rows.push([this===s,e.type,e.target===s,e.currentTarget===s,s.aborted,s.reason===reason])},{once:true});s.onabort=e=>rows.push(['onabort',e.type]);ac.abort(reason);ac.abort('second');try{s.throwIfAborted()}catch(e){rows.push(e===reason)}return rows;})()));",
+      "expected": [
+        true,
+        false,
+        "undefined",
+        "[object AbortSignal]",
+        "AbortSignal",
+        [
+          true,
+          "abort",
+          true,
+          true,
+          true,
+          true
+        ],
+        [
+          "onabort",
+          "abort"
+        ],
+        true
+      ]
+    },
+    {
+      "name": "abort-static",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const a=AbortSignal.abort();const b=AbortSignal.timeout(2);const c=AbortSignal.any([a,b]);await new Promise(r=>setTimeout(r,8));return [a.aborted,a.reason.name,a.reason.message,a.reason.code,c.reason===a.reason,b.aborted,b.reason.name,b.reason.message,b.reason.code];})()));",
+      "expected": [
+        true,
+        "AbortError",
+        "This operation was aborted",
+        20,
+        true,
+        true,
+        "TimeoutError",
+        "The operation was aborted due to timeout",
+        23
+      ]
+    },
+    {
+      "name": "interval-id-stable",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const ids=[];await new Promise(done=>{const t=setInterval(()=>{ids.push(+t);if(ids.length===3){clearTimeout(+t);done()}},2)});return [ids.length,ids.every(id=>id===ids[0])];})()));",
+      "expected": [
+        3,
+        true
+      ]
+    },
+    {
+      "name": "refresh-uncoerced-new-id-numeric-clear",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});let n=0;const t=setTimeout(()=>n++,2);await new Promise(r=>setTimeout(r,10));t.refresh();clearTimeout(+t);await new Promise(r=>setTimeout(r,10));return [n,t._destroyed];})()));",
+      "expected": [
+        1,
+        true
+      ]
+    },
+    {
+      "name": "refresh-coerced-new-id-numeric-clear",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});let n=0;const t=setTimeout(()=>n++,2);const first=+t;await new Promise(r=>setTimeout(r,10));t.refresh();const second=+t;clearTimeout(second);await new Promise(r=>setTimeout(r,10));return [n,first!==second,t._destroyed];})()));",
+      "expected": [
+        2,
+        true,
+        true
+      ]
+    },
+    {
+      "name": "refresh-pending-keeps-id",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const t=setTimeout(()=>{},50);const before=+t;t.refresh();const after=+t;clearTimeout(after);return [before===after,t._destroyed];})()));",
+      "expected": [
+        true,
+        true
+      ]
+    },
+    {
+      "name": "promise-interval-concurrent-next",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');const iter=p.setInterval(2,'v');const a=iter.next(),b=iter.next();return [await a,await b,await iter.return('end')];})()));",
+      "expected": [
+        {
+          "value": "v",
+          "done": false
+        },
+        {
+          "value": "v",
+          "done": false
+        },
+        {
+          "value": "end",
+          "done": true
+        }
+      ]
+    },
+    {
+      "name": "promise-interval-buffered-abort",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises'),ac=new AbortController();const iter=p.setInterval(2,7,{signal:ac.signal});const first=await iter.next();await new Promise(r=>setTimeout(r,9));ac.abort('done');try{return [first,await iter.next()]}catch(e){return [first,err(e)]}})()));",
+      "expected": [
+        {
+          "value": 7,
+          "done": false
+        },
+        {
+          "value": 7,
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "abort-onabort-reassignment-order",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const c=new AbortController(),rows=[];c.signal.onabort=()=>rows.push('old');c.signal.addEventListener('abort',()=>rows.push('middle'));c.signal.onabort=()=>rows.push('new');c.abort();return rows;})()));",
+      "expected": [
+        "new",
+        "middle"
+      ]
+    },
+    {
+      "name": "abort-stop-immediate-still-rejects",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises'),c=new AbortController(),rows=[];c.signal.addEventListener('abort',e=>{rows.push('stop');e.stopImmediatePropagation()});c.signal.addEventListener('abort',()=>rows.push('skip'));const pending=p.setTimeout(30,0,{signal:c.signal});c.abort('cause');try{await pending}catch(e){rows.push(err(e))}return rows;})()));",
+      "expected": [
+        "stop",
+        {
+          "name": "AbortError",
+          "message": "The operation was aborted",
+          "code": "ABORT_ERR",
+          "cause": "cause"
+        }
+      ]
+    },
+    {
+      "name": "abort-removal-once",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const c=new AbortController(),rows=[];const fn=()=>rows.push('first');c.signal.addEventListener('abort',fn);c.signal.addEventListener('abort',fn);c.signal.removeEventListener('abort',fn);c.signal.addEventListener('abort',()=>rows.push('once'),{once:true});c.abort();c.abort();return rows;})()));",
+      "expected": [
+        "once"
+      ]
+    },
+    {
+      "name": "abort-any-empty-and-prior-order",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const a=new AbortController(),b=new AbortController();a.abort('a');b.abort('b');const empty=AbortSignal.any([]),first=AbortSignal.any([b.signal,a.signal]);return [empty.aborted,first.reason];})()));",
+      "expected": [
+        false,
+        "b"
+      ]
+    },
+    {
+      "name": "abort-any-invalid",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const out=[];for(const input of [null,{},[{}],[null]])try{AbortSignal.any(input);out.push('ok')}catch(e){out.push(err(e))}return out;})()));",
+      "expected": [
+        {
+          "name": "TypeError",
+          "message": "signals cannot be converted to sequence.",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        {
+          "name": "TypeError",
+          "message": "signals cannot be converted to sequence.",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        {
+          "name": "TypeError",
+          "message": "signals[0] is not of type AbortSignal.",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        {
+          "name": "TypeError",
+          "message": "signals[0] is not of type AbortSignal.",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "abort-timeout-invalid",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const out=[];for(const input of [undefined,null,'2',-1,1.5,NaN,Infinity,4294967296,2n])try{AbortSignal.timeout(input);out.push('ok')}catch(e){out.push(err(e))}return out;})()));",
+      "expected": [
+        {
+          "name": "TypeError",
+          "message": "The \"delay\" argument must be of type number. Received undefined",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        {
+          "name": "TypeError",
+          "message": "The \"delay\" argument must be of type number. Received null",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        {
+          "name": "TypeError",
+          "message": "The \"delay\" argument must be of type number. Received type string ('2')",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        {
+          "name": "RangeError",
+          "message": "The value of \"delay\" is out of range. It must be >= 0 && <= 4294967295. Received -1",
+          "code": "ERR_OUT_OF_RANGE"
+        },
+        {
+          "name": "RangeError",
+          "message": "The value of \"delay\" is out of range. It must be an integer. Received 1.5",
+          "code": "ERR_OUT_OF_RANGE"
+        },
+        {
+          "name": "RangeError",
+          "message": "The value of \"delay\" is out of range. It must be an integer. Received NaN",
+          "code": "ERR_OUT_OF_RANGE"
+        },
+        {
+          "name": "RangeError",
+          "message": "The value of \"delay\" is out of range. It must be an integer. Received Infinity",
+          "code": "ERR_OUT_OF_RANGE"
+        },
+        {
+          "name": "RangeError",
+          "message": "The value of \"delay\" is out of range. It must be >= 0 && <= 4294967295. Received 4294967296",
+          "code": "ERR_OUT_OF_RANGE"
+        },
+        {
+          "name": "TypeError",
+          "message": "The \"delay\" argument must be of type number. Received type bigint (2n)",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "abort-controller-receiver",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const getter=Object.getOwnPropertyDescriptor(AbortController.prototype,'signal').get;const out=[];for(const fn of [()=>getter.call({}),()=>AbortController.prototype.abort.call({}),()=>new AbortSignal()])try{fn();out.push('ok')}catch(e){out.push(err(e))}return out;})()));",
+      "expected": [
+        {
+          "name": "TypeError",
+          "message": "Cannot read private member #signal from an object whose class did not declare it",
+          "code": null
+        },
+        {
+          "name": "TypeError",
+          "message": "Cannot read private member #signal from an object whose class did not declare it",
+          "code": null
+        },
+        {
+          "name": "TypeError",
+          "message": "Illegal constructor",
+          "code": "ERR_ILLEGAL_CONSTRUCTOR"
+        }
+      ]
+    },
+    {
+      "name": "callback-array-nested-diagnostics",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const out=[];for(const input of [[1,2],new Uint8Array(2),function named(){},Object.create(null)]){try{const t=setTimeout(input,50);clearTimeout(t);out.push('ok')}catch(e){out.push(err(e))}}return out;})()));",
+      "expected": [
+        {
+          "name": "TypeError",
+          "message": "The \"callback\" argument must be of type function. Received an instance of Array",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        {
+          "name": "TypeError",
+          "message": "The \"callback\" argument must be of type function. Received an instance of Uint8Array",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        "ok",
+        {
+          "name": "TypeError",
+          "message": "The \"callback\" argument must be of type function. Received [Object: null prototype] {}",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    },
+    {
+      "name": "delay-object-bigint-symbol",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const out=[];for(const input of [{valueOf:()=>2n},{valueOf:()=>Symbol('x')}])try{setTimeout(()=>{},input);out.push('ok')}catch(e){out.push(err(e))}return out;})()));",
+      "expected": [
+        {
+          "name": "TypeError",
+          "message": "Cannot mix BigInt and other types, use explicit conversions",
+          "code": null
+        },
+        {
+          "name": "TypeError",
+          "message": "Cannot convert a Symbol value to a number",
+          "code": null
+        }
+      ]
+    },
+    {
+      "name": "promise-options-signal-duck",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises');try{await p.setTimeout(2,0,{signal:{aborted:true,reason:7}});return 'ok'}catch(e){return err(e)}})()));",
+      "expected": {
+        "name": "AbortError",
+        "message": "The operation was aborted",
+        "code": "ABORT_ERR",
+        "cause": 7
+      }
+    },
+    {
+      "name": "promise-options-getter-order",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const p=await import('node:timers/promises'),rows=[];const options={get signal(){rows.push('signal');return undefined},get ref(){rows.push('ref');return true}};await p.setTimeout(1,0,options);return rows;})()));",
+      "expected": [
+        "signal",
+        "ref",
+        "ref",
+        "signal",
+        "ref"
+      ]
+    },
+    {
+      "name": "clear-receiver-duck",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const rows=[];const duck={_onTimeout:()=>{},_destroyed:false};clearTimeout(duck);rows.push(duck._onTimeout,duck._destroyed,duck._idleTimeout);return rows;})()));",
+      "expected": [
+        null,
+        true,
+        -1
+      ]
+    },
+    {
+      "name": "global-descriptors-abort",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});return ['AbortController','AbortSignal'].map(key=>{const d=Object.getOwnPropertyDescriptor(globalThis,key);return [key,d.enumerable,d.configurable,typeof d.get,typeof d.set,typeof d.value]});})()));",
+      "expected": [
+        [
+          "AbortController",
+          true,
+          true,
+          "undefined",
+          "undefined",
+          "function"
+        ],
+        [
+          "AbortSignal",
+          true,
+          true,
+          "undefined",
+          "undefined",
+          "function"
+        ]
+      ]
+    },
+    {
+      "name": "promisify-symbol-descriptor",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});return [setTimeout,setImmediate].map(fn=>{const d=Object.getOwnPropertyDescriptor(fn,Symbol.for('nodejs.util.promisify.custom'));return [d.enumerable,d.configurable,typeof d.get,typeof d.set]});})()));",
+      "expected": [
+        [
+          true,
+          false,
+          "function",
+          "undefined"
+        ],
+        [
+          true,
+          false,
+          "function",
+          "undefined"
+        ]
+      ]
+    },
+    {
+      "name": "coercion-owned-errors-preserved",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const out=[];for(const message of ['owned bigint failure','owned symbol failure','cannot convert bigint to number'])try{setTimeout(()=>{},{valueOf(){throw new TypeError(message)}})}catch(e){out.push(err(e))}return out;})()));",
+      "expected": [
+        {
+          "name": "TypeError",
+          "message": "owned bigint failure",
+          "code": null
+        },
+        {
+          "name": "TypeError",
+          "message": "owned symbol failure",
+          "code": null
+        },
+        {
+          "name": "TypeError",
+          "message": "cannot convert bigint to number",
+          "code": null
+        }
+      ]
+    },
+    {
+      "name": "coercion-symbol-primitive",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const out=[];for(const input of [{[Symbol.toPrimitive]:()=>2n},{[Symbol.toPrimitive]:()=>Symbol('x')},{[Symbol.toPrimitive]:()=>({})},{[Symbol.toPrimitive]:2},{[Symbol.toPrimitive]:{}},{[Symbol.toPrimitive]:'owned'}])try{setTimeout(()=>{},input);out.push('ok')}catch(e){out.push(err(e))}return out;})()));",
+      "expected": [
+        {
+          "name": "TypeError",
+          "message": "Cannot mix BigInt and other types, use explicit conversions",
+          "code": null
+        },
+        {
+          "name": "TypeError",
+          "message": "Cannot convert a Symbol value to a number",
+          "code": null
+        },
+        {
+          "name": "TypeError",
+          "message": "Cannot convert object to primitive value",
+          "code": null
+        },
+        {
+          "name": "TypeError",
+          "message": "number 2 is not a function",
+          "code": null
+        },
+        {
+          "name": "TypeError",
+          "message": "object is not a function",
+          "code": null
+        },
+        {
+          "name": "TypeError",
+          "message": "string \"owned\" is not a function",
+          "code": null
+        }
+      ]
+    },
+    {
+      "name": "coercion-number-hint-method-order",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const rows=[];const t=setTimeout(()=>{},{[Symbol.toPrimitive](hint){rows.push(hint);return 2}});clearTimeout(t);const u=setTimeout(()=>{},{valueOf(){rows.push('valueOf');return {}},toString(){rows.push('toString');return '2'}});clearTimeout(u);return rows;})()));",
+      "expected": [
+        "number",
+        "valueOf",
+        "toString"
+      ]
+    },
+    {
+      "name": "abort-onabort-remove-readd",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const c=new AbortController(),rows=[];c.signal.onabort=()=>rows.push('old');c.signal.addEventListener('abort',()=>rows.push('middle'));c.signal.onabort=null;c.signal.onabort=()=>rows.push('new');c.abort();return rows;})()));",
+      "expected": [
+        "new",
+        "middle"
+      ]
+    },
+    {
+      "name": "abort-controller-overridden-signal",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const c=new AbortController(),signal=c.signal;Object.defineProperty(c,'signal',{get(){throw new Error('must not read')}});c.abort('reason');return [signal.aborted,signal.reason];})()));",
+      "expected": [
+        true,
+        "reason"
+      ]
+    },
+    {
+      "name": "abort-any-iterable",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const a=new AbortController(),b=new AbortController();const s=AbortSignal.any(new Set([a.signal,b.signal]));b.abort('b');return [s.aborted,s.reason];})()));",
+      "expected": [
+        true,
+        "b"
+      ]
+    },
+    {
+      "name": "abort-public-descriptors",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const row=(o,n)=>{const d=Object.getOwnPropertyDescriptor(o,n);return [n,d.enumerable,d.configurable,d.writable??null,typeof d.get,typeof d.set,typeof d.value,typeof d.value==='function'?d.value.length:null]};return [ ['aborted','reason','onabort','throwIfAborted'].map(n=>row(AbortSignal.prototype,n)),['signal','abort'].map(n=>row(AbortController.prototype,n)),['abort','timeout','any'].map(n=>row(AbortSignal,n)) ];})()));",
+      "expected": [
+        [
+          [
+            "aborted",
+            true,
+            true,
+            null,
+            "function",
+            "undefined",
+            "undefined",
+            null
+          ],
+          [
+            "reason",
+            false,
+            true,
+            null,
+            "function",
+            "undefined",
+            "undefined",
+            null
+          ],
+          [
+            "onabort",
+            true,
+            true,
+            null,
+            "function",
+            "function",
+            "undefined",
+            null
+          ],
+          [
+            "throwIfAborted",
+            false,
+            true,
+            true,
+            "undefined",
+            "undefined",
+            "function",
+            0
+          ]
+        ],
+        [
+          [
+            "signal",
+            true,
+            true,
+            null,
+            "function",
+            "undefined",
+            "undefined",
+            null
+          ],
+          [
+            "abort",
+            true,
+            true,
+            true,
+            "undefined",
+            "undefined",
+            "function",
+            0
+          ]
+        ],
+        [
+          [
+            "abort",
+            false,
+            true,
+            true,
+            "undefined",
+            "undefined",
+            "function",
+            0
+          ],
+          [
+            "timeout",
+            false,
+            true,
+            true,
+            "undefined",
+            "undefined",
+            "function",
+            1
+          ],
+          [
+            "any",
+            false,
+            true,
+            true,
+            "undefined",
+            "undefined",
+            "function",
+            1
+          ]
+        ]
+      ]
+    },
+    {
+      "name": "abort-tags-descriptors",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});return [AbortSignal.prototype,AbortController.prototype].map(o=>{const d=Object.getOwnPropertyDescriptor(o,Symbol.toStringTag);return [d.value,d.enumerable,d.configurable,d.writable,typeof d.get]})})()));",
+      "expected": [
+        [
+          "AbortSignal",
+          false,
+          true,
+          false,
+          "undefined"
+        ],
+        [
+          "AbortController",
+          false,
+          true,
+          false,
+          "undefined"
+        ]
+      ]
+    },
+    {
+      "name": "abort-any-primitives",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{const err=e=>({name:e.name,message:e.message,code:e.code??null,...(e.cause!==undefined?{cause:e.cause}:{})});const out=[];for(const input of ['', 'x',false,1,2n])try{out.push(AbortSignal.any(input).aborted)}catch(e){out.push(err(e))}return out;})()));",
+      "expected": [
+        {
+          "name": "TypeError",
+          "message": "signals cannot be converted to sequence.",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        {
+          "name": "TypeError",
+          "message": "signals cannot be converted to sequence.",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        {
+          "name": "TypeError",
+          "message": "signals cannot be converted to sequence.",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        {
+          "name": "TypeError",
+          "message": "signals cannot be converted to sequence.",
+          "code": "ERR_INVALID_ARG_TYPE"
+        },
+        {
+          "name": "TypeError",
+          "message": "signals cannot be converted to sequence.",
+          "code": "ERR_INVALID_ARG_TYPE"
+        }
+      ]
+    }
+  ],
+  "additional_source_seal": "evidence/runtime-timer-surface/20260907T030937096733Z-extra/manifest.json",
+  "coercion_source_seal": "evidence/runtime-timer-surface/20260907T031656741716Z-coercion/manifest.json",
+  "descriptor_source_seal": "evidence/runtime-timer-surface/20260907T032222276368Z-descriptors/manifest.json"
+}

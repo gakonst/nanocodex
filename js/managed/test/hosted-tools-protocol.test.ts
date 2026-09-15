@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  MAX_HOSTED_TOOLS_FRAME_BYTES,
   HostedToolsProtocolError,
   parseHostedToolsHostFrame,
   parseHostedToolsManagedFrame,
@@ -139,8 +138,15 @@ describe("hosted tools socket protocol", () => {
     expect(() => parseHostedToolsHostFrame("{" )).toThrow("JSON objects");
     expect(() => parseHostedToolsHostFrame(JSON.stringify({ type: "ping", nonce: "x".repeat(129) })))
       .toThrow("nonce");
-    expect(() => parseHostedToolsHostFrame("x".repeat(MAX_HOSTED_TOOLS_FRAME_BYTES + 1)))
-      .toThrow("limited");
+    const large = "x".repeat(512 * 1024);
+    expect(parseHostedToolsHostFrame(JSON.stringify({
+      type: "result",
+      call_id: "call:large",
+      outcome: {
+        status: "completed",
+        output: { ...outcome.output, output: large },
+      },
+    }))).toMatchObject({ outcome: { output: { output: large } } });
     expect(() => parseHostedToolsHostFrame(JSON.stringify({
       type: "catalog",
       tools: [tool],

@@ -1,7 +1,5 @@
 import {
-  HOSTED_TOOL_CALL_TIMEOUT_MS,
   HOSTED_TOOLS_LEASE_MS,
-  MAX_HOSTED_TOOL_OUTPUT_BYTES,
   HostedToolsProtocolError,
   parseHostedToolsHostFrame,
   parseHostedToolsManagedFrame,
@@ -23,10 +21,7 @@ import type { ToolContext } from "../../tools/types.mjs";
 
 const SOCKET_TAG = "hosted-tools";
 const INVALID_CONNECT_GRANT_ID = "invalid-connect-grant";
-const DEFAULT_MAX_IN_FLIGHT = 64;
 const OPEN = 1;
-const MAX_RETAINED_RECEIPTS = 512;
-const MAX_CALLS_PER_GENERATION = 512;
 const REVOKED_ROUTE_LEASE_EXPIRES_AT = -1;
 const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
 const LEGACY_ROUTE_ID = "$legacy";
@@ -34,8 +29,15 @@ export const HOSTED_MACHINE_TOOL_NAMES = Object.freeze([
   "exec_command",
   "write_stdin",
   "preview",
+  "mcp__cua_repl__js",
+  "mcp__cua_repl__js_reset",
 ] as const);
 const MACHINE_TOOL_NAMES: ReadonlySet<string> = new Set(HOSTED_MACHINE_TOOL_NAMES);
+// Placement overlays deliberately retain their canonical cloud name. The
+// owning ToolRouter admits them only when the callable contract is identical,
+// then prefers the live attachment with the cloud tool as a pre-dispatch-only
+// fallback. Every other machine-local tool remains namespaced by machine ID.
+const ATTACHED_OVERLAY_TOOL_NAMES: ReadonlySet<string> = new Set(["browser_execute"]);
 const encoder = new TextEncoder();
 
 /**
@@ -225,7 +227,6 @@ export interface HostedToolsBrokerPersistence {
   markGenerationAmbiguous(leaseId: string, generation: number, resultJson: string, now: number): void;
   activeCallCount(leaseId: string, generation: number): number;
   generationCallCount(leaseId: string, generation: number): number;
-  pruneReceipts(limit: number): void;
 }
 
 export type HostedToolsBrokerCoreOptions = Readonly<{
@@ -289,15 +290,13 @@ export class HostedToolsBrokerCore {
   ) {
     this.#now = options.now ?? Date.now;
     this.#randomUUID = options.randomUUID ?? (() => crypto.randomUUID());
-    this.#maxInFlight = options.maxInFlight ?? DEFAULT_MAX_IN_FLIGHT;
-    if (!Number.isSafeInteger(this.#maxInFlight) || this.#maxInFlight < 1
-      || this.#maxInFlight > DEFAULT_MAX_IN_FLIGHT) {
-      throw new TypeError(`maxInFlight must be an integer from 1 through ${DEFAULT_MAX_IN_FLIGHT}`);
+    this.#maxInFlight = options.maxInFlight ?? Number.MAX_SAFE_INTEGER;
+    if (!Number.isSafeInteger(this.#maxInFlight) || this.#maxInFlight < 1) {
+      throw new TypeError("maxInFlight must be a positive safe integer");
     }
-    this.#maxCallsPerGeneration = options.maxCallsPerGeneration ?? MAX_CALLS_PER_GENERATION;
-    if (!Number.isSafeInteger(this.#maxCallsPerGeneration) || this.#maxCallsPerGeneration < 1
-      || this.#maxCallsPerGeneration > MAX_CALLS_PER_GENERATION) {
-      throw new TypeError(`maxCallsPerGeneration must be an integer from 1 through ${MAX_CALLS_PER_GENERATION}`);
+    this.#maxCallsPerGeneration = options.maxCallsPerGeneration ?? Number.MAX_SAFE_INTEGER;
+    if (!Number.isSafeInteger(this.#maxCallsPerGeneration) || this.#maxCallsPerGeneration < 1) {
+      throw new TypeError("maxCallsPerGeneration must be a positive safe integer");
     }
     this.#persistence = options.persistence;
     this.#onCatalogChanged = options.onCatalogChanged;
@@ -356,6 +355,18 @@ export class HostedToolsBrokerCore {
         this.#catalogValidator = validator;
       },
     });
+  }
+
+  /** Trusted owner HTTP facade. Retains the same lease, deadline, schema and result-conflict checks as WebSocket delivery. */
+  completeHttpResult(callId: string, outcome: unknown): void {
+    const frame = parseHostedToolsHostFrame(JSON.stringify({ type: "result", call_id: callId, outcome }));
+    if (frame.type !== "result") throw new HostedToolsProtocolError("invalid_result", "expected a tool result");
+    const row = this.#persistence.call(callId);
+    if (!row) throw new HostedToolsProtocolError("unknown_call", "no retained tool call");
+    const state = this.#persistence.states().find(state => state.lease_id === row.lease_id && state.generation === row.generation);
+    const socket = this.#socketForState(state);
+    if (!socket) throw new HostedToolsProtocolError("stale_socket", "tool result requires its active pinned attachment");
+    this.#completeResult(socket, frame);
   }
 
   owns(socket: HostedToolsSocket): boolean { return this.handles(socket); }
@@ -760,9 +771,14 @@ export class HostedToolsBrokerCore {
         throw new Error("leased tool attachment must publish its exact assigned machine ID");
       }
       if (initial.expectedAttachmentId !== undefined) {
-        const extra = frame.tools.find((entry) => !MACHINE_TOOL_NAMES.has(entry.definition.name));
+        const extra = frame.tools.find((entry) => (
+          !MACHINE_TOOL_NAMES.has(entry.definition.name)
+          && !ATTACHED_OVERLAY_TOOL_NAMES.has(entry.definition.name)
+        ));
         if (extra !== undefined) {
-          throw new Error("leased tool attachments may publish only canonical machine primitives");
+          throw new Error(
+            "leased tool attachments may publish only canonical machine primitives or placement overlays",
+          );
         }
       }
       if (machine !== undefined) validateMachineToolContracts(frame.tools);
@@ -938,7 +954,6 @@ export class HostedToolsBrokerCore {
       throw new HostedToolsProtocolError("result_conflict", "call result lost durable ownership");
     }
     const pending = this.#takePending(row.call_id);
-    this.#pruneReceipts();
     this.#ackResult(socket, frame);
     pending?.resolve(frame.outcome);
   }
@@ -1050,9 +1065,9 @@ export class HostedToolsBrokerCore {
       ? retained.deadline_at
       : Math.min(
         request.deadlineAt ?? Number.MAX_SAFE_INTEGER,
-        now + Math.min(binding.entry.timeout_ms, HOSTED_TOOL_CALL_TIMEOUT_MS),
+        Math.min(Number.MAX_SAFE_INTEGER, now + binding.entry.timeout_ms),
       );
-    const outputByteBudget = request.outputByteBudget ?? MAX_HOSTED_TOOL_OUTPUT_BYTES;
+    const outputByteBudget = request.outputByteBudget ?? Number.MAX_SAFE_INTEGER;
     const transportCallId = retained?.call_id ?? this.#randomUUID();
     const hostId = retained?.host_id ?? binding.hostId;
     const pinnedLeaseId = retained?.lease_id ?? binding.leaseId;
@@ -1218,7 +1233,6 @@ export class HostedToolsBrokerCore {
     outcome: HostedToolCallOutcome,
   ): HostedToolCallOutcome {
     this.#persistence.transitionCall(row.call_id, ["admitted"], state, JSON.stringify(outcome), this.#now());
-    this.#pruneReceipts();
     return outcome;
   }
 
@@ -1261,7 +1275,6 @@ export class HostedToolsBrokerCore {
       JSON.stringify(outcome),
       this.#now(),
     );
-    this.#pruneReceipts();
     this.#takePending(row.call_id)?.resolve(outcome);
   }
 
@@ -1286,7 +1299,6 @@ export class HostedToolsBrokerCore {
       this.#persistence.markGenerationAmbiguous(leaseId, generation, JSON.stringify(outcome), this.#now());
       this.#persistence.clearHost(leaseId, generation);
     });
-    this.#pruneReceipts();
     this.#resolveGeneration(leaseId, generation, outcome);
     this.#notifyCatalogChanged();
   }
@@ -1296,10 +1308,6 @@ export class HostedToolsBrokerCore {
       if (pending.leaseId !== leaseId || pending.generation !== generation) continue;
       this.#takePending(callId)?.resolve(outcome);
     }
-  }
-
-  #pruneReceipts(): void {
-    this.#persistence.pruneReceipts(MAX_RETAINED_RECEIPTS);
   }
 
   #takePending(callId: string): PendingCall | undefined {
@@ -1570,7 +1578,7 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
 }
 
 function exposedEntry(entry: HostedToolCatalogEntry, machine: HostedMachine | undefined): HostedToolCatalogEntry {
-  if (machine === undefined) return entry;
+  if (machine === undefined || ATTACHED_OVERLAY_TOOL_NAMES.has(entry.definition.name)) return entry;
   const routeName = `user:${machine.id}:${entry.definition.name}`;
   const candidate = `user_${machine.id}_${entry.definition.name}`;
   const safeCandidate = candidate.replace(/[^A-Za-z0-9_-]/g, "_");

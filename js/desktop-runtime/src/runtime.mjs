@@ -10,6 +10,7 @@ import { Agent } from "nanocodex/managed";
 import { createTools } from "nanocodex/tools";
 import * as Workspace from "nanocodex/node/workspace";
 import { createNodeProcessTools } from "nanocodex-tools/node";
+import { createComputerTools, discoverComputer } from "nanocodex-computer";
 import WebSocket from "ws";
 import { mergeAccountHands, restoredAccountHands } from "./account-hands.mjs";
 import { createVmTools, supportsLocalVms } from "./vm-tools.mjs";
@@ -713,7 +714,11 @@ export class DesktopRuntime extends EventEmitter {
     const workspace = await Workspace.open({ path: hand.workspace, root: hand.workspace });
     resource.abort.signal.throwIfAborted();
     const vmTools = this.#localVmTools(hand, resource);
-    const tools = await createTools({ tools: [...processes.tools, ...vmTools], workspace, attachmentId: hand.id, machines: [{ id: hand.id, name: hand.name, workspace: hand.workspace, capabilities: ["native", "shell", "filesystem", "process", "pipes", ...(vmTools.length ? ["vm_host"] : [])] }] });
+    const computerExecutable = await discoverComputer({ binary: this.#state.defaults.binary });
+    const computer = computerExecutable ? createComputerTools({ executable: computerExecutable,
+      ...(process.platform === "linux" && !hand.agentId ? { desktopRuntime: join(this.#nativeScreenDirectory(hand), "desktop") } : {}) }) : undefined;
+    if (computer) resource.add(computer.close);
+    const tools = await createTools({ tools: [...processes.tools, ...vmTools, ...(computer?.tools ?? [])], workspace, attachmentId: hand.id, machines: [{ id: hand.id, name: hand.name, workspace: hand.workspace, capabilities: ["native", "shell", "filesystem", "process", "pipes", ...(computer ? ["computer"] : []), ...(vmTools.length ? ["vm_host"] : [])] }] });
     resource.add(() => tools.close());
     resource.abort.signal.throwIfAborted();
     const endpoint = new URL(hand.agentId ? `/v1/agents/${encodeURIComponent(hand.agentId)}/tool-host` : "/v1/account/tool-host", this.#options.baseUrl);
@@ -758,10 +763,13 @@ export class DesktopRuntime extends EventEmitter {
       void resource.close().finally(() => { if (this.#resources.get(hand.id) === resource) this.#resources.delete(hand.id); });
     });
   }
+  #nativeScreenDirectory(hand) {
+    const scope = createHash("sha256").update(`${this.#options.baseUrl}\0${this.#options.apiKey}`).digest("hex");
+    return join(this.#dataDirectory, "screens", scope, hand.id);
+  }
   async #startNativeScreen(hand, resource) {
     const binary = await this.#prepareVmHelper(this.#state.defaults.binary);
-    const scope = createHash("sha256").update(`${this.#options.baseUrl}\0${this.#options.apiKey}`).digest("hex");
-    const stateDirectory = join(this.#dataDirectory, "screens", scope, hand.id);
+    const stateDirectory = this.#nativeScreenDirectory(hand);
     await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
     resource.abort.signal.throwIfAborted();
     const env = Object.fromEntries(["PATH", "HOME", "TMPDIR", "LANG"].filter(key => process.env[key]).map(key => [key, process.env[key]]));

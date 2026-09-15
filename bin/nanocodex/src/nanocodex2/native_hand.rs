@@ -8,6 +8,7 @@ use std::{
 };
 
 use clap::Args;
+use nanocodex_browser::{Browser, BrowserExecuteTool};
 use nanocodex_managed::{ManagedClient, ManagedError};
 use nanocodex_tools::{
     Tools, WorkspaceTools,
@@ -33,6 +34,19 @@ pub(crate) struct NativeHand {
     /// Human-readable machine name; defaults to this device's name.
     #[arg(long, value_name = "NAME")]
     machine_name: Option<String>,
+
+    /// Route managed browser work through this machine's network connection.
+    #[arg(long)]
+    browser: bool,
+
+    /// Exact Chrome or Chromium executable used by this Hand's private browser.
+    #[arg(
+        long,
+        value_name = "PATH",
+        env = "NANOCODEX_BROWSER_EXECUTABLE",
+        requires = "browser"
+    )]
+    browser_executable: Option<PathBuf>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -44,6 +58,7 @@ struct Identity {
 
 struct NativeState {
     machine: AttachmentMachine,
+    directory: PathBuf,
     _lock: NativeStateLock,
 }
 
@@ -58,7 +73,17 @@ impl Drop for NativeStateLock {
 }
 
 impl NativeState {
+    #[cfg(test)]
     fn open(workspace: &Path, directory: &Path, name: String) -> Result<Self, ManagedError> {
+        Self::open_with_browser(workspace, directory, name, false)
+    }
+
+    fn open_with_browser(
+        workspace: &Path,
+        directory: &Path,
+        name: String,
+        browser: bool,
+    ) -> Result<Self, ManagedError> {
         let workspace = fs::canonicalize(workspace).map_err(configuration)?;
         if !workspace.is_dir() {
             return Err(configuration(
@@ -138,15 +163,24 @@ impl NativeState {
             .workspace
             .to_str()
             .ok_or_else(|| configuration("native Hand workspace must be valid UTF-8"))?;
+        let mut capabilities = host::MACHINE_CAPABILITIES
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if browser {
+            capabilities.extend(["browser".to_owned(), "browser-egress".to_owned()]);
+            capabilities.sort_unstable();
+        }
         let machine = AttachmentMachine::new(
             identity.machine_id.to_string(),
             name,
             workspace,
-            host::MACHINE_CAPABILITIES,
+            capabilities,
         )
         .map_err(configuration)?;
         Ok(Self {
             machine,
+            directory: directory.to_path_buf(),
             _lock: lock,
         })
     }
@@ -176,7 +210,17 @@ pub(crate) async fn serve(client: &ManagedClient, command: NativeHand) -> Result
     let name = command
         .machine_name
         .unwrap_or_else(|| host::bounded_display_name(whoami::devicename()));
-    let state = NativeState::open(&command.workspace, &directory, name)?;
+    let browser = if command.browser {
+        let mut builder = Browser::builder();
+        if let Some(executable) = command.browser_executable {
+            builder = builder.executable(executable);
+        }
+        Some(builder.build().map_err(configuration)?)
+    } else {
+        None
+    };
+    let state =
+        NativeState::open_with_browser(&command.workspace, &directory, name, browser.is_some())?;
     let target = client.account_attachment_target()?;
     let screen = match super::screen_native::NativeScreen::start(
         &target,
@@ -192,26 +236,55 @@ pub(crate) async fn serve(client: &ManagedClient, command: NativeHand) -> Result
             None
         }
     };
-    let result = run(target, state, super::service::shutdown_signal()).await;
+    let result = run_with_browser(
+        target,
+        state,
+        browser.clone(),
+        super::service::shutdown_signal(),
+    )
+    .await;
     let stopped = match screen {
         Some(screen) => screen.shutdown().await,
         None => Ok(()),
     };
-    result.and(stopped)
+    let browser_stopped = match browser {
+        Some(browser) => browser.close().await.map_err(configuration),
+        None => Ok(()),
+    };
+    result.and(stopped).and(browser_stopped)
 }
 
+#[cfg(test)]
 async fn run(
     target: AttachmentTarget,
     state: NativeState,
     shutdown: impl Future<Output = Result<(), ManagedError>>,
 ) -> Result<(), ManagedError> {
+    run_with_browser(target, state, None, shutdown).await
+}
+
+async fn run_with_browser(
+    target: AttachmentTarget,
+    state: NativeState,
+    browser: Option<Browser>,
+    shutdown: impl Future<Output = Result<(), ManagedError>>,
+) -> Result<(), ManagedError> {
     // WorkspaceTools uses the existing sanitized subprocess environment. Do not
     // forward the account credential or ambient sensitive variables to programs.
-    let tools = Tools::builder()
+    let mut tools = Tools::builder()
         .without_defaults()
-        .add(WorkspaceTools::new(state.machine.workspace()))
-        .build()
-        .map_err(configuration)?;
+        .add(WorkspaceTools::new(state.machine.workspace()));
+    if let Some(mut config) = nanocodex_computer::ComputerConfig::discover() {
+        if cfg!(target_os = "linux") {
+            config.desktop_runtime = Some(state.directory.join("desktop"));
+        }
+        let computer = nanocodex_computer::ComputerTools::local(config);
+        tools = tools.add(computer.js()).add(computer.reset());
+    }
+    if let Some(browser) = browser {
+        tools = tools.tool(BrowserExecuteTool::from_browser(browser));
+    }
+    let tools = tools.build().map_err(configuration)?;
     let (attachment, mut events) = tools
         .attach(target)
         .metadata(AttachmentMetadata::machine(state.machine.clone()))
@@ -293,6 +366,61 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(cli.command, Some(crate::Command::NativeHand(_))));
+        assert!(
+            crate::Cli::try_parse_from([
+                "nanocodex2",
+                "native-hand",
+                "--workspace",
+                ".",
+                "--browser-executable",
+                "/opt/chrome",
+            ])
+            .is_err()
+        );
+        let cli = crate::Cli::try_parse_from([
+            "nanocodex2",
+            "native-hand",
+            "--workspace",
+            ".",
+            "--browser",
+            "--browser-executable",
+            "/opt/chrome",
+        ])
+        .unwrap();
+        let Some(crate::Command::NativeHand(command)) = cli.command else {
+            panic!("expected native Hand");
+        };
+        assert!(command.browser);
+        assert_eq!(
+            command.browser_executable,
+            Some(PathBuf::from("/opt/chrome"))
+        );
+    }
+
+    #[test]
+    fn native_browser_hand_advertises_egress_capabilities() {
+        let workspace = tempfile::tempdir().unwrap();
+        let directory = private_state_directory();
+        let state = NativeState::open_with_browser(
+            workspace.path(),
+            directory.path(),
+            "Browser host".into(),
+            true,
+        )
+        .unwrap();
+        let machine = serde_json::to_value(&state.machine).unwrap();
+        assert!(
+            machine["capabilities"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("browser"))
+        );
+        assert!(
+            machine["capabilities"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("browser-egress"))
+        );
     }
 
     #[test]

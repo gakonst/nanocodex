@@ -1,0 +1,120 @@
+{
+  "scope": "Original get_app_state and window_result plus pinned original tslib. Policy/canonicalization and native client are synthetic callbacks; no native OS observation.",
+  "script_sha256": "260a401a81e23befae3f662300158a279ae7d5ab9d3e74111c5ebd530067e6f3",
+  "sources": [
+    {
+      "name": "get_app_state.js",
+      "path": "sources/sky/src/targets/mac/get_app_state.js",
+      "sha256": "daa17cad27858cf32ef0f6c2e4fac9fba6a2560bb6e9042640552c0c2d6d651a"
+    },
+    {
+      "name": "window_result.js",
+      "path": "sources/sky/src/targets/mac/window_result.js",
+      "sha256": "e1ac0e53f8f8102fbebba5ce8ab0e1648d1399cb7580fb8e98423a469c7d2701"
+    }
+  ],
+  "tslib": {
+    "source": "/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules/@oai/sky/dist/js-dependency-cache/shared-v1/applied-bk-agent-openai-js/pnpm-store/v11/links/@rollup/plugin-typescript/12.1.2/bf978194e78e4126a616bfdc5a9fea913609f48ddc1a68ce028d4322c58982dd/node_modules/tslib/tslib.es6.js",
+    "sha256": "072e9fea747565a13de5f48e08678fc4d30ca858c601238e839fc3749ab4e15f",
+    "artifact": "tslib.es6.js"
+  },
+  "passed": 14,
+  "failed": 0,
+  "cases": [
+    {
+      "id": "missing-skyshot-rejects-with-screenshot-error",
+      "status": "passed",
+      "evidence": null
+    },
+    {
+      "id": "absent-screenshot-and-empty-url-return-null",
+      "status": "passed",
+      "evidence": null
+    },
+    {
+      "id": "screenshot-url-type-validation-and-opaque-scheme",
+      "status": "passed",
+      "evidence": null
+    },
+    {
+      "id": "text-is-required-string-including-empty",
+      "status": "passed",
+      "evidence": null
+    },
+    {
+      "id": "instructions-null-empty-invalid-and-whitespace",
+      "status": "passed",
+      "evidence": null
+    },
+    {
+      "id": "instruction-prefix-exact-and-only-once-per-bundle",
+      "status": "passed",
+      "evidence": {
+        "first": "<app_specific_instructions>\nFixture instructions\n</app_specific_instructions>\nfixture tree",
+        "second": "fixture tree",
+        "cache": [
+          "example.fixture"
+        ]
+      }
+    },
+    {
+      "id": "numbers-suppresses-instructions-without-marking-seen",
+      "status": "passed",
+      "evidence": null
+    },
+    {
+      "id": "instruction-cache-fallback-to-app-string-then-request",
+      "status": "passed",
+      "evidence": null
+    },
+    {
+      "id": "instruction-cache-scope-is-caller-owned",
+      "status": "passed",
+      "evidence": null
+    },
+    {
+      "id": "instruction-cache-added-before-downstream-consumption",
+      "status": "passed",
+      "evidence": {
+        "downstream_emit_not_part_of_formatter": true
+      }
+    },
+    {
+      "id": "wrapper-policy-canonicalizes-and-forwards-only-app-disable-diff",
+      "status": "passed",
+      "evidence": [
+        {
+          "kind": "policy",
+          "name": "get_app_state",
+          "input": {
+            "app": "alias",
+            "disableDiff": false,
+            "extra": "ignored"
+          }
+        },
+        {
+          "kind": "client",
+          "args": {
+            "app": "/synthetic/Canonical.app",
+            "disableDiff": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "wrapper-preserves-undefined-diff-and-native-result-shape",
+      "status": "passed",
+      "evidence": null
+    },
+    {
+      "id": "wrapper-propagates-client-error-without-marking-instructions",
+      "status": "passed",
+      "evidence": null
+    },
+    {
+      "id": "formatter-validation-order-url-before-text-before-instructions",
+      "status": "passed",
+      "evidence": null
+    }
+  ]
+}

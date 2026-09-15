@@ -1,0 +1,234 @@
+{
+  "provenance": {
+    "binary": "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl",
+    "sha256": "0d6f59d5aff9db38d3bf1cad78f3b2d71daaedaefddbc00c65fa3241ce83ad7c",
+    "scope": "Pure synthetic TextDecoder and Buffer, no filesystem/provider/UI access",
+    "captured": "2026-09-06T22:26:55.821569+00:00"
+  },
+  "groups": [
+    {
+      "name": "buffer-0",
+      "cases": [
+        "overlap/indexOf/utf8/b/0",
+        "overlap/indexOf/utf8/b/120000",
+        "overlap/indexOf/utf8/b/-1",
+        "overlap/indexOf/utf8/a/0",
+        "overlap/indexOf/utf8/a/120000",
+        "overlap/indexOf/utf8/a/-1",
+        "overlap/indexOf/utf8/c/0",
+        "overlap/indexOf/utf8/c/120000",
+        "overlap/indexOf/utf8/c/-1",
+        "overlap/indexOf/utf16le/b/0",
+        "overlap/indexOf/utf16le/b/120000",
+        "overlap/indexOf/utf16le/b/-1",
+        "overlap/indexOf/utf16le/a/0",
+        "overlap/indexOf/utf16le/a/120000",
+        "overlap/indexOf/utf16le/a/-1",
+        "overlap/indexOf/utf16le/c/0",
+        "overlap/indexOf/utf16le/c/120000",
+        "overlap/indexOf/utf16le/c/-1",
+        "overlap/lastIndexOf/utf8/b/0",
+        "overlap/lastIndexOf/utf8/b/120000",
+        "overlap/lastIndexOf/utf8/b/-1",
+        "overlap/lastIndexOf/utf8/a/0",
+        "overlap/lastIndexOf/utf8/a/120000",
+        "overlap/lastIndexOf/utf8/a/-1",
+        "overlap/lastIndexOf/utf8/c/0",
+        "overlap/lastIndexOf/utf8/c/120000",
+        "overlap/lastIndexOf/utf8/c/-1",
+        "overlap/lastIndexOf/utf16le/b/0",
+        "overlap/lastIndexOf/utf16le/b/120000",
+        "overlap/lastIndexOf/utf16le/b/-1",
+        "overlap/lastIndexOf/utf16le/a/0",
+        "overlap/lastIndexOf/utf16le/a/120000",
+        "overlap/lastIndexOf/utf16le/a/-1",
+        "overlap/lastIndexOf/utf16le/c/0",
+        "overlap/lastIndexOf/utf16le/c/120000",
+        "overlap/lastIndexOf/utf16le/c/-1",
+        "overlap/includes/utf8/b/0",
+        "overlap/includes/utf8/b/120000",
+        "overlap/includes/utf8/b/-1",
+        "overlap/includes/utf8/a/0",
+        "overlap/includes/utf8/a/120000",
+        "overlap/includes/utf8/a/-1",
+        "overlap/includes/utf8/c/0",
+        "overlap/includes/utf8/c/120000",
+        "overlap/includes/utf8/c/-1",
+        "overlap/includes/utf16le/b/0",
+        "overlap/includes/utf16le/b/120000",
+        "overlap/includes/utf16le/b/-1",
+        "overlap/includes/utf16le/a/0",
+        "overlap/includes/utf16le/a/120000",
+        "overlap/includes/utf16le/a/-1",
+        "overlap/includes/utf16le/c/0",
+        "overlap/includes/utf16le/c/120000",
+        "overlap/includes/utf16le/c/-1"
+      ],
+      "code": "const {Buffer}=await import('node:buffer');const failure=e=>({name:e.name,code:e.code??null,message:e.message});const normalize=v=>typeof v==='bigint'?{bigint:String(v)}:Buffer.isBuffer(v)?{buffer:v.toString('hex')}:v;\nnodeRepl.write(JSON.stringify([(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'b','utf8');return b.indexOf(needle,0,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'b','utf8');return b.indexOf(needle,120000,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'b','utf8');return b.indexOf(needle,-1,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'a','utf8');return b.indexOf(needle,0,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'a','utf8');return b.indexOf(needle,120000,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'a','utf8');return b.indexOf(needle,-1,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'c','utf8');return b.indexOf(needle,0,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'c','utf8');return b.indexOf(needle,120000,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'c','utf8');return b.indexOf(needle,-1,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'b','utf16le');return b.indexOf(needle,0,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'b','utf16le');return b.indexOf(needle,120000,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'b','utf16le');return b.indexOf(needle,-1,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'a','utf16le');return b.indexOf(needle,0,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'a','utf16le');return b.indexOf(needle,120000,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'a','utf16le');return b.indexOf(needle,-1,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'c','utf16le');return b.indexOf(needle,0,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'c','utf16le');return b.indexOf(needle,120000,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'c','utf16le');return b.indexOf(needle,-1,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'b','utf8');return b.lastIndexOf(needle,0,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'b','utf8');return b.lastIndexOf(needle,120000,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'b','utf8');return b.lastIndexOf(needle,-1,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'a','utf8');return b.lastIndexOf(needle,0,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'a','utf8');return b.lastIndexOf(needle,120000,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'a','utf8');return b.lastIndexOf(needle,-1,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'c','utf8');return b.lastIndexOf(needle,0,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'c','utf8');return b.lastIndexOf(needle,120000,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'c','utf8');return b.lastIndexOf(needle,-1,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'b','utf16le');return b.lastIndexOf(needle,0,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'b','utf16le');return b.lastIndexOf(needle,120000,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'b','utf16le');return b.lastIndexOf(needle,-1,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'a','utf16le');return b.lastIndexOf(needle,0,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'a','utf16le');return b.lastIndexOf(needle,120000,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'a','utf16le');return b.lastIndexOf(needle,-1,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'c','utf16le');return b.lastIndexOf(needle,0,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'c','utf16le');return b.lastIndexOf(needle,120000,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'c','utf16le');return b.lastIndexOf(needle,-1,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'b','utf8');return b.includes(needle,0,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'b','utf8');return b.includes(needle,120000,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'b','utf8');return b.includes(needle,-1,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'a','utf8');return b.includes(needle,0,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'a','utf8');return b.includes(needle,120000,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'a','utf8');return b.includes(needle,-1,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'c','utf8');return b.includes(needle,0,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'c','utf8');return b.includes(needle,120000,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf8'),needle=Buffer.from('a'.repeat(4096)+'c','utf8');return b.includes(needle,-1,'utf8')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'b','utf16le');return b.includes(needle,0,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'b','utf16le');return b.includes(needle,120000,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'b','utf16le');return b.includes(needle,-1,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'a','utf16le');return b.includes(needle,0,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'a','utf16le');return b.includes(needle,120000,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'a','utf16le');return b.includes(needle,-1,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'c','utf16le');return b.includes(needle,0,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'c','utf16le');return b.includes(needle,120000,'utf16le')})())}}catch(error){return {error:failure(error)}}})(),(()=>{try{return {value:normalize((()=>{const b=Buffer.from('a'.repeat(120000)+'b'+'a'.repeat(120000),'utf16le'),needle=Buffer.from('a'.repeat(4096)+'c','utf16le');return b.includes(needle,-1,'utf16le')})())}}catch(error){return {error:failure(error)}}})()]));",
+      "expected": [
+        {
+          "value": 115904
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": 0
+        },
+        {
+          "value": 120001
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": 231808
+        },
+        {
+          "value": 231808
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": 0
+        },
+        {
+          "value": 120000
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": 115904
+        },
+        {
+          "value": 115904
+        },
+        {
+          "value": 0
+        },
+        {
+          "value": 115903
+        },
+        {
+          "value": 235904
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": 231808
+        },
+        {
+          "value": 0
+        },
+        {
+          "value": 120000
+        },
+        {
+          "value": 471808
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": -1
+        },
+        {
+          "value": true
+        },
+        {
+          "value": false
+        },
+        {
+          "value": false
+        },
+        {
+          "value": true
+        },
+        {
+          "value": true
+        },
+        {
+          "value": false
+        },
+        {
+          "value": false
+        },
+        {
+          "value": false
+        },
+        {
+          "value": false
+        },
+        {
+          "value": true
+        },
+        {
+          "value": true
+        },
+        {
+          "value": false
+        },
+        {
+          "value": true
+        },
+        {
+          "value": true
+        },
+        {
+          "value": false
+        },
+        {
+          "value": false
+        },
+        {
+          "value": false
+        },
+        {
+          "value": false
+        }
+      ]
+    }
+  ]
+}

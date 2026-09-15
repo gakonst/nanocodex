@@ -1667,6 +1667,8 @@ mod supported {
                 vm_no_network: config.vm_no_network,
                 machine_id: "unprovisioned".to_owned(),
                 machine_name: "Unprovisioned VM".to_owned(),
+                browser: false,
+                browser_executable: None,
             };
             vm_hand::VmHand::preflight_host_config(&hand_template)
                 .map_err(|error| VmHostError::Configuration(error.to_string()))?;

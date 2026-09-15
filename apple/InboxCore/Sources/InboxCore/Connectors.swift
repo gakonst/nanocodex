@@ -25,9 +25,24 @@ public struct ConnectorCapabilityStatus: Equatable, Sendable {
     public let legacyLabel: String?
 }
 
+public enum McpConnectionStatus: String, Equatable, Sendable {
+    case authorizationRequired = "authorization_required"
+    case connected
+    case reauthorizationRequired = "reauthorization_required"
+    case disabled
+    case revoked
+}
+
+public struct McpConnection: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let name: String
+    public let status: McpConnectionStatus
+}
+
 public struct ConnectorOverview: Equatable, Sendable {
     public let providers: [ConnectorProviderDefinition]
     public let statuses: [String: ConnectorCapabilityStatus]
+    public let mcpConnections: [McpConnection]
 
     public func isConnected(_ provider: ConnectorProviderDefinition) -> Bool {
         provider.capabilities.contains { statuses[$0.id]?.connected == true }
@@ -94,14 +109,50 @@ public struct ConnectorAuthorization: Equatable, Sendable {
     }
 }
 
+public struct McpAuthorization: Equatable, Sendable {
+    public let connectionID: String
+    public let authorizationURL: URL
+    public let callbackURL: URL
+    public let attemptID: String
+
+    public func result(from url: URL) throws -> ConnectorAuthorizationResult {
+        guard url.scheme == callbackURL.scheme,
+              url.host == callbackURL.host,
+              url.port == callbackURL.port,
+              url.path == callbackURL.path,
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw APIError.invalidResponse
+        }
+        let items = components.queryItems ?? []
+        guard items.count == 3,
+              items.filter({ $0.name == "attempt" }).count == 1,
+              items.first(where: { $0.name == "attempt" })?.value == attemptID,
+              items.filter({ $0.name == "mcp_connection" }).count == 1,
+              items.first(where: { $0.name == "mcp_connection" })?.value == connectionID,
+              let raw = items.first(where: { $0.name == "mcp_result" })?.value,
+              items.filter({ $0.name == "mcp_result" }).count == 1,
+              let result = ConnectorAuthorizationResult(rawValue: raw) else {
+            throw APIError.invalidResponse
+        }
+        return result
+    }
+}
+
+public enum McpConnectionStart: Equatable, Sendable {
+    case connected(McpConnection)
+    case authorization(McpAuthorization)
+}
+
 public extension ManagedClient {
     func connectorOverview() async throws -> ConnectorOverview {
         async let catalog = json(path: "/v1/connectors/catalog")
         async let statuses = json(path: "/v1/connectors")
-        let (catalogValue, statusValue) = try await (catalog, statuses)
+        async let mcpConnections = json(path: "/v1/connectors/mcp-connections")
+        let (catalogValue, statusValue, mcpValue) = try await (catalog, statuses, mcpConnections)
         return try ConnectorOverview(
             providers: Self.connectorProviders(from: catalogValue),
-            statuses: Self.connectorStatuses(from: statusValue)
+            statuses: Self.connectorStatuses(from: statusValue),
+            mcpConnections: Self.mcpConnections(from: mcpValue)
         )
     }
 
@@ -139,6 +190,55 @@ public extension ManagedClient {
         }
         _ = try await json(
             path: "/v1/connectors/\(provider)/connections/\(connectionID)",
+            method: "DELETE"
+        )
+    }
+
+    func addMcpConnection(target: String) async throws -> McpConnection {
+        let response = try await json(
+            path: "/v1/connectors/mcp-connections",
+            method: "POST",
+            body: .object(["target": .string(target)])
+        )
+        return try Self.mcpConnection(from: response["mcp_connection"])
+    }
+
+    func beginMcpAuthorization(connectionID: String) async throws -> McpConnectionStart {
+        let connectionID = try Self.mcpConnectionID(connectionID)
+        let attemptID = UUID().uuidString.lowercased()
+        var callback = URLComponents(string: "nanocodex://connectors/mcp-complete")
+        callback?.queryItems = [URLQueryItem(name: "attempt", value: attemptID)]
+        guard let callbackURL = callback?.url else { throw APIError.invalidResponse }
+        let returnTo = "/v1/connectors/mcp-mobile-complete?attempt=" + attemptID
+        let response = try await json(
+            path: "/v1/connectors/mcp-connections/\(connectionID)/start",
+            method: "POST",
+            body: .object(["return_to": .string(returnTo)])
+        )
+        let connection = try Self.mcpConnection(from: response["mcp_connection"])
+        guard connection.id == connectionID else { throw APIError.invalidResponse }
+        if connection.status == .connected, response["authorization_url"] == .null {
+            return .connected(connection)
+        }
+        guard let authorizationURL = URL(string: response["authorization_url"].string),
+              authorizationURL.scheme == "https",
+              authorizationURL.user == nil,
+              authorizationURL.password == nil,
+              authorizationURL.fragment == nil else {
+            throw APIError.invalidResponse
+        }
+        return .authorization(McpAuthorization(
+            connectionID: connectionID,
+            authorizationURL: authorizationURL,
+            callbackURL: callbackURL,
+            attemptID: attemptID
+        ))
+    }
+
+    func disconnectMcpConnection(connectionID: String) async throws {
+        let connectionID = try Self.mcpConnectionID(connectionID)
+        _ = try await json(
+            path: "/v1/connectors/mcp-connections/\(connectionID)",
             method: "DELETE"
         )
     }
@@ -217,6 +317,34 @@ public extension ManagedClient {
                 legacyLabel: legacyLabel.isEmpty ? nil : try displayString(legacyLabel, maximum: 256)
             ))
         })
+    }
+
+    private static func mcpConnections(from value: JSON) throws -> [McpConnection] {
+        guard case .array(let rawConnections) = value["mcp_connections"], rawConnections.count <= 64 else {
+            throw APIError.invalidResponse
+        }
+        var ids = Set<String>()
+        return try rawConnections.map { raw in
+            let connection = try mcpConnection(from: raw)
+            guard ids.insert(connection.id).inserted else { throw APIError.invalidResponse }
+            return connection
+        }
+    }
+
+    private static func mcpConnection(from value: JSON) throws -> McpConnection {
+        let id = try mcpConnectionID(value["id"].string)
+        let name = try displayString(value["name"].string, maximum: 256)
+        guard let status = McpConnectionStatus(rawValue: value["status"].string) else {
+            throw APIError.invalidResponse
+        }
+        return McpConnection(id: id, name: name, status: status)
+    }
+
+    private static func mcpConnectionID(_ value: String) throws -> String {
+        guard value.range(of: #"^[A-Za-z0-9_-]{43}$"#, options: .regularExpression) != nil else {
+            throw APIError.invalidResponse
+        }
+        return value
     }
 
     private static func connectorIdentifier(_ value: String) throws -> String {

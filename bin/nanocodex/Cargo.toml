@@ -26,6 +26,7 @@ tempo = [
 ]
 
 [dependencies]
+nanocodex-computer.workspace = true
 arboard.workspace = true
 async-trait.workspace = true
 alloy-primitives.workspace = true

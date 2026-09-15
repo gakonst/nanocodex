@@ -1,0 +1,3227 @@
+{
+  "provenance": {
+    "node": "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node",
+    "nodeVersion": "v24.19.0",
+    "nodeSha256": "a2f397892a25f0c0e2b6e764395be935d30c974c2c85e814acacb1bed6d2f42a",
+    "scope": "Node builtin metadata, lexical path operations, and filesystem operations inside a newly owned temporary tree only"
+  },
+  "pathCases": [
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        ""
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "/"
+      ],
+      "result": "/"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        ".."
+      ],
+      "result": ".."
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "foo"
+      ],
+      "result": "foo"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "foo/"
+      ],
+      "result": "foo/"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "foo/bar.txt"
+      ],
+      "result": "foo/bar.txt"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "/foo//bar/../baz/"
+      ],
+      "result": "/foo/baz/"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "//foo"
+      ],
+      "result": "/foo"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "//foo/bar"
+      ],
+      "result": "/foo/bar"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "///"
+      ],
+      "result": "/"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "/a/.hidden"
+      ],
+      "result": "/a/.hidden"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "a/.."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "a/."
+      ],
+      "result": "a"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "foo..."
+      ],
+      "result": "foo..."
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "foo.."
+      ],
+      "result": "foo.."
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        ".foo"
+      ],
+      "result": ".foo"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "..foo"
+      ],
+      "result": "..foo"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "..."
+      ],
+      "result": "..."
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "C:foo"
+      ],
+      "result": "C:foo"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "C:"
+      ],
+      "result": "C:"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "C:\\foo\\..\\bar\\"
+      ],
+      "result": "C:\\foo\\..\\bar\\"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "C:\\"
+      ],
+      "result": "C:\\"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "\\foo\\bar"
+      ],
+      "result": "\\foo\\bar"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "\\\\server\\share\\dir\\file.txt"
+      ],
+      "result": "\\\\server\\share\\dir\\file.txt"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "\\\\server\\share"
+      ],
+      "result": "\\\\server\\share"
+    },
+    {
+      "flavor": "posix",
+      "method": "normalize",
+      "args": [
+        "C:/foo//bar"
+      ],
+      "result": "C:/foo/bar"
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        ""
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "/"
+      ],
+      "result": true
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "."
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        ".."
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "foo"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "foo/"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "foo/bar.txt"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "/foo//bar/../baz/"
+      ],
+      "result": true
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "//foo"
+      ],
+      "result": true
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "//foo/bar"
+      ],
+      "result": true
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "///"
+      ],
+      "result": true
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "/a/.hidden"
+      ],
+      "result": true
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "a/.."
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "a/."
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "foo..."
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "foo.."
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        ".foo"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "..foo"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "..."
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "C:foo"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "C:"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "C:\\foo\\..\\bar\\"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "C:\\"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "\\foo\\bar"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "\\\\server\\share\\dir\\file.txt"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "\\\\server\\share"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "isAbsolute",
+      "args": [
+        "C:/foo//bar"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        ""
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "/"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        ".."
+      ],
+      "result": ".."
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "foo"
+      ],
+      "result": "foo"
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "foo/"
+      ],
+      "result": "foo"
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "foo/bar.txt"
+      ],
+      "result": "bar.txt"
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "/foo//bar/../baz/"
+      ],
+      "result": "baz"
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "//foo"
+      ],
+      "result": "foo"
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "//foo/bar"
+      ],
+      "result": "bar"
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "///"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "/a/.hidden"
+      ],
+      "result": ".hidden"
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "a/.."
+      ],
+      "result": ".."
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "a/."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "foo..."
+      ],
+      "result": "foo..."
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "foo.."
+      ],
+      "result": "foo.."
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        ".foo"
+      ],
+      "result": ".foo"
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "..foo"
+      ],
+      "result": "..foo"
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "..."
+      ],
+      "result": "..."
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "C:foo"
+      ],
+      "result": "C:foo"
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "C:"
+      ],
+      "result": "C:"
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "C:\\foo\\..\\bar\\"
+      ],
+      "result": "C:\\foo\\..\\bar\\"
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "C:\\"
+      ],
+      "result": "C:\\"
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "\\foo\\bar"
+      ],
+      "result": "\\foo\\bar"
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "\\\\server\\share\\dir\\file.txt"
+      ],
+      "result": "\\\\server\\share\\dir\\file.txt"
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "\\\\server\\share"
+      ],
+      "result": "\\\\server\\share"
+    },
+    {
+      "flavor": "posix",
+      "method": "basename",
+      "args": [
+        "C:/foo//bar"
+      ],
+      "result": "bar"
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        ""
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "/"
+      ],
+      "result": "/"
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        ".."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "foo"
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "foo/"
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "foo/bar.txt"
+      ],
+      "result": "foo"
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "/foo//bar/../baz/"
+      ],
+      "result": "/foo//bar/.."
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "//foo"
+      ],
+      "result": "//"
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "//foo/bar"
+      ],
+      "result": "//foo"
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "///"
+      ],
+      "result": "/"
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "/a/.hidden"
+      ],
+      "result": "/a"
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "a/.."
+      ],
+      "result": "a"
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "a/."
+      ],
+      "result": "a"
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "foo..."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "foo.."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        ".foo"
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "..foo"
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "..."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "C:foo"
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "C:"
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "C:\\foo\\..\\bar\\"
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "C:\\"
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "\\foo\\bar"
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "\\\\server\\share\\dir\\file.txt"
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "\\\\server\\share"
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "dirname",
+      "args": [
+        "C:/foo//bar"
+      ],
+      "result": "C:/foo/"
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        ""
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "/"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "."
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        ".."
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "foo"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "foo/"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "foo/bar.txt"
+      ],
+      "result": ".txt"
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "/foo//bar/../baz/"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "//foo"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "//foo/bar"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "///"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "/a/.hidden"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "a/.."
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "a/."
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "foo..."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "foo.."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        ".foo"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "..foo"
+      ],
+      "result": ".foo"
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "..."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "C:foo"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "C:"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "C:\\foo\\..\\bar\\"
+      ],
+      "result": ".\\bar\\"
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "C:\\"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "\\foo\\bar"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "\\\\server\\share\\dir\\file.txt"
+      ],
+      "result": ".txt"
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "\\\\server\\share"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "extname",
+      "args": [
+        "C:/foo//bar"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        ""
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "",
+        "ext": "",
+        "name": ""
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "/"
+      ],
+      "result": {
+        "root": "/",
+        "dir": "/",
+        "base": "",
+        "ext": "",
+        "name": ""
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "."
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": ".",
+        "ext": "",
+        "name": "."
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        ".."
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "..",
+        "ext": "",
+        "name": ".."
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "foo"
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "foo",
+        "ext": "",
+        "name": "foo"
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "foo/"
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "foo",
+        "ext": "",
+        "name": "foo"
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "foo/bar.txt"
+      ],
+      "result": {
+        "root": "",
+        "dir": "foo",
+        "base": "bar.txt",
+        "ext": ".txt",
+        "name": "bar"
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "/foo//bar/../baz/"
+      ],
+      "result": {
+        "root": "/",
+        "dir": "/foo//bar/..",
+        "base": "baz",
+        "ext": "",
+        "name": "baz"
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "//foo"
+      ],
+      "result": {
+        "root": "/",
+        "dir": "/",
+        "base": "foo",
+        "ext": "",
+        "name": "foo"
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "//foo/bar"
+      ],
+      "result": {
+        "root": "/",
+        "dir": "//foo",
+        "base": "bar",
+        "ext": "",
+        "name": "bar"
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "///"
+      ],
+      "result": {
+        "root": "/",
+        "dir": "/",
+        "base": "",
+        "ext": "",
+        "name": ""
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "/a/.hidden"
+      ],
+      "result": {
+        "root": "/",
+        "dir": "/a",
+        "base": ".hidden",
+        "ext": "",
+        "name": ".hidden"
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "a/.."
+      ],
+      "result": {
+        "root": "",
+        "dir": "a",
+        "base": "..",
+        "ext": "",
+        "name": ".."
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "a/."
+      ],
+      "result": {
+        "root": "",
+        "dir": "a",
+        "base": ".",
+        "ext": "",
+        "name": "."
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "foo..."
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "foo...",
+        "ext": ".",
+        "name": "foo.."
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "foo.."
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "foo..",
+        "ext": ".",
+        "name": "foo."
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        ".foo"
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": ".foo",
+        "ext": "",
+        "name": ".foo"
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "..foo"
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "..foo",
+        "ext": ".foo",
+        "name": "."
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "..."
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "...",
+        "ext": ".",
+        "name": ".."
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "C:foo"
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "C:foo",
+        "ext": "",
+        "name": "C:foo"
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "C:"
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "C:",
+        "ext": "",
+        "name": "C:"
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "C:\\foo\\..\\bar\\"
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "C:\\foo\\..\\bar\\",
+        "ext": ".\\bar\\",
+        "name": "C:\\foo\\."
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "C:\\"
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "C:\\",
+        "ext": "",
+        "name": "C:\\"
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "\\foo\\bar"
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "\\foo\\bar",
+        "ext": "",
+        "name": "\\foo\\bar"
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "\\\\server\\share\\dir\\file.txt"
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "\\\\server\\share\\dir\\file.txt",
+        "ext": ".txt",
+        "name": "\\\\server\\share\\dir\\file"
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "\\\\server\\share"
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "\\\\server\\share",
+        "ext": "",
+        "name": "\\\\server\\share"
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "parse",
+      "args": [
+        "C:/foo//bar"
+      ],
+      "result": {
+        "root": "",
+        "dir": "C:/foo/",
+        "base": "bar",
+        "ext": "",
+        "name": "bar"
+      }
+    },
+    {
+      "flavor": "posix",
+      "method": "join",
+      "args": [
+        "a",
+        "..",
+        "b"
+      ],
+      "result": "b"
+    },
+    {
+      "flavor": "posix",
+      "method": "join",
+      "args": [
+        "/foo",
+        "bar",
+        ".."
+      ],
+      "result": "/foo"
+    },
+    {
+      "flavor": "posix",
+      "method": "join",
+      "args": [
+        "",
+        ""
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "posix",
+      "method": "join",
+      "args": [
+        "//server",
+        "share",
+        "folder"
+      ],
+      "result": "/server/share/folder"
+    },
+    {
+      "flavor": "posix",
+      "method": "join",
+      "args": [
+        "C:\\foo",
+        "..",
+        "bar"
+      ],
+      "result": "bar"
+    },
+    {
+      "flavor": "posix",
+      "method": "relative",
+      "args": [
+        "/a/b",
+        "/a/c"
+      ],
+      "result": "../c"
+    },
+    {
+      "flavor": "posix",
+      "method": "relative",
+      "args": [
+        "/a",
+        "/a"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "posix",
+      "method": "relative",
+      "args": [
+        "C:\\a\\b",
+        "c:\\a\\c"
+      ],
+      "result": "../c:\\a\\c"
+    },
+    {
+      "flavor": "posix",
+      "method": "relative",
+      "args": [
+        "C:\\a",
+        "D:\\b"
+      ],
+      "result": "../D:\\b"
+    },
+    {
+      "flavor": "posix",
+      "method": "relative",
+      "args": [
+        "\\\\server\\share\\a",
+        "\\\\server\\share\\b"
+      ],
+      "result": "../\\\\server\\share\\b"
+    },
+    {
+      "flavor": "posix",
+      "method": "format",
+      "args": [
+        {
+          "root": "/",
+          "name": "file",
+          "ext": "txt"
+        }
+      ],
+      "result": "/file.txt"
+    },
+    {
+      "flavor": "posix",
+      "method": "format",
+      "args": [
+        {
+          "dir": "/a",
+          "base": "b.txt"
+        }
+      ],
+      "result": "/a/b.txt"
+    },
+    {
+      "flavor": "posix",
+      "method": "format",
+      "args": [
+        {
+          "root": "C:\\",
+          "name": "file",
+          "ext": ".txt"
+        }
+      ],
+      "result": "C:\\file.txt"
+    },
+    {
+      "flavor": "posix",
+      "method": "format",
+      "args": [
+        {}
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        ""
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "/"
+      ],
+      "result": "\\"
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        ".."
+      ],
+      "result": ".."
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "foo"
+      ],
+      "result": "foo"
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "foo/"
+      ],
+      "result": "foo\\"
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "foo/bar.txt"
+      ],
+      "result": "foo\\bar.txt"
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "/foo//bar/../baz/"
+      ],
+      "result": "\\foo\\baz\\"
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "//foo"
+      ],
+      "result": "\\foo"
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "//foo/bar"
+      ],
+      "result": "\\\\foo\\bar\\"
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "///"
+      ],
+      "result": "\\"
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "/a/.hidden"
+      ],
+      "result": "\\a\\.hidden"
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "a/.."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "a/."
+      ],
+      "result": "a"
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "foo..."
+      ],
+      "result": "foo..."
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "foo.."
+      ],
+      "result": "foo.."
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        ".foo"
+      ],
+      "result": ".foo"
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "..foo"
+      ],
+      "result": "..foo"
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "..."
+      ],
+      "result": "..."
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "C:foo"
+      ],
+      "result": "C:foo"
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "C:"
+      ],
+      "result": "C:."
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "C:\\foo\\..\\bar\\"
+      ],
+      "result": "C:\\bar\\"
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "C:\\"
+      ],
+      "result": "C:\\"
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "\\foo\\bar"
+      ],
+      "result": "\\foo\\bar"
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "\\\\server\\share\\dir\\file.txt"
+      ],
+      "result": "\\\\server\\share\\dir\\file.txt"
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "\\\\server\\share"
+      ],
+      "result": "\\\\server\\share\\"
+    },
+    {
+      "flavor": "win32",
+      "method": "normalize",
+      "args": [
+        "C:/foo//bar"
+      ],
+      "result": "C:\\foo\\bar"
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        ""
+      ],
+      "result": false
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "/"
+      ],
+      "result": true
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "."
+      ],
+      "result": false
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        ".."
+      ],
+      "result": false
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "foo"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "foo/"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "foo/bar.txt"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "/foo//bar/../baz/"
+      ],
+      "result": true
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "//foo"
+      ],
+      "result": true
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "//foo/bar"
+      ],
+      "result": true
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "///"
+      ],
+      "result": true
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "/a/.hidden"
+      ],
+      "result": true
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "a/.."
+      ],
+      "result": false
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "a/."
+      ],
+      "result": false
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "foo..."
+      ],
+      "result": false
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "foo.."
+      ],
+      "result": false
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        ".foo"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "..foo"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "..."
+      ],
+      "result": false
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "C:foo"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "C:"
+      ],
+      "result": false
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "C:\\foo\\..\\bar\\"
+      ],
+      "result": true
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "C:\\"
+      ],
+      "result": true
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "\\foo\\bar"
+      ],
+      "result": true
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "\\\\server\\share\\dir\\file.txt"
+      ],
+      "result": true
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "\\\\server\\share"
+      ],
+      "result": true
+    },
+    {
+      "flavor": "win32",
+      "method": "isAbsolute",
+      "args": [
+        "C:/foo//bar"
+      ],
+      "result": true
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        ""
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "/"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        ".."
+      ],
+      "result": ".."
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "foo"
+      ],
+      "result": "foo"
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "foo/"
+      ],
+      "result": "foo"
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "foo/bar.txt"
+      ],
+      "result": "bar.txt"
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "/foo//bar/../baz/"
+      ],
+      "result": "baz"
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "//foo"
+      ],
+      "result": "foo"
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "//foo/bar"
+      ],
+      "result": "bar"
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "///"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "/a/.hidden"
+      ],
+      "result": ".hidden"
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "a/.."
+      ],
+      "result": ".."
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "a/."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "foo..."
+      ],
+      "result": "foo..."
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "foo.."
+      ],
+      "result": "foo.."
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        ".foo"
+      ],
+      "result": ".foo"
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "..foo"
+      ],
+      "result": "..foo"
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "..."
+      ],
+      "result": "..."
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "C:foo"
+      ],
+      "result": "foo"
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "C:"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "C:\\foo\\..\\bar\\"
+      ],
+      "result": "bar"
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "C:\\"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "\\foo\\bar"
+      ],
+      "result": "bar"
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "\\\\server\\share\\dir\\file.txt"
+      ],
+      "result": "file.txt"
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "\\\\server\\share"
+      ],
+      "result": "share"
+    },
+    {
+      "flavor": "win32",
+      "method": "basename",
+      "args": [
+        "C:/foo//bar"
+      ],
+      "result": "bar"
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        ""
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "/"
+      ],
+      "result": "/"
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        ".."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "foo"
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "foo/"
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "foo/bar.txt"
+      ],
+      "result": "foo"
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "/foo//bar/../baz/"
+      ],
+      "result": "/foo//bar/.."
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "//foo"
+      ],
+      "result": "/"
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "//foo/bar"
+      ],
+      "result": "//foo/bar"
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "///"
+      ],
+      "result": "/"
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "/a/.hidden"
+      ],
+      "result": "/a"
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "a/.."
+      ],
+      "result": "a"
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "a/."
+      ],
+      "result": "a"
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "foo..."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "foo.."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        ".foo"
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "..foo"
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "..."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "C:foo"
+      ],
+      "result": "C:"
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "C:"
+      ],
+      "result": "C:"
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "C:\\foo\\..\\bar\\"
+      ],
+      "result": "C:\\foo\\.."
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "C:\\"
+      ],
+      "result": "C:\\"
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "\\foo\\bar"
+      ],
+      "result": "\\foo"
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "\\\\server\\share\\dir\\file.txt"
+      ],
+      "result": "\\\\server\\share\\dir"
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "\\\\server\\share"
+      ],
+      "result": "\\\\server\\share"
+    },
+    {
+      "flavor": "win32",
+      "method": "dirname",
+      "args": [
+        "C:/foo//bar"
+      ],
+      "result": "C:/foo/"
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        ""
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "/"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "."
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        ".."
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "foo"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "foo/"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "foo/bar.txt"
+      ],
+      "result": ".txt"
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "/foo//bar/../baz/"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "//foo"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "//foo/bar"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "///"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "/a/.hidden"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "a/.."
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "a/."
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "foo..."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "foo.."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        ".foo"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "..foo"
+      ],
+      "result": ".foo"
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "..."
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "C:foo"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "C:"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "C:\\foo\\..\\bar\\"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "C:\\"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "\\foo\\bar"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "\\\\server\\share\\dir\\file.txt"
+      ],
+      "result": ".txt"
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "\\\\server\\share"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "extname",
+      "args": [
+        "C:/foo//bar"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        ""
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "",
+        "ext": "",
+        "name": ""
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "/"
+      ],
+      "result": {
+        "root": "/",
+        "dir": "/",
+        "base": "",
+        "ext": "",
+        "name": ""
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "."
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": ".",
+        "ext": "",
+        "name": "."
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        ".."
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "..",
+        "ext": "",
+        "name": ".."
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "foo"
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "foo",
+        "ext": "",
+        "name": "foo"
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "foo/"
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "foo",
+        "ext": "",
+        "name": "foo"
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "foo/bar.txt"
+      ],
+      "result": {
+        "root": "",
+        "dir": "foo",
+        "base": "bar.txt",
+        "ext": ".txt",
+        "name": "bar"
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "/foo//bar/../baz/"
+      ],
+      "result": {
+        "root": "/",
+        "dir": "/foo//bar/..",
+        "base": "baz",
+        "ext": "",
+        "name": "baz"
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "//foo"
+      ],
+      "result": {
+        "root": "/",
+        "dir": "/",
+        "base": "foo",
+        "ext": "",
+        "name": "foo"
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "//foo/bar"
+      ],
+      "result": {
+        "root": "//foo/bar",
+        "dir": "//foo/bar",
+        "base": "",
+        "ext": "",
+        "name": ""
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "///"
+      ],
+      "result": {
+        "root": "/",
+        "dir": "/",
+        "base": "",
+        "ext": "",
+        "name": ""
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "/a/.hidden"
+      ],
+      "result": {
+        "root": "/",
+        "dir": "/a",
+        "base": ".hidden",
+        "ext": "",
+        "name": ".hidden"
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "a/.."
+      ],
+      "result": {
+        "root": "",
+        "dir": "a",
+        "base": "..",
+        "ext": "",
+        "name": ".."
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "a/."
+      ],
+      "result": {
+        "root": "",
+        "dir": "a",
+        "base": ".",
+        "ext": "",
+        "name": "."
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "foo..."
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "foo...",
+        "ext": ".",
+        "name": "foo.."
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "foo.."
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "foo..",
+        "ext": ".",
+        "name": "foo."
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        ".foo"
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": ".foo",
+        "ext": "",
+        "name": ".foo"
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "..foo"
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "..foo",
+        "ext": ".foo",
+        "name": "."
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "..."
+      ],
+      "result": {
+        "root": "",
+        "dir": "",
+        "base": "...",
+        "ext": ".",
+        "name": ".."
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "C:foo"
+      ],
+      "result": {
+        "root": "C:",
+        "dir": "C:",
+        "base": "foo",
+        "ext": "",
+        "name": "foo"
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "C:"
+      ],
+      "result": {
+        "root": "C:",
+        "dir": "C:",
+        "base": "",
+        "ext": "",
+        "name": ""
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "C:\\foo\\..\\bar\\"
+      ],
+      "result": {
+        "root": "C:\\",
+        "dir": "C:\\foo\\..",
+        "base": "bar",
+        "ext": "",
+        "name": "bar"
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "C:\\"
+      ],
+      "result": {
+        "root": "C:\\",
+        "dir": "C:\\",
+        "base": "",
+        "ext": "",
+        "name": ""
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "\\foo\\bar"
+      ],
+      "result": {
+        "root": "\\",
+        "dir": "\\foo",
+        "base": "bar",
+        "ext": "",
+        "name": "bar"
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "\\\\server\\share\\dir\\file.txt"
+      ],
+      "result": {
+        "root": "\\\\server\\share\\",
+        "dir": "\\\\server\\share\\dir",
+        "base": "file.txt",
+        "ext": ".txt",
+        "name": "file"
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "\\\\server\\share"
+      ],
+      "result": {
+        "root": "\\\\server\\share",
+        "dir": "\\\\server\\share",
+        "base": "",
+        "ext": "",
+        "name": ""
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "parse",
+      "args": [
+        "C:/foo//bar"
+      ],
+      "result": {
+        "root": "C:/",
+        "dir": "C:/foo/",
+        "base": "bar",
+        "ext": "",
+        "name": "bar"
+      }
+    },
+    {
+      "flavor": "win32",
+      "method": "join",
+      "args": [
+        "a",
+        "..",
+        "b"
+      ],
+      "result": "b"
+    },
+    {
+      "flavor": "win32",
+      "method": "join",
+      "args": [
+        "/foo",
+        "bar",
+        ".."
+      ],
+      "result": "\\foo"
+    },
+    {
+      "flavor": "win32",
+      "method": "join",
+      "args": [
+        "",
+        ""
+      ],
+      "result": "."
+    },
+    {
+      "flavor": "win32",
+      "method": "join",
+      "args": [
+        "//server",
+        "share",
+        "folder"
+      ],
+      "result": "\\\\server\\share\\folder"
+    },
+    {
+      "flavor": "win32",
+      "method": "join",
+      "args": [
+        "C:\\foo",
+        "..",
+        "bar"
+      ],
+      "result": "C:\\bar"
+    },
+    {
+      "flavor": "win32",
+      "method": "relative",
+      "args": [
+        "/a/b",
+        "/a/c"
+      ],
+      "result": "..\\c"
+    },
+    {
+      "flavor": "win32",
+      "method": "relative",
+      "args": [
+        "/a",
+        "/a"
+      ],
+      "result": ""
+    },
+    {
+      "flavor": "win32",
+      "method": "relative",
+      "args": [
+        "C:\\a\\b",
+        "c:\\a\\c"
+      ],
+      "result": "..\\c"
+    },
+    {
+      "flavor": "win32",
+      "method": "relative",
+      "args": [
+        "C:\\a",
+        "D:\\b"
+      ],
+      "result": "D:\\b"
+    },
+    {
+      "flavor": "win32",
+      "method": "relative",
+      "args": [
+        "\\\\server\\share\\a",
+        "\\\\server\\share\\b"
+      ],
+      "result": "..\\b"
+    },
+    {
+      "flavor": "win32",
+      "method": "format",
+      "args": [
+        {
+          "root": "/",
+          "name": "file",
+          "ext": "txt"
+        }
+      ],
+      "result": "/file.txt"
+    },
+    {
+      "flavor": "win32",
+      "method": "format",
+      "args": [
+        {
+          "dir": "/a",
+          "base": "b.txt"
+        }
+      ],
+      "result": "/a\\b.txt"
+    },
+    {
+      "flavor": "win32",
+      "method": "format",
+      "args": [
+        {
+          "root": "C:\\",
+          "name": "file",
+          "ext": ".txt"
+        }
+      ],
+      "result": "C:\\file.txt"
+    },
+    {
+      "flavor": "win32",
+      "method": "format",
+      "args": [
+        {}
+      ],
+      "result": ""
+    }
+  ],
+  "filesystem": {
+    "code": "\nconst fs=await import('node:fs/promises');const path=await import('node:path');const {Buffer}=await import('node:buffer');\nconst directory=path.join(root,'nested','child');\nconst created=await fs.mkdir(directory,{recursive:true});\nconst file=path.join(directory,'β.txt');await fs.writeFile(file,'Aβ🧪');await fs.appendFile(file,'\\n終');\nconst raw=await fs.readFile(file),text=await fs.readFile(file,'utf8');\nconst copied=path.join(root,'copied');await fs.copyFile(file,copied);let exclusive;try{await fs.copyFile(file,copied,fs.constants.COPYFILE_EXCL)}catch(error){exclusive=error.code;}\nconst renamed=path.join(root,'renamed');await fs.rename(copied,renamed);const details=await fs.stat(renamed);\nconst entries=await fs.readdir(directory,{withFileTypes:true});\nconst handle=await fs.open(renamed,'r+');const buffer=Buffer.alloc(3);const read=await handle.read(buffer,0,3,1);const wrote=await handle.write(Buffer.from('Z'),0,1,0);await handle.sync();await handle.close();\nconst changed=await fs.readFile(renamed,'utf8');let missing;try{await fs.readFile(path.join(root,'absent'))}catch(error){missing=error.code;}\nawait fs.truncate(renamed,1);const shortened=await fs.readFile(renamed,'hex');await fs.unlink(renamed);\nconst result={created:created===path.join(root,'nested'),text,buffer:Buffer.isBuffer(raw),hex:raw.toString('hex'),exclusive,size:details.size,isFile:details.isFile(),isDirectory:details.isDirectory(),entries:entries.map(value=>[value.name,value.isFile(),value.isDirectory()]),bytesRead:read.bytesRead,readHex:buffer.toString('hex'),bytesWritten:wrote.bytesWritten,changed,missing,shortened,aliases:fs===await import('fs/promises')};\nawait fs.rm(path.join(root,'nested'),{recursive:true});await fs.rm(path.join(root,'absent'),{force:true});\nresult;\n",
+    "result": {
+      "created": true,
+      "text": "Aβ🧪\n終",
+      "buffer": true,
+      "hex": "41ceb2f09fa7aa0ae7b582",
+      "exclusive": "EEXIST",
+      "size": 11,
+      "isFile": true,
+      "isDirectory": false,
+      "entries": [
+        [
+          "β.txt",
+          true,
+          false
+        ]
+      ],
+      "bytesRead": 3,
+      "readHex": "ceb2f0",
+      "bytesWritten": 1,
+      "changed": "Zβ🧪\n終",
+      "missing": "ENOENT",
+      "shortened": "5a",
+      "aliases": true
+    }
+  }
+}

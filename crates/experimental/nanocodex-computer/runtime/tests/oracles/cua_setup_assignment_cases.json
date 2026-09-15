@@ -1,0 +1,171 @@
+{
+  "scope": "Two original own-property observations in the closed full-module fixture. This does not establish the installed original module realm.",
+  "source_capture": {
+    "phase": "/private/tmp/skyre-publication-order-comparison-msr6a93k",
+    "manifest_sha256": "81d6227ce70afdf199eb3939e55980cded119a2da57c261417b7c60685f65eca",
+    "stdout_sha256": "6a5469e5b86d9f6d6d1dd18859b7f2700b12e28fd12a0eaeb4a04473569427f7",
+    "node_sha256": "a2f397892a25f0c0e2b6e764395be935d30c974c2c85e814acacb1bed6d2f42a"
+  },
+  "original_sources": [
+    {
+      "path": "/private/tmp/skyre-publication-order-comparison-msr6a93k/fixture/work/snapshots/2026-09-06/sources/cua/src/tinysky_alt/globals.js",
+      "sha256": "f966c221102c0d4f4535bf8b53361f609843bdbce7a3835da8fbd572d2c9582d",
+      "bytes": 462
+    },
+    {
+      "path": "/private/tmp/skyre-publication-order-comparison-msr6a93k/fixture/work/snapshots/2026-09-06/sources/cua/src/tinysky_alt/create_tinysky_alt.js",
+      "sha256": "41e23e737ef7a4b43ef9194b8a60a4e98732c699db101eab71f5097133f078fa",
+      "bytes": 9291
+    },
+    {
+      "path": "/private/tmp/skyre-publication-order-comparison-msr6a93k/fixture/work/snapshots/2026-09-06/sources/cua/src/get_state.js",
+      "sha256": "b84b2611b6fac487cec8c85bff39063f2b1fea60c91f74846f377f1fbf9cb8af",
+      "bytes": 1116
+    },
+    {
+      "path": "/private/tmp/skyre-publication-order-comparison-msr6a93k/fixture/work/snapshots/2026-09-06/sources/cua/src/tinysky_alt/documentation.js",
+      "sha256": "6aa29538b0dfaa938b2a2145c76ebcd4ec3d142d865cb9be788ad09f289dcd6f",
+      "bytes": 998
+    },
+    {
+      "path": "/private/tmp/skyre-publication-order-comparison-msr6a93k/fixture/work/snapshots/2026-09-06/sources/cua/docs/tinysky-alt-core-cua-repl.md",
+      "sha256": "07ecfbacc70165543dcd3f22e0772cbbd43e18c19e205ec032413cd5fd882b6a",
+      "bytes": 9944
+    },
+    {
+      "path": "/private/tmp/skyre-publication-order-comparison-msr6a93k/fixture/work/snapshots/2026-09-06/sources/cua/docs/tinysky-alt-confirmations.md",
+      "sha256": "68474884543a6a1e72275b59f27f383313fd6aa8604ccedabb5d5cd37077e6fc",
+      "bytes": 5607
+    }
+  ],
+  "cases": [
+    {
+      "id": "agent-installs-assignment-observer",
+      "expected": {
+        "initial": [
+          "initialize"
+        ],
+        "events": [
+          {
+            "at": "agent-set",
+            "keys": [
+              "initialize"
+            ]
+          },
+          {
+            "at": "assignment",
+            "phase": "temporary",
+            "members": [
+              [
+                "browsers",
+                "createBrowserTab",
+                "getBrowser",
+                "getTab",
+                "listBrowsers",
+                "listTabs"
+              ]
+            ],
+            "agentPublished": true
+          },
+          {
+            "at": "assignment",
+            "phase": "temporary",
+            "members": [
+              [
+                "computer",
+                "getApp",
+                "listApps"
+              ]
+            ],
+            "agentPublished": true
+          },
+          {
+            "at": "assignment",
+            "phase": "outer",
+            "members": [
+              [
+                "browsers",
+                "computer",
+                "createBrowserTab",
+                "getApp",
+                "getBrowser",
+                "getState",
+                "getTab",
+                "listApps",
+                "listBrowsers",
+                "listTabs"
+              ]
+            ],
+            "agentPublished": true
+          }
+        ],
+        "syncThrow": false,
+        "fulfilled": true,
+        "resultUndefined": true,
+        "error": null,
+        "keys": [
+          "browsers",
+          "computer",
+          "createBrowserTab",
+          "getApp",
+          "getBrowser",
+          "getState",
+          "getTab",
+          "initialize",
+          "listApps",
+          "listBrowsers",
+          "listTabs"
+        ],
+        "agent": {
+          "type": "object",
+          "browserType": "object"
+        }
+      }
+    },
+    {
+      "id": "agent-installs-throwing-temporary-observer",
+      "expected": {
+        "initial": [
+          "initialize"
+        ],
+        "events": [
+          {
+            "at": "agent-set",
+            "keys": [
+              "initialize"
+            ]
+          },
+          {
+            "at": "assignment",
+            "phase": "temporary",
+            "members": [
+              [
+                "browsers",
+                "createBrowserTab",
+                "getBrowser",
+                "getTab",
+                "listBrowsers",
+                "listTabs"
+              ]
+            ],
+            "agentPublished": true
+          }
+        ],
+        "syncThrow": false,
+        "fulfilled": false,
+        "resultUndefined": true,
+        "error": {
+          "name": "Error",
+          "message": "owned temporary browser assignment"
+        },
+        "keys": [
+          "initialize"
+        ],
+        "agent": {
+          "type": "object",
+          "browserType": "object"
+        }
+      }
+    }
+  ]
+}

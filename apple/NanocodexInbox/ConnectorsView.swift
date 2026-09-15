@@ -7,6 +7,7 @@ struct ConnectorsView: View {
     @ObservedObject var model: InboxModel
     @StateObject private var center = ConnectorCenter()
     @State private var query = ""
+    @State private var showingAddMcp = false
 
     private var providers: [ConnectorProviderDefinition] {
         guard let overview = center.overview else { return [] }
@@ -27,6 +28,22 @@ struct ConnectorsView: View {
         guard let overview = center.overview else { return providers }
         return providers.filter { !overview.isConnected($0) }
     }
+    private var mcpConnections: [McpConnection] {
+        guard let overview = center.overview else { return [] }
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return overview.mcpConnections }
+        return overview.mcpConnections.filter { $0.name.localizedCaseInsensitiveContains(query) }
+    }
+    private var connectedMcp: [McpConnection] {
+        mcpConnections.filter { $0.status == .connected }
+    }
+    private var availableMcp: [McpConnection] {
+        mcpConnections.filter { $0.status != .connected && $0.status != .revoked }
+    }
+    private var showsAddMcp: Bool {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return query.isEmpty || "Add MCP server".localizedCaseInsensitiveContains(query)
+    }
 
     var body: some View {
         List {
@@ -34,7 +51,7 @@ struct ConnectorsView: View {
                 HStack { Spacer(); ProgressView("Loading connectors"); Spacer() }
                     .listRowBackground(Color.clear)
             }
-            if !connected.isEmpty {
+            if !connected.isEmpty || !connectedMcp.isEmpty {
                 Section("Connected") {
                     ForEach(connected) { provider in
                         NavigationLink {
@@ -49,9 +66,21 @@ struct ConnectorsView: View {
                         .accessibilityIdentifier("connector-connected:" + provider.id)
                         .accessibilityValue(connectedDetail(provider))
                     }
+                    ForEach(connectedMcp) { connection in
+                        NavigationLink {
+                            McpConnectionView(model: model, center: center, connection: connection)
+                        } label: {
+                            McpRow(
+                                connection: connection,
+                                action: nil,
+                                busy: center.operation == "mcp:" + connection.id
+                            )
+                        }
+                        .accessibilityIdentifier("mcp-connected:" + connection.id)
+                    }
                 }
             }
-            if !available.isEmpty {
+            if !available.isEmpty || !availableMcp.isEmpty || showsAddMcp {
                 Section("Available") {
                     ForEach(available) { provider in
                         Button {
@@ -67,9 +96,37 @@ struct ConnectorsView: View {
                         .disabled(center.operation != nil)
                         .accessibilityIdentifier("connector-available:" + provider.id)
                     }
+                    ForEach(availableMcp) { connection in
+                        Button {
+                            Task { await center.connect(connection, using: model) }
+                        } label: {
+                            McpRow(
+                                connection: connection,
+                                action: connection.status == .reauthorizationRequired ? "Reconnect" : "Connect",
+                                busy: center.operation == "mcp:" + connection.id
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(center.operation != nil || connection.status == .disabled)
+                        .accessibilityIdentifier("mcp-available:" + connection.id)
+                    }
+                    if showsAddMcp {
+                        Button { showingAddMcp = true } label: {
+                            HStack(spacing: 12) {
+                                ConnectorLogo(provider: "mcp", size: 34)
+                                Text("Add MCP server")
+                                Spacer()
+                                Image(systemName: "plus").foregroundStyle(.blue)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(center.operation != nil)
+                        .accessibilityIdentifier("mcp-add")
+                    }
                 }
             }
-            if center.overview != nil, providers.isEmpty {
+            if center.overview != nil, providers.isEmpty, mcpConnections.isEmpty, !showsAddMcp {
                 ContentUnavailableView.search(text: query)
                     .listRowBackground(Color.clear)
             }
@@ -89,6 +146,9 @@ struct ConnectorsView: View {
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search connectors")
         .refreshable { await center.load(using: model) }
         .task { if center.overview == nil { await center.load(using: model) } }
+        .sheet(isPresented: $showingAddMcp) {
+            AddMcpView(model: model, center: center)
+        }
         .accessibilityIdentifier("connectors-list")
     }
 
@@ -97,6 +157,79 @@ struct ConnectorsView: View {
         let count = overview.connections(for: provider).count
         if count == 0 { return "Connected" }
         return count == 1 ? overview.connections(for: provider)[0].label : "\(count) accounts"
+    }
+}
+
+private struct AddMcpView: View {
+    @ObservedObject var model: InboxModel
+    @ObservedObject var center: ConnectorCenter
+    @Environment(\.dismiss) private var dismiss
+    @State private var target = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("MCP server URL", text: $target)
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                    .autocorrectionDisabled()
+                    .submitLabel(.go)
+                    .onSubmit { add() }
+                    .accessibilityIdentifier("mcp-target")
+                if let error = center.error {
+                    Text(error).font(.subheadline).foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Add MCP server")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    if center.operation == "mcp:add" { ProgressView() }
+                    else { Button("Add") { add() }.disabled(target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+                }
+            }
+        }
+    }
+
+    private func add() {
+        let target = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty else { return }
+        Task { if await center.addMcp(target, using: model) { dismiss() } }
+    }
+}
+
+private struct McpConnectionView: View {
+    @ObservedObject var model: InboxModel
+    @ObservedObject var center: ConnectorCenter
+    let connection: McpConnection
+    @State private var confirmingRevoke = false
+
+    var body: some View {
+        List {
+            Section {
+                HStack(spacing: 12) {
+                    ConnectorLogo(provider: "mcp", size: 36)
+                    Text(connection.name).font(.body.weight(.medium)).lineLimit(1)
+                }
+            }
+            Section {
+                Button("Revoke", role: .destructive) { confirmingRevoke = true }
+                    .disabled(center.operation != nil)
+                    .accessibilityIdentifier("mcp-revoke")
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle(connection.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog("Revoke \(connection.name)?", isPresented: $confirmingRevoke) {
+            Button("Revoke", role: .destructive) {
+                Task { await center.revoke(connection, using: model) }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
     }
 }
 
@@ -219,6 +352,24 @@ private struct ConnectorRow: View {
     }
 }
 
+private struct McpRow: View {
+    let connection: McpConnection
+    let action: String?
+    let busy: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ConnectorLogo(provider: "mcp", size: 34)
+            Text(connection.name).font(.body).lineLimit(1)
+            Spacer(minLength: 10)
+            if busy { ProgressView() }
+            else if connection.status == .disabled { Text("Disabled").foregroundStyle(.secondary) }
+            else if let action { Text(action).font(.body.weight(.medium)).foregroundStyle(.blue) }
+        }
+        .contentShape(Rectangle())
+    }
+}
+
 private struct ConnectorLogo: View {
     let provider: String
     let size: CGFloat
@@ -228,6 +379,7 @@ private struct ConnectorLogo: View {
         case "github": "chevron.left.forwardslash.chevron.right"
         case "slack": "number"
         case "x": "xmark"
+        case "mcp": "network"
         default: "link"
         }
     }
@@ -315,15 +467,98 @@ private final class ConnectorCenter: NSObject, ObservableObject, ASWebAuthentica
         } catch { self.error = error.localizedDescription }
     }
 
+    func addMcp(_ target: String, using model: InboxModel) async -> Bool {
+        guard operation == nil else { return false }
+        operation = "mcp:add"
+        error = nil
+        defer { operation = nil }
+        do {
+            let connection = try await model.addMcpConnection(target)
+            let completed = try await completeMcpConnection(connection, using: model)
+            overview = try await model.connectorOverview()
+            return completed
+        } catch let authenticationError as ASWebAuthenticationSessionError
+            where authenticationError.code == .canceledLogin {
+            overview = try? await model.connectorOverview()
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            overview = try? await model.connectorOverview()
+            return false
+        }
+    }
+
+    func connect(_ connection: McpConnection, using model: InboxModel) async {
+        guard operation == nil else { return }
+        operation = "mcp:" + connection.id
+        error = nil
+        defer { operation = nil }
+        do {
+            _ = try await completeMcpConnection(connection, using: model)
+            overview = try await model.connectorOverview()
+        } catch let authenticationError as ASWebAuthenticationSessionError
+            where authenticationError.code == .canceledLogin {
+            return
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func revoke(_ connection: McpConnection, using model: InboxModel) async {
+        guard operation == nil else { return }
+        operation = "mcp:" + connection.id
+        error = nil
+        defer { operation = nil }
+        do {
+            try await model.disconnectMcpConnection(connection.id)
+            overview = try await model.connectorOverview()
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func completeMcpConnection(
+        _ connection: McpConnection,
+        using model: InboxModel
+    ) async throws -> Bool {
+        switch try await model.beginMcpAuthorization(connection.id) {
+        case .connected:
+            return true
+        case .authorization(let authorization):
+            let callbackURL = try await authenticate(
+                authorizationURL: authorization.authorizationURL,
+                callbackURL: authorization.callbackURL,
+                prefersEphemeral: false
+            )
+            switch try authorization.result(from: callbackURL) {
+            case .connected:
+                return true
+            case .cancelled:
+                return false
+            case .failed:
+                error = "\(connection.name) couldn’t be connected. Try again."
+                return false
+            }
+        }
+    }
+
     private func authenticate(
         _ authorization: ConnectorAuthorization,
         prefersEphemeral: Bool
     ) async throws -> URL {
-        guard let scheme = authorization.callbackURL.scheme else { throw APIError.invalidResponse }
+        try await authenticate(
+            authorizationURL: authorization.authorizationURL,
+            callbackURL: authorization.callbackURL,
+            prefersEphemeral: prefersEphemeral
+        )
+    }
+
+    private func authenticate(
+        authorizationURL: URL,
+        callbackURL: URL,
+        prefersEphemeral: Bool
+    ) async throws -> URL {
+        guard let scheme = callbackURL.scheme else { throw APIError.invalidResponse }
         authenticationSession?.cancel()
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
             let session = ASWebAuthenticationSession(
-                url: authorization.authorizationURL,
+                url: authorizationURL,
                 callbackURLScheme: scheme
             ) { [weak self] callbackURL, error in
                 Task { @MainActor in

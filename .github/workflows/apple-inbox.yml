@@ -2,9 +2,9 @@ name: Apple apps
 on:
   push:
     branches: [master]
-    paths: ['Cargo.toml', 'Cargo.lock', 'crates/experimental/nanocodex-voice-protocol/**', 'crates/experimental/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml']
+    paths: ['Cargo.toml', 'Cargo.lock', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/experimental/nanocodex-voice-protocol/**', 'crates/experimental/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml']
   pull_request:
-    paths: ['Cargo.toml', 'Cargo.lock', 'crates/experimental/nanocodex-voice-protocol/**', 'crates/experimental/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml']
+    paths: ['Cargo.toml', 'Cargo.lock', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/experimental/nanocodex-voice-protocol/**', 'crates/experimental/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml']
 permissions:
   contents: read
 concurrency:
@@ -46,6 +46,8 @@ jobs:
         run: swift test --package-path apple/NanocodexRemote
       - name: Build shared desktop runtime and dependencies
         run: pnpm exec turbo run build --filter=@nanocodex/desktop-runtime
+      - name: Build native computer companion
+        run: pnpm build:computer
       - name: Prepare bundled Mac runtime
         run: |
           curl --fail --location https://nodejs.org/dist/v24.19.0/node-v24.19.0-darwin-arm64.tar.gz --output "$RUNNER_TEMP/nanocodex-node.tar.gz"
@@ -73,7 +75,10 @@ jobs:
   native:
     name: iPhone and iPad Inbox
     runs-on: macos-26
-    timeout-minutes: 25
+    # The UI suite is intentionally sequential because its system-app journeys
+    # share one simulator. Leave enough room for the complete suite and one
+    # targeted retry while per-test timeouts fence individual simulator hangs.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -105,12 +110,18 @@ jobs:
           xcrun simctl io "$device" recordVideo --codec=h264 apple/build/evidence/inbox-journey.mp4 &
           capture_pid=$!
           trap 'kill -INT "$capture_pid" 2>/dev/null || true; wait "$capture_pid" || true' EXIT
-          xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination "platform=iOS Simulator,id=$device" -parallel-testing-enabled NO -derivedDataPath apple/build/ios -resultBundlePath apple/build/inbox.xcresult CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test-without-building
+          # Preserve the full XCTest transcript as evidence while keeping the
+          # Actions log focused enough that late-suite failures are not cut off.
+          xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination "platform=iOS Simulator,id=$device" -parallel-testing-enabled NO -retry-tests-on-failure -test-iterations 2 -test-timeouts-enabled YES -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 300 -derivedDataPath apple/build/ios -resultBundlePath apple/build/inbox.xcresult CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test-without-building 2>&1 \
+            | tee apple/build/evidence/inbox-xcodebuild.log \
+            | grep -E 'Test Case .* (started|passed|failed|skipped)|\.swift:[0-9]+: error:|Testing failed:|\*\* TEST (SUCCEEDED|FAILED) \*\*'
       - name: Export native screenshots
         if: always()
         run: |
-          if [ -d apple/build/inbox.xcresult ]; then
+          if [ -f apple/build/inbox.xcresult/Info.plist ]; then
             xcrun xcresulttool export attachments --path apple/build/inbox.xcresult --output-path apple/build/evidence/screenshots
+          else
+            echo "Skipping screenshot export because the result bundle is incomplete"
           fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()

@@ -1,0 +1,2829 @@
+{
+  "declarations_sha256": "a271888603a3fdc7de1ba930c9324fedc3a6fd038bd7681ae252f45f6ecc6cec",
+  "classifications": [
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": []
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": []
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Disposition",
+            "value": " ATTACHMENT"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Disposition",
+            "value": " ATTACHMENT"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Disposition",
+            "value": "attachmentx"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Disposition",
+            "value": "attachmentx"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Disposition",
+            "value": "attachment ; filename=x"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Disposition",
+            "value": "attachment ; filename=x"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=x"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=x"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/html"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/html"
+          }
+        ]
+      },
+      "armed": true,
+      "download": false,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/html"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/html"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/html"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": " ATTACHMENT"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/html"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": " ATTACHMENT"
+          }
+        ]
+      },
+      "armed": true,
+      "download": false,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/html"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachmentx"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/html"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachmentx"
+          }
+        ]
+      },
+      "armed": true,
+      "download": false,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/html"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment ; filename=x"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/html"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment ; filename=x"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/html"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=x"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/html"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=x"
+          }
+        ]
+      },
+      "armed": true,
+      "download": false,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "TEXT/HTML; charset=utf-8"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "TEXT/HTML; charset=utf-8"
+          }
+        ]
+      },
+      "armed": true,
+      "download": false,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "TEXT/HTML; charset=utf-8"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "TEXT/HTML; charset=utf-8"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "TEXT/HTML; charset=utf-8"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": " ATTACHMENT"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "TEXT/HTML; charset=utf-8"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": " ATTACHMENT"
+          }
+        ]
+      },
+      "armed": true,
+      "download": false,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "TEXT/HTML; charset=utf-8"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachmentx"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "TEXT/HTML; charset=utf-8"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachmentx"
+          }
+        ]
+      },
+      "armed": true,
+      "download": false,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "TEXT/HTML; charset=utf-8"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment ; filename=x"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "TEXT/HTML; charset=utf-8"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment ; filename=x"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "TEXT/HTML; charset=utf-8"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=x"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "TEXT/HTML; charset=utf-8"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=x"
+          }
+        ]
+      },
+      "armed": true,
+      "download": false,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": " ATTACHMENT"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": " ATTACHMENT"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachmentx"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachmentx"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment ; filename=x"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment ; filename=x"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=x"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment; filename=x"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=x"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment; filename=x"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": " ATTACHMENT"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": " ATTACHMENT"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachmentx"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachmentx"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment ; filename=x"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment ; filename=x"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=x"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment; filename=x"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=x"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "image/png"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment; filename=x"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": " ATTACHMENT"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": " ATTACHMENT"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachmentx"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachmentx"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment ; filename=x"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment ; filename=x"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=x"
+          }
+        ]
+      },
+      "armed": false,
+      "download": false,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment; filename=x"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=x"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {
+        "responseCode": 200,
+        "responsePhrase": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "video/mp4"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment; filename=x"
+          }
+        ]
+      }
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "audio/mpeg"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "audio/mpeg"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "audio/mpeg"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "audio/mpeg"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "audio/mpeg"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": " ATTACHMENT"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "audio/mpeg"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": " ATTACHMENT"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "audio/mpeg"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachmentx"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "audio/mpeg"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachmentx"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "audio/mpeg"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment ; filename=x"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "audio/mpeg"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment ; filename=x"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "audio/mpeg"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=x"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "audio/mpeg"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=x"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": " ATTACHMENT"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": " ATTACHMENT"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachmentx"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachmentx"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment ; filename=x"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment ; filename=x"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=x"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "text/plain"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=x"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/octet-stream"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/octet-stream"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/octet-stream"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/octet-stream"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/octet-stream"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": " ATTACHMENT"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/octet-stream"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": " ATTACHMENT"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/octet-stream"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachmentx"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/octet-stream"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachmentx"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/octet-stream"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment ; filename=x"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/octet-stream"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "attachment ; filename=x"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/octet-stream"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=x"
+          }
+        ]
+      },
+      "armed": false,
+      "download": true,
+      "overrides": {}
+    },
+    {
+      "response": {
+        "requestId": "request",
+        "request": {
+          "url": "https://owned.test/file"
+        },
+        "resourceType": "Document",
+        "responseStatusCode": 200,
+        "responseStatusText": "Owned OK",
+        "responseHeaders": [
+          {
+            "name": "Content-Type",
+            "value": "application/octet-stream"
+          },
+          {
+            "name": "Content-Disposition",
+            "value": "inline; filename=x"
+          }
+        ]
+      },
+      "armed": true,
+      "download": true,
+      "overrides": {}
+    }
+  ],
+  "timeouts": [
+    {
+      "value": -5,
+      "label": "0"
+    },
+    {
+      "value": 0,
+      "label": "0"
+    },
+    {
+      "value": 0,
+      "label": "0"
+    },
+    {
+      "value": 1e-7,
+      "label": "1e-7"
+    },
+    {
+      "value": 5e-324,
+      "label": "5e-324"
+    },
+    {
+      "value": 0.5,
+      "label": "0.5"
+    },
+    {
+      "value": 1.5,
+      "label": "1.5"
+    },
+    {
+      "value": 1000000,
+      "label": "120000"
+    },
+    {
+      "value": "7",
+      "label": "3000"
+    },
+    {
+      "value": null,
+      "label": "3000"
+    }
+  ]
+}

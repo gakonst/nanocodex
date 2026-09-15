@@ -1,0 +1,35 @@
+{
+  "source": "evidence/runtime-reset-concurrency/20260907T002118276218Z/manifest.json",
+  "manifestSha256": "f4b7f254d19fca5db2a27cea6712f530a9a01cf88e081aeb9aa9bdd9bb5339bf",
+  "scope": "Actual installed kernel. Three active timer/queued-JS/reset repetitions; complete ordered traces retained in source seal. Results omit only nondeterministic successful JS duration fields.",
+  "active": {
+    "content": [
+      {
+        "type": "text",
+        "text": "js execution reset"
+      }
+    ],
+    "isError": true
+  },
+  "reset": {
+    "content": [
+      {
+        "type": "text",
+        "text": "js kernel reset"
+      }
+    ],
+    "isError": false
+  },
+  "queuedContent": [
+    {
+      "type": "text",
+      "text": "queued"
+    }
+  ],
+  "followupContent": [
+    {
+      "type": "text",
+      "text": "456"
+    }
+  ]
+}

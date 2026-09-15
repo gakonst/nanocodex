@@ -5,11 +5,14 @@ final class AgentNotificationUITests: XCTestCase {
     private func thread(_ title: String) -> XCUIElement {
         springboard.buttons.matching(NSPredicate(format: "identifier == %@ AND label CONTAINS %@", "ShortLook.Platter.Content.Seamless", title)).firstMatch
     }
+    private func notificationRow(_ title: String) -> XCUIElement {
+        springboard.buttons.matching(NSPredicate(format: "identifier == %@ AND label CONTAINS %@", "ListCell", title)).firstMatch
+    }
     private func openNotifications() {
         XCUIDevice.shared.press(.home)
         springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.001))
             .press(forDuration: 0.1, thenDragTo: springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.8)))
-        // Expand iOS's stacked notification display before acting on a card.
+        // Scroll the stacked notification display fully into view.
         springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.65))
             .press(forDuration: 0.1, thenDragTo: springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)))
     }
@@ -33,12 +36,29 @@ final class AgentNotificationUITests: XCTestCase {
         XCTAssertTrue(inbox.waitForExistence(timeout: 10), springboard.debugDescription)
         XCTAssertTrue(data.waitForExistence(timeout: 10), springboard.debugDescription)
         capture("agent-thread-notifications")
-        let frame = inbox.frame
-        springboard.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: frame.maxX - 20, dy: frame.midY))
-            .press(forDuration: 0.1, thenDragTo: springboard.coordinate(withNormalizedOffset: .zero)
-                .withOffset(CGVector(dx: frame.minX + 20, dy: frame.midY)))
-        if springboard.buttons["Clear"].waitForExistence(timeout: 2) { springboard.buttons["Clear"].tap() }
-        XCTAssertFalse(inbox.exists, springboard.debugDescription)
+
+        // Same-app notifications arrive as a stack. The rear card is clipped
+        // and does not accept an individual swipe until the front card expands
+        // the stack.
+        if data.frame.width - inbox.frame.width > 8 {
+            data.tap()
+            let expanded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                inbox.exists && abs(data.frame.width - inbox.frame.width) < 8
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [expanded], timeout: 5), .completed, springboard.debugDescription)
+        }
+
+        let row = notificationRow("Build the agent inbox")
+        XCTAssertTrue(row.waitForExistence(timeout: 5), springboard.debugDescription)
+        let clear = springboard.buttons["Clear"].firstMatch
+        for _ in 0..<2 {
+            row.swipeLeft(velocity: .fast)
+            if clear.waitForExistence(timeout: 5) { break }
+        }
+        XCTAssertTrue(clear.exists, springboard.debugDescription)
+        clear.tap()
+        let cleared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: inbox)
+        XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 10), .completed, springboard.debugDescription)
         XCTAssertTrue(data.exists)
         // A foreground refresh must not reinsert the cleared thread.
         app.activate()

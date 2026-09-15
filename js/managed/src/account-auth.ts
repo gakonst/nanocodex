@@ -1,3 +1,4 @@
+import { configurationCatalog } from "./agent-configuration";
 import { DurableObject } from "cloudflare:workers";
 import { fetchResponseWithDeadline } from "./deadline";
 import { Handler, Kv } from "accounts/server";
@@ -1693,6 +1694,9 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (/^\/(agent-definitions|environment-templates)(?:\/|$)/.test(url.pathname)) {
+      return configurationCatalog(request, this.ctx.storage);
+    }
     if (url.pathname === "/account") {
       if (request.method === "PUT") {
         const body = await request.json<{ id?: unknown; persistent?: unknown }>();

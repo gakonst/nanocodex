@@ -1,0 +1,413 @@
+{
+  "events": [
+    {
+      "event": {
+        "method": "Page.frameNavigated",
+        "params": {
+          "frame": {
+            "id": "root",
+            "url": "https://owned.test/end"
+          }
+        }
+      },
+      "url": "https://owned.test/end",
+      "load": false,
+      "domcontentloaded": false
+    },
+    {
+      "event": {
+        "method": "Page.frameNavigated",
+        "params": {
+          "frame": {
+            "id": "child",
+            "parentId": "root",
+            "url": "https://owned.test/end"
+          }
+        }
+      },
+      "url": null,
+      "load": false,
+      "domcontentloaded": false
+    },
+    {
+      "event": {
+        "method": "Page.navigatedWithinDocument",
+        "params": {
+          "frameId": "child",
+          "url": "https://owned.test/end"
+        }
+      },
+      "url": "https://owned.test/end",
+      "load": false,
+      "domcontentloaded": false
+    },
+    {
+      "event": {
+        "method": "Page.frameNavigated",
+        "params": {
+          "frame": {
+            "id": "root",
+            "url": "https://owned.test/other"
+          }
+        }
+      },
+      "url": null,
+      "load": false,
+      "domcontentloaded": false
+    },
+    {
+      "event": {
+        "method": "Page.loadEventFired",
+        "params": {}
+      },
+      "url": null,
+      "load": true,
+      "domcontentloaded": true
+    },
+    {
+      "event": {
+        "method": "Page.domContentEventFired",
+        "params": {}
+      },
+      "url": null,
+      "load": false,
+      "domcontentloaded": true
+    }
+  ],
+  "scope": "Original extracted wait bodies and scalar helpers, with identity schema/routing stubs; malformed public schema acceptance and live event timing not established",
+  "sourceSha256": "3032666de451e423db76b5f9b0456e370d4f57416bbf53d0c746be636359ba02",
+  "anchors": [
+    {
+      "name": "De",
+      "start_utf8": 255710,
+      "end_utf8": 255820,
+      "sha256": "3436c0517a9dfaaf301857c2761ddf104f202b010eed9b94d5f1b0073a0bcc25"
+    },
+    {
+      "name": "eG",
+      "start_utf8": 724928,
+      "end_utf8": 725010,
+      "sha256": "b92e97ffecbd46033f7199a1c3058dccce03b19e60076f9a73784f357d0d3c09"
+    },
+    {
+      "name": "tG",
+      "start_utf8": 725010,
+      "end_utf8": 725131,
+      "sha256": "0b1395c0cf2c3cf4c523c85c492121b7a02540a1c2b4cada6764f42cac79b89c"
+    },
+    {
+      "name": "Gy",
+      "start_utf8": 724534,
+      "end_utf8": 724928,
+      "sha256": "be7bf96a8bbf41cdd4c6fd4b08c66ac08873687732651228005391da7194ee63"
+    },
+    {
+      "name": "s1",
+      "start_utf8": 725823,
+      "end_utf8": 725997,
+      "sha256": "9d576a6ef08ebcb9fab158bb7e1541d6ab21401f72b6f81b5a4be5187ac86cf9"
+    },
+    {
+      "name": "rG",
+      "start_utf8": 725997,
+      "end_utf8": 726107,
+      "sha256": "5e9ec48c8cbedbb500108f582dd4de735ab893810b77b2dae220849adbbabfd8"
+    },
+    {
+      "name": "a1",
+      "start_utf8": 726107,
+      "end_utf8": 726439,
+      "sha256": "c880f575848914e15b10ecffff6bf685b3ad76a630d344211c816dfb3d6a575f"
+    },
+    {
+      "name": "nG",
+      "start_utf8": 726439,
+      "end_utf8": 726645,
+      "sha256": "b508da0c8804784aded708212aa928cda3aaca74ca667fee1010fbcb5697f5be"
+    },
+    {
+      "name": "u1",
+      "start_utf8": 725258,
+      "end_utf8": 725822,
+      "sha256": "b7fe7894cbd9942751dfa9174069f1f0aea86549ad92004a6a43b04b1453c7fa"
+    }
+  ],
+  "cases": [
+    {
+      "spec": {
+        "name": "already loaded",
+        "state": "load",
+        "initial": {
+          "href": "https://owned.test/start",
+          "readyState": "complete"
+        }
+      },
+      "calls": [
+        {
+          "method": "Page.enable",
+          "tab": 7
+        },
+        {
+          "method": "readDocumentState"
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "spec": {
+        "name": "already interactive",
+        "state": "domcontentloaded",
+        "initial": {
+          "readyState": "interactive"
+        }
+      },
+      "calls": [
+        {
+          "method": "Page.enable",
+          "tab": 7
+        },
+        {
+          "method": "readDocumentState"
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "spec": {
+        "name": "pending load clamp",
+        "state": "load",
+        "timeoutMs": 12000,
+        "initial": {
+          "readyState": "loading"
+        }
+      },
+      "calls": [
+        {
+          "method": "Page.enable",
+          "tab": 7
+        },
+        {
+          "method": "readDocumentState"
+        },
+        {
+          "method": "waitForEvent",
+          "tab": 7,
+          "timeoutMs": 3000,
+          "message": "Timed out waiting for load in tab 7."
+        }
+      ],
+      "result": null,
+      "error": null
+    },
+    {
+      "spec": {
+        "name": "networkidle rejects",
+        "state": "networkidle",
+        "initial": {
+          "readyState": "complete"
+        }
+      },
+      "calls": [],
+      "result": null,
+      "error": "playwright_wait_for_load_state does not support networkidle"
+    },
+    {
+      "spec": {
+        "name": "matching URL defaults commit",
+        "url": "https://owned.test/start",
+        "initial": {
+          "href": "https://owned.test/start",
+          "readyState": "loading"
+        }
+      },
+      "calls": [
+        {
+          "method": "Page.enable",
+          "tab": 7
+        },
+        {
+          "method": "readDocumentState"
+        }
+      ],
+      "result": {
+        "url": "https://owned.test/start"
+      },
+      "error": null
+    },
+    {
+      "spec": {
+        "name": "changed URL defaults commit",
+        "url": "https://owned.test/end",
+        "initial": {
+          "href": "https://owned.test/start",
+          "readyState": "loading"
+        }
+      },
+      "calls": [
+        {
+          "method": "Page.enable",
+          "tab": 7
+        },
+        {
+          "method": "readDocumentState"
+        },
+        {
+          "method": "Page.getFrameTree",
+          "tab": 7
+        },
+        {
+          "method": "waitForEvent",
+          "tab": 7,
+          "timeoutMs": 3000,
+          "message": "Timed out waiting for URL https://owned.test/end in tab 7."
+        }
+      ],
+      "result": {
+        "url": "https://owned.test/end"
+      },
+      "error": null
+    },
+    {
+      "spec": {
+        "name": "changed URL and load each have a full clamped budget",
+        "url": "https://owned.test/end",
+        "waitUntil": "load",
+        "timeoutMs": 12000,
+        "initial": {
+          "href": "https://owned.test/start",
+          "readyState": "loading"
+        }
+      },
+      "calls": [
+        {
+          "method": "Page.enable",
+          "tab": 7
+        },
+        {
+          "method": "readDocumentState"
+        },
+        {
+          "method": "Page.getFrameTree",
+          "tab": 7
+        },
+        {
+          "method": "waitForEvent",
+          "tab": 7,
+          "timeoutMs": 3000,
+          "message": "Timed out waiting for URL https://owned.test/end in tab 7."
+        },
+        {
+          "method": "Page.enable",
+          "tab": 7
+        },
+        {
+          "method": "readDocumentState"
+        },
+        {
+          "method": "waitForEvent",
+          "tab": 7,
+          "timeoutMs": 3000,
+          "message": "Timed out waiting for load in tab 7."
+        }
+      ],
+      "result": {
+        "url": "https://owned.test/end"
+      },
+      "error": null
+    }
+  ],
+  "globs": [
+    {
+      "pattern": "https://x/*",
+      "value": "https://x/a/b",
+      "matches": false
+    },
+    {
+      "pattern": "https://x/**",
+      "value": "https://x/a/b",
+      "matches": true
+    },
+    {
+      "pattern": "https://x/a?",
+      "value": "https://x/ab",
+      "matches": false
+    },
+    {
+      "pattern": "https://x/*",
+      "value": "https://x/a\nb",
+      "matches": true
+    },
+    {
+      "pattern": "https://x/**",
+      "value": "https://x/a\nb",
+      "matches": false
+    },
+    {
+      "pattern": "**",
+      "value": "a\rb",
+      "matches": false
+    },
+    {
+      "pattern": "**",
+      "value": "a b",
+      "matches": false
+    },
+    {
+      "pattern": "**",
+      "value": "a b",
+      "matches": false
+    },
+    {
+      "pattern": "*",
+      "value": "a b",
+      "matches": true
+    },
+    {
+      "pattern": "https://x/🙂*",
+      "value": "https://x/🙂ok",
+      "matches": true
+    },
+    {
+      "pattern": "https://x/[a]",
+      "value": "https://x/[a]",
+      "matches": true
+    },
+    {
+      "pattern": "x",
+      "value": "x\n",
+      "matches": false
+    }
+  ],
+  "durations": [
+    {
+      "value": null,
+      "milliseconds": 3000
+    },
+    {
+      "value": null,
+      "milliseconds": 3000
+    },
+    {
+      "value": -1,
+      "milliseconds": 0
+    },
+    {
+      "value": 0,
+      "milliseconds": 0
+    },
+    {
+      "value": 0.5,
+      "milliseconds": 0.5
+    },
+    {
+      "value": 1000,
+      "milliseconds": 1000
+    },
+    {
+      "value": 12000,
+      "milliseconds": 3000
+    }
+  ]
+}

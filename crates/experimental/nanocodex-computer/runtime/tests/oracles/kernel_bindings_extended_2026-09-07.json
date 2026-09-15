@@ -1,0 +1,183 @@
+{
+  "provenance": {
+    "binary": "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl",
+    "sha256": "0d6f59d5aff9db38d3bf1cad78f3b2d71daaedaefddbc00c65fa3241ce83ad7c",
+    "scope": "Synthetic ECMAScript bindings; no provider/UI calls"
+  },
+  "scenarios": [
+    {
+      "name": "nested_var_block",
+      "cells": [
+        {
+          "code": "{var inner=7;}",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": ""
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "code": "nodeRepl.write(typeof inner);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "undefined"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "class_redeclaration",
+      "cells": [
+        {
+          "code": "class Box{value(){return 1}}const before=Box;",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": ""
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "code": "class Box{value(){return 2}}nodeRepl.write([new Box().value(),new before().value()]);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "[ 2, 1 ]"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "failed_class_binding",
+      "cells": [
+        {
+          "code": "class Ready{};throw new Error('after class');",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "after class"
+              }
+            ],
+            "isError": true
+          }
+        },
+        {
+          "code": "nodeRepl.write(typeof Ready);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "function"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "loop_commit_failure",
+      "cells": [
+        {
+          "code": "for(var item of [4,5]){throw new Error('loop')}",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "loop"
+              }
+            ],
+            "isError": true
+          }
+        },
+        {
+          "code": "nodeRepl.write(item);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "4"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "destructure_names",
+      "cells": [
+        {
+          "code": "let {first:a,...rest}={first:1,last:2};let [b,,...tail]=[3,4,5];",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": ""
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "code": "let {a}={a:9};nodeRepl.write([a,rest,b,tail]);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "[ 9, { last: 2 }, 3, [ 5 ] ]"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "later_lexical_shadow",
+      "cells": [
+        {
+          "code": "const n=1;",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": ""
+              }
+            ],
+            "isError": false
+          }
+        },
+        {
+          "code": "function local(){let n=2;n++};local();nodeRepl.write(n);",
+          "result": {
+            "content": [
+              {
+                "type": "text",
+                "text": "1"
+              }
+            ],
+            "isError": false
+          }
+        }
+      ]
+    }
+  ]
+}

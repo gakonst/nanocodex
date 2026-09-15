@@ -1,0 +1,795 @@
+{
+  "schema": 1,
+  "scope": "Seventeen actual inert installed-kernel generic EventTarget/Event observations; no native conformance claim",
+  "command_sha256": "eaa95cbb4b0c7dae088d7bfbc4cb07b2365cbb53f8c1748d6f6e7008fcc4a975",
+  "source_cases_sha256": "c204b1af982f0ef6a0f101a0fa38fe1556c8bf3f505c580926d25827d6b2a714",
+  "stdout_sha256": "42054f323a7981e92dd92cdb1c3c07fefb365bdb046785233c4c61f931cf1f31",
+  "cases": [
+    {
+      "name": "reachable-constructors-and-public-descriptors",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst controller=new AbortController();let ownedEvent;\ncontroller.signal.addEventListener('abort',event=>{ownedEvent=event},{once:true});controller.abort('owned');\nconst EventClass=ownedEvent.constructor;\nconst fail=fn=>{try{const value=fn();return {ok:true,undefined:value===undefined}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst t=new Target(),event=new EventClass('owned');\nconst descriptor=(object,key)=>{const d=Object.getOwnPropertyDescriptor(object,key);return !d?null:{enumerable:d.enumerable,configurable:d.configurable,writable:d.writable??null,get:typeof d.get,set:typeof d.set,name:typeof d.value==='function'?d.value.name:null,length:typeof d.value==='function'?d.value.length:null}};\nreturn {globals:[typeof EventTarget,typeof Event],target:[typeof Target,Target.name,Target.length],event:[typeof EventClass,EventClass.name,EventClass.length],instance:[t instanceof Target,controller.signal instanceof Target,event instanceof EventClass,ownedEvent instanceof EventClass],tags:[Object.prototype.toString.call(t),Object.prototype.toString.call(event)],targetMethods:Object.fromEntries(['constructor','addEventListener','removeEventListener','dispatchEvent'].map(k=>[k,descriptor(Target.prototype,k)])),eventMembers:Object.fromEntries(['constructor','type','target','currentTarget','eventPhase','isTrusted','preventDefault','stopPropagation','stopImmediatePropagation','composedPath','initEvent'].map(k=>[k,descriptor(EventClass.prototype,k)])),targetOwnNames:Object.getOwnPropertyNames(t),eventOwnNames:Object.getOwnPropertyNames(event)};\n\n})()));",
+      "expected": {
+        "event": [
+          "function",
+          "Event",
+          1
+        ],
+        "eventMembers": {
+          "composedPath": {
+            "configurable": true,
+            "enumerable": true,
+            "get": "undefined",
+            "length": 0,
+            "name": "composedPath",
+            "set": "undefined",
+            "writable": true
+          },
+          "constructor": {
+            "configurable": true,
+            "enumerable": false,
+            "get": "undefined",
+            "length": 1,
+            "name": "Event",
+            "set": "undefined",
+            "writable": true
+          },
+          "currentTarget": {
+            "configurable": true,
+            "enumerable": true,
+            "get": "function",
+            "length": null,
+            "name": null,
+            "set": "undefined",
+            "writable": null
+          },
+          "eventPhase": {
+            "configurable": true,
+            "enumerable": true,
+            "get": "function",
+            "length": null,
+            "name": null,
+            "set": "undefined",
+            "writable": null
+          },
+          "initEvent": {
+            "configurable": true,
+            "enumerable": true,
+            "get": "undefined",
+            "length": 1,
+            "name": "initEvent",
+            "set": "undefined",
+            "writable": true
+          },
+          "isTrusted": {
+            "configurable": false,
+            "enumerable": true,
+            "get": "function",
+            "length": null,
+            "name": null,
+            "set": "undefined",
+            "writable": null
+          },
+          "preventDefault": {
+            "configurable": true,
+            "enumerable": true,
+            "get": "undefined",
+            "length": 0,
+            "name": "preventDefault",
+            "set": "undefined",
+            "writable": true
+          },
+          "stopImmediatePropagation": {
+            "configurable": true,
+            "enumerable": true,
+            "get": "undefined",
+            "length": 0,
+            "name": "stopImmediatePropagation",
+            "set": "undefined",
+            "writable": true
+          },
+          "stopPropagation": {
+            "configurable": true,
+            "enumerable": true,
+            "get": "undefined",
+            "length": 0,
+            "name": "stopPropagation",
+            "set": "undefined",
+            "writable": true
+          },
+          "target": {
+            "configurable": true,
+            "enumerable": true,
+            "get": "function",
+            "length": null,
+            "name": null,
+            "set": "undefined",
+            "writable": null
+          },
+          "type": {
+            "configurable": true,
+            "enumerable": true,
+            "get": "function",
+            "length": null,
+            "name": null,
+            "set": "undefined",
+            "writable": null
+          }
+        },
+        "eventOwnNames": [],
+        "globals": [
+          "undefined",
+          "undefined"
+        ],
+        "instance": [
+          true,
+          true,
+          true,
+          true
+        ],
+        "tags": [
+          "[object EventTarget]",
+          "[object Event]"
+        ],
+        "target": [
+          "function",
+          "EventTarget",
+          0
+        ],
+        "targetMethods": {
+          "addEventListener": {
+            "configurable": true,
+            "enumerable": true,
+            "get": "undefined",
+            "length": 2,
+            "name": "addEventListener",
+            "set": "undefined",
+            "writable": true
+          },
+          "constructor": {
+            "configurable": true,
+            "enumerable": false,
+            "get": "undefined",
+            "length": 0,
+            "name": "EventTarget",
+            "set": "undefined",
+            "writable": true
+          },
+          "dispatchEvent": {
+            "configurable": true,
+            "enumerable": true,
+            "get": "undefined",
+            "length": 1,
+            "name": "dispatchEvent",
+            "set": "undefined",
+            "writable": true
+          },
+          "removeEventListener": {
+            "configurable": true,
+            "enumerable": true,
+            "get": "undefined",
+            "length": 2,
+            "name": "removeEventListener",
+            "set": "undefined",
+            "writable": true
+          }
+        },
+        "targetOwnNames": []
+      },
+      "request_id": 2
+    },
+    {
+      "name": "generic-helper-default-and-independent-configuration",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst controller=new AbortController();let ownedEvent;\ncontroller.signal.addEventListener('abort',event=>{ownedEvent=event},{once:true});controller.abort('owned');\nconst EventClass=ownedEvent.constructor;\nconst fail=fn=>{try{const value=fn();return {ok:true,undefined:value===undefined}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst previous=h.default.defaultMaxListeners,t=new Target(),signal=new AbortController().signal;\ntry{h.default.defaultMaxListeners=4;const next=new Target(),newSignal=new AbortController().signal;h.setMaxListeners(7,t);h.setMaxListeners(3,next);return {previous,initial:[h.getMaxListeners(signal),h.listenerCount(t,'x'),h.getEventListeners(t,'x').length],maxima:[h.getMaxListeners(t),h.getMaxListeners(next),h.getMaxListeners(newSignal)],names:[typeof t.getMaxListeners,typeof t.setMaxListeners,typeof t.listenerCount,typeof t.listeners]}}finally{h.default.defaultMaxListeners=previous}\n\n})()));",
+      "expected": {
+        "initial": [
+          0,
+          0,
+          0
+        ],
+        "maxima": [
+          7,
+          3,
+          0
+        ],
+        "names": [
+          "undefined",
+          "undefined",
+          "undefined",
+          "undefined"
+        ],
+        "previous": 10
+      },
+      "request_id": 3
+    },
+    {
+      "name": "default-maximum-snapshots-at-target-construction",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst controller=new AbortController();let ownedEvent;\ncontroller.signal.addEventListener('abort',event=>{ownedEvent=event},{once:true});controller.abort('owned');\nconst EventClass=ownedEvent.constructor;\nconst fail=fn=>{try{const value=fn();return {ok:true,undefined:value===undefined}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst previous=h.default.defaultMaxListeners,a=new Target();try{h.setMaxListeners(6);const b=new Target();h.default.defaultMaxListeners=8;const c=new Target();return {before:previous,values:[h.getMaxListeners(a),h.getMaxListeners(b),h.getMaxListeners(c),h.getMaxListeners(new AbortController().signal)],global:h.default.defaultMaxListeners}}finally{h.default.defaultMaxListeners=previous}\n\n})()));",
+      "expected": {
+        "before": 10,
+        "global": 8,
+        "values": [
+          10,
+          6,
+          8,
+          0
+        ]
+      },
+      "request_id": 4
+    },
+    {
+      "name": "generic-sync-order-duplicate-object-and-this",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst controller=new AbortController();let ownedEvent;\ncontroller.signal.addEventListener('abort',event=>{ownedEvent=event},{once:true});controller.abort('owned');\nconst EventClass=ownedEvent.constructor;\nconst fail=fn=>{try{const value=fn();return {ok:true,undefined:value===undefined}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst t=new Target(),rows=[];function fn(event){rows.push(['fn',this===t,event.target===t,event.currentTarget===t,event.eventPhase,event.isTrusted])}const object={handleEvent(event){rows.push(['object',this===object,event.target===t,event.currentTarget===t,event.eventPhase,event.isTrusted])}};\nconst added=[t.addEventListener('x',fn),t.addEventListener('x',fn),t.addEventListener('x',object)].map(x=>x===undefined);\nconst listed=h.getEventListeners(t,'x'),event=new EventClass('x');const result=t.dispatchEvent(event);return {added,count:h.listenerCount(t,'x'),list:[listed[0]===fn,listed[1]===object],rows,result,after:[event.target===t,event.currentTarget===null,event.eventPhase,event.composedPath().length]};\n\n})()));",
+      "expected": {
+        "added": [
+          true,
+          true,
+          true
+        ],
+        "after": [
+          true,
+          true,
+          0,
+          0
+        ],
+        "count": 2,
+        "list": [
+          true,
+          true
+        ],
+        "result": true,
+        "rows": [
+          [
+            "fn",
+            true,
+            true,
+            true,
+            2,
+            false
+          ],
+          [
+            "object",
+            true,
+            true,
+            false,
+            0,
+            false
+          ]
+        ]
+      },
+      "request_id": 5
+    },
+    {
+      "name": "capture-once-and-property-only-removal",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst controller=new AbortController();let ownedEvent;\ncontroller.signal.addEventListener('abort',event=>{ownedEvent=event},{once:true});controller.abort('owned');\nconst EventClass=ownedEvent.constructor;\nconst fail=fn=>{try{const value=fn();return {ok:true,undefined:value===undefined}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst t=new Target(),rows=[];function a(){rows.push('a')}function b(){rows.push('b')}\nt.addEventListener('x',a);t.addEventListener('x',a,true);t.addEventListener('x',a);t.addEventListener('x',b,{once:true});\nconst counts=[h.listenerCount(t,'x')];t.removeEventListener('x',a,true);counts.push(h.listenerCount(t,'x'));t.dispatchEvent(new EventClass('x'));counts.push(h.listenerCount(t,'x'));t.removeEventListener('x',a,{capture:true});counts.push(h.listenerCount(t,'x'));\nreturn {counts,rows,list:h.getEventListeners(t,'x').length};\n\n})()));",
+      "expected": {
+        "counts": [
+          3,
+          2,
+          1,
+          0
+        ],
+        "list": 0,
+        "rows": [
+          "a",
+          "b"
+        ]
+      },
+      "request_id": 6
+    },
+    {
+      "name": "ordinary-mutation-during-dispatch",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst controller=new AbortController();let ownedEvent;\ncontroller.signal.addEventListener('abort',event=>{ownedEvent=event},{once:true});controller.abort('owned');\nconst EventClass=ownedEvent.constructor;\nconst fail=fn=>{try{const value=fn();return {ok:true,undefined:value===undefined}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst t=new Target(),rows=[];function late(){rows.push('late')}function b(){rows.push('b')}function c(){rows.push('c')}function a(){rows.push('a');t.addEventListener('x',late);t.removeEventListener('x',b)}\nt.addEventListener('x',a);t.addEventListener('x',b);t.addEventListener('x',c);t.dispatchEvent(new EventClass('x'));const first=[...rows];rows.length=0;t.dispatchEvent(new EventClass('x'));return {first,second:rows,count:h.listenerCount(t,'x'),labels:h.getEventListeners(t,'x').map(x=>x.name)};\n\n})()));",
+      "expected": {
+        "count": 3,
+        "first": [
+          "a",
+          "c",
+          "late"
+        ],
+        "labels": [
+          "a",
+          "c",
+          "late"
+        ],
+        "second": [
+          "a",
+          "c",
+          "late"
+        ]
+      },
+      "request_id": 7
+    },
+    {
+      "name": "once-removal-precedes-bounded-new-event-reentry",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst controller=new AbortController();let ownedEvent;\ncontroller.signal.addEventListener('abort',event=>{ownedEvent=event},{once:true});controller.abort('owned');\nconst EventClass=ownedEvent.constructor;\nconst fail=fn=>{try{const value=fn();return {ok:true,undefined:value===undefined}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst t=new Target(),rows=[];let nested=false;t.addEventListener('x',()=>{rows.push(['once',h.listenerCount(t,'x')]);if(!nested){nested=true;t.dispatchEvent(new EventClass('x'))}},{once:true});t.addEventListener('x',()=>rows.push(['plain',h.listenerCount(t,'x')]));const result=t.dispatchEvent(new EventClass('x'));return {result,rows,count:h.listenerCount(t,'x')};\n\n})()));",
+      "expected": {
+        "count": 1,
+        "result": true,
+        "rows": [
+          [
+            "once",
+            1
+          ],
+          [
+            "plain",
+            1
+          ],
+          [
+            "plain",
+            1
+          ]
+        ]
+      },
+      "request_id": 8
+    },
+    {
+      "name": "helper-snapshots-do-not-mutate-owner-and-key-is-not-coerced",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst controller=new AbortController();let ownedEvent;\ncontroller.signal.addEventListener('abort',event=>{ownedEvent=event},{once:true});controller.abort('owned');\nconst EventClass=ownedEvent.constructor;\nconst fail=fn=>{try{const value=fn();return {ok:true,undefined:value===undefined}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst t=new Target(),fn=()=>{};t.addEventListener('x',fn);const list=h.getEventListeners(t,'x');list.length=0;let conversions=0;const key={toString(){conversions++;return 'x'}};return {count:h.listenerCount(t,'x'),list:h.getEventListeners(t,'x').length,same:h.getEventListeners(t,'x')[0]===fn,objectKey:[h.listenerCount(t,key),h.getEventListeners(t,key).length],conversions};\n\n})()));",
+      "expected": {
+        "conversions": 0,
+        "count": 1,
+        "list": 1,
+        "objectKey": [
+          0,
+          0
+        ],
+        "same": true
+      },
+      "request_id": 9
+    },
+    {
+      "name": "owned-object-listener-resolves-current-method",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst controller=new AbortController();let ownedEvent;\ncontroller.signal.addEventListener('abort',event=>{ownedEvent=event},{once:true});controller.abort('owned');\nconst EventClass=ownedEvent.constructor;\nconst fail=fn=>{try{const value=fn();return {ok:true,undefined:value===undefined}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst t=new Target(),rows=[],object={handleEvent(event){rows.push(['first',this===object,event.type])}};t.addEventListener('x',object);t.dispatchEvent(new EventClass('x'));object.handleEvent=function(event){rows.push(['second',this===object,event.type])};t.dispatchEvent(new EventClass('x'));t.removeEventListener('x',object);return {rows,count:h.listenerCount(t,'x')};\n\n})()));",
+      "expected": {
+        "count": 0,
+        "rows": [
+          [
+            "first",
+            true,
+            "x"
+          ],
+          [
+            "second",
+            true,
+            "x"
+          ]
+        ]
+      },
+      "request_id": 10
+    },
+    {
+      "name": "genuine-event-state-cancellation-and-redispatch",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst controller=new AbortController();let ownedEvent;\ncontroller.signal.addEventListener('abort',event=>{ownedEvent=event},{once:true});controller.abort('owned');\nconst EventClass=ownedEvent.constructor;\nconst fail=fn=>{try{const value=fn();return {ok:true,undefined:value===undefined}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst t=new Target(),other=new Target(),event=new EventClass('x',{bubbles:true,cancelable:true,composed:true}),rows=[];\nconst state=()=>({type:event.type,target:event.target===null?'null':event.target===t?'t':event.target===other?'other':'foreign',current:event.currentTarget===null?'null':event.currentTarget===t?'t':event.currentTarget===other?'other':'foreign',phase:event.eventPhase,bubbles:event.bubbles,cancelable:event.cancelable,composed:event.composed,defaultPrevented:event.defaultPrevented,returnValue:event.returnValue,cancelBubble:event.cancelBubble,trusted:event.isTrusted,path:event.composedPath().map(x=>x===t?'t':'other')});\nconst before=state();t.addEventListener('x',()=>{rows.push(state());event.preventDefault();rows.push(state())});const first=t.dispatchEvent(event),after=state(),second=other.dispatchEvent(event);return {before,rows,first,after,second,redispatched:state(),timestamp:{type:typeof event.timeStamp,finite:Number.isFinite(event.timeStamp),nonnegative:event.timeStamp>=0},nativeAbortTrusted:ownedEvent.isTrusted};\n\n})()));",
+      "expected": {
+        "after": {
+          "bubbles": true,
+          "cancelBubble": false,
+          "cancelable": true,
+          "composed": true,
+          "current": "null",
+          "defaultPrevented": true,
+          "path": [],
+          "phase": 0,
+          "returnValue": false,
+          "target": "t",
+          "trusted": false,
+          "type": "x"
+        },
+        "before": {
+          "bubbles": true,
+          "cancelBubble": false,
+          "cancelable": true,
+          "composed": true,
+          "current": "null",
+          "defaultPrevented": false,
+          "path": [],
+          "phase": 0,
+          "returnValue": true,
+          "target": "null",
+          "trusted": false,
+          "type": "x"
+        },
+        "first": false,
+        "nativeAbortTrusted": true,
+        "redispatched": {
+          "bubbles": true,
+          "cancelBubble": false,
+          "cancelable": true,
+          "composed": true,
+          "current": "null",
+          "defaultPrevented": true,
+          "path": [],
+          "phase": 0,
+          "returnValue": false,
+          "target": "other",
+          "trusted": false,
+          "type": "x"
+        },
+        "rows": [
+          {
+            "bubbles": true,
+            "cancelBubble": false,
+            "cancelable": true,
+            "composed": true,
+            "current": "t",
+            "defaultPrevented": false,
+            "path": [
+              "t"
+            ],
+            "phase": 2,
+            "returnValue": true,
+            "target": "t",
+            "trusted": false,
+            "type": "x"
+          },
+          {
+            "bubbles": true,
+            "cancelBubble": false,
+            "cancelable": true,
+            "composed": true,
+            "current": "t",
+            "defaultPrevented": true,
+            "path": [
+              "t"
+            ],
+            "phase": 2,
+            "returnValue": false,
+            "target": "t",
+            "trusted": false,
+            "type": "x"
+          }
+        ],
+        "second": false,
+        "timestamp": {
+          "finite": true,
+          "nonnegative": true,
+          "type": "number"
+        }
+      },
+      "request_id": 11
+    },
+    {
+      "name": "passive-and-propagation-controls",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst controller=new AbortController();let ownedEvent;\ncontroller.signal.addEventListener('abort',event=>{ownedEvent=event},{once:true});controller.abort('owned');\nconst EventClass=ownedEvent.constructor;\nconst fail=fn=>{try{const value=fn();return {ok:true,undefined:value===undefined}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst rows=[];for(const mode of ['normal','passive','stop','immediate']){const t=new Target(),seen=[],event=new EventClass('x',{cancelable:true});t.addEventListener('x',e=>{seen.push('first');e.preventDefault();if(mode==='stop')e.stopPropagation();if(mode==='immediate')e.stopImmediatePropagation()},{passive:mode==='passive'});t.addEventListener('x',()=>seen.push('second'));const result=t.dispatchEvent(event);rows.push({mode,seen,result,canceled:event.defaultPrevented,cancelBubble:event.cancelBubble,phase:event.eventPhase,currentNull:event.currentTarget===null})}return rows;\n\n})()));",
+      "expected": [
+        {
+          "cancelBubble": false,
+          "canceled": true,
+          "currentNull": true,
+          "mode": "normal",
+          "phase": 0,
+          "result": false,
+          "seen": [
+            "first",
+            "second"
+          ]
+        },
+        {
+          "cancelBubble": false,
+          "canceled": false,
+          "currentNull": true,
+          "mode": "passive",
+          "phase": 0,
+          "result": true,
+          "seen": [
+            "first",
+            "second"
+          ]
+        },
+        {
+          "cancelBubble": true,
+          "canceled": true,
+          "currentNull": true,
+          "mode": "stop",
+          "phase": 0,
+          "result": false,
+          "seen": [
+            "first",
+            "second"
+          ]
+        },
+        {
+          "cancelBubble": true,
+          "canceled": true,
+          "currentNull": true,
+          "mode": "immediate",
+          "phase": 0,
+          "result": false,
+          "seen": [
+            "first"
+          ]
+        }
+      ],
+      "request_id": 12
+    },
+    {
+      "name": "listener-options-with-owned-abort-signal",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst controller=new AbortController();let ownedEvent;\ncontroller.signal.addEventListener('abort',event=>{ownedEvent=event},{once:true});controller.abort('owned');\nconst EventClass=ownedEvent.constructor;\nconst fail=fn=>{try{const value=fn();return {ok:true,undefined:value===undefined}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst t=new Target(),c=new AbortController(),already=new AbortController(),fn=()=>{};already.abort('done');const counts=[];const snapshot=()=>[h.listenerCount(t,'x'),h.listenerCount(c.signal,'abort'),h.getEventListeners(c.signal,'abort').length];counts.push(snapshot());t.addEventListener('x',fn,{signal:c.signal});counts.push(snapshot());t.addEventListener('x',()=>{},{signal:already.signal});counts.push(snapshot());c.abort('owned');counts.push(snapshot());return {counts,after:h.getEventListeners(t,'x').length};\n\n})()));",
+      "expected": {
+        "after": 0,
+        "counts": [
+          [
+            0,
+            0,
+            0
+          ],
+          [
+            1,
+            1,
+            1
+          ],
+          [
+            1,
+            1,
+            1
+          ],
+          [
+            0,
+            0,
+            0
+          ]
+        ]
+      },
+      "request_id": 13
+    },
+    {
+      "name": "benign-options-read-order-and-type-conversion",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst controller=new AbortController();let ownedEvent;\ncontroller.signal.addEventListener('abort',event=>{ownedEvent=event},{once:true});controller.abort('owned');\nconst EventClass=ownedEvent.constructor;\nconst fail=fn=>{try{const value=fn();return {ok:true,undefined:value===undefined}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst t=new Target(),reads=[],fn=()=>{},type={toString(){reads.push('type');return 'x'}},options={get once(){reads.push('once');return false},get capture(){reads.push('capture');return false},get passive(){reads.push('passive');return false},get signal(){reads.push('signal');return undefined}};\nt.addEventListener(type,fn,options);const add=[...reads];reads.length=0;t.removeEventListener(type,fn,{get capture(){reads.push('remove-capture');return false}});return {add,remove:reads,count:h.listenerCount(t,'x')};\n\n})()));",
+      "expected": {
+        "add": [
+          "once",
+          "capture",
+          "passive",
+          "signal",
+          "type"
+        ],
+        "count": 0,
+        "remove": [
+          "type",
+          "remove-capture"
+        ]
+      },
+      "request_id": 14
+    },
+    {
+      "name": "ordinary-target-method-validation-and-wrong-receivers",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst controller=new AbortController();let ownedEvent;\ncontroller.signal.addEventListener('abort',event=>{ownedEvent=event},{once:true});controller.abort('owned');\nconst EventClass=ownedEvent.constructor;\nconst fail=fn=>{try{const value=fn();return {ok:true,undefined:value===undefined}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst t=new Target(),fn=()=>{},event=new EventClass('x');return {missingAdd:fail(()=>t.addEventListener()),missingListener:fail(()=>t.addEventListener('x')),badListener:fail(()=>t.addEventListener('x',7)),badOptions:fail(()=>t.addEventListener('x',fn,7)),missingRemove:fail(()=>t.removeEventListener()),badRemoveListener:fail(()=>t.removeEventListener('x',7)),missingDispatch:fail(()=>t.dispatchEvent()),badEvent:fail(()=>t.dispatchEvent({type:'x'})),nullEvent:fail(()=>t.dispatchEvent(null)),wrongAdd:fail(()=>Reflect.apply(Target.prototype.addEventListener,{},['x',fn])),wrongRemove:fail(()=>Reflect.apply(Target.prototype.removeEventListener,null,['x',fn])),wrongDispatch:fail(()=>Reflect.apply(Target.prototype.dispatchEvent,{},[event])),count:h.listenerCount(t,'x')};\n\n})()));",
+      "expected": {
+        "badEvent": {
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"event\" argument must be an instance of Event. Received an instance of Object",
+          "name": "TypeError",
+          "ok": false
+        },
+        "badListener": {
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be an instance of EventListener. Received type number (7)",
+          "name": "TypeError",
+          "ok": false
+        },
+        "badOptions": {
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"options\" argument must be of type object. Received type number (7)",
+          "name": "TypeError",
+          "ok": false
+        },
+        "badRemoveListener": {
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be an instance of EventListener. Received type number (7)",
+          "name": "TypeError",
+          "ok": false
+        },
+        "count": 0,
+        "missingAdd": {
+          "code": "ERR_MISSING_ARGS",
+          "message": "The \"type\" and \"listener\" arguments must be specified",
+          "name": "TypeError",
+          "ok": false
+        },
+        "missingDispatch": {
+          "code": "ERR_MISSING_ARGS",
+          "message": "The \"event\" argument must be specified",
+          "name": "TypeError",
+          "ok": false
+        },
+        "missingListener": {
+          "code": "ERR_MISSING_ARGS",
+          "message": "The \"type\" and \"listener\" arguments must be specified",
+          "name": "TypeError",
+          "ok": false
+        },
+        "missingRemove": {
+          "code": "ERR_MISSING_ARGS",
+          "message": "The \"type\" and \"listener\" arguments must be specified",
+          "name": "TypeError",
+          "ok": false
+        },
+        "nullEvent": {
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"event\" argument must be an instance of Event. Received null",
+          "name": "TypeError",
+          "ok": false
+        },
+        "wrongAdd": {
+          "code": "ERR_INVALID_THIS",
+          "message": "Value of \"this\" must be of type EventTarget",
+          "name": "TypeError",
+          "ok": false
+        },
+        "wrongDispatch": {
+          "code": "ERR_INVALID_THIS",
+          "message": "Value of \"this\" must be of type EventTarget",
+          "name": "TypeError",
+          "ok": false
+        },
+        "wrongRemove": {
+          "code": "ERR_INVALID_THIS",
+          "message": "Value of \"this\" must be of type EventTarget",
+          "name": "TypeError",
+          "ok": false
+        }
+      },
+      "request_id": 15
+    },
+    {
+      "name": "event-constructor-validation-and-ordinary-coercion",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst controller=new AbortController();let ownedEvent;\ncontroller.signal.addEventListener('abort',event=>{ownedEvent=event},{once:true});controller.abort('owned');\nconst EventClass=ownedEvent.constructor;\nconst fail=fn=>{try{const value=fn();return {ok:true,undefined:value===undefined}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst rows=[];for(const args of [[],[undefined],[null],[7],['x',null],['x',false],['x',[]],['x',{bubbles:1,cancelable:0,composed:'yes'}]]){try{const e=new EventClass(...args);rows.push({ok:true,type:e.type,bubbles:e.bubbles,cancelable:e.cancelable,composed:e.composed,targetNull:e.target===null,currentNull:e.currentTarget===null,phase:e.eventPhase,trusted:e.isTrusted})}catch(error){rows.push({ok:false,name:error.name,code:error.code??null,message:error.message})}}return rows;\n\n})()));",
+      "expected": [
+        {
+          "code": "ERR_MISSING_ARGS",
+          "message": "The \"type\" argument must be specified",
+          "name": "TypeError",
+          "ok": false
+        },
+        {
+          "bubbles": false,
+          "cancelable": false,
+          "composed": false,
+          "currentNull": true,
+          "ok": true,
+          "phase": 0,
+          "targetNull": true,
+          "trusted": false,
+          "type": "undefined"
+        },
+        {
+          "bubbles": false,
+          "cancelable": false,
+          "composed": false,
+          "currentNull": true,
+          "ok": true,
+          "phase": 0,
+          "targetNull": true,
+          "trusted": false,
+          "type": "null"
+        },
+        {
+          "bubbles": false,
+          "cancelable": false,
+          "composed": false,
+          "currentNull": true,
+          "ok": true,
+          "phase": 0,
+          "targetNull": true,
+          "trusted": false,
+          "type": "7"
+        },
+        {
+          "bubbles": false,
+          "cancelable": false,
+          "composed": false,
+          "currentNull": true,
+          "ok": true,
+          "phase": 0,
+          "targetNull": true,
+          "trusted": false,
+          "type": "x"
+        },
+        {
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"options\" argument must be of type object. Received type boolean (false)",
+          "name": "TypeError",
+          "ok": false
+        },
+        {
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"options\" argument must be of type object. Received an instance of Array",
+          "name": "TypeError",
+          "ok": false
+        },
+        {
+          "bubbles": true,
+          "cancelable": false,
+          "composed": true,
+          "currentNull": true,
+          "ok": true,
+          "phase": 0,
+          "targetNull": true,
+          "trusted": false,
+          "type": "x"
+        }
+      ],
+      "request_id": 16
+    },
+    {
+      "name": "event-legacy-init-and-public-method-brands",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst controller=new AbortController();let ownedEvent;\ncontroller.signal.addEventListener('abort',event=>{ownedEvent=event},{once:true});controller.abort('owned');\nconst EventClass=ownedEvent.constructor;\nconst fail=fn=>{try{const value=fn();return {ok:true,undefined:value===undefined}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst event=new EventClass('old',{cancelable:true,bubbles:true,composed:true});event.preventDefault();const states=[];const read=()=>[event.type,event.bubbles,event.cancelable,event.composed,event.defaultPrevented,event.returnValue];states.push(read());event.initEvent('new');states.push(read());event.initEvent('again',false,true);states.push(read());return {states,missingInit:fail(()=>event.initEvent()),wrongPrevent:fail(()=>Reflect.apply(EventClass.prototype.preventDefault,{},[])),wrongPath:fail(()=>Reflect.apply(EventClass.prototype.composedPath,{},[]))};\n\n})()));",
+      "expected": {
+        "missingInit": {
+          "code": "ERR_MISSING_ARGS",
+          "message": "The \"type\" argument must be specified",
+          "name": "TypeError",
+          "ok": false
+        },
+        "states": [
+          [
+            "old",
+            true,
+            true,
+            true,
+            true,
+            false
+          ],
+          [
+            "new",
+            false,
+            false,
+            true,
+            false,
+            true
+          ],
+          [
+            "again",
+            false,
+            true,
+            true,
+            true,
+            false
+          ]
+        ],
+        "wrongPath": {
+          "code": "ERR_INVALID_THIS",
+          "message": "Value of \"this\" must be of type Event",
+          "name": "TypeError",
+          "ok": false
+        },
+        "wrongPrevent": {
+          "code": "ERR_INVALID_THIS",
+          "message": "Value of \"this\" must be of type Event",
+          "name": "TypeError",
+          "ok": false
+        }
+      },
+      "request_id": 17
+    },
+    {
+      "name": "ordinary-subclass-inherits-real-owner",
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst controller=new AbortController();let ownedEvent;\ncontroller.signal.addEventListener('abort',event=>{ownedEvent=event},{once:true});controller.abort('owned');\nconst EventClass=ownedEvent.constructor;\nconst fail=fn=>{try{const value=fn();return {ok:true,undefined:value===undefined}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nclass OwnedTarget extends Target{}class OwnedEvent extends EventClass{}const t=new OwnedTarget(),event=new OwnedEvent('x'),rows=[];t.addEventListener('x',function(e){rows.push([this===t,e===event,e.target===t])});return {names:[t.constructor.name,event.constructor.name],brands:[t instanceof Target,event instanceof EventClass],maximum:h.getMaxListeners(t),count:h.listenerCount(t,'x'),result:t.dispatchEvent(event),rows,globals:[typeof EventTarget,typeof Event]};\n\n})()));",
+      "expected": {
+        "brands": [
+          true,
+          true
+        ],
+        "count": 1,
+        "globals": [
+          "undefined",
+          "undefined"
+        ],
+        "maximum": 10,
+        "names": [
+          "OwnedTarget",
+          "OwnedEvent"
+        ],
+        "result": true,
+        "rows": [
+          [
+            true,
+            true,
+            true
+          ]
+        ]
+      },
+      "request_id": 18
+    }
+  ]
+}

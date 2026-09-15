@@ -238,6 +238,11 @@ Use `evaluate` only when the normal snapshot and interaction actions are
 insufficient. The browser is owned by the host: do not launch a browser, connect
 to a debugging port, or manage browser processes yourself."#;
 
+const BROWSER_EXECUTE_DESCRIPTION: &str = r#"Run browser automation in this Hand's retained browser session.
+Call this tool from outer Nanocodex Code Mode as the final expression: `await tools.browser_execute({ code })`.
+Inside `code`, use `codemode.search("short intent")`, `codemode.describe("cdp.method")`, `cdp.spec({})`, `cdp.send({ method, params?, sessionId? })`, and `cdp.attachToTarget({ targetId })`.
+This surface uses the same restricted Target, Page, DOM, and Input CDP contract as the managed Cloudflare browser. Credential-bearing and unrestricted capabilities, including `Runtime.evaluate`, cookies, authorization headers, provider connection URLs, and Live View URLs, are rejected and redacted."#;
+
 /// One action against the active page of a browser session.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -3880,6 +3885,22 @@ impl Browser {
         self.inner.execute(action).await
     }
 
+    /// Executes one Cloudflare-compatible browser Code Mode cell.
+    ///
+    /// The inner cell exposes only the restricted `cdp` and `codemode`
+    /// browser helpers. The owned Chromium session remains live across calls.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed browser, policy, CDP, or Code Mode error.
+    pub async fn execute_code(
+        &self,
+        code: &str,
+        context: ToolContext<'_>,
+    ) -> Result<ToolOutput, BrowserError> {
+        self.inner.execute_code(code, context).await
+    }
+
     /// Replays every recorded browser action in order against this session.
     ///
     /// Trace-control actions are skipped so replay does not recursively record
@@ -3955,6 +3976,83 @@ impl Browser {
     /// Returns an error if Chromium rejects or interrupts graceful shutdown.
     pub async fn close(&self) -> Result<(), BrowserError> {
         self.inner.close().await
+    }
+}
+
+/// A Hand-hosted browser tool with the exact managed Cloudflare callable contract.
+pub struct BrowserExecuteTool {
+    browser: Browser,
+}
+
+impl BrowserExecuteTool {
+    /// Creates a lazy isolated browser using the dedicated automation Chromium.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the private browser runtime cannot be configured.
+    pub fn new() -> Result<Self, BrowserBuildError> {
+        Ok(Self::from_browser(Browser::new()?))
+    }
+
+    /// Creates the tool with an explicit Chrome or Chromium executable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the private browser runtime cannot be configured.
+    pub fn with_executable(
+        executable: impl Into<std::path::PathBuf>,
+    ) -> Result<Self, BrowserBuildError> {
+        Ok(Self::from_browser(Browser::with_executable(executable)?))
+    }
+
+    /// Wraps one retained browser session.
+    #[must_use]
+    pub const fn from_browser(browser: Browser) -> Self {
+        Self { browser }
+    }
+
+    /// Returns the retained browser handle for explicit lifecycle ownership.
+    #[must_use]
+    pub fn browser(&self) -> Browser {
+        self.browser.clone()
+    }
+}
+
+fn browser_execute_definition() -> ToolDefinition {
+    static DEFINITION: OnceLock<ToolDefinition> = OnceLock::new();
+    DEFINITION
+        .get_or_init(|| {
+            ToolDefinition::function(
+                "browser_execute",
+                BROWSER_EXECUTE_DESCRIPTION,
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "code": { "type": "string" }
+                    },
+                    "required": ["code"],
+                    "additionalProperties": false
+                }),
+            )
+        })
+        .clone()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserExecuteInput {
+    code: String,
+}
+
+#[async_trait]
+impl Tool for BrowserExecuteTool {
+    fn definition(&self) -> ToolDefinition {
+        browser_execute_definition()
+    }
+
+    async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
+        let input = input.decode_json::<BrowserExecuteInput>()?;
+        Ok(self.browser.execute_code(&input.code, context).await?)
     }
 }
 

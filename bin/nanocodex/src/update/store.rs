@@ -110,11 +110,14 @@ impl VersionStore {
         binary: &[u8],
         nanocodex2: &[u8],
         vm_guest: Option<&[u8]>,
+        computer: Option<&[u8]>,
     ) -> Result<()> {
         validate_key(key)?;
         fs::create_dir_all(self.versions_dir())
             .wrap_err("failed to create the Nanocodex version store")?;
-        if self.is_cached_bundle(key, vm_guest.is_some())? {
+        if self.is_cached_bundle(key, vm_guest.is_some())?
+            && (computer.is_none() || self.is_cached_computer(key)?)
+        {
             return Ok(());
         }
 
@@ -123,7 +126,7 @@ impl VersionStore {
             let installed_binary = fs::read(self.binary_path(key))
                 .wrap_err_with(|| format!("failed to read Nanocodex version {key}"))?;
             if self.is_cached(key)? && Sha256::digest(&installed_binary) == Sha256::digest(binary) {
-                self.write_companion_files(&directory, nanocodex2, vm_guest)?;
+                self.write_companion_files(&directory, nanocodex2, vm_guest, computer)?;
                 return Ok(());
             }
             bail!(
@@ -143,7 +146,7 @@ impl VersionStore {
             format!("{}\n", hex::encode(Sha256::digest(binary))).as_bytes(),
             false,
         )?;
-        self.write_companion_files(staging.path(), nanocodex2, vm_guest)?;
+        self.write_companion_files(staging.path(), nanocodex2, vm_guest, computer)?;
         fs::rename(staging.path(), &directory)
             .wrap_err_with(|| format!("failed to install {}", directory.display()))?;
         Ok(())
@@ -154,6 +157,7 @@ impl VersionStore {
         directory: &Path,
         nanocodex2: &[u8],
         vm_guest: Option<&[u8]>,
+        computer: Option<&[u8]>,
     ) -> Result<()> {
         atomic_write(&directory.join(NANOCODEX2_BINARY_NAME), nanocodex2, true)?;
         atomic_write(
@@ -169,7 +173,22 @@ impl VersionStore {
                 false,
             )?;
         }
+        if let Some(computer) = computer {
+            atomic_write(&directory.join("nanocodex-computer"), computer, true)?;
+            atomic_write(
+                &directory.join("nanocodex-computer.sha256"),
+                format!("{}\n", hex::encode(Sha256::digest(computer))).as_bytes(),
+                false,
+            )?;
+        }
         Ok(())
+    }
+
+    pub(super) fn is_cached_computer(&self, key: &str) -> Result<bool> {
+        file_matches_checksum(
+            &self.version_dir(key).join("nanocodex-computer"),
+            &self.version_dir(key).join("nanocodex-computer.sha256"),
+        )
     }
 
     pub(super) fn is_cached_bundle(&self, key: &str, requires_vm_guest: bool) -> Result<bool> {
@@ -195,6 +214,7 @@ impl VersionStore {
             self.activate_symlink(key)?;
             self.install_launcher()?;
             self.sync_nanocodex2_launcher(key)?;
+            self.sync_computer_launcher(key)?;
         }
 
         #[cfg(not(unix))]
@@ -433,6 +453,30 @@ exec "$install_root/current/nanocodex" "$@"
     }
 
     #[cfg(unix)]
+    fn sync_computer_launcher(&self, key: &str) -> Result<()> {
+        const LAUNCHER: &str = r#"#!/bin/sh
+set -eu
+case "$0" in
+    */*) launcher=$0 ;;
+    *) launcher=$(command -v "$0") ;;
+esac
+bin_dir=$(CDPATH= cd -- "$(dirname -- "$launcher")" && pwd -P)
+install_root=$(dirname -- "$bin_dir")
+exec "$install_root/current/nanocodex-computer" "$@"
+"#;
+        let path = self.root.join("bin/nanocodex-computer");
+        if self.is_cached_computer(key)? {
+            return atomic_write(&path, LAUNCHER.as_bytes(), true);
+        }
+        // Preserve a separately installed user executable when switching to
+        // an older bundle that predates CUA.
+        if fs::read(&path).is_ok_and(|bytes| bytes == LAUNCHER.as_bytes()) {
+            fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
     fn sync_nanocodex2_launcher(&self, key: &str) -> Result<()> {
         const LAUNCHER: &str = r#"#!/bin/sh
 set -eu
@@ -627,11 +671,22 @@ mod tests {
         let store = VersionStore::at(directory.path());
 
         store
-            .install_bundle("nightly-build", b"cli", b"managed-cli", Some(b"guest"))
+            .install_bundle(
+                "nightly-build",
+                b"cli",
+                b"managed-cli",
+                Some(b"guest"),
+                Some(b"computer"),
+            )
             .unwrap();
         store.activate("nightly-build").unwrap();
 
         assert!(store.is_cached_bundle("nightly-build", true).unwrap());
+        assert!(store.is_cached_computer("nightly-build").unwrap());
+        assert_eq!(
+            fs::read(directory.path().join("current/nanocodex-computer")).unwrap(),
+            b"computer"
+        );
         assert_eq!(
             fs::read(directory.path().join("current/nanocodex2")).unwrap(),
             b"managed-cli"
@@ -680,7 +735,7 @@ mod tests {
         let store = VersionStore::at(directory.path());
 
         store
-            .install_bundle("0.5.0", b"stable-cli", b"stable-managed-cli", None)
+            .install_bundle("0.5.0", b"stable-cli", b"stable-managed-cli", None, None)
             .unwrap();
         store.activate("0.5.0").unwrap();
 
@@ -713,7 +768,7 @@ mod tests {
         assert!(!directory.path().join("bin/nanocodex2").exists());
 
         store
-            .install_bundle("0.4.0", b"stable-cli", b"stable-managed-cli", None)
+            .install_bundle("0.4.0", b"stable-cli", b"stable-managed-cli", None, None)
             .unwrap();
         assert!(store.is_cached_bundle("0.4.0", false).unwrap());
         assert!(!directory.path().join("bin/nanocodex2").exists());

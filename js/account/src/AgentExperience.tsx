@@ -1,3 +1,4 @@
+import { ManagedAgentInspector } from "./ManagedAgentInspector";
 import { sessionQueryKey } from "./queryClient";
 import type { BrowserSession } from "./sessionQueries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -61,6 +62,7 @@ export const AgentExperience = memo(function AgentExperience({
   onThemeChange(theme: "light" | "dark"): void;
 }) {
   const navigate = useNavigate();
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [ephemeralThreadId, setEphemeralThreadId] = useState(() => crypto.randomUUID());
   const account = useAccountSession();
   const capabilityError = useMemo(() => browserAgentCapabilityError(), []);
@@ -261,11 +263,13 @@ export const AgentExperience = memo(function AgentExperience({
           <button ref={sidebarTriggerRef} className="agent-sidebar-toggle chat-icon-button" type="button" onClick={() => { if (window.matchMedia("(min-width: 761px)").matches) toggleDesktopSidebar(); else setRailOpen(true); }} aria-label="Open sidebar" aria-expanded={railOpen} aria-controls="agent-navigation"><PanelLeft aria-hidden="true" /></button>
           <div className="agent-chat-heading"><strong>{landing ? "Nanocodex" : title}</strong></div>
           <div className="agent-chat-header-actions">
+            {managedConversationId && <button type="button" onClick={() => setInspectorOpen(open => !open)} aria-expanded={inspectorOpen}>Inspect</button>}
             {agentStatus === "starting" || agentStatus === "error" ? <span className={`agent-chat-status is-${agentStatus}`} role="status"><i aria-hidden="true" />{agentStatus === "starting" ? "Connecting…" : "Needs attention"}</span> : null}
             <button className="chat-icon-button" type="button" onClick={() => onThemeChange(theme === "light" ? "dark" : "light")} aria-label={`Use ${theme === "light" ? "dark" : "light"} appearance`} title={`Use ${theme === "light" ? "dark" : "light"} appearance`}>{theme === "light" ? <Moon aria-hidden="true" /> : <Sun aria-hidden="true" />}</button>
             <button className="chat-icon-button" type="button" disabled={conversationPending} onClick={newChat} aria-label={landing ? "New chat" : "New agent"} title={landing ? "New chat" : "New agent"}><SquarePen aria-hidden="true" /></button>
           </div>
         </header>
+        {inspectorOpen && managedConversationId && <ManagedAgentInspector key={`${account.account?.id}:${managedConversationId}`} agentId={managedConversationId} onClose={() => setInspectorOpen(false)} />}
         {LOCAL_SPONSORED_TRIAL_RESET && showHomepageTrialReset ? (
           <Suspense fallback={null}>
             <LocalSponsoredTrialReset onReset={acceptSponsoredTrialReset} />

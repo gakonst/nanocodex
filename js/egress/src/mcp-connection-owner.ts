@@ -83,6 +83,7 @@ type StoredConnection = {
   endpoint: string;
   name: string;
   requestedScopes: string[];
+  authentication?: "none";
   lifecycle: "active" | "disabled" | "revoked";
   createdAt: number;
   revokedAt?: number;
@@ -153,7 +154,7 @@ export class McpConnectionDirectory extends DurableObject<Record<string, never>>
   }
 }
 
-/** Generic OAuth-protected remote MCP connections owned by one user broker. */
+/** Generic public or OAuth-protected remote MCP connections owned by one user broker. */
 export class McpConnectionOwner {
   readonly #storage: DurableObjectStorage;
   readonly #env: McpConnectionBrokerEnv;
@@ -218,7 +219,7 @@ export class McpConnectionOwner {
       const authorizationUrl = await this.#start(id, request);
       return json({
         ...this.#publicWire([this.#connection(id)]),
-        authorization_url: authorizationUrl,
+        ...(authorizationUrl ? { authorization_url: authorizationUrl } : {}),
       }, 200);
     }
     if (request.method === "POST" && operation === "callback") {
@@ -260,7 +261,7 @@ export class McpConnectionOwner {
     return connection;
   }
 
-  async #start(id: string, request: Request): Promise<string> {
+  async #start(id: string, request: Request): Promise<string | undefined> {
     const connection = this.#connection(id);
     this.#requireActive(connection);
     const body = await readJson(request, MAX_CONTROL_BODY_BYTES);
@@ -270,7 +271,17 @@ export class McpConnectionOwner {
       || !returnTo || !validReturnTo(returnTo)) {
       throw new McpFailure(400, "invalid_request");
     }
-    const metadata = await discoverOAuth(connection.endpoint);
+    const access = await probeMcpAccess(connection.endpoint);
+    if (access.kind === "public") {
+      connection.authentication = "none";
+      delete connection.pending;
+      delete connection.authorization;
+      delete connection.reauthorizationRequired;
+      await this.#persist();
+      return undefined;
+    }
+    delete connection.authentication;
+    const metadata = await discoverOAuth(connection.endpoint, access.resourceMetadata);
     const scopes = selectedScopes(connection, metadata.scopesSupported);
     const client = await oauthClient(this.#env, metadata, redirectUri);
     const verifier = randomBase64Url(64);
@@ -358,6 +369,26 @@ export class McpConnectionOwner {
     if (request.headers.has("authorization") || request.headers.has("cookie")
       || request.headers.has("proxy-authorization")) {
       throw new McpFailure(403, "caller_credential_forbidden");
+    }
+    if (connection.authentication === "none") {
+      const upstream = await mcpFetch(mcpUpstreamRequest(
+        connection.endpoint,
+        request,
+        undefined,
+        request.body,
+      ));
+      if (upstream.status === 401) {
+        await cancelBody(upstream);
+        delete connection.authentication;
+        connection.reauthorizationRequired = true;
+        await this.#persist();
+        throw new McpFailure(409, "reauthorization_required");
+      }
+      if (REDIRECT_STATUS.has(upstream.status)) {
+        await cancelBody(upstream);
+        throw new McpFailure(502, "mcp_redirect_blocked");
+      }
+      return safeMcpResponse(upstream, []);
     }
     let usable = await this.#usableAuthorization(connection);
     let authorization = usable.authorization;
@@ -580,21 +611,72 @@ function publicStatus(connection: StoredConnection): PublicStatus {
   if (connection.authorization?.expiresAt !== undefined
     && connection.authorization.expiresAt <= Date.now() + EXPIRY_SKEW_MS
     && !connection.authorization.refreshToken) return "reauthorization_required";
-  return connection.authorization ? "connected" : "authorization_required";
+  return connection.authentication === "none" || connection.authorization
+    ? "connected"
+    : "authorization_required";
 }
 
-async function discoverOAuth(endpointValue: string): Promise<OAuthMetadata> {
-  const endpoint = new URL(endpointValue);
-  const challenge = await oauthFetch(new Request(endpoint, {
-    method: "GET",
-    headers: { accept: "application/json, text/event-stream" },
+type McpAccessProbe =
+  | Readonly<{ kind: "public" }>
+  | Readonly<{ kind: "oauth"; resourceMetadata?: string }>;
+
+async function probeMcpAccess(endpointValue: string): Promise<McpAccessProbe> {
+  const response = await mcpFetch(new Request(endpointValue, {
+    method: "POST",
+    headers: {
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+      "mcp-protocol-version": "2025-06-18",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "nanocodex-access-probe",
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "nanocodex", version: "0.5.0" },
+      },
+    }),
   }));
-  const advertised = challenge.status === 401
-    ? resourceMetadataFromChallenge(challenge.headers.get("www-authenticate"))
-    : undefined;
-  await cancelBody(challenge);
+  if (response.status === 401) {
+    const resourceMetadata = resourceMetadataFromChallenge(
+      response.headers.get("www-authenticate"),
+    );
+    await cancelBody(response);
+    return {
+      kind: "oauth",
+      ...(resourceMetadata ? { resourceMetadata } : {}),
+    };
+  }
+  if (!response.ok || REDIRECT_STATUS.has(response.status)) {
+    await cancelBody(response);
+    throw new McpFailure(502, "mcp_initialize_failed");
+  }
+  const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (contentType === "text/event-stream") {
+    await cancelBody(response);
+    return { kind: "public" };
+  }
+  if (contentType !== "application/json") {
+    await cancelBody(response);
+    throw new McpFailure(502, "invalid_mcp_initialize_response");
+  }
+  const value = await responseJson(response, "invalid_mcp_initialize_response");
+  if (value.jsonrpc !== "2.0" || value.id !== "nanocodex-access-probe"
+    || !isRecord(value.result)) {
+    throw new McpFailure(502, "invalid_mcp_initialize_response");
+  }
+  return { kind: "public" };
+}
+
+async function discoverOAuth(
+  endpointValue: string,
+  challengedResourceMetadata?: string,
+): Promise<OAuthMetadata> {
+  const endpoint = new URL(endpointValue);
   const candidates = unique([
-    advertised,
+    challengedResourceMetadata,
     wellKnownUrl("oauth-protected-resource", endpoint).href,
     new URL("/.well-known/oauth-protected-resource", endpoint.origin).href,
   ].filter((value): value is string => Boolean(value)));
@@ -798,10 +880,11 @@ function rejectScopeEscalation(granted: string[], requested: string[]): void {
 function mcpUpstreamRequest(
   endpoint: string,
   original: Request,
-  accessToken: string,
+  accessToken: string | undefined,
   body: BodyInit | null,
 ): Request {
-  const headers = new Headers({ authorization: `Bearer ${accessToken}` });
+  const headers = new Headers();
+  if (accessToken) headers.set("authorization", `Bearer ${accessToken}`);
   for (const name of MCP_REQUEST_HEADERS) {
     const value = boundedHeader(original.headers, name);
     if (value !== null) headers.set(name, value);
@@ -900,13 +983,16 @@ async function mcpFetch(request: Request): Promise<Response> {
   finally { clearTimeout(timeout); }
 }
 
-async function responseJson(response: Response): Promise<Record<string, unknown>> {
+async function responseJson(
+  response: Response,
+  errorCode = "invalid_mcp_oauth_response",
+): Promise<Record<string, unknown>> {
   const text = await readBoundedText(response, MAX_PROVIDER_BODY_BYTES);
   try {
     const value: unknown = JSON.parse(text);
     if (!isRecord(value)) throw new Error();
     return value;
-  } catch { throw new McpFailure(502, "invalid_mcp_oauth_response"); }
+  } catch { throw new McpFailure(502, errorCode); }
 }
 
 function canonicalPublicEndpoint(value: string): boolean {

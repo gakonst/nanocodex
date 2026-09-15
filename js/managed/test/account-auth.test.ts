@@ -175,6 +175,50 @@ describe("connector route compatibility", () => {
       `https://broker.internal/users/${USER_ID}/connectors/google`,
     );
   });
+
+  it("finishes an OAuth MCP in the native app without returning OAuth material", async () => {
+    const local = portableEnv();
+    const sessionToken = "e".repeat(64);
+    const attempt = "6f3eec23-8a1a-4de4-b498-1689a2829ca0";
+    local.set("webauthn", `session:${sessionToken}`, {
+      credentialId: CREDENTIAL_ID,
+      publicKey: PUBLIC_KEY,
+      userId: encodeUserId(USER_ID),
+      issuedAt: 1,
+      expiresAt: Math.floor(Date.now() / 1_000) + 60,
+    });
+    const requests: Request[] = [];
+    const env = {
+      ...local.env,
+      NANOCODEX: {
+        async fetch(input: RequestInfo | URL, init?: RequestInit) {
+          requests.push(new Request(input, init));
+          return Response.json({
+            return_to: `/v1/connectors/mcp-mobile-complete?attempt=${attempt}`,
+            mcp_connections: [{ id: CONNECT_MCP_ID, name: "Linear", status: "connected" }],
+          });
+        },
+      } as unknown as Fetcher,
+    };
+    const callbackUrl = new URL(
+      `https://nanocodex.example/v1/connectors/mcp-connections/${CONNECT_MCP_ID}/callback?code=private-code&state=private-state`,
+    );
+    const callback = await routeConnectorRequest(new Request(callbackUrl, {
+      headers: { cookie: `nanocodex_account=${sessionToken}` },
+    }), env, callbackUrl);
+
+    expect(callback?.status).toBe(303);
+    const completionUrl = new URL(callback!.headers.get("location")!);
+    expect(completionUrl.pathname).toBe("/v1/connectors/mcp-mobile-complete");
+    expect(completionUrl.searchParams.get("mcp_result")).toBe("connected");
+    expect(completionUrl.href).not.toMatch(/private-code|private-state/);
+    const native = await routeConnectorRequest(new Request(completionUrl), env, completionUrl);
+    expect(native?.status).toBe(303);
+    expect(native?.headers.get("location")).toBe(
+      `nanocodex://connectors/mcp-complete?attempt=${attempt}&mcp_connection=${CONNECT_MCP_ID}&mcp_result=connected`,
+    );
+    expect(requests).toHaveLength(1);
+  });
 });
 
 describe("account provisioning", () => {

@@ -1,0 +1,4472 @@
+{
+  "sourceSha256": "3032666de451e423db76b5f9b0456e370d4f57416bbf53d0c746be636359ba02",
+  "bindings": [
+    {
+      "name": "m7",
+      "kind": "var",
+      "value_kind": "Literal",
+      "start_utf8": 677320,
+      "end_utf8": 677326,
+      "sha256": "f1219bc49f8657e8c361ac9408f420ac432e807903457dd71c375412eb57e096"
+    },
+    {
+      "name": "f7",
+      "kind": "var",
+      "value_kind": "Literal",
+      "start_utf8": 677327,
+      "end_utf8": 677332,
+      "sha256": "8650df9b78c7e1d6e30d7caec76c5c2378b1042462f242c14d7dc591a3a1a3dc"
+    },
+    {
+      "name": "yr",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 677333,
+      "end_utf8": 677391,
+      "sha256": "6cbe6fefde5e8cc2e747e8722fb535b5acc697ba9c7efc0a11ce8b714f9d2161"
+    },
+    {
+      "name": "Zp",
+      "kind": "var",
+      "value_kind": "ClassExpression",
+      "start_utf8": 677395,
+      "end_utf8": 701072,
+      "sha256": "b1e32a2bf95b00ebd1c32a238d13ff665dda2b96ef3b24bfd4383359cf718d5f"
+    },
+    {
+      "name": "Kt",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703210,
+      "end_utf8": 703257,
+      "sha256": "7fd7b7b8768ba6cc127e8f4b0b57eabbf0e6be29e9a83fa8f34a34844bb44413"
+    },
+    {
+      "name": "Ek",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703257,
+      "end_utf8": 703372,
+      "sha256": "8e0342c0ec330279a5d6c9daf468f80adb3c3f29c1f68e2129c47c5e89dff53e"
+    },
+    {
+      "name": "Ak",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703372,
+      "end_utf8": 703425,
+      "sha256": "0dcafb9bc6dd38c0f3d8fe4912d9d41b64d8f61e0bd7504534679fed2551b02f"
+    }
+  ],
+  "scope": "Controlled finite clocks and finite JSON numeric IDs; direct nonmutating stored-state observation. helperOnly is not evidence of ordinary caller activation. No OS clock changes or provider authority.",
+  "cases": [
+    {
+      "name": "empty failure leaves expiry untouched across rollback",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "end",
+          "clocks": [
+            1000,
+            1000
+          ]
+        },
+        {
+          "op": "begin"
+        },
+        {
+          "op": "end",
+          "fail": true
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            10500
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "reads": [
+            1000,
+            1000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "reads": [],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "reads": [
+            10500
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "expired but unpruned empty completion survives rollback",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "end",
+          "clocks": [
+            1000,
+            1000
+          ]
+        },
+        {
+          "op": "begin"
+        },
+        {
+          "op": "end"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            10500
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "reads": [
+            1000,
+            1000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "reads": [],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "reads": [
+            10500
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "nonnumeric null does not prune",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "end",
+          "clocks": [
+            1000,
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": null
+          },
+          "clocks": []
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            10500
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "reads": [
+            1000,
+            1000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "reads": [
+            10500
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "nonnumeric \"7\" does not prune",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "end",
+          "clocks": [
+            1000,
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": "7"
+          },
+          "clocks": []
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            10500
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "reads": [
+            1000,
+            1000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "reads": [
+            10500
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "nonnumeric {} does not prune",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "end",
+          "clocks": [
+            1000,
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": {}
+          },
+          "clocks": []
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            10500
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "reads": [
+            1000,
+            1000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "reads": [
+            10500
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "nonnumeric [] does not prune",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "end",
+          "clocks": [
+            1000,
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": []
+          },
+          "clocks": []
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            10500
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "reads": [
+            1000,
+            1000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "reads": [
+            10500
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "nonnumeric false does not prune",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "end",
+          "clocks": [
+            1000,
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": false
+          },
+          "clocks": []
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            10500
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "reads": [
+            1000,
+            1000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "reads": [
+            10500
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "visibility and foreign frames do not read or prune",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "end",
+          "clocks": [
+            1000,
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastVisibilityChanged",
+          "params": {
+            "visible": false
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [],
+          "child": true
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [],
+          "target": true
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            10500
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "reads": [
+            1000,
+            1000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "reads": [
+            10500
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "numeric pruning is irreversible after clock rollback",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "end",
+          "clocks": [
+            1000,
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            11000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            1000
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "reads": [
+            1000,
+            1000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [
+            11000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": false,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        }
+      ]
+    },
+    {
+      "name": "two reads allow a later expiry after prune",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "end",
+          "clocks": [
+            1000,
+            4000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            13999
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            14000
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "reads": [
+            1000,
+            4000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              14000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "reads": [
+            13999
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              14000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [
+            14000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        }
+      ]
+    },
+    {
+      "name": "clock rollback between prune and expiry",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "end",
+          "clocks": [
+            1000,
+            -20000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            -10001
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            -10000
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "reads": [
+            1000,
+            -20000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              -10000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "reads": [
+            -10001
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              -10000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [
+            -10000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        }
+      ]
+    },
+    {
+      "name": "forward jump prunes old IDs before new retirement",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "end",
+          "clocks": [
+            1000,
+            1000
+          ]
+        },
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 8
+          },
+          "clocks": [
+            1001
+          ]
+        },
+        {
+          "op": "end",
+          "clocks": [
+            12000,
+            40000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 8
+          },
+          "clocks": [
+            49999
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 8
+          },
+          "clocks": [
+            50000
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "reads": [
+            1000,
+            1000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1001
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            8
+          ],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "reads": [
+            12000,
+            40000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              8,
+              50000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              8,
+              50000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "reads": [
+            49999
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              8,
+              50000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [
+            50000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        }
+      ]
+    },
+    {
+      "name": "negative fraction zero and rounded large numeric IDs",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 0
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 0
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": -1
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 0.5
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 1e+100
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 9007199254740992
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 9007199254740992
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "end",
+          "clocks": [
+            1000,
+            1001
+          ],
+          "fail": true
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 0
+          },
+          "clocks": [
+            11000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": -1
+          },
+          "clocks": [
+            11001
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            -1
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            -1,
+            0.5
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            -1,
+            0.5,
+            1e+100
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            -1,
+            0.5,
+            1e+100,
+            9007199254740992
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            -1,
+            0.5,
+            1e+100,
+            9007199254740992
+          ],
+          "retired": []
+        },
+        {
+          "reads": [
+            1000,
+            1001
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              0,
+              11001
+            ],
+            [
+              -1,
+              11001
+            ],
+            [
+              0.5,
+              11001
+            ],
+            [
+              1e+100,
+              11001
+            ],
+            [
+              9007199254740992,
+              11001
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "reads": [
+            11000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              0,
+              11001
+            ],
+            [
+              -1,
+              11001
+            ],
+            [
+              0.5,
+              11001
+            ],
+            [
+              1e+100,
+              11001
+            ],
+            [
+              9007199254740992,
+              11001
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [
+            11001
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        }
+      ]
+    },
+    {
+      "name": "failure caps insertion order with repeated earlier ID",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 0
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 1
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 2
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 3
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 4
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 5
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 6
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 8
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 9
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 10
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 11
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 12
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 13
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 14
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 15
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 16
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 17
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 18
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 19
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 20
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 21
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 22
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 23
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 24
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 25
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 26
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 27
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 28
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 29
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 30
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 31
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 32
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 33
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 34
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 0
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "end",
+          "clocks": [
+            1000,
+            2000
+          ],
+          "fail": true
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 2
+          },
+          "clocks": [
+            11999
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 3
+          },
+          "clocks": [
+            11999
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 34
+          },
+          "clocks": [
+            12000
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34
+          ],
+          "retired": []
+        },
+        {
+          "reads": [
+            1000,
+            2000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              3,
+              12000
+            ],
+            [
+              4,
+              12000
+            ],
+            [
+              5,
+              12000
+            ],
+            [
+              6,
+              12000
+            ],
+            [
+              7,
+              12000
+            ],
+            [
+              8,
+              12000
+            ],
+            [
+              9,
+              12000
+            ],
+            [
+              10,
+              12000
+            ],
+            [
+              11,
+              12000
+            ],
+            [
+              12,
+              12000
+            ],
+            [
+              13,
+              12000
+            ],
+            [
+              14,
+              12000
+            ],
+            [
+              15,
+              12000
+            ],
+            [
+              16,
+              12000
+            ],
+            [
+              17,
+              12000
+            ],
+            [
+              18,
+              12000
+            ],
+            [
+              19,
+              12000
+            ],
+            [
+              20,
+              12000
+            ],
+            [
+              21,
+              12000
+            ],
+            [
+              22,
+              12000
+            ],
+            [
+              23,
+              12000
+            ],
+            [
+              24,
+              12000
+            ],
+            [
+              25,
+              12000
+            ],
+            [
+              26,
+              12000
+            ],
+            [
+              27,
+              12000
+            ],
+            [
+              28,
+              12000
+            ],
+            [
+              29,
+              12000
+            ],
+            [
+              30,
+              12000
+            ],
+            [
+              31,
+              12000
+            ],
+            [
+              32,
+              12000
+            ],
+            [
+              33,
+              12000
+            ],
+            [
+              34,
+              12000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [
+            11999
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              3,
+              12000
+            ],
+            [
+              4,
+              12000
+            ],
+            [
+              5,
+              12000
+            ],
+            [
+              6,
+              12000
+            ],
+            [
+              7,
+              12000
+            ],
+            [
+              8,
+              12000
+            ],
+            [
+              9,
+              12000
+            ],
+            [
+              10,
+              12000
+            ],
+            [
+              11,
+              12000
+            ],
+            [
+              12,
+              12000
+            ],
+            [
+              13,
+              12000
+            ],
+            [
+              14,
+              12000
+            ],
+            [
+              15,
+              12000
+            ],
+            [
+              16,
+              12000
+            ],
+            [
+              17,
+              12000
+            ],
+            [
+              18,
+              12000
+            ],
+            [
+              19,
+              12000
+            ],
+            [
+              20,
+              12000
+            ],
+            [
+              21,
+              12000
+            ],
+            [
+              22,
+              12000
+            ],
+            [
+              23,
+              12000
+            ],
+            [
+              24,
+              12000
+            ],
+            [
+              25,
+              12000
+            ],
+            [
+              26,
+              12000
+            ],
+            [
+              27,
+              12000
+            ],
+            [
+              28,
+              12000
+            ],
+            [
+              29,
+              12000
+            ],
+            [
+              30,
+              12000
+            ],
+            [
+              31,
+              12000
+            ],
+            [
+              32,
+              12000
+            ],
+            [
+              33,
+              12000
+            ],
+            [
+              34,
+              12000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "reads": [
+            11999
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              3,
+              12000
+            ],
+            [
+              4,
+              12000
+            ],
+            [
+              5,
+              12000
+            ],
+            [
+              6,
+              12000
+            ],
+            [
+              7,
+              12000
+            ],
+            [
+              8,
+              12000
+            ],
+            [
+              9,
+              12000
+            ],
+            [
+              10,
+              12000
+            ],
+            [
+              11,
+              12000
+            ],
+            [
+              12,
+              12000
+            ],
+            [
+              13,
+              12000
+            ],
+            [
+              14,
+              12000
+            ],
+            [
+              15,
+              12000
+            ],
+            [
+              16,
+              12000
+            ],
+            [
+              17,
+              12000
+            ],
+            [
+              18,
+              12000
+            ],
+            [
+              19,
+              12000
+            ],
+            [
+              20,
+              12000
+            ],
+            [
+              21,
+              12000
+            ],
+            [
+              22,
+              12000
+            ],
+            [
+              23,
+              12000
+            ],
+            [
+              24,
+              12000
+            ],
+            [
+              25,
+              12000
+            ],
+            [
+              26,
+              12000
+            ],
+            [
+              27,
+              12000
+            ],
+            [
+              28,
+              12000
+            ],
+            [
+              29,
+              12000
+            ],
+            [
+              30,
+              12000
+            ],
+            [
+              31,
+              12000
+            ],
+            [
+              32,
+              12000
+            ],
+            [
+              33,
+              12000
+            ],
+            [
+              34,
+              12000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [
+            12000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        }
+      ]
+    },
+    {
+      "name": "active retired collision is never collected",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "end",
+          "clocks": [
+            1000,
+            1000
+          ]
+        },
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            1001
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 8
+          },
+          "clocks": [
+            1002
+          ]
+        },
+        {
+          "op": "end",
+          "clocks": [
+            1003,
+            1004
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            11000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 8
+          },
+          "clocks": [
+            11003
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 8
+          },
+          "clocks": [
+            11004
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "reads": [
+            1000,
+            1000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1001
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1002
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            8
+          ],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "reads": [
+            1003,
+            1004
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ],
+            [
+              8,
+              11004
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [
+            11000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              8,
+              11004
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "reads": [
+            11003
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              8,
+              11004
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [
+            11004
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        }
+      ]
+    },
+    {
+      "name": "numeric inactive event still calls expiry helper",
+      "actions": [
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 1
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": "1"
+          },
+          "clocks": []
+        }
+      ],
+      "rows": [
+        {
+          "hidden": false,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": false,
+          "reads": [],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        }
+      ]
+    },
+    {
+      "name": "raw state unchanged by retirement and late frames",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            1000
+          ]
+        },
+        {
+          "op": "end",
+          "clocks": [
+            1000,
+            1000
+          ]
+        },
+        {
+          "op": "raw",
+          "method": "Page.startScreencast"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            10999
+          ]
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 8
+          },
+          "clocks": [
+            10999
+          ]
+        },
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          },
+          "clocks": [
+            11000
+          ]
+        },
+        {
+          "op": "raw",
+          "method": "Page.stopScreencast",
+          "fail": true
+        },
+        {
+          "op": "begin"
+        },
+        {
+          "op": "raw",
+          "method": "Page.stopScreencast"
+        },
+        {
+          "op": "begin"
+        },
+        {
+          "op": "end"
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "reads": [
+            1000
+          ],
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "reads": [
+            1000,
+            1000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "reads": [],
+          "raw": true,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "reads": [
+            10999
+          ],
+          "raw": true,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [
+            10999
+          ],
+          "raw": true,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "invoked": false,
+          "reads": [],
+          "raw": true,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "reads": [
+            11000
+          ],
+          "raw": true,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "reads": [],
+          "raw": true,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "invoked": false,
+          "reads": [],
+          "raw": true,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "reads": [],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "invoked": true,
+          "reads": [],
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "reads": [],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        }
+      ]
+    },
+    {
+      "name": "helper-only refresh keeps original insertion position",
+      "helperOnly": true,
+      "actions": [
+        {
+          "op": "retire",
+          "ids": [
+            1,
+            2,
+            3
+          ],
+          "clocks": [
+            1000,
+            1000
+          ]
+        },
+        {
+          "op": "retire",
+          "ids": [
+            2,
+            4
+          ],
+          "clocks": [
+            1001,
+            2000
+          ]
+        },
+        {
+          "op": "retire",
+          "ids": [],
+          "clocks": []
+        },
+        {
+          "op": "retire",
+          "ids": [
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35
+          ],
+          "clocks": [
+            2001,
+            3000
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "reads": [
+            1000,
+            1000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              1,
+              11000
+            ],
+            [
+              2,
+              11000
+            ],
+            [
+              3,
+              11000
+            ]
+          ]
+        },
+        {
+          "reads": [
+            1001,
+            2000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              1,
+              11000
+            ],
+            [
+              2,
+              12000
+            ],
+            [
+              3,
+              11000
+            ],
+            [
+              4,
+              12000
+            ]
+          ]
+        },
+        {
+          "reads": [],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              1,
+              11000
+            ],
+            [
+              2,
+              12000
+            ],
+            [
+              3,
+              11000
+            ],
+            [
+              4,
+              12000
+            ]
+          ]
+        },
+        {
+          "reads": [
+            2001,
+            3000
+          ],
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              4,
+              12000
+            ],
+            [
+              5,
+              13000
+            ],
+            [
+              6,
+              13000
+            ],
+            [
+              7,
+              13000
+            ],
+            [
+              8,
+              13000
+            ],
+            [
+              9,
+              13000
+            ],
+            [
+              10,
+              13000
+            ],
+            [
+              11,
+              13000
+            ],
+            [
+              12,
+              13000
+            ],
+            [
+              13,
+              13000
+            ],
+            [
+              14,
+              13000
+            ],
+            [
+              15,
+              13000
+            ],
+            [
+              16,
+              13000
+            ],
+            [
+              17,
+              13000
+            ],
+            [
+              18,
+              13000
+            ],
+            [
+              19,
+              13000
+            ],
+            [
+              20,
+              13000
+            ],
+            [
+              21,
+              13000
+            ],
+            [
+              22,
+              13000
+            ],
+            [
+              23,
+              13000
+            ],
+            [
+              24,
+              13000
+            ],
+            [
+              25,
+              13000
+            ],
+            [
+              26,
+              13000
+            ],
+            [
+              27,
+              13000
+            ],
+            [
+              28,
+              13000
+            ],
+            [
+              29,
+              13000
+            ],
+            [
+              30,
+              13000
+            ],
+            [
+              31,
+              13000
+            ],
+            [
+              32,
+              13000
+            ],
+            [
+              33,
+              13000
+            ],
+            [
+              34,
+              13000
+            ],
+            [
+              35,
+              13000
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

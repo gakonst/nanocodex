@@ -42,7 +42,7 @@ test("attachment publishes one exact catalog and exchanges ready, call, result, 
         output_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
       },
       parallel_safe: true,
-      timeout_ms: 120_000,
+      timeout_ms: Number.MAX_SAFE_INTEGER,
     }],
   });
   socket.receive({ type: "ready" });

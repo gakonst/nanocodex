@@ -1,0 +1,789 @@
+{
+  "cases": [
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst alias=await import('events'),descriptor=Object.getOwnPropertyDescriptor(h.EventEmitter,'once'),emitter=new h.EventEmitter();\nconst pending=h.once(emitter,'owned'),during=counts(emitter,'owned');emitter.emit('owned');const value=await pending;\nreturn {aliases:alias===h,namedStatic:h.once===h.EventEmitter.once,defaultStatic:h.once===h.default.once,prototypeDistinct:h.once!==h.EventEmitter.prototype.once,\n function:{name:h.once.name,length:h.once.length,kind:h.once.constructor.name},descriptor:{writable:descriptor.writable,enumerable:descriptor.enumerable,configurable:descriptor.configurable},\n promiseTag:Object.prototype.toString.call(pending),during,emptyArgs:Array.isArray(value)&&value.length===0,after:counts(emitter,'owned')};\n\n})()));",
+      "expected": {
+        "after": {
+          "abort": null,
+          "error": 0,
+          "event": 0
+        },
+        "aliases": true,
+        "defaultStatic": true,
+        "descriptor": {
+          "configurable": true,
+          "enumerable": true,
+          "writable": true
+        },
+        "during": {
+          "abort": null,
+          "error": 1,
+          "event": 1
+        },
+        "emptyArgs": true,
+        "function": {
+          "kind": "AsyncFunction",
+          "length": 2,
+          "name": "once"
+        },
+        "namedStatic": true,
+        "promiseTag": "[object Promise]",
+        "prototypeDistinct": true
+      },
+      "name": "export-alias-static-identity-and-promise-shape",
+      "raw_request_id": 2,
+      "raw_response_line": 2
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst emitter=new h.EventEmitter(),object={owned:1},array=[2],state={settled:false};\nconst pending=h.once(emitter,'owned');pending.then(()=>{state.settled=true});const before=counts(emitter,'owned');\nconst dispatched=emitter.emit('owned',object,array,undefined,3),sameTurn=state.settled,afterEmit=counts(emitter,'owned'),values=await pending;\nreturn {before,dispatched,sameTurn,afterEmit,afterAwait:state.settled,array:Array.isArray(values),length:values.length,same:[values[0]===object,values[1]===array,values[2]===undefined,values[3]===3]};\n\n})()));",
+      "expected": {
+        "afterAwait": true,
+        "afterEmit": {
+          "abort": null,
+          "error": 0,
+          "event": 0
+        },
+        "array": true,
+        "before": {
+          "abort": null,
+          "error": 1,
+          "event": 1
+        },
+        "dispatched": true,
+        "length": 4,
+        "same": [
+          true,
+          true,
+          true,
+          true
+        ],
+        "sameTurn": false
+      },
+      "name": "emitter-resolution-array-identity-and-synchronous-registration",
+      "raw_request_id": 3,
+      "raw_response_line": 3
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst rows=[];for(const name of [undefined,7,Symbol('owned')]){const e=new h.EventEmitter(),p=h.once(e,name),before=counts(e,name);const result=e.emit(name,'value'),args=await p;rows.push({kind:typeof name,before,result,args,after:counts(e,name)})}return rows;\n\n})()));",
+      "expected": [
+        {
+          "after": {
+            "abort": null,
+            "error": 0,
+            "event": 0
+          },
+          "args": [
+            "value"
+          ],
+          "before": {
+            "abort": null,
+            "error": 1,
+            "event": 1
+          },
+          "kind": "undefined",
+          "result": true
+        },
+        {
+          "after": {
+            "abort": null,
+            "error": 0,
+            "event": 0
+          },
+          "args": [
+            "value"
+          ],
+          "before": {
+            "abort": null,
+            "error": 1,
+            "event": 1
+          },
+          "kind": "number",
+          "result": true
+        },
+        {
+          "after": {
+            "abort": null,
+            "error": 0,
+            "event": 0
+          },
+          "args": [
+            "value"
+          ],
+          "before": {
+            "abort": null,
+            "error": 1,
+            "event": 1
+          },
+          "kind": "symbol",
+          "result": true
+        }
+      ],
+      "name": "ordinary-event-names-and-symbol-identity",
+      "raw_request_id": 4,
+      "raw_response_line": 4
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst e=new h.EventEmitter(),error=new Error('owned failure'),source=new AbortController(),p=h.once(e,'owned',{signal:source.signal});\nconst observed=p.then(()=>({resolved:true}),failure=>({same:failure===error,name:failure.name,message:failure.message})),before=counts(e,'owned',source.signal);\nconst dispatched=e.emit('error',error),after=counts(e,'owned',source.signal);return {before,dispatched,after,result:await observed};\n\n})()));",
+      "expected": {
+        "after": {
+          "abort": 0,
+          "error": 0,
+          "event": 0
+        },
+        "before": {
+          "abort": 1,
+          "error": 1,
+          "event": 1
+        },
+        "dispatched": true,
+        "result": {
+          "message": "owned failure",
+          "name": "Error",
+          "same": true
+        }
+      },
+      "name": "emitter-error-rejects-with-original-object-and-cleans-listeners",
+      "raw_request_id": 5,
+      "raw_response_line": 5
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst e=new h.EventEmitter(),error=new Error('owned error payload'),source=new AbortController(),p=h.once(e,'error',{signal:source.signal}),before=counts(e,'error',source.signal);\nconst dispatched=e.emit('error',error,'tail'),args=await p;return {before,dispatched,length:args.length,same:args[0]===error,tail:args[1],after:counts(e,'error',source.signal)};\n\n})()));",
+      "expected": {
+        "after": {
+          "abort": 0,
+          "error": 0,
+          "event": 0
+        },
+        "before": {
+          "abort": 1,
+          "error": 1,
+          "event": 1
+        },
+        "dispatched": true,
+        "length": 2,
+        "same": true,
+        "tail": "tail"
+      },
+      "name": "literal-error-name-resolves-as-ordinary-argument-array",
+      "raw_request_id": 6,
+      "raw_response_line": 6
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst mode=\"event\",e=new h.EventEmitter(),c=new AbortController(),rows=[];\ne.on('newListener',(name,listener)=>rows.push(['add',String(name),listener.name,e.listenerCount('owned'),e.listenerCount('error')]));\ne.on('removeListener',(name,listener)=>rows.push(['remove',String(name),listener.name,e.listenerCount('owned'),e.listenerCount('error')]));rows.length=0;\nconst p=h.once(e,'owned',{signal:c.signal}),result=p.then(args=>({ok:true,args}),error=>({ok:false,name:error.name,code:error.code??null,message:error.message,cause:error.cause??null}));\nconst installed=rows.slice(),before=counts(e,'owned',c.signal);rows.length=0;\nif(mode==='event')e.emit('owned','value');else if(mode==='error')e.emit('error',new Error('owned error'));else c.abort('owned cancellation');\nreturn {mode,installed,before,removed:rows,after:counts(e,'owned',c.signal),result:await result};\n\n})()));",
+      "expected": {
+        "after": {
+          "abort": 0,
+          "error": 0,
+          "event": 0
+        },
+        "before": {
+          "abort": 1,
+          "error": 1,
+          "event": 1
+        },
+        "installed": [
+          [
+            "add",
+            "owned",
+            "resolver",
+            0,
+            0
+          ],
+          [
+            "add",
+            "error",
+            "errorListener",
+            1,
+            0
+          ]
+        ],
+        "mode": "event",
+        "removed": [
+          [
+            "remove",
+            "owned",
+            "resolver",
+            0,
+            1
+          ],
+          [
+            "remove",
+            "error",
+            "errorListener",
+            0,
+            0
+          ]
+        ],
+        "result": {
+          "args": [
+            "value"
+          ],
+          "ok": true
+        }
+      },
+      "name": "emitter-listener-lifecycle-order-event",
+      "raw_request_id": 7,
+      "raw_response_line": 7
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst mode=\"error\",e=new h.EventEmitter(),c=new AbortController(),rows=[];\ne.on('newListener',(name,listener)=>rows.push(['add',String(name),listener.name,e.listenerCount('owned'),e.listenerCount('error')]));\ne.on('removeListener',(name,listener)=>rows.push(['remove',String(name),listener.name,e.listenerCount('owned'),e.listenerCount('error')]));rows.length=0;\nconst p=h.once(e,'owned',{signal:c.signal}),result=p.then(args=>({ok:true,args}),error=>({ok:false,name:error.name,code:error.code??null,message:error.message,cause:error.cause??null}));\nconst installed=rows.slice(),before=counts(e,'owned',c.signal);rows.length=0;\nif(mode==='event')e.emit('owned','value');else if(mode==='error')e.emit('error',new Error('owned error'));else c.abort('owned cancellation');\nreturn {mode,installed,before,removed:rows,after:counts(e,'owned',c.signal),result:await result};\n\n})()));",
+      "expected": {
+        "after": {
+          "abort": 0,
+          "error": 0,
+          "event": 0
+        },
+        "before": {
+          "abort": 1,
+          "error": 1,
+          "event": 1
+        },
+        "installed": [
+          [
+            "add",
+            "owned",
+            "resolver",
+            0,
+            0
+          ],
+          [
+            "add",
+            "error",
+            "errorListener",
+            1,
+            0
+          ]
+        ],
+        "mode": "error",
+        "removed": [
+          [
+            "remove",
+            "error",
+            "errorListener",
+            1,
+            0
+          ],
+          [
+            "remove",
+            "owned",
+            "resolver",
+            0,
+            0
+          ]
+        ],
+        "result": {
+          "cause": null,
+          "code": null,
+          "message": "owned error",
+          "name": "Error",
+          "ok": false
+        }
+      },
+      "name": "emitter-listener-lifecycle-order-error",
+      "raw_request_id": 8,
+      "raw_response_line": 8
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst mode=\"abort\",e=new h.EventEmitter(),c=new AbortController(),rows=[];\ne.on('newListener',(name,listener)=>rows.push(['add',String(name),listener.name,e.listenerCount('owned'),e.listenerCount('error')]));\ne.on('removeListener',(name,listener)=>rows.push(['remove',String(name),listener.name,e.listenerCount('owned'),e.listenerCount('error')]));rows.length=0;\nconst p=h.once(e,'owned',{signal:c.signal}),result=p.then(args=>({ok:true,args}),error=>({ok:false,name:error.name,code:error.code??null,message:error.message,cause:error.cause??null}));\nconst installed=rows.slice(),before=counts(e,'owned',c.signal);rows.length=0;\nif(mode==='event')e.emit('owned','value');else if(mode==='error')e.emit('error',new Error('owned error'));else c.abort('owned cancellation');\nreturn {mode,installed,before,removed:rows,after:counts(e,'owned',c.signal),result:await result};\n\n})()));",
+      "expected": {
+        "after": {
+          "abort": 0,
+          "error": 0,
+          "event": 0
+        },
+        "before": {
+          "abort": 1,
+          "error": 1,
+          "event": 1
+        },
+        "installed": [
+          [
+            "add",
+            "owned",
+            "resolver",
+            0,
+            0
+          ],
+          [
+            "add",
+            "error",
+            "errorListener",
+            1,
+            0
+          ]
+        ],
+        "mode": "abort",
+        "removed": [
+          [
+            "remove",
+            "owned",
+            "resolver",
+            0,
+            1
+          ],
+          [
+            "remove",
+            "error",
+            "errorListener",
+            0,
+            0
+          ]
+        ],
+        "result": {
+          "cause": "owned cancellation",
+          "code": "ABORT_ERR",
+          "message": "The operation was aborted",
+          "name": "AbortError",
+          "ok": false
+        }
+      },
+      "name": "emitter-listener-lifecycle-order-abort",
+      "raw_request_id": 9,
+      "raw_response_line": 9
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst source=new AbortController(),reason={owned:'cause'};source.abort(reason);const e=new h.EventEmitter(),rows=[];\nfor(const target of [e,null,{},7]){let sync=false,p;try{p=h.once(target,'owned',{signal:source.signal})}catch{sync=true}const result=await p.then(()=>({ok:true}),error=>({ok:false,name:error.name,code:error.code,message:error.message,causeSame:error.cause===reason}));rows.push({target:target===e?'emitter':target===null?'null':typeof target,sync,result})}\nreturn {rows,count:counts(e,'owned',source.signal)};\n\n})()));",
+      "expected": {
+        "count": {
+          "abort": 0,
+          "error": 0,
+          "event": 0
+        },
+        "rows": [
+          {
+            "result": {
+              "causeSame": true,
+              "code": "ABORT_ERR",
+              "message": "The operation was aborted",
+              "name": "AbortError",
+              "ok": false
+            },
+            "sync": false,
+            "target": "emitter"
+          },
+          {
+            "result": {
+              "causeSame": true,
+              "code": "ABORT_ERR",
+              "message": "The operation was aborted",
+              "name": "AbortError",
+              "ok": false
+            },
+            "sync": false,
+            "target": "null"
+          },
+          {
+            "result": {
+              "causeSame": true,
+              "code": "ABORT_ERR",
+              "message": "The operation was aborted",
+              "name": "AbortError",
+              "ok": false
+            },
+            "sync": false,
+            "target": "object"
+          },
+          {
+            "result": {
+              "causeSame": true,
+              "code": "ABORT_ERR",
+              "message": "The operation was aborted",
+              "name": "AbortError",
+              "ok": false
+            },
+            "sync": false,
+            "target": "number"
+          }
+        ]
+      },
+      "name": "already-aborted-options-reject-before-target-access",
+      "raw_request_id": 10,
+      "raw_response_line": 10
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst e=new h.EventEmitter(),c=new AbortController(),reason={owned:1},p=h.once(e,'owned',{signal:c.signal});\nconst result=p.then(()=>({ok:true}),error=>({ok:false,name:error.name,code:error.code,message:error.message,causeSame:error.cause===reason}));\nconst before=counts(e,'owned',c.signal);c.abort(reason);const after=counts(e,'owned',c.signal),lateEmit=e.emit('owned','unused');return {before,after,lateEmit,result:await result};\n\n})()));",
+      "expected": {
+        "after": {
+          "abort": 0,
+          "error": 0,
+          "event": 0
+        },
+        "before": {
+          "abort": 1,
+          "error": 1,
+          "event": 1
+        },
+        "lateEmit": false,
+        "result": {
+          "causeSame": true,
+          "code": "ABORT_ERR",
+          "message": "The operation was aborted",
+          "name": "AbortError",
+          "ok": false
+        }
+      },
+      "name": "later-abort-cleans-emitter-and-carries-exact-reason",
+      "raw_request_id": 11,
+      "raw_response_line": 11
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst e=new h.EventEmitter(),c=new AbortController(),p=h.once(e,'owned',{signal:c.signal});const before=counts(e,'owned',c.signal);\ne.emit('owned','value');const afterEvent=counts(e,'owned',c.signal);c.abort('later');return {before,afterEvent,args:await p,afterAbort:counts(e,'owned',c.signal)};\n\n})()));",
+      "expected": {
+        "afterAbort": {
+          "abort": 0,
+          "error": 0,
+          "event": 0
+        },
+        "afterEvent": {
+          "abort": 0,
+          "error": 0,
+          "event": 0
+        },
+        "args": [
+          "value"
+        ],
+        "before": {
+          "abort": 1,
+          "error": 1,
+          "event": 1
+        }
+      },
+      "name": "event-resolution-removes-abort-listener-before-later-abort",
+      "raw_request_id": 12,
+      "raw_response_line": 12
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst t=new Target(),state={settled:false},p=h.once(t,'owned');p.then(()=>{state.settled=true});const before=counts(t,'owned');\nconst errorDispatch=t.dispatchEvent(new EventClass('error'));await Promise.resolve();const afterError={settled:state.settled,...counts(t,'owned')};\nconst event=new EventClass('owned'),eventDispatch=t.dispatchEvent(event),args=await p;\nreturn {before,errorDispatch,afterError,eventDispatch,array:Array.isArray(args),length:args.length,same:args[0]===event,after:counts(t,'owned')};\n\n})()));",
+      "expected": {
+        "after": {
+          "abort": null,
+          "error": 0,
+          "event": 0
+        },
+        "afterError": {
+          "abort": null,
+          "error": 0,
+          "event": 1,
+          "settled": false
+        },
+        "array": true,
+        "before": {
+          "abort": null,
+          "error": 0,
+          "event": 1
+        },
+        "errorDispatch": true,
+        "eventDispatch": true,
+        "length": 1,
+        "same": true
+      },
+      "name": "generic-target-event-resolution-has-no-special-error-listener",
+      "raw_request_id": 13,
+      "raw_response_line": 13
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst c=new AbortController(),p=h.once(c.signal,'abort'),before=counts(c.signal,'abort');c.abort('owned');const args=await p;\nreturn {before,array:Array.isArray(args),length:args.length,type:args[0].type,trusted:args[0].isTrusted,targetSame:args[0].target===c.signal,reason:c.signal.reason,after:counts(c.signal,'abort')};\n\n})()));",
+      "expected": {
+        "after": {
+          "abort": null,
+          "error": 0,
+          "event": 0
+        },
+        "array": true,
+        "before": {
+          "abort": null,
+          "error": 0,
+          "event": 1
+        },
+        "length": 1,
+        "reason": "owned",
+        "targetSame": true,
+        "trusted": true,
+        "type": "abort"
+      },
+      "name": "genuine-abortsignal-target-resolves-with-owned-trusted-event",
+      "raw_request_id": 14,
+      "raw_response_line": 14
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst t=new Target(),c=new AbortController(),p=h.once(t,'owned',{signal:c.signal}),result=p.then(()=>({ok:true}),error=>({ok:false,name:error.name,code:error.code,message:error.message,cause:error.cause}));\nconst before=counts(t,'owned',c.signal);c.abort('owned cancellation');const after=counts(t,'owned',c.signal);return {before,after,result:await result};\n\n})()));",
+      "expected": {
+        "after": {
+          "abort": 0,
+          "error": 0,
+          "event": 0
+        },
+        "before": {
+          "abort": 1,
+          "error": 0,
+          "event": 1
+        },
+        "result": {
+          "cause": "owned cancellation",
+          "code": "ABORT_ERR",
+          "message": "The operation was aborted",
+          "name": "AbortError",
+          "ok": false
+        }
+      },
+      "name": "generic-target-later-option-abort-cleans-real-owner",
+      "raw_request_id": 15,
+      "raw_response_line": 15
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst c=new AbortController(),p=h.once(c.signal,'abort',{signal:c.signal}),result=p.then(args=>({ok:true,length:args.length,type:args[0].type,trusted:args[0].isTrusted}),error=>({ok:false,name:error.name}));\nconst before=counts(c.signal,'abort',c.signal);c.abort('same signal');return {before,after:counts(c.signal,'abort',c.signal),result:await result};\n\n})()));",
+      "expected": {
+        "after": {
+          "abort": 0,
+          "error": 0,
+          "event": 0
+        },
+        "before": {
+          "abort": 2,
+          "error": 0,
+          "event": 2
+        },
+        "result": {
+          "length": 1,
+          "ok": true,
+          "trusted": true,
+          "type": "abort"
+        }
+      },
+      "name": "same-signal-event-resolution-precedes-option-cancellation",
+      "raw_request_id": 16,
+      "raw_response_line": 16
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst c=new AbortController(),p=h.once(c.signal,'owned',{signal:c.signal}),result=p.then(()=>({ok:true}),error=>({ok:false,name:error.name,code:error.code,cause:error.cause}));\nconst before=counts(c.signal,'owned',c.signal);c.abort('same signal');return {before,after:counts(c.signal,'owned',c.signal),result:await result};\n\n})()));",
+      "expected": {
+        "after": {
+          "abort": 0,
+          "error": 0,
+          "event": 0
+        },
+        "before": {
+          "abort": 1,
+          "error": 0,
+          "event": 1
+        },
+        "result": {
+          "cause": "same signal",
+          "code": "ABORT_ERR",
+          "name": "AbortError",
+          "ok": false
+        }
+      },
+      "name": "same-signal-other-event-rejects-on-option-cancellation",
+      "raw_request_id": 17,
+      "raw_response_line": 17
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst first=new AbortController(),e=new h.EventEmitter();first.signal.addEventListener('abort',event=>event.stopImmediatePropagation());\nconst p=h.once(e,'owned',{signal:first.signal}),rejected=p.then(()=>({ok:true}),error=>({ok:false,name:error.name,code:error.code}));first.abort('owned');\nconst second=new AbortController();second.signal.addEventListener('abort',event=>event.stopImmediatePropagation());const q=h.once(second.signal,'abort');second.abort('owned');const args=await q;\nreturn {rejected:await rejected,emitter:counts(e,'owned',first.signal),resolved:{length:args.length,trusted:args[0].isTrusted},secondCount:h.listenerCount(second.signal,'abort')};\n\n})()));",
+      "expected": {
+        "emitter": {
+          "abort": 1,
+          "error": 0,
+          "event": 0
+        },
+        "rejected": {
+          "code": "ABORT_ERR",
+          "name": "AbortError",
+          "ok": false
+        },
+        "resolved": {
+          "length": 1,
+          "trusted": true
+        },
+        "secondCount": 1
+      },
+      "name": "owned-abort-propagation-control-does-not-strand-once",
+      "raw_request_id": 18,
+      "raw_response_line": 18
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst rows=[];\nfor(const [label,target,options]of [['null-target',null,undefined],['undefined-target',undefined,undefined],['plain-target',{},undefined],['number-target',7,undefined],['null-options',new h.EventEmitter(),null],['array-options',new h.EventEmitter(),[]],['number-options',new h.EventEmitter(),7],['string-options',new h.EventEmitter(),'x'],['function-options',new h.EventEmitter(),function owned(){}],['null-signal',new h.EventEmitter(),{signal:null}],['plain-signal',new h.EventEmitter(),{signal:{}}],['target-before-options',null,7]]){\n let sync=false,p;try{p=h.once(target,'owned',options)}catch(error){sync=true;p=Promise.reject(error)}\n rows.push({label,sync,result:await caught(p)});\n}return rows;\n\n})()));",
+      "expected": [
+        {
+          "label": "null-target",
+          "result": {
+            "code": null,
+            "message": "Cannot read properties of null (reading 'on')",
+            "name": "TypeError",
+            "ok": false
+          },
+          "sync": false
+        },
+        {
+          "label": "undefined-target",
+          "result": {
+            "code": null,
+            "message": "Cannot read properties of undefined (reading 'on')",
+            "name": "TypeError",
+            "ok": false
+          },
+          "sync": false
+        },
+        {
+          "label": "plain-target",
+          "result": {
+            "code": "ERR_INVALID_ARG_TYPE",
+            "message": "The \"emitter\" argument must be an instance of EventEmitter. Received an instance of Object",
+            "name": "TypeError",
+            "ok": false
+          },
+          "sync": false
+        },
+        {
+          "label": "number-target",
+          "result": {
+            "code": "ERR_INVALID_ARG_TYPE",
+            "message": "The \"emitter\" argument must be an instance of EventEmitter. Received type number (7)",
+            "name": "TypeError",
+            "ok": false
+          },
+          "sync": false
+        },
+        {
+          "label": "null-options",
+          "result": {
+            "code": "ERR_INVALID_ARG_TYPE",
+            "message": "The \"options\" argument must be of type object. Received null",
+            "name": "TypeError",
+            "ok": false
+          },
+          "sync": false
+        },
+        {
+          "label": "array-options",
+          "result": {
+            "code": "ERR_INVALID_ARG_TYPE",
+            "message": "The \"options\" argument must be of type object. Received an instance of Array",
+            "name": "TypeError",
+            "ok": false
+          },
+          "sync": false
+        },
+        {
+          "label": "number-options",
+          "result": {
+            "code": "ERR_INVALID_ARG_TYPE",
+            "message": "The \"options\" argument must be of type object. Received type number (7)",
+            "name": "TypeError",
+            "ok": false
+          },
+          "sync": false
+        },
+        {
+          "label": "string-options",
+          "result": {
+            "code": "ERR_INVALID_ARG_TYPE",
+            "message": "The \"options\" argument must be of type object. Received type string ('x')",
+            "name": "TypeError",
+            "ok": false
+          },
+          "sync": false
+        },
+        {
+          "label": "function-options",
+          "result": {
+            "code": "ERR_INVALID_ARG_TYPE",
+            "message": "The \"options\" argument must be of type object. Received function owned",
+            "name": "TypeError",
+            "ok": false
+          },
+          "sync": false
+        },
+        {
+          "label": "null-signal",
+          "result": {
+            "code": "ERR_INVALID_ARG_TYPE",
+            "message": "The \"options.signal\" property must be an instance of AbortSignal. Received null",
+            "name": "TypeError",
+            "ok": false
+          },
+          "sync": false
+        },
+        {
+          "label": "plain-signal",
+          "result": {
+            "code": "ERR_INVALID_ARG_TYPE",
+            "message": "The \"options.signal\" property must be an instance of AbortSignal. Received an instance of Object",
+            "name": "TypeError",
+            "ok": false
+          },
+          "sync": false
+        },
+        {
+          "label": "target-before-options",
+          "result": {
+            "code": "ERR_INVALID_ARG_TYPE",
+            "message": "The \"options\" argument must be of type object. Received type number (7)",
+            "name": "TypeError",
+            "ok": false
+          },
+          "sync": false
+        }
+      ],
+      "name": "ordinary-options-and-target-errors-are-promise-rejections",
+      "raw_request_id": 19,
+      "raw_response_line": 19
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst e=new h.EventEmitter(),c=new AbortController(),reads=[],options={get signal(){reads.push(['signal',e.listenerCount('owned'),e.listenerCount('error')]);return c.signal}};\nconst p=h.once(e,'owned',options),during=counts(e,'owned',c.signal);e.emit('owned','done');return {reads,during,args:await p,after:counts(e,'owned',c.signal)};\n\n})()));",
+      "expected": {
+        "after": {
+          "abort": 0,
+          "error": 0,
+          "event": 0
+        },
+        "args": [
+          "done"
+        ],
+        "during": {
+          "abort": 1,
+          "error": 1,
+          "event": 1
+        },
+        "reads": [
+          [
+            "signal",
+            0,
+            0
+          ]
+        ]
+      },
+      "name": "ordinary-options-signal-getter-precedes-registration-once",
+      "raw_request_id": 20,
+      "raw_response_line": 20
+    },
+    {
+      "code": "nodeRepl.write(JSON.stringify(await(async()=>{\nconst h=await import('node:events'),Target=Object.getPrototypeOf(AbortSignal);\nconst origin=new AbortController();let EventClass;origin.signal.addEventListener('abort',event=>{EventClass=event.constructor},{once:true});origin.abort();\nconst counts=(target,name,signal)=>({event:h.listenerCount(target,name),error:h.listenerCount(target,'error'),abort:signal?h.listenerCount(signal,'abort'):null});\nconst caught=async promise=>{try{return {ok:true,value:await promise}}catch(error){return {ok:false,name:error.name,code:error.code??null,message:error.message}}};\n\nconst t=new Target(),state={reads:0},name={toString(){state.reads++;return 'owned'}},p=h.once(t,name),before=counts(t,'owned');\nconst event=new EventClass('owned');t.dispatchEvent(event);const args=await p;\nconst c=new AbortController(),bad=await caught(h.once(t,Symbol('owned'),{signal:c.signal}));\nreturn {reads:state.reads,before,length:args.length,same:args[0]===event,after:counts(t,'owned',c.signal),bad};\n\n})()));",
+      "expected": {
+        "after": {
+          "abort": 0,
+          "error": 0,
+          "event": 0
+        },
+        "bad": {
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "Value is a Symbol and cannot be converted to a string.",
+          "name": "TypeError",
+          "ok": false
+        },
+        "before": {
+          "abort": null,
+          "error": 0,
+          "event": 1
+        },
+        "length": 1,
+        "reads": 1,
+        "same": true
+      },
+      "name": "generic-name-conversion-and-symbol-failure",
+      "raw_request_id": 21,
+      "raw_response_line": 21
+    }
+  ],
+  "kind": "actual installed inert kernel events.once observations"
+}

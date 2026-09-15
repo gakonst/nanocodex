@@ -1,0 +1,1072 @@
+{
+  "started_at": "2026-09-11T09:00:02.804Z",
+  "finished_at": "2026-09-11T09:11:20.625Z",
+  "complete": true,
+  "trials": 96,
+  "successes": 96,
+  "sessions_created": 24,
+  "sessions_deleted": 24,
+  "usage_missing": 0,
+  "estimated_model_subtotal_low_usd": 2.136112349999999,
+  "estimated_model_subtotal_high_usd": 2.3809964999999997,
+  "pricing_source": "https://developers.openai.com/api/docs/pricing",
+  "pricing_checked": "2026-09-11",
+  "groups": [
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "path": "responses_http",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 1470.7029999999795,
+      "ttft_range_ms": [
+        714.1416250000184,
+        1864.3314169999794
+      ],
+      "completion_median_ms": 1682.9397919999901,
+      "completion_range_ms": [
+        1057.531083000009,
+        2023.029041999951
+      ],
+      "first_event_median_ms": 1184.4225420000148,
+      "connection_median_ms": null,
+      "first_text_to_completion_median_ms": 212.2367920000106,
+      "inclusive_ttft_median_ms": 1470.7029999999795,
+      "input_tokens_median": 36,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 0,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.000013199999999999999,
+      "cost_high_median_usd": 0.000013199999999999999,
+      "usage_known": 3,
+      "reported_tiers": [
+        "default"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "path": "responses_ws",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 1118.6705419999998,
+      "ttft_range_ms": [
+        996.0603750000009,
+        4184.184458000003
+      ],
+      "completion_median_ms": 1147.2186250000013,
+      "completion_range_ms": [
+        1066.3172499999637,
+        4312.842291000008
+      ],
+      "first_event_median_ms": 713.0007500000065,
+      "connection_median_ms": 3629.668208999996,
+      "first_text_to_completion_median_ms": 70.25687499996275,
+      "inclusive_ttft_median_ms": 4184.184458000003,
+      "input_tokens_median": 36,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 0,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.000013199999999999999,
+      "cost_high_median_usd": 0.000013199999999999999,
+      "usage_known": 3,
+      "reported_tiers": [
+        "default"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "path": "nanocodex_node",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 1965.097625000053,
+      "ttft_range_ms": [
+        1772.7812080000003,
+        2399.9891249999637
+      ],
+      "completion_median_ms": 2061.370292000007,
+      "completion_range_ms": [
+        1810.924416999973,
+        2401.355082999973
+      ],
+      "first_event_median_ms": 1493.2832920000656,
+      "connection_median_ms": 1104.449125,
+      "first_text_to_completion_median_ms": 38.14320899997256,
+      "inclusive_ttft_median_ms": 1965.8575830000918,
+      "input_tokens_median": 6018,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 6015,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.00151035,
+      "cost_high_median_usd": 0.00151035,
+      "usage_known": 3,
+      "reported_tiers": [
+        "default"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "path": "openai_agents",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 9372.015958999982,
+      "ttft_range_ms": [
+        8332.248708,
+        9802.764542000019
+      ],
+      "completion_median_ms": 9384.170541999978,
+      "completion_range_ms": [
+        9335.277457999997,
+        14001.746375000046
+      ],
+      "first_event_median_ms": 2029.3748750000086,
+      "connection_median_ms": null,
+      "first_text_to_completion_median_ms": 1003.0287499999977,
+      "inclusive_ttft_median_ms": 9372.015958999982,
+      "input_tokens_median": 6077,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": null,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.0012214,
+      "cost_high_median_usd": 0.0015252500000000001,
+      "usage_known": 3,
+      "reported_tiers": [
+        "not reported"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "fast",
+      "path": "responses_http",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 778.8280830000003,
+      "ttft_range_ms": [
+        773.6594999999506,
+        1588.2387500000186
+      ],
+      "completion_median_ms": 895.982290999993,
+      "completion_range_ms": [
+        884.6742079999531,
+        1730.6457919999957
+      ],
+      "first_event_median_ms": 589.2768749999814,
+      "connection_median_ms": null,
+      "first_text_to_completion_median_ms": 117.15420799999265,
+      "inclusive_ttft_median_ms": 778.8280830000003,
+      "input_tokens_median": 36,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 0,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.000026399999999999998,
+      "cost_high_median_usd": 0.000026399999999999998,
+      "usage_known": 3,
+      "reported_tiers": [
+        "priority"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "fast",
+      "path": "responses_ws",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 621.7813339999411,
+      "ttft_range_ms": [
+        583.5112079999526,
+        720.3184579999652
+      ],
+      "completion_median_ms": 663.3067499999888,
+      "completion_range_ms": [
+        625.648790999956,
+        767.0666659999988
+      ],
+      "first_event_median_ms": 260.8334999999497,
+      "connection_median_ms": 1437.0785419999738,
+      "first_text_to_completion_median_ms": 42.13758300000336,
+      "inclusive_ttft_median_ms": 621.7813339999411,
+      "input_tokens_median": 36,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 0,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.000026399999999999998,
+      "cost_high_median_usd": 0.000026399999999999998,
+      "usage_known": 3,
+      "reported_tiers": [
+        "priority"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "fast",
+      "path": "nanocodex_node",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 3836.752458999981,
+      "ttft_range_ms": [
+        1826.8699579999084,
+        4385.422124999983
+      ],
+      "completion_median_ms": 3874.6524169999757,
+      "completion_range_ms": [
+        1899.89383299998,
+        4453.554417000007
+      ],
+      "first_event_median_ms": 3328.508334000013,
+      "connection_median_ms": 2465.221583,
+      "first_text_to_completion_median_ms": 68.13229200002388,
+      "inclusive_ttft_median_ms": 3837.6947919999366,
+      "input_tokens_median": 6018,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 6015,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.0030207,
+      "cost_high_median_usd": 0.0030207,
+      "usage_known": 3,
+      "reported_tiers": [
+        "priority"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "fast",
+      "path": "openai_agents",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 9535.454959000024,
+      "ttft_range_ms": [
+        8019.843542000046,
+        10430.825750000018
+      ],
+      "completion_median_ms": 10237.245292000007,
+      "completion_range_ms": [
+        8636.559209000086,
+        10553.159583
+      ],
+      "first_event_median_ms": 2535.26133400001,
+      "connection_median_ms": null,
+      "first_text_to_completion_median_ms": 616.7156670000404,
+      "inclusive_ttft_median_ms": 9535.454959000024,
+      "input_tokens_median": 6077,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": null,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.0024428,
+      "cost_high_median_usd": 0.0030505000000000003,
+      "usage_known": 3,
+      "reported_tiers": [
+        "not reported"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "default",
+      "path": "responses_http",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 1417.1058330000378,
+      "ttft_range_ms": [
+        972.0238339999923,
+        4299.4574159999975
+      ],
+      "completion_median_ms": 1593.3472500000498,
+      "completion_range_ms": [
+        1065.4725839999737,
+        4511.2829159999965
+      ],
+      "first_event_median_ms": 1060.937042000005,
+      "connection_median_ms": null,
+      "first_text_to_completion_median_ms": 176.241417000012,
+      "inclusive_ttft_median_ms": 1417.1058330000378,
+      "input_tokens_median": 36,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 0,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.000132,
+      "cost_high_median_usd": 0.000132,
+      "usage_known": 3,
+      "reported_tiers": [
+        "default"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "default",
+      "path": "responses_ws",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 932.96545899997,
+      "ttft_range_ms": [
+        912.8545830000076,
+        1032.826166999992
+      ],
+      "completion_median_ms": 1033.4110419999924,
+      "completion_range_ms": [
+        936.5043329999899,
+        1111.3457089999574
+      ],
+      "first_event_median_ms": 311.6011249999865,
+      "connection_median_ms": 1809.0476659999986,
+      "first_text_to_completion_median_ms": 23.649749999982305,
+      "inclusive_ttft_median_ms": 932.96545899997,
+      "input_tokens_median": 36,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 0,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.000132,
+      "cost_high_median_usd": 0.000132,
+      "usage_known": 3,
+      "reported_tiers": [
+        "default"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "default",
+      "path": "nanocodex_node",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 3031.081542,
+      "ttft_range_ms": [
+        2247.5335830000113,
+        3116.042959000042
+      ],
+      "completion_median_ms": 3108.8347090000025,
+      "completion_range_ms": [
+        2310.63741700002,
+        3119.421208999993
+      ],
+      "first_event_median_ms": 2107.1668750000026,
+      "connection_median_ms": 1446.49325,
+      "first_text_to_completion_median_ms": 63.103834000008646,
+      "inclusive_ttft_median_ms": 3032.938374999998,
+      "input_tokens_median": 6018,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 6015,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.0151035,
+      "cost_high_median_usd": 0.0151035,
+      "usage_known": 3,
+      "reported_tiers": [
+        "default"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "default",
+      "path": "openai_agents",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 8625.138665999999,
+      "ttft_range_ms": [
+        7166.685749999946,
+        9857.481832999969
+      ],
+      "completion_median_ms": 9899.309499999996,
+      "completion_range_ms": [
+        8203.436749999993,
+        10013.770499999984
+      ],
+      "first_event_median_ms": 2296.0380829999995,
+      "connection_median_ms": null,
+      "first_text_to_completion_median_ms": 1036.7510000000475,
+      "inclusive_ttft_median_ms": 8625.138665999999,
+      "input_tokens_median": 6077,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": null,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.012214,
+      "cost_high_median_usd": 0.015252499999999999,
+      "usage_known": 3,
+      "reported_tiers": [
+        "not reported"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "fast",
+      "path": "responses_http",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 1068.8630830000038,
+      "ttft_range_ms": [
+        864.235875000013,
+        1509.7068749999744
+      ],
+      "completion_median_ms": 1123.8811659999774,
+      "completion_range_ms": [
+        946.3787090000114,
+        1611.2386249999981
+      ],
+      "first_event_median_ms": 891.9785409999895,
+      "connection_median_ms": null,
+      "first_text_to_completion_median_ms": 82.1428339999984,
+      "inclusive_ttft_median_ms": 1068.8630830000038,
+      "input_tokens_median": 36,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 0,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.000264,
+      "cost_high_median_usd": 0.000264,
+      "usage_known": 3,
+      "reported_tiers": [
+        "priority"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "fast",
+      "path": "responses_ws",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 828.9790419999626,
+      "ttft_range_ms": [
+        780.4567090000492,
+        1228.6802080000052
+      ],
+      "completion_median_ms": 901.0016250000335,
+      "completion_range_ms": [
+        861.5907499999739,
+        1271.7259160000249
+      ],
+      "first_event_median_ms": 288.09799999999814,
+      "connection_median_ms": 942.9912499999919,
+      "first_text_to_completion_median_ms": 43.04570800001966,
+      "inclusive_ttft_median_ms": 828.9790419999626,
+      "input_tokens_median": 36,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 0,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.000264,
+      "cost_high_median_usd": 0.000264,
+      "usage_known": 3,
+      "reported_tiers": [
+        "priority"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "fast",
+      "path": "nanocodex_node",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 2170.3229580000043,
+      "ttft_range_ms": [
+        1689.5926250000484,
+        2942.0585829999764
+      ],
+      "completion_median_ms": 2346.6689580000093,
+      "completion_range_ms": [
+        1770.6951669999398,
+        2988.202333000023
+      ],
+      "first_event_median_ms": 1728.2799999999988,
+      "connection_median_ms": 889.593375,
+      "first_text_to_completion_median_ms": 81.1025419998914,
+      "inclusive_ttft_median_ms": 2171.058333000008,
+      "input_tokens_median": 6018,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 6015,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.030207,
+      "cost_high_median_usd": 0.030207,
+      "usage_known": 3,
+      "reported_tiers": [
+        "priority"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "fast",
+      "path": "openai_agents",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 10013.08070800011,
+      "ttft_range_ms": [
+        8546.24212499999,
+        11230.813208000007
+      ],
+      "completion_median_ms": 11461.002333000011,
+      "completion_range_ms": [
+        10128.568625000073,
+        12326.412125000003
+      ],
+      "first_event_median_ms": 2024.510958000028,
+      "connection_median_ms": null,
+      "first_text_to_completion_median_ms": 1095.5989169999957,
+      "inclusive_ttft_median_ms": 10013.08070800011,
+      "input_tokens_median": 6077,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": null,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.024428,
+      "cost_high_median_usd": 0.030504999999999997,
+      "usage_known": 3,
+      "reported_tiers": [
+        "not reported"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "default",
+      "path": "responses_http",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 1363.4424170000711,
+      "ttft_range_ms": [
+        1133.8131250000006,
+        4031.953458999982
+      ],
+      "completion_median_ms": 1391.2460420000134,
+      "completion_range_ms": [
+        1287.1809999999969,
+        4250.882333999965
+      ],
+      "first_event_median_ms": 773.5114170000015,
+      "connection_median_ms": null,
+      "first_text_to_completion_median_ms": 153.36787499999627,
+      "inclusive_ttft_median_ms": 1363.4424170000711,
+      "input_tokens_median": 36,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 0,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.000244,
+      "cost_high_median_usd": 0.000244,
+      "usage_known": 3,
+      "reported_tiers": [
+        "default"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "default",
+      "path": "responses_ws",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 3068.1184580000117,
+      "ttft_range_ms": [
+        989.976250000007,
+        5600.454874999996
+      ],
+      "completion_median_ms": 3139.768291000044,
+      "completion_range_ms": [
+        1047.932334000012,
+        5659.940207999985
+      ],
+      "first_event_median_ms": 276.17987500003073,
+      "connection_median_ms": 1040.3263330000045,
+      "first_text_to_completion_median_ms": 59.48533299998962,
+      "inclusive_ttft_median_ms": 3068.1184580000117,
+      "input_tokens_median": 36,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 0,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.000244,
+      "cost_high_median_usd": 0.000244,
+      "usage_known": 3,
+      "reported_tiers": [
+        "default"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "default",
+      "path": "nanocodex_node",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 4765.108542000002,
+      "ttft_range_ms": [
+        3434.551000000094,
+        9743.720917000013
+      ],
+      "completion_median_ms": 4827.767708999978,
+      "completion_range_ms": [
+        3508.3423750000075,
+        9861.981417000003
+      ],
+      "first_event_median_ms": 1276.411042000007,
+      "connection_median_ms": 1042.324959,
+      "first_text_to_completion_median_ms": 73.79137499991339,
+      "inclusive_ttft_median_ms": 4765.69754199998,
+      "input_tokens_median": 6018,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 6015,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.030187,
+      "cost_high_median_usd": 0.030187,
+      "usage_known": 3,
+      "reported_tiers": [
+        "default"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "default",
+      "path": "openai_agents",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 9676.031084000017,
+      "ttft_range_ms": [
+        8026.47454200004,
+        11690.586083999995
+      ],
+      "completion_median_ms": 12785.731958999997,
+      "completion_range_ms": [
+        10210.231000000029,
+        27163.71616699999
+      ],
+      "first_event_median_ms": 2046.8807090000482,
+      "connection_median_ms": null,
+      "first_text_to_completion_median_ms": 4759.257416999957,
+      "inclusive_ttft_median_ms": 9676.031084000017,
+      "input_tokens_median": 6077,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": null,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.024408,
+      "cost_high_median_usd": 0.030484999999999998,
+      "usage_known": 3,
+      "reported_tiers": [
+        "not reported"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "fast",
+      "path": "responses_http",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 816.5824589999975,
+      "ttft_range_ms": [
+        735.8017919999547,
+        994.3479579999985
+      ],
+      "completion_median_ms": 977.3476249999949,
+      "completion_range_ms": [
+        844.2168750000419,
+        1060.5546250000043
+      ],
+      "first_event_median_ms": 581.6561249999795,
+      "connection_median_ms": null,
+      "first_text_to_completion_median_ms": 108.41508300008718,
+      "inclusive_ttft_median_ms": 816.5824589999975,
+      "input_tokens_median": 36,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 0,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.000488,
+      "cost_high_median_usd": 0.000488,
+      "usage_known": 3,
+      "reported_tiers": [
+        "priority"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "fast",
+      "path": "responses_ws",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 800.5608749999956,
+      "ttft_range_ms": [
+        658.140625,
+        1394.2492920000223
+      ],
+      "completion_median_ms": 877.5544170000067,
+      "completion_range_ms": [
+        695.8688339999644,
+        1434.285749999981
+      ],
+      "first_event_median_ms": 342.5392920000013,
+      "connection_median_ms": 4394.769792000006,
+      "first_text_to_completion_median_ms": 40.03645799995866,
+      "inclusive_ttft_median_ms": 1394.2492920000223,
+      "input_tokens_median": 36,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 0,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.000488,
+      "cost_high_median_usd": 0.000488,
+      "usage_known": 3,
+      "reported_tiers": [
+        "priority"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "fast",
+      "path": "nanocodex_node",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 2009.702750000055,
+      "ttft_range_ms": [
+        1866.287083000003,
+        2817.3640410000007
+      ],
+      "completion_median_ms": 2604.6710000000894,
+      "completion_range_ms": [
+        1928.091791999992,
+        2828.653999999995
+      ],
+      "first_event_median_ms": 1526.8093750000698,
+      "connection_median_ms": 1080.934833,
+      "first_text_to_completion_median_ms": 61.80470899998909,
+      "inclusive_ttft_median_ms": 2010.3557080000173,
+      "input_tokens_median": 6018,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 6015,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.060374,
+      "cost_high_median_usd": 0.060374,
+      "usage_known": 3,
+      "reported_tiers": [
+        "priority"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "fast",
+      "path": "openai_agents",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 8566.32108299993,
+      "ttft_range_ms": [
+        8161.674375000002,
+        11691.208125000005
+      ],
+      "completion_median_ms": 10423.89512499998,
+      "completion_range_ms": [
+        9832.336332999985,
+        11691.50904200002
+      ],
+      "first_event_median_ms": 1920.566583000007,
+      "connection_median_ms": null,
+      "first_text_to_completion_median_ms": 1266.015250000055,
+      "inclusive_ttft_median_ms": 8566.32108299993,
+      "input_tokens_median": 6077,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": null,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.048816,
+      "cost_high_median_usd": 0.060969999999999996,
+      "usage_known": 3,
+      "reported_tiers": [
+        "not reported"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "default",
+      "path": "responses_http",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 2640.2992920000106,
+      "ttft_range_ms": [
+        1282.168416999979,
+        2974.8439159999834
+      ],
+      "completion_median_ms": 2766.82262500003,
+      "completion_range_ms": [
+        1382.6734169999836,
+        3186.8106659999758
+      ],
+      "first_event_median_ms": 888.1375000000116,
+      "connection_median_ms": null,
+      "first_text_to_completion_median_ms": 126.52333300001919,
+      "inclusive_ttft_median_ms": 2640.2992920000106,
+      "input_tokens_median": 36,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 0,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.00061,
+      "cost_high_median_usd": 0.00061,
+      "usage_known": 3,
+      "reported_tiers": [
+        "default"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "default",
+      "path": "responses_ws",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 1559.1132080000243,
+      "ttft_range_ms": [
+        1107.4767500000016,
+        1845.470166999963
+      ],
+      "completion_median_ms": 1620.6148750000284,
+      "completion_range_ms": [
+        1205.59375,
+        1913.9302080000052
+      ],
+      "first_event_median_ms": 706.3159160000505,
+      "connection_median_ms": 1387.9831669999985,
+      "first_text_to_completion_median_ms": 68.46004100004211,
+      "inclusive_ttft_median_ms": 1845.470166999963,
+      "input_tokens_median": 36,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 0,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.00061,
+      "cost_high_median_usd": 0.00061,
+      "usage_known": 3,
+      "reported_tiers": [
+        "default"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "default",
+      "path": "nanocodex_node",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 3303.178666999913,
+      "ttft_range_ms": [
+        2772.03145900002,
+        4703.583291999996
+      ],
+      "completion_median_ms": 3483.470791999949,
+      "completion_range_ms": [
+        2832.676542000001,
+        5336.969666999998
+      ],
+      "first_event_median_ms": 2145.1484169999603,
+      "connection_median_ms": 1272.89075,
+      "first_text_to_completion_median_ms": 180.29212500003632,
+      "inclusive_ttft_median_ms": 3304.061625999864,
+      "input_tokens_median": 6570,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 6567,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.0823675,
+      "cost_high_median_usd": 0.0823675,
+      "usage_known": 3,
+      "reported_tiers": [
+        "default"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "default",
+      "path": "openai_agents",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 10278.368832999957,
+      "ttft_range_ms": [
+        9984.760499999975,
+        10290.683458000014
+      ],
+      "completion_median_ms": 12174.276374999958,
+      "completion_range_ms": [
+        10643.284166999976,
+        12443.000583000015
+      ],
+      "first_event_median_ms": 2227.7488750000193,
+      "connection_median_ms": null,
+      "first_text_to_completion_median_ms": 2152.3171250000014,
+      "inclusive_ttft_median_ms": 10278.368832999957,
+      "input_tokens_median": 7116,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": null,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.07141,
+      "cost_high_median_usd": 0.0892,
+      "usage_known": 3,
+      "reported_tiers": [
+        "not reported"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "fast",
+      "path": "responses_http",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 1421.7879169999796,
+      "ttft_range_ms": [
+        1162.688334000064,
+        1886.116417000012
+      ],
+      "completion_median_ms": 1605.086249999993,
+      "completion_range_ms": [
+        1397.2098750000587,
+        2023.1329999999725
+      ],
+      "first_event_median_ms": 1028.6474579999922,
+      "connection_median_ms": null,
+      "first_text_to_completion_median_ms": 183.29833300001337,
+      "inclusive_ttft_median_ms": 1421.7879169999796,
+      "input_tokens_median": 36,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 0,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.00122,
+      "cost_high_median_usd": 0.00122,
+      "usage_known": 3,
+      "reported_tiers": [
+        "fast"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "fast",
+      "path": "responses_ws",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 1094.3815419999883,
+      "ttft_range_ms": [
+        836.8881249999977,
+        1578.4186670000054
+      ],
+      "completion_median_ms": 1135.0813339999877,
+      "completion_range_ms": [
+        893.1732090000296,
+        1579.343875000006
+      ],
+      "first_event_median_ms": 275.981541999965,
+      "connection_median_ms": 1698.8564579999947,
+      "first_text_to_completion_median_ms": 40.699791999999434,
+      "inclusive_ttft_median_ms": 1094.3815419999883,
+      "input_tokens_median": 36,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 0,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.00122,
+      "cost_high_median_usd": 0.00122,
+      "usage_known": 3,
+      "reported_tiers": [
+        "fast"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "fast",
+      "path": "nanocodex_node",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 3062.8817920000292,
+      "ttft_range_ms": [
+        2933.0564170000143,
+        29021.311916
+      ],
+      "completion_median_ms": 3241.7990839999984,
+      "completion_range_ms": [
+        3121.9199999999837,
+        29234.450375
+      ],
+      "first_event_median_ms": 2220.6025000000373,
+      "connection_median_ms": 1924.976959,
+      "first_text_to_completion_median_ms": 188.86358299996937,
+      "inclusive_ttft_median_ms": 3063.6853760000085,
+      "input_tokens_median": 6570,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": 6567,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.164735,
+      "cost_high_median_usd": 0.164735,
+      "usage_known": 3,
+      "reported_tiers": [
+        "fast"
+      ],
+      "failures": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "fast",
+      "path": "openai_agents",
+      "n": 3,
+      "successes": 3,
+      "ttft_median_ms": 10408.092374999978,
+      "ttft_range_ms": [
+        8120.367415999994,
+        10922.596708000056
+      ],
+      "completion_median_ms": 11647.686791000073,
+      "completion_range_ms": [
+        9840.914540999976,
+        11970.605416000006
+      ],
+      "first_event_median_ms": 2343.143291000044,
+      "connection_median_ms": null,
+      "first_text_to_completion_median_ms": 1562.5130410000274,
+      "inclusive_ttft_median_ms": 10408.092374999978,
+      "input_tokens_median": 7116,
+      "output_tokens_median": 5,
+      "cached_tokens_median": 0,
+      "cache_write_tokens_median": null,
+      "reasoning_tokens_median": 0,
+      "cost_low_median_usd": 0.14282,
+      "cost_high_median_usd": 0.1784,
+      "usage_known": 3,
+      "reported_tiers": [
+        "not reported"
+      ],
+      "failures": []
+    }
+  ]
+}

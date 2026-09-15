@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "status": "authored, unrun source-defined assertions; not original runtime observations",
+  "source": "globals.js default argument and create_tinysky_alt.js strict-false browser/computer reads",
+  "cases": [
+    {
+      "id": "both",
+      "expression": "({browser:true,computer:true})",
+      "browser": true,
+      "computer": true
+    },
+    {
+      "id": "browser",
+      "expression": "({browser:true,computer:false})",
+      "browser": true,
+      "computer": false
+    },
+    {
+      "id": "computer",
+      "expression": "({browser:false,computer:true})",
+      "browser": false,
+      "computer": true
+    },
+    {
+      "id": "neither",
+      "expression": "({browser:false,computer:false})",
+      "browser": false,
+      "computer": false
+    },
+    {
+      "id": "default",
+      "expression": "undefined",
+      "browser": true,
+      "computer": true
+    },
+    {
+      "id": "empty",
+      "expression": "({})",
+      "browser": true,
+      "computer": true
+    },
+    {
+      "id": "null_fields",
+      "expression": "({browser:null,computer:null})",
+      "browser": true,
+      "computer": true
+    },
+    {
+      "id": "zero_empty",
+      "expression": "({browser:0,computer:\"\"})",
+      "browser": true,
+      "computer": true
+    },
+    {
+      "id": "boxed_false",
+      "expression": "({browser:new Boolean(false),computer:new Boolean(false)})",
+      "browser": true,
+      "computer": true
+    },
+    {
+      "id": "inherited_false",
+      "expression": "Object.create({browser:false,computer:false})",
+      "browser": false,
+      "computer": false
+    },
+    {
+      "id": "primitive_false",
+      "expression": "false",
+      "browser": true,
+      "computer": true
+    },
+    {
+      "id": "primitive_number",
+      "expression": "0",
+      "browser": true,
+      "computer": true
+    },
+    {
+      "id": "primitive_string",
+      "expression": "\"\"",
+      "browser": true,
+      "computer": true
+    }
+  ]
+}

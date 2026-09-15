@@ -1,0 +1,3303 @@
+{
+  "sourceSha256": "9b8fdd773cf489cb9a77752dbc061351ef96b240465c194e6187c6faee28609e",
+  "dispatcherSha256": "a6f818e3a7eea5479f6866a426df5be8168c6520386404a7fb5b8da3b66586e0",
+  "modifiersSha256": "f23320e2397f43075050e6bc476de7e48ab0eb8e68c26b29268fa3c4e5121573",
+  "scope": "Captured dispatchTextCharacter with inert CDP, all ASCII plus four Unicode characters; no original service/network/OS operations.",
+  "cases": [
+    {
+      "character": "\u0000",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u0000"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u0001",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u0001"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u0002",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u0002"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u0003",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u0003"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u0004",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u0004"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u0005",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u0005"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u0006",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u0006"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u0007",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u0007"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\b",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\b"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\t",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\t"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\n",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 13,
+            "code": "Enter",
+            "key": "Enter",
+            "text": "\r",
+            "unmodifiedText": "\r",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 13,
+            "code": "Enter",
+            "key": "Enter",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u000b",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u000b"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\f",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\f"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\r",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 13,
+            "code": "Enter",
+            "key": "Enter",
+            "text": "\r",
+            "unmodifiedText": "\r",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 13,
+            "code": "Enter",
+            "key": "Enter",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u000e",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u000e"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u000f",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u000f"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u0010",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u0010"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u0011",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u0011"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u0012",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u0012"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u0013",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u0013"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u0014",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u0014"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u0015",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u0015"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u0016",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u0016"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u0017",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u0017"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u0018",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u0018"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u0019",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u0019"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u001a",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u001a"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u001b",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u001b"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u001c",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u001c"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u001d",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u001d"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u001e",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u001e"
+          }
+        }
+      ]
+    },
+    {
+      "character": "\u001f",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "\u001f"
+          }
+        }
+      ]
+    },
+    {
+      "character": " ",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 32,
+            "code": "Space",
+            "key": " ",
+            "text": " ",
+            "unmodifiedText": " ",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 32,
+            "code": "Space",
+            "key": " ",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "!",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 49,
+            "code": "Digit1",
+            "key": "!",
+            "text": "!",
+            "unmodifiedText": "!",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 49,
+            "code": "Digit1",
+            "key": "!",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "\"",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 222,
+            "code": "Quote",
+            "key": "\"",
+            "text": "\"",
+            "unmodifiedText": "\"",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 222,
+            "code": "Quote",
+            "key": "\"",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "#",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 51,
+            "code": "Digit3",
+            "key": "#",
+            "text": "#",
+            "unmodifiedText": "#",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 51,
+            "code": "Digit3",
+            "key": "#",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "$",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 52,
+            "code": "Digit4",
+            "key": "$",
+            "text": "$",
+            "unmodifiedText": "$",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 52,
+            "code": "Digit4",
+            "key": "$",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "%",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 53,
+            "code": "Digit5",
+            "key": "%",
+            "text": "%",
+            "unmodifiedText": "%",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 53,
+            "code": "Digit5",
+            "key": "%",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "&",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 55,
+            "code": "Digit7",
+            "key": "&",
+            "text": "&",
+            "unmodifiedText": "&",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 55,
+            "code": "Digit7",
+            "key": "&",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "'",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 222,
+            "code": "Quote",
+            "key": "'",
+            "text": "'",
+            "unmodifiedText": "'",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 222,
+            "code": "Quote",
+            "key": "'",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "(",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 57,
+            "code": "Digit9",
+            "key": "(",
+            "text": "(",
+            "unmodifiedText": "(",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 57,
+            "code": "Digit9",
+            "key": "(",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": ")",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 48,
+            "code": "Digit0",
+            "key": ")",
+            "text": ")",
+            "unmodifiedText": ")",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 48,
+            "code": "Digit0",
+            "key": ")",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "*",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 56,
+            "code": "Digit8",
+            "key": "*",
+            "text": "*",
+            "unmodifiedText": "*",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 56,
+            "code": "Digit8",
+            "key": "*",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "+",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 187,
+            "code": "Equal",
+            "key": "+",
+            "text": "+",
+            "unmodifiedText": "+",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 187,
+            "code": "Equal",
+            "key": "+",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": ",",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 188,
+            "code": "Comma",
+            "key": ",",
+            "text": ",",
+            "unmodifiedText": ",",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 188,
+            "code": "Comma",
+            "key": ",",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "-",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 189,
+            "code": "Minus",
+            "key": "-",
+            "text": "-",
+            "unmodifiedText": "-",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 189,
+            "code": "Minus",
+            "key": "-",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": ".",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 190,
+            "code": "Period",
+            "key": ".",
+            "text": ".",
+            "unmodifiedText": ".",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 190,
+            "code": "Period",
+            "key": ".",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "/",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 191,
+            "code": "Slash",
+            "key": "/",
+            "text": "/",
+            "unmodifiedText": "/",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 191,
+            "code": "Slash",
+            "key": "/",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "0",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 48,
+            "code": "Digit0",
+            "key": "0",
+            "text": "0",
+            "unmodifiedText": "0",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 48,
+            "code": "Digit0",
+            "key": "0",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "1",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 49,
+            "code": "Digit1",
+            "key": "1",
+            "text": "1",
+            "unmodifiedText": "1",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 49,
+            "code": "Digit1",
+            "key": "1",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "2",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 50,
+            "code": "Digit2",
+            "key": "2",
+            "text": "2",
+            "unmodifiedText": "2",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 50,
+            "code": "Digit2",
+            "key": "2",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "3",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 51,
+            "code": "Digit3",
+            "key": "3",
+            "text": "3",
+            "unmodifiedText": "3",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 51,
+            "code": "Digit3",
+            "key": "3",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "4",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 52,
+            "code": "Digit4",
+            "key": "4",
+            "text": "4",
+            "unmodifiedText": "4",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 52,
+            "code": "Digit4",
+            "key": "4",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "5",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 53,
+            "code": "Digit5",
+            "key": "5",
+            "text": "5",
+            "unmodifiedText": "5",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 53,
+            "code": "Digit5",
+            "key": "5",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "6",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 54,
+            "code": "Digit6",
+            "key": "6",
+            "text": "6",
+            "unmodifiedText": "6",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 54,
+            "code": "Digit6",
+            "key": "6",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "7",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 55,
+            "code": "Digit7",
+            "key": "7",
+            "text": "7",
+            "unmodifiedText": "7",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 55,
+            "code": "Digit7",
+            "key": "7",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "8",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 56,
+            "code": "Digit8",
+            "key": "8",
+            "text": "8",
+            "unmodifiedText": "8",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 56,
+            "code": "Digit8",
+            "key": "8",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "9",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 57,
+            "code": "Digit9",
+            "key": "9",
+            "text": "9",
+            "unmodifiedText": "9",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 57,
+            "code": "Digit9",
+            "key": "9",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": ":",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 186,
+            "code": "Semicolon",
+            "key": ":",
+            "text": ":",
+            "unmodifiedText": ":",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 186,
+            "code": "Semicolon",
+            "key": ":",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": ";",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 186,
+            "code": "Semicolon",
+            "key": ";",
+            "text": ";",
+            "unmodifiedText": ";",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 186,
+            "code": "Semicolon",
+            "key": ";",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "<",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 188,
+            "code": "Comma",
+            "key": "<",
+            "text": "<",
+            "unmodifiedText": "<",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 188,
+            "code": "Comma",
+            "key": "<",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "=",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 187,
+            "code": "Equal",
+            "key": "=",
+            "text": "=",
+            "unmodifiedText": "=",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 187,
+            "code": "Equal",
+            "key": "=",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": ">",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 190,
+            "code": "Period",
+            "key": ">",
+            "text": ">",
+            "unmodifiedText": ">",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 190,
+            "code": "Period",
+            "key": ">",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "?",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 191,
+            "code": "Slash",
+            "key": "?",
+            "text": "?",
+            "unmodifiedText": "?",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 191,
+            "code": "Slash",
+            "key": "?",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "@",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 50,
+            "code": "Digit2",
+            "key": "@",
+            "text": "@",
+            "unmodifiedText": "@",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 50,
+            "code": "Digit2",
+            "key": "@",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "A",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 65,
+            "code": "KeyA",
+            "key": "A",
+            "text": "A",
+            "unmodifiedText": "A",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 65,
+            "code": "KeyA",
+            "key": "A",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "B",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 66,
+            "code": "KeyB",
+            "key": "B",
+            "text": "B",
+            "unmodifiedText": "B",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 66,
+            "code": "KeyB",
+            "key": "B",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "C",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 67,
+            "code": "KeyC",
+            "key": "C",
+            "text": "C",
+            "unmodifiedText": "C",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 67,
+            "code": "KeyC",
+            "key": "C",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "D",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 68,
+            "code": "KeyD",
+            "key": "D",
+            "text": "D",
+            "unmodifiedText": "D",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 68,
+            "code": "KeyD",
+            "key": "D",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "E",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 69,
+            "code": "KeyE",
+            "key": "E",
+            "text": "E",
+            "unmodifiedText": "E",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 69,
+            "code": "KeyE",
+            "key": "E",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "F",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 70,
+            "code": "KeyF",
+            "key": "F",
+            "text": "F",
+            "unmodifiedText": "F",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 70,
+            "code": "KeyF",
+            "key": "F",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "G",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 71,
+            "code": "KeyG",
+            "key": "G",
+            "text": "G",
+            "unmodifiedText": "G",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 71,
+            "code": "KeyG",
+            "key": "G",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "H",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 72,
+            "code": "KeyH",
+            "key": "H",
+            "text": "H",
+            "unmodifiedText": "H",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 72,
+            "code": "KeyH",
+            "key": "H",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "I",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 73,
+            "code": "KeyI",
+            "key": "I",
+            "text": "I",
+            "unmodifiedText": "I",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 73,
+            "code": "KeyI",
+            "key": "I",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "J",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 74,
+            "code": "KeyJ",
+            "key": "J",
+            "text": "J",
+            "unmodifiedText": "J",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 74,
+            "code": "KeyJ",
+            "key": "J",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "K",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 75,
+            "code": "KeyK",
+            "key": "K",
+            "text": "K",
+            "unmodifiedText": "K",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 75,
+            "code": "KeyK",
+            "key": "K",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "L",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 76,
+            "code": "KeyL",
+            "key": "L",
+            "text": "L",
+            "unmodifiedText": "L",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 76,
+            "code": "KeyL",
+            "key": "L",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "M",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 77,
+            "code": "KeyM",
+            "key": "M",
+            "text": "M",
+            "unmodifiedText": "M",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 77,
+            "code": "KeyM",
+            "key": "M",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "N",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 78,
+            "code": "KeyN",
+            "key": "N",
+            "text": "N",
+            "unmodifiedText": "N",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 78,
+            "code": "KeyN",
+            "key": "N",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "O",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 79,
+            "code": "KeyO",
+            "key": "O",
+            "text": "O",
+            "unmodifiedText": "O",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 79,
+            "code": "KeyO",
+            "key": "O",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "P",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 80,
+            "code": "KeyP",
+            "key": "P",
+            "text": "P",
+            "unmodifiedText": "P",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 80,
+            "code": "KeyP",
+            "key": "P",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "Q",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 81,
+            "code": "KeyQ",
+            "key": "Q",
+            "text": "Q",
+            "unmodifiedText": "Q",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 81,
+            "code": "KeyQ",
+            "key": "Q",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "R",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 82,
+            "code": "KeyR",
+            "key": "R",
+            "text": "R",
+            "unmodifiedText": "R",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 82,
+            "code": "KeyR",
+            "key": "R",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "S",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 83,
+            "code": "KeyS",
+            "key": "S",
+            "text": "S",
+            "unmodifiedText": "S",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 83,
+            "code": "KeyS",
+            "key": "S",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "T",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 84,
+            "code": "KeyT",
+            "key": "T",
+            "text": "T",
+            "unmodifiedText": "T",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 84,
+            "code": "KeyT",
+            "key": "T",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "U",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 85,
+            "code": "KeyU",
+            "key": "U",
+            "text": "U",
+            "unmodifiedText": "U",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 85,
+            "code": "KeyU",
+            "key": "U",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "V",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 86,
+            "code": "KeyV",
+            "key": "V",
+            "text": "V",
+            "unmodifiedText": "V",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 86,
+            "code": "KeyV",
+            "key": "V",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "W",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 87,
+            "code": "KeyW",
+            "key": "W",
+            "text": "W",
+            "unmodifiedText": "W",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 87,
+            "code": "KeyW",
+            "key": "W",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "X",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 88,
+            "code": "KeyX",
+            "key": "X",
+            "text": "X",
+            "unmodifiedText": "X",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 88,
+            "code": "KeyX",
+            "key": "X",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "Y",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 89,
+            "code": "KeyY",
+            "key": "Y",
+            "text": "Y",
+            "unmodifiedText": "Y",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 89,
+            "code": "KeyY",
+            "key": "Y",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "Z",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 90,
+            "code": "KeyZ",
+            "key": "Z",
+            "text": "Z",
+            "unmodifiedText": "Z",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 90,
+            "code": "KeyZ",
+            "key": "Z",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "[",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 219,
+            "code": "BracketLeft",
+            "key": "[",
+            "text": "[",
+            "unmodifiedText": "[",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 219,
+            "code": "BracketLeft",
+            "key": "[",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "\\",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 220,
+            "code": "Backslash",
+            "key": "\\",
+            "text": "\\",
+            "unmodifiedText": "\\",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 220,
+            "code": "Backslash",
+            "key": "\\",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "]",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 221,
+            "code": "BracketRight",
+            "key": "]",
+            "text": "]",
+            "unmodifiedText": "]",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 221,
+            "code": "BracketRight",
+            "key": "]",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "^",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 54,
+            "code": "Digit6",
+            "key": "^",
+            "text": "^",
+            "unmodifiedText": "^",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 54,
+            "code": "Digit6",
+            "key": "^",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "_",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 189,
+            "code": "Minus",
+            "key": "_",
+            "text": "_",
+            "unmodifiedText": "_",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 189,
+            "code": "Minus",
+            "key": "_",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "`",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 192,
+            "code": "Backquote",
+            "key": "`",
+            "text": "`",
+            "unmodifiedText": "`",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 192,
+            "code": "Backquote",
+            "key": "`",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "a",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 65,
+            "code": "KeyA",
+            "key": "a",
+            "text": "a",
+            "unmodifiedText": "a",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 65,
+            "code": "KeyA",
+            "key": "a",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "b",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 66,
+            "code": "KeyB",
+            "key": "b",
+            "text": "b",
+            "unmodifiedText": "b",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 66,
+            "code": "KeyB",
+            "key": "b",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "c",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 67,
+            "code": "KeyC",
+            "key": "c",
+            "text": "c",
+            "unmodifiedText": "c",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 67,
+            "code": "KeyC",
+            "key": "c",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "d",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 68,
+            "code": "KeyD",
+            "key": "d",
+            "text": "d",
+            "unmodifiedText": "d",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 68,
+            "code": "KeyD",
+            "key": "d",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "e",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 69,
+            "code": "KeyE",
+            "key": "e",
+            "text": "e",
+            "unmodifiedText": "e",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 69,
+            "code": "KeyE",
+            "key": "e",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "f",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 70,
+            "code": "KeyF",
+            "key": "f",
+            "text": "f",
+            "unmodifiedText": "f",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 70,
+            "code": "KeyF",
+            "key": "f",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "g",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 71,
+            "code": "KeyG",
+            "key": "g",
+            "text": "g",
+            "unmodifiedText": "g",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 71,
+            "code": "KeyG",
+            "key": "g",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "h",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 72,
+            "code": "KeyH",
+            "key": "h",
+            "text": "h",
+            "unmodifiedText": "h",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 72,
+            "code": "KeyH",
+            "key": "h",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "i",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 73,
+            "code": "KeyI",
+            "key": "i",
+            "text": "i",
+            "unmodifiedText": "i",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 73,
+            "code": "KeyI",
+            "key": "i",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "j",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 74,
+            "code": "KeyJ",
+            "key": "j",
+            "text": "j",
+            "unmodifiedText": "j",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 74,
+            "code": "KeyJ",
+            "key": "j",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "k",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 75,
+            "code": "KeyK",
+            "key": "k",
+            "text": "k",
+            "unmodifiedText": "k",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 75,
+            "code": "KeyK",
+            "key": "k",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "l",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 76,
+            "code": "KeyL",
+            "key": "l",
+            "text": "l",
+            "unmodifiedText": "l",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 76,
+            "code": "KeyL",
+            "key": "l",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "m",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 77,
+            "code": "KeyM",
+            "key": "m",
+            "text": "m",
+            "unmodifiedText": "m",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 77,
+            "code": "KeyM",
+            "key": "m",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "n",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 78,
+            "code": "KeyN",
+            "key": "n",
+            "text": "n",
+            "unmodifiedText": "n",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 78,
+            "code": "KeyN",
+            "key": "n",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "o",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 79,
+            "code": "KeyO",
+            "key": "o",
+            "text": "o",
+            "unmodifiedText": "o",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 79,
+            "code": "KeyO",
+            "key": "o",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "p",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 80,
+            "code": "KeyP",
+            "key": "p",
+            "text": "p",
+            "unmodifiedText": "p",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 80,
+            "code": "KeyP",
+            "key": "p",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "q",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 81,
+            "code": "KeyQ",
+            "key": "q",
+            "text": "q",
+            "unmodifiedText": "q",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 81,
+            "code": "KeyQ",
+            "key": "q",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "r",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 82,
+            "code": "KeyR",
+            "key": "r",
+            "text": "r",
+            "unmodifiedText": "r",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 82,
+            "code": "KeyR",
+            "key": "r",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "s",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 83,
+            "code": "KeyS",
+            "key": "s",
+            "text": "s",
+            "unmodifiedText": "s",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 83,
+            "code": "KeyS",
+            "key": "s",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "t",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 84,
+            "code": "KeyT",
+            "key": "t",
+            "text": "t",
+            "unmodifiedText": "t",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 84,
+            "code": "KeyT",
+            "key": "t",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "u",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 85,
+            "code": "KeyU",
+            "key": "u",
+            "text": "u",
+            "unmodifiedText": "u",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 85,
+            "code": "KeyU",
+            "key": "u",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "v",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 86,
+            "code": "KeyV",
+            "key": "v",
+            "text": "v",
+            "unmodifiedText": "v",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 86,
+            "code": "KeyV",
+            "key": "v",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "w",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 87,
+            "code": "KeyW",
+            "key": "w",
+            "text": "w",
+            "unmodifiedText": "w",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 87,
+            "code": "KeyW",
+            "key": "w",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "x",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 88,
+            "code": "KeyX",
+            "key": "x",
+            "text": "x",
+            "unmodifiedText": "x",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 88,
+            "code": "KeyX",
+            "key": "x",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "y",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 89,
+            "code": "KeyY",
+            "key": "y",
+            "text": "y",
+            "unmodifiedText": "y",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 89,
+            "code": "KeyY",
+            "key": "y",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "z",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 90,
+            "code": "KeyZ",
+            "key": "z",
+            "text": "z",
+            "unmodifiedText": "z",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 90,
+            "code": "KeyZ",
+            "key": "z",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "{",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 219,
+            "code": "BracketLeft",
+            "key": "{",
+            "text": "{",
+            "unmodifiedText": "{",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 219,
+            "code": "BracketLeft",
+            "key": "{",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "|",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 220,
+            "code": "Backslash",
+            "key": "|",
+            "text": "|",
+            "unmodifiedText": "|",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 220,
+            "code": "Backslash",
+            "key": "|",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "}",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 221,
+            "code": "BracketRight",
+            "key": "}",
+            "text": "}",
+            "unmodifiedText": "}",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 221,
+            "code": "BracketRight",
+            "key": "}",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "~",
+      "calls": [
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyDown",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 192,
+            "code": "Backquote",
+            "key": "~",
+            "text": "~",
+            "unmodifiedText": "~",
+            "location": 0,
+            "isKeypad": false
+          }
+        },
+        {
+          "method": "Input.dispatchKeyEvent",
+          "params": {
+            "type": "keyUp",
+            "modifiers": 0,
+            "windowsVirtualKeyCode": 192,
+            "code": "Backquote",
+            "key": "~",
+            "location": 0
+          }
+        }
+      ]
+    },
+    {
+      "character": "",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": ""
+          }
+        }
+      ]
+    },
+    {
+      "character": "α",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "α"
+          }
+        }
+      ]
+    },
+    {
+      "character": "🧪",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "🧪"
+          }
+        }
+      ]
+    },
+    {
+      "character": "é",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "é"
+          }
+        }
+      ]
+    },
+    {
+      "character": "́",
+      "calls": [
+        {
+          "method": "Input.insertText",
+          "params": {
+            "text": "́"
+          }
+        }
+      ]
+    }
+  ]
+}

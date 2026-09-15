@@ -151,8 +151,17 @@ final class ContextUITests: XCTestCase {
         app.buttons["retry-pending"].tap()
         // A restored demo intentionally fails once again, then succeeds.
         if app.buttons["retry-pending"].waitForExistence(timeout: 3) { app.buttons["retry-pending"].tap() }
+        // Admission preserves the follow-up behind the active demo turn. Steer
+        // it into that turn before asserting its transcript representation.
+        XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 10))
+        app.buttons["steer-now"].tap()
         let conversation = app.scrollViews["conversation"]
-        XCTAssertTrue(conversation.staticTexts["Help me plan Friday"].waitForExistence(timeout: 8))
+        let request = conversation.staticTexts["Help me plan Friday"]
+        for _ in 0..<12 {
+            if request.exists { break }
+            conversation.swipeUp(velocity: .fast)
+        }
+        XCTAssertTrue(request.waitForExistence(timeout: 5))
         conversation.buttons["Captured context (1)"].tap()
         XCTAssertTrue(conversation.staticTexts["Dinner with Alex on Friday"].waitForExistence(timeout: 5))
         XCTAssertFalse(conversation.staticTexts["Train leaves at six"].exists)
@@ -192,15 +201,21 @@ final class ContextUITests: XCTestCase {
         let editor = safari.textFields.matching(NSPredicate(format: "identifier BEGINSWITH %@ OR identifier == %@", "SearchFieldItemView", "URL")).firstMatch
         if editor.waitForExistence(timeout: 2) { editor.typeText(link + XCUIKeyboardKey.return.rawValue) }
         else { address.typeText(link + XCUIKeyboardKey.return.rawValue) }
-        let share = safari.buttons["Share"]
+        // Safari 26 sometimes exposes the page-menu Share row as a generic
+        // accessibility element rather than a Button.
+        let share = safari.descendants(matching: .any)
+            .matching(NSPredicate(format: "label == %@ OR label == %@", "Share", "Share…")).firstMatch
         if !share.waitForExistence(timeout: 3) {
             let more = safari.buttons["More"]
             XCTAssertTrue(more.waitForExistence(timeout: 20), safari.debugDescription)
             // Safari's floating toolbar can report an invalid automatic hit
             // point even when its accessibility frame is on screen.
-            more.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            for _ in 0..<3 {
+                more.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+                if share.waitForExistence(timeout: 8) { break }
+            }
         }
-        XCTAssertTrue(share.waitForExistence(timeout: 10), safari.debugDescription)
+        XCTAssertTrue(share.exists, safari.debugDescription)
         let shareReady = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: share)
         XCTAssertEqual(XCTWaiter.wait(for: [shareReady], timeout: 30), .completed, safari.debugDescription)
         share.tap()

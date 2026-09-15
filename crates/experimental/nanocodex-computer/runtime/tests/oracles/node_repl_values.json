@@ -1,0 +1,220 @@
+{
+  "provenance": {
+    "source": "../snapshots/1000926/node-repl-embedded/worker-runtime.js",
+    "sourceSha256": "735d72f7b40d005e6d7f86160ffc61018943f0f0f3b239980a3b753f6a0049d3",
+    "installedBinary": "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl",
+    "installedBinarySha256": "0d6f59d5aff9db38d3bf1cad78f3b2d71daaedaefddbc00c65fa3241ce83ad7c",
+    "exactBinaryOffset": 10073712,
+    "scope": "Synthetic values only; image IPC intercepted, no UI or service calls"
+  },
+  "writes": [
+    {
+      "expression": "undefined",
+      "output": "undefined"
+    },
+    {
+      "expression": "null",
+      "output": "null"
+    },
+    {
+      "expression": "true",
+      "output": "true"
+    },
+    {
+      "expression": "-0",
+      "output": "-0"
+    },
+    {
+      "expression": "NaN",
+      "output": "NaN"
+    },
+    {
+      "expression": "Infinity",
+      "output": "Infinity"
+    },
+    {
+      "expression": "123n",
+      "output": "123n"
+    },
+    {
+      "expression": "\"plain text\"",
+      "output": "plain text"
+    },
+    {
+      "expression": "({a:1,text:\"β終🧪\",missing:undefined})",
+      "output": "{ a: 1, text: 'β終🧪', missing: undefined }"
+    },
+    {
+      "expression": "[1,\"two\",null,undefined]",
+      "output": "[ 1, 'two', null, undefined ]"
+    },
+    {
+      "expression": "new Uint8Array([0,137,255])",
+      "output": "Uint8Array(3) [ 0, 137, 255 ]"
+    },
+    {
+      "expression": "new Int16Array([-1,2])",
+      "output": "Int16Array(2) [ -1, 2 ]"
+    },
+    {
+      "expression": "new Map([[\"a\",1],[2,\"b\"]])",
+      "output": "Map(2) { 'a' => 1, 2 => 'b' }"
+    },
+    {
+      "expression": "new Set([1,\"a\"])",
+      "output": "Set(2) { 1, 'a' }"
+    },
+    {
+      "expression": "new Date(\"2026-09-06T00:00:00.000Z\")",
+      "output": "2026-09-06T00:00:00.000Z"
+    },
+    {
+      "expression": "/hello/giu",
+      "output": "/hello/giu"
+    },
+    {
+      "expression": "Object.assign(Object.create(null),{a:1})",
+      "output": "[Object: null prototype] { a: 1 }"
+    },
+    {
+      "expression": "({\"not an identifier\":1,β:2})",
+      "output": "{ 'not an identifier': 1, 'β': 2 }"
+    },
+    {
+      "expression": "(()=>{const value={};value.self=value;return value})()",
+      "output": "<ref *1> { self: [Circular *1] }"
+    },
+    {
+      "expression": "({a:{b:{c:{d:{e:{f:1}}}}}})",
+      "output": "{\n  a: {\n    b: { c: { d: { e: [Object] } } }\n  }\n}"
+    },
+    {
+      "expression": "Array(3)",
+      "output": "[ <3 empty items> ]"
+    },
+    {
+      "expression": "(function named(){})",
+      "output": "[Function: named]"
+    },
+    {
+      "expression": "({get secret(){throw new Error(\"getter must not execute\")}})",
+      "output": "{ secret: [Getter] }"
+    },
+    {
+      "expression": "[\"single'quote\", \"double\\\"quote\", \"line\\nfeed\"]",
+      "output": "[ \"single'quote\", 'double\"quote', 'line\\nfeed' ]"
+    }
+  ],
+  "outputEvents": [
+    {
+      "kind": "write",
+      "text": "one"
+    },
+    {
+      "kind": "write",
+      "text": "a",
+      "item_id": "named"
+    },
+    {
+      "kind": "write",
+      "text": "two"
+    },
+    {
+      "kind": "write",
+      "text": "b",
+      "item_id": "named"
+    }
+  ],
+  "writeErrors": [
+    {
+      "itemId": null,
+      "error": "nodeRepl.write expected a nonempty string content item ID",
+      "name": "TypeError"
+    },
+    {
+      "itemId": "",
+      "error": "nodeRepl.write expected a nonempty string content item ID",
+      "name": "TypeError"
+    },
+    {
+      "itemId": 0,
+      "error": "nodeRepl.write expected a nonempty string content item ID",
+      "name": "TypeError"
+    },
+    {
+      "itemId": {},
+      "error": "nodeRepl.write expected a nonempty string content item ID",
+      "name": "TypeError"
+    },
+    {
+      "itemId": false,
+      "error": "nodeRepl.write expected a nonempty string content item ID",
+      "name": "TypeError"
+    }
+  ],
+  "images": [
+    {
+      "expression": "new Uint8Array([137,80,78,71,13,10,26,10])",
+      "image_url": "data:image/png;base64,iVBORw0KGgo="
+    },
+    {
+      "expression": "new Uint8Array([255,216,255])",
+      "image_url": "data:image/jpeg;base64,/9j/"
+    },
+    {
+      "expression": "new Uint8Array([82,73,70,70,0,0,0,0,87,69,66,80])",
+      "image_url": "data:image/webp;base64,UklGRgAAAABXRUJQ"
+    },
+    {
+      "expression": "new Uint8Array([9,137,80,78,71,13,10,26,10,9]).subarray(1,9)",
+      "image_url": "data:image/png;base64,iVBORw0KGgo="
+    },
+    {
+      "expression": "({bytes:new Uint8Array([1,2]),mimeType:\"image/custom\"})",
+      "image_url": "data:image/custom;base64,AQI="
+    },
+    {
+      "expression": "Promise.resolve(new Uint8Array([255,216,255]))",
+      "image_url": "data:image/jpeg;base64,/9j/"
+    },
+    {
+      "expression": "\"data:image/png;base64,iVBORw0KGgo=\"",
+      "image_url": "data:image/png;base64,iVBORw0KGgo="
+    },
+    {
+      "expression": "\"https://example.invalid/image.png\"",
+      "error": "nodeRepl.emitImage only accepts data or file URLs",
+      "name": "Error"
+    },
+    {
+      "expression": "\"\"",
+      "error": "nodeRepl.emitImage expected a non-empty image_url",
+      "name": "Error"
+    },
+    {
+      "expression": "new Uint8Array([])",
+      "error": "nodeRepl.emitImage could not infer image MIME type from bytes; expected PNG, JPEG, or WebP data",
+      "name": "Error"
+    },
+    {
+      "expression": "({bytes:[],mimeType:\"image/png\"})",
+      "error": "nodeRepl.emitImage expected bytes to be Buffer, Uint8Array, ArrayBuffer, or ArrayBufferView",
+      "name": "Error"
+    },
+    {
+      "expression": "({bytes:new Uint8Array([1]),mimeType:\"\"})",
+      "error": "nodeRepl.emitImage expected a non-empty mimeType",
+      "name": "Error"
+    },
+    {
+      "expression": "({bytes:new Uint8Array([1]),mimeType:\"image/png\",extra:true})",
+      "error": "nodeRepl.emitImage received an unsupported value",
+      "name": "Error"
+    },
+    {
+      "expression": "({data:\"AA==\",mime_type:\"image/png\"})",
+      "error": "nodeRepl.emitImage received an unsupported value",
+      "name": "Error"
+    }
+  ]
+}

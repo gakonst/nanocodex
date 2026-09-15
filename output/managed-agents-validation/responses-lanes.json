@@ -1,0 +1,116 @@
+{
+  "timestamp": "2026-09-10T21:37:46.311Z",
+  "model": "gpt-5.6-luna",
+  "connect_ms": 1219.338791,
+  "complete": true,
+  "records": [
+    {
+      "lane": "main",
+      "first_text_ms": 736.9929589999999,
+      "completion_ms": 776.720875,
+      "correct": true,
+      "usage": {
+        "input_tokens": 15,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 20
+      }
+    },
+    {
+      "lane": "other",
+      "first_text_ms": 876.0551660000001,
+      "completion_ms": 934.8735000000001,
+      "correct": true,
+      "usage": {
+        "input_tokens": 15,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 20
+      }
+    },
+    {
+      "lane": "fork",
+      "first_text_ms": 705.0779589999997,
+      "completion_ms": 771.6745839999999,
+      "correct": true,
+      "usage": {
+        "input_tokens": 38,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 43
+      }
+    },
+    {
+      "lane": "main",
+      "first_text_ms": 786.361625,
+      "completion_ms": 966.9822920000001,
+      "correct": true,
+      "usage": {
+        "input_tokens": 38,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 19,
+        "output_tokens_details": {
+          "reasoning_tokens": 12
+        },
+        "total_tokens": 57
+      }
+    },
+    {
+      "lane": "cache",
+      "first_text_ms": 691.3596669999997,
+      "completion_ms": 692.7945419999996,
+      "correct": true,
+      "usage": {
+        "input_tokens": 3022,
+        "input_tokens_details": {
+          "cache_write_tokens": 3008,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 3027
+      }
+    },
+    {
+      "lane": "cache",
+      "first_text_ms": 635.1082500000002,
+      "completion_ms": 716.056458,
+      "correct": true,
+      "usage": {
+        "input_tokens": 3022,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 3008
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 3027
+      }
+    }
+  ]
+}

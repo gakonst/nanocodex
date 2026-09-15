@@ -1,0 +1,1942 @@
+{
+  "scope": "direct adjacent Node builtin provider; not original kernel import-surface proof",
+  "inventory": {
+    "aliases": {
+      "namespace": true,
+      "default": true,
+      "named": true,
+      "defaultIsNamed": true,
+      "constructorSelf": true
+    },
+    "namespace": [
+      {
+        "key": "EventEmitter",
+        "enumerable": true,
+        "configurable": false,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "EventEmitter",
+          "length": 1
+        }
+      },
+      {
+        "key": "EventEmitterAsyncResource",
+        "enumerable": true,
+        "configurable": false,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "EventEmitterAsyncResource",
+          "length": 0
+        }
+      },
+      {
+        "key": "addAbortListener",
+        "enumerable": true,
+        "configurable": false,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "addAbortListener",
+          "length": 2
+        }
+      },
+      {
+        "key": "captureRejectionSymbol",
+        "enumerable": true,
+        "configurable": false,
+        "kind": "data",
+        "writable": true,
+        "type": "symbol",
+        "value": {
+          "symbol": "nodejs.rejection",
+          "global": "nodejs.rejection"
+        }
+      },
+      {
+        "key": "captureRejections",
+        "enumerable": true,
+        "configurable": false,
+        "kind": "data",
+        "writable": true,
+        "type": "boolean",
+        "value": false
+      },
+      {
+        "key": "default",
+        "enumerable": true,
+        "configurable": false,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "EventEmitter",
+          "length": 1
+        }
+      },
+      {
+        "key": "defaultMaxListeners",
+        "enumerable": true,
+        "configurable": false,
+        "kind": "data",
+        "writable": true,
+        "type": "number",
+        "value": 10
+      },
+      {
+        "key": "errorMonitor",
+        "enumerable": true,
+        "configurable": false,
+        "kind": "data",
+        "writable": true,
+        "type": "symbol",
+        "value": {
+          "symbol": "events.errorMonitor",
+          "global": null
+        }
+      },
+      {
+        "key": "getEventListeners",
+        "enumerable": true,
+        "configurable": false,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "getEventListeners",
+          "length": 2
+        }
+      },
+      {
+        "key": "getMaxListeners",
+        "enumerable": true,
+        "configurable": false,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "getMaxListeners",
+          "length": 1
+        }
+      },
+      {
+        "key": "init",
+        "enumerable": true,
+        "configurable": false,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "",
+          "length": 1
+        }
+      },
+      {
+        "key": "listenerCount",
+        "enumerable": true,
+        "configurable": false,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "listenerCount",
+          "length": 2
+        }
+      },
+      {
+        "key": "on",
+        "enumerable": true,
+        "configurable": false,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "on",
+          "length": 2
+        }
+      },
+      {
+        "key": "once",
+        "enumerable": true,
+        "configurable": false,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "once",
+          "length": 2
+        }
+      },
+      {
+        "key": "setMaxListeners",
+        "enumerable": true,
+        "configurable": false,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "",
+          "length": 0
+        }
+      },
+      {
+        "key": "usingDomains",
+        "enumerable": true,
+        "configurable": false,
+        "kind": "data",
+        "writable": true,
+        "type": "boolean",
+        "value": false
+      },
+      {
+        "key": {
+          "symbol": "Symbol.toStringTag",
+          "global": null
+        },
+        "enumerable": false,
+        "configurable": false,
+        "kind": "data",
+        "writable": false,
+        "type": "string",
+        "value": "Module"
+      }
+    ],
+    "constructor": [
+      {
+        "key": "length",
+        "enumerable": false,
+        "configurable": true,
+        "kind": "data",
+        "writable": false,
+        "type": "number",
+        "value": 1
+      },
+      {
+        "key": "name",
+        "enumerable": false,
+        "configurable": true,
+        "kind": "data",
+        "writable": false,
+        "type": "string",
+        "value": "EventEmitter"
+      },
+      {
+        "key": "prototype",
+        "enumerable": false,
+        "configurable": false,
+        "kind": "data",
+        "writable": true,
+        "type": "object",
+        "value": null
+      },
+      {
+        "key": "addAbortListener",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "addAbortListener",
+          "length": 2
+        }
+      },
+      {
+        "key": "once",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "once",
+          "length": 2
+        }
+      },
+      {
+        "key": "on",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "on",
+          "length": 2
+        }
+      },
+      {
+        "key": "getEventListeners",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "getEventListeners",
+          "length": 2
+        }
+      },
+      {
+        "key": "getMaxListeners",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "getMaxListeners",
+          "length": 1
+        }
+      },
+      {
+        "key": "listenerCount",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "listenerCount",
+          "length": 2
+        }
+      },
+      {
+        "key": "EventEmitter",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "EventEmitter",
+          "length": 1
+        }
+      },
+      {
+        "key": "usingDomains",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "boolean",
+        "value": false
+      },
+      {
+        "key": "captureRejectionSymbol",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "symbol",
+        "value": {
+          "symbol": "nodejs.rejection",
+          "global": "nodejs.rejection"
+        }
+      },
+      {
+        "key": "captureRejections",
+        "enumerable": true,
+        "configurable": false,
+        "kind": "accessor",
+        "get": {
+          "function": "get",
+          "length": 0
+        },
+        "set": {
+          "function": "set",
+          "length": 1
+        }
+      },
+      {
+        "key": "EventEmitterAsyncResource",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "accessor",
+        "get": {
+          "function": "lazyEventEmitterAsyncResource",
+          "length": 0
+        },
+        "set": {
+          "type": "undefined"
+        }
+      },
+      {
+        "key": "errorMonitor",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "symbol",
+        "value": {
+          "symbol": "events.errorMonitor",
+          "global": null
+        }
+      },
+      {
+        "key": "defaultMaxListeners",
+        "enumerable": true,
+        "configurable": false,
+        "kind": "accessor",
+        "get": {
+          "function": "get",
+          "length": 0
+        },
+        "set": {
+          "function": "set",
+          "length": 1
+        }
+      },
+      {
+        "key": "kMaxEventTargetListeners",
+        "enumerable": false,
+        "configurable": false,
+        "kind": "data",
+        "writable": false,
+        "type": "symbol",
+        "value": {
+          "symbol": "events.maxEventTargetListeners",
+          "global": null
+        }
+      },
+      {
+        "key": "kMaxEventTargetListenersWarned",
+        "enumerable": false,
+        "configurable": false,
+        "kind": "data",
+        "writable": false,
+        "type": "symbol",
+        "value": {
+          "symbol": "events.maxEventTargetListenersWarned",
+          "global": null
+        }
+      },
+      {
+        "key": "setMaxListeners",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "",
+          "length": 0
+        }
+      },
+      {
+        "key": "init",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "",
+          "length": 1
+        }
+      }
+    ],
+    "prototype": [
+      {
+        "key": "constructor",
+        "enumerable": false,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "EventEmitter",
+          "length": 1
+        }
+      },
+      {
+        "key": "_events",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "undefined",
+        "value": {
+          "type": "undefined"
+        }
+      },
+      {
+        "key": "_eventsCount",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "number",
+        "value": 0
+      },
+      {
+        "key": "_maxListeners",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "undefined",
+        "value": {
+          "type": "undefined"
+        }
+      },
+      {
+        "key": "setMaxListeners",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "setMaxListeners",
+          "length": 1
+        }
+      },
+      {
+        "key": "getMaxListeners",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "getMaxListeners",
+          "length": 0
+        }
+      },
+      {
+        "key": "emit",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "emit",
+          "length": 1
+        }
+      },
+      {
+        "key": "addListener",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "addListener",
+          "length": 2
+        }
+      },
+      {
+        "key": "on",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "addListener",
+          "length": 2
+        }
+      },
+      {
+        "key": "prependListener",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "prependListener",
+          "length": 2
+        }
+      },
+      {
+        "key": "once",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "once",
+          "length": 2
+        }
+      },
+      {
+        "key": "prependOnceListener",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "prependOnceListener",
+          "length": 2
+        }
+      },
+      {
+        "key": "removeListener",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "removeListener",
+          "length": 2
+        }
+      },
+      {
+        "key": "off",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "removeListener",
+          "length": 2
+        }
+      },
+      {
+        "key": "removeAllListeners",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "removeAllListeners",
+          "length": 1
+        }
+      },
+      {
+        "key": "listeners",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "listeners",
+          "length": 1
+        }
+      },
+      {
+        "key": "rawListeners",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "rawListeners",
+          "length": 1
+        }
+      },
+      {
+        "key": "listenerCount",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "listenerCount",
+          "length": 2
+        }
+      },
+      {
+        "key": "eventNames",
+        "enumerable": true,
+        "configurable": true,
+        "kind": "data",
+        "writable": true,
+        "type": "function",
+        "value": {
+          "function": "eventNames",
+          "length": 0
+        }
+      },
+      {
+        "key": {
+          "symbol": "kCapture",
+          "global": null
+        },
+        "enumerable": false,
+        "configurable": false,
+        "kind": "data",
+        "writable": true,
+        "type": "boolean",
+        "value": false
+      }
+    ],
+    "namespacePrototypeIsNull": true,
+    "namespaceExtensible": false,
+    "defaultMaxListeners": 10
+  },
+  "cases": [
+    {
+      "name": "construct-and-independent-state",
+      "value": {
+        "instance": true,
+        "proto": true,
+        "empty": [],
+        "registered": true,
+        "counts": [
+          1,
+          0
+        ],
+        "constructor": true
+      }
+    },
+    {
+      "name": "construct-without-new",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": null,
+          "message": "Cannot read properties of undefined (reading '_events')"
+        }
+      }
+    },
+    {
+      "name": "ordinary-subclass",
+      "value": {
+        "instance": true,
+        "subclass": true,
+        "seen": [
+          true,
+          7
+        ]
+      }
+    },
+    {
+      "name": "call-constructor-on-ordinary-receiver",
+      "value": {
+        "keys": [
+          "_events",
+          "_eventsCount",
+          "_maxListeners"
+        ],
+        "hasEvents": "object",
+        "prototypeUnchanged": true
+      }
+    },
+    {
+      "name": "zero-listener-return",
+      "value": [
+        false,
+        false,
+        []
+      ]
+    },
+    {
+      "name": "emit-order-this-args-1",
+      "value": {
+        "result": true,
+        "seen": [
+          [
+            0,
+            true,
+            3,
+            true,
+            "value",
+            true
+          ]
+        ],
+        "count": 1
+      }
+    },
+    {
+      "name": "emit-order-this-args-2",
+      "value": {
+        "result": true,
+        "seen": [
+          [
+            0,
+            true,
+            3,
+            true,
+            "value",
+            true
+          ],
+          [
+            1,
+            true,
+            3,
+            true,
+            "value",
+            true
+          ]
+        ],
+        "count": 2
+      }
+    },
+    {
+      "name": "emit-order-this-args-5",
+      "value": {
+        "result": true,
+        "seen": [
+          [
+            0,
+            true,
+            3,
+            true,
+            "value",
+            true
+          ],
+          [
+            1,
+            true,
+            3,
+            true,
+            "value",
+            true
+          ],
+          [
+            2,
+            true,
+            3,
+            true,
+            "value",
+            true
+          ],
+          [
+            3,
+            true,
+            3,
+            true,
+            "value",
+            true
+          ],
+          [
+            4,
+            true,
+            3,
+            true,
+            "value",
+            true
+          ]
+        ],
+        "count": 5
+      }
+    },
+    {
+      "name": "registration-return-on",
+      "value": {
+        "same": true,
+        "registered": 1,
+        "afterFirst": true,
+        "afterSecond": true,
+        "remaining": 1
+      }
+    },
+    {
+      "name": "registration-return-addListener",
+      "value": {
+        "same": true,
+        "registered": 1,
+        "afterFirst": true,
+        "afterSecond": true,
+        "remaining": 1
+      }
+    },
+    {
+      "name": "registration-return-prependListener",
+      "value": {
+        "same": true,
+        "registered": 1,
+        "afterFirst": true,
+        "afterSecond": true,
+        "remaining": 1
+      }
+    },
+    {
+      "name": "registration-return-once",
+      "value": {
+        "same": true,
+        "registered": 1,
+        "afterFirst": true,
+        "afterSecond": false,
+        "remaining": 0
+      }
+    },
+    {
+      "name": "registration-return-prependOnceListener",
+      "value": {
+        "same": true,
+        "registered": 1,
+        "afterFirst": true,
+        "afterSecond": false,
+        "remaining": 0
+      }
+    },
+    {
+      "name": "duplicate-and-prepend-order",
+      "value": {
+        "seen": [
+          "g",
+          "f",
+          "g",
+          "f"
+        ],
+        "listeners": [
+          "g",
+          "f",
+          "g",
+          "f"
+        ],
+        "count": 4,
+        "selected": 2
+      }
+    },
+    {
+      "name": "once-order-and-wrapper-identity",
+      "value": {
+        "seen": [
+          "prep",
+          "stable",
+          "once",
+          "stable"
+        ],
+        "first": true,
+        "second": true,
+        "unwrapped": true,
+        "rawWrapper": true,
+        "stableRaw": true,
+        "onceRaw": true,
+        "remaining": [
+          "stable"
+        ]
+      }
+    },
+    {
+      "name": "once-recursive-emission-removes-before-call",
+      "value": {
+        "result": true,
+        "seen": [
+          [
+            "once",
+            1
+          ],
+          [
+            "stable"
+          ],
+          [
+            "nested",
+            true
+          ],
+          [
+            "stable"
+          ]
+        ],
+        "count": 1
+      }
+    },
+    {
+      "name": "remove-one-last-duplicate-removeListener",
+      "value": {
+        "same": true,
+        "seen": [
+          "f",
+          "g"
+        ],
+        "names": [
+          "f",
+          "g"
+        ],
+        "selected": 1
+      }
+    },
+    {
+      "name": "remove-one-last-duplicate-off",
+      "value": {
+        "same": true,
+        "seen": [
+          "f",
+          "g"
+        ],
+        "names": [
+          "f",
+          "g"
+        ],
+        "selected": 1
+      }
+    },
+    {
+      "name": "remove-once-once-original",
+      "value": {
+        "called": 0,
+        "emitted": false,
+        "count": 0
+      }
+    },
+    {
+      "name": "remove-once-once-wrapper",
+      "value": {
+        "called": 0,
+        "emitted": false,
+        "count": 0
+      }
+    },
+    {
+      "name": "remove-once-prependOnceListener-original",
+      "value": {
+        "called": 0,
+        "emitted": false,
+        "count": 0
+      }
+    },
+    {
+      "name": "remove-once-prependOnceListener-wrapper",
+      "value": {
+        "called": 0,
+        "emitted": false,
+        "count": 0
+      }
+    },
+    {
+      "name": "remove-missing-noop",
+      "value": {
+        "same": true,
+        "other": true,
+        "count": 1,
+        "events": [
+          "x"
+        ]
+      }
+    },
+    {
+      "name": "once-wrapper-direct-call",
+      "value": {
+        "first": 42,
+        "second": {
+          "type": "undefined"
+        },
+        "seen": [
+          [
+            true,
+            [
+              "direct"
+            ]
+          ]
+        ],
+        "remaining": 0,
+        "event": false
+      }
+    },
+    {
+      "name": "mutate-remove-later-listener",
+      "value": {
+        "seen": [
+          "first",
+          "second",
+          "first"
+        ],
+        "count": 1
+      }
+    },
+    {
+      "name": "mutate-remove-self",
+      "value": {
+        "seen": [
+          "first",
+          "last",
+          "last"
+        ],
+        "count": 1
+      }
+    },
+    {
+      "name": "mutate-add-listener-deferred-until-next-emit",
+      "value": {
+        "seen": [
+          "first",
+          "second",
+          "first",
+          "second",
+          "late"
+        ],
+        "count": 3
+      }
+    },
+    {
+      "name": "mutate-remove-all-preserves-current-snapshot",
+      "value": {
+        "first": true,
+        "second": false,
+        "seen": [
+          "first",
+          "second"
+        ],
+        "count": 0
+      }
+    },
+    {
+      "name": "mutate-nested-emit-sees-current-registry",
+      "value": {
+        "seen": [
+          "first0",
+          "first1",
+          "second1",
+          "late1",
+          "second0"
+        ],
+        "count": 3
+      }
+    },
+    {
+      "name": "listeners-snapshots-are-independent",
+      "value": {
+        "counts": [
+          1,
+          0,
+          2
+        ],
+        "plain": [
+          "f",
+          "g"
+        ],
+        "rawOnce": true
+      }
+    },
+    {
+      "name": "event-key-order-and-symbol-identity",
+      "value": {
+        "events": [
+          "1",
+          "2",
+          "z",
+          "",
+          "a",
+          {
+            "symbol": "same",
+            "global": null
+          },
+          {
+            "symbol": "same",
+            "global": null
+          }
+        ],
+        "s1": 1,
+        "s2": 1,
+        "foreign": 0
+      }
+    },
+    {
+      "name": "string-event-\"\"",
+      "value": {
+        "present": true,
+        "seen": [
+          7
+        ],
+        "removed": false,
+        "keys": []
+      }
+    },
+    {
+      "name": "string-event-\"__proto__\"",
+      "value": {
+        "present": true,
+        "seen": [
+          7
+        ],
+        "removed": false,
+        "keys": []
+      }
+    },
+    {
+      "name": "string-event-\"constructor\"",
+      "value": {
+        "present": true,
+        "seen": [
+          7
+        ],
+        "removed": false,
+        "keys": []
+      }
+    },
+    {
+      "name": "string-event-\"toString\"",
+      "value": {
+        "present": true,
+        "seen": [
+          7
+        ],
+        "removed": false,
+        "keys": []
+      }
+    },
+    {
+      "name": "string-event-\"hasOwnProperty\"",
+      "value": {
+        "present": true,
+        "seen": [
+          7
+        ],
+        "removed": false,
+        "keys": []
+      }
+    },
+    {
+      "name": "string-event-\"0\"",
+      "value": {
+        "present": true,
+        "seen": [
+          7
+        ],
+        "removed": false,
+        "keys": []
+      }
+    },
+    {
+      "name": "string-event-\"01\"",
+      "value": {
+        "present": true,
+        "seen": [
+          7
+        ],
+        "removed": false,
+        "keys": []
+      }
+    },
+    {
+      "name": "string-event-\"\u00e9\"",
+      "value": {
+        "present": true,
+        "seen": [
+          7
+        ],
+        "removed": false,
+        "keys": []
+      }
+    },
+    {
+      "name": "string-event-\"\ud83d\ude00\"",
+      "value": {
+        "present": true,
+        "seen": [
+          7
+        ],
+        "removed": false,
+        "keys": []
+      }
+    },
+    {
+      "name": "ordinary-event-key-coercion-null",
+      "value": {
+        "result": true,
+        "seen": [
+          "called"
+        ],
+        "keys": [
+          "null"
+        ]
+      }
+    },
+    {
+      "name": "ordinary-event-key-coercion-undefined",
+      "value": {
+        "result": true,
+        "seen": [
+          "called"
+        ],
+        "keys": [
+          "undefined"
+        ]
+      }
+    },
+    {
+      "name": "ordinary-event-key-coercion-12",
+      "value": {
+        "result": true,
+        "seen": [
+          "called"
+        ],
+        "keys": [
+          "12"
+        ]
+      }
+    },
+    {
+      "name": "ordinary-event-key-coercion-true",
+      "value": {
+        "result": true,
+        "seen": [
+          "called"
+        ],
+        "keys": [
+          "true"
+        ]
+      }
+    },
+    {
+      "name": "object-key-coercion-order",
+      "value": {
+        "seen": [
+          "key",
+          "key",
+          "key",
+          "listener",
+          "key"
+        ],
+        "count": 0
+      }
+    },
+    {
+      "name": "newListener-before-insertion-and-nesting",
+      "value": {
+        "seen": [
+          [
+            "x",
+            "f",
+            0
+          ],
+          [
+            "x",
+            "extra",
+            0
+          ]
+        ],
+        "names": [
+          "extra",
+          "f"
+        ]
+      }
+    },
+    {
+      "name": "meta-events-unwrap-once-original",
+      "value": {
+        "seen": [
+          [
+            "new",
+            true,
+            0
+          ],
+          [
+            "remove",
+            true,
+            0
+          ]
+        ],
+        "count": 0
+      }
+    },
+    {
+      "name": "removeAll-meta-order",
+      "value": {
+        "same": true,
+        "seen": [
+          [
+            "x",
+            "g",
+            1
+          ],
+          [
+            "x",
+            "f",
+            0
+          ],
+          [
+            "y",
+            "h",
+            0
+          ]
+        ],
+        "events": []
+      }
+    },
+    {
+      "name": "removeAll-one-key-retains-other-and-symbol",
+      "value": {
+        "same": true,
+        "events": [
+          "y",
+          {
+            "symbol": "s",
+            "global": null
+          }
+        ],
+        "counts": [
+          0,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "caught-unhandled-error-preserves-object",
+      "value": {
+        "threw": true,
+        "same": true,
+        "name": "Error",
+        "code": null,
+        "message": "owned error",
+        "count": 0
+      }
+    },
+    {
+      "name": "caught-unhandled-error-value-undefined",
+      "value": {
+        "threw": {
+          "name": "Error",
+          "code": "ERR_UNHANDLED_ERROR",
+          "message": "Unhandled error. (undefined)"
+        }
+      }
+    },
+    {
+      "name": "caught-unhandled-error-value-null",
+      "value": {
+        "threw": {
+          "name": "Error",
+          "code": "ERR_UNHANDLED_ERROR",
+          "message": "Unhandled error. (null)"
+        }
+      }
+    },
+    {
+      "name": "caught-unhandled-error-value-owned error data",
+      "value": {
+        "threw": {
+          "name": "Error",
+          "code": "ERR_UNHANDLED_ERROR",
+          "message": "Unhandled error. ('owned error data')"
+        }
+      }
+    },
+    {
+      "name": "caught-unhandled-error-value-17",
+      "value": {
+        "threw": {
+          "name": "Error",
+          "code": "ERR_UNHANDLED_ERROR",
+          "message": "Unhandled error. (17)"
+        }
+      }
+    },
+    {
+      "name": "handled-error-is-ordinary-synchronous-event",
+      "value": {
+        "result": true,
+        "seen": [
+          [
+            true,
+            true
+          ]
+        ]
+      }
+    },
+    {
+      "name": "listener-throw-stops-current-dispatch",
+      "value": {
+        "same": true,
+        "seen": [
+          "first"
+        ],
+        "count": 2
+      }
+    },
+    {
+      "name": "once-listener-throw-remains-removed",
+      "value": {
+        "same": true,
+        "seen": [
+          "once",
+          "stable"
+        ],
+        "second": true,
+        "count": 1
+      }
+    },
+    {
+      "name": "invalid-listener-on-null",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received null"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-on-undefined",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received undefined"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-on-number",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received type number (1)"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-on-object",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received an instance of Object"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-on-string",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received type string ('listener')"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-addListener-null",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received null"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-addListener-undefined",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received undefined"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-addListener-number",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received type number (1)"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-addListener-object",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received an instance of Object"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-addListener-string",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received type string ('listener')"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-prependListener-null",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received null"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-prependListener-undefined",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received undefined"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-prependListener-number",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received type number (1)"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-prependListener-object",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received an instance of Object"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-prependListener-string",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received type string ('listener')"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-once-null",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received null"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-once-undefined",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received undefined"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-once-number",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received type number (1)"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-once-object",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received an instance of Object"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-once-string",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received type string ('listener')"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-prependOnceListener-null",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received null"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-prependOnceListener-undefined",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received undefined"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-prependOnceListener-number",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received type number (1)"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-prependOnceListener-object",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received an instance of Object"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-prependOnceListener-string",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received type string ('listener')"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-removeListener-null",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received null"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-removeListener-undefined",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received undefined"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-removeListener-number",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received type number (1)"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-removeListener-object",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received an instance of Object"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-removeListener-string",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received type string ('listener')"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-off-null",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received null"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-off-undefined",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received undefined"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-off-number",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received type number (1)"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-off-object",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received an instance of Object"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-off-string",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"listener\" argument must be of type function. Received type string ('listener')"
+        }
+      }
+    },
+    {
+      "name": "invalid-listener-before-key-coercion",
+      "value": {
+        "result": {
+          "threw": {
+            "name": "TypeError",
+            "code": "ERR_INVALID_ARG_TYPE",
+            "message": "The \"listener\" argument must be of type function. Received null"
+          }
+        },
+        "seen": [],
+        "events": []
+      }
+    },
+    {
+      "name": "ordinary-max-listener-state",
+      "value": {
+        "before": 10,
+        "values": [
+          [
+            0,
+            true,
+            true,
+            10
+          ],
+          [
+            1,
+            true,
+            true,
+            10
+          ],
+          [
+            3,
+            true,
+            true,
+            10
+          ],
+          [
+            "Infinity",
+            true,
+            true,
+            10
+          ]
+        ]
+      }
+    },
+    {
+      "name": "invalid-setMaxListeners-number",
+      "value": {
+        "threw": {
+          "name": "RangeError",
+          "code": "ERR_OUT_OF_RANGE",
+          "message": "The value of \"setMaxListeners\" is out of range. It must be >= 0. Received -1"
+        }
+      }
+    },
+    {
+      "name": "invalid-setMaxListeners-NaN",
+      "value": {
+        "threw": {
+          "name": "RangeError",
+          "code": "ERR_OUT_OF_RANGE",
+          "message": "The value of \"setMaxListeners\" is out of range. It must be >= 0. Received NaN"
+        }
+      }
+    },
+    {
+      "name": "invalid-setMaxListeners-string",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"setMaxListeners\" argument must be of type number. Received type string ('3')"
+        }
+      }
+    },
+    {
+      "name": "invalid-setMaxListeners-null",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"setMaxListeners\" argument must be of type number. Received null"
+        }
+      }
+    },
+    {
+      "name": "invalid-setMaxListeners-undefined",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"setMaxListeners\" argument must be of type number. Received undefined"
+        }
+      }
+    },
+    {
+      "name": "invalid-setMaxListeners-object",
+      "value": {
+        "threw": {
+          "name": "TypeError",
+          "code": "ERR_INVALID_ARG_TYPE",
+          "message": "The \"setMaxListeners\" argument must be of type number. Received an instance of Object"
+        }
+      }
+    },
+    {
+      "name": "defaultMaxListeners-shared-by-alias-and-instance-overrides",
+      "value": {
+        "alias": 4,
+        "prior": 4,
+        "next": 4,
+        "own": 2
+      }
+    },
+    {
+      "name": "state-survives-ordinary-caught-error-and-removal",
+      "value": {
+        "failure": {
+          "threw": {
+            "name": "TypeError",
+            "code": "ERR_INVALID_ARG_TYPE",
+            "message": "The \"listener\" argument must be of type function. Received null"
+          }
+        },
+        "emitted": true,
+        "seen": [
+          "after"
+        ],
+        "remaining": []
+      }
+    }
+  ]
+}

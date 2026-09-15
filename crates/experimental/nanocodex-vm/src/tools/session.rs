@@ -1068,7 +1068,7 @@ impl VmToolSessionHandle {
         );
         let started_at = Instant::now();
         let result = self
-            .request_inner(tool, input, context, &span)
+            .request_inner(tool.into(), input, context, &span)
             .instrument(span.clone())
             .await;
         if let Ok(execution) = &result {
@@ -1080,7 +1080,7 @@ impl VmToolSessionHandle {
 
     async fn request_inner(
         &self,
-        tool: StandardTool,
+        tool: super::protocol::GuestTool,
         input: ToolInput,
         context: ToolContext<'_>,
         span: &tracing::Span,
@@ -1907,6 +1907,28 @@ fn elapsed_ns(started_at: Instant) -> u64 {
 
 #[async_trait::async_trait]
 impl VmToolClient for VmToolSessionHandle {
+    async fn computer(
+        &self,
+        request: Option<nanocodex_computer::ComputerRequest>,
+        context: ToolContext<'_>,
+    ) -> ToolResult {
+        use super::protocol::{ComputerToolKind, GuestTool};
+        let (kind, args) = match request {
+            Some(request) => {
+                request.validate()?;
+                (ComputerToolKind::Cua, serde_json::to_value(request)?)
+            }
+            None => (ComputerToolKind::CuaReset, serde_json::json!({})),
+        };
+        self.request_inner(
+            GuestTool::Computer(kind),
+            ToolInput::Function(serde_json::value::to_raw_value(&args)?),
+            context,
+            &tracing::Span::current(),
+        )
+        .await
+        .map_err(|error| Box::new(error) as _)
+    }
     async fn execute(
         &self,
         tool: StandardTool,

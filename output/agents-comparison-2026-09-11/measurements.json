@@ -1,0 +1,5852 @@
+{
+  "version": 1,
+  "started_at": "2026-09-11T09:00:02.804Z",
+  "prompt": "Return only the sum of 17 and 25 as decimal digits.",
+  "instructions": "Follow the user request precisely. Keep the final answer short.",
+  "reasoning": "low",
+  "models": [
+    "gpt-5.6-luna",
+    "gpt-5.6-terra",
+    "gpt-5.6-sol",
+    "gpt-6-astra"
+  ],
+  "tiers": [
+    "default",
+    "fast"
+  ],
+  "repetitions": 3,
+  "seed": 20260911,
+  "complete": true,
+  "finished_at": "2026-09-11T09:11:20.625Z",
+  "records": [
+    {
+      "model": "gpt-6-astra",
+      "tier": "fast",
+      "path": "nanocodex_node",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:00:02.805Z",
+      "text": "",
+      "ttft_ms": 29021.311916,
+      "usage": {
+        "input_tokens": 6570,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6567
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6575
+      },
+      "agent_setup_ms": 21.452249999999992,
+      "model_started_ms": 39.52020799999997,
+      "connection_ms": 11628.644,
+      "first_event_ms": 28019.776875,
+      "reported_tier": "fast",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-6-astra",
+          "response_id": "resp_0690a486e015daba016aa3c32df3bc87d1830280b15634d1ad",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 29200923416,
+          "time_to_first_event_ns": 27989144667,
+          "time_to_first_output_ns": 28980652417,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6570,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6567
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6575
+          }
+        }
+      ],
+      "completion_ms": 29234.450375,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6570,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6567,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6575,
+        "estimated_cost": {
+          "usd": "0.164735",
+          "input_usd": "0.00006",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.164175",
+          "output_usd": "0.0005",
+          "service_tier": "fast"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 29256.444459,
+      "measurement_wall_ms": 29263.870666,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.164735,
+        "high": 0.164735,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 11664.928375000001,
+          "type": "response.create",
+          "model": "gpt-6-astra",
+          "service_tier": "priority",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "default",
+      "path": "responses_http",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:00:32.072Z",
+      "text": "42",
+      "ttft_ms": 4299.4574159999975,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 3988.126749999996,
+      "status": 200,
+      "request_id": "req_d7b87614be1948e9935e838cd823d261",
+      "first_event_ms": 3988.8192500000005,
+      "reported_tier": "default",
+      "first_complete_text_ms": 4510.4673330000005,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 4511.2829159999965,
+      "measurement_wall_ms": 4516.333875000004,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000132,
+        "high": 0.000132,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "path": "responses_ws",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:00:36.594Z",
+      "text": "42",
+      "ttft_ms": 1118.6705419999998,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": false,
+      "connection_ms": 3629.668208999996,
+      "first_event_ms": 594.1562090000007,
+      "reported_tier": "default",
+      "first_complete_text_ms": 1146.3274999999994,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1147.2186250000013,
+      "measurement_wall_ms": 4777.459292,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000013199999999999999,
+        "high": 0.000013199999999999999,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "default",
+      "path": "nanocodex_node",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:00:41.379Z",
+      "text": "",
+      "ttft_ms": 3031.081542,
+      "usage": {
+        "input_tokens": 6018,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6015
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6023
+      },
+      "agent_setup_ms": 1.856832999998005,
+      "model_started_ms": 3.575042000004032,
+      "connection_ms": 1709.509375,
+      "first_event_ms": 2107.1668750000026,
+      "reported_tier": "default",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-5.6-terra",
+          "response_id": "resp_0c2e004e5cd4b7da016aa3c33b4f4087d1a7801e89cee27891",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 3104431166,
+          "time_to_first_event_ns": 2103556458,
+          "time_to_first_output_ns": 3027672667,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6018,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6015
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6023
+          }
+        }
+      ],
+      "completion_ms": 3108.8347090000025,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6018,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6015,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6023,
+        "estimated_cost": {
+          "usd": "0.0151035",
+          "input_usd": "0.000006",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.0150375",
+          "output_usd": "0.00006",
+          "service_tier": "standard"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 3110.8248329999988,
+      "measurement_wall_ms": 3114.5748329999988,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.0151035,
+        "high": 0.0151035,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 1712.413542000002,
+          "type": "response.create",
+          "model": "gpt-5.6-terra",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "fast",
+      "path": "nanocodex_node",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:00:44.501Z",
+      "text": "",
+      "ttft_ms": 2817.3640410000007,
+      "usage": {
+        "input_tokens": 6018,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6015
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6023
+      },
+      "agent_setup_ms": 0.5899169999975129,
+      "model_started_ms": 2.834332999998878,
+      "connection_ms": 1080.934833,
+      "first_event_ms": 2045.4699580000015,
+      "reported_tier": "priority",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-5.6-sol",
+          "response_id": "resp_0b0fcf3a16aa5bab016aa3c33e6a4087d18b0dcfac9a9fd13d",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 2827427875,
+          "time_to_first_event_ns": 2044114750,
+          "time_to_first_output_ns": 2807996333,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6018,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6015
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6023
+          }
+        }
+      ],
+      "completion_ms": 2828.653999999995,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6018,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6015,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6023,
+        "estimated_cost": {
+          "usd": "0.060374",
+          "input_usd": "0.000024",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.06015",
+          "output_usd": "0.0002",
+          "service_tier": "priority"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 2829.2697499999995,
+      "measurement_wall_ms": 2829.6152079999956,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.060374,
+        "high": 0.060374,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 1090.6243329999998,
+          "type": "response.create",
+          "model": "gpt-5.6-sol",
+          "service_tier": "priority",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "default",
+      "path": "openai_agents",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:00:47.334Z",
+      "text": "42",
+      "ttft_ms": 8625.138665999999,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "headers_ms": 2292.488832999996,
+      "status": 201,
+      "request_id": "req_6fc3b01f58974b9a927219473698d87e",
+      "first_event_ms": 2296.0380829999995,
+      "session_id": "sess_0f055712fb1e0155006aa3c34079548191869a6e9108decee0",
+      "turn_id": "turn_0f055712fb1e0155006aa3c34608dc81918cfe134bb9ffcc6e",
+      "first_complete_text_ms": 8625.247208,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 9899.309499999996,
+      "measurement_wall_ms": 9899.568749999999,
+      "saved_turn": {
+        "id": "turn_0f055712fb1e0155006aa3c34608dc81918cfe134bb9ffcc6e",
+        "object": "agent.session.turn",
+        "session_id": "sess_0f055712fb1e0155006aa3c34079548191869a6e9108decee0",
+        "agent_id": "agent_f9cb72abd5a740a3b8fe06fd68f00aea08abaabcb88948438d",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117252,
+        "started_at": 1789117252,
+        "completed_at": 1789117254,
+        "error": null,
+        "usage": {
+          "input_tokens": 6077,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 6082
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.012214,
+        "high": 0.015252499999999999,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "path": "openai_agents",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:01:06.199Z",
+      "text": "42",
+      "ttft_ms": 8332.248708,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "headers_ms": 2029.0216250000085,
+      "status": 201,
+      "request_id": "req_030a9ac7e007459c8cdfa030ec73193c",
+      "first_event_ms": 2029.3748750000086,
+      "session_id": "sess_0e4fbb683f47c3fb006aa3c3536e908191ab5895f64be8ac1b",
+      "turn_id": "turn_0e4fbb683f47c3fb006aa3c35820948191a347dead1bd43b26",
+      "first_complete_text_ms": 8332.256625000009,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 9335.277457999997,
+      "measurement_wall_ms": 9335.499332999992,
+      "saved_turn": {
+        "id": "turn_0e4fbb683f47c3fb006aa3c35820948191a347dead1bd43b26",
+        "object": "agent.session.turn",
+        "session_id": "sess_0e4fbb683f47c3fb006aa3c3536e908191ab5895f64be8ac1b",
+        "agent_id": "agent_ff4109fb9d754970b5442d6153d11303839c46773bb34c5db6",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117270,
+        "started_at": 1789117270,
+        "completed_at": 1789117272,
+        "error": null,
+        "usage": {
+          "input_tokens": 6077,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 6082
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.0012214,
+        "high": 0.0015252500000000001,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "default",
+      "path": "responses_http",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:01:24.502Z",
+      "text": "42",
+      "ttft_ms": 1133.8131250000006,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 773.2054169999901,
+      "status": 200,
+      "request_id": "req_896bac5b86c44b55b00e341cf6084dd2",
+      "first_event_ms": 773.5114170000015,
+      "reported_tier": "default",
+      "first_complete_text_ms": 1251.5813329999946,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1287.1809999999969,
+      "measurement_wall_ms": 1288.051250000004,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000244,
+        "high": 0.000244,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "fast",
+      "path": "nanocodex_node",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:01:25.805Z",
+      "text": "",
+      "ttft_ms": 2170.3229580000043,
+      "usage": {
+        "input_tokens": 6018,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6015
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6023
+      },
+      "agent_setup_ms": 0.7353750000038417,
+      "model_started_ms": 2.6775410000118427,
+      "connection_ms": 1149.950333,
+      "first_event_ms": 1728.2799999999988,
+      "reported_tier": "priority",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-5.6-terra",
+          "response_id": "resp_00e067f8d03aaf00016aa3c3674f4087d194859a2b3b70cd09",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 2344668584,
+          "time_to_first_event_ns": 1726358375,
+          "time_to_first_output_ns": 2168719084,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6018,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6015
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6023
+          }
+        }
+      ],
+      "completion_ms": 2346.6689580000093,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6018,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6015,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6023,
+        "estimated_cost": {
+          "usd": "0.030207",
+          "input_usd": "0.000012",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.030075",
+          "output_usd": "0.00012",
+          "service_tier": "priority"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 2347.4302920000046,
+      "measurement_wall_ms": 2347.766749999995,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.030207,
+        "high": 0.030207,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 1152.3230410000106,
+          "type": "response.create",
+          "model": "gpt-5.6-terra",
+          "service_tier": "priority",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "fast",
+      "path": "responses_http",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:01:28.166Z",
+      "text": "42",
+      "ttft_ms": 994.3479579999985,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 776.0157920000056,
+      "status": 200,
+      "request_id": "req_47b93ca878ef487eb4b40ed7019fff49",
+      "first_event_ms": 776.3068750000093,
+      "reported_tier": "priority",
+      "first_complete_text_ms": 1041.8115830000024,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1060.5546250000043,
+      "measurement_wall_ms": 1060.9536670000089,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000488,
+        "high": 0.000488,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "fast",
+      "path": "responses_ws",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:01:29.245Z",
+      "text": "42",
+      "ttft_ms": 1578.4186670000054,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": false,
+      "connection_ms": 1698.8564579999947,
+      "first_event_ms": 905.3220000000001,
+      "reported_tier": "fast",
+      "first_complete_text_ms": 1578.5266669999983,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1579.343875000006,
+      "measurement_wall_ms": 3278.313709000009,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.00122,
+        "high": 0.00122,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "default",
+      "path": "nanocodex_node",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:01:32.547Z",
+      "text": "",
+      "ttft_ms": 9743.720917000013,
+      "usage": {
+        "input_tokens": 6018,
+        "input_tokens_details": {
+          "cached_tokens": 6015,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6023
+      },
+      "agent_setup_ms": 0.6842079999914858,
+      "model_started_ms": 1.4109170000010636,
+      "connection_ms": 1042.324959,
+      "first_event_ms": 1276.411042000007,
+      "reported_tier": "default",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-5.6-sol",
+          "response_id": "resp_081b15668691bacb016aa3c3720d4087d189ce61c3e1080809",
+          "attempt": 3,
+          "connection_generation": 3,
+          "status": "completed",
+          "duration_ns": 9860654459,
+          "time_to_first_event_ns": 1671856167,
+          "time_to_first_output_ns": 5758118875,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6018,
+            "input_tokens_details": {
+              "cached_tokens": 6015,
+              "cache_write_tokens": 0
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6023
+          }
+        }
+      ],
+      "completion_ms": 9861.981417000003,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6018,
+        "cached_input_tokens": 6015,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6023,
+        "estimated_cost": {
+          "usd": "0.002518",
+          "input_usd": "0.000012",
+          "cached_input_usd": "0.002406",
+          "cache_write_input_usd": "0",
+          "output_usd": "0.0001",
+          "service_tier": "standard"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 9862.698040999996,
+      "measurement_wall_ms": 9863.089084000007,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.002518,
+        "high": 0.002518,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 952.3873750000057,
+          "type": "response.create",
+          "model": "gpt-5.6-sol",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        },
+        {
+          "elapsed_ms": 2911.913042,
+          "type": "response.create",
+          "model": "gpt-5.6-sol",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        },
+        {
+          "elapsed_ms": 5028.682125000007,
+          "type": "response.create",
+          "model": "gpt-5.6-sol",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "default",
+      "path": "openai_agents",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:01:42.417Z",
+      "text": "42",
+      "ttft_ms": 11690.586083999995,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "headers_ms": 2208.8970839999965,
+      "status": 201,
+      "request_id": "req_bc7d89269ae74689bf7673a1632b1e75",
+      "first_event_ms": 2209.2407089999906,
+      "session_id": "sess_028e5783fa91bbcd006aa3c37776948191ba51f94f1ea2bead",
+      "turn_id": "turn_028e5783fa91bbcd006aa3c37d79f481918a547b2194bfa8cb",
+      "first_complete_text_ms": 11766.233083999992,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 27163.71616699999,
+      "measurement_wall_ms": 27164.287624999997,
+      "saved_turn": {
+        "id": "turn_028e5783fa91bbcd006aa3c37d79f481918a547b2194bfa8cb",
+        "object": "agent.session.turn",
+        "session_id": "sess_028e5783fa91bbcd006aa3c37776948191ba51f94f1ea2bead",
+        "agent_id": "agent_2b7155991d37490a8e740eec61e8ae170a5b680435544f52af",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117307,
+        "started_at": 1789117307,
+        "completed_at": 1789117315,
+        "error": null,
+        "usage": {
+          "input_tokens": 6077,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 6082
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.024408,
+        "high": 0.030484999999999998,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "fast",
+      "path": "openai_agents",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:02:17.959Z",
+      "text": "42",
+      "ttft_ms": 11230.813208000007,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "headers_ms": 2024.2988750000077,
+      "status": 201,
+      "request_id": "req_20e6eca0c8dd424abffe2950ef87eda8",
+      "first_event_ms": 2024.510958000028,
+      "session_id": "sess_0fbc63c76912cfb6006aa3c39afc3081918cc249e4853a273b",
+      "turn_id": "turn_0fbc63c76912cfb6006aa3c3a24f5c8191b80c35a1f1c8fb57",
+      "first_complete_text_ms": 11230.824375000026,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 12326.412125000003,
+      "measurement_wall_ms": 12327.788333000004,
+      "saved_turn": {
+        "id": "turn_0fbc63c76912cfb6006aa3c3a24f5c8191b80c35a1f1c8fb57",
+        "object": "agent.session.turn",
+        "session_id": "sess_0fbc63c76912cfb6006aa3c39afc3081918cc249e4853a273b",
+        "agent_id": "agent_385bff152a4643b698dc4d5e14f1dfc34447e92c446b4212ab",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117344,
+        "started_at": 1789117344,
+        "completed_at": 1789117347,
+        "error": null,
+        "usage": {
+          "input_tokens": 6077,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 6082
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.024428,
+        "high": 0.030504999999999997,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "default",
+      "path": "openai_agents",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:02:40.728Z",
+      "text": "42",
+      "ttft_ms": 10290.683458000014,
+      "usage": {
+        "input_tokens": 7116,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 7121
+      },
+      "headers_ms": 2226.657999999996,
+      "status": 201,
+      "request_id": "req_0735dceab5424d5ab7e9f71904465fd7",
+      "first_event_ms": 2227.7488750000193,
+      "session_id": "sess_01d9e155f696e1d7006aa3c3b1ea0481918889789a67e61188",
+      "turn_id": "turn_01d9e155f696e1d7006aa3c3b844888191af711e781f80811d",
+      "first_complete_text_ms": 10290.710374999995,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 12443.000583000015,
+      "measurement_wall_ms": 12443.315666999988,
+      "saved_turn": {
+        "id": "turn_01d9e155f696e1d7006aa3c3b844888191af711e781f80811d",
+        "object": "agent.session.turn",
+        "session_id": "sess_01d9e155f696e1d7006aa3c3b1ea0481918889789a67e61188",
+        "agent_id": "agent_34e5af683ee54e0d81e1067ea0dfdbe0541efe37eb4c497188",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117366,
+        "started_at": 1789117366,
+        "completed_at": 1789117369,
+        "error": null,
+        "usage": {
+          "input_tokens": 7116,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 7121
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.07141,
+        "high": 0.0892,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "fast",
+      "path": "responses_ws",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:03:00.502Z",
+      "text": "42",
+      "ttft_ms": 800.5608749999956,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": false,
+      "connection_ms": 4394.769792000006,
+      "first_event_ms": 342.5392920000013,
+      "reported_tier": "priority",
+      "first_complete_text_ms": 874.5546669999894,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 877.5544170000067,
+      "measurement_wall_ms": 5272.454041999998,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000488,
+        "high": 0.000488,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "default",
+      "path": "responses_http",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:03:05.798Z",
+      "text": "42",
+      "ttft_ms": 2974.8439159999834,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 2209.166124999989,
+      "status": 200,
+      "request_id": "req_8b7ec0ce619d47c4949998066ee1433c",
+      "first_event_ms": 2211.1029159999744,
+      "reported_tier": "default",
+      "first_complete_text_ms": 3163.940499999997,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 3186.8106659999758,
+      "measurement_wall_ms": 3187.0670830000017,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.00061,
+        "high": 0.00061,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "fast",
+      "path": "openai_agents",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:03:09.005Z",
+      "text": "42",
+      "ttft_ms": 11691.208125000005,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "headers_ms": 3120.855209000001,
+      "status": 201,
+      "request_id": "req_386b46074a0745cd89d3d7f9b83deb74",
+      "first_event_ms": 3120.99337500002,
+      "session_id": "sess_0c9f48cb6f998caa006aa3c3ce7c7081918810e50ede06b043",
+      "turn_id": "turn_0c9f48cb6f998caa006aa3c3d5a0dc81918872d8003000163c",
+      "first_complete_text_ms": 11691.234209000017,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 11691.50904200002,
+      "measurement_wall_ms": 11692.044875000021,
+      "saved_turn": {
+        "id": "turn_0c9f48cb6f998caa006aa3c3d5a0dc81918872d8003000163c",
+        "object": "agent.session.turn",
+        "session_id": "sess_0c9f48cb6f998caa006aa3c3ce7c7081918810e50ede06b043",
+        "agent_id": "agent_8979685b88f141b4a94339c7d6c8bbb0e1cc9905595a4670b0",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117396,
+        "started_at": 1789117396,
+        "completed_at": 1789117398,
+        "error": null,
+        "usage": {
+          "input_tokens": 6077,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 6082
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.048816,
+        "high": 0.060969999999999996,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "path": "responses_http",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:03:28.430Z",
+      "text": "42",
+      "ttft_ms": 714.1416250000184,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 518.918875000003,
+      "status": 200,
+      "request_id": "req_7458b7c4538d4697bac641640cdcfba6",
+      "first_event_ms": 519.1512499999953,
+      "reported_tier": "default",
+      "first_complete_text_ms": 910.7235830000136,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1057.531083000009,
+      "measurement_wall_ms": 1058.564624999999,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000013199999999999999,
+        "high": 0.000013199999999999999,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "fast",
+      "path": "responses_http",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:03:29.502Z",
+      "text": "42",
+      "ttft_ms": 778.8280830000003,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 588.9367909999855,
+      "status": 200,
+      "request_id": "req_e32eebf7c5ab4a23ad1d65314e9fd38e",
+      "first_event_ms": 589.2768749999814,
+      "reported_tier": "priority",
+      "first_complete_text_ms": 832.2547079999931,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 895.982290999993,
+      "measurement_wall_ms": 903.5220829999889,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000026399999999999998,
+        "high": 0.000026399999999999998,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "path": "nanocodex_node",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:03:30.424Z",
+      "text": "",
+      "ttft_ms": 1772.7812080000003,
+      "usage": {
+        "input_tokens": 6018,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6015
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6023
+      },
+      "agent_setup_ms": 1.6347499999974389,
+      "model_started_ms": 2.954582999984268,
+      "connection_ms": 836.573042,
+      "first_event_ms": 1396.1997499999998,
+      "reported_tier": "default",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-5.6-luna",
+          "response_id": "resp_07ef1f74f7905a7e016aa3c3e3935887d1bd0fe03cf2113419",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 1808761125,
+          "time_to_first_event_ns": 1393511000,
+          "time_to_first_output_ns": 1769044042,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6018,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6015
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6023
+          }
+        }
+      ],
+      "completion_ms": 1810.924416999973,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6018,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6015,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6023,
+        "estimated_cost": {
+          "usd": "0.00151035",
+          "input_usd": "0.0000006",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.00150375",
+          "output_usd": "0.000006",
+          "service_tier": "standard"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 1812.591791999992,
+      "measurement_wall_ms": 1812.892291999975,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.00151035,
+        "high": 0.00151035,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 839.1379999999772,
+          "type": "response.create",
+          "model": "gpt-5.6-luna",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "default",
+      "path": "responses_ws",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:03:32.255Z",
+      "text": "42",
+      "ttft_ms": 5600.454874999996,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": false,
+      "connection_ms": 1040.3263330000045,
+      "first_event_ms": 338.62429199999315,
+      "reported_tier": "default",
+      "first_complete_text_ms": 5658.646166999999,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 5659.940207999985,
+      "measurement_wall_ms": 6700.516624999989,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000244,
+        "high": 0.000244,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "default",
+      "path": "responses_ws",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:03:38.980Z",
+      "text": "42",
+      "ttft_ms": 1032.826166999992,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": false,
+      "connection_ms": 1809.0476659999986,
+      "first_event_ms": 333.4004999999888,
+      "reported_tier": "default",
+      "first_complete_text_ms": 1033.005959000002,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1033.4110419999924,
+      "measurement_wall_ms": 2842.5672919999924,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000132,
+        "high": 0.000132,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "fast",
+      "path": "responses_ws",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:03:41.841Z",
+      "text": "42",
+      "ttft_ms": 1228.6802080000052,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": false,
+      "connection_ms": 942.9912499999919,
+      "first_event_ms": 741.0370410000032,
+      "reported_tier": "priority",
+      "first_complete_text_ms": 1270.2310830000206,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1271.7259160000249,
+      "measurement_wall_ms": 2214.8227079999924,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000264,
+        "high": 0.000264,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "fast",
+      "path": "openai_agents",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:03:44.083Z",
+      "text": "42",
+      "ttft_ms": 9535.454959000024,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "headers_ms": 2534.014334000007,
+      "status": 201,
+      "request_id": "req_28a6547d852f4d01942ec1d40ae7fa9f",
+      "first_event_ms": 2535.26133400001,
+      "session_id": "sess_00f7e1cc9237f624006aa3c3f1780c819197f2e04f256b7845",
+      "turn_id": "turn_00f7e1cc9237f624006aa3c3f6d6948191a604dffceeec728a",
+      "first_complete_text_ms": 9535.465834000002,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 10237.245292000007,
+      "measurement_wall_ms": 10237.477416999987,
+      "saved_turn": {
+        "id": "turn_00f7e1cc9237f624006aa3c3f6d6948191a604dffceeec728a",
+        "object": "agent.session.turn",
+        "session_id": "sess_00f7e1cc9237f624006aa3c3f1780c819197f2e04f256b7845",
+        "agent_id": "agent_7c115d2e71d94374891618992113ffcd952cdfa2224b48dcab",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117429,
+        "started_at": 1789117429,
+        "completed_at": 1789117431,
+        "error": null,
+        "usage": {
+          "input_tokens": 6077,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 6082
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.0024428,
+        "high": 0.0030505000000000003,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "fast",
+      "path": "nanocodex_node",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:04:01.755Z",
+      "text": "",
+      "ttft_ms": 4385.422124999983,
+      "usage": {
+        "input_tokens": 6018,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6015
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6023
+      },
+      "agent_setup_ms": 0.686333999998169,
+      "model_started_ms": 1.9998750000086147,
+      "connection_ms": 2465.221583,
+      "first_event_ms": 3656.935541999992,
+      "reported_tier": "priority",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-5.6-luna",
+          "response_id": "resp_0ac6571d00167364016aa3c4053ec487d1bc4859bcb152c42c",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 4452278708,
+          "time_to_first_event_ns": 3655632875,
+          "time_to_first_output_ns": 4383917958,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6018,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6015
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6023
+          }
+        }
+      ],
+      "completion_ms": 4453.554417000007,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6018,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6015,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6023,
+        "estimated_cost": {
+          "usd": "0.0030207",
+          "input_usd": "0.0000012",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.0030075",
+          "output_usd": "0.000012",
+          "service_tier": "priority"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 4454.267917000019,
+      "measurement_wall_ms": 4454.5688329999975,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.0030207,
+        "high": 0.0030207,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 2469.3154170000053,
+          "type": "response.create",
+          "model": "gpt-5.6-luna",
+          "service_tier": "priority",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "fast",
+      "path": "responses_http",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:04:06.226Z",
+      "text": "42",
+      "ttft_ms": 1421.7879169999796,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 1028.221749999997,
+      "status": 200,
+      "request_id": "req_e64680d2b4484a74a85f01799dc214bd",
+      "first_event_ms": 1028.6474579999922,
+      "reported_tier": "fast",
+      "first_complete_text_ms": 1561.543458,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1605.086249999993,
+      "measurement_wall_ms": 1605.3402089999872,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.00122,
+        "high": 0.00122,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "default",
+      "path": "responses_ws",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:04:07.842Z",
+      "text": "42",
+      "ttft_ms": 1107.4767500000016,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": false,
+      "connection_ms": 1387.9831669999985,
+      "first_event_ms": 347.4833749999816,
+      "reported_tier": "default",
+      "first_complete_text_ms": 1205.1313749999972,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1205.59375,
+      "measurement_wall_ms": 2593.7103329999954,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.00061,
+        "high": 0.00061,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "default",
+      "path": "nanocodex_node",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:04:10.466Z",
+      "text": "",
+      "ttft_ms": 2772.03145900002,
+      "usage": {
+        "input_tokens": 6570,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6567
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6575
+      },
+      "agent_setup_ms": 1.2884580000245478,
+      "model_started_ms": 2.892334000003757,
+      "connection_ms": 1081.147875,
+      "first_event_ms": 1413.07491700002,
+      "reported_tier": "default",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-6-astra",
+          "response_id": "resp_096e9519ef83e46a016aa3c40bbc1c87d18e1d75e88961fa98",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 2830248042,
+          "time_to_first_event_ns": 1410907000,
+          "time_to_first_output_ns": 2768720500,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6570,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6567
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6575
+          }
+        }
+      ],
+      "completion_ms": 2832.676542000001,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6570,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6567,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6575,
+        "estimated_cost": {
+          "usd": "0.0823675",
+          "input_usd": "0.00003",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.0820875",
+          "output_usd": "0.00025",
+          "service_tier": "standard"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 2834.0739580000227,
+      "measurement_wall_ms": 2835.034915999975,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.0823675,
+        "high": 0.0823675,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 1084.0900419999962,
+          "type": "response.create",
+          "model": "gpt-6-astra",
+          "service_tier": "default",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "fast",
+      "path": "openai_agents",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:04:13.334Z",
+      "text": "42",
+      "ttft_ms": 10408.092374999978,
+      "usage": {
+        "input_tokens": 7116,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 7121
+      },
+      "headers_ms": 3347.0521659999795,
+      "status": 201,
+      "request_id": "req_64c970429d41457c8b254befe6734e88",
+      "first_event_ms": 3347.446874999994,
+      "session_id": "sess_04d3f7c57b58bbc3006aa3c40fddf881919512aebc7769f49a",
+      "turn_id": "turn_04d3f7c57b58bbc3006aa3c4158ed08191b14319a7bfdbcc86",
+      "first_complete_text_ms": 10408.104749999999,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 11970.605416000006,
+      "measurement_wall_ms": 11972.753332999971,
+      "saved_turn": {
+        "id": "turn_04d3f7c57b58bbc3006aa3c4158ed08191b14319a7bfdbcc86",
+        "object": "agent.session.turn",
+        "session_id": "sess_04d3f7c57b58bbc3006aa3c40fddf881919512aebc7769f49a",
+        "agent_id": "agent_e1fe4ea413bd4375b90e747fbfbf86a50384546c6e2947aa9c",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117459,
+        "started_at": 1789117459,
+        "completed_at": 1789117462,
+        "error": null,
+        "usage": {
+          "input_tokens": 7116,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 7121
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.14282,
+        "high": 0.1784,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "fast",
+      "path": "responses_ws",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:04:31.682Z",
+      "text": "42",
+      "ttft_ms": 720.3184579999652,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": false,
+      "connection_ms": 1437.0785419999738,
+      "first_event_ms": 260.8334999999497,
+      "reported_tier": "priority",
+      "first_complete_text_ms": 751.4547909999965,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 767.0666659999988,
+      "measurement_wall_ms": 2204.3431669999845,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000026399999999999998,
+        "high": 0.000026399999999999998,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "fast",
+      "path": "responses_http",
+      "repetition": 1,
+      "started_at": "2026-09-11T09:04:33.916Z",
+      "text": "42",
+      "ttft_ms": 864.235875000013,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 599.1812500000233,
+      "status": 200,
+      "request_id": "req_09db4cfa5e754d28983e1fa3c6e4d588",
+      "first_event_ms": 599.528209000011,
+      "reported_tier": "priority",
+      "first_complete_text_ms": 920.7884170000325,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 946.3787090000114,
+      "measurement_wall_ms": 947.0418749999953,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000264,
+        "high": 0.000264,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "fast",
+      "path": "openai_agents",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:04:34.894Z",
+      "text": "42",
+      "ttft_ms": 8120.367415999994,
+      "usage": {
+        "input_tokens": 7116,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 7121
+      },
+      "headers_ms": 1944.453749999986,
+      "status": 201,
+      "request_id": "req_cd23ed6944f647c7995e6c15ff94b69d",
+      "first_event_ms": 1946.671457999968,
+      "session_id": "sess_0fb36bde338a1af1006aa3c423c9fc81918636c7305669c866",
+      "turn_id": "turn_0fb36bde338a1af1006aa3c4290b588191b0d5f652ea53563b",
+      "first_complete_text_ms": 8120.37725000002,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 9840.914540999976,
+      "measurement_wall_ms": 9842.369999999995,
+      "saved_turn": {
+        "id": "turn_0fb36bde338a1af1006aa3c4290b588191b0d5f652ea53563b",
+        "object": "agent.session.turn",
+        "session_id": "sess_0fb36bde338a1af1006aa3c423c9fc81918636c7305669c866",
+        "agent_id": "agent_f15452a0df7f4132a7a27e0baf723bca6337a7063a72475881",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117479,
+        "started_at": 1789117479,
+        "completed_at": 1789117482,
+        "error": null,
+        "usage": {
+          "input_tokens": 7116,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 7121
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.14282,
+        "high": 0.1784,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "path": "nanocodex_node",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:04:52.260Z",
+      "text": "",
+      "ttft_ms": 2399.9891249999637,
+      "usage": {
+        "input_tokens": 6018,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6015
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6023
+      },
+      "agent_setup_ms": 0.7228749999776483,
+      "model_started_ms": 1.6403750000172295,
+      "connection_ms": 1502.306166,
+      "first_event_ms": 1939.6915000000154,
+      "reported_tier": "default",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-5.6-luna",
+          "response_id": "resp_017bf41fa3892944016aa3c4360b1487d1a47fb8a4edfaac9f",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 2399982375,
+          "time_to_first_event_ns": 1936476958,
+          "time_to_first_output_ns": 2398578917,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6018,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6015
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6023
+          }
+        }
+      ],
+      "completion_ms": 2401.355082999973,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6018,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6015,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6023,
+        "estimated_cost": {
+          "usd": "0.00151035",
+          "input_usd": "0.0000006",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.00150375",
+          "output_usd": "0.000006",
+          "service_tier": "standard"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 2402.1086670000223,
+      "measurement_wall_ms": 2402.449874999991,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.00151035,
+        "high": 0.00151035,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 1505.8021249999874,
+          "type": "response.create",
+          "model": "gpt-5.6-luna",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "default",
+      "path": "responses_http",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:04:54.681Z",
+      "text": "42",
+      "ttft_ms": 1282.168416999979,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 761.2842919999966,
+      "status": 200,
+      "request_id": "req_c417405751e0474a9a3b5ee1d70a1fb5",
+      "first_event_ms": 762.4077499999548,
+      "reported_tier": "default",
+      "first_complete_text_ms": 1340.8389169999864,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1382.6734169999836,
+      "measurement_wall_ms": 1383.2278749999823,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.00061,
+        "high": 0.00061,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "fast",
+      "path": "responses_ws",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:04:56.083Z",
+      "text": "42",
+      "ttft_ms": 828.9790419999626,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": true,
+      "first_event_ms": 288.09799999999814,
+      "reported_tier": "priority",
+      "first_complete_text_ms": 861.4180419999757,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 861.5907499999739,
+      "measurement_wall_ms": 861.6647499999963,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000264,
+        "high": 0.000264,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "default",
+      "path": "responses_ws",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:04:56.959Z",
+      "text": "42",
+      "ttft_ms": 912.8545830000076,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": true,
+      "first_event_ms": 256.8481669999892,
+      "reported_tier": "default",
+      "first_complete_text_ms": 936.1116669999901,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 936.5043329999899,
+      "measurement_wall_ms": 936.645709000004,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000132,
+        "high": 0.000132,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "fast",
+      "path": "responses_ws",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:04:57.927Z",
+      "text": "42",
+      "ttft_ms": 658.140625,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": true,
+      "first_event_ms": 245.78966700000456,
+      "reported_tier": "priority",
+      "first_complete_text_ms": 695.7069170000032,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 695.8688339999644,
+      "measurement_wall_ms": 695.9672089999658,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000488,
+        "high": 0.000488,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "fast",
+      "path": "openai_agents",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:04:58.640Z",
+      "text": "42",
+      "ttft_ms": 10430.825750000018,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "headers_ms": 2657.4121670000022,
+      "status": 201,
+      "request_id": "req_a83348e9fb4249c99e375a7298ad7e4b",
+      "first_event_ms": 2657.8332919999957,
+      "session_id": "sess_08729346213fc561006aa3c43c32d481918467436b73bd51b6",
+      "turn_id": "turn_08729346213fc561006aa3c441a038819194fb70575e16eb23",
+      "first_complete_text_ms": 10430.869250000047,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 10553.159583,
+      "measurement_wall_ms": 10553.415708000015,
+      "saved_turn": {
+        "id": "turn_08729346213fc561006aa3c441a038819194fb70575e16eb23",
+        "object": "agent.session.turn",
+        "session_id": "sess_08729346213fc561006aa3c43c32d481918467436b73bd51b6",
+        "agent_id": "agent_3334a164b0364773aadfc0bbf23b5bce5f605eb6035a4a3aa7",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117504,
+        "started_at": 1789117504,
+        "completed_at": 1789117505,
+        "error": null,
+        "usage": {
+          "input_tokens": 6077,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 6082
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.0024428,
+        "high": 0.0030505000000000003,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "default",
+      "path": "nanocodex_node",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:05:17.539Z",
+      "text": "",
+      "ttft_ms": 4703.583291999996,
+      "usage": {
+        "input_tokens": 6570,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6567
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6575
+      },
+      "agent_setup_ms": 0.7798330000368878,
+      "model_started_ms": 1.6589999999850988,
+      "connection_ms": 2325.209125,
+      "first_event_ms": 2879.419958000013,
+      "reported_tier": "default",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-6-astra",
+          "response_id": "resp_04e2d4639285ac62016aa3c45049d487d1b90cbf7f3f41c519",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 5335596042,
+          "time_to_first_event_ns": 2877861166,
+          "time_to_first_output_ns": 4702401250,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6570,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6567
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6575
+          }
+        }
+      ],
+      "completion_ms": 5336.969666999998,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6570,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6567,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6575,
+        "estimated_cost": {
+          "usd": "0.0823675",
+          "input_usd": "0.00003",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.0820875",
+          "output_usd": "0.00025",
+          "service_tier": "standard"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 5337.825167000003,
+      "measurement_wall_ms": 5338.618666999973,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.0823675,
+        "high": 0.0823675,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 2326.510917000007,
+          "type": "response.create",
+          "model": "gpt-6-astra",
+          "service_tier": "default",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "fast",
+      "path": "openai_agents",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:05:22.899Z",
+      "text": "42",
+      "ttft_ms": 8546.24212499999,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "headers_ms": 1854.4255830000038,
+      "status": 201,
+      "request_id": "req_b18e4a6cfc0c4ea6bf6ec372235c314d",
+      "first_event_ms": 1854.7714160000323,
+      "session_id": "sess_00f28af569e9a43e006aa3c454021481918729c7afa3ea89cf",
+      "turn_id": "turn_00f28af569e9a43e006aa3c458af9481918755389fd6e85dbc",
+      "first_complete_text_ms": 8546.260707999987,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 11461.002333000011,
+      "measurement_wall_ms": 11461.299915999989,
+      "saved_turn": {
+        "id": "turn_00f28af569e9a43e006aa3c458af9481918755389fd6e85dbc",
+        "object": "agent.session.turn",
+        "session_id": "sess_00f28af569e9a43e006aa3c454021481918729c7afa3ea89cf",
+        "agent_id": "agent_cfbe9ad883b14997b159a0968032d05bd05a17fefe3b484394",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117527,
+        "started_at": 1789117527,
+        "completed_at": 1789117531,
+        "error": null,
+        "usage": {
+          "input_tokens": 6077,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 6082
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.024428,
+        "high": 0.030504999999999997,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "fast",
+      "path": "nanocodex_node",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:05:42.248Z",
+      "text": "",
+      "ttft_ms": 3062.8817920000292,
+      "usage": {
+        "input_tokens": 6570,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6567
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6575
+      },
+      "agent_setup_ms": 0.8035839999793097,
+      "model_started_ms": 1.5552090000128374,
+      "connection_ms": 1010.825292,
+      "first_event_ms": 2135.305250000034,
+      "reported_tier": "fast",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-6-astra",
+          "response_id": "resp_0d7ff85f20bbb884016aa3c468418c87d18a99b244ebf1a250",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 3240360125,
+          "time_to_first_event_ns": 2134248542,
+          "time_to_first_output_ns": 3055951959,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6570,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6567
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6575
+          }
+        }
+      ],
+      "completion_ms": 3241.7990839999984,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6570,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6567,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6575,
+        "estimated_cost": {
+          "usd": "0.164735",
+          "input_usd": "0.00006",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.164175",
+          "output_usd": "0.0005",
+          "service_tier": "fast"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 3242.6607089999598,
+      "measurement_wall_ms": 3243.561166999978,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.164735,
+        "high": 0.164735,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 1012.7170840000035,
+          "type": "response.create",
+          "model": "gpt-6-astra",
+          "service_tier": "priority",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "default",
+      "path": "responses_http",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:05:45.517Z",
+      "text": "42",
+      "ttft_ms": 4031.953458999982,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 1813.800916999986,
+      "status": 200,
+      "request_id": "req_fa428a926def4c14a51f6929893de0cc",
+      "first_event_ms": 1814.2269589999923,
+      "reported_tier": "default",
+      "first_complete_text_ms": 4211.0190839999705,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 4250.882333999965,
+      "measurement_wall_ms": 4251.144749999978,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000244,
+        "high": 0.000244,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "fast",
+      "path": "responses_http",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:05:49.786Z",
+      "text": "42",
+      "ttft_ms": 1588.2387500000186,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 1379.6997500000289,
+      "status": 200,
+      "request_id": "req_3637d769af97460f803cea5662b26d3a",
+      "first_event_ms": 1380.2357499999925,
+      "reported_tier": "priority",
+      "first_complete_text_ms": 1670.0427500000224,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1730.6457919999957,
+      "measurement_wall_ms": 1730.9673750000075,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000026399999999999998,
+        "high": 0.000026399999999999998,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "fast",
+      "path": "responses_http",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:05:51.551Z",
+      "text": "42",
+      "ttft_ms": 816.5824589999975,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 570.9887500000186,
+      "status": 200,
+      "request_id": "req_f69ceecaf11b40748c777e32b6719aec",
+      "first_event_ms": 581.6561249999795,
+      "reported_tier": "priority",
+      "first_complete_text_ms": 948.741875000007,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 977.3476249999949,
+      "measurement_wall_ms": 977.5679590000072,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000488,
+        "high": 0.000488,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "fast",
+      "path": "openai_agents",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:05:52.561Z",
+      "text": "42",
+      "ttft_ms": 8161.674375000002,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "headers_ms": 1863.1596250000293,
+      "status": 201,
+      "request_id": "req_0dfec2746ffc42e2b780aac07ecd6938",
+      "first_event_ms": 1863.597208000021,
+      "session_id": "sess_089abb53342250a8006aa3c47175308191b7f3b7fefe8f2e9b",
+      "turn_id": "turn_089abb53342250a8006aa3c47672588191af6baee2d1943140",
+      "first_complete_text_ms": 8161.689000000013,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 10423.89512499998,
+      "measurement_wall_ms": 10424.383582999988,
+      "saved_turn": {
+        "id": "turn_089abb53342250a8006aa3c47672588191af6baee2d1943140",
+        "object": "agent.session.turn",
+        "session_id": "sess_089abb53342250a8006aa3c47175308191b7f3b7fefe8f2e9b",
+        "agent_id": "agent_3a8c020e22e64d859716cbaa7eadc085de05939d33ff4f1dbd",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117557,
+        "started_at": 1789117557,
+        "completed_at": 1789117560,
+        "error": null,
+        "usage": {
+          "input_tokens": 6077,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 6082
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.048816,
+        "high": 0.060969999999999996,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "fast",
+      "path": "responses_ws",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:06:11.274Z",
+      "text": "42",
+      "ttft_ms": 583.5112079999526,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": true,
+      "first_event_ms": 211.2919159999583,
+      "reported_tier": "priority",
+      "first_complete_text_ms": 613.7548329999554,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 625.648790999956,
+      "measurement_wall_ms": 625.7166669999715,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000026399999999999998,
+        "high": 0.000026399999999999998,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "path": "openai_agents",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:06:11.918Z",
+      "text": "42",
+      "ttft_ms": 9802.764542000019,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "headers_ms": 1958.6701250000042,
+      "status": 201,
+      "request_id": "req_c4ad642d9f794a3e8266da4ca5bd0789",
+      "first_event_ms": 1959.0102920000209,
+      "session_id": "sess_06beb65dcecdfe5c006aa3c484842c8191a54212156eedf5ff",
+      "turn_id": "turn_06beb65dcecdfe5c006aa3c48a6de48191b25d7ae61caaaff9",
+      "first_complete_text_ms": 9802.772667000012,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 14001.746375000046,
+      "measurement_wall_ms": 14002.056458000035,
+      "saved_turn": {
+        "id": "turn_06beb65dcecdfe5c006aa3c48a6de48191b25d7ae61caaaff9",
+        "object": "agent.session.turn",
+        "session_id": "sess_06beb65dcecdfe5c006aa3c484842c8191a54212156eedf5ff",
+        "agent_id": "agent_b0d4066775b94b3a96fb3be71d1e2f4e337a706b1a0d43ab8d",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117577,
+        "started_at": 1789117577,
+        "completed_at": 1789117582,
+        "error": null,
+        "usage": {
+          "input_tokens": 6077,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 6082
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.0012214,
+        "high": 0.0015252500000000001,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "default",
+      "path": "responses_ws",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:06:35.068Z",
+      "text": "42",
+      "ttft_ms": 3068.1184580000117,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": true,
+      "first_event_ms": 276.17987500003073,
+      "reported_tier": "default",
+      "first_complete_text_ms": 3139.5504580000415,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 3139.768291000044,
+      "measurement_wall_ms": 3139.8194999999832,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000244,
+        "high": 0.000244,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "default",
+      "path": "responses_http",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:06:38.230Z",
+      "text": "42",
+      "ttft_ms": 972.0238339999923,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 604.8477089999942,
+      "status": 200,
+      "request_id": "req_40a1640a5d8b4b379e5f1ab8ce3bcb17",
+      "first_event_ms": 625.6660419999971,
+      "reported_tier": "default",
+      "first_complete_text_ms": 1049.6985419999692,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1065.4725839999737,
+      "measurement_wall_ms": 1065.701915999991,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000132,
+        "high": 0.000132,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "fast",
+      "path": "responses_http",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:06:39.315Z",
+      "text": "42",
+      "ttft_ms": 1068.8630830000038,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 891.4915829999954,
+      "status": 200,
+      "request_id": "req_20a55917aa904298bc67d6b57b80a62a",
+      "first_event_ms": 891.9785409999895,
+      "reported_tier": "priority",
+      "first_complete_text_ms": 1094.516707999981,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1123.8811659999774,
+      "measurement_wall_ms": 1124.09375,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000264,
+        "high": 0.000264,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "default",
+      "path": "responses_ws",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:06:40.463Z",
+      "text": "42",
+      "ttft_ms": 1559.1132080000243,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": true,
+      "first_event_ms": 706.3159160000505,
+      "reported_tier": "default",
+      "first_complete_text_ms": 1620.1504580000183,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1620.6148750000284,
+      "measurement_wall_ms": 1620.682708999957,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.00061,
+        "high": 0.00061,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "fast",
+      "path": "nanocodex_node",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:06:42.118Z",
+      "text": "",
+      "ttft_ms": 3836.752458999981,
+      "usage": {
+        "input_tokens": 6018,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6015
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6023
+      },
+      "agent_setup_ms": 0.9423329999553971,
+      "model_started_ms": 1.9144170000217855,
+      "connection_ms": 2541.441542,
+      "first_event_ms": 3328.508334000013,
+      "reported_tier": "priority",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-5.6-luna",
+          "response_id": "resp_0f1e7ed568ad3d98016aa3c4a54ba887d18e87745ebbe495bd",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 3872733084,
+          "time_to_first_event_ns": 3327268041,
+          "time_to_first_output_ns": 3784847875,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6018,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6015
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6023
+          }
+        }
+      ],
+      "completion_ms": 3874.6524169999757,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6018,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6015,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6023,
+        "estimated_cost": {
+          "usd": "0.0030207",
+          "input_usd": "0.0000012",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.0030075",
+          "output_usd": "0.000012",
+          "service_tier": "priority"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 3875.6441249999916,
+      "measurement_wall_ms": 3876.443457999965,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.0030207,
+        "high": 0.0030207,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 2544.5914169999887,
+          "type": "response.create",
+          "model": "gpt-5.6-luna",
+          "service_tier": "priority",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "path": "responses_ws",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:06:46.028Z",
+      "text": "42",
+      "ttft_ms": 996.0603750000009,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": true,
+      "first_event_ms": 713.0007500000065,
+      "reported_tier": "default",
+      "first_complete_text_ms": 1065.4753339999588,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1066.3172499999637,
+      "measurement_wall_ms": 1066.4188330000034,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000013199999999999999,
+        "high": 0.000013199999999999999,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "fast",
+      "path": "responses_http",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:06:47.128Z",
+      "text": "42",
+      "ttft_ms": 1886.116417000012,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 1570.6539580000099,
+      "status": 200,
+      "request_id": "req_f5dbf2df614347dd99105e201161cdaa",
+      "first_event_ms": 1571.3705830000108,
+      "reported_tier": "fast",
+      "first_complete_text_ms": 2022.5748749999912,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 2023.1329999999725,
+      "measurement_wall_ms": 2024.42179199995,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.00122,
+        "high": 0.00122,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "default",
+      "path": "nanocodex_node",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:06:49.190Z",
+      "text": "",
+      "ttft_ms": 4765.108542000002,
+      "usage": {
+        "input_tokens": 6018,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6015
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6023
+      },
+      "agent_setup_ms": 0.5889999999781139,
+      "model_started_ms": 1.3806249999906868,
+      "connection_ms": 2688.92875,
+      "first_event_ms": 3638.2245840000105,
+      "reported_tier": "default",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-5.6-sol",
+          "response_id": "resp_0f8937f4e0c0fa0e016aa3c4ac1c7887d1be2dc1b38459dd0d",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 4826755417,
+          "time_to_first_event_ns": 3637227292,
+          "time_to_first_output_ns": 4754138750,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6018,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6015
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6023
+          }
+        }
+      ],
+      "completion_ms": 4827.767708999978,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6018,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6015,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6023,
+        "estimated_cost": {
+          "usd": "0.030187",
+          "input_usd": "0.000012",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.030075",
+          "output_usd": "0.0001",
+          "service_tier": "standard"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 4828.388291999989,
+      "measurement_wall_ms": 4828.683000000019,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.030187,
+        "high": 0.030187,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 2691.522042000026,
+          "type": "response.create",
+          "model": "gpt-5.6-sol",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "default",
+      "path": "nanocodex_node",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:06:54.037Z",
+      "text": "",
+      "ttft_ms": 3116.042959000042,
+      "usage": {
+        "input_tokens": 6018,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6015
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6023
+      },
+      "agent_setup_ms": 0.5857909999904223,
+      "model_started_ms": 1.3233750000363216,
+      "connection_ms": 1446.49325,
+      "first_event_ms": 2305.701375000004,
+      "reported_tier": "default",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-5.6-terra",
+          "response_id": "resp_09f74aeddf6ba478016aa3c4b0139487d1b3dd9701b6884cec",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 3118139625,
+          "time_to_first_event_ns": 2304662375,
+          "time_to_first_output_ns": 3114679750,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6018,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6015
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6023
+          }
+        }
+      ],
+      "completion_ms": 3119.421208999993,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6018,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6015,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6023,
+        "estimated_cost": {
+          "usd": "0.0151035",
+          "input_usd": "0.000006",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.0150375",
+          "output_usd": "0.00006",
+          "service_tier": "standard"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 3120.0515409999643,
+      "measurement_wall_ms": 3121.2507500000065,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.0151035,
+        "high": 0.0151035,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 1449.0760840000003,
+          "type": "response.create",
+          "model": "gpt-5.6-terra",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "fast",
+      "path": "nanocodex_node",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:06:57.187Z",
+      "text": "",
+      "ttft_ms": 2942.0585829999764,
+      "usage": {
+        "input_tokens": 6018,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6015
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6023
+      },
+      "agent_setup_ms": 0.5267080000485294,
+      "model_started_ms": 1.3823749999864958,
+      "connection_ms": 889.593375,
+      "first_event_ms": 2394.841415999981,
+      "reported_tier": "priority",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-5.6-terra",
+          "response_id": "resp_0bcafc789c01f3c8016aa3c4b36de087d1a7f617c31ed8c9fb",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 2986571541,
+          "time_to_first_event_ns": 2393575083,
+          "time_to_first_output_ns": 2941049791,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6018,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6015
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6023
+          }
+        }
+      ],
+      "completion_ms": 2988.202333000023,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6018,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6015,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6023,
+        "estimated_cost": {
+          "usd": "0.030207",
+          "input_usd": "0.000012",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.030075",
+          "output_usd": "0.00012",
+          "service_tier": "priority"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 2988.8847079999978,
+      "measurement_wall_ms": 2989.5317919999943,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.030207,
+        "high": 0.030207,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 891.2824580000015,
+          "type": "response.create",
+          "model": "gpt-5.6-terra",
+          "service_tier": "priority",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "path": "responses_http",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:07:00.215Z",
+      "text": "42",
+      "ttft_ms": 1470.7029999999795,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 1184.0162080000155,
+      "status": 200,
+      "request_id": "req_052bd59a88e34627beaa1882921eaa17",
+      "first_event_ms": 1184.4225420000148,
+      "reported_tier": "default",
+      "first_complete_text_ms": 1682.762208,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1682.9397919999901,
+      "measurement_wall_ms": 1683.223209000018,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000013199999999999999,
+        "high": 0.000013199999999999999,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "fast",
+      "path": "responses_ws",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:07:01.920Z",
+      "text": "42",
+      "ttft_ms": 836.8881249999977,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": true,
+      "first_event_ms": 239.0486249999958,
+      "reported_tier": "fast",
+      "first_complete_text_ms": 892.7962089999928,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 893.1732090000296,
+      "measurement_wall_ms": 893.2442080000183,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.00122,
+        "high": 0.00122,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "fast",
+      "path": "nanocodex_node",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:07:02.865Z",
+      "text": "",
+      "ttft_ms": 1866.287083000003,
+      "usage": {
+        "input_tokens": 6018,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6015
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6023
+      },
+      "agent_setup_ms": 0.5679170000366867,
+      "model_started_ms": 1.3569579999893904,
+      "connection_ms": 1048.649417,
+      "first_event_ms": 1380.255999999994,
+      "reported_tier": "priority",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-5.6-sol",
+          "response_id": "resp_0878283b36954063016aa3c4b81c8087d1ba3ffd3aaea3eb14",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 1926914208,
+          "time_to_first_event_ns": 1379318792,
+          "time_to_first_output_ns": 1861535625,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6018,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6015
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6023
+          }
+        }
+      ],
+      "completion_ms": 1928.091791999992,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6018,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6015,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6023,
+        "estimated_cost": {
+          "usd": "0.060374",
+          "input_usd": "0.000024",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.06015",
+          "output_usd": "0.0002",
+          "service_tier": "priority"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 1928.7030420000083,
+      "measurement_wall_ms": 1929.3659159999806,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.060374,
+        "high": 0.060374,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 1051.4119170000195,
+          "type": "response.create",
+          "model": "gpt-5.6-sol",
+          "service_tier": "priority",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "default",
+      "path": "openai_agents",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:07:04.830Z",
+      "text": "42",
+      "ttft_ms": 9984.760499999975,
+      "usage": {
+        "input_tokens": 7116,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 7121
+      },
+      "headers_ms": 1957.424291000003,
+      "status": 201,
+      "request_id": "req_92d109953d82467ba64401f58511a802",
+      "first_event_ms": 2477.1249579999712,
+      "session_id": "sess_0eb587b8bc118d86006aa3c4b987548191896023f9148c57cd",
+      "turn_id": "turn_0eb587b8bc118d86006aa3c4bf82c08191be5d29837f85f85c",
+      "first_complete_text_ms": 9984.827665999997,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 12174.276374999958,
+      "measurement_wall_ms": 12174.534417000017,
+      "saved_turn": {
+        "id": "turn_0eb587b8bc118d86006aa3c4bf82c08191be5d29837f85f85c",
+        "object": "agent.session.turn",
+        "session_id": "sess_0eb587b8bc118d86006aa3c4b987548191896023f9148c57cd",
+        "agent_id": "agent_0a0f6be5769e4f97a3e7ee0da4a2ba1f5ec31c0ee9354af4b9",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117630,
+        "started_at": 1789117630,
+        "completed_at": 1789117634,
+        "error": null,
+        "usage": {
+          "input_tokens": 7116,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 7121
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.07141,
+        "high": 0.0892,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "default",
+      "path": "openai_agents",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:07:26.501Z",
+      "text": "42",
+      "ttft_ms": 8026.47454200004,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "headers_ms": 2046.7020000000484,
+      "status": 201,
+      "request_id": "req_46f968cdf7a4494eaf982b6126406f78",
+      "first_event_ms": 2046.8807090000482,
+      "session_id": "sess_03eeda14d7aaad0c006aa3c4cf9e788191900b4c1c1eabc3d9",
+      "turn_id": "turn_03eeda14d7aaad0c006aa3c4d4c89c819189f33a828ec1cf56",
+      "first_complete_text_ms": 8026.478459000005,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 12785.731958999997,
+      "measurement_wall_ms": 12786.381249999977,
+      "saved_turn": {
+        "id": "turn_03eeda14d7aaad0c006aa3c4d4c89c819189f33a828ec1cf56",
+        "object": "agent.session.turn",
+        "session_id": "sess_03eeda14d7aaad0c006aa3c4cf9e788191900b4c1c1eabc3d9",
+        "agent_id": "agent_5e6175b078d44433a5f73ea4bd29748b107cbb48a8e1484b8a",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117651,
+        "started_at": 1789117651,
+        "completed_at": 1789117656,
+        "error": null,
+        "usage": {
+          "input_tokens": 6077,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 6082
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.024408,
+        "high": 0.030484999999999998,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "default",
+      "path": "openai_agents",
+      "repetition": 2,
+      "started_at": "2026-09-11T09:07:46.804Z",
+      "text": "42",
+      "ttft_ms": 9857.481832999969,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "headers_ms": 2604.0322080000187,
+      "status": 201,
+      "request_id": "req_d81951fd4c7d4ae2af72d0de93e0019c",
+      "first_event_ms": 2604.5169999999925,
+      "session_id": "sess_0c13bbdcc01d7c06006aa3c4e4a6bc8191b717af7a239d991d",
+      "turn_id": "turn_0c13bbdcc01d7c06006aa3c4e97f1081918bb9e0c6bbcb1943",
+      "first_complete_text_ms": 9857.491457999975,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 10013.770499999984,
+      "measurement_wall_ms": 10014.115500000014,
+      "saved_turn": {
+        "id": "turn_0c13bbdcc01d7c06006aa3c4e97f1081918bb9e0c6bbcb1943",
+        "object": "agent.session.turn",
+        "session_id": "sess_0c13bbdcc01d7c06006aa3c4e4a6bc8191b717af7a239d991d",
+        "agent_id": "agent_78fb486463b047c3a803cd46e4953f8f1f690db464304e4dac",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117672,
+        "started_at": 1789117672,
+        "completed_at": 1789117674,
+        "error": null,
+        "usage": {
+          "input_tokens": 6077,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 6082
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.012214,
+        "high": 0.015252499999999999,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "default",
+      "path": "responses_http",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:08:04.830Z",
+      "text": "42",
+      "ttft_ms": 1417.1058330000378,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 1060.4446250000037,
+      "status": 200,
+      "request_id": "req_61e22c99acf8475fbf935e159644f680",
+      "first_event_ms": 1060.937042000005,
+      "reported_tier": "default",
+      "first_complete_text_ms": 1524.3759169999976,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1593.3472500000498,
+      "measurement_wall_ms": 1593.9257920000236,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000132,
+        "high": 0.000132,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "default",
+      "path": "responses_ws",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:08:06.477Z",
+      "text": "42",
+      "ttft_ms": 932.96545899997,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": true,
+      "first_event_ms": 311.6011249999865,
+      "reported_tier": "default",
+      "first_complete_text_ms": 1101.5686250000144,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1111.3457089999574,
+      "measurement_wall_ms": 1111.4362089999486,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000132,
+        "high": 0.000132,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "fast",
+      "path": "nanocodex_node",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:08:07.640Z",
+      "text": "",
+      "ttft_ms": 2933.0564170000143,
+      "usage": {
+        "input_tokens": 6570,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6567
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6575
+      },
+      "agent_setup_ms": 0.5856659999699332,
+      "model_started_ms": 1.7443750000093132,
+      "connection_ms": 1924.976959,
+      "first_event_ms": 2220.6025000000373,
+      "reported_tier": "fast",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-6-astra",
+          "response_id": "resp_080d2d67f9fe562c016aa3c4f9bff487d19643b62ab606ef89",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 3120516375,
+          "time_to_first_event_ns": 2218839375,
+          "time_to_first_output_ns": 2926126709,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6570,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6567
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6575
+          }
+        }
+      ],
+      "completion_ms": 3121.9199999999837,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6570,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6567,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6575,
+        "estimated_cost": {
+          "usd": "0.164735",
+          "input_usd": "0.00006",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.164175",
+          "output_usd": "0.0005",
+          "service_tier": "fast"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 3122.5506249999744,
+      "measurement_wall_ms": 3123.2012499999837,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.164735,
+        "high": 0.164735,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 1926.3590420000255,
+          "type": "response.create",
+          "model": "gpt-6-astra",
+          "service_tier": "priority",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "fast",
+      "path": "responses_http",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:08:10.789Z",
+      "text": "42",
+      "ttft_ms": 1509.7068749999744,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 1209.677874999994,
+      "status": 200,
+      "request_id": "req_d4311422297c4c64b17c4646fe41f4ee",
+      "first_event_ms": 1210.472375000012,
+      "reported_tier": "priority",
+      "first_complete_text_ms": 1568.2727500000037,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1611.2386249999981,
+      "measurement_wall_ms": 1611.8125829999917,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000264,
+        "high": 0.000264,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "default",
+      "path": "responses_ws",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:08:12.440Z",
+      "text": "42",
+      "ttft_ms": 989.976250000007,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": true,
+      "first_event_ms": 246.4787500000093,
+      "reported_tier": "default",
+      "first_complete_text_ms": 1047.7469170000404,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1047.932334000012,
+      "measurement_wall_ms": 1047.986333000008,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000244,
+        "high": 0.000244,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "default",
+      "path": "responses_http",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:08:13.513Z",
+      "text": "42",
+      "ttft_ms": 2640.2992920000106,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 887.9787079999805,
+      "status": 200,
+      "request_id": "req_38f93218464d4fb2a6a3eba5dc5c2808",
+      "first_event_ms": 888.1375000000116,
+      "reported_tier": "default",
+      "first_complete_text_ms": 2720.25900000002,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 2766.82262500003,
+      "measurement_wall_ms": 2767.8445409999695,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.00061,
+        "high": 0.00061,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "default",
+      "path": "nanocodex_node",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:08:16.319Z",
+      "text": "",
+      "ttft_ms": 2247.5335830000113,
+      "usage": {
+        "input_tokens": 6018,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6015
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6023
+      },
+      "agent_setup_ms": 0.7102910000248812,
+      "model_started_ms": 1.6482919999980368,
+      "connection_ms": 1226.021666,
+      "first_event_ms": 1657.0339580000145,
+      "reported_tier": "default",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-5.6-terra",
+          "response_id": "resp_0c61aff29be5048c016aa3c501d55887d1b98ed32db2507003",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 2309711834,
+          "time_to_first_event_ns": 1645611500,
+          "time_to_first_output_ns": 2240478125,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6018,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6015
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6023
+          }
+        }
+      ],
+      "completion_ms": 2310.63741700002,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6018,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6015,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6023,
+        "estimated_cost": {
+          "usd": "0.0151035",
+          "input_usd": "0.000006",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.0150375",
+          "output_usd": "0.00006",
+          "service_tier": "standard"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 2311.370166000037,
+      "measurement_wall_ms": 2311.6964160000207,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.0151035,
+        "high": 0.0151035,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 1227.7837080000318,
+          "type": "response.create",
+          "model": "gpt-5.6-terra",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "fast",
+      "path": "responses_ws",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:08:18.658Z",
+      "text": "42",
+      "ttft_ms": 1094.3815419999883,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": true,
+      "first_event_ms": 275.981541999965,
+      "reported_tier": "fast",
+      "first_complete_text_ms": 1134.7682499999646,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1135.0813339999877,
+      "measurement_wall_ms": 1135.1342089999816,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.00122,
+        "high": 0.00122,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "fast",
+      "path": "responses_ws",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:08:19.827Z",
+      "text": "42",
+      "ttft_ms": 1394.2492920000223,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": true,
+      "first_event_ms": 905.39962500002,
+      "reported_tier": "priority",
+      "first_complete_text_ms": 1433.7023339999723,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1434.285749999981,
+      "measurement_wall_ms": 1434.437750000041,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000488,
+        "high": 0.000488,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "path": "responses_ws",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:08:21.292Z",
+      "text": "42",
+      "ttft_ms": 4184.184458000003,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": true,
+      "first_event_ms": 3603.070000000007,
+      "reported_tier": "default",
+      "first_complete_text_ms": 4287.2903750000405,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 4312.842291000008,
+      "measurement_wall_ms": 4312.959375000035,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000013199999999999999,
+        "high": 0.000013199999999999999,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "path": "responses_http",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:08:25.635Z",
+      "text": "42",
+      "ttft_ms": 1864.3314169999794,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 1480.5672499999637,
+      "status": 200,
+      "request_id": "req_fcedeb2cd3644e9c99de113891b25717",
+      "first_event_ms": 1494.8360419999808,
+      "reported_tier": "default",
+      "first_complete_text_ms": 1934.390832999954,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 2023.029041999951,
+      "measurement_wall_ms": 2025.8969999999972,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000013199999999999999,
+        "high": 0.000013199999999999999,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "default",
+      "path": "openai_agents",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:08:27.690Z",
+      "text": "42",
+      "ttft_ms": 9676.031084000017,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "headers_ms": 1514.7144589999807,
+      "status": 201,
+      "request_id": "req_04f150e5bc7b43cd82541421a1a62e33",
+      "first_event_ms": 1514.9050419999985,
+      "session_id": "sess_0735ea1b4fbfbf29006aa3c50c5ac881918e7e36aea605e906",
+      "turn_id": "turn_0735ea1b4fbfbf29006aa3c5118e508191842db308badf2ee7",
+      "first_complete_text_ms": 9676.036459000024,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 10210.231000000029,
+      "measurement_wall_ms": 10210.506875000021,
+      "saved_turn": {
+        "id": "turn_0735ea1b4fbfbf29006aa3c5118e508191842db308badf2ee7",
+        "object": "agent.session.turn",
+        "session_id": "sess_0735ea1b4fbfbf29006aa3c50c5ac881918e7e36aea605e906",
+        "agent_id": "agent_66cd5964be1d4f68975111c89ae00b627a9ee3832ee84cf1a3",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117711,
+        "started_at": 1789117711,
+        "completed_at": 1789117714,
+        "error": null,
+        "usage": {
+          "input_tokens": 6077,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 6082
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.024408,
+        "high": 0.030484999999999998,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "default",
+      "path": "nanocodex_node",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:08:46.910Z",
+      "text": "",
+      "ttft_ms": 3303.178666999913,
+      "usage": {
+        "input_tokens": 6570,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6567
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6575
+      },
+      "agent_setup_ms": 0.8829589999513701,
+      "model_started_ms": 1.9299170000012964,
+      "connection_ms": 1272.89075,
+      "first_event_ms": 2145.1484169999603,
+      "reported_tier": "default",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-6-astra",
+          "response_id": "resp_0907f2c9c51efdd4016aa3c520dfd887d1b2dba2c1e9c678ba",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 3482310958,
+          "time_to_first_event_ns": 2143736542,
+          "time_to_first_output_ns": 3302052333,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6570,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6567
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6575
+          }
+        }
+      ],
+      "completion_ms": 3483.470791999949,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6570,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6567,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6575,
+        "estimated_cost": {
+          "usd": "0.0823675",
+          "input_usd": "0.00003",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.0820875",
+          "output_usd": "0.00025",
+          "service_tier": "standard"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 3484.388874999946,
+      "measurement_wall_ms": 3486.965916999965,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.0823675,
+        "high": 0.0823675,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 1274.8337089999113,
+          "type": "response.create",
+          "model": "gpt-6-astra",
+          "service_tier": "default",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "fast",
+      "path": "openai_agents",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:08:50.432Z",
+      "text": "42",
+      "ttft_ms": 10013.08070800011,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "headers_ms": 2511.3245410000673,
+      "status": 201,
+      "request_id": "req_48aaf24356fa4894a044673ffa621259",
+      "first_event_ms": 2511.484208000009,
+      "session_id": "sess_021f94ac4439a8c1006aa3c523b5488191925add64d6bf618d",
+      "turn_id": "turn_021f94ac4439a8c1006aa3c52a36bc8191bcdc18422edc8d41",
+      "first_complete_text_ms": 10013.086875000037,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 10128.568625000073,
+      "measurement_wall_ms": 10129.271541999886,
+      "saved_turn": {
+        "id": "turn_021f94ac4439a8c1006aa3c52a36bc8191bcdc18422edc8d41",
+        "object": "agent.session.turn",
+        "session_id": "sess_021f94ac4439a8c1006aa3c523b5488191925add64d6bf618d",
+        "agent_id": "agent_c7845997d3164f4c9b062a51c9b1238fafd446a5ddc146c997",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117735,
+        "started_at": 1789117735,
+        "completed_at": 1789117737,
+        "error": null,
+        "usage": {
+          "input_tokens": 6077,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 6082
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.024428,
+        "high": 0.030504999999999997,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "path": "openai_agents",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:09:08.456Z",
+      "text": "42",
+      "ttft_ms": 9372.015958999982,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "headers_ms": 2035.4403750000056,
+      "status": 201,
+      "request_id": "req_144119c278cc4104bcc5bc35fa77bf98",
+      "first_event_ms": 2035.6991249999264,
+      "session_id": "sess_01cf1a5c06808924006aa3c53505088191ad3d53f4558db2a5",
+      "turn_id": "turn_01cf1a5c06808924006aa3c53a7aa0819185732c4cf3ecaa5c",
+      "first_complete_text_ms": 9372.019999999902,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 9384.170541999978,
+      "measurement_wall_ms": 9384.493041999987,
+      "saved_turn": {
+        "id": "turn_01cf1a5c06808924006aa3c53a7aa0819185732c4cf3ecaa5c",
+        "object": "agent.session.turn",
+        "session_id": "sess_01cf1a5c06808924006aa3c53505088191ad3d53f4558db2a5",
+        "agent_id": "agent_83099a3ad41645fa93596144e9771f004401162dafe14a41a2",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117752,
+        "started_at": 1789117752,
+        "completed_at": 1789117754,
+        "error": null,
+        "usage": {
+          "input_tokens": 6077,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 6082
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.0012214,
+        "high": 0.0015252500000000001,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "path": "nanocodex_node",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:09:26.161Z",
+      "text": "",
+      "ttft_ms": 1965.097625000053,
+      "usage": {
+        "input_tokens": 6018,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6015
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6023
+      },
+      "agent_setup_ms": 0.7599580000387505,
+      "model_started_ms": 7.215124999987893,
+      "connection_ms": 1104.449125,
+      "first_event_ms": 1493.2832920000656,
+      "reported_tier": "default",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-5.6-luna",
+          "response_id": "resp_09ddad017804dc58016aa3c547800c87d19b73af377252634d",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 2055589083,
+          "time_to_first_event_ns": 1487222208,
+          "time_to_first_output_ns": 1929343875,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6018,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6015
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6023
+          }
+        }
+      ],
+      "completion_ms": 2061.370292000007,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6018,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6015,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6023,
+        "estimated_cost": {
+          "usd": "0.00151035",
+          "input_usd": "0.0000006",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.00150375",
+          "output_usd": "0.000006",
+          "service_tier": "standard"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 2062.1512499999953,
+      "measurement_wall_ms": 2062.480709000025,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.00151035,
+        "high": 0.00151035,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 1115.6653340000194,
+          "type": "response.create",
+          "model": "gpt-5.6-luna",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "fast",
+      "path": "responses_http",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:09:28.253Z",
+      "text": "42",
+      "ttft_ms": 773.6594999999506,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 553.8257919999305,
+      "status": 200,
+      "request_id": "req_8a61e331dcb7454080ca7ea462a137b9",
+      "first_event_ms": 553.9784579999978,
+      "reported_tier": "priority",
+      "first_complete_text_ms": 848.2307919999585,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 884.6742079999531,
+      "measurement_wall_ms": 887.812874999945,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000026399999999999998,
+        "high": 0.000026399999999999998,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "default",
+      "path": "nanocodex_node",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:09:29.246Z",
+      "text": "",
+      "ttft_ms": 3434.551000000094,
+      "usage": {
+        "input_tokens": 6018,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6015
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6023
+      },
+      "agent_setup_ms": 1.0840839999727905,
+      "model_started_ms": 1.653667000005953,
+      "connection_ms": 924.004167,
+      "first_event_ms": 1253.234250000096,
+      "reported_tier": "default",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-5.6-sol",
+          "response_id": "resp_0498683110c149dc016aa3c54a66f887d1bc4a30f8fa983e6a",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 3507308000,
+          "time_to_first_event_ns": 1252212375,
+          "time_to_first_output_ns": 3433567750,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6018,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6015
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6023
+          }
+        }
+      ],
+      "completion_ms": 3508.3423750000075,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6018,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6015,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6023,
+        "estimated_cost": {
+          "usd": "0.030187",
+          "input_usd": "0.000012",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.030075",
+          "output_usd": "0.0001",
+          "service_tier": "standard"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 3509.45220900001,
+      "measurement_wall_ms": 3509.8811250000726,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.030187,
+        "high": 0.030187,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 925.4285420000087,
+          "type": "response.create",
+          "model": "gpt-5.6-sol",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "fast",
+      "path": "openai_agents",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:09:32.800Z",
+      "text": "42",
+      "ttft_ms": 10922.596708000056,
+      "usage": {
+        "input_tokens": 7116,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 7121
+      },
+      "headers_ms": 2342.0322910000104,
+      "status": 201,
+      "request_id": "req_b03c51ee443743708916ae0e0864fee9",
+      "first_event_ms": 2343.143291000044,
+      "session_id": "sess_06cf60326fe712e4006aa3c54e01a0819193f3a5f87163c132",
+      "turn_id": "turn_06cf60326fe712e4006aa3c553dd9881919e8459662b758d8b",
+      "first_complete_text_ms": 10922.600915999967,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 11647.686791000073,
+      "measurement_wall_ms": 11648.160542000085,
+      "saved_turn": {
+        "id": "turn_06cf60326fe712e4006aa3c553dd9881919e8459662b758d8b",
+        "object": "agent.session.turn",
+        "session_id": "sess_06cf60326fe712e4006aa3c54e01a0819193f3a5f87163c132",
+        "agent_id": "agent_8a32e3058ed346b99f460943dbd16c3e20f77d2a90924703a7",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117778,
+        "started_at": 1789117778,
+        "completed_at": 1789117781,
+        "error": null,
+        "usage": {
+          "input_tokens": 7116,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 7121
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.14282,
+        "high": 0.1784,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "fast",
+      "path": "nanocodex_node",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:09:53.338Z",
+      "text": "",
+      "ttft_ms": 2009.702750000055,
+      "usage": {
+        "input_tokens": 6018,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6015
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6023
+      },
+      "agent_setup_ms": 0.652957999962382,
+      "model_started_ms": 4.067416000063531,
+      "connection_ms": 1181.126958,
+      "first_event_ms": 1526.8093750000698,
+      "reported_tier": "priority",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-5.6-sol",
+          "response_id": "resp_095c9958f1e6af34016aa3c562c15087d18695bc851c1c38c3",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 2602682084,
+          "time_to_first_event_ns": 1524111375,
+          "time_to_first_output_ns": 2005428708,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6018,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6015
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6023
+          }
+        }
+      ],
+      "completion_ms": 2604.6710000000894,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6018,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6015,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6023,
+        "estimated_cost": {
+          "usd": "0.060374",
+          "input_usd": "0.000024",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.06015",
+          "output_usd": "0.0002",
+          "service_tier": "priority"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 2605.3453329999465,
+      "measurement_wall_ms": 2605.6160409998847,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.060374,
+        "high": 0.060374,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 1186.4097499999916,
+          "type": "response.create",
+          "model": "gpt-5.6-sol",
+          "service_tier": "priority",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "fast",
+      "path": "openai_agents",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:09:56.014Z",
+      "text": "42",
+      "ttft_ms": 8566.32108299993,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "headers_ms": 1920.3932499999646,
+      "status": 201,
+      "request_id": "req_1c4fb81cf42c440698a22e21b768d33d",
+      "first_event_ms": 1920.566583000007,
+      "session_id": "sess_04683c95646d6ea9006aa3c564c0f88191b588d68dcd1e6414",
+      "turn_id": "turn_04683c95646d6ea9006aa3c569ebac81918dac1f05d06e88d0",
+      "first_complete_text_ms": 8566.332957999897,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 9832.336332999985,
+      "measurement_wall_ms": 9832.570958000026,
+      "saved_turn": {
+        "id": "turn_04683c95646d6ea9006aa3c569ebac81918dac1f05d06e88d0",
+        "object": "agent.session.turn",
+        "session_id": "sess_04683c95646d6ea9006aa3c564c0f88191b588d68dcd1e6414",
+        "agent_id": "agent_38880acc98ba4924b5a0ae1c6ea73e38a5ea9a050b3b4040be",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117800,
+        "started_at": 1789117800,
+        "completed_at": 1789117802,
+        "error": null,
+        "usage": {
+          "input_tokens": 6077,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 6082
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.048816,
+        "high": 0.060969999999999996,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "fast",
+      "path": "responses_http",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:10:16.223Z",
+      "text": "42",
+      "ttft_ms": 735.8017919999547,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 485.40366700000595,
+      "status": 200,
+      "request_id": "req_0288ca2158104581957acf29c55f60d6",
+      "first_event_ms": 519.5225830000127,
+      "reported_tier": "priority",
+      "first_complete_text_ms": 819.6347499999683,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 844.2168750000419,
+      "measurement_wall_ms": 844.659083000035,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000488,
+        "high": 0.000488,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "fast",
+      "path": "responses_ws",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:10:17.122Z",
+      "text": "42",
+      "ttft_ms": 780.4567090000492,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": true,
+      "first_event_ms": 281.18841699999757,
+      "reported_tier": "priority",
+      "first_complete_text_ms": 898.0985840000212,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 901.0016250000335,
+      "measurement_wall_ms": 901.0772080000024,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000264,
+        "high": 0.000264,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "default",
+      "path": "responses_ws",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:10:18.079Z",
+      "text": "42",
+      "ttft_ms": 1845.470166999963,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": true,
+      "first_event_ms": 868.8944170000032,
+      "reported_tier": "default",
+      "first_complete_text_ms": 1912.9319169999799,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1913.9302080000052,
+      "measurement_wall_ms": 1914.0090410000412,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.00061,
+        "high": 0.00061,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "fast",
+      "path": "nanocodex_node",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:10:20.032Z",
+      "text": "",
+      "ttft_ms": 1826.8699579999084,
+      "usage": {
+        "input_tokens": 6018,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6015
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6023
+      },
+      "agent_setup_ms": 0.585209000040777,
+      "model_started_ms": 1.5609999999869615,
+      "connection_ms": 931.176208,
+      "first_event_ms": 1467.6023750000168,
+      "reported_tier": "priority",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-5.6-luna",
+          "response_id": "resp_092a9be2ca7d8b40016aa3c57d392887d18ee53be0b2d752e7",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 1898967792,
+          "time_to_first_event_ns": 1466271625,
+          "time_to_first_output_ns": 1825602666,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6018,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6015
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6023
+          }
+        }
+      ],
+      "completion_ms": 1899.89383299998,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6018,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6015,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6023,
+        "estimated_cost": {
+          "usd": "0.0030207",
+          "input_usd": "0.0000012",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.0030075",
+          "output_usd": "0.000012",
+          "service_tier": "priority"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 1900.49916700006,
+      "measurement_wall_ms": 1901.046667000046,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.0030207,
+        "high": 0.0030207,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 933.1104999999516,
+          "type": "response.create",
+          "model": "gpt-5.6-luna",
+          "service_tier": "priority",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "fast",
+      "path": "openai_agents",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:10:21.980Z",
+      "text": "42",
+      "ttft_ms": 8019.843542000046,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "headers_ms": 2103.2418340001022,
+      "status": 201,
+      "request_id": "req_3b85ed1d92794e6f96043b0b2ed9d82a",
+      "first_event_ms": 2103.394500000053,
+      "session_id": "sess_084a02d6a9ca6e7e006aa3c57f4c188191a503277d2ed65151",
+      "turn_id": "turn_084a02d6a9ca6e7e006aa3c583b0bc8191b99d86e6f9458c08",
+      "first_complete_text_ms": 8019.857875000103,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 8636.559209000086,
+      "measurement_wall_ms": 8638.364875000087,
+      "saved_turn": {
+        "id": "turn_084a02d6a9ca6e7e006aa3c583b0bc8191b99d86e6f9458c08",
+        "object": "agent.session.turn",
+        "session_id": "sess_084a02d6a9ca6e7e006aa3c57f4c188191a503277d2ed65151",
+        "agent_id": "agent_79d8774e0b8d46a4bed91fb055de90ee57d07047f1bb4d7281",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117826,
+        "started_at": 1789117826,
+        "completed_at": 1789117827,
+        "error": null,
+        "usage": {
+          "input_tokens": 6077,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 6082
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.0024428,
+        "high": 0.0030505000000000003,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "fast",
+      "path": "nanocodex_node",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:10:38.014Z",
+      "text": "",
+      "ttft_ms": 1689.5926250000484,
+      "usage": {
+        "input_tokens": 6018,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6015
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6023
+      },
+      "agent_setup_ms": 0.6293329999316484,
+      "model_started_ms": 1.477333000046201,
+      "connection_ms": 888.554,
+      "first_event_ms": 1237.3360000000102,
+      "reported_tier": "priority",
+      "model_calls": [
+        {
+          "call_index": 1,
+          "model": "gpt-5.6-terra",
+          "response_id": "resp_0226ef5105304f50016aa3c58f1db887d1954845e0ded6a03c",
+          "attempt": 1,
+          "connection_generation": 1,
+          "status": "completed",
+          "duration_ns": 1769152375,
+          "time_to_first_event_ns": 1236449916,
+          "time_to_first_output_ns": 1688161083,
+          "tool_calls": 0,
+          "usage": {
+            "input_tokens": 6018,
+            "input_tokens_details": {
+              "cached_tokens": 0,
+              "cache_write_tokens": 6015
+            },
+            "output_tokens": 5,
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "total_tokens": 6023
+          }
+        }
+      ],
+      "completion_ms": 1770.6951669999398,
+      "final_text": "42",
+      "terminal": "turn_completed",
+      "nano_usage": {
+        "input_tokens": 6018,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 6015,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 6023,
+        "estimated_cost": {
+          "usd": "0.030207",
+          "input_usd": "0.000012",
+          "cached_input_usd": "0",
+          "cache_write_input_usd": "0.030075",
+          "output_usd": "0.00012",
+          "service_tier": "priority"
+        },
+        "cost_status": "estimated_from_usage"
+      },
+      "observed_setup_plus_completion_ms": 1771.3894169999985,
+      "measurement_wall_ms": 1772.562042000005,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.030207,
+        "high": 0.030207,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": 0,
+      "outgoing_requests": [
+        {
+          "elapsed_ms": 891.3145419999491,
+          "type": "response.create",
+          "model": "gpt-5.6-terra",
+          "service_tier": "priority",
+          "reasoning": {
+            "effort": "low",
+            "context": "all_turns"
+          },
+          "max_output_tokens": null,
+          "store": false
+        }
+      ]
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "tier": "default",
+      "path": "openai_agents",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:10:39.829Z",
+      "text": "42",
+      "ttft_ms": 7166.685749999946,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "headers_ms": 1490.9150829999708,
+      "status": 201,
+      "request_id": "req_4958753ca5144fea8e9c187a718708a8",
+      "first_event_ms": 1491.2909579999978,
+      "session_id": "sess_019630bca7245862006aa3c590c28481918c13b9b8b3a42540",
+      "turn_id": "turn_019630bca7245862006aa3c59519d08191836fc5f222905c23",
+      "first_complete_text_ms": 7166.697665999993,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 8203.436749999993,
+      "measurement_wall_ms": 8205.643584000063,
+      "saved_turn": {
+        "id": "turn_019630bca7245862006aa3c59519d08191836fc5f222905c23",
+        "object": "agent.session.turn",
+        "session_id": "sess_019630bca7245862006aa3c590c28481918c13b9b8b3a42540",
+        "agent_id": "agent_090c5bf04bce40b09165e56ce26a32803e6ba51edc804817aa",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117843,
+        "started_at": 1789117843,
+        "completed_at": 1789117845,
+        "error": null,
+        "usage": {
+          "input_tokens": 6077,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 6082
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.012214,
+        "high": 0.015252499999999999,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "tier": "fast",
+      "path": "responses_ws",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:10:56.642Z",
+      "text": "42",
+      "ttft_ms": 621.7813339999411,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "connection_reused": true,
+      "first_event_ms": 309.49179199989885,
+      "reported_tier": "priority",
+      "first_complete_text_ms": 662.9325839999365,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 663.3067499999888,
+      "measurement_wall_ms": 663.3605830000015,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000026399999999999998,
+        "high": 0.000026399999999999998,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "fast",
+      "path": "responses_http",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:10:57.349Z",
+      "text": "42",
+      "ttft_ms": 1162.688334000064,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 760.3486249999842,
+      "status": 200,
+      "request_id": "req_5198b1a414ae45cbbd839cb7ea4b16b8",
+      "first_event_ms": 760.9441670000087,
+      "reported_tier": "fast",
+      "first_complete_text_ms": 1315.8022089999868,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1397.2098750000587,
+      "measurement_wall_ms": 1398.3030000000726,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.00122,
+        "high": 0.00122,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-6-astra",
+      "tier": "default",
+      "path": "openai_agents",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:10:58.803Z",
+      "text": "42",
+      "ttft_ms": 10278.368832999957,
+      "usage": {
+        "input_tokens": 7116,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 7121
+      },
+      "headers_ms": 2108.3419579999754,
+      "status": 201,
+      "request_id": "req_56491fd0daba4164a12eacf37f24ad81",
+      "first_event_ms": 2108.738999999943,
+      "session_id": "sess_0d0cda59739df805006aa3c5a3debc819197bd3b4ae9610731",
+      "turn_id": "turn_0d0cda59739df805006aa3c5a9be90819183c142ade9d43451",
+      "first_complete_text_ms": 10278.37729199999,
+      "terminal": "agent.session.turn.completed",
+      "completion_ms": 10643.284166999976,
+      "measurement_wall_ms": 10643.5,
+      "saved_turn": {
+        "id": "turn_0d0cda59739df805006aa3c5a9be90819183c142ade9d43451",
+        "object": "agent.session.turn",
+        "session_id": "sess_0d0cda59739df805006aa3c5a3debc819197bd3b4ae9610731",
+        "agent_id": "agent_4857ebee997b44a6a589bfdfc5b8aea7c18e0b35ec8a4a18bf",
+        "subagent_id": null,
+        "status": "completed",
+        "created_at": 1789117864,
+        "started_at": 1789117864,
+        "completed_at": 1789117865,
+        "error": null,
+        "usage": {
+          "input_tokens": 7116,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 7121
+        }
+      },
+      "final_text": "42",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.07141,
+        "high": 0.0892,
+        "cache_write_known": false,
+        "tier_reported": false
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "tier": "default",
+      "path": "responses_http",
+      "repetition": 3,
+      "started_at": "2026-09-11T09:11:19.198Z",
+      "text": "42",
+      "ttft_ms": 1363.4424170000711,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "headers_ms": 484.53591700003017,
+      "status": 200,
+      "request_id": "req_6578bc55430745758e547f27c261ba17",
+      "first_event_ms": 484.70079200004693,
+      "reported_tier": "default",
+      "first_complete_text_ms": 1375.513917000033,
+      "final_text": "42",
+      "terminal": "response.completed",
+      "completion_ms": 1391.2460420000134,
+      "measurement_wall_ms": 1391.487833000021,
+      "correct": true,
+      "estimated_model_cost": {
+        "low": 0.000244,
+        "high": 0.000244,
+        "cache_write_known": true,
+        "tier_reported": true
+      },
+      "tool_calls": null,
+      "outgoing_requests": []
+    }
+  ]
+}

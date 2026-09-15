@@ -368,6 +368,9 @@ importers:
       nanocodex:
         specifier: workspace:*
         version: link:../nanocodex
+      nanocodex-computer:
+        specifier: workspace:*
+        version: link:../nanocodex-computer
       nanocodex-tools:
         specifier: workspace:*
         version: link:../nanocodex-tools
@@ -436,6 +439,9 @@ importers:
       nanocodex:
         specifier: workspace:*
         version: link:../nanocodex
+      nanocodex-computer:
+        specifier: workspace:*
+        version: link:../nanocodex-computer
       nanocodex-connect-protocol:
         specifier: workspace:*
         version: link:../nanocodex-connect-protocol
@@ -552,6 +558,19 @@ importers:
       quickjs-emscripten-core:
         specifier: 0.32.0
         version: 0.32.0
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  js/nanocodex-computer:
+    dependencies:
+      nanocodex-tools:
+        specifier: workspace:*
+        version: link:../nanocodex-tools
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
       typescript:
         specifier: 5.9.3
         version: 5.9.3
@@ -6494,13 +6513,13 @@ snapshots:
 
   '@slack/logger@4.0.1':
     dependencies:
-      '@types/node': 22.20.1
+      '@types/node': 24.13.3
 
   '@slack/socket-mode@2.0.7(debug@4.4.3(supports-color@10.2.2))(supports-color@10.2.2)':
     dependencies:
       '@slack/logger': 4.0.1
       '@slack/web-api': 7.19.0(debug@4.4.3(supports-color@10.2.2))(supports-color@10.2.2)
-      '@types/node': 22.20.1
+      '@types/node': 24.13.3
       '@types/ws': 8.18.1
       eventemitter3: 5.0.4
       ws: 8.21.3
@@ -6516,7 +6535,7 @@ snapshots:
     dependencies:
       '@slack/logger': 4.0.1
       '@slack/types': 2.22.0
-      '@types/node': 22.20.1
+      '@types/node': 24.13.3
       '@types/retry': 0.12.0
       axios: 1.20.0(debug@4.4.3(supports-color@10.2.2))(supports-color@10.2.2)
       eventemitter3: 5.0.4
@@ -6755,7 +6774,6 @@ snapshots:
   '@types/node@24.13.3':
     dependencies:
       undici-types: 7.18.2
-    optional: true
 
   '@types/react-dom@19.2.3(@types/react@19.2.14)':
     dependencies:
@@ -9627,8 +9645,7 @@ snapshots:
 
   undici-types@6.21.0: {}
 
-  undici-types@7.18.2:
-    optional: true
+  undici-types@7.18.2: {}
 
   undici@7.28.0: {}
 

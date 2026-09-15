@@ -83,6 +83,82 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(fixture.broker.machines()).toEqual([]);
   });
 
+  it("publishes the browser placement overlay under the exact cloud tool name", async () => {
+    const fixture = createFixture();
+    const host = fixture.socket();
+    const validator = vi.fn(() => true as const);
+    fixture.broker.provider().setCatalogValidator(validator);
+    await fixture.broker.message(host.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "desktop",
+      tools: [machineEntry("exec_command"), browserExecuteEntry()],
+      machines: [{
+        id: "desktop",
+        name: "Residential browser",
+        workspace: "/workspace",
+        capabilities: ["browser", "browser-egress", "filesystem"],
+      }],
+    }));
+
+    expect(host.sent).toEqual([{ type: "ready" }]);
+    expect(fixture.broker.provider().definitions()).toEqual([
+      expect.objectContaining({
+        name: "browser_execute",
+        defer_loading: true,
+        parameters: {
+          type: "object",
+          properties: { code: { type: "string" } },
+          required: ["code"],
+          additionalProperties: false,
+        },
+      }),
+    ]);
+    expect(fixture.broker.provider().resolve("browser_execute")).toMatchObject({
+      name: "browser_execute",
+      provider: "machine",
+      remoteName: "browser_execute",
+    });
+    expect(fixture.broker.provider().resolve("user_desktop_browser_execute")).toBeUndefined();
+    expect(validator).toHaveBeenCalledWith([
+      expect.objectContaining({ definition: expect.objectContaining({ name: "browser_execute" }) }),
+    ]);
+  });
+
+  it("allows the browser placement overlay on a leased Hand but rejects arbitrary extras", async () => {
+    const route = "vm-host:browser:1";
+    const fixture = createFixture();
+    const allowed = fixture.socket(undefined, undefined, undefined, "leased-vm", NOW + 10, route);
+    await fixture.broker.message(allowed.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "leased-vm",
+      tools: [machineEntry("exec_command"), browserExecuteEntry()],
+      machines: [{
+        id: "leased-vm",
+        name: "Leased browser Hand",
+        workspace: "/workspace",
+        capabilities: ["browser", "browser-egress", "filesystem"],
+      }],
+    }));
+    expect(allowed.sent).toEqual([{ type: "ready" }]);
+    expect(fixture.broker.provider().resolve("browser_execute")).toBeDefined();
+
+    const rejected = fixture.socket(
+      undefined, undefined, undefined, "other-vm", NOW + 10, "vm-host:browser:2",
+    );
+    await fixture.broker.message(rejected.webSocket, JSON.stringify({
+      type: "catalog",
+      attachment_id: "other-vm",
+      tools: [machineEntry("exec_command"), entry("arbitrary_extra")],
+      machines: [{
+        id: "other-vm",
+        name: "Other VM",
+        workspace: "/workspace",
+        capabilities: ["filesystem"],
+      }],
+    }));
+    expect(rejected.closed?.reason).toContain("leased tool attachments");
+  });
+
   it("caps leased attachments at their control lease and revokes their exact route", async () => {
     const fixture = createFixture();
     const firstRoute = "vm-host:33333333-3333-4333-8333-333333333333:1";
@@ -667,6 +743,21 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(fixture.broker.machines()).toEqual([]);
   });
 
+  it("accepts HTTP results through the pinned broker lifecycle and rejects conflicts", async () => {
+    const fixture = createFixture(); const host = fixture.socket(); await catalog(fixture.broker, host);
+    const pending = fixture.broker.provider().resolve("fixture__lookup")!.handler({ id: "42" }, {
+      sessionId: "session:1", callId: "source:1", model: "gpt-5.6-luna",
+    });
+    const outcome = JSON.parse(result(IDS[1]!, "done")).outcome;
+    fixture.broker.completeHttpResult(IDS[1]!, outcome);
+    await expect(pending).resolves.toMatchObject({ success: true, output: "done" });
+    fixture.broker.completeHttpResult(IDS[1]!, outcome);
+    expect(() => fixture.broker.completeHttpResult(IDS[1]!, JSON.parse(result(IDS[1]!, "different")).outcome)).toThrow();
+    expect(() => fixture.broker.completeHttpResult("missing", outcome)).toThrow();
+    fixture.broker.close(host.webSocket, "host retired");
+    expect(() => fixture.broker.completeHttpResult(IDS[1]!, outcome)).toThrow();
+  });
+
   it("durably dispatches an exact call and ACKs both the result and duplicate receipt", async () => {
     const fixture = createFixture();
     const host = fixture.socket();
@@ -686,7 +777,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
       name: "fixture__lookup",
       input: { id: "42" },
       output_token_budget: 10_000,
-      output_byte_budget: 128 * 1024,
+      output_byte_budget: Number.MAX_SAFE_INTEGER,
       deadline_at: NOW + 30_000,
     });
     await fixture.broker.message(host.webSocket, result(IDS[1]!, "done"));
@@ -1215,7 +1306,6 @@ class MemoryPersistence implements HostedToolsBrokerPersistence {
     return [...this.calls.values()].filter((row) => row.lease_id === leaseId
       && row.generation === generation).length;
   }
-  pruneReceipts(_limit: number): void {}
 }
 
 async function catalog(broker: HostedToolsBroker, host: FakeSocket): Promise<void> {
@@ -1267,6 +1357,28 @@ function machineEntry(name: "exec_command" | "write_stdin" | "preview") {
     parallel_safe: name !== "write_stdin",
     summary: `Machine ${name}`,
     timeout_ms: 30_000,
+  };
+}
+
+function browserExecuteEntry(): HostedToolCatalogEntry {
+  return {
+    provider: "machine",
+    remote_name: "browser_execute",
+    definition: {
+      type: "function",
+      name: "browser_execute",
+      description: "Run browser automation through this Hand.",
+      strict: false,
+      parameters: {
+        type: "object",
+        properties: { code: { type: "string" } },
+        required: ["code"],
+        additionalProperties: false,
+      },
+    },
+    parallel_safe: false,
+    summary: "Use the attached browser",
+    timeout_ms: 120_000,
   };
 }
 

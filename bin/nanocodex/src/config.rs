@@ -445,6 +445,12 @@ impl AgentArgs {
         if let Some(browser) = &configured_browser {
             tools = tools.provider(browser.tool());
         }
+        if configured_vm.is_none()
+            && let Some(config) = nanocodex_computer::ComputerConfig::discover()
+        {
+            let computer = nanocodex_computer::ComputerTools::local(config);
+            tools = tools.add(computer.js()).add(computer.reset());
+        }
         if let Some(managed_memory) = &managed_memory {
             tools = managed_memory.install(tools);
         }

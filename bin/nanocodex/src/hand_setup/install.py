@@ -161,7 +161,7 @@ def main(stage, config):
         if extra_memory > available - 2048:
             raise RuntimeError("Not enough available RAM for the requested VM pool; lower --max-vms or --vm-memory-mib")
     print("Installing Linux runtime dependencies…", flush=True)
-    packages = ["ca-certificates", "xvfb", "openbox", "xterm", "xauth", "fonts-dejavu-core"]
+    packages = ["ca-certificates", "libpulse0", "libxkbcommon0", "xvfb", "openbox", "xterm", "xauth", "fonts-dejavu-core"]
     if not config["native_only"] and not shutil.which("docker"):
         packages.append("docker.io")
     env = dict(os.environ, DEBIAN_FRONTEND="noninteractive", NEEDRESTART_MODE="l")
@@ -193,7 +193,7 @@ def main(stage, config):
     cache = ROOT / "cache"
     artifacts = []
     for artifact in config["artifacts"]:
-        if artifact["name"] not in ["nanocodex2", "nanocodex-vm-guest"]:
+        if artifact["name"] not in ["nanocodex2", "nanocodex-vm-guest", "nanocodex-computer"]:
             raise RuntimeError("Unexpected artifact")
         source = stage / artifact["name"] if artifact.get("local") else download(artifact["url"], artifact["sha256"], cache)
         if digest(source) != artifact["sha256"]:

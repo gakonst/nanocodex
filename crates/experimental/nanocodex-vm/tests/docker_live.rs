@@ -260,6 +260,50 @@ async fn startup_failure_cleans_up_and_explicit_internet_works() {
 
 #[tokio::test]
 #[ignore = "requires a Linux Docker daemon and the built Hand image; no KVM needed"]
+async fn cua_starts_a_private_desktop_without_a_screen_publisher() {
+    let volume = Volume::new();
+    let workspace = DockerWorkspace::builder(image(), &volume.0)
+        .launch()
+        .await
+        .unwrap();
+    assert!(
+        workspace
+            .control()
+            .read_file("/run/nanocodex-hand-desktop/ready")
+            .await
+            .is_err()
+    );
+    {
+        let tools = workspace
+            .tools_builder()
+            .web_search(false)
+            .image_generation(false)
+            .build()
+            .unwrap();
+        let runtime = ToolRuntime::new_with_tools("/app", None, None, &tools);
+        let result = runtime.execute_tool(
+            "mcp__cua_repl__js",
+            function(json!({"code":"const frames = await cua.computer.get_screenshot(); await nodeRepl.emitImage(frames[0].data_url);"})),
+            ToolContext::new("test", "cli-desktop", "first-cua", &[], 4000),
+        ).await.unwrap();
+        assert!(result.success, "{:?}", result.output);
+        assert!(
+            matches!(result.output, ToolOutputBody::Content(ref content) if content.iter().any(|item| matches!(item, ToolOutputContent::InputImage { .. })))
+        );
+        assert!(
+            workspace
+                .control()
+                .read_file("/run/nanocodex-hand-desktop/ready")
+                .await
+                .is_ok()
+        );
+    }
+    workspace.shutdown().await.unwrap();
+    assert!(volume.containers().await.trim().is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires a Linux Docker daemon and the built Hand image; no KVM needed"]
 async fn desktop_and_last_capability_cleanup() {
     let volume = Volume::new();
     let workspace = DockerWorkspace::builder(image(), &volume.0)
@@ -324,6 +368,31 @@ async fn desktop_and_last_capability_cleanup() {
             .build()
             .unwrap();
         let runtime = ToolRuntime::new_with_tools("/app", None, None, &tools);
+        let computer = runtime.execute_tool("mcp__cua_repl__js",
+            function(json!({"code":"let desktop = cua.computer; const frames = await desktop.get_screenshot(); await nodeRepl.emitImage(frames[0].data_url);"})),
+            ToolContext::new("test", "docker-live", "cua-image", &[], 4000)).await.unwrap();
+        assert!(computer.success, "{:?}", computer.output);
+        assert!(
+            matches!(computer.output, ToolOutputBody::Content(ref items) if items.iter().any(|item| matches!(item, ToolOutputContent::InputImage { .. })))
+        );
+        let retained = runtime
+            .execute_tool(
+                "mcp__cua_repl__js",
+                function(json!({"code":"nodeRepl.write(desktop.target);"})),
+                ToolContext::new("test", "docker-live", "cua-state", &[], 4000),
+            )
+            .await
+            .unwrap();
+        assert!(retained.success && retained.structured_result().to_string().contains("linux"));
+        let reset = runtime
+            .execute_tool(
+                "mcp__cua_repl__js_reset",
+                function(json!({})),
+                ToolContext::new("test", "docker-live", "cua-reset", &[], 4000),
+            )
+            .await
+            .unwrap();
+        assert!(reset.success, "{:?}", reset.output);
         let output = runtime
             .execute_tool(
                 "view_image",

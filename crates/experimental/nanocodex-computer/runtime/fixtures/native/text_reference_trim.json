@@ -1,0 +1,62 @@
+[
+  {
+    "length" : 3,
+    "location" : 2,
+    "source" : " \tβ🧪\n ",
+    "trimmed" : "β🧪"
+  },
+  {
+    "length" : 2,
+    "location" : 1,
+    "source" : " ́x ",
+    "trimmed" : "́x"
+  },
+  {
+    "length" : 1,
+    "location" : 1,
+    "source" : "​α​",
+    "trimmed" : "α"
+  },
+  {
+    "length" : 1,
+    "location" : 1,
+    "source" : " x ",
+    "trimmed" : "x"
+  },
+  {
+    "length" : 1,
+    "location" : 2,
+    "source" : " \tx\n",
+    "trimmed" : "x"
+  },
+  {
+    "length" : 0,
+    "location" : null,
+    "source" : "   ",
+    "trimmed" : ""
+  },
+  {
+    "length" : 7,
+    "location" : 1,
+    "source" : "\t[é](x) \n",
+    "trimmed" : "[é](x)"
+  },
+  {
+    "length" : 3,
+    "location" : 1,
+    "source" : "　́🧪　",
+    "trimmed" : "́🧪"
+  },
+  {
+    "length" : 1,
+    "location" : 2,
+    "source" : "\r\nα",
+    "trimmed" : "α"
+  },
+  {
+    "length" : 3,
+    "location" : 0,
+    "source" : "﻿x﻿",
+    "trimmed" : "﻿x﻿"
+  }
+]

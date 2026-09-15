@@ -1,0 +1,3088 @@
+{
+  "sourceSha256": "3032666de451e423db76b5f9b0456e370d4f57416bbf53d0c746be636359ba02",
+  "bindings": [
+    {
+      "name": "m7",
+      "kind": "var",
+      "value_kind": "Literal",
+      "start_utf8": 677320,
+      "end_utf8": 677326,
+      "sha256": "f1219bc49f8657e8c361ac9408f420ac432e807903457dd71c375412eb57e096"
+    },
+    {
+      "name": "f7",
+      "kind": "var",
+      "value_kind": "Literal",
+      "start_utf8": 677327,
+      "end_utf8": 677332,
+      "sha256": "8650df9b78c7e1d6e30d7caec76c5c2378b1042462f242c14d7dc591a3a1a3dc"
+    },
+    {
+      "name": "yr",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 677333,
+      "end_utf8": 677391,
+      "sha256": "6cbe6fefde5e8cc2e747e8722fb535b5acc697ba9c7efc0a11ce8b714f9d2161"
+    },
+    {
+      "name": "Zp",
+      "kind": "var",
+      "value_kind": "ClassExpression",
+      "start_utf8": 677395,
+      "end_utf8": 701072,
+      "sha256": "b1e32a2bf95b00ebd1c32a238d13ff665dda2b96ef3b24bfd4383359cf718d5f"
+    },
+    {
+      "name": "Kt",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703210,
+      "end_utf8": 703257,
+      "sha256": "7fd7b7b8768ba6cc127e8f4b0b57eabbf0e6be29e9a83fa8f34a34844bb44413"
+    },
+    {
+      "name": "Ek",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703257,
+      "end_utf8": 703372,
+      "sha256": "8e0342c0ec330279a5d6c9daf468f80adb3c3f29c1f68e2129c47c5e89dff53e"
+    },
+    {
+      "name": "Ak",
+      "kind": "FunctionDeclaration",
+      "value_kind": "FunctionDeclaration",
+      "start_utf8": 703372,
+      "end_utf8": 703425,
+      "sha256": "0dcafb9bc6dd38c0f3d8fe4912d9d41b64d8f61e0bd7504534679fed2551b02f"
+    }
+  ],
+  "captureBindings": [
+    {
+      "name": "u9",
+      "kind": "FunctionDeclaration",
+      "start_utf8": 643751,
+      "end_utf8": 644900,
+      "sha256": "6d728798503914836d31132f05e68cce76b63cb523e5473606e84577755d4112"
+    },
+    {
+      "name": "l9",
+      "kind": "FunctionDeclaration",
+      "start_utf8": 644900,
+      "end_utf8": 645059,
+      "sha256": "04aaa26323345a13b91a89b85fe2f2fae1b79e43f711a306d01a3bc510b0a916"
+    },
+    {
+      "name": "c9",
+      "kind": "FunctionDeclaration",
+      "start_utf8": 645059,
+      "end_utf8": 645118,
+      "sha256": "333245e4d0a01e11e5a4dc6a7fca1be9a2ad4b9bae1bf4423a1c3c9a19b10592"
+    },
+    {
+      "name": "d9",
+      "kind": "FunctionDeclaration",
+      "start_utf8": 645118,
+      "end_utf8": 645323,
+      "sha256": "e756dcc8316e18929634d81dd1ef17dc2fba57b7c256c34a04852acdb6aada8e"
+    },
+    {
+      "name": "fr",
+      "kind": "var",
+      "start_utf8": 637483,
+      "end_utf8": 637492,
+      "sha256": "483cdedde62d4da36eed9aeecb34b39a86f6a3af4dfd9bbe46394eba67b4bd3f"
+    },
+    {
+      "name": "i9",
+      "kind": "var",
+      "start_utf8": 642404,
+      "end_utf8": 642410,
+      "sha256": "674087501ca7a050b1763ba09d72763ab39eb45fe0a45227a86543202d06491b"
+    }
+  ],
+  "scope": "Original shared-CDP methods and viewport capture helper with inert dispatch and explicit event/clock collaborators; finite transition traces, not all renderer scheduling interleavings.",
+  "cases": [
+    {
+      "name": "raw ownership changes only after successful dispatch",
+      "actions": [
+        {
+          "op": "raw",
+          "method": "Page.startScreencast",
+          "success": false
+        },
+        {
+          "op": "begin"
+        },
+        {
+          "op": "end"
+        },
+        {
+          "op": "raw",
+          "method": "Page.startScreencast"
+        },
+        {
+          "op": "begin"
+        },
+        {
+          "op": "raw",
+          "method": "Page.stopScreencast",
+          "success": false
+        },
+        {
+          "op": "begin"
+        },
+        {
+          "op": "raw",
+          "method": "Page.stopScreencast"
+        },
+        {
+          "op": "begin"
+        },
+        {
+          "op": "end",
+          "fail": true
+        }
+      ],
+      "rows": [
+        {
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "invoked": true,
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "raw": true,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "invoked": false,
+          "raw": true,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "raw": true,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "invoked": false,
+          "raw": true,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "invoked": true,
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        }
+      ]
+    },
+    {
+      "name": "internal filtering preserves event emission and excludes child targets",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 8
+          },
+          "child": true
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 9
+          },
+          "target": true
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": "10"
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {}
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastVisibilityChanged",
+          "params": {
+            "visible": true
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastVisibilityChanged",
+          "params": {
+            "visible": false
+          }
+        },
+        {
+          "op": "event",
+          "method": "Other",
+          "params": {}
+        },
+        {
+          "op": "end"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 9999
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 1
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          }
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "hidden": false,
+          "current": false,
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "hidden": false,
+          "current": false,
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": false,
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": false,
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "hidden": false,
+          "current": false,
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "current": false,
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "current": false,
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": false,
+          "current": false,
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        }
+      ]
+    },
+    {
+      "name": "failure retires numeric IDs with insertion-ordered capacity",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 0
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 1
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 2
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 3
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 4
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 5
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 6
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 8
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 9
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 10
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 11
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 12
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 13
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 14
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 15
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 16
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 17
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 18
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 19
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 20
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 21
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 22
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 23
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 24
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 25
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 26
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 27
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 28
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 29
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 30
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 31
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 32
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 33
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 34
+          }
+        },
+        {
+          "op": "end",
+          "fail": true
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 0
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 2
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 3
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 34
+          }
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32,
+            33,
+            34
+          ],
+          "retired": []
+        },
+        {
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              3,
+              11000
+            ],
+            [
+              4,
+              11000
+            ],
+            [
+              5,
+              11000
+            ],
+            [
+              6,
+              11000
+            ],
+            [
+              7,
+              11000
+            ],
+            [
+              8,
+              11000
+            ],
+            [
+              9,
+              11000
+            ],
+            [
+              10,
+              11000
+            ],
+            [
+              11,
+              11000
+            ],
+            [
+              12,
+              11000
+            ],
+            [
+              13,
+              11000
+            ],
+            [
+              14,
+              11000
+            ],
+            [
+              15,
+              11000
+            ],
+            [
+              16,
+              11000
+            ],
+            [
+              17,
+              11000
+            ],
+            [
+              18,
+              11000
+            ],
+            [
+              19,
+              11000
+            ],
+            [
+              20,
+              11000
+            ],
+            [
+              21,
+              11000
+            ],
+            [
+              22,
+              11000
+            ],
+            [
+              23,
+              11000
+            ],
+            [
+              24,
+              11000
+            ],
+            [
+              25,
+              11000
+            ],
+            [
+              26,
+              11000
+            ],
+            [
+              27,
+              11000
+            ],
+            [
+              28,
+              11000
+            ],
+            [
+              29,
+              11000
+            ],
+            [
+              30,
+              11000
+            ],
+            [
+              31,
+              11000
+            ],
+            [
+              32,
+              11000
+            ],
+            [
+              33,
+              11000
+            ],
+            [
+              34,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "current": false,
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              3,
+              11000
+            ],
+            [
+              4,
+              11000
+            ],
+            [
+              5,
+              11000
+            ],
+            [
+              6,
+              11000
+            ],
+            [
+              7,
+              11000
+            ],
+            [
+              8,
+              11000
+            ],
+            [
+              9,
+              11000
+            ],
+            [
+              10,
+              11000
+            ],
+            [
+              11,
+              11000
+            ],
+            [
+              12,
+              11000
+            ],
+            [
+              13,
+              11000
+            ],
+            [
+              14,
+              11000
+            ],
+            [
+              15,
+              11000
+            ],
+            [
+              16,
+              11000
+            ],
+            [
+              17,
+              11000
+            ],
+            [
+              18,
+              11000
+            ],
+            [
+              19,
+              11000
+            ],
+            [
+              20,
+              11000
+            ],
+            [
+              21,
+              11000
+            ],
+            [
+              22,
+              11000
+            ],
+            [
+              23,
+              11000
+            ],
+            [
+              24,
+              11000
+            ],
+            [
+              25,
+              11000
+            ],
+            [
+              26,
+              11000
+            ],
+            [
+              27,
+              11000
+            ],
+            [
+              28,
+              11000
+            ],
+            [
+              29,
+              11000
+            ],
+            [
+              30,
+              11000
+            ],
+            [
+              31,
+              11000
+            ],
+            [
+              32,
+              11000
+            ],
+            [
+              33,
+              11000
+            ],
+            [
+              34,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "current": false,
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              3,
+              11000
+            ],
+            [
+              4,
+              11000
+            ],
+            [
+              5,
+              11000
+            ],
+            [
+              6,
+              11000
+            ],
+            [
+              7,
+              11000
+            ],
+            [
+              8,
+              11000
+            ],
+            [
+              9,
+              11000
+            ],
+            [
+              10,
+              11000
+            ],
+            [
+              11,
+              11000
+            ],
+            [
+              12,
+              11000
+            ],
+            [
+              13,
+              11000
+            ],
+            [
+              14,
+              11000
+            ],
+            [
+              15,
+              11000
+            ],
+            [
+              16,
+              11000
+            ],
+            [
+              17,
+              11000
+            ],
+            [
+              18,
+              11000
+            ],
+            [
+              19,
+              11000
+            ],
+            [
+              20,
+              11000
+            ],
+            [
+              21,
+              11000
+            ],
+            [
+              22,
+              11000
+            ],
+            [
+              23,
+              11000
+            ],
+            [
+              24,
+              11000
+            ],
+            [
+              25,
+              11000
+            ],
+            [
+              26,
+              11000
+            ],
+            [
+              27,
+              11000
+            ],
+            [
+              28,
+              11000
+            ],
+            [
+              29,
+              11000
+            ],
+            [
+              30,
+              11000
+            ],
+            [
+              31,
+              11000
+            ],
+            [
+              32,
+              11000
+            ],
+            [
+              33,
+              11000
+            ],
+            [
+              34,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "current": false,
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              3,
+              11000
+            ],
+            [
+              4,
+              11000
+            ],
+            [
+              5,
+              11000
+            ],
+            [
+              6,
+              11000
+            ],
+            [
+              7,
+              11000
+            ],
+            [
+              8,
+              11000
+            ],
+            [
+              9,
+              11000
+            ],
+            [
+              10,
+              11000
+            ],
+            [
+              11,
+              11000
+            ],
+            [
+              12,
+              11000
+            ],
+            [
+              13,
+              11000
+            ],
+            [
+              14,
+              11000
+            ],
+            [
+              15,
+              11000
+            ],
+            [
+              16,
+              11000
+            ],
+            [
+              17,
+              11000
+            ],
+            [
+              18,
+              11000
+            ],
+            [
+              19,
+              11000
+            ],
+            [
+              20,
+              11000
+            ],
+            [
+              21,
+              11000
+            ],
+            [
+              22,
+              11000
+            ],
+            [
+              23,
+              11000
+            ],
+            [
+              24,
+              11000
+            ],
+            [
+              25,
+              11000
+            ],
+            [
+              26,
+              11000
+            ],
+            [
+              27,
+              11000
+            ],
+            [
+              28,
+              11000
+            ],
+            [
+              29,
+              11000
+            ],
+            [
+              30,
+              11000
+            ],
+            [
+              31,
+              11000
+            ],
+            [
+              32,
+              11000
+            ],
+            [
+              33,
+              11000
+            ],
+            [
+              34,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "current": false,
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              3,
+              11000
+            ],
+            [
+              4,
+              11000
+            ],
+            [
+              5,
+              11000
+            ],
+            [
+              6,
+              11000
+            ],
+            [
+              7,
+              11000
+            ],
+            [
+              8,
+              11000
+            ],
+            [
+              9,
+              11000
+            ],
+            [
+              10,
+              11000
+            ],
+            [
+              11,
+              11000
+            ],
+            [
+              12,
+              11000
+            ],
+            [
+              13,
+              11000
+            ],
+            [
+              14,
+              11000
+            ],
+            [
+              15,
+              11000
+            ],
+            [
+              16,
+              11000
+            ],
+            [
+              17,
+              11000
+            ],
+            [
+              18,
+              11000
+            ],
+            [
+              19,
+              11000
+            ],
+            [
+              20,
+              11000
+            ],
+            [
+              21,
+              11000
+            ],
+            [
+              22,
+              11000
+            ],
+            [
+              23,
+              11000
+            ],
+            [
+              24,
+              11000
+            ],
+            [
+              25,
+              11000
+            ],
+            [
+              26,
+              11000
+            ],
+            [
+              27,
+              11000
+            ],
+            [
+              28,
+              11000
+            ],
+            [
+              29,
+              11000
+            ],
+            [
+              30,
+              11000
+            ],
+            [
+              31,
+              11000
+            ],
+            [
+              32,
+              11000
+            ],
+            [
+              33,
+              11000
+            ],
+            [
+              34,
+              11000
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "retired collision never belongs to a new active capture",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          }
+        },
+        {
+          "op": "end"
+        },
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 8
+          }
+        },
+        {
+          "op": "end"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 8
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 10000
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 8
+          }
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "invoked": true,
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "current": false,
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            8
+          ],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ],
+            [
+              8,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "current": false,
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ],
+            [
+              8,
+              11000
+            ]
+          ]
+        },
+        {
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": false,
+          "current": false,
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": false,
+          "current": false,
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        }
+      ]
+    },
+    {
+      "name": "raw capture cannot expose a colliding retired internal ID before expiry",
+      "actions": [
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          }
+        },
+        {
+          "op": "end"
+        },
+        {
+          "op": "raw",
+          "method": "Page.startScreencast"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 8
+          }
+        },
+        {
+          "op": "advance",
+          "ms": 10000
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 7
+          }
+        },
+        {
+          "op": "raw",
+          "method": "Page.stopScreencast"
+        }
+      ],
+      "rows": [
+        {
+          "invoked": true,
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            7
+          ],
+          "retired": []
+        },
+        {
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "raw": true,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "current": false,
+          "raw": true,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": false,
+          "current": false,
+          "raw": true,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              7,
+              11000
+            ]
+          ]
+        },
+        {
+          "raw": true,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": false,
+          "current": false,
+          "raw": true,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        }
+      ]
+    },
+    {
+      "name": "tab ownership is independent",
+      "actions": [
+        {
+          "op": "raw",
+          "method": "Page.startScreencast",
+          "tab": "2"
+        },
+        {
+          "op": "begin"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 0
+          }
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 1.5
+          }
+        },
+        {
+          "op": "end"
+        },
+        {
+          "op": "begin",
+          "tab": "2"
+        },
+        {
+          "op": "raw",
+          "method": "Page.stopScreencast",
+          "tab": "2"
+        },
+        {
+          "op": "begin",
+          "tab": "2"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 0
+          },
+          "tab": "2"
+        },
+        {
+          "op": "end",
+          "tab": "2"
+        },
+        {
+          "op": "event",
+          "method": "Page.screencastFrame",
+          "params": {
+            "sessionId": 0
+          }
+        }
+      ],
+      "rows": [
+        {
+          "raw": true,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "invoked": true,
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0
+          ],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0,
+            1.5
+          ],
+          "retired": []
+        },
+        {
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              0,
+              11000
+            ],
+            [
+              1.5,
+              11000
+            ]
+          ]
+        },
+        {
+          "invoked": false,
+          "raw": true,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "invoked": true,
+          "raw": false,
+          "active": true,
+          "ids": [],
+          "retired": []
+        },
+        {
+          "hidden": true,
+          "current": true,
+          "raw": false,
+          "active": true,
+          "ids": [
+            0
+          ],
+          "retired": []
+        },
+        {
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              0,
+              11000
+            ]
+          ]
+        },
+        {
+          "hidden": true,
+          "current": false,
+          "raw": false,
+          "active": false,
+          "ids": [],
+          "retired": [
+            [
+              0,
+              11000
+            ],
+            [
+              1.5,
+              11000
+            ]
+          ]
+        }
+      ]
+    }
+  ],
+  "captures": [
+    {
+      "mode": "fresh",
+      "value": "owned-frame",
+      "commands": [
+        {
+          "method": "Page.startScreencast",
+          "params": {
+            "everyNthFrame": 1,
+            "format": "jpeg",
+            "quality": 80
+          }
+        },
+        {
+          "method": "Page.stopScreencast",
+          "params": {}
+        },
+        {
+          "method": "Page.screencastFrameAck",
+          "params": {
+            "sessionId": 1
+          }
+        }
+      ]
+    },
+    {
+      "mode": "stale",
+      "value": "owned-frame",
+      "commands": [
+        {
+          "method": "Page.startScreencast",
+          "params": {
+            "everyNthFrame": 1,
+            "format": "jpeg",
+            "quality": 80
+          }
+        },
+        {
+          "method": "Page.screencastFrameAck",
+          "params": {
+            "sessionId": 1
+          }
+        },
+        {
+          "method": "Page.stopScreencast",
+          "params": {}
+        },
+        {
+          "method": "Page.screencastFrameAck",
+          "params": {
+            "sessionId": 2
+          }
+        }
+      ]
+    },
+    {
+      "mode": "start_refused",
+      "value": null,
+      "commands": [
+        {
+          "method": "Page.startScreencast",
+          "params": {
+            "everyNthFrame": 1,
+            "format": "jpeg",
+            "quality": 80
+          }
+        },
+        {
+          "method": "Page.stopScreencast",
+          "params": {}
+        }
+      ]
+    },
+    {
+      "mode": "stop_refused",
+      "value": null,
+      "commands": [
+        {
+          "method": "Page.startScreencast",
+          "params": {
+            "everyNthFrame": 1,
+            "format": "jpeg",
+            "quality": 80
+          }
+        },
+        {
+          "method": "Page.stopScreencast",
+          "params": {}
+        },
+        {
+          "method": "Page.screencastFrameAck",
+          "params": {
+            "sessionId": 1
+          }
+        },
+        {
+          "method": "Page.stopScreencast",
+          "params": {}
+        }
+      ]
+    },
+    {
+      "mode": "ack_refused",
+      "value": null,
+      "commands": [
+        {
+          "method": "Page.startScreencast",
+          "params": {
+            "everyNthFrame": 1,
+            "format": "jpeg",
+            "quality": 80
+          }
+        },
+        {
+          "method": "Page.stopScreencast",
+          "params": {}
+        },
+        {
+          "method": "Page.screencastFrameAck",
+          "params": {
+            "sessionId": 1
+          }
+        }
+      ]
+    },
+    {
+      "mode": "invisible",
+      "value": null,
+      "commands": [
+        {
+          "method": "Page.startScreencast",
+          "params": {
+            "everyNthFrame": 1,
+            "format": "jpeg",
+            "quality": 80
+          }
+        },
+        {
+          "method": "Page.stopScreencast",
+          "params": {}
+        }
+      ]
+    },
+    {
+      "mode": "idle",
+      "value": null,
+      "commands": [
+        {
+          "method": "Page.startScreencast",
+          "params": {
+            "everyNthFrame": 1,
+            "format": "jpeg",
+            "quality": 80
+          }
+        },
+        {
+          "method": "Page.stopScreencast",
+          "params": {}
+        }
+      ]
+    },
+    {
+      "mode": "disconnect",
+      "value": null,
+      "commands": [
+        {
+          "method": "Page.startScreencast",
+          "params": {
+            "everyNthFrame": 1,
+            "format": "jpeg",
+            "quality": 80
+          }
+        },
+        {
+          "method": "Page.stopScreencast",
+          "params": {}
+        }
+      ]
+    },
+    {
+      "mode": "empty",
+      "value": null,
+      "commands": [
+        {
+          "method": "Page.startScreencast",
+          "params": {
+            "everyNthFrame": 1,
+            "format": "jpeg",
+            "quality": 80
+          }
+        },
+        {
+          "method": "Page.stopScreencast",
+          "params": {}
+        },
+        {
+          "method": "Page.screencastFrameAck",
+          "params": {
+            "sessionId": 1
+          }
+        }
+      ]
+    },
+    {
+      "mode": "raw",
+      "value": null,
+      "commands": []
+    }
+  ]
+}

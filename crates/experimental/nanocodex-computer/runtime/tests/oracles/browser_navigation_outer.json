@@ -1,0 +1,253 @@
+{
+  "sourceOracle": "evidence/browser-navigation/20260907T024021950985Z-original-outer/oracle.json",
+  "sourceSha256": "052c28582ae85207e7d10e8e621b1bd2994e4c435ff72d124f7b063bd5e6f6bc",
+  "scope": "Exact original first-cell text/errors and successful followup values; process-specific unexpected-exit diagnostic not asserted",
+  "cases": [
+    {
+      "name": "awaited-callback-result",
+      "first": "var count=0;nodeRepl.write(await tab.playwright.expectNavigation(()=>{count++;return 42;}));nodeRepl.write(count)",
+      "second": "nodeRepl.write(count)",
+      "bootstrap_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": ""
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      },
+      "first_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "421"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      },
+      "first_ms": 186.696791,
+      "second_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "1"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "sync-throw-wait-success",
+      "first": "var count=0;try{await tab.playwright.expectNavigation(()=>{count++;throw Error('owned action failure')})}catch(e){nodeRepl.write(e.message)}",
+      "second": "nodeRepl.write(count)",
+      "bootstrap_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": ""
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      },
+      "first_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "owned action failure"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      },
+      "first_ms": 185.037833,
+      "second_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "1"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "sync-throw-wait-failure",
+      "first": "var count=0;try{await tab.playwright.expectNavigation(()=>{count++;throw Error('owned action failure')},{url:'https://owned.invalid/fail'})}catch(e){nodeRepl.write(e.message)}",
+      "second": "nodeRepl.write(typeof count)",
+      "bootstrap_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": ""
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      },
+      "first_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "node_repl kernel unhandled rejection: owned wait failure; kernel reset. Catch or handle async errors (including Promise rejections and EventEmitter 'error' events) to avoid kernel termination."
+          }
+        ],
+        "isError": true,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      },
+      "first_ms": 184.860583,
+      "second_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "node_repl kernel exited unexpectedly\n\nnode_repl diagnostics: {\"kernel_pid\":53776,\"kernel_status\":\"exited(code=1)\",\"kernel_stderr_tail\":\"(node:53776) ExperimentalWarning: VM Modules is an experimental feature and might change at any time | (Use `node --trace-warnings ...` to show where the warning was created) | node_repl kernel unhandled rejection: owned wait failure\",\"reason\":\"stdout_eof\",\"stream_error\":null}"
+          }
+        ],
+        "isError": true
+      }
+    },
+    {
+      "name": "async-reject-wait-failure",
+      "first": "var count=0;try{await tab.playwright.expectNavigation(()=>{count++;return Promise.reject(Error('owned action rejection'))},{url:'https://owned.invalid/fail'})}catch(e){nodeRepl.write(e.message)}",
+      "second": "nodeRepl.write(count)",
+      "bootstrap_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": ""
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      },
+      "first_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "owned action rejection"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      },
+      "first_ms": 184.778542,
+      "second_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "1"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "unawaited-outer-success",
+      "first": "var count=0;var operation=tab.playwright.expectNavigation(()=>{count++;return 42});nodeRepl.write({count,brand:operation instanceof Promise})",
+      "second": "nodeRepl.write(await operation)",
+      "bootstrap_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": ""
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      },
+      "first_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{ count: 1, brand: true }"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      },
+      "first_ms": 184.671458,
+      "second_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "42"
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      }
+    },
+    {
+      "name": "unawaited-outer-failure",
+      "first": "var count=0;var operation=tab.playwright.expectNavigation(()=>{count++;return 42},{url:'https://owned.invalid/fail'});nodeRepl.write(count)",
+      "second": "nodeRepl.write(typeof count)",
+      "bootstrap_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": ""
+          }
+        ],
+        "isError": false,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      },
+      "first_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "node_repl kernel unhandled rejection: owned wait failure; kernel reset. Catch or handle async errors (including Promise rejections and EventEmitter 'error' events) to avoid kernel termination."
+          }
+        ],
+        "isError": true,
+        "_meta": {
+          "codex/nodeReplExecutionDurationMs": "<elapsed milliseconds>"
+        }
+      },
+      "first_ms": 185.498958,
+      "second_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "node_repl kernel exited unexpectedly\n\nnode_repl diagnostics: {\"kernel_pid\":53807,\"kernel_status\":\"exited(code=1)\",\"kernel_stderr_tail\":\"(node:53807) ExperimentalWarning: VM Modules is an experimental feature and might change at any time | (Use `node --trace-warnings ...` to show where the warning was created) | node_repl kernel unhandled rejection: owned wait failure\",\"reason\":\"stdout_eof\",\"stream_error\":null}"
+          }
+        ],
+        "isError": true
+      }
+    }
+  ]
+}

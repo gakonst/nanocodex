@@ -26,8 +26,34 @@ use super::{
     BrowserPostActionSnapshot, BrowserPseudoClass, BrowserReactEventKind, BrowserReducedMotion,
     BrowserRouteHeader, BrowserRouteResponse, BrowserStorageState, BrowserTarget, BrowserTool,
     BrowserViewport, BrowserWaitForSelectorState, HostPasskeyAuthenticator, IosBrowser,
-    ReactDiagnostics, VirtualAuthenticator, browser_tool_builder,
+    ReactDiagnostics, VirtualAuthenticator, browser_execute_definition, browser_tool_builder,
 };
+
+#[test]
+fn browser_execute_matches_the_managed_cloudflare_callable_contract() {
+    let nanocodex_tools::ToolDefinition::Function {
+        name,
+        strict,
+        parameters,
+        output_schema,
+        ..
+    } = browser_execute_definition()
+    else {
+        panic!("browser_execute must be a function tool");
+    };
+    assert_eq!(name.as_ref(), "browser_execute");
+    assert!(!strict);
+    assert_eq!(
+        parameters.as_value(),
+        &serde_json::json!({
+            "type": "object",
+            "properties": { "code": { "type": "string" } },
+            "required": ["code"],
+            "additionalProperties": false
+        })
+    );
+    assert!(output_schema.is_none());
+}
 
 #[test]
 fn browser_tool_enables_virtual_platform_passkeys() {

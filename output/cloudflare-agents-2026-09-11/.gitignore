@@ -1,0 +1,4 @@
+# Verbose synthetic wire captures stay local. Commit reduced measurements later.
+*-raw.json
+production-pilot.json
+*.sessions.jsonl

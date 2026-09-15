@@ -2,6 +2,24 @@ use nanocodex_tools::{ToolInput, contract::ToolOutputWire, standard::StandardToo
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(untagged)]
+pub(crate) enum GuestTool {
+    Standard(StandardTool),
+    Computer(ComputerToolKind),
+}
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ComputerToolKind {
+    Cua,
+    CuaReset,
+}
+impl From<StandardTool> for GuestTool {
+    fn from(tool: StandardTool) -> Self {
+        Self::Standard(tool)
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
 pub(crate) enum SessionRequest {
@@ -235,7 +253,7 @@ mod optional_wire_bytes {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ToolRequest {
     pub id: u64,
-    pub tool: StandardTool,
+    pub tool: GuestTool,
     pub input: WireToolInput,
     pub context: WireToolContext,
 }
@@ -296,7 +314,7 @@ mod tests {
     fn function_request_round_trips_opaque_arguments() {
         let request = ToolRequest {
             id: 7,
-            tool: StandardTool::ExecCommand,
+            tool: StandardTool::ExecCommand.into(),
             input: WireToolInput::from(ToolInput::Function(
                 to_raw_value(&json!({"cmd": "pwd"})).unwrap(),
             )),
@@ -319,7 +337,7 @@ mod tests {
     fn tool_request_and_response_have_stable_typed_shapes() {
         let request = SessionRequest::Tool(ToolRequest {
             id: 1,
-            tool: StandardTool::ExecCommand,
+            tool: StandardTool::ExecCommand.into(),
             input: WireToolInput::from(ToolInput::Function(
                 to_raw_value(&json!({"cmd": "pwd"})).unwrap(),
             )),

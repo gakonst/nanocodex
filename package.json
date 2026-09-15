@@ -6,6 +6,9 @@
     "node": ">=24"
   },
   "scripts": {
+    "build:computer": "turbo run build:runtime --filter=nanocodex-computer",
+    "test:computer": "turbo run test --filter=nanocodex-computer",
+    "install:computer": "cargo install --path crates/experimental/nanocodex-computer/runtime --bin nanocodex-computer --locked",
     "predev": "portless proxy start --port ${PORTLESS_PORT:-443}",
     "dev": "turbo run dev --filter=nanocodex-web --filter=@nanocodex/connect-playground",
     "build": "turbo run build",
@@ -21,7 +24,7 @@
     "deploy:connect-playground": "turbo run build --filter=@nanocodex/connect-playground && pnpm --filter @nanocodex/connect-playground run deploy",
     "deploy:account": "turbo run build --filter=nanocodex-web && pnpm --filter nanocodex-web run deploy",
     "build:voice-core": "bash apple/NanocodexVoice/scripts/build-core.sh",
-    "build:macos": "pnpm build:voice-core && pnpm --filter @nanocodex/desktop-runtime run build && xcodebuild -project macos/Nanocodex.xcodeproj -scheme Nanocodex -configuration Release -derivedDataPath macos/build build",
+    "build:macos": "pnpm build:computer && pnpm build:voice-core && pnpm --filter @nanocodex/desktop-runtime run build && xcodebuild -project macos/Nanocodex.xcodeproj -scheme Nanocodex -configuration Release -derivedDataPath macos/build build",
     "build:voice-native": "python3 scripts/build-voice-native.py",
     "build:macos:gpu-hand": "bash scripts/build-macos-gpu-hand.sh"
   },

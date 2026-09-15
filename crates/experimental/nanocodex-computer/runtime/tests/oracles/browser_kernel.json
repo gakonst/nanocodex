@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "original": {
+    "chunks/js-kernel-D-fGWWbJ.js": "a638cc8d7b3dc6ab685e4b6c0881cc380f60a4b83ae4a3bbb13f5706031f6297",
+    "chunks/js-kernel-offscreen-QvBXQnnr.js": "589e9649265b893a2b98e9cdc28e135ea81f479ad21d268ba60a798526d3c7fe",
+    "manifest.json": "d14ec9983740d0537fcebe3d592c4799adafeab94bb22de5a8c4f43eb25f6b92"
+  },
+  "parser_sha256": "97d3c4e192c24ee88f1a2ab2d0fa6b9da44d777305618eb80f08317e6b46e8b7",
+  "activation": "Packaged documents explicitly opened only by the owned fixture; no original product caller or chrome.offscreen activation established.",
+  "worker_cases": [
+    {"id":"W01","scripts":["let kept = 40; const fixed = 2; function sum(){return kept+fixed;} class Box { value(){return sum();} }", "if(new Box().value()!==42) throw Error('retention');"],"ok":[true,true]},
+    {"id":"W02","scripts":["let number = 1;", "number=2; let shadow=3;", "let number=5; const shadow=7;", "if(number!==5 || shadow!==7) throw Error('shadow');"],"ok":[true,true,true,true]},
+    {"id":"W03","scripts":["let base=1;", "let syntax = ;", "let thrown=2; throw 'rejected';", "let awaited=3; await Promise.reject('awaited');", "if(base!==1 || typeof syntax!=='undefined' || typeof thrown!=='undefined' || typeof awaited!=='undefined') throw Error('failed scope retained');"],"ok":[true,false,false,false,true]},
+    {"id":"W04","scripts":["let count=1; const old={value:2};", "count=5; old.value=9; let discard=8; throw 123;", "if(count!==5 || old.value!==9 || typeof discard!=='undefined') throw Error('effects');"],"ok":[true,false,true]},
+    {"id":"W05","scripts":["42", "return {secret:123};", "undefined"],"ok":[true,true,true]},
+    {"id":"W06","scripts":["let order=[]; await new Promise(resolve=>setTimeout(resolve,20)); order.push(1);", "order.push(2); if(JSON.stringify(order)!=='[1,2]') throw Error('out of order');"],"ok":[true,true]},
+    {"id":"W07","scripts":["throw 'literal';", "throw 3;", "throw null;", "const e = new TypeError('typed'); e.stack='owned custom stack'; throw e;"],"ok":[false,false,false,false]}
+  ],
+  "matrix": {
+    "W01":"let/const/function/class retention", "W02":"shadowing and assignments", "W03":"failed cells preserve prior evaluator", "W04":"old mutations survive failure", "W05":"literal success result", "W06":"serial awaited cells", "W07":"thrown value envelopes",
+    "M01":"lazy worker and monotonic IDs", "M02":"pre-abort", "M03":"active abort rejects all", "M04":"queued abort rejects all", "M05":"live timer and CPU reset", "M06":"idle and repeated reset", "M07":"worker error/messageerror/post failure cleanup", "M08":"response gates and errors",
+    "S01":"parent source and port gates", "S02":"request validation", "S03":"cancel unknown and response port cleanup", "S04":"duplicate external IDs",
+    "B01":"exact iframe ready source", "B02":"five-second readiness timeout", "B03":"same-extension sender", "B04":"response/port failure gates", "B05":"real MessageChannel transfer",
+    "C01":"opaque sandbox and no privileged APIs", "C02":"unprivileged worker globals", "C03":"CSP denies network with positive control", "C04":"sandbox-only blob worker and eval", "L01":"close and reopen loses state", "L02":"owned resource cleanup"
+  }
+}

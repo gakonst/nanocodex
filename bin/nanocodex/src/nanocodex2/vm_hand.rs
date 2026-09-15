@@ -5,6 +5,7 @@ use std::{
 };
 
 use fs2::FileExt as _;
+use nanocodex_browser::{Browser, BrowserExecuteTool};
 use nanocodex_managed::ManagedError;
 use nanocodex_tools::{
     Tools,
@@ -49,6 +50,7 @@ pub(crate) struct VmHand {
     workspace: HandWorkspace,
     tools: Tools,
     machine: AttachmentMachine,
+    browser: Option<Browser>,
     _root_lock: Option<File>,
     desktop: Option<VmDesktop>,
 }
@@ -158,10 +160,37 @@ impl VmHand {
             })?;
             (HandWorkspace::Vm(workspace), root_lock)
         };
-        let tools = match workspace.attachment_tools_builder().build() {
+        let browser = if config.browser {
+            let mut builder = Browser::builder();
+            if let Some(executable) = &config.browser_executable {
+                builder = builder.executable(executable);
+            }
+            match builder.build() {
+                Ok(browser) => Some(browser),
+                Err(error) => {
+                    let message = format!("failed to configure Hand browser: {error}");
+                    return match workspace.shutdown().await {
+                        Ok(()) => Err(configuration(message)),
+                        Err(shutdown) => Err(configuration(format!(
+                            "{message}; Hand shutdown also failed: {shutdown}"
+                        ))),
+                    };
+                }
+            }
+        } else {
+            None
+        };
+        let mut tools = workspace.attachment_tools_builder();
+        if let Some(browser) = &browser {
+            tools = tools.tool(BrowserExecuteTool::from_browser(browser.clone()));
+        }
+        let tools = match tools.build() {
             Ok(tools) => tools,
             Err(error) => {
                 let message = format!("failed to prepare Hand tools: {error}");
+                if let Some(browser) = &browser {
+                    let _ = browser.close().await;
+                }
                 return match workspace.shutdown().await {
                     Ok(()) => Err(configuration(message)),
                     Err(shutdown) => Err(configuration(format!(
@@ -174,6 +203,7 @@ impl VmHand {
             workspace,
             tools,
             machine,
+            browser,
             _root_lock: root_lock,
             desktop: None,
         })
@@ -361,21 +391,33 @@ impl VmHand {
             }
         }
         drop(self.tools);
+        let browser = match self.browser.take() {
+            Some(browser) => browser
+                .close()
+                .await
+                .map_err(|error| configuration(format!("failed to close Hand browser: {error}"))),
+            None => Ok(()),
+        };
         let started_at = Instant::now();
-        loop {
+        let workspace = loop {
             match self.workspace.shutdown().await {
-                Ok(()) => return Ok(()),
+                Ok(()) => break Ok(()),
                 Err(error)
                     if error.is_busy() && started_at.elapsed() < CAPABILITY_DRAIN_TIMEOUT =>
                 {
                     sleep(CAPABILITY_DRAIN_INTERVAL).await;
                 }
                 Err(error) => {
-                    return Err(configuration(format!(
+                    break Err(configuration(format!(
                         "failed to shut down VM hand: {error}"
                     )));
                 }
             }
+        };
+        match (browser, workspace) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(browser), Err(workspace)) => Err(configuration(format!("{browser}; {workspace}"))),
         }
     }
 }
@@ -465,6 +507,9 @@ fn attachment_machine(config: &VmHandConfig) -> Result<AttachmentMachine, Manage
         .map_or(!config.vm_no_network, |docker| docker.internet)
     {
         capabilities.push("network".to_owned());
+    }
+    if config.browser {
+        capabilities.extend(["browser".to_owned(), "browser-egress".to_owned()]);
     }
     capabilities.sort_unstable();
     AttachmentMachine::new(
@@ -579,6 +624,8 @@ mod tests {
             vm_no_network: false,
             machine_id: "docker-hand".into(),
             machine_name: "Docker Hand".into(),
+            browser: false,
+            browser_executable: None,
         };
         validate_common_config(&config).unwrap();
         let machine = serde_json::to_value(attachment_machine(&config).unwrap()).unwrap();

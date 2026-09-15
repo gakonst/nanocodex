@@ -1,0 +1,55 @@
+{
+  "kind": "complete-original-launcher-and-resource-inputs",
+  "files": [
+    {
+      "path": "../../snapshots/2026-09-06/sources/plugins/unified-computer-use/scripts/launch.mjs",
+      "sha256": "a50b66879f7b72e45ab6fbaad77eff14a87680a946135f410c121b9b166a2597",
+      "bytes": 3420
+    },
+    {
+      "path": "../../snapshots/2026-09-06/sources/plugins/unified-computer-use/resources/banner.js",
+      "sha256": "ea314fb1cd41e59891ea7c26bde1fb7b42ec95e3b2ddec93f01bbfd5dde4a5f4",
+      "bytes": 93
+    },
+    {
+      "path": "../../snapshots/2026-09-06/sources/plugins/unified-computer-use/resources/banner-browser.js",
+      "sha256": "500e31d91d2c60f4a29a31ca70ec63bd0b148b5d1f99f834070c6468f209c3b7",
+      "bytes": 94
+    },
+    {
+      "path": "../../snapshots/2026-09-06/sources/plugins/unified-computer-use/resources/banner-computer.js",
+      "sha256": "40c0a46a4e4abb6c451a1fda8a0f3e2681e1e3264dfe00869cbc2a7289eae8e2",
+      "bytes": 94
+    },
+    {
+      "path": "../../snapshots/2026-09-06/sources/plugins/unified-computer-use/resources/js-tool-description.md",
+      "sha256": "43cc1857cdae559e3ecf2ab4062c3a6f391a8ede8222b036a3eb8d3a4b2d1f18",
+      "bytes": 832
+    },
+    {
+      "path": "../../snapshots/2026-09-06/sources/plugins/unified-computer-use/resources/browser-description.md",
+      "sha256": "02b04e29cb29f499b8f1f7ed983e72b72ee8f1f1ac68e2df6b968787d8cefb06",
+      "bytes": 1266
+    },
+    {
+      "path": "../../snapshots/2026-09-06/sources/plugins/unified-computer-use/resources/computer-description.md",
+      "sha256": "e8318bd16b9792b517d300802583961317d7e0cb3a3a4ed776a681ed20f16f7d",
+      "bytes": 140
+    },
+    {
+      "path": "../../snapshots/2026-09-06/sources/plugins/unified-computer-use/resources/js-output-description.md",
+      "sha256": "d70145e293be39e68910e9d64dec6ebc9fc89d3f9bb71ef68e8690756039c359",
+      "bytes": 268
+    },
+    {
+      "path": "../../snapshots/2026-09-06/sources/plugins/unified-computer-use/resources/js-reset.md",
+      "sha256": "acc0866ae73c7050a5817faebbe241cf9c3315ddc5865790a9eba6ba077158c0",
+      "bytes": 235
+    },
+    {
+      "path": "../../snapshots/2026-09-06/sources/plugins/unified-computer-use/resources/server-instructions.md",
+      "sha256": "cc83affd8d5f9ff823907efe3683cd3c2e818f04f1460d2ade1bb1f9c2bc8249",
+      "bytes": 85
+    }
+  ]
+}

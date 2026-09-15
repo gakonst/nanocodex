@@ -90,6 +90,11 @@ export async function routeConnectorRequest(
     return connectorMobileCompletion(url);
   }
 
+  if (url.pathname === "/v1/connectors/mcp-mobile-complete") {
+    if (request.method !== "GET") return json({ error: "method_not_allowed" }, 405);
+    return mcpMobileCompletion(url);
+  }
+
   if (url.pathname === "/v1/connectors/mcp-connections") {
     if ((request.method !== "GET" && request.method !== "POST") || url.search) {
       return json({ error: "method_not_allowed" }, 405);
@@ -530,7 +535,11 @@ export async function publicMcpStartResponse(
   const authorizationUrlValue = isRecord(value) && typeof value.authorization_url === "string"
     ? safeAuthorizationUrl(value.authorization_url)
     : undefined;
-  if (!connection || !authorizationUrlValue) return json({ error: "mcp_broker_invalid" }, 502);
+  if (!connection) return json({ error: "mcp_broker_invalid" }, 502);
+  if (connection.status === "connected" && !authorizationUrlValue) {
+    return json({ mcp_connection: connection }, 200);
+  }
+  if (!authorizationUrlValue) return json({ error: "mcp_broker_invalid" }, 502);
   const authorizationUrl = new URL(authorizationUrlValue);
   const callbackState = authorizationUrl.searchParams.get("state");
   if (!isCallbackCompletionState(callbackState)) return json({ error: "mcp_broker_invalid" }, 502);
@@ -558,10 +567,38 @@ async function finishMcpCallback(response: Response, url: URL, id: string): Prom
     ? "connected"
     : url.searchParams.has("error") ? "cancelled" : "failed";
   const completionState = url.searchParams.get("state");
+  if (returnTo && new URL(returnTo, url.origin).pathname === "/v1/connectors/mcp-mobile-complete") {
+    return redirectMcpResult(url, returnTo, id, result);
+  }
   return completionState
     && isCallbackCompletionState(completionState)
     ? mcpCallbackCompletionPage(url, returnTo ?? "/", id, completionState, result)
     : redirectMcpResult(url, returnTo ?? "/", id, result);
+}
+
+export function mcpMobileCompletion(url: URL): Response {
+  const attempt = url.searchParams.get("attempt");
+  const connection = mcpConnectionId(url.searchParams.get("mcp_connection") ?? undefined);
+  const result = url.searchParams.get("mcp_result");
+  if ([...url.searchParams].length !== 3
+    || !attempt || !UUID.test(attempt)
+    || !connection
+    || (result !== "connected" && result !== "cancelled" && result !== "failed")) {
+    return json({ error: "invalid_request" }, 400);
+  }
+  const callback = new URL("nanocodex://connectors/mcp-complete");
+  callback.searchParams.set("attempt", attempt);
+  callback.searchParams.set("mcp_connection", connection);
+  callback.searchParams.set("mcp_result", result);
+  return new Response(null, {
+    status: 303,
+    headers: {
+      "cache-control": "no-store",
+      location: callback.href,
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+    },
+  });
 }
 
 function safeAuthorizationUrl(value: string): string | undefined {

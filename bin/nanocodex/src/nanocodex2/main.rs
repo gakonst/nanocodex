@@ -237,6 +237,20 @@ struct Hand {
     #[arg(long, help_heading = "Identity")]
     machine_name: Option<String>,
 
+    /// Route managed browser work through this host alongside the VM or container Hand.
+    #[arg(long, help_heading = "Browser")]
+    browser: bool,
+
+    /// Exact Chrome or Chromium executable used by this Hand's private browser.
+    #[arg(
+        long,
+        value_name = "PATH",
+        env = "NANOCODEX_BROWSER_EXECUTABLE",
+        requires = "browser",
+        help_heading = "Browser"
+    )]
+    browser_executable: Option<PathBuf>,
+
     /// Static Linux guest executable for an ext4 VM (or NANOCODEX_VM_GUEST_RUNTIME).
     #[arg(
         long = "guest-runtime",
@@ -924,9 +938,14 @@ async fn open_workspace_agent_with_settings(
     let attachment_metadata = config
         .attachment_metadata()
         .map_err(|error| ManagedError::Configuration(error.to_string()))?;
-    let tools = Tools::builder()
+    let mut tools = Tools::builder()
         .without_defaults()
-        .add(WorkspaceTools::new(&workspace))
+        .add(WorkspaceTools::new(&workspace));
+    if let Some(config) = nanocodex_computer::ComputerConfig::discover() {
+        let computer = nanocodex_computer::ComputerTools::local(config);
+        tools = tools.add(computer.js()).add(computer.reset());
+    }
+    let tools = tools
         .build()
         .map_err(|error| ManagedError::Configuration(error.to_string()))?;
     let backend = match (agent_id, state) {

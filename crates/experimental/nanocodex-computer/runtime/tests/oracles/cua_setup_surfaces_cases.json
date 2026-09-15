@@ -1,0 +1,364 @@
+{
+  "kind": "authored-source-defined-cases; original/native execution pending",
+  "cases": [
+    {
+      "id": "omitted",
+      "options": {
+        "browser": true,
+        "computer": true
+      }
+    },
+    {
+      "id": "both",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": "browser,computer"
+    },
+    {
+      "id": "both-reversed",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": "computer,browser"
+    },
+    {
+      "id": "browser",
+      "options": {
+        "browser": true,
+        "computer": false
+      },
+      "input": "browser"
+    },
+    {
+      "id": "computer",
+      "options": {
+        "browser": false,
+        "computer": true
+      },
+      "input": "computer"
+    },
+    {
+      "id": "duplicates",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": "browser,browser,computer,computer"
+    },
+    {
+      "id": "empty-fields",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": ",browser,,computer,"
+    },
+    {
+      "id": "browser-duplicates",
+      "options": {
+        "browser": true,
+        "computer": false
+      },
+      "input": ",browser,browser,"
+    },
+    {
+      "id": "computer-duplicates",
+      "options": {
+        "browser": false,
+        "computer": true
+      },
+      "input": "computer,,computer"
+    },
+    {
+      "id": "bounded-repeat",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": "browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,browser,computer"
+    },
+    {
+      "id": "trim-0009",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": "\tbrowser\t,\tcomputer\t"
+    },
+    {
+      "id": "trim-000a",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": "\nbrowser\n,\ncomputer\n"
+    },
+    {
+      "id": "trim-000b",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": "\u000bbrowser\u000b,\u000bcomputer\u000b"
+    },
+    {
+      "id": "trim-000c",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": "\fbrowser\f,\fcomputer\f"
+    },
+    {
+      "id": "trim-000d",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": "\rbrowser\r,\rcomputer\r"
+    },
+    {
+      "id": "trim-0020",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": " browser , computer "
+    },
+    {
+      "id": "trim-00a0",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": " browser , computer "
+    },
+    {
+      "id": "trim-1680",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": " browser , computer "
+    },
+    {
+      "id": "trim-2000",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": " browser , computer "
+    },
+    {
+      "id": "trim-2001",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": " browser , computer "
+    },
+    {
+      "id": "trim-2002",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": " browser , computer "
+    },
+    {
+      "id": "trim-2003",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": " browser , computer "
+    },
+    {
+      "id": "trim-2004",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": " browser , computer "
+    },
+    {
+      "id": "trim-2005",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": " browser , computer "
+    },
+    {
+      "id": "trim-2006",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": " browser , computer "
+    },
+    {
+      "id": "trim-2007",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": " browser , computer "
+    },
+    {
+      "id": "trim-2008",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": " browser , computer "
+    },
+    {
+      "id": "trim-2009",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": " browser , computer "
+    },
+    {
+      "id": "trim-200a",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": " browser , computer "
+    },
+    {
+      "id": "trim-2028",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": " browser , computer "
+    },
+    {
+      "id": "trim-2029",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": " browser , computer "
+    },
+    {
+      "id": "trim-202f",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": " browser , computer "
+    },
+    {
+      "id": "trim-205f",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": " browser , computer "
+    },
+    {
+      "id": "trim-3000",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": "　browser　,　computer　"
+    },
+    {
+      "id": "trim-feff",
+      "options": {
+        "browser": true,
+        "computer": true
+      },
+      "input": "﻿browser﻿,﻿computer﻿"
+    },
+    {
+      "id": "empty",
+      "input": "",
+      "error": "CUA_REPL_ENABLED_SURFACES must enable browser or computer"
+    },
+    {
+      "id": "comma",
+      "input": ",",
+      "error": "CUA_REPL_ENABLED_SURFACES must enable browser or computer"
+    },
+    {
+      "id": "empty-fields-only",
+      "input": ",, ,\t,",
+      "error": "CUA_REPL_ENABLED_SURFACES must enable browser or computer"
+    },
+    {
+      "id": "whitespace-only",
+      "input": "\t\n\u000b\f\r                  　﻿",
+      "error": "CUA_REPL_ENABLED_SURFACES must enable browser or computer"
+    },
+    {
+      "id": "case-browser",
+      "input": "Browser",
+      "error": "Unknown CUA_REPL_ENABLED_SURFACES value: Browser"
+    },
+    {
+      "id": "case-computer",
+      "input": "COMPUTER",
+      "error": "Unknown CUA_REPL_ENABLED_SURFACES value: COMPUTER"
+    },
+    {
+      "id": "unknown-after-known",
+      "input": "browser,other",
+      "error": "Unknown CUA_REPL_ENABLED_SURFACES value: other"
+    },
+    {
+      "id": "unknown-before-known",
+      "input": "other,computer",
+      "error": "Unknown CUA_REPL_ENABLED_SURFACES value: other"
+    },
+    {
+      "id": "first-unknown-order",
+      "input": "browser,other,OTHER,computer",
+      "error": "Unknown CUA_REPL_ENABLED_SURFACES value: other"
+    },
+    {
+      "id": "reverse-unknown-order",
+      "input": "OTHER,other",
+      "error": "Unknown CUA_REPL_ENABLED_SURFACES value: OTHER"
+    },
+    {
+      "id": "duplicate-unknown",
+      "input": "bad,bad,computer",
+      "error": "Unknown CUA_REPL_ENABLED_SURFACES value: bad"
+    },
+    {
+      "id": "internal-space",
+      "input": "brow ser",
+      "error": "Unknown CUA_REPL_ENABLED_SURFACES value: brow ser"
+    },
+    {
+      "id": "unicode",
+      "input": "🧪",
+      "error": "Unknown CUA_REPL_ENABLED_SURFACES value: 🧪"
+    },
+    {
+      "id": "nel-not-trim",
+      "input": "browser",
+      "error": "Unknown CUA_REPL_ENABLED_SURFACES value: browser"
+    },
+    {
+      "id": "mongolian-not-trim",
+      "input": "᠎browser᠎",
+      "error": "Unknown CUA_REPL_ENABLED_SURFACES value: ᠎browser᠎"
+    },
+    {
+      "id": "zwsp-not-trim",
+      "input": "​browser​",
+      "error": "Unknown CUA_REPL_ENABLED_SURFACES value: ​browser​"
+    }
+  ]
+}

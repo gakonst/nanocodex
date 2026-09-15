@@ -85,6 +85,12 @@ jobs:
       - name: Verify embedded VM init
         shell: bash
         run: python3 scripts/check-vm-init.py "target/${{ matrix.target }}/nightly/build"
+      - name: Install Linux computer dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes pkg-config libpulse-dev libxkbcommon-dev
+      - name: Build computer companion
+        shell: bash
+        run: cargo build --locked --release --manifest-path crates/experimental/nanocodex-computer/runtime/Cargo.toml --target ${{ matrix.target }} --bin nanocodex-computer
       - name: Sign macOS VM hand host
         if: matrix.target == 'aarch64-apple-darwin'
         shell: bash
@@ -101,30 +107,34 @@ jobs:
           mkdir dist
           cp "target/${{ matrix.target }}/nightly/nanocodex" "dist/${{ matrix.artifact }}"
           cp "target/${{ matrix.target }}/nightly/nanocodex2" "dist/${{ matrix.companion }}"
+          cp "crates/experimental/nanocodex-computer/runtime/target/${{ matrix.target }}/release/nanocodex-computer" "dist/nanocodex-computer-${{ matrix.target }}"
           if [[ -z "$PR_NUMBER" ]]; then
             gzip -n -9 -c "dist/${{ matrix.artifact }}" \
               > "dist/${{ matrix.artifact }}.gz"
             gzip -n -9 -c "dist/${{ matrix.companion }}" \
               > "dist/${{ matrix.companion }}.gz"
+            gzip -n -9 -c "dist/nanocodex-computer-${{ matrix.target }}" > "dist/nanocodex-computer-${{ matrix.target }}.gz"
           fi
       - name: Smoke nightly binaries
         shell: bash
         run: |
           "dist/${{ matrix.artifact }}" --help >/dev/null
           "dist/${{ matrix.companion }}" --help >/dev/null
+          "dist/nanocodex-computer-${{ matrix.target }}" --help >/dev/null
       - name: Stage PR provenance and checksum
         if: github.event_name == 'workflow_dispatch' && inputs.pr != ''
         shell: bash
         env:
           ARTIFACT: ${{ matrix.artifact }}
           COMPANION: ${{ matrix.companion }}
+          COMPUTER: nanocodex-computer-${{ matrix.target }}
           PR_NUMBER: ${{ inputs.pr }}
         run: |
           cd dist
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$ARTIFACT" "$COMPANION" > "$ARTIFACT.sha256"
+            sha256sum "$ARTIFACT" "$COMPANION" "$COMPUTER" > "$ARTIFACT.sha256"
           else
-            shasum -a 256 "$ARTIFACT" "$COMPANION" > "$ARTIFACT.sha256"
+            shasum -a 256 "$ARTIFACT" "$COMPANION" "$COMPUTER" > "$ARTIFACT.sha256"
           fi
           printf '{"repository":"%s","pr":%s,"sha":"%s","artifact":"%s","run_id":%s}\n' \
             "$GITHUB_REPOSITORY" "$PR_NUMBER" "$BUILD_SHA" "$ARTIFACT" \
@@ -267,6 +277,8 @@ jobs:
                 nanocodex-x86_64-unknown-linux-gnu|nanocodex-x86_64-unknown-linux-gnu.gz|\
                 nanocodex2-aarch64-apple-darwin|nanocodex2-aarch64-apple-darwin.gz|\
                 nanocodex2-x86_64-unknown-linux-gnu|nanocodex2-x86_64-unknown-linux-gnu.gz|\
+                nanocodex-computer-aarch64-apple-darwin|nanocodex-computer-aarch64-apple-darwin.gz|\
+                nanocodex-computer-x86_64-unknown-linux-gnu|nanocodex-computer-x86_64-unknown-linux-gnu.gz|\
                 nanocodex-vm-guest-x86_64-unknown-linux-musl|nanocodex-vm-guest-x86_64-unknown-linux-musl.gz)
                   ;;
                 *)
