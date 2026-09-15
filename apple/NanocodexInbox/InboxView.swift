@@ -382,6 +382,18 @@ struct InboxView: View {
                     Text("Tasks you start can keep this Hand connected in the background on iOS 26 or later. iOS shows progress and lets you stop the task. When idle, this phone connects only during brief background windows or while Nanocodex is open. Force-quitting ends background work.").font(.caption).foregroundStyle(.secondary)
                     if let error = model.handBackgroundError { Text(error).font(.caption).foregroundStyle(.secondary) }
                 }
+                Section("Nanocodex updates") {
+                    LabeledContent("Installed", value: "\(Bundle.main.object(forInfoDictionaryKey: \"CFBundleShortVersionString\") as? String ?? \"—\") (\(Bundle.main.object(forInfoDictionaryKey: \"CFBundleVersion\") as? String ?? \"—\"))")
+                    Button("Install available update") {
+                        guard let testFlight = URL(string: "itms-beta://") else { return }
+                        UIApplication.shared.open(testFlight) { opened in
+                            guard !opened, let store = URL(string: "https://apps.apple.com/app/testflight/id899247664") else { return }
+                            UIApplication.shared.open(store)
+                        }
+                    }
+                    .accessibilityIdentifier("install-nanocodex-update")
+                    Text("Builds requested from Nanocodex are delivered through Apple's internal TestFlight channel. Turn on Automatic Updates there for hands-free installation after Apple finishes processing.").font(.caption).foregroundStyle(.secondary)
+                }
             }
             Section("Controls") {
                 Text("Tap a tab at the top to switch conversations. The bottom bar has Back, Screens, + for a new conversation, the tab selector, and the app menu. Tap the tab selector to see all windows, or drag it to switch tabs.")

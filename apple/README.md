@@ -80,6 +80,8 @@ names. Keep the bundle IDs and App Group aligned when configuring signing.
 Open `apple/NanocodexInbox.xcodeproj`, select the `NanocodexInbox` scheme, then
 choose an iPhone or iPad simulator. Requires iOS 18 or later.
 Choose a development team in Signing & Capabilities to run on a physical device.
+For phone-triggered signed builds and self-updates, see
+[Phone-driven Nanocodex delivery](../docs/iphone-delivery.md).
 Local package `InboxCore` owns the native protocol adapter, event projection,
 cursor ordering, and inbox policy. PhoneNumberKit provides country calling codes
 and international phone-number parsing. Local package `NanocodexVoice` owns the

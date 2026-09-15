@@ -15,6 +15,7 @@ cargo --version
 wasm-bindgen --version
 cargo clippy --version
 cargo fmt --version
+gh --version
 printf 'console.log("node ok")\n' > hello.js
 node hello.js
 printf 'import Foundation\nprint("swift ok")\n' > hello.swift
