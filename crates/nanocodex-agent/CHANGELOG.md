@@ -5,6 +5,109 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0](https://github.com/gakonst/nanocodex/releases/tag/v0.6.0) - 2026-09-15
+
+### Bug Fixes
+
+- [durability] Checkpoint recovered cancellations ([#301](https://github.com/gakonst/nanocodex/issues/301))
+- [durability] Emit terminals only after durable settlement
+- [durability] Checkpoint current execution and retire settled effects
+- [agent] Allow const admission cancellation configuration
+- [agent] Finish nested tools across yielded calls
+- [apple] Preserve repository tree in native playtest update
+- [apple] Preserve reading position and playtest navigation edge cases
+- [durability] Preserve encrypted provider item identities
+- [durability] Recover from authoritative operation settlement
+- [durability] Recover with retained model requests
+- [agent] Keep host context clippy-clean
+- [astra] Use model-specific prompts across runtimes
+- [managed] Retain steering and sandbox work across retries
+- [durability] Cancel turns at admission
+- [managed] Recover sandbox work across runtime changes
+- [durability] Replay completed tool outputs exactly
+- [bindings] Route durable forks by thread
+- [ci] Satisfy durability const lints
+- [agent] Resume durable spawned routing
+- [agent] Retain provider session routing across branches
+- [agent] Replay unstored forks on fresh transports
+- [durability] Remove billing uncertainty state
+- [durability] Settle uncertain effects safely
+- [agent] Reset unstored fresh-agent checkpoints
+- [agent] Replay unstored forks on fresh transports
+- [ci] Restore cross-package compatibility
+- [managed] Preserve exact durable dispatch state
+- [agent] Satisfy wasm release clippy
+- [subagents] Observe batch children at creation
+- Satisfy WASM warnings gate
+- [js] Scope direct subagent lifecycle per agent
+- [agent] Make rollout flush portable to wasm
+- [durability] Rebind runtime policy on cold resume
+- [agent] Scope const lint to wasm platform
+- [agent] Keep execution branching const-safe
+- [durability] Fence authoritative execution end to end
+- [agent] Preserve remote workspace paths
+- [durability] Terminally commit failed turns
+- Fix durable subagent recovery ownership
+- [agent] Remove stale prompt request import
+- [agent] Journal prompts automatically
+
+### Features
+
+- Undo pending steering and queued messages
+- Align Astra defaults and Code Mode with Codex ([#275](https://github.com/gakonst/nanocodex/issues/275))
+- [managed] Add scoped VM hand factories
+- Complete GPT-6 Astra integration
+- Prepare GPT-6 Astra support
+- [nanocodex2] Add durable interactive attach
+- [durability] Persist clean agent descendants
+- [durability] Persist spawned agent trees
+- [tools] Align MCP naming OAuth and typed output
+- [agent] Align Responses context and rollout replay
+- [subagents] Start coordinated agent batches atomically
+- [managed] Run nondurable subagents from durable roots
+- [web] Retain local agent transcripts
+- [subagents] Configure spawned model and thinking
+- [agent] Expose durable request identities
+- [agent] Journal durable prompts and steps
+- [durability] Add portable journal runtime
+
+### Miscellaneous Tasks
+
+- [ci] Satisfy workspace formatting and Rust 1.97 checks
+
+### Other
+
+- Merge remote-tracking branch 'origin/master' into codex/durable-current-execution
+- Merge pull request [#252](https://github.com/gakonst/nanocodex/issues/252) from gakonst/feat/host-vm-pools
+- Merge pull request [#251](https://github.com/gakonst/nanocodex/issues/251) from gakonst/feat/gpt-6-astra-readiness
+- Revert "feat(durability): persist spawned agent trees"
+- Merge pull request [#226](https://github.com/gakonst/nanocodex/issues/226) from gakonst/fix/btw-unstored-fork
+- Merge pull request [#217](https://github.com/gakonst/nanocodex/issues/217) from gakonst/refactor/durability-total-state
+- Merge remote-tracking branch 'origin/master' into codex/cloud-accounts-playground
+- Merge remote-tracking branch 'origin/master' into codex/cloud-accounts-playground
+- Merge pull request [#207](https://github.com/gakonst/nanocodex/issues/207) from gakonst/fix/remote-workspace-resolution
+- Merge pull request [#181](https://github.com/gakonst/nanocodex/issues/181) from gakonst/feat/durable-runtime
+- Merge master into durable runtime
+- Merge pull request [#193](https://github.com/gakonst/nanocodex/issues/193) from gakonst/feat/viem-v3-js-api
+- Merge remote-tracking branch 'origin/master' into agent/eval-cluster-dashboard
+
+### Refactor
+
+- [durability] Persist bounded execution records across hosts
+- [durability] Replay committed effects only
+- [durability] Replace journals with total state
+- [agent] Isolate local OpenAI implementation
+- [agent] Erase lifecycle behind backend seam
+- [agent] Make turn results backend-neutral
+- [subagents] Extract reusable native and wasm extension
+- [durability] Own agent integration above lifecycle
+- [agent] Unify durable prompt submission
+
+### Testing
+
+- [agent] Align fork checkpoint expectations
+- [agent] Use backend-neutral session identities
+
 ## [0.5.0](https://github.com/gakonst/nanocodex/releases/tag/v0.5.0) - 2026-08-12
 
 ### Bug Fixes
@@ -14,10 +117,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Miscellaneous Tasks
 
+- [release] Refresh 0.5.0 changelogs
 - [release] Prepare 0.5.0
 
 ### Other
 
+- Merge pull request [#169](https://github.com/gakonst/nanocodex/issues/169) from gakonst/release/0.5.0
 - Merge pull request [#167](https://github.com/gakonst/nanocodex/issues/167) from clabby/cl/structured-events
 
 ## [0.4.0](https://github.com/gakonst/nanocodex/releases/tag/v0.4.0) - 2026-08-11
@@ -29,6 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [ci] Preserve typed prompt consumer contracts
 - Close remaining Codex wire parity gaps
 - [tui] Sanitize resume picker metadata
+- [oai] Account for usage-uncertain attempts
 - [tools] Align Code Mode tool contracts
 - [agent] Dispatch unnamespaced hosted tools
 - [tls] Standardize rustls on ring

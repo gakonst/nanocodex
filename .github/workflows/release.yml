@@ -29,6 +29,7 @@ jobs:
           version=$(cargo metadata --no-deps --format-version 1 | jq -er '.packages[] | select(.name == "nanocodex") | .version')
           test "$GITHUB_REF_NAME" = "v$version"
           test "$(node -p "require('./js/nanocodex/package.json').version")" = "$version"
+          test "$(node -p "require('./js/nanocodex-tools/package.json').version")" = "$version"
           test "$(node -p "require('./js/nanocodex-vite/package.json').version")" = "$version"
           test "$(cargo metadata --no-deps --format-version 1 | jq -er '.packages[] | select(.name == "nanocodex-python") | .version')" = "$version"
           grep -Fq 'dynamic = ["version"]' py/bindings/pyproject.toml

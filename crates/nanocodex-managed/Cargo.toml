@@ -23,9 +23,9 @@ tools = ["dep:nanocodex-tools"]
 
 [dependencies]
 futures-util.workspace = true
-nanocodex-agent = { path = "../nanocodex-agent", version = "0.5.0", default-features = false }
-nanocodex-oai-api = { path = "../nanocodex-oai-api", version = "0.5.0", default-features = false, features = ["events"] }
-nanocodex-tools = { path = "../nanocodex-tools", version = "0.5.0", default-features = false, features = ["attachment"], optional = true }
+nanocodex-agent = { path = "../nanocodex-agent", version = "0.6.0", default-features = false }
+nanocodex-oai-api = { path = "../nanocodex-oai-api", version = "0.6.0", default-features = false, features = ["events"] }
+nanocodex-tools = { path = "../nanocodex-tools", version = "0.6.0", default-features = false, features = ["attachment"], optional = true }
 reqwest = { workspace = true, features = ["stream"] }
 rustls.workspace = true
 serde.workspace = true

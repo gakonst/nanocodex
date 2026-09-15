@@ -5,13 +5,1340 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [0.6.0](https://github.com/gakonst/nanocodex/releases/tag/v0.6.0) - 2026-09-15
 
 ### Bug Fixes
 
-- [cli] Fall back to another installed Chromium-family browser when the default
-  Brave installation is absent, or omit browser tools when none is available,
-  while keeping explicit browser selection strict.
+- [web] Respect reduced motion and transparency preferences ([#322](https://github.com/gakonst/nanocodex/issues/322))
+- [managed] Clarify workspace-relative hand paths ([#321](https://github.com/gakonst/nanocodex/issues/321))
+- [ci] Recognize the TestFlight URL scheme ([#328](https://github.com/gakonst/nanocodex/issues/328))
+- [managed] Replay SSE through short event pages ([#311](https://github.com/gakonst/nanocodex/issues/311))
+- [managed] Return unstarted offline hand calls to the agent ([#316](https://github.com/gakonst/nanocodex/issues/316))
+- [apple] Preserve native transcript UI and speed up history scrolling
+- [ios] Route queued steering through the active-turn API ([#309](https://github.com/gakonst/nanocodex/issues/309))
+- [hand] Select the published hosted toolkit image ([#313](https://github.com/gakonst/nanocodex/issues/313))
+- [desktop] Delegate private VM disk cloning to Rust
+- [vm] Present Mac GPU frames in Linux Hand desktops
+- [vm] Enable software OpenGL in desktop hands ([#310](https://github.com/gakonst/nanocodex/issues/310))
+- [hand] Package setup outside its source directory
+- [ci] Require static Linux init in VM host releases
+- [hand] Recover guest desktops across factory shutdown and crashes
+- [vm] Match static musl startup objects and test guest readiness
+- [memory] Honor caller-selected retrieval sizes without silent clamping
+- [durability] Store complete turns and memory without arbitrary content quotas
+- [apple] Preserve full content and accelerate native history tabs
+- [web] Retain complete history and reuse cached tab transcripts
+- [managed] Hide explicit unlimited shell limits ([#306](https://github.com/gakonst/nanocodex/issues/306))
+- [ios] Let native composer own scrolling and reveal expansion on overflow
+- [managed] Make brain file traversal bounded by work ([#305](https://github.com/gakonst/nanocodex/issues/305))
+- [tools] Use safe integer capacities for unlimited shell buffers
+- [ios] Keep background expiration from cancelling cloud turns
+- [durability] Checkpoint recovered cancellations ([#301](https://github.com/gakonst/nanocodex/issues/301))
+- [managed] Include Chrome in the Cloudflare sandbox image ([#300](https://github.com/gakonst/nanocodex/issues/300))
+- [transport] Let quiet reasoning wait without restarting
+- [managed] Keep slow archive uploads on a bounded alarm cadence
+- [managed] Separate archive backoff from turn recovery
+- [hand] Satisfy dependency and shutdown lint checks
+- [tui] Keep image detection from consuming keyboard input
+- [tui] Render batch trees and readable session results
+- [vm] Discover firmware beside installed guest runtime
+- [tui] Render authoritative managed turn failures
+- [durability] Emit terminals only after durable settlement
+- Stream assistant replies across managed clients
+- [durability] Checkpoint current execution and retire settled effects
+- [hands] Deploy verified portable server image
+- [hands] Build portable desktop capture images
+- [remote] Stabilize publishers and repair server enrollment
+- [ios] Reconcile controls before advancing overview history
+- [ios] Keep task notifications and restored outcomes accurate
+- [macos] Clear stale failure indicators after review
+- [macos] Preserve draft model choices across relaunch
+- [egress] Retain sanitized upstream rejection status
+- [account] Cancel abandoned relay response requests
+- [apple] Reconnect idle streams behind durable state
+- [voice] Finish handoffs rejected before model startup
+- [voice] Remove forced first-turn memory delegation
+- [build] Version the shared CLI auth dependency
+- [tui] Preserve steering and remote command state
+- [agent] Allow const admission cancellation configuration
+- [managed] Detach deleted agents before external cleanup
+- [ios] Keep context search available in sheets
+- [voice] Report failed first turns without provider handoff
+- [macos] Reseal bundled runtime on incremental builds
+- [cli] Release native Hand locks across process restarts
+- [agent] Finish nested tools across yielded calls
+- [managed] Preserve the cron trigger limit response
+- [remote] Retain command sessions and release polling timers
+- [remote] Make screen rows fully tappable
+- [remote] Restore VM desktop before tool reconnection
+- [remote] Preserve connector scope and screen loading state
+- [ios] Move overview actions to bottom bar
+- [ci] Build Connect protocol for managed checks
+- [hands] Restore retained sandbox storage routes
+- [ci] Prepare managed evaluator before boundary tests
+- [hands] Prepare Cloudflare desktop shared memory
+- [ci] Recognize the Waymote executable in scripts
+- [hands] Satisfy VM shutdown lint
+- [ci] Install Go for Mac checks and resolve voice lints
+- [voice] Improve WebRTC startup and transcript handling
+- [agents] Mark browser X requests as same-origin ([#295](https://github.com/gakonst/nanocodex/issues/295))
+- [agents] Expose native X browsing in browser chats ([#294](https://github.com/gakonst/nanocodex/issues/294))
+- [apple] Retain command progress across recovery replays
+- [ui] Show command exit codes in expanded results
+- [ui] Retain command progress and accurate elapsed time
+- [voice] Merge shared context bootstrap and startup changes
+- [voice] Share context bootstrap and unblock startup
+- [managed] Purge actor-local brain files on agent deletion ([#288](https://github.com/gakonst/nanocodex/issues/288))
+- [managed] Keep brain file operations in actor-local storage ([#287](https://github.com/gakonst/nanocodex/issues/287))
+- Complete native commands and remove WASM headroom checks ([#285](https://github.com/gakonst/nanocodex/issues/285))
+- [managed] Retain sandbox filesystem metadata in R2 ([#284](https://github.com/gakonst/nanocodex/issues/284))
+- [managed] Pass sandbox environment through SDK options ([#283](https://github.com/gakonst/nanocodex/issues/283))
+- [managed] Preserve original video attachments in brain storage
+- [managed] Download source archives for host clones ([#282](https://github.com/gakonst/nanocodex/issues/282))
+- [managed] Broker connected execution and remove artificial workload limits
+- [managed] Release disconnected event streams
+- [react] Fence corrections after cancellation
+- [managed] Preserve rapid steering order
+- [managed] Execute brain tools without provisioning hands
+- [wasm] Keep durability transfers valid above Worker memory offsets
+- [account] Settle browser hand before first managed prompt
+- [managed] Drain bootstrap construction before admission cleanup
+- [managed] Inject bootstrap context before first prompt
+- [apple] Keep fixed-size composer flush with queued prompts
+- [apple] Restore history position after insertion and await settled transitions
+- [apple] Prevent composer compression and restore button contrast
+- [apple] Anchor loaded history and leave demo without Keychain access
+- [apple] Preserve repository tree in native playtest update
+- [apple] Keep connection recovery accessible above the keyboard
+- [apple] Preserve reading position and playtest navigation edge cases
+- [apple] Remove input inset beneath queued prompts
+- [apple] Make nested activity field inference explicit
+- [apple] Preserve activity precision and composer accessibility
+- [apple] Align debug architectures and fit cards around the keyboard
+- [managed] Accept idempotent cron session UUIDs
+- [managed] Decode encoded cron turn IDs before routing
+- [subagents] Make native and JavaScript concurrency unlimited by default
+- [tools] Stop evicting live shell processes at an arbitrary session cap
+- [durability] Recover legacy snapshots without oversized string copies
+- [durability] Stream large checkpoints within the Worker memory budget
+- [durability] Avoid hydrating prior checkpoints on commit
+- [managed] Drain receipt archives during active recovery
+- [durability] Preserve encrypted provider item identities
+- [durability] Recover from authoritative operation settlement
+- [managed] Retry transient thread history reads
+- [ci] Correct steering comment spelling
+- [managed] Keep durable sessions responsive across reconnects
+- [ci] Skip unchanged sandbox image rollouts
+- [connect] Bound SMS wallet provisioning
+- [nanocodex2] Select Astra directly
+- [astra] Reopen Connect wallet for payment
+- [durability] Recover with retained model requests
+- [managed] Keep browser prompt behind Rust Code Mode ([#253](https://github.com/gakonst/nanocodex/issues/253))
+- [vm-host] Keep locked templates addressable on Linux
+- [managed] Document VM connector boundary
+- [agent] Restore mixed legacy host contexts
+- [managed] Harden VM hand lifecycle
+- [agent] Keep host context clippy-clean
+- [astra] Use model-specific prompts across runtimes
+- [managed] Refresh direct tool bindings after reconnect
+- [account] Expose Astra in model selector ([#258](https://github.com/gakonst/nanocodex/issues/258))
+- Expose transcript emptiness to binary builds
+- Satisfy terminal benchmark lint
+- Compile standalone Astra terminal
+- Restore pnpm override metadata
+- [managed] Dispatch namespace hands concurrently
+- [managed] Route concurrent account VM hands
+- [agent] Return account authorization links
+- [sandbox] Avoid background flush deadlocks
+- [sandbox] Flush retained workspace writes
+- [tui] Await turn after event stream closes
+- [tui] Satisfy history projection clippy
+- [managed] Persist cancellation wakeup
+- [cloudflare] Restore interrupted subagents
+- [cloudflare] Fence reconstructed agent ownership
+- [vite] Build optimized WASM for production
+- [managed] Await queued cancellation terminal
+- [managed] Control attached turns by durable id
+- [wasm] Use optimized artifacts for production builds
+- [managed] Retain steering and sandbox work across retries
+- [durability] Cancel turns at admission
+- [managed] Recover sandbox work across runtime changes
+- [managed] Durably admit pre-cancelled turns
+- [managed] Harden workspace execution clients
+- [durability] Replay completed tool outputs exactly
+- [browser] Handle request read counts in tests
+- [managed] Release test locks before await
+- [ci] Restore Rust quality gates
+- [account] Render home terminal in first paint
+- [browser] Preserve sessions across navigation stalls
+- [ci] Allow reviewed AI SDK releases
+- [auth] Clarify OTP steps
+- [auth] Make OTP login usable
+- [browser] Decouple host cookies from automation runtime
+- [browser] Auto-detect host cookie profiles
+- [deploy] Build managed workspace dependencies ([#242](https://github.com/gakonst/nanocodex/issues/242))
+- [ci] Build account protocol before tests ([#240](https://github.com/gakonst/nanocodex/issues/240))
+- [account] Recover abandoned MCP OAuth popups ([#239](https://github.com/gakonst/nanocodex/issues/239))
+- [ci] Run JavaScript consumers through pnpm ([#238](https://github.com/gakonst/nanocodex/issues/238))
+- [vite] Reject incomplete WASM package caches ([#237](https://github.com/gakonst/nanocodex/issues/237))
+- [account] Avoid duplicate terminal welcome on refresh
+- [mcp] Persist OAuth issuer for refresh
+- [ci] Install deployment workspace with pnpm
+- [durability] Align crash stress with committed effects
+- [managed] Allow native tool-host API keys
+- [dx] Keep the BSD build lock stable
+- [dev] Prepare auxiliary managed worker
+- [connect] Replace deleted managed sessions safely
+- [dx] Make clean worktrees deterministic
+- [deploy] Build managed WASM dependency
+- [deploy] Run package scripts through pnpm
+- [ci] Restore React Vite Linux optional packages
+- [ci] Include React Vite Linux binding
+- [ci] Make platform locks portable
+- [ci] Make Vite lock portable
+- [connect] Enforce exact managed grant slices
+- [browser] Own prepared runtime authority
+- [terminal] Make voice and telemetry explicit
+- [connect] Keep grant sessions memory-only by default
+- [react] Make Connect ownership explicit
+- [tui] Admit idle collapse before run start
+- [python] Assert retained fork prompt suffix
+- [bindings] Route durable forks by thread
+- [ci] Satisfy durability const lints
+- [agent] Resume durable spawned routing
+- [agent] Retain provider session routing across branches
+- [agent] Replay unstored forks on fresh transports
+- [connect] Label hosted grants without keys
+- [managed] Admit the Chrome tab tool catalog
+- [chrome] Make chat fill the side panel
+- [chrome] Show complete turn transcripts
+- [managed] Anchor production container inputs
+- [egress] Anchor production bundle aliases
+- [chrome] Refresh completed turn controls
+- Fix connect agent identity projection
+- [ssh] Interoperate with strict OpenSSH servers
+- [managed] Classify brokered SSH options precisely
+- [chrome] Fence durable conversation transitions
+- [managed] Align durable memory boundaries
+- [managed] Preserve SSH grant and egress boundaries
+- [managed] Harden sticky compute promotion
+- [managed] Preserve promoted machine workspace
+- [managed] Include sandbox in production topology
+- [managed] Normalize smoke workspace bytes
+- [managed] Await ix machine reconnect
+- [managed] Keep ix SDK out of Workerd bundle
+- [managed] Remove unsupported direct ix Worker config
+- [managed] Remove unsupported direct ix Worker smoke
+- [managed] Make compute materialization exact
+- [managed] Release escalated compute with runtime
+- [connect] Preserve origin for managed reads
+- [connect] Forward managed websocket origin
+- [durability] Remove billing uncertainty state
+- [deploy] Pin container rollout flag
+- [managed] Stage durable class cutover
+- [durability] Enforce exact portable store revisions
+- [durability] Settle uncertain effects safely
+- [durability] Retain portable managed replays
+- [durability] Harden adversarial store boundaries
+- [managed] Recover total-state integration tests
+- [agent] Reset unstored fresh-agent checkpoints
+- [agent] Replay unstored forks on fresh transports
+- [ci] Restore cross-package compatibility
+- [connect] Sign explicit zero-spend policy
+- [managed] Bind tool hosts to Connect grants
+- [connect] Preserve tool-host rejection
+- [extension] Fence panel unload
+- [connect] Reject terminal tool tickets
+- [extension] Fence durable tab ownership
+- [connect] Cancel tool attachment readiness
+- [connect] Await durable tool readiness
+- [connect] Pin Chrome cleanup origin
+- [js] Forward invoking model to web hosts ([#224](https://github.com/gakonst/nanocodex/issues/224))
+- [connect] Return OAuth through registered callback
+- [connect] Route playground auth to production API
+- [git] Materialize bounded managed snapshots
+- [git] Clone managed repositories in one shot
+- [connect] Approve dedicated API requests
+- [connect] Target production device API
+- [managed] Execute explicit shell requests directly
+- [deploy] Probe Connect as navigation
+- [deploy] Allow root edge convergence
+- [web] Render Connect device document
+- [web] Serve Connect device deep links
+- [git] Publish immutable negotiation metadata
+- [deploy] Accept full repository health snapshot
+- [tools] Make Just Bash shims fail faithfully
+- [web] Separate account and Connect egress
+- [deploy] Align repository mirror secret
+- [deploy] Publish repository generation
+- [managed] Restore connect capabilities and repository tools
+- [connect] Project websocket route errors
+- [connect] Complete embedded connector approvals
+- [deploy] Wait for boundary probe route
+- [deploy] Restore connect and managed voice flows
+- [connect] Enforce grant-scoped managed execution
+- [dev] Verify canonical local application routes
+- [deploy] Discover authenticated Cloudflare account
+- [deploy] Validate production service topology
+- [managed] Dispose sandbox RPC results
+- [managed] Dispose AI Search RPC results
+- [tools] Scope patch validation to native targets
+- [terminal] Announce voice failures once
+- [connect] Bind voice transport to app grants
+- [web] Gate voice on realtime entitlement
+- [voice] Bound browser startup lifecycle
+- [managed] Retire failed agent constructions
+- [dev] Repair local eval schema on startup
+- [dev] Make local shutdown race idempotent
+- [memory] Dispose AI Search item stubs
+- [web] Size multiplayer touch actions
+- [react] Preserve voice across strict remounts
+- [voice] Bound browser microphone capture
+- [multiplayer] Terminate ended rooms cleanly
+- [tools] Dispatch discovered browser attachments
+- [auth] Target saved passkeys exactly
+- [connect] Keep account OAuth in place
+- [dev] Stop the checkout-owned local stack
+- [dev] Repair stale local package installs
+- [connect] Accept opaque Codex refresh tokens
+- [deploy] Use shared Connect API service root
+- [tools] Trust decoded web search responses
+- [tools] Reject aliased apply patch targets
+- [connect] Allow immediate device registration retries
+- [web] Retain remembered passkeys on sign out
+- [managed] Require passkey reauthentication
+- [web] Recover expired account sessions
+- [managed] Preserve exact durable dispatch state
+- [ci] Install managed runtime dependencies for production
+- [managed] Preserve durable replay and cleanup ownership
+- [ci] Accept optional tool results and test envs
+- [connect] Preserve production deployment state
+- [managed] Preserve authorization and agent lifecycle
+- [agent] Satisfy wasm release clippy
+- [managed] Chunk durable recovery state
+- [web] Restore concurrent semantic formations
+- [subagents] Observe batch children at creation
+- [web] Standardize local development on localhost
+- [web] Make local stack cold starts self-contained
+- [js] Declare Worker schema validator
+- Satisfy WASM warnings gate
+- [tools] Dispatch late-discovered embedded tools
+- [js] Deduplicate namespace search results
+- [js] Preserve tool search provider ownership
+- [js] Emit typed tool search results
+- [js] Make tool cleanup ownership safe
+- [js] Release descendant agent handles
+- [js] Schedule overlays for every placement
+- [js] Require managed completion citations
+- [js] Release disposed subagent scopes
+- [managed] Retain cloud fallback on initial attach failure
+- [tools] Validate catalog fence lease pins
+- [js] Scope direct subagent lifecycle per agent
+- [tools] Canonicalize numeric schema keys identically
+- [managed] Await reverse tool attachment readiness
+- [js] Align cloud workspace tool contracts
+- [tools] Preserve attachment catalog fence details
+- [managed] Complete turns from durable runtime events
+- [tools] Align hosted catalog digest domain
+- [agent] Make rollout flush portable to wasm
+- [managed] Separate event sequence from durable cursor
+- [managed] Keep lifecycle identities backend-neutral
+- [tools] Decouple attachment observation
+- [tools] Keep hidden embedded tools off model specs
+- [oai] Distinguish claimed and committed terminals
+- [tools] Keep catalog validation at recipe composition
+- [oai] Close terminal publication races lock-free
+- [tools] Finish embedded API rename
+- [oai] Enforce contiguous terminal event streams
+- [web] Load local env from main worktree
+- [web] Reuse local passkeys across dev stacks
+- [release] Restore hosted installer
+- [managed] Restore local account credential startup
+- [deploy] Allow staged X OAuth credentials ([#216](https://github.com/gakonst/nanocodex/issues/216))
+- [browser] Satisfy Rust 1.98 clippy ([#213](https://github.com/gakonst/nanocodex/issues/213))
+- [connect] Unwrap managed voice calls
+- [connect] Preserve mobile managed turn bodies
+- [extension] Retain toolbar tab grant
+- [connect] Send managed turns through native fetch
+- [connect] Trace Safari submits over CORS
+- [connect] Accept Chrome no-spend grants
+- [terminal] Keep mobile send action stable
+- [extension] Harden retained grant boundary
+- [connect] Bypass browser cache for playground shell
+- [react] Release completed durable turns
+- [connect] Keep voice enabled in playground
+- [connect] Keep chat send action unambiguous
+- [terminal] Submit from iOS send key
+- [web] Clarify embedded microphone access
+- [managed] Retry stalled durable result reads
+- [connect] Recover durable replies without SSE
+- [web] Pin Connect deploy config
+- [connect] Restore narrower connector grants
+- [connect] Reject stale permission projections
+- [web] Label managed agent connection state
+- [managed] Retain realtime lease until end commits
+- [connectors] Make X disconnect idempotent
+- [connectors] Revoke X authorization once
+- [connect] Collapse profile approval and recover mobile turns
+- [connect] Enforce transcript visibility and hydrate history
+- [tools] Keep image diagnostics out of TUI stderr
+- [web] Atomically replace landing preview
+- [connect] Expose X to browser agents
+- [web] Remove moving composer placeholder
+- [web] Keep mobile header anchored
+- [managed] Make live account info authoritative
+- [web] Smooth mobile keyboard transitions
+- [web] Make agent session status headless
+- [web] Stabilize mobile agent chrome
+- [connect] Validate connector requests by identity
+- [connect] Stream authorized agent replies
+- [connect] Preserve sessions across browser reconnects
+- [connect] Harden browser session lifecycle
+- [managed] Include X in account info
+- [web] Anchor composer to mobile keyboard
+- [web] Keep homepage agent ephemeral
+- [connect] Serialize passkey ceremonies
+- [connect] Close dialog after connected commit
+- [managed] Terminalize pre-runtime cancellations
+- [connect] Scope account awareness to managed agents ([#210](https://github.com/gakonst/nanocodex/issues/210))
+- [connect] Harden the mobile durable agent flow
+- [voice] Use Codex realtime model
+- [web] Flatten mobile terminal composer
+- [browser] Match Codex V3 voice lifecycle
+- [connect] Honor private conversation history
+- [managed] Align consumers with account-owned agents
+- [managed] Restore brokered local readiness
+- [connect] Complete approval after passkey
+- [connect] Keep durable terminal mounted
+- [web] Anchor mobile agent input and steering
+- [connect] Compact signed capability resources
+- [web] Fence stale browser runtimes across deploys
+- [web] Remove global navigation shortcuts
+- [connectors] Refresh expired GitHub grants
+- [connect] Stream pinned browser runtime assets
+- [browser] Authorize nested worker egress
+- [connect] Deduplicate account authorizations
+- [browser] Bundle code evaluator worker
+- [connect] Separate session and workspace ids
+- [connect] Create UUIDv7 agent sessions
+- [connect] Bind canonical workspace storage
+- [connect] Proxy browser workspace git
+- [connect] Bind reused keys to selected account
+- [web] Label source tree search
+- [connect] Reuse canonical Nanocodex passkeys
+- [example] Retain account access-key lookup capability
+- [web] Pin mobile agent chat viewport
+- [durability] Rebind runtime policy on cold resume
+- [connect] Preserve origin on profile approval
+- [connect] Trust the public account origin
+- [deploy] Fence managed WASM artifacts
+- [connect] Expire live model sockets
+- [deploy] Preserve live durable object schema
+- [auth] Accept existing passkey accounts
+- [agent] Scope const lint to wasm platform
+- [agent] Keep execution branching const-safe
+- [durability] Fence authoritative execution end to end
+- [web] Restore browser shell test boundary
+- [web] Recover managed clients from network failures
+- [connectors] Harden account OAuth isolation
+- [web] Keep narrow phone navigation in bounds
+- [web] Make agent terminal scroll naturally on mobile
+- [egress] Require trusted browser sessions
+- [web] Bootstrap local dependencies before migrations
+- [web] Keep touch terminal controls unobscured
+- [web] Hold auth state until credentials are ready
+- [managed] Encode durable summary headers safely
+- [deploy] Attest generated Worker builds
+- [ci] Define ChatGPT egress test worker
+- [web] Install local runtime dependencies
+- [ci] Resolve production origin safely
+- [deploy] Centralize production origin
+- [web] Order transcript bootstrap before live turns
+- [tools] Reject redirects on Workers
+- [browser] Stabilize durable agent startup
+- [managed] Reject malformed bearer bootstrap
+- [agent] Preserve remote workspace paths
+- [vm] Keep resolver bootstrap argv printable
+- [js] Reject credentialed tool redirects
+- [durability] Terminally commit failed turns
+- [egress] Check in relay binding
+- [managed] Retry rejected preflight connections
+- [web] Resolve default tool endpoints
+- [managed] Distinguish passkey session tokens
+- [web] Await local credential claim
+- [egress] Share local development credential
+- [web] Synchronize durable agent tabs
+- [managed] Forward browser model POST bodies once
+- [web] Attach passkeys to browser identities
+- [cloudflare] Harden manual production rollout
+- [cloudflare] Bootstrap current durable schema
+- [web] Ship brokered agent and multiplayer surfaces
+- [oai] Acknowledge realtime constructor width
+- [tools] Retain shells across turn cancellation
+- [browser] Keep launch cfg warnings clean
+- [cloudflare] Await private backend readiness
+- [web] Close detached demo lifecycles
+- [cloudflare] Keep dead OAuth credentials sealed
+- [browser] Keep managed macOS launches off Keychain
+- [browser] Isolate macOS automation launches
+- [web] Bound repository upload attempts
+- [web] Retry mirror state after rollout
+- [web] Version patch cache representations
+- [web] Attest complete deployment delivery
+- [web] Roll worker versions without container rebuild
+- [web] Attest direct worker deploys
+- [web] Expose only healthy MCP tools
+- [auth] Repair access-only durable credentials
+- [web] Bind compiled subscription wasm
+- [cloudflare] Seal managed agent capabilities
+- [js] Complete browser tool runtime
+- [web] Complete mobile accessibility boundaries
+- [web] Release terminal results and measure root TTFT
+- Fix durable subagent recovery ownership
+- [react] Close agent lifecycle races
+- [web] Preserve document validators at the edge
+- [vercel] Unify workflow sandbox session identity
+- [examples] Preserve cleanup after result release
+- [examples] Release completed turn results
+- [web] Enforce production delivery boundaries
+- [web] Retain client navigation for deep links
+- [web] Own mobile commit modals
+- [web] Use one mobile terminal composer
+- [web] Prepare repository navigation atomically
+- [js] Retain worker turns independently
+- [web] Respect mobile interaction bounds
+- [web] Measure inlined worker wrapper
+- [react] Cancel stale agent startup
+- [js] Satisfy current stable wasm lint gate
+- [web] Mirror document routing in local dev
+- [web] Return route-aware document status
+- [web] Preserve relative canonical through Vite
+- [web] Keep canonical links on deployed host
+- [js] Complete browser tool lifecycle
+- [ci] Satisfy remaining Rust 1.98 lints
+- [ci] Satisfy Rust 1.98 const lint
+- [ci] Satisfy parity benchmark lint
+- [ci] Use valid streaming fixture words
+- [ci] Clear remaining Rust 1.98 lints
+- [ci] Satisfy Rust 1.98 quality gates
+- [ci] Unblock current toolchain checks
+- [cli] Bound turn event coordination
+- [browser] Recover poisoned chromium sessions
+- [browser] Harden touch and trace timing
+- [tui] Resume idle roots after subagent completion
+- [web] Stabilize browser agent bundles
+- [update] Bootstrap legacy nightly managers
+- [release] Harden binary distribution
+- [web] Keep Pierre adapters accessible
+- [web] Make repository surfaces accessible
+- [web] Publish canonical repository branch
+- [web] Publish repository packs in bounded parts
+- [web] Retry repository upload transport failures
+- [web] Raise terminal hint contrast
+- [web] Harden and minimalize live terminal
+- [terminal] Own cursor visibility
+- [web] Recover discarded mobile workers
+- [web] Harden mobile deployment rollover
+- [react] Surface discarded worker failures
+- [web] Keep mobile branch dispatch session-ready
+- [react] Replay ready sessions to remounted consumers
+- [web] Raise home agent contrast
+- [web] Gate btw actions on fork readiness
+- [examples] Hydrate secure wterm clients
+- [examples] Mount wterm renderers after hydration
+- [web] Bind mobile actions to ready branch sessions
+- [web] Rotate ChatGPT egress instances
+- [web] Admit Realtime calls through egress relay
+- [web] Route realtime calls through ChatGPT egress
+- [web] Repair mobile voice and interaction
+- [web] Stabilize docs delivery
+- [vercel] Harden terminal attachment
+- [web] Keep ephemeral prompt IDs local
+- [web] Harden mobile voice and durable replay
+- [web] Allow same-origin microphone capture
+- [voice] Move browser lifecycle into SDK
+- [js] Expose typed Code Mode tool results
+- [web] Align browser voice with Rust lifecycle
+- [js] Bind browser dataset fetch
+- [js] Inherit endpoints from subscription auth
+- [ci] Install local bindings dependencies
+- [web] Report WASM size without hard cap
+- [agent] Remove stale prompt request import
+- [durability] Satisfy WASM clippy
+- [wasm] Enable emitted Binaryen features
+- [examples] Harden hosted durability replay
+- [agent] Journal prompts automatically
+- [examples] Cancel Vercel sandbox tools
+- [examples] Provide sandbox tool cancellation
+- [web] Refresh published repository indexes
+- [web] Commit eval routes atomically
+- [web] Show published repository surfaces
+- [web] Bound browser shell execution
+- [web] Repair Cloudflare Git publication
+- [js] Compose MCP search in code mode
+- [web] Keep mobile workspace controls in view
+- [web] Refresh artifact runtime after header repair
+- [web] Allow sandboxed artifact frame
+- [web] Rebind reconstructed subscription hosts
+- [web] Initialize browser Git Buffer
+- [web] Preserve Worker fetch receiver
+- [browser] Recover stopped DevTools sessions
+- [bindings] Instantiate Worker subscription WASM
+- [web] Retain subscription WASM bootstrap
+- [web] Estimate missing eval costs
+- [ci] Publish Cloudflare Git from master ref
+- [examples] Pass tool cancellation context
+- [web] Support incremental thread Git pushes
+- [eval] Serialize workset mutations
+- [bindings] Bundle subscription runtime for workers
+- [auth] Derive subscription store defaults
+- [web] Publish repository commit pages with valid keys
+- [release] Publish rolling checksum last
+- [update] Resolve immutable nightly assets
+- [web] Bound public Git request bodies
+- [web] Initialize repository publisher before execution
+- [eval] Validate benchmark host before admission
+- [eval] Preserve capture-only harness networking ([#183](https://github.com/gakonst/nanocodex/issues/183))
+- [release] Install static VM guest with nightlies ([#182](https://github.com/gakonst/nanocodex/issues/182))
+- [eval] Align prompt cache identity with Codex ([#180](https://github.com/gakonst/nanocodex/issues/180))
+- Remove stale CI work and SQLite lock churn
+- [web] Load eval analytics automatically
+- [web] Bound deployed commit history
+- Preserve SDK warmup behavior
+- [web] Complete deferred Mercator MPP flows
+- [web] Harden passkey-backed MPP sessions
+- [web] Keep WASM bundle artifacts synchronized
+- [eval] Recognize completed single-shot workers
+- [browser] Enable virtual passkeys by default
+- [web] Persist Tempo MPP access keys
+- [js] Compose Tempo from Accounts providers
+- [tempo] Retain redirect guard in mpp backport
+- [egress] Preserve buffered response URLs
+- [tempo] Use mpp-rs paid MCP wrapper
+- [web] Install MCP runtime dependencies
+- [web] Lock MCP runtime dependencies
+- [mcp] Harden OAuth token refresh
+- [tui] Preserve colors under NO_COLOR
+- [cli] Tolerate missing default browser
+
+### Dependencies
+
+- Merge pull request [#195](https://github.com/gakonst/nanocodex/issues/195) from gakonst/fix/web-tools-production-deps
+
+### Documentation
+
+- [hand] Keep Cloudflare toolkit scratch off R2 ([#314](https://github.com/gakonst/nanocodex/issues/314))
+- [vm] Record installed Mac GPU Hand validation
+- Record deployment and final mobile refresh validation
+- Record mobile and desktop reliability measurements
+- Record final device and personal voice verification
+- Record voice failure and stream recovery validation
+- Distinguish model latency from missed live updates
+- [remote] Record physical phone and runtime verification
+- [remote] Document native hosts and verified connections
+- Simplify repository development guidance
+- Document capacity reads and classify retained Worker failures
+- Encode minimal architecture ownership
+- Remove historical planning archaeology
+- [managed] Describe sticky ix promotion
+- [managed] Document ix broker container
+- [managed] Explain ix broker boundary
+- [managed] Document ix broker
+- [managed] Document ix provider smoke
+- [codex] Advance parity checkpoint to 50ea8fd4
+- Correct dual-binary release contract
+- Focus agent instructions on platform invariants
+- Split roadmap into customer-driven tracks
+- Record hosted account rollout
+- Handle optional turn usage
+- [tools] Defer workspace replication
+- [tools] Qualify MCP API link
+- [extension] Install local bindings before build
+- Document the sharded durability architecture
+- Spell out check constraints
+- Require browser-verified web changes
+- [js] Model complete result ownership
+- [js] Record current wasm performance
+- [web] Organize the product manual
+- Document durable execution
+- [web] Launch Vocs product documentation
+- Reposition nanocodex as an embedded agent SDK
+- [durability] Show progressive composition
+- Require root-cause fixes and stable loading UI ([#184](https://github.com/gakonst/nanocodex/issues/184))
+- [eval] Define canonical host workflow
+
+### Features
+
+- [packages] Promote browser, egress, VM, Hand, and voice packages ([#329](https://github.com/gakonst/nanocodex/issues/329))
+- [connectors] Add native account and MCP management ([#319](https://github.com/gakonst/nanocodex/issues/319))
+- [apple] Add generic Bluetooth LE and Flipper Zero support ([#317](https://github.com/gakonst/nanocodex/issues/317))
+- [tui] Preserve drafts and scoped transcripts through reconnects ([#326](https://github.com/gakonst/nanocodex/issues/326))
+- [macos] Refresh native tabs, panes, and workspace controls ([#323](https://github.com/gakonst/nanocodex/issues/323))
+- [ios] Phone-requested Nanocodex self updates ([#320](https://github.com/gakonst/nanocodex/issues/320))
+- Add parallel Sky-compatible computer use ([#315](https://github.com/gakonst/nanocodex/issues/315))
+- [managed] Add configurable agents, operations, and performance fixes ([#307](https://github.com/gakonst/nanocodex/issues/307))
+- [hand] Route browser egress through connected Hands ([#257](https://github.com/gakonst/nanocodex/issues/257))
+- [hand] Ship development, document, science, and creative tools ([#312](https://github.com/gakonst/nanocodex/issues/312))
+- [hand] Add a persistent Docker backend without KVM ([#308](https://github.com/gakonst/nanocodex/issues/308))
+- [vm] Share Mac GPUs with verified Vulkan Hands
+- [hand] Enroll persistent Linux hands locally or over SSH
+- [voice] Align native, browser, and Swift sessions with Codex
+- [managed] Stream original attachments within platform multipart limits
+- [sandbox] Add Swift and the CI development stack ([#303](https://github.com/gakonst/nanocodex/issues/303))
+- [hand] Publish native Rust screens for retained VMs
+- [ios] Refresh inbox activity and background transcript preparation
+- Undo pending steering and queued messages
+- [macos] Add persistent browser tabs and agent split panes
+- [cli] Share account sign-in and managed controls
+- [cli] Support all account connectors
+- [managed] Expose settings and durable schedule controls
+- [cli] Add outbound native account hands
+- [remote] Keep Mac hosts online and accelerate viewer setup
+- [ios] Add browser navigation and recent conversation ordering
+- [ios] Replace inbox sidebar with browser tabs
+- [hands] Configure verified Linux server image
+- [hands] Enable managed sandbox desktops
+- [hands] Add resilient remote screens and SSH desktops
+- [voice] Integrate subscription controls and preserve large context
+- [terminal] Render generated output and preserve reading position
+- [apple] Polish inbox gestures and Nanocodex branding
+- [voice] Prefetch first-utterance context across platforms
+- [web] Cache account and thread data with TanStack Query
+- [agents] Add first-party X browsing ([#292](https://github.com/gakonst/nanocodex/issues/292))
+- [remote] Stream and control connected device screens
+- [apple] Add native workspace, voice, and device Hands
+- Align Astra defaults and Code Mode with Codex ([#275](https://github.com/gakonst/nanocodex/issues/275))
+- [web] Reskin website and Connect to match the native apps ([#286](https://github.com/gakonst/nanocodex/issues/286))
+- [managed] Restore context tools and expose cron creation
+- [apple] Attach queued prompts to composer and humanize activity
+- [apple] Add native agent inbox with simulator interaction capture
+- [vault] Support API keys alongside logins
+- [managed] Run cron in fresh or continued sessions
+- [account] Manage agent cron schedules in the web UI
+- [desktop] Add Electron and native macOS managed clients ([#256](https://github.com/gakonst/nanocodex/issues/256))
+- [managed] Add durable cron triggers and SDK controls ([#270](https://github.com/gakonst/nanocodex/issues/270))
+- [astra] Add one-shot MACH trial app
+- [managed] Add scoped VM hand factories
+- [cli] Add model and thinking slash commands ([#259](https://github.com/gakonst/nanocodex/issues/259))
+- [browser] Record constant-rate 60 fps video
+- Complete GPT-6 Astra integration
+- Prepare GPT-6 Astra support
+- [nanocodex2] Trace VM hand activity
+- [managed] Share VM hands across an account
+- [managed] Attach retained VM compute hands
+- [managed] Enable cross-mount sandbox access
+- [tui] Open rendered markdown links
+- [web] Add in-chat account connection actions
+- [managed] Mount sandbox hands on demand
+- [managed] Route execution through cwd namespaces
+- [managed] Harden durable brain and hands
+- [web] Add SMS-sponsored homepage trial ([#250](https://github.com/gakonst/nanocodex/issues/250))
+- [managed] Observe sandbox processes
+- [browser] Retain isolated automation sessions
+- [managed] Add brain and hands workspace fabric
+- [nanocodex2] Add hosted model controls
+- [wallet] Add MACH funding
+- [connect] List Tempo wallet connection
+- [connect] Show account wallet address
+- [auth] Add managed account wallets
+- Use Twilio Verify for OTP login
+- [auth] Replace passkey login with SMS OTP
+- [nanocodex2] Stream managed turns over websocket
+- [browser] Add host cookie sync and managed runtime
+- [nanocodex2] Ship instant managed TUI
+- [chief-of-staff] Use private managed RPC ([#247](https://github.com/gakonst/nanocodex/issues/247))
+- [chief-of-staff] Add WhatsApp assistant ([#246](https://github.com/gakonst/nanocodex/issues/246))
+- [chief-of-staff] Add Viber channel ([#244](https://github.com/gakonst/nanocodex/issues/244))
+- [chief-of-staff] Add one-click Slack app install ([#245](https://github.com/gakonst/nanocodex/issues/245))
+- [connect] Add encrypted manual vault
+- [connect] Add host application authentication examples ([#241](https://github.com/gakonst/nanocodex/issues/241))
+- Add Chief of Staff Chat SDK worker ([#234](https://github.com/gakonst/nanocodex/issues/234))
+- Land connectors, memory, OAuth lifecycle, TypeScript, and CI recovery ([#236](https://github.com/gakonst/nanocodex/issues/236))
+- [nanocodex2] Add durable interactive attach
+- [connect] Configure account connectors from chat
+- [cli] Add local managed durability server
+- [cli] Add local durability stress mode
+- [durability] Persist clean agent descendants
+- [tui] Collapse btw threads into main
+- [durability] Persist spawned agent trees
+- [connect] Authorize exact hosted browser tools
+- [chrome] Target any open web tab
+- Add SSH to Just Bash on Cloudflare Workers ([#220](https://github.com/gakonst/nanocodex/issues/220))
+- [web] Manage brokered SSH identities
+- [chrome] Reuse durable conversation experience
+- [managed] Make compute promotion sticky
+- [managed] Route ssh identity refs through egress
+- [egress] Host target-bound ssh identities
+- [tools] Add non-interactive just-bash ssh
+- [managed] Bind Cloudflare native compute
+- [managed] Select configured compute provider
+- [managed] Select cloudflare or ix compute
+- [managed] Run ix broker with official SDK
+- [managed] Implement stateless ix broker
+- [managed] Add ix control broker package
+- [managed] Route ix through stateless control broker
+- [managed] Add concrete ix SDK provider
+- [managed] Make ix a first-class machine provider
+- [managed] Add portable compute providers
+- [managed] Escalate cargo through compute provider
+- [managed] Add lazy Cloudflare compute provider
+- [web] Route account MCPs to browser agents
+- [managed] Attach account MCPs to durable agents
+- [js] Gate MCP servers by live availability
+- [chrome] Add durable chat transcript
+- [managed] Complete durable agent portability
+- [durability] Add resumable range portability
+- [durability] Exercise managed provider cutovers
+- [durability] Prove cross-provider portability
+- [connect] Authorize Chrome cleanup tools
+- [extension] Use account-owned durable agent
+- [connect] Attach app-defined durable tools
+- [observability] Correlate production agent flows
+- [tools] Support managed gh repository clone
+- [tools] Materialize pinned repository workspaces
+- [git] Pin immutable smart http generations
+- [account] Manage hosted MCP connections
+- [terminal] Expose voice status and cancellation
+- [connect] Expose hosted MCP identifiers
+- [connect] Scope hosted MCP grants
+- [deploy] Provision Cloudflare topology
+- [web] Ship hosted attached-tools demo
+- [connect] Import Codex ChatGPT auth after approval
+- [egress] Import approved ChatGPT credentials
+- [connect] Own credential imports in shared API service
+- [connect] Defer approved ChatGPT imports to CLI
+- [connect] Share account identity and connector surface
+- [tools] Align MCP naming OAuth and typed output
+- [subagents] Bound inactive session residency
+- [agent] Align Responses context and rollout replay
+- [update] Install nanocodex binaries as one bundle
+- [dev] Add checkout-owned platform commands
+- [deploy] Add complete direct Cloudflare rollout
+- [web] Share account connection surface
+- [web] Share Connect account chooser
+- [update] Install nanocodex2 with nightlies
+- Add account-backed managed history and Connect onboarding
+- [web] Choreograph formations from live swarm state
+- [web] Compile bottom-up swarm choreography
+- [subagents] Start coordinated agent batches atomically
+- [web] Coordinate formations through generic task paths
+- [web] Coordinate formations through resident auctions
+- [web] Coordinate World residents through one task tree
+- [js] Expose runtime subagent identity to inherited tools
+- [managed] Host default MCP catalog server-side
+- [js] Expose direct subagent lifecycle
+- [facade] Expose local and managed backends by feature
+- [nanocodex2] Add thin managed workspace client
+- [managed] Add separate lifecycle backend crate
+- [js] Unify agent tools and managed transports
+- [managed] Broker reverse tool attachments
+- [tools] Attach immutable recipes over websocket
+- [js] Install subagents by default
+- [managed] Run nondurable subagents from durable roots
+- [managed] Host Android phone tools for managed agents ([#212](https://github.com/gakonst/nanocodex/issues/212))
+- [terminal] Interleave durable voice transcripts
+- [connect] Allow origin-bound popup apps
+- [extension] Add prompt-driven site recipes
+- [js] Support popup-backed model clients
+- [browser] Manage Chrome extensions and passkeys
+- [web] Enable reusable voice across agent surfaces
+- [web] Extract reusable agent terminal
+- [managed] Expose agent-scoped realtime transport
+- [connectors] Add X OAuth identity
+- [voice] Ship Codex voice across all surfaces
+- [web] Ship reusable streaming agent surface
+- [connect] Persist sessions and durable agents
+- [connect] Restore app grant sessions
+- [connect] Center durable chat in playground
+- [browser] Add Codex V3 voice bindings
+- [connect] Authorize durable embedded agents
+- [web] Group product navigation
+- [connect] Unify agent tools and account authorization
+- [connect] Reuse managed account connectors
+- [web] Redesign the mobile agent workspace
+- [connectors] Identify authenticated accounts to agents
+- [managed] Surface connector egress capabilities
+- [connectors] Add account OAuth and unified egress
+- [connect] Add hosted dialog and playground
+- [connect] Add delegated agent SDK
+- [web] Retain local agent transcripts
+- [web] Add durable conversation history
+- [browser] Add isolated native auth handoffs
+- [js] Add reusable Vite integration
+- [web] Switch agent between local and managed
+- [managed] Install private default tools
+- [cloudflare] Add per-user managed agent accounts
+- [cloudflare] Own durable agents behind Agent.create
+- [web] Finish Multiplayer and World surfaces
+- [js] Add durable Cloudflare agent bindings
+- [cloudflare] Harden brokered managed agents
+- [voice] Match Codex realtime call controls
+- [subagents] Configure spawned model and thinking
+- [voice] Recover realtime sideband sessions
+- [web] Add Multiplayer and World demos
+- [cloudflare] Broker durable multiplayer agents
+- [tui] Detach btw threads into terminal splits
+- [js] Bind Cloudflare durability storage
+- [cloudflare] Ship durable managed agent API
+- [js] Add durable admission and bounded bash
+- [react] Add selector-aware agent resources
+- [js] Add structural postgres durability store
+- [vercel] Persist mid-turn durability in postgres
+- [js] Export durability types from leaf entry
+- [web] Expose MCP and live artifacts
+- [react] Own agent lifecycle in explicit config
+- [js] Add host-isolate durability bindings
+- [web] Ship package-owned browser agent
+- [browser] Add mobile auditing and iOS support
+- [web] Productionize the interactive agent
+- [web] Rebuild the product surfaces
+- [web] Launch integrated agent and docs experience
+- [web] Unify product visual system
+- [web] Replace homepage TUI with xterm
+- [js] Add reusable agent terminal adapter
+- [web] Minimalize product homepage
+- [web] Launch product homepage and native docs
+- [examples] Render workflow agent with wterm
+- [js] Expose browser voice capture injection
+- [vercel] Attach a live wterm workspace
+- [js] Add physical dataset cursors
+- [js] Make artifacts a first-class Code Mode tool
+- [js] Add browser dataset tools
+- [js] Extract composable web and browser tools
+- [web] Add browser-native runtime tools
+- [js] Add transport and subagent extensions
+- [agent] Expose durable request identities
+- [wasm] Expose host-owned durability stores
+- [agent] Journal durable prompts and steps
+- [durability] Add portable journal runtime
+- [eval] Complete Cloudflare coordinator workers
+- [web] Complete browser workspace tooling
+- [bindings] Align hosted Code Mode tools
+- [auth] Add Rust-owned ChatGPT subscriptions
+- [web] Move Git and browser workspaces to Cloudflare ([#186](https://github.com/gakonst/nanocodex/issues/186))
+- [web] Add voice-driven React interfaces
+- [web] Add interactive artifacts
+- [web] Add persistent workspace browser
+- [js] Add persistent kernel workspaces
+- [browser] Persist and select virtual passkeys ([#176](https://github.com/gakonst/nanocodex/issues/176))
+- [credits] Support Link CLI checkout
+- [auth] Support persistent ChatGPT access tokens
+- [tempo] Enable built-in paid Mercator MCP
+- [wasm] Add deferred paid MCP support
+
+### Miscellaneous Tasks
+
+- [apple] Update PhoneNumberKit to 5.0.9 ([#325](https://github.com/gakonst/nanocodex/issues/325))
+- [ci] Recognize the Mesa Zink driver name
+- [ci] Satisfy workspace formatting and Rust 1.97 checks
+- [voice] Trace stream admission and durable event delivery
+- [voice] Identify sanitized HTTP rejection codes
+- [voice] Retain opt-in device latency diagnostics
+- [hands] Publish verified Linux desktop images
+- Identify retained archive request timeouts
+- Make retained durability recovery fixtures configurable
+- Capture sanitized durable runtime failure outcomes
+- Remove one-off retained turn diagnostics
+- Configure Astra trial runtime
+- [astra] Deploy trial app through Cloudflare
+- Remove Python package size guard
+- Keep product examples out of stable bindings
+- Keep Rivet outside the bindings gate
+- Apply the Rust lint policy to WASM
+- Remove redundant Rust test ceremony
+- Keep platform work independent of Rust drift
+- Validate sticky compute policy
+- Replace sticky compute validator
+- Finish sticky promotion validation
+- Validate sticky compute promotion
+- [managed] Fix spelling gate
+- Validate managed compute config without generated wasm
+- Validate managed compute with package build
+- Rerun managed compute finalization
+- Finalize managed compute binding
+- Remove one-shot compute wiring workflow
+- [managed] Containerize ix broker
+- Wire managed compute providers
+- Wire managed compute provider
+- [managed] Lock ix provider checks
+- [managed] Lock ix provider
+- Refresh ix provider locks
+- [managed] Test ix provider broker
+- Remove ix SDK inspection workflow
+- Inspect ix machine reconnect surface
+- Inspect ix browser SDK entry
+- Inspect ix SDK exports
+- [managed] Lock ix SDK
+- Refresh managed lock for ix SDK
+- [managed] Pin ix SDK
+- [managed] Include Rust in sandbox image
+- [observability] Retain root and Connect telemetry
+- [web] Bind fresh eval database
+- [managed] Sync local bindings lock
+- [cloudflare] Deploy credential-neutral production topology
+- Deploy the complete Cloudflare stack
+- [web] Attest Cloudflare deployments
+- Build VM guest for nightly PR artifacts
+- [web] Account for dashboard bundle growth
+- [web] Calibrate agent worker bundle budget
+
+### Other
+
+- Limit mobile active tabs to recent sessions and expand long drafts ([#302](https://github.com/gakonst/nanocodex/issues/302))
+- Merge remote-tracking branch 'origin/master' into codex/durable-current-execution
+- Integrate managed streaming fixes
+- Merge pull request [#280](https://github.com/gakonst/nanocodex/issues/280) from gakonst/fix/managed-brain-first
+- Merge pull request [#279](https://github.com/gakonst/nanocodex/issues/279) from gakonst/fix/wasm-durability-memory-views
+- Merge pull request [#278](https://github.com/gakonst/nanocodex/issues/278) from gakonst/fix/managed-hand-bootstrap
+- Merge pull request [#277](https://github.com/gakonst/nanocodex/issues/277) from gakonst/fix/managed-bootstrap-instructions
+- Merge pull request [#276](https://github.com/gakonst/nanocodex/issues/276) from gakonst/feat/managed-context-tools
+- Merge pull request [#267](https://github.com/gakonst/nanocodex/issues/267) from gakonst/feat/swift-agent-inbox
+- Exercise voice dismissal with a full downward sheet drag
+- Harden queue cancellation chains and voice swipe/background recovery
+- Add durable queued steering, swipe-first navigation and voice draft sheet
+- Keep running-agent messages on steering and expose Stop directly
+- Tighten native inbox chrome and keep agent progress visible while steering
+- Restyle native agent inbox with ChatGPT-inspired surfaces and conversation layout
+- Keep agent controls visible while steering with the keyboard
+- Retain cancellation memory regression and remove temporary diagnostics
+- Expose owned capacity diagnostics and identify cancellation stalls
+- Merge pull request [#266](https://github.com/gakonst/nanocodex/issues/266) from gakonst/fix/skip-unchanged-managed-container
+- Merge pull request [#265](https://github.com/gakonst/nanocodex/issues/265) from gakonst/fix/connect-otp-wallet-timeout
+- Merge pull request [#264](https://github.com/gakonst/nanocodex/issues/264) from gakonst/fix/remove-astra-entitled
+- Merge pull request [#263](https://github.com/gakonst/nanocodex/issues/263) from gakonst/codex/astra-trial-secrets
+- Merge pull request [#262](https://github.com/gakonst/nanocodex/issues/262) from gakonst/fix/nanocodex2-astra-direct-default
+- Merge pull request [#261](https://github.com/gakonst/nanocodex/issues/261) from gakonst/chore/astra-trial-cloudflare
+- Merge pull request [#260](https://github.com/gakonst/nanocodex/issues/260) from gakonst/feat/astra-one-shot-demo
+- Merge pull request [#252](https://github.com/gakonst/nanocodex/issues/252) from gakonst/feat/host-vm-pools
+- Merge pull request [#254](https://github.com/gakonst/nanocodex/issues/254) from gakonst/fix/direct-tool-reconnect
+- Merge pull request [#251](https://github.com/gakonst/nanocodex/issues/251) from gakonst/feat/gpt-6-astra-readiness
+- Merge pull request [#235](https://github.com/gakonst/nanocodex/issues/235) from gakonst/feat/named-workspace-fabric
+- Merge pull request [#243](https://github.com/gakonst/nanocodex/issues/243) from gakonst/feat/sms-otp-auth
+- Merge remote-tracking branch 'origin/master' into codex/pr243-managed-wallet
+- Merge nanocodex2 TUI and live startup
+- Revert "fix connect agent identity projection"
+- Revert "refactor(js): unify agent lifecycle types"
+- Revert "fix(react): make Connect ownership explicit"
+- Revert "fix(connect): keep grant sessions memory-only by default"
+- Revert "fix(terminal): make voice and telemetry explicit"
+- Revert "fix(browser): own prepared runtime authority"
+- Revert "fix(connect): enforce exact managed grant slices"
+- Revert "feat(durability): persist spawned agent trees"
+- Merge pull request [#226](https://github.com/gakonst/nanocodex/issues/226) from gakonst/fix/btw-unstored-fork
+- Merge remote-tracking branch 'origin/master' into codex/pr220-integration
+- Merge remote-tracking branch 'origin/master' into codex/pr220-integration
+- Update SSH stack to latest compute base
+- Integrate SSH stack with current master
+- Merge pull request [#217](https://github.com/gakonst/nanocodex/issues/217) from gakonst/refactor/durability-total-state
+- Merge remote-tracking branch 'origin/master' into pr-217-integration
+- Stabilize production flow timing tests
+- Enable Codex MCP config by default
+- Run World formations as concurrent resident waves
+- Make Formation Lab prompt-driven
+- Remove resident wait action
+- Remove fabricated usage blockers
+- Revert "web: add OpenRouter OAuth provider"
+- Revert "test(web): cover OpenRouter account copy"
+- Harden browser model connections
+- Add OpenRouter OAuth provider
+- Remove websocket multiplexer
+- Add independent formation ladder
+- Multiplex host-managed agent sockets
+- Type voice transcript projection
+- Add reducer-backed resident room
+- Close resident turns over reducer tools
+- Improve World sprite fidelity and population
+- Record final durability scale evidence
+- Verify durability load cleanup by run identity
+- [connect] Trace mobile submit stages
+- Make managed creation replay crash-safe
+- Detect ambiguous create leaks in durability load
+- Make managed agent creation idempotent
+- Replay idempotent agent creation stages
+- Retry idempotent credential subject binds
+- Verify durable load cleanup ownership
+- Store account agent registries row-wise
+- Fence subject authority to its named object
+- Probe the public managed API in durability load tests
+- Remove the global credential subject coordinator
+- Merge remote-tracking branch 'origin/master' into codex/cloud-accounts-playground
+- Archive managed durability history in R2
+- Bound managed durability receipt state
+- Protect durable recovery from idle alarms
+- Bound managed agent durability growth
+- Merge remote-tracking branch 'origin/master' into codex/cloud-accounts-playground
+- Merge remote-tracking branch 'origin/master' into codex/cloud-accounts-playground
+- Merge remote-tracking branch 'origin/master' into codex/cloud-accounts-playground
+- Merge remote-tracking branch 'origin/master' into codex/cloud-accounts-playground
+- Merge remote-tracking branch 'origin/master' into codex/cloud-accounts-playground
+- Merge pull request [#209](https://github.com/gakonst/nanocodex/issues/209) from gakonst/feat/native-browser-auth
+- Merge pull request [#208](https://github.com/gakonst/nanocodex/issues/208) from gakonst/feat/vite-plugin
+- Merge pull request [#207](https://github.com/gakonst/nanocodex/issues/207) from gakonst/fix/remote-workspace-resolution
+- Merge pull request [#206](https://github.com/gakonst/nanocodex/issues/206) from gakonst/fix/vm-resolver-bootstrap
+- Merge pull request [#205](https://github.com/gakonst/nanocodex/issues/205) from gakonst/fix/tool-redirect-credentials
+- Merge pull request [#181](https://github.com/gakonst/nanocodex/issues/181) from gakonst/feat/durable-runtime
+- Merge master into durable runtime
+- Merge pull request [#198](https://github.com/gakonst/nanocodex/issues/198) from gakonst/feat/dataset-cursor-pagination
+- Merge pull request [#197](https://github.com/gakonst/nanocodex/issues/197) from gakonst/fix/deployed-dataset-illegal-invocation
+- Merge pull request [#196](https://github.com/gakonst/nanocodex/issues/196) from gakonst/codex/web-dataset-tools
+- Merge pull request [#194](https://github.com/gakonst/nanocodex/issues/194) from gakonst/feat/library-web-tools
+- Merge pull request [#193](https://github.com/gakonst/nanocodex/issues/193) from gakonst/feat/viem-v3-js-api
+- Merge pull request [#192](https://github.com/gakonst/nanocodex/issues/192) from gakonst/fix/cloudflare-eval-coordinator-parity
+- Merge pull request [#191](https://github.com/gakonst/nanocodex/issues/191) from gakonst/feat/browser-sandbox-hardening
+- Merge pull request [#190](https://github.com/gakonst/nanocodex/issues/190) from gakonst/feat/rust-owned-chatgpt-subscription
+- Merge pull request [#189](https://github.com/gakonst/nanocodex/issues/189) from gakonst/fix/latest-master-repair
+- Merge pull request [#177](https://github.com/gakonst/nanocodex/issues/177) from gakonst/feat/web-persistent-workspace
+- Merge pull request [#179](https://github.com/gakonst/nanocodex/issues/179) from gakonst/perf/minimize-agent-overhead
+- Merge pull request [#178](https://github.com/gakonst/nanocodex/issues/178) from gakonst/fix/hosted-tool-search-dispatch
+- Merge pull request [#171](https://github.com/gakonst/nanocodex/issues/171) from gakonst/feat/wasm-mcp-mercator
+- Merge remote-tracking branch 'origin/master' into wrapup/pr-171
+- Merge pull request [#173](https://github.com/gakonst/nanocodex/issues/173) from gakonst/agent/runtime-hardening-followups
+- Merge pull request [#175](https://github.com/gakonst/nanocodex/issues/175) from gakonst/fix/persistent-chatgpt-access-tokens
+- Merge pull request [#174](https://github.com/gakonst/nanocodex/issues/174) from gakonst/fix/browser-tool-virtual-passkeys
+- Merge pull request [#164](https://github.com/gakonst/nanocodex/issues/164) from gakonst/agent/eval-cluster-dashboard
+- Merge remote-tracking branch 'origin/master' into agent/eval-cluster-dashboard
+- Merge pull request [#138](https://github.com/gakonst/nanocodex/issues/138) from Giulio2002/fix/browser-missing-brave
+- Merge pull request [#163](https://github.com/gakonst/nanocodex/issues/163) from gakonst/agent/document-dev-georgios-workflow
+
+### Performance
+
+- [ios] Reuse account-scoped native history HTTP caches
+- [apple] Cache rendered code and markdown with NSCache
+- [managed] Revalidate history and cache immutable archive segments
+- [ios] Remove repeated tab lookups and unchanged roster updates
+- [managed] Release caught-up replay buffers and avoid native-only redeploys
+- [managed] Bound history reads before loading event payloads
+- [managed] Keep history observers out of runtime lifecycle
+- [ios] Incrementally project streams and bound inactive tab memory
+- [ios] Avoid publishing unchanged inbox decks
+- [ios] Back off unchanged cancellation observations
+- [ios] Deliver agent refreshes without batch barriers
+- [voice] Scope cleanup waits to each conversation
+- [managed] Resolve credential ownership in the agent session
+- [tui] Replay retained history incrementally
+- [tui] Prefetch retained history smoothly
+- [tui] Benchmark retained history rendering
+- [nanocodex2] Create agents over the live socket
+- [wasm] Reserve optimized builds for releases
+- [durability] Collapse redundant settlement state
+- [tools] Cache discovered embedded definitions
+- [connect] Restore static asset caching
+- [connect] Remove login hot-path RPCs
+- [connect] Publish grants before balance hydration
+- [connect] Warm the dialog and bound the playground
+- [connect] Keep the wallet engine in the dialog
+- [browser] Defer MCP catalog discovery
+- [managed] Tail events before history hydration
+- [managed] Summarize durable conversations
+- [managed] Page durable conversation history
+- [managed] Defer room recovery watchdog
+- [web] Remove startup request waterfalls
+- [managed] Collapse durable request paths
+- [web] Collapse account readiness checks
+- [web] Cache versioned World assets
+- [web] Prepare immutable highlighted routes
+- [web] Shrink repository upload slices
+- [web] Expire unclaimed diff workers
+- [js] Overlap cold worker agent boot
+- [js] Reuse browser git workspace root
+- [js] Prewarm exact browser wasm module
+- [js] Retain browser git configuration
+- [js] Skip agent startup git status scan
+- [js] Overlap browser agent prewarm
+- [web] Discover route assets from documents
+- [web] Compress published patch streams
+- [web] Load documentation grammars per route
+- [web] Overlap agent runtime and terminal delivery
+- [js] Avoid host boundary byte allocations
+- [web] Defer browser bash until first command
+- [web] Prewarm authenticated agent runtime
+- [web] Preload authenticated agent delivery
+- [web] Collapse route startup boundary
+- [web] Collapse mobile boundary delivery
+- [web] Page published commit history
+- [web] Mount direct routes atomically
+- [ci] Keep package smoke offline
+- [js] Materialize completed results on demand
+- [web] Keep signed-out agent runtime cold
+- [js] Cross agent events only on demand
+- [web] Revalidate route metadata with ETags
+- [react] Keep disabled agents cold
+- [web] Coalesce terminal projections
+- [web] Share credential health bootstrap
+- [web] Stream commit history in bounded parts
+- [web] Lazy-load browser command runtimes
+- [wasm] Shrink durable binding artifacts
+- [web] Keep browser shell chunks isolated
+- [web] Harden browser workspaces
+- [web] Keep agent runtime support lazy
+- [js] Prewarm browser WASM once ([#185](https://github.com/gakonst/nanocodex/issues/185))
+- [web] Render eval charts with workset
+- [eval] Speed dashboard and fix timing
+- Reduce agent startup overhead
+
+### Refactor
+
+- [durability] Persist bounded execution records across hosts
+- [desktop] Retire the Electron app
+- [astra] Remove catalog entitlement projection
+- [js] Extract reusable platform packages
+- [durability] Replay committed effects only
+- [platform] Finish standard monorepo workflow
+- [platform] Remove redundant operator and test surfaces
+- [js] Unify agent lifecycle types
+- [js] Flatten managed platform boundaries
+- [vite] Own generated WASM and OAuth relay
+- [dev] Use standard Cloudflare worker topology
+- [dev] Delete local process orchestration
+- [dev] Trim test and release ceremony
+- [deploy] Use direct Wrangler ownership
+- [managed] Bind compute provider to canonical workspace
+- [durability] Replace journals with total state
+- [runtime] Share just bash across agent modes
+- [dev] Remove just operator wrapper
+- [mcp] Make tool search the sole discovery surface
+- [tools] Simplify reverse attachment protocol
+- [tools] Separate callable parity from placement
+- [agent] Isolate local OpenAI implementation
+- [agent] Erase lifecycle behind backend seam
+- [agent] Make turn results backend-neutral
+- [tools] Separate embedded execution placement
+- [oai] Keep event publication lock-free
+- [oai] Publish portable agent events
+- [tools] Make selection catalogs deterministic
+- [web] Make durable demo managed-only
+- [web] Unify account connections
+- [connect-playground] Focus the durable agent flow
+- [connectors] Surface account info to agents
+- [react] Expose useNanocodex directly
+- [js] Route realtime policy through wasm
+- [js] Make transport setup private
+- [js] Make durability leaf exclusive
+- [examples] Dispose opaque turn results
+- [web] Remove anonymous guest access
+- [web] Make terminal shell minimal
+- [subagents] Extract reusable native and wasm extension
+- [durability] Own agent integration above lifecycle
+- [examples] Use built-in durability stores
+- [agent] Unify durable prompt submission
+- [js] Extract reusable artifact packages
+
+### Styling
+
+- Add browser-style mobile tab overview and persistent tab closing ([#304](https://github.com/gakonst/nanocodex/issues/304))
+- [cli] Format native Hand declarations
+- [web] Remove terminal brand label
+
+### Testing
+
+- [managed] Verify steering withdrawal before model consumption ([#327](https://github.com/gakonst/nanocodex/issues/327))
+- [durability] Cover replayable steering withdrawal ([#324](https://github.com/gakonst/nanocodex/issues/324))
+- [tui] Include voice UI in the render benchmark
+- [voice] Remove redundant sender clone
+- [durability] Gate deployments on large-input completion and replay
+- [tui] Synchronize descendant cancellation without timing assumptions
+- [ios] Synchronize stream recovery without timing assumptions
+- Correct release footer and production journey budget
+- [durability] Update experimental tool callers for host interruption
+- Keep streaming chunks compatible with spelling checks
+- [durability] Match retained failure chunk boundary
+- [durability] Verify chunk rollback and report missing counts
+- [macos] Capture numeric capacity for retained task diagnostics
+- [macos] Classify retained task failures without payload logging
+- [managed] Verify old cancellation retries retain alarms
+- [macos] Measure repeated live voice startup and cleanup
+- [wasm] Cover queued cancellation before model replacement
+- [macos] Verify hosted main window content
+- [macos] Inspect retained agent diagnostics by ID
+- [macos] Retain durable state for failed voice journeys
+- [ios] Verify stored video playback and hand lifecycle
+- [ios] Retain measured voice and device dogfood checks
+- [macos] Capture completed spoken memory replies
+- [macos] Retain live voice latency and memory evidence
+- [ios] Cover live menus and scope queued message gestures
+- [ios] Preserve voice when returning to the conversation
+- [apple] Use supported XCTest confirmation query
+- [apple] Capture settled activity details and visible failures
+- [managed] Retry transient live API failures
+- [managed] Validate complete live settings and tool execution
+- [vm-host] Release startup event guard before await
+- Use supported Astra reasoning mode
+- [tools] Fence reconnect detach race
+- [managed] Complete attachment drain handshake
+- [auth] Support local OTP wallet flow
+- [managed] Cover sticky transparent promotion
+- [managed] Build ix broker container
+- [managed] Cover compute provider selection
+- [managed] Cover ix broker provider
+- [managed] Cover ix broker lifecycle
+- [managed] Cover concrete ix SDK provider
+- [managed] Configure ix compute smoke
+- [managed] Add live ix compute smoke
+- [managed] Exercise cargo test on real ix VM
+- [managed] Add live ix compute smoke
+- [managed] Exercise ix machines client contract
+- [managed] Prove exact retained workspace projection
+- [managed] Configure Cloudflare compute smoke
+- [managed] Add live Cloudflare compute smoke
+- [managed] Cover compute provider adapters
+- [managed] Avoid spying on frozen provider
+- [managed] Prove lazy cargo escalation
+- [web] Carry model through tool context
+- [managed] Include portability in owner grants
+- [managed] Carry model through tool contexts
+- Test exact replay as a read-only operation
+- Test durability across multi-turn production flows
+- [vercel] Classify pre-transaction failures
+- [vercel] Migrate Postgres durability coverage
+- [managed] Target durable retry boundaries
+- [managed] Stabilize total-state retry coverage
+- [managed] Observe total-state retries
+- [agent] Align fork checkpoint expectations
+- [git] Store immutable publication metadata
+- [connect] Expect popup OAuth completion
+- [cli] Complete managed memory auth fixture
+- [bindings] Close browser fork fixtures
+- [bindings] Align historical fork checkpoints
+- [managed] Keep auth fixtures worker-owned
+- [managed] Keep race fixtures worker-owned
+- Make lifecycle timing deterministic
+- [js] Track Cloudflare durability schema
+- [web] Remove duplicate local fetch helper
+- [web] Type local Connect API bindings
+- [js] Cover empty MCP search wire output
+- [web] Adapt service binding doubles
+- [managed] Require exact detached workspace proof
+- [agent] Use backend-neutral session identities
+- [js] Use complete managed terminal fixtures
+- [nanocodex2] Own local smoke credentials and cleanup
+- [nanocodex2] Prove detached cloud workspace fallback
+- [nanocodex2] Assert session-local event sequence
+- [managed] Allow cold subagent startup
+- [managed] Observe room replay across isolates
+- [web] Cover OpenRouter account copy
+- [web] Assert terminal behavior at its owner ([#215](https://github.com/gakonst/nanocodex/issues/215))
+- [managed] Allow device host cold startup ([#214](https://github.com/gakonst/nanocodex/issues/214))
+- [managed] Match prefixed network-tool prompts
+- [web] Align reusable agent surface assertions
+- [connect] Model the prewarmed dialog harness
+- [web] Include Connect dialog Worker routes
+- [browser] Make deferred MCP readiness causal
+- [managed] Tolerate overlapping cleanup alarm delivery
+- [deploy] Distinguish managed template name
+- [web] Update mobile shell invariants
+- [web] Preserve lazy World asset loading
+- [web] Cover durable agent recovery
+- [web] Align managed readiness fixture
+- [web] Model durable turn admission
+- [web] Assert multimodal image tool boundary
+- [js] Observe cancellation results immediately
+- [web] Preserve submit timing assertion
+- [web] Cover client benchmark navigation
+- [vm] Consume complete gvproxy requests
+- [web] Exercise complete wasm tool contract
+- [perf] Gate browser WASM linear memory
+- [js] Budget extracted browser runtime
+- [rivet] Synchronize active-turn capacity ([#188](https://github.com/gakonst/nanocodex/issues/188))
 
 ## [0.5.0](https://github.com/gakonst/nanocodex/releases/tag/v0.5.0) - 2026-08-12
 
@@ -22,31 +1349,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [events] Preserve structured results universally
 - [events] Retain structured nested tool results
 - [oai] Drop notifications orphaned by compaction
+- [eval] Preserve recent attempts in control loop
+- [eval] Make worker unit names restart-safe
+- [eval] Distinguish retries from memory recovery
+- [eval] Require exact worker exit signals
+- [eval] Retain worker exit classification
+- [eval] Gate neural admission during recovery
+- [eval] Expose recent controller failure details
+- [eval] Preserve live worker claims
 - [eval] Keep neural waits within one tool call
 - [eval] Allow per-attempt evidence directories
 - [eval] Admit only missing neural workers
 - [eval] Disable browser in neural controller
 - [eval] Scope neural occupancy to its board
 
+### Documentation
+
+- Clarify stale eval host cleanup
+- Optimize frontier eval iteration loop
+- Reset incompatible experimental eval state
+- Avoid cargo tests during eval iteration
+
 ### Features
 
+- [eval] Restore durable neural benchmark control
+- [eval] Show cluster utilization in dashboard
 - [eval] Isolate workers in a systemd slice
 
 ### Miscellaneous Tasks
 
+- [release] Refresh 0.5.0 changelogs
 - [release] Prepare 0.5.0
 - [eval] Remove deprecated Python Harbor stack
 
 ### Other
 
+- Merge pull request [#169](https://github.com/gakonst/nanocodex/issues/169) from gakonst/release/0.5.0
 - Merge pull request [#167](https://github.com/gakonst/nanocodex/issues/167) from clabby/cl/structured-events
 - :broom:
 - Merge pull request [#168](https://github.com/gakonst/nanocodex/issues/168) from clabby/cl/fix-orphaned-notifs
+- [eval] Add full GPQA and BrowseComp profiles
 - Merge pull request [#161](https://github.com/gakonst/nanocodex/issues/161) from gakonst/agent/simple-neural-eval-runtime
 - Merge pull request [#162](https://github.com/gakonst/nanocodex/issues/162) from gakonst/agent/remove-python-harbor
 
+### Performance
+
+- [web] Load eval task details directly
+
 ### Refactor
 
+- [web] Collapse healthy eval lifecycle counts
+- [web] Clarify eval lifecycle counts
+- [web] Keep eval overview operational
+- [eval] Reset experimental workset schema
+- [web] Simplify eval dashboard overview
 - [eval] Combine neural wait and observation
 - [eval] Own canonical task execution
 - [eval] Strip neural controller tools
@@ -151,6 +1507,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [egress] Preserve middleware error chains
 - [vm] Stabilize image cache identity
 - [vm] Own guest command cleanup
+- [oai] Account for usage-uncertain attempts
 - [tools] Keep tool search visible in code mode
 - [tools] Align Code Mode tool contracts
 - [browser] Gate Safari discovery by platform

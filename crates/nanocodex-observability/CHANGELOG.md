@@ -5,11 +5,36 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0](https://github.com/gakonst/nanocodex/releases/tag/v0.6.0) - 2026-09-15
+
+### Bug Fixes
+
+- [apple] Preserve repository tree in native playtest update
+- [apple] Preserve reading position and playtest navigation edge cases
+
+### Features
+
+- [nanocodex2] Trace VM hand activity
+
+### Other
+
+- Merge pull request [#179](https://github.com/gakonst/nanocodex/issues/179) from gakonst/perf/minimize-agent-overhead
+- Merge remote-tracking branch 'origin/master' into agent/eval-cluster-dashboard
+
+### Performance
+
+- Reduce agent startup overhead
+
 ## [0.5.0](https://github.com/gakonst/nanocodex/releases/tag/v0.5.0) - 2026-08-12
 
 ### Miscellaneous Tasks
 
+- [release] Refresh 0.5.0 changelogs
 - [release] Prepare 0.5.0
+
+### Other
+
+- Merge pull request [#169](https://github.com/gakonst/nanocodex/issues/169) from gakonst/release/0.5.0
 
 ## [0.4.0](https://github.com/gakonst/nanocodex/releases/tag/v0.4.0) - 2026-08-11
 

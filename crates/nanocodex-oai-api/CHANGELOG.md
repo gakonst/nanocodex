@@ -5,6 +5,77 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0](https://github.com/gakonst/nanocodex/releases/tag/v0.6.0) - 2026-09-15
+
+### Bug Fixes
+
+- [transport] Let quiet reasoning wait without restarting
+- [durability] Checkpoint current execution and retire settled effects
+- [voice] Improve WebRTC startup and transcript handling
+- [apple] Preserve repository tree in native playtest update
+- [apple] Preserve reading position and playtest navigation edge cases
+- [durability] Preserve encrypted provider item identities
+- [durability] Recover with retained model requests
+- [astra] Use model-specific prompts across runtimes
+- [agent] Retain provider session routing across branches
+- [agent] Replay unstored forks on fresh transports
+- [durability] Remove billing uncertainty state
+- [durability] Settle uncertain effects safely
+- [oai] Distinguish claimed and committed terminals
+- [oai] Close terminal publication races lock-free
+- [oai] Enforce contiguous terminal event streams
+- [voice] Use Codex realtime model
+- [durability] Terminally commit failed turns
+- [oai] Acknowledge realtime constructor width
+- [auth] Repair access-only durable credentials
+- [ci] Unblock current toolchain checks
+- [js] Expose typed Code Mode tool results
+- [auth] Derive subscription store defaults
+- [eval] Align prompt cache identity with Codex ([#180](https://github.com/gakonst/nanocodex/issues/180))
+- Preserve SDK warmup behavior
+
+### Features
+
+- [voice] Align native, browser, and Swift sessions with Codex
+- Align Astra defaults and Code Mode with Codex ([#275](https://github.com/gakonst/nanocodex/issues/275))
+- [managed] Add scoped VM hand factories
+- Complete GPT-6 Astra integration
+- Prepare GPT-6 Astra support
+- [tools] Align MCP naming OAuth and typed output
+- [agent] Align Responses context and rollout replay
+- [voice] Match Codex realtime call controls
+- [subagents] Configure spawned model and thinking
+- [voice] Recover realtime sideband sessions
+- [agent] Journal durable prompts and steps
+- [auth] Add Rust-owned ChatGPT subscriptions
+- [auth] Support persistent ChatGPT access tokens
+
+### Miscellaneous Tasks
+
+- [ci] Satisfy workspace formatting and Rust 1.97 checks
+
+### Other
+
+- Merge pull request [#252](https://github.com/gakonst/nanocodex/issues/252) from gakonst/feat/host-vm-pools
+- Merge pull request [#251](https://github.com/gakonst/nanocodex/issues/251) from gakonst/feat/gpt-6-astra-readiness
+- Merge pull request [#226](https://github.com/gakonst/nanocodex/issues/226) from gakonst/fix/btw-unstored-fork
+- Merge pull request [#217](https://github.com/gakonst/nanocodex/issues/217) from gakonst/refactor/durability-total-state
+- Merge pull request [#181](https://github.com/gakonst/nanocodex/issues/181) from gakonst/feat/durable-runtime
+- Merge master into durable runtime
+- Merge pull request [#190](https://github.com/gakonst/nanocodex/issues/190) from gakonst/feat/rust-owned-chatgpt-subscription
+- Merge remote-tracking branch 'origin/master' into wrapup/pr-171
+- Merge pull request [#175](https://github.com/gakonst/nanocodex/issues/175) from gakonst/fix/persistent-chatgpt-access-tokens
+- Merge remote-tracking branch 'origin/master' into agent/eval-cluster-dashboard
+
+### Performance
+
+- Reduce agent startup overhead
+
+### Refactor
+
+- [oai] Keep event publication lock-free
+- [oai] Publish portable agent events
+
 ## [0.5.0](https://github.com/gakonst/nanocodex/releases/tag/v0.5.0) - 2026-08-12
 
 ### Bug Fixes
@@ -16,10 +87,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Miscellaneous Tasks
 
+- [release] Refresh 0.5.0 changelogs
 - [release] Prepare 0.5.0
 
 ### Other
 
+- Merge pull request [#169](https://github.com/gakonst/nanocodex/issues/169) from gakonst/release/0.5.0
 - Merge pull request [#167](https://github.com/gakonst/nanocodex/issues/167) from clabby/cl/structured-events
 - :broom:
 - Merge pull request [#168](https://github.com/gakonst/nanocodex/issues/168) from clabby/cl/fix-orphaned-notifs
@@ -35,6 +108,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [oai] Recover forbidden websocket handshakes
 - [oai] Preserve code mode notifications in replay
 - Close remaining Codex wire parity gaps
+- [oai] Account for usage-uncertain attempts
 - [tools] Align Code Mode tool contracts
 - [tls] Standardize rustls on ring
 - Preserve Codex rollout model compatibility

@@ -5,6 +5,89 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0](https://github.com/gakonst/nanocodex/releases/tag/v0.6.0) - 2026-09-15
+
+### Bug Fixes
+
+- [apple] Preserve repository tree in native playtest update
+- [apple] Preserve reading position and playtest navigation edge cases
+- [tools] Stop evicting live shell processes at an arbitrary session cap
+- [tools] Scope patch validation to native targets
+- [tools] Trust decoded web search responses
+- [tools] Reject aliased apply patch targets
+- [tools] Dispatch late-discovered embedded tools
+- [tools] Validate catalog fence lease pins
+- [tools] Canonicalize numeric schema keys identically
+- [tools] Preserve attachment catalog fence details
+- [tools] Align hosted catalog digest domain
+- [tools] Decouple attachment observation
+- [tools] Keep hidden embedded tools off model specs
+- [tools] Keep catalog validation at recipe composition
+- [tools] Finish embedded API rename
+- [tools] Keep image diagnostics out of TUI stderr
+- [tools] Retain shells across turn cancellation
+- [js] Complete browser tool runtime
+- [ci] Satisfy remaining Rust 1.98 lints
+- [js] Expose typed Code Mode tool results
+- Preserve SDK warmup behavior
+- [web] Complete deferred Mercator MPP flows
+- [tempo] Use mpp-rs paid MCP wrapper
+- [mcp] Harden OAuth token refresh
+
+### Documentation
+
+- [tools] Defer workspace replication
+- [tools] Qualify MCP API link
+
+### Features
+
+- Add parallel Sky-compatible computer use ([#315](https://github.com/gakonst/nanocodex/issues/315))
+- [remote] Stream and control connected device screens
+- Align Astra defaults and Code Mode with Codex ([#275](https://github.com/gakonst/nanocodex/issues/275))
+- [managed] Add scoped VM hand factories
+- [nanocodex2] Trace VM hand activity
+- [managed] Add brain and hands workspace fabric
+- [nanocodex2] Ship instant managed TUI
+- [tools] Align MCP naming OAuth and typed output
+- [tools] Attach immutable recipes over websocket
+- [bindings] Align hosted Code Mode tools
+- [web] Move Git and browser workspaces to Cloudflare ([#186](https://github.com/gakonst/nanocodex/issues/186))
+- [tempo] Enable built-in paid Mercator MCP
+- [wasm] Add deferred paid MCP support
+
+### Other
+
+- Merge pull request [#252](https://github.com/gakonst/nanocodex/issues/252) from gakonst/feat/host-vm-pools
+- Merge remote-tracking branch 'origin/master' into codex/pr243-managed-wallet
+- Merge remote-tracking branch 'origin/master' into codex/cloud-accounts-playground
+- Merge remote-tracking branch 'origin/master' into codex/cloud-accounts-playground
+- Merge master into durable runtime
+- Merge pull request [#193](https://github.com/gakonst/nanocodex/issues/193) from gakonst/feat/viem-v3-js-api
+- Merge pull request [#191](https://github.com/gakonst/nanocodex/issues/191) from gakonst/feat/browser-sandbox-hardening
+- Merge pull request [#179](https://github.com/gakonst/nanocodex/issues/179) from gakonst/perf/minimize-agent-overhead
+- Merge pull request [#178](https://github.com/gakonst/nanocodex/issues/178) from gakonst/fix/hosted-tool-search-dispatch
+- Merge pull request [#171](https://github.com/gakonst/nanocodex/issues/171) from gakonst/feat/wasm-mcp-mercator
+- Merge remote-tracking branch 'origin/master' into agent/eval-cluster-dashboard
+
+### Performance
+
+- [tools] Cache discovered embedded definitions
+- [browser] Defer MCP catalog discovery
+- Reduce agent startup overhead
+
+### Refactor
+
+- [durability] Persist bounded execution records across hosts
+- [mcp] Make tool search the sole discovery surface
+- [tools] Simplify reverse attachment protocol
+- [tools] Separate embedded execution placement
+- [tools] Make selection catalogs deterministic
+- [subagents] Extract reusable native and wasm extension
+
+### Testing
+
+- [tools] Fence reconnect detach race
+
 ## [0.5.0](https://github.com/gakonst/nanocodex/releases/tag/v0.5.0) - 2026-08-12
 
 ### Bug Fixes
@@ -15,10 +98,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Miscellaneous Tasks
 
+- [release] Refresh 0.5.0 changelogs
 - [release] Prepare 0.5.0
 
 ### Other
 
+- Merge pull request [#169](https://github.com/gakonst/nanocodex/issues/169) from gakonst/release/0.5.0
 - Merge pull request [#167](https://github.com/gakonst/nanocodex/issues/167) from clabby/cl/structured-events
 - :broom:
 
