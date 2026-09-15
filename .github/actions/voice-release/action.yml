@@ -45,4 +45,4 @@ runs:
       run: |
         mkdir "$RUNNER_TEMP/voice-archive"
         tar -xzf "$VOICE_OUTPUT" -C "$RUNNER_TEMP/voice-archive"
-        cargo test --locked --manifest-path third_party/codex-voice/Cargo.toml -p nanocodex-voice-native --test packaged -- --ignored
+        cargo test --locked -p nanocodex-voice-native --test packaged -- --ignored
