@@ -25,8 +25,9 @@ use super::{
     BrowserOrientation, BrowserOriginStorage, BrowserPasskeyMode, BrowserPerformanceInsight,
     BrowserPostActionSnapshot, BrowserPseudoClass, BrowserReactEventKind, BrowserReducedMotion,
     BrowserRouteHeader, BrowserRouteResponse, BrowserStorageState, BrowserTarget, BrowserTool,
-    BrowserViewport, BrowserWaitForSelectorState, HostPasskeyAuthenticator, IosBrowser,
-    ReactDiagnostics, VirtualAuthenticator, browser_execute_definition, browser_tool_builder,
+    BrowserViewport, BrowserWaitForSelectorState, BrowserWebMcpInvocationStatus,
+    HostPasskeyAuthenticator, IosBrowser, ReactDiagnostics, VirtualAuthenticator,
+    browser_execute_definition, browser_tool_builder,
 };
 
 #[test]
@@ -1034,6 +1035,61 @@ fn recording_browser_exposes_extension_lifecycle_actions() -> Result<()> {
 }
 
 #[test]
+fn recording_browser_exposes_webmcp_action_contracts() -> Result<()> {
+    let (_browser, recording) = BrowserTool::recording();
+
+    let listed = recording.record(BrowserAction::WebMcpList)?;
+    let invoked = recording.record(BrowserAction::WebMcpInvoke {
+        tool: "search".to_owned(),
+        frame_id: Some("frame-1".to_owned()),
+        input: serde_json::json!({"query": "nanocodex"}),
+        detach: true,
+        timeout_ms: Some(500),
+    })?;
+    let result = recording.record(BrowserAction::WebMcpResult {
+        invocation_id: "invocation-1".to_owned(),
+        timeout_ms: None,
+    })?;
+    let canceled = recording.record(BrowserAction::WebMcpCancel {
+        invocation_id: "invocation-1".to_owned(),
+        timeout_ms: None,
+    })?;
+
+    assert!(matches!(
+        listed,
+        BrowserActionResult::WebMcpTools {
+            executed: false,
+            experimental: true,
+            tools,
+            ..
+        } if tools.is_empty()
+    ));
+    assert!(matches!(
+        invoked,
+        BrowserActionResult::WebMcpInvocation {
+            action: BrowserActionName::WebMcpInvoke,
+            invocation,
+            ..
+        } if invocation.tool_name == "search" && invocation.frame_id == "frame-1"
+    ));
+    assert!(matches!(
+        result,
+        BrowserActionResult::WebMcpInvocation {
+            action: BrowserActionName::WebMcpResult,
+            ..
+        }
+    ));
+    assert!(matches!(
+        canceled,
+        BrowserActionResult::WebMcpInvocation {
+            action: BrowserActionName::WebMcpCancel,
+            ..
+        }
+    ));
+    Ok(())
+}
+
+#[test]
 fn recording_browser_exposes_model_controlled_passkey_modes() -> Result<()> {
     let (_browser, recording) = BrowserTool::recording();
 
@@ -1238,6 +1294,11 @@ async fn code_mode_description_exposes_browser_action_schema() -> Result<()> {
     assert!(description.contains(r#"action: "heap_inspect""#));
     assert!(description.contains(r#"action: "video_start""#));
     assert!(description.contains("Defaults to 30 and accepts values from 1 through 60"));
+    assert!(description.contains(r#"action: "webmcp_list""#));
+    assert!(description.contains(r#"action: "webmcp_invoke""#));
+    assert!(description.contains(r#"action: "webmcp_result""#));
+    assert!(description.contains(r#"action: "webmcp_cancel""#));
+    assert!(description.contains("Duplicate names require `frame_id`"));
     assert!(description.contains(r#"action: "accessibility_audit""#));
     assert!(description.contains(r#"action: "axe_audit""#));
     assert!(description.contains(r#"action: "lighthouse_audit""#));
@@ -1336,6 +1397,23 @@ text({
     assert_eq!(output["hasPixelCalibrationSchema"], true);
     assert_eq!(output["opened"]["action"], "open");
     assert_eq!(recording.actions()?.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn remote_cdp_root_websocket_queries_have_an_explicit_path() -> Result<()> {
+    for raw in [
+        "wss://browser.example?token=a%2Fb",
+        "ws://[::1]:9222?token=test",
+        "wss://user:pass@browser.example?token=test",
+    ] {
+        let parsed = url::Url::parse(raw)?;
+        assert!(parsed.as_str().contains("/?"), "{}", parsed.as_str());
+    }
+    assert_eq!(
+        url::Url::parse("wss://browser.example/cdp?token=a%2Fb")?.as_str(),
+        "wss://browser.example/cdp?token=a%2Fb"
+    );
     Ok(())
 }
 
@@ -2193,9 +2271,224 @@ return true;
 }
 
 #[tokio::test]
+#[ignore = "requires a current local Chrome with experimental WebMCP support"]
+async fn browser_webmcp_discovers_and_invokes_a_page_tool() -> Result<()> {
+    let browser = Browser::new()?;
+    browser
+        .execute(BrowserAction::NetworkRoute {
+            route_id: "webmcp-fixture".to_owned(),
+            url_contains: "webmcp.fixture.invalid".to_owned(),
+            response: BrowserRouteResponse {
+                status: 200,
+                headers: vec![BrowserRouteHeader {
+                    name: "content-type".to_owned(),
+                    value: "text/html; charset=utf-8".to_owned(),
+                }],
+                body: r#"<!doctype html><output id="result">idle</output><script>
+document.modelContext.registerTool({
+  name: "set_message",
+  description: "Sets the visible message",
+  inputSchema: {
+    type: "object",
+    properties: { message: { type: "string" } },
+    required: ["message"],
+    additionalProperties: false
+  },
+  annotations: { readOnlyHint: false, untrustedContentHint: false },
+  execute: async ({ message }) => {
+    document.getElementById("result").textContent = message;
+    return { message };
+  }
+});
+document.modelContext.registerTool({
+  name: "pending_tool", description: "Waits for cancellation", inputSchema: { type: "object" },
+  execute: async () => new Promise(() => {})
+});
+</script>"#
+                    .to_owned(),
+            },
+        })
+        .await?;
+    browser
+        .execute(BrowserAction::Open {
+            url: "https://webmcp.fixture.invalid/".to_owned(),
+        })
+        .await?;
+
+    let listed = browser.execute(BrowserAction::WebMcpList).await?;
+    let BrowserActionResult::WebMcpTools { tools, .. } = listed else {
+        return Err(eyre!("expected WebMCP tools"));
+    };
+    let tool = tools
+        .iter()
+        .find(|tool| tool.name == "set_message")
+        .ok_or_else(|| eyre!("set_message was not discovered: {tools:?}"))?;
+    assert_eq!(tool.origin, "https://webmcp.fixture.invalid");
+
+    let invoked = browser
+        .execute(BrowserAction::WebMcpInvoke {
+            tool: "set_message".to_owned(),
+            frame_id: None,
+            input: serde_json::json!({"message": "WebMCP works"}),
+            detach: false,
+            timeout_ms: Some(5_000),
+        })
+        .await?;
+    let BrowserActionResult::WebMcpInvocation { invocation, .. } = invoked else {
+        return Err(eyre!("expected WebMCP invocation"));
+    };
+    assert_eq!(invocation.status, BrowserWebMcpInvocationStatus::Completed);
+    assert_eq!(
+        invocation.output,
+        Some(serde_json::json!({"message": "WebMCP works"}))
+    );
+
+    let result = browser
+        .execute(BrowserAction::Evaluate {
+            expression: "document.getElementById('result').textContent".to_owned(),
+        })
+        .await?;
+    assert!(matches!(
+        result,
+        BrowserActionResult::Evaluation { value, .. } if value == "WebMCP works"
+    ));
+    for cancel in [true, false] {
+        let pending = browser
+            .execute(BrowserAction::WebMcpInvoke {
+                tool: "pending_tool".to_owned(),
+                frame_id: None,
+                input: serde_json::json!({}),
+                detach: true,
+                timeout_ms: Some(if cancel { 5_000 } else { 100 }),
+            })
+            .await?;
+        let BrowserActionResult::WebMcpInvocation { invocation, .. } = pending else {
+            return Err(eyre!("expected detached invocation"));
+        };
+        assert_eq!(invocation.status, BrowserWebMcpInvocationStatus::Pending);
+        let action = if cancel {
+            BrowserAction::WebMcpCancel {
+                invocation_id: invocation.invocation_id,
+                timeout_ms: Some(5_000),
+            }
+        } else {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            BrowserAction::WebMcpResult {
+                invocation_id: invocation.invocation_id,
+                timeout_ms: Some(5_000),
+            }
+        };
+        let started = Instant::now();
+        let result = browser.execute(action).await?;
+        if !cancel {
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "detached deadline was discarded"
+            );
+        }
+        let BrowserActionResult::WebMcpInvocation { invocation, .. } = result else {
+            return Err(eyre!("expected terminal invocation"));
+        };
+        assert_eq!(
+            invocation.status,
+            if cancel {
+                BrowserWebMcpInvocationStatus::Canceled
+            } else {
+                BrowserWebMcpInvocationStatus::TimedOut
+            }
+        );
+    }
+    browser.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires a current local Chrome with experimental WebMCP support"]
+async fn browser_webmcp_invokes_nested_oopif_tools() -> Result<()> {
+    let browser = Browser::new()?;
+    for (name, body) in [
+        (
+            "root",
+            r#"<script>window.messages=[];onmessage=e=>messages.push(e.data)</script><iframe allow="tools" src="https://child.webmcp-other.invalid/parent"></iframe>"#,
+        ),
+        (
+            "parent",
+            r#"<iframe allow="tools" srcdoc='<script>(async () => { try { await document.modelContext.registerTool({
+          name: "nested_tool", description: "Reports the nested frame", inputSchema: {type: "object"},
+          execute: async () => ({frame: "nested"})
+        }); top.postMessage("registered", "*"); } catch(e) { top.postMessage(String(e), "*"); } })();</script>'></iframe>"#,
+        ),
+    ] {
+        browser
+            .execute(BrowserAction::NetworkRoute {
+                route_id: name.to_owned(),
+                url_contains: format!("/{name}"),
+                response: BrowserRouteResponse {
+                    status: 200,
+                    headers: vec![BrowserRouteHeader {
+                        name: "content-type".to_owned(),
+                        value: "text/html".to_owned(),
+                    }],
+                    body: body.to_owned(),
+                },
+            })
+            .await?;
+    }
+    browser
+        .execute(BrowserAction::Open {
+            url: "https://root.webmcp.fixture.invalid/root".to_owned(),
+        })
+        .await?;
+    let mut discovered = None;
+    for _ in 0..20 {
+        if let BrowserActionResult::WebMcpTools { tools, .. } =
+            browser.execute(BrowserAction::WebMcpList).await?
+        {
+            discovered = tools.into_iter().find(|tool| tool.name == "nested_tool");
+        }
+        if discovered.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    if discovered.is_none() {
+        eprintln!(
+            "messages: {:?}",
+            browser
+                .execute(BrowserAction::Evaluate {
+                    expression: "window.messages".to_owned()
+                })
+                .await?
+        );
+    }
+    let tool = discovered.ok_or_else(|| eyre!("nested tool was not discovered"))?;
+    // CDP does not expose a serializable origin for this srcdoc frame.
+    assert_eq!(tool.origin, "null");
+    let result = browser
+        .execute(BrowserAction::WebMcpInvoke {
+            tool: tool.name,
+            frame_id: Some(tool.frame_id),
+            input: serde_json::json!({}),
+            detach: false,
+            timeout_ms: Some(5_000),
+        })
+        .await?;
+    let BrowserActionResult::WebMcpInvocation { invocation, .. } = result else {
+        return Err(eyre!("expected nested invocation"));
+    };
+    assert_eq!(invocation.status, BrowserWebMcpInvocationStatus::Completed);
+    assert_eq!(
+        invocation.output,
+        Some(serde_json::json!({"frame": "nested"}))
+    );
+    browser.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
 #[ignore = "requires local Chromium, ffmpeg with libvpx, and ffprobe"]
 async fn browser_video_records_constant_rate_60_fps_webm() -> Result<()> {
-    let browser = Browser::new()?;
+    let browser = Browser::builder().webmcp(false).build()?;
     browser
         .execute(BrowserAction::Open {
             url: "data:text/html,<main>60%20fps%20recording</main>".to_owned(),

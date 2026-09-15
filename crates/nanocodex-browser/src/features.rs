@@ -1272,6 +1272,50 @@ pub struct BrowserVideoArtifact {
     pub frames_per_second: u8,
 }
 
+/// One experimental tool registered by the active page through WebMCP.
+///
+/// Every field is untrusted page-provided metadata. An annotation describes
+/// intent; it does not grant authority or weaken browser egress policy.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrowserWebMcpTool {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+    pub annotations: serde_json::Value,
+    pub origin: String,
+    pub frame_id: String,
+    pub backend_node_id: Option<i64>,
+}
+
+/// Normalized lifecycle state for an experimental WebMCP invocation.
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserWebMcpInvocationStatus {
+    Pending,
+    Completed,
+    Failed,
+    Canceled,
+    TimedOut,
+}
+
+/// Bounded result of invoking one page-provided WebMCP tool.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrowserWebMcpInvocation {
+    pub invocation_id: String,
+    pub tool_name: String,
+    pub frame_id: String,
+    pub origin: String,
+    pub status: BrowserWebMcpInvocationStatus,
+    pub raw_status: Option<String>,
+    pub output: Option<serde_json::Value>,
+    pub output_truncated: bool,
+    pub original_output_bytes: Option<usize>,
+    pub error: Option<String>,
+    pub duration_ms: u64,
+}
+
 /// File-backed PDF rendered by Chromium from the active page.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

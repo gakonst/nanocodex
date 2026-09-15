@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Features
 
+- Add experimental frame-aware WebMCP tool discovery, invocation, detached
+  result polling, cancellation, bounded page metadata, and bounded outputs.
 - Record constant-rate WebM video at 30 fps by default and up to 60 fps, with
   high-frame-rate encoder tuning and separate captured/written frame counts.
 

@@ -217,6 +217,9 @@ actions return a typed unsupported error; there is no Chromium fallback.
   PDF, visual/session/performance traces, constant-rate WebM video at up to 60
   fps, CPU profiles, coverage, heap inspection, accessibility/axe, Lighthouse,
   and CrUX actions.
+- Experimental frame-aware WebMCP discovery, invocation, detached results, and
+  cancellation for tools registered by the active page. Page metadata and
+  outputs remain untrusted content and never weaken the browser egress policy.
 - Harness-owned cookies/storage, virtual passkeys, explicit host-passkey handoff,
   upload roots, browser egress policy, remote CDP, and libkrun VM composition.
 - Pinned Chromium mobile profiles, verified audit matrices, and an explicit
@@ -338,6 +341,10 @@ assert_eq!(capture.origin.as_str(), "https://example.com/");
   absent from the model-callable schema. INFO tracing retains only safe
   configuration and count metadata, not cookie values, browser storage values,
   configured header values, raw network events, or action payloads/results.
+- Locally launched Chrome enables its experimental WebMCP feature flags by
+  default; use `Browser::builder().webmcp(false)` to opt out. Remote CDP
+  providers must enable WebMCP when launching Chrome or the actions return an
+  explicit unsupported error.
 - Cloned browser handles share one session and serialized action stream. Call
   `Browser::close` or `BrowserVm::shutdown` when deterministic cleanup matters.
 - The crate consumes `nanocodex-vm` unconditionally today, so local-only builds

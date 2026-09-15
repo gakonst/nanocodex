@@ -25,6 +25,7 @@ mod session_trace;
 mod source_maps;
 mod video;
 mod web_diagnostics;
+mod webmcp;
 
 pub(crate) use artifacts::MAX_IMAGE_ARTIFACT_BYTES;
 
@@ -126,6 +127,8 @@ const SESSION_DISCARD_TIMEOUT: Duration = Duration::from_secs(3);
 const MAIN_CONTEXT_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_EXPLICIT_WAIT: Duration = Duration::from_secs(30);
 const MAX_SCRIPT_EVALUATION: Duration = Duration::from_secs(30);
+const DEFAULT_WEBMCP_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_WEBMCP_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_NETWORK_BODY_WAIT: Duration = Duration::from_secs(30);
 const MAX_NETWORK_BODY_BYTES: usize = 8 * 1024 * 1024;
 const MAX_ACTION_INPUT_BYTES: u64 = 4 * 1024 * 1024;
@@ -171,6 +174,7 @@ pub(crate) struct NativeBrowser {
     context: BrowserContext,
     storage_state: Option<BrowserStorageState>,
     after_action: BrowserAfterAction,
+    webmcp_enabled: bool,
     ffmpeg_executable: Option<PathBuf>,
     lighthouse_executable: Option<PathBuf>,
     crux_client: Option<BrowserCruxClient>,
@@ -425,6 +429,7 @@ struct Session {
     browser_tasks: Vec<JoinHandle<()>>,
     page_tasks: Vec<JoinHandle<()>>,
     network_observer: network_observer::NetworkObserver,
+    webmcp_observer: Option<webmcp::WebMcpObserver>,
     diagnostics: Arc<StdMutex<Diagnostics>>,
     source_maps: source_maps::SourceMaps,
     devtools: devtools::DevtoolsDiagnostics,
@@ -995,6 +1000,7 @@ fn trace_browser_configuration(owner: &NativeBrowser) {
         "context": browser_context_trace_value(&owner.context),
         "storageState": storage_state,
         "afterAction": format!("{:?}", owner.after_action),
+        "webmcpEnabled": owner.webmcp_enabled,
         "ffmpegExecutable": owner.ffmpeg_executable,
         "lighthouseExecutable": owner.lighthouse_executable,
         "cruxClientConfigured": owner.crux_client.is_some(),
@@ -1083,6 +1089,12 @@ impl Session {
                     .arg("force-webrtc-ip-handling-policy=disable_non_proxied_udp")
                     .arg("webrtc-ip-handling-policy=disable_non_proxied_udp");
             }
+            if owner.webmcp_enabled {
+                config = config.arg((
+                    "enable-features",
+                    "NetworkService,NetworkServiceInProcess,WebMCPTesting,DevToolsWebMCPSupport",
+                ));
+            }
             let config = build_config(config)?;
             Chromium::launch(config).await?
         };
@@ -1146,6 +1158,14 @@ impl Session {
             Arc::clone(&diagnostics),
         )
         .await?;
+        let webmcp_observer = if owner.webmcp_enabled {
+            Some(
+                webmcp::WebMcpObserver::start(browser.websocket_address(), page.target_id())
+                    .await?,
+            )
+        } else {
+            None
+        };
         let egress_targets = HashSet::from([page.target_id().as_ref().to_owned()]);
 
         Ok(Self {
@@ -1156,6 +1176,7 @@ impl Session {
             browser_tasks,
             page_tasks,
             network_observer,
+            webmcp_observer,
             diagnostics,
             source_maps,
             devtools,
@@ -1204,6 +1225,9 @@ impl Session {
             None => Ok(()),
         };
         self.network_observer.abort();
+        if let Some(observer) = &self.webmcp_observer {
+            observer.abort();
+        }
         for task in &self.browser_tasks {
             task.abort();
         }
@@ -1217,7 +1241,12 @@ impl Session {
     }
 
     fn driver_finished(&self) -> bool {
-        self.handler.is_finished() || self.network_observer.is_finished()
+        self.handler.is_finished()
+            || self.network_observer.is_finished()
+            || self
+                .webmcp_observer
+                .as_ref()
+                .is_some_and(webmcp::WebMcpObserver::is_finished)
     }
 
     fn unusable(&self) -> bool {
@@ -1227,6 +1256,9 @@ impl Session {
     async fn discard(mut self) -> Result<(), BrowserError> {
         self.handler.abort();
         self.network_observer.abort();
+        if let Some(observer) = &self.webmcp_observer {
+            observer.abort();
+        }
         for task in &self.browser_tasks {
             task.abort();
         }
@@ -1324,6 +1356,11 @@ impl Session {
             self.browser_tasks.push(task);
         }
         self.network_observer.activate(target_id).await?;
+        if let Some(observer) = &self.webmcp_observer {
+            observer
+                .activate(page.target_id().as_ref().to_owned())
+                .await?;
+        }
         if let Ok(mut diagnostics) = self.diagnostics.lock() {
             diagnostics.reset_page();
         }
@@ -3459,6 +3496,7 @@ impl NativeBrowser {
         context: BrowserContext,
         storage_state: Option<BrowserStorageState>,
         after_action: BrowserAfterAction,
+        webmcp_enabled: bool,
         ffmpeg_executable: Option<PathBuf>,
         lighthouse_executable: Option<PathBuf>,
         crux_client: Option<BrowserCruxClient>,
@@ -3481,6 +3519,7 @@ impl NativeBrowser {
             context,
             storage_state,
             after_action,
+            webmcp_enabled,
             ffmpeg_executable,
             lighthouse_executable,
             crux_client,
@@ -5370,6 +5409,77 @@ return {
                 sequence,
                 executed: true,
                 video,
+            })
+        }
+        BrowserAction::WebMcpList => {
+            let observer = session
+                .webmcp_observer
+                .as_ref()
+                .ok_or(BrowserError::WebMcpDisabled)?;
+            Ok(BrowserActionResult::WebMcpTools {
+                sequence,
+                executed: true,
+                experimental: true,
+                tools: observer.list().await?,
+            })
+        }
+        BrowserAction::WebMcpInvoke {
+            tool,
+            frame_id,
+            input,
+            detach,
+            timeout_ms,
+        } => {
+            let observer = session
+                .webmcp_observer
+                .as_ref()
+                .ok_or(BrowserError::WebMcpDisabled)?;
+            let tools = observer.list().await?;
+            let registered = resolve_webmcp_tool(&tools, &tool, frame_id.as_deref())?;
+            let invocation = observer
+                .invoke(registered, input, detach, webmcp_timeout(timeout_ms))
+                .await?;
+            Ok(BrowserActionResult::WebMcpInvocation {
+                sequence,
+                executed: true,
+                action: BrowserActionName::WebMcpInvoke,
+                invocation,
+            })
+        }
+        BrowserAction::WebMcpResult {
+            invocation_id,
+            timeout_ms,
+        } => {
+            let observer = session
+                .webmcp_observer
+                .as_ref()
+                .ok_or(BrowserError::WebMcpDisabled)?;
+            let invocation = observer
+                .result(&invocation_id, webmcp_timeout(timeout_ms))
+                .await?;
+            Ok(BrowserActionResult::WebMcpInvocation {
+                sequence,
+                executed: true,
+                action: BrowserActionName::WebMcpResult,
+                invocation,
+            })
+        }
+        BrowserAction::WebMcpCancel {
+            invocation_id,
+            timeout_ms,
+        } => {
+            let observer = session
+                .webmcp_observer
+                .as_ref()
+                .ok_or(BrowserError::WebMcpDisabled)?;
+            let invocation = observer
+                .cancel(&invocation_id, webmcp_timeout(timeout_ms))
+                .await?;
+            Ok(BrowserActionResult::WebMcpInvocation {
+                sequence,
+                executed: true,
+                action: BrowserActionName::WebMcpCancel,
+                invocation,
             })
         }
         BrowserAction::ListFrames => Ok(BrowserActionResult::Frames {
@@ -7462,6 +7572,36 @@ const fn action_result(sequence: u64, action: BrowserActionName) -> BrowserActio
     }
 }
 
+fn webmcp_timeout(timeout_ms: Option<u64>) -> Duration {
+    timeout_ms
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_WEBMCP_TIMEOUT)
+        .clamp(Duration::from_millis(1), MAX_WEBMCP_TIMEOUT)
+}
+
+fn resolve_webmcp_tool(
+    tools: &[crate::BrowserWebMcpTool],
+    name: &str,
+    frame_id: Option<&str>,
+) -> Result<crate::BrowserWebMcpTool, BrowserError> {
+    let matches = tools
+        .iter()
+        .filter(|tool| tool.name == name && frame_id.is_none_or(|id| tool.frame_id == id))
+        .cloned()
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => Err(BrowserError::WebMcpToolNotFound {
+            name: name.to_owned(),
+            frame_id: frame_id.map(str::to_owned),
+        }),
+        [tool] => Ok(tool.clone()),
+        _ => Err(BrowserError::WebMcpToolAmbiguous {
+            name: name.to_owned(),
+            frame_ids: matches.into_iter().map(|tool| tool.frame_id).collect(),
+        }),
+    }
+}
+
 const fn requires_action_completion(action: BrowserActionName) -> bool {
     matches!(
         action,
@@ -8173,6 +8313,20 @@ pub enum BrowserError {
     InvalidVideoFrameRate { frames_per_second: u8, maximum: u8 },
     #[error("browser video task failed")]
     VideoTask(#[source] tokio::task::JoinError),
+    #[error("WebMCP is disabled for this browser")]
+    WebMcpDisabled,
+    #[error("no WebMCP tool named `{name}` was found for frame {frame_id:?}")]
+    WebMcpToolNotFound {
+        name: String,
+        frame_id: Option<String>,
+    },
+    #[error("WebMCP tool `{name}` exists in multiple frames: {frame_ids:?}; provide frame_id")]
+    WebMcpToolAmbiguous {
+        name: String,
+        frame_ids: Vec<String>,
+    },
+    #[error("{message}")]
+    WebMcp { message: String },
     #[error("browser has no pending JavaScript dialog")]
     DialogNotPending,
     #[error("this browser was not configured with a virtual authenticator")]
@@ -8243,6 +8397,14 @@ pub enum BrowserError {
     TooManyMobileAuditOrientations { count: usize },
     #[error("browser JavaScript evaluation exceeded the {maximum:?} deadline")]
     EvaluationTimeout { maximum: Duration },
+}
+
+impl From<webmcp::WebMcpError> for BrowserError {
+    fn from(error: webmcp::WebMcpError) -> Self {
+        Self::WebMcp {
+            message: error.to_string(),
+        }
+    }
 }
 
 const MOBILE_STATE_SCRIPT: &str = r#"function() {
