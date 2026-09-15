@@ -86,6 +86,7 @@ pub(crate) struct Transcript {
     tool_spinner: Option<Spinner>,
     running_tool_timers: HashMap<EntryId, RunningToolTimer>,
     retry_timer: Option<RetryTimer>,
+    retry_origin: Option<(u64, u64)>,
     expandables_focused: bool,
     selected_expandable: Option<EntryId>,
     expandable_hits: Vec<ExpandableHitRegion>,
@@ -260,6 +261,7 @@ impl Transcript {
             tool_spinner: None,
             running_tool_timers: HashMap::new(),
             retry_timer: None,
+            retry_origin: None,
             expandables_focused: false,
             selected_expandable: None,
             expandable_hits: Vec::new(),
@@ -281,6 +283,10 @@ impl Transcript {
         snapshot.model = self.model.fork_snapshot();
         snapshot.cache.workspace.clone_from(&self.cache.workspace);
         snapshot
+    }
+
+    pub(crate) fn ignores_finished_run_event(&self, record: &TranscriptRecord) -> bool {
+        self.model.ignores_finished_run_event(record)
     }
 
     pub(crate) const fn at_top(&self) -> bool {
@@ -387,15 +393,9 @@ impl Transcript {
     ) -> ComponentUpdate<TranscriptEffect> {
         let previous_activity = self.activity();
         let change = self.model.apply(&record);
-        let activity = self.activity();
         let now = Instant::now();
-        if record.kind() == "model.attempt.retrying" {
-            if let Some(TransientStatus::Retrying(delay_ns)) = self.model.transient() {
-                self.retry_timer = Some(RetryTimer::new(now, *delay_ns));
-            }
-        } else if !matches!(self.model.transient(), Some(TransientStatus::Retrying(_))) {
-            self.retry_timer = None;
-        }
+        self.sync_retry_timer(now, unix_milliseconds());
+        let activity = self.activity();
         self.sync_running_tool_timers(now);
         let tool_active = self.model.has_running_tools();
         if tool_active && self.tool_spinner.is_none() {
@@ -418,6 +418,24 @@ impl Transcript {
             RenderRequest::Streaming
         };
         ComponentUpdate { effects, render }
+    }
+
+    fn sync_retry_timer(&mut self, now: Instant, now_unix_ms: u64) {
+        if let Some(TransientStatus::Retrying(delay_ns)) = self.model.transient() {
+            let origin = self.model.transient_retry_origin();
+            if self.retry_timer.is_none() || self.retry_origin != origin {
+                let elapsed_ns = origin.map_or(0, |(_, started_at)| {
+                    now_unix_ms
+                        .saturating_sub(started_at)
+                        .saturating_mul(1_000_000)
+                });
+                self.retry_timer = Some(RetryTimer::new(now, delay_ns.saturating_sub(elapsed_ns)));
+                self.retry_origin = origin;
+            }
+        } else {
+            self.retry_timer = None;
+            self.retry_origin = None;
+        }
     }
 
     fn update_message(
@@ -468,6 +486,7 @@ impl Transcript {
             return ComponentUpdate::none();
         }
         let now = Instant::now();
+        self.sync_retry_timer(now, unix_milliseconds());
         self.sync_running_tool_timers(now);
         self.tool_spinner = self.model.has_running_tools().then(|| Spinner::new(now));
         let activity = self.activity();
@@ -480,7 +499,7 @@ impl Transcript {
         }
     }
 
-    fn activity(&self) -> TranscriptEffect {
+    pub(super) fn activity(&self) -> TranscriptEffect {
         TranscriptEffect {
             active: self.model.is_active(),
             status: self.model.transient().map(|status| match status {
@@ -1084,21 +1103,7 @@ impl Transcript {
     fn resolve_anchor(&mut self, anchor: Anchor, width: u16, theme: &Theme) -> Option<Anchor> {
         let entry = self.model.entry(anchor.entry)?;
         if self.cache.visible_depth(entry, &self.model).is_none() {
-            // Folding a batch can hide the entire tail while the viewport is
-            // inside one of its children. Keep that group in view.
-            let mut parent = entry.parent;
-            while let Some(id) = parent {
-                let Some(ancestor) = self.model.entry(id) else {
-                    break;
-                };
-                if self.cache.visible_depth(ancestor, &self.model).is_some() {
-                    return self.resolve_anchor(Anchor { entry: id, line: 0 }, width, theme);
-                }
-                parent = ancestor.parent;
-            }
-            return self
-                .next_visible_entry(anchor.entry, width, theme)
-                .or_else(|| self.previous(Anchor { line: 0, ..anchor }, width, theme));
+            return self.next_visible_entry(anchor.entry, width, theme);
         }
         let len = self.cache.layout(entry, &self.model, width, theme).len();
         (len > 0).then_some(Anchor {
@@ -1492,10 +1497,6 @@ impl LayoutCache {
 }
 
 impl CachedEntry {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Keep cache inputs aligned with the explicit renderer inputs, including tree depth"
-    )]
     fn new(
         entry: &TranscriptEntry,
         depth: u16,
@@ -1742,10 +1743,6 @@ fn render_top_right_hint(
     Some(Rect::new(x, area.y, width, 1))
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Keep independent rendering inputs explicit rather than introducing a context wrapper"
-)]
 fn render_entry(
     entry: &TranscriptEntry,
     depth: u16,
@@ -2167,46 +2164,82 @@ mod history_tests {
     }
 
     #[test]
-    fn hidden_tail_anchor_recovers_its_batch_after_folding_or_child_arrival() {
-        for child_arrives in [false, true] {
-            let mut transcript = Transcript::new();
-            tree_call(&mut transcript, 1, "batch", "exec");
-            tree_call(&mut transcript, 2, "batch/code-0", "accountInfo");
-            let parent = transcript.model.entries()[0].id;
-            if !child_arrives {
-                tree_call(&mut transcript, 3, "batch/code-1", "accountInfo");
-                transcript.update(TranscriptEvent::ToggleExpandAll);
-            }
-            let child = transcript.model.entries().last().unwrap().id;
-            transcript.scroll = ScrollState::Detached(Anchor {
-                entry: child,
-                line: 0,
-            });
-            if child_arrives {
-                tree_call(&mut transcript, 3, "batch/code-1", "accountInfo");
-            } else {
-                transcript.update(TranscriptEvent::ToggleExpandAll);
-            }
-            let expected = Anchor {
-                entry: parent,
-                line: 0,
-            };
-            assert_eq!(
-                transcript.resolve_anchor(
-                    Anchor {
-                        entry: child,
-                        line: 0
-                    },
-                    80,
-                    &Theme::default()
-                ),
-                Some(expected),
-                "child_arrives={child_arrives}"
-            );
-            let plan = transcript.render_plan(80, 6, &Theme::default());
-            assert!(!plan.anchors.is_empty(), "child_arrives={child_arrives}");
-            assert!(plan.anchors.iter().all(|anchor| anchor.entry == parent));
-        }
+    fn restored_retry_countdown_uses_the_original_deadline() {
+        use nanocodex::agent::events::{AgentEvent, AgentEventKind};
+        use serde_json::json;
+        use std::time::{Duration, Instant};
+        let event = |sequence, timestamp, turn: &str, kind, payload| {
+            TranscriptRecord::from_agent(
+                sequence,
+                timestamp,
+                AgentEvent {
+                    protocol_version: 1,
+                    request_id: Arc::from("request"),
+                    seq: sequence,
+                    kind,
+                    payload: serde_json::value::to_raw_value(&payload).unwrap().into(),
+                },
+            )
+            .with_managed_turn_id(Some(turn))
+        };
+        let mut transcript = Transcript::new();
+        let now = Instant::now();
+        transcript.model.apply(&event(
+            1,
+            1_000,
+            "retrying",
+            AgentEventKind::ModelAttemptRetrying,
+            json!({"delay_ns": 10_000_000_000_u64, "error": "retry"}),
+        ));
+        transcript.sync_retry_timer(now, 1_000);
+        assert_eq!(transcript.retry_timer.unwrap().remaining_ns, 10_000_000_000);
+        transcript.model.apply(&event(
+            2,
+            2_000,
+            "other",
+            AgentEventKind::ModelWarmupStarted,
+            json!({}),
+        ));
+        transcript.sync_retry_timer(now + Duration::from_secs(1), 2_000);
+        assert!(transcript.retry_timer.is_none());
+        transcript.model.apply(
+            &TranscriptRecord::from_local(
+                3,
+                4_000,
+                LocalEvent::ManagedFinalMessage {
+                    turn_id: "other".to_owned(),
+                    text: "done".to_owned(),
+                },
+            )
+            .unwrap(),
+        );
+        transcript.sync_retry_timer(now + Duration::from_secs(3), 4_000);
+        assert_eq!(transcript.retry_timer.unwrap().remaining_ns, 7_000_000_000);
+        assert_eq!(
+            transcript.retry_timer.unwrap().deadline,
+            now + Duration::from_secs(10)
+        );
+        transcript
+            .retry_timer
+            .as_mut()
+            .unwrap()
+            .refresh(now + Duration::from_secs(4));
+        transcript.sync_retry_timer(now + Duration::from_secs(4), 5_000);
+        assert_eq!(transcript.retry_timer.unwrap().remaining_ns, 6_000_000_000);
+        // A new retry with an identical delay is a new countdown.
+        transcript.model.apply(&event(
+            4,
+            5_000,
+            "retrying",
+            AgentEventKind::ModelAttemptRetrying,
+            json!({"delay_ns": 10_000_000_000_u64, "error": "retry again"}),
+        ));
+        transcript.sync_retry_timer(now + Duration::from_secs(4), 5_000);
+        assert_eq!(transcript.retry_timer.unwrap().remaining_ns, 10_000_000_000);
+        assert_eq!(
+            transcript.retry_timer.unwrap().deadline,
+            now + Duration::from_secs(14)
+        );
     }
 
     #[test]

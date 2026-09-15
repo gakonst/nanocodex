@@ -29,7 +29,7 @@ use self::{
     },
     history::{
         HistoryPrefetch, HistoryWindow, history_projection, history_projection_with_sequences,
-        live_managed_projection, older_history_projection_with_sequences, unix_ms,
+        live_managed_projection, unix_ms,
     },
     pane::PaneId,
     prompt::Submission,
@@ -444,14 +444,23 @@ enum ConnectionPurpose {
     Resume(PaneId),
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RecoveryPhase {
+    Connecting,
+    Replaying,
+    Disconnected,
+}
+
 enum ConnectionResult {
+    Recovered(Result<ConnectedAgent, ConnectionFailure>),
     Agent {
         purpose: ConnectionPurpose,
         result: Result<ConnectedAgent, ConnectionFailure>,
     },
     Sessions {
         pane: PaneId,
-        result: Result<AgentList, ManagedError>,
+        request_id: u64,
+        result: Option<Result<AgentList, ManagedError>>,
     },
     Disconnected(Result<(), NanocodexError>),
 }
@@ -476,8 +485,14 @@ impl SettingsMutation {
 struct DriverRuntime {
     client: ManagedClient,
     agent: Option<Nanocodex>,
+    startup_attach: bool,
+    pending_resume: Option<(tokio::task::AbortHandle, PaneId)>,
     managed_events: Option<mpsc::UnboundedReceiver<ManagedEvent>>,
     managed_events_open: bool,
+    recovery: Option<RecoveryPhase>,
+    recovery_events: VecDeque<ManagedEvent>,
+    observed_cursor: String,
+    last_recovery: Option<Instant>,
     connection_generation: u64,
     agent_id: String,
     settings: AgentSettings,
@@ -489,6 +504,9 @@ struct DriverRuntime {
     controls: HashMap<TurnId, TurnControl>,
     local_managed_turns: HashMap<TurnId, String>,
     submitted_turns: HashSet<String>,
+    detached_submissions: HashSet<String>,
+    unacknowledged_inputs: HashMap<TurnId, (PaneId, String, Submission)>,
+    confirmed_requests: HashSet<String>,
     managed_active_turns: ManagedActiveTurns,
     admitting: HashSet<TurnId>,
     cancel_after_admission: HashSet<TurnId>,
@@ -522,6 +540,7 @@ struct DriverRuntime {
     pending_submission: Option<(PaneId, TurnId, Submission)>,
     recent_prompts: Vec<RecentPrompt>,
     connection: JoinSet<ConnectionResult>,
+    session_list_cancellations: HashMap<(PaneId, u64), CancellationToken>,
     retry_target: Option<RetryTarget>,
 }
 
@@ -552,7 +571,6 @@ fn prepare_history_replay(
     next_sequence: u64,
     mut history_records: Vec<Arc<TranscriptRecord>>,
     live_records: Vec<Arc<TranscriptRecord>>,
-    coherent_tail: bool,
     agent_id: &str,
     workspace: &Path,
     effort: ReasoningEffort,
@@ -560,9 +578,8 @@ fn prepare_history_replay(
     let mut older_history = HistoryWindow::default();
     older_history.prepend(page)?;
     let mut projected_next_sequence = next_sequence;
-    let (mut older_records, older_prompts) = older_history_projection_with_sequences(
+    let (mut older_records, older_prompts) = history_projection_with_sequences(
         &older_history.events,
-        coherent_tail,
         agent_id,
         workspace,
         &mut sequences,
@@ -600,6 +617,133 @@ fn history_replay_matches(
 }
 
 impl DriverRuntime {
+    fn finish_resume(&mut self, task_id: tokio::task::Id) -> Option<PaneId> {
+        let (task, _) = self.pending_resume.as_ref()?;
+        if task.id() != task_id {
+            return None;
+        }
+        self.pending_resume.take().map(|(_, pane)| pane)
+    }
+
+    fn begin_recovery(
+        &mut self,
+        app: &mut AppNode,
+        scheduler: &mut RenderScheduler,
+        automatic: bool,
+    ) {
+        if let Some((_, pane)) = &self.pending_resume {
+            // A failed old stream must not race the explicitly selected session.
+            // If resume fails, its completion path will recover this connection.
+            self.managed_events = None;
+            self.managed_events_open = false;
+            request_render(
+                app.update(AppEvent::NotifyError {
+                    pane: *pane,
+                    error: "Previous session disconnected · waiting for the selected session"
+                        .to_owned(),
+                }),
+                scheduler,
+            );
+            return;
+        }
+        if matches!(
+            self.recovery,
+            Some(RecoveryPhase::Connecting | RecoveryPhase::Replaying)
+        ) {
+            return;
+        }
+        if self.recovery.is_none() {
+            request_render(
+                app.update(AppEvent::AgentStreamClosed(PaneId::Main)),
+                scheduler,
+            );
+            self.managed_events = None;
+            self.managed_events_open = false;
+            self.connection_generation = self.connection_generation.wrapping_add(1);
+            let mut pending: Vec<_> = self.unacknowledged_inputs.drain().collect();
+            pending.sort_by_key(|(id, _)| std::cmp::Reverse(*id));
+            for (_, (pane, request_id, prompt)) in pending {
+                if !self.confirmed_requests.contains(&request_id) {
+                    request_render(
+                        app.update(AppEvent::RetainPrompt {
+                            pane,
+                            request_id,
+                            prompt,
+                        }),
+                        scheduler,
+                    );
+                }
+            }
+            self.admissions = JoinSet::new();
+            self.completions = JoinSet::new();
+            self.steers = JoinSet::new();
+            self.withdrawals = JoinSet::new();
+            self.pending_withdrawals.clear();
+            self.steer_receipts.clear();
+            self.controls.clear();
+            self.admitting.clear();
+            self.cancel_after_admission.clear();
+            let uncertain = self
+                .unconfirmed_steer
+                .take()
+                .map(|(id, _, target)| (id, target))
+                .or_else(|| self.pending_steer_target.take());
+            self.unconfirmed_steer = uncertain.and_then(|(id, target)| {
+                let turn_id = match target {
+                    SteerTarget::Local(local) => self.local_managed_turns.get(&local)?.clone(),
+                    SteerTarget::Managed { turn_id, .. } => turn_id,
+                };
+                Some((
+                    id,
+                    self.connection_generation,
+                    SteerTarget::Managed {
+                        agent_id: self.agent_id.clone(),
+                        turn_id,
+                    },
+                ))
+            });
+            self.local_managed_turns.clear();
+            self.managed_active_turns = ManagedActiveTurns::default();
+            self.history_generation = self.history_generation.wrapping_add(1);
+            self.history_loads = JoinSet::new();
+            self.history_replays = JoinSet::new();
+            self.history_prefetch.reset();
+            for (pane, id) in take_waiting_steer_failures(&mut self.waiting_steers) {
+                request_render(app.update(AppEvent::SteerFailed { pane, id }), scheduler);
+            }
+            if let Some(previous) = self.agent.take() {
+                self.connection.spawn(async move {
+                    // This driver already failed; detachment must not cancel its durable work.
+                    drop(previous.disconnect().await);
+                    ConnectionResult::Disconnected(Ok(()))
+                });
+            }
+        }
+        if automatic
+            && self
+                .last_recovery
+                .is_some_and(|when| when.elapsed() < std::time::Duration::from_secs(5))
+        {
+            self.recovery = Some(RecoveryPhase::Disconnected);
+            request_render(
+                app.update(AppEvent::AgentReconnectFailed {
+                    pane: PaneId::Main,
+                    error: "The connection stopped again. Press Enter to reconnect.".to_owned(),
+                }),
+                scheduler,
+            );
+            return;
+        }
+        self.recovery = Some(RecoveryPhase::Connecting);
+        self.last_recovery = Some(Instant::now());
+        let client = self.client.clone();
+        let agent_id = self.agent_id.clone();
+        let cursor = self.observed_cursor.clone();
+        self.connection.spawn(async move {
+            ConnectionResult::Recovered(reconnect_agent(client, agent_id, cursor).await)
+        });
+    }
+
     fn resolve_steer(
         &self,
         generation: u64,
@@ -693,11 +837,6 @@ impl DriverRuntime {
         else {
             return;
         };
-        let coherent_tail = self
-            .history
-            .events
-            .iter()
-            .any(|event| matches!(event.data, ManagedEventData::TurnAccepted { .. }));
         let sequences = self.history_sequences.clone();
         let history_records = self.history_records.clone();
         let live_records = self.live_records.clone();
@@ -716,7 +855,6 @@ impl DriverRuntime {
                 next_sequence,
                 history_records,
                 live_records,
-                coherent_tail,
                 &agent_id,
                 &workspace,
                 effort,
@@ -773,6 +911,10 @@ impl DriverRuntime {
     }
 
     fn start_submission(&mut self, pane: PaneId, id: TurnId, prompt: Submission) {
+        if self.recovery.is_some() {
+            self.pending_submission = Some((pane, id, prompt));
+            return;
+        }
         let prompt = inject_shell_context(&mut self.shell_context, prompt);
         if !self.settings_updates.is_empty() || !self.settings_queue.is_empty() {
             self.pending_submission = Some((pane, id, prompt));
@@ -789,6 +931,8 @@ impl DriverRuntime {
         };
         let managed_request_id = uuid::Uuid::now_v7().to_string();
         self.submitted_turns.insert(managed_request_id.clone());
+        self.unacknowledged_inputs
+            .insert(id, (pane, managed_request_id.clone(), prompt.clone()));
         self.local_managed_turns
             .insert(id, managed_request_id.clone());
         self.admitting.insert(id);
@@ -831,7 +975,7 @@ impl DriverRuntime {
         // Retain IDs after completion: the observer can deliver acceptance after
         // the completion future, and replay must not duplicate the prompt either.
         if let ManagedEventData::TurnAccepted { id, .. } = &event.data
-            && self.submitted_turns.contains(id)
+            && (self.submitted_turns.contains(id) || self.detached_submissions.contains(id))
         {
             return Ok(None);
         }
@@ -894,6 +1038,8 @@ impl DriverRuntime {
         }
         self.managed_events = None;
         self.managed_events_open = false;
+        self.observed_cursor = "0".to_owned();
+        self.last_recovery = None;
         self.connection_generation = self.connection_generation.wrapping_add(1);
         self.agent_id.clear();
         self.settings = settings;
@@ -901,6 +1047,12 @@ impl DriverRuntime {
         self.managed_active_turns = ManagedActiveTurns::default();
         self.local_managed_turns.clear();
         self.submitted_turns.clear();
+        self.detached_submissions.clear();
+        self.unacknowledged_inputs.clear();
+        self.confirmed_requests.clear();
+        self.steer_receipts.clear();
+        self.pending_withdrawals.clear();
+        self.withdrawals = JoinSet::new();
         self.cancellation_fences.reset();
         self.cancellation_had_effect = false;
         self.cancellation_failed = false;
@@ -919,7 +1071,9 @@ impl DriverRuntime {
     }
 
     fn idle(&self) -> bool {
-        self.controls.is_empty()
+        self.pending_resume.is_none()
+            && self.recovery.is_none()
+            && self.controls.is_empty()
             && self.managed_active_turns.ids.is_empty()
             && self.admissions.is_empty()
             && self.completions.is_empty()
@@ -934,7 +1088,7 @@ impl DriverRuntime {
             && self.pending_submission.is_none()
             && self.cancel_after_admission.is_empty()
             && !self.cancellation_fences.has_in_flight()
-            && self.connection.is_empty()
+            && self.connection.len() == self.session_list_cancellations.len()
     }
 
     fn cancel_local_turns(&mut self, pane: PaneId, turns: Vec<(TurnId, String)>) {
@@ -985,6 +1139,14 @@ impl DriverRuntime {
             (pane, target, outcome)
         });
     }
+}
+
+fn connection_failure(error: &NanocodexError) -> bool {
+    matches!(
+        error,
+        NanocodexError::AgentStopped | NanocodexError::TurnStopped
+    ) || matches!(error, NanocodexError::Backend { source, .. }
+            if matches!(source.downcast_ref::<ManagedError>(), Some(ManagedError::InvalidEvent(_))))
 }
 
 fn withdraw_waiting_steer(
@@ -1102,6 +1264,55 @@ async fn connect_agent(
     ))
 }
 
+async fn reconnect_agent(
+    client: ManagedClient,
+    agent_id: String,
+    after: String,
+) -> Result<ConnectedAgent, ConnectionFailure> {
+    let mut connected = connect_agent(
+        client.clone(),
+        Some(agent_id.clone()),
+        AgentSettings::default(),
+    )
+    .await?;
+    let catch_up = async {
+        if let Some(warning) = connected.5.take() {
+            return Err(ManagedError::Configuration(warning));
+        }
+        while connected.4.has_more
+            && connected
+                .4
+                .events
+                .first()
+                .is_none_or(|event| !cursor_at_or_before(&event.cursor, &after))
+        {
+            let before = connected
+                .4
+                .before
+                .clone()
+                .expect("nonterminal history has a cursor");
+            let page = client
+                .history(&agent_id, Some(&before), HISTORY_PAGE_SIZE)
+                .await?;
+            connected.4.prepend(page)?;
+        }
+        connected
+            .4
+            .events
+            .retain(|event| !cursor_at_or_before(&event.cursor, &after));
+        Ok(())
+    }
+    .await;
+    if let Err(error) = catch_up {
+        drop(connected.0.disconnect().await);
+        return Err(ConnectionFailure {
+            error,
+            retry: RetryTarget::Agent(agent_id),
+        });
+    }
+    Ok(connected)
+}
+
 pub(crate) async fn run(
     client: &ManagedClient,
     agent_id: Option<String>,
@@ -1146,8 +1357,14 @@ async fn run_inner(
     let mut runtime = DriverRuntime {
         client: client.clone(),
         agent: None,
+        startup_attach: matches!(attach, Some(Some(_))),
+        pending_resume: None,
         managed_events: None,
         managed_events_open: false,
+        recovery: None,
+        recovery_events: VecDeque::new(),
+        observed_cursor: "0".to_owned(),
+        last_recovery: None,
         connection_generation: 0,
         agent_id: String::new(),
         settings: initial_settings,
@@ -1159,6 +1376,9 @@ async fn run_inner(
         controls: HashMap::new(),
         local_managed_turns: HashMap::new(),
         submitted_turns: HashSet::new(),
+        detached_submissions: HashSet::new(),
+        unacknowledged_inputs: HashMap::new(),
+        confirmed_requests: HashSet::new(),
         managed_active_turns: ManagedActiveTurns::default(),
         admitting: HashSet::new(),
         cancel_after_admission: HashSet::new(),
@@ -1192,6 +1412,7 @@ async fn run_inner(
         pending_submission: None,
         recent_prompts: Vec::new(),
         connection: JoinSet::new(),
+        session_list_cancellations: HashMap::new(),
         retry_target: None,
     };
     // Put the complete interface on screen before any managed request starts.
@@ -1212,6 +1433,10 @@ async fn run_inner(
             .await?;
         }
         Some(Some(agent_id)) => {
+            request_render(
+                app.update(AppEvent::AgentConnecting(PaneId::Main)),
+                &mut scheduler,
+            );
             runtime.spawn_connection(ConnectionPurpose::Startup, RetryTarget::Agent(agent_id));
         }
         None => {
@@ -1224,19 +1449,61 @@ async fn run_inner(
     let mut stopping = false;
 
     while !stopping {
-        if runtime
-            .unconfirmed_steer
-            .as_ref()
-            .is_some_and(|(_, generation, target)| {
-                *generation != runtime.connection_generation
-                    || !runtime.steer_target_current(target)
-            })
+        if runtime.recovery == Some(RecoveryPhase::Replaying) && runtime.recovery_events.is_empty()
+        {
+            runtime.recovery = None;
+            // These requests no longer have local workers to reconcile, but their
+            // prompts remain in the transcript if admission arrives on the new stream.
+            runtime
+                .detached_submissions
+                .extend(runtime.submitted_turns.drain());
+            runtime.confirmed_requests.clear();
+            runtime.local_managed_turns.clear();
+            request_render(
+                app.update(AppEvent::SettingsHydrated {
+                    pane: PaneId::Main,
+                    effort: effort_from_thinking(runtime.settings.thinking),
+                    fast_mode: runtime.settings.fast_mode,
+                    model: runtime.settings.model,
+                }),
+                &mut scheduler,
+            );
+            let update = app.update(AppEvent::AgentReconnected {
+                pane: PaneId::Main,
+                active_turns: runtime.managed_active_turns.ids.len(),
+                pending_local: runtime.pending_submission.is_some(),
+                reasoning_mode: reasoning_mode_from_managed(runtime.settings.reasoning_mode),
+            });
+            stopping |= apply_update(
+                update,
+                &mut app,
+                &mut runtime,
+                &mut terminal,
+                &mut scheduler,
+            )
+            .await?;
+            if runtime.active_shells == 0
+                && let Some((pane, id, prompt)) = runtime.pending_submission.take()
+            {
+                runtime.start_submission(pane, id, prompt);
+            }
+            runtime.start_history_prefetch(PaneId::Main);
+        }
+        if runtime.recovery.is_none()
+            && runtime
+                .unconfirmed_steer
+                .as_ref()
+                .is_some_and(|(_, generation, target)| {
+                    *generation != runtime.connection_generation
+                        || !runtime.steer_target_current(target)
+                })
         {
             runtime.unconfirmed_steer = None;
         }
         // Admit steering serially. In particular, attached-agent HTTP requests must not
         // overtake one another, and cancellation must still run while an ack is pending.
-        while runtime.steers.is_empty()
+        while runtime.recovery.is_none()
+            && runtime.steers.is_empty()
             && runtime.unconfirmed_steer.is_none()
             && !runtime.waiting_steers.is_empty()
         {
@@ -1302,6 +1569,7 @@ async fn run_inner(
                 stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
             }
             event = async {
+                if let Some(event) = runtime.recovery_events.pop_front() { return Some(event); }
                 match runtime.managed_events.as_mut() {
                     Some(events) => events.recv().await,
                     None => pending().await,
@@ -1309,6 +1577,25 @@ async fn run_inner(
             }, if runtime.managed_events_open => {
                 match event {
                     Some(event) => {
+                        runtime.observed_cursor.clone_from(&event.cursor);
+                        if let Some(request_id) = event.data.turn_id() {
+                            if runtime.submitted_turns.contains(request_id) {
+                                runtime.confirmed_requests.insert(request_id.to_owned());
+                            }
+                            let update = app.update(AppEvent::PromptConfirmed { pane: PaneId::Main, request_id: request_id.to_owned() });
+                            stopping |= apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
+                        }
+                        if runtime.recovery == Some(RecoveryPhase::Replaying) {
+                            // The state snapshot already includes these historical transitions.
+                            // Replay their transcript without changing its current active-turn set.
+                            if let Some((record, prompt)) = runtime.project_managed_event(event)? {
+                                runtime.live_records.push(Arc::clone(&record));
+                                if let Some(prompt) = prompt { runtime.recent_prompts.insert(0, prompt); }
+                                let update = app.update(AppEvent::ExternalTranscript { pane: PaneId::Main, record });
+                                stopping |= apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
+                            }
+                            continue;
+                        }
                         // The durable envelope is authoritative even when a failed runtime
                         // could not publish its nested run terminal. Keep caller IDs after
                         // completion because the worker result may win this race.
@@ -1389,30 +1676,31 @@ async fn run_inner(
                             ).await?;
                         }
                     }
-                    None => {
-                        runtime.managed_events_open = false;
-                        runtime.managed_active_turns.ids.clear();
-                        runtime.managed_active_turns.live_steer = false;
-                        runtime.managed_active_turns.live_cancel = false;
-                        // Losing the observer does not prove any durable cancellation target
-                        // terminated. Keep same-generation requests fenced until their HTTP
-                        // response or a replacement connection resolves them.
-                        runtime.cancellation_had_effect = false;
-                        runtime.cancellation_failed = false;
-                        request_render(
-                            app.update(AppEvent::AgentStreamClosed(PaneId::Main)),
-                            &mut scheduler,
-                        );
-                    }
+                    None => runtime.begin_recovery(&mut app, &mut scheduler, true),
                 }
             }
-            result = runtime.connection.join_next(), if !runtime.connection.is_empty() => {
+            result = runtime.connection.join_next_with_id(), if !runtime.connection.is_empty() => {
                 if let Some(result) = result {
-                    let result = match result {
+                    let (task_id, result) = match result {
                         Ok(result) => result,
                         Err(error) => {
                             let message =
                                 format!("Managed connection task stopped unexpectedly: {error}");
+                            if let Some(pane) = runtime.finish_resume(error.id()) {
+                                request_render(app.update(AppEvent::SessionLoadFailed { pane, error: message }), &mut scheduler);
+                                if !runtime.managed_events_open {
+                                    runtime.begin_recovery(&mut app, &mut scheduler, true);
+                                }
+                                continue;
+                            }
+                            if error.is_cancelled() {
+                                continue;
+                            }
+                            if runtime.recovery == Some(RecoveryPhase::Connecting) {
+                                runtime.recovery = Some(RecoveryPhase::Disconnected);
+                                request_render(app.update(AppEvent::AgentReconnectFailed { pane: PaneId::Main, error: message }), &mut scheduler);
+                                continue;
+                            }
                             request_render(app.update(AppEvent::NotifyError {
                                 pane: PaneId::Main,
                                 error: message.clone(),
@@ -1457,21 +1745,64 @@ async fn run_inner(
                             continue;
                         }
                     };
+                    if matches!(&result, ConnectionResult::Agent { purpose: ConnectionPurpose::Resume(_), .. })
+                        && runtime.finish_resume(task_id).is_none()
+                    {
+                        // Abort cannot retract a result already queued by JoinSet.
+                        // Only the still-selected resume task may install its agent.
+                        if let ConnectionResult::Agent { result: Ok((agent, ..)), .. } = result {
+                            runtime.connection.spawn(async move {
+                                ConnectionResult::Disconnected(agent.disconnect().await)
+                            });
+                        }
+                        continue;
+                    }
                     match result {
-                        ConnectionResult::Sessions { pane, result } => {
+                        ConnectionResult::Recovered(Ok((agent, events, agent_id, workspace, history, _, settings, _, active_turns))) => {
+                            runtime.agent = Some(agent);
+                            runtime.agent_id = agent_id;
+                            runtime.workspace = workspace;
+                            runtime.settings = settings;
+                            runtime.managed_events = Some(events);
+                            runtime.managed_events_open = true;
+                            runtime.managed_active_turns = active_turns;
+                            runtime.cancellation_fences.reset();
+                            runtime.cancellation_had_effect = false;
+                            runtime.cancellation_failed = false;
+                            for request_id in &runtime.managed_active_turns.ids {
+                                request_render(app.update(AppEvent::PromptConfirmed { pane: PaneId::Main, request_id: request_id.clone() }), &mut scheduler);
+                            }
+                            runtime.recovery_events = history.events.into();
+                            runtime.recovery = Some(RecoveryPhase::Replaying);
+                        }
+                        ConnectionResult::Recovered(Err(failure)) => {
+                            runtime.recovery = Some(RecoveryPhase::Disconnected);
+                            request_render(app.update(AppEvent::AgentReconnectFailed {
+                                pane: PaneId::Main,
+                                error: format!("Could not reconnect: {}. Press Enter to retry.", failure.error),
+                            }), &mut scheduler);
+                        }
+                        ConnectionResult::Sessions { pane, request_id, result } => {
+                            let cancelled = runtime.session_list_cancellations.remove(&(pane, request_id))
+                                .is_none_or(|token| token.is_cancelled());
+                            if cancelled { continue; }
+                            let Some(result) = result else { continue; };
                             let update = match result {
                                 Ok(list) => app.update(AppEvent::SessionsLoaded {
                                     pane,
+                                    request_id,
                                     sessions: session_summaries(&list, &runtime.workspace),
                                 }),
-                                Err(error) => app.update(AppEvent::SessionLoadFailed {
+                                Err(error) => app.update(AppEvent::SessionListFailed {
                                     pane,
+                                    request_id,
                                     error: format!("Could not load managed sessions: {error}"),
                                 }),
                             };
                             stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
                         }
                         ConnectionResult::Agent { purpose, result: Ok((agent, managed_events, agent_id, workspace, history, warning, settings, created, active_turns)) } => {
+                            runtime.startup_attach = false;
                             runtime.retry_target = None;
                             let requested_startup_settings = if created {
                                 runtime.pending_settings.take()
@@ -1484,10 +1815,15 @@ async fn run_inner(
                             runtime.history_replays = JoinSet::new();
                             runtime.history_prefetch.reset();
                             if !matches!(purpose, ConnectionPurpose::Startup) {
+                                // Unconsumed local output belongs to the previous session.
+                                // Preserve it until a resume succeeds, then drop it with
+                                // that session's local transcript.
+                                runtime.shell_context.clear();
                                 runtime.history_sequences.clear();
                                 runtime.history_records.clear();
                                 runtime.live_records.clear();
                                 runtime.submitted_turns.clear();
+                                runtime.detached_submissions.clear();
                                 runtime.sequence = 1;
                             }
                             let (history_records, mut prompts) =
@@ -1540,6 +1876,7 @@ async fn run_inner(
                             runtime.cancellation_failed = false;
                             runtime.next_turn = runtime.next_turn.max(runtime.sequence);
                             runtime.recent_prompts = prompts;
+                            runtime.observed_cursor = history.events.last().map_or_else(|| "0".to_owned(), |event| event.cursor.clone());
                             runtime.history = history;
                             runtime.history_records = history_records;
                             let pane = match purpose {
@@ -1562,9 +1899,15 @@ async fn run_inner(
                                     let effort = effort_from_thinking(settings.thinking);
                                     let reasoning_mode =
                                         reasoning_mode_from_managed(settings.reasoning_mode);
-                                    let projection = RootNode::project_session(effort, records);
+                                    // This history belongs to the live stream installed above.
+                                    // Closing it would fail active tools and erase retry status.
+                                    let projection = RootNode::project_open_session(effort, records);
                                     app.update(AppEvent::SessionRestored {
                                         pane,
+                                        draft_reset: match purpose {
+                                            ConnectionPurpose::Startup => DraftReset::Preserve,
+                                            ConnectionPurpose::Resume(_) => DraftReset::Clear,
+                                        },
                                         projection: Box::new(projection),
                                         effort,
                                         reasoning_mode,
@@ -1624,6 +1967,10 @@ async fn run_inner(
                                 }
                             }
                             let update = match purpose {
+                                ConnectionPurpose::Startup if runtime.startup_attach => app.update(AppEvent::AgentReconnectFailed {
+                                    pane: PaneId::Main,
+                                    error: message.clone(),
+                                }),
                                 ConnectionPurpose::Startup => app.update(AppEvent::NotifyError {
                                     pane: PaneId::Main,
                                     error: message.clone(),
@@ -1634,6 +1981,9 @@ async fn run_inner(
                                 }),
                             };
                             request_render(update, &mut scheduler);
+                            if matches!(purpose, ConnectionPurpose::Resume(_)) && !runtime.managed_events_open {
+                                runtime.begin_recovery(&mut app, &mut scheduler, true);
+                            }
                             for (pane, id) in
                                 take_waiting_steer_failures(&mut runtime.waiting_steers)
                             {
@@ -1742,6 +2092,11 @@ async fn run_inner(
                             )));
                         }
                     };
+                    if admission.as_ref().is_err_and(connection_failure) {
+                        runtime.begin_recovery(&mut app, &mut scheduler, true);
+                        continue;
+                    }
+                    runtime.unacknowledged_inputs.remove(&id);
                     runtime.admitting.remove(&id);
                     let cancelled_after_admission = runtime.cancel_after_admission.remove(&id);
                     let mut updates = Vec::new();
@@ -1819,6 +2174,10 @@ async fn run_inner(
             result = runtime.completions.join_next(), if !runtime.completions.is_empty() => {
                 if let Some(result) = result {
                     let (pane, id, outcome) = result.map_err(|error| ManagedError::Configuration(format!("turn task failed: {error}")))?;
+                    if outcome.as_ref().is_err_and(connection_failure) {
+                        runtime.begin_recovery(&mut app, &mut scheduler, true);
+                        continue;
+                    }
                     runtime.controls.remove(&id);
                     runtime.local_managed_turns.remove(&id);
                     runtime.cancellation_fences.local_terminal(id);
@@ -2126,6 +2485,28 @@ async fn apply_update(
                             runtime.pending_submission = Some((pane, id, prompt));
                         }
                     }
+                    RootEffect::ShowAgentId => {
+                        if runtime.agent_id.is_empty() {
+                            absorb(
+                                app.update(AppEvent::NotifyError {
+                                    pane,
+                                    error: "No agent ID yet. Send a prompt to start a session."
+                                        .to_owned(),
+                                }),
+                                &mut effects,
+                                scheduler,
+                            );
+                        } else {
+                            absorb(
+                                app.update(AppEvent::ShowAgentId {
+                                    pane,
+                                    id: runtime.agent_id.clone(),
+                                }),
+                                &mut effects,
+                                scheduler,
+                            );
+                        }
+                    }
                     RootEffect::RunShell(command) => {
                         let id = ShellId::new(runtime.next_shell);
                         runtime.next_shell = runtime.next_shell.saturating_add(1);
@@ -2338,6 +2719,20 @@ async fn apply_update(
                             scheduler,
                         );
                     }
+                    RootEffect::Reconnect => {
+                        if runtime.startup_attach {
+                            if let Some(target) = runtime.retry_target.take() {
+                                absorb(
+                                    app.update(AppEvent::AgentConnecting(pane)),
+                                    &mut effects,
+                                    scheduler,
+                                );
+                                runtime.spawn_connection(ConnectionPurpose::Startup, target);
+                            }
+                        } else {
+                            runtime.begin_recovery(app, scheduler, false);
+                        }
+                    }
                     RootEffect::PersistSteer { id, text } => {
                         // Only this request's own acknowledgement may release its fence.
                         // Uncorrelated shared telemetry never emits this effect.
@@ -2447,14 +2842,37 @@ async fn apply_update(
                         }
                     }
                     RootEffect::SetTheme(_) => {}
-                    RootEffect::LoadSessions(_) => {
+                    RootEffect::LoadSessions { request_id, .. } => {
                         let client = runtime.client.clone();
+                        let cancellation = CancellationToken::new();
+                        runtime
+                            .session_list_cancellations
+                            .insert((pane, request_id), cancellation.clone());
                         runtime.connection.spawn(async move {
                             ConnectionResult::Sessions {
                                 pane,
-                                result: client.list().await,
+                                request_id,
+                                result: tokio::select! {
+                                    () = cancellation.cancelled() => None,
+                                    result = client.list() => Some(result),
+                                },
                             }
                         });
+                    }
+                    RootEffect::CancelSessionList(request_id) => {
+                        if let Some(cancellation) =
+                            runtime.session_list_cancellations.get(&(pane, request_id))
+                        {
+                            cancellation.cancel();
+                        }
+                    }
+                    RootEffect::CancelSessionResume => {
+                        if let Some((task, _)) = runtime.pending_resume.take() {
+                            task.abort();
+                            if !runtime.managed_events_open {
+                                runtime.begin_recovery(app, scheduler, true);
+                            }
+                        }
                     }
                     RootEffect::LoadRecentPrompts(_) => {
                         absorb(
@@ -2487,7 +2905,7 @@ async fn apply_update(
                             continue;
                         }
                         let client = runtime.client.clone();
-                        runtime.connection.spawn(async move {
+                        let resume = runtime.connection.spawn(async move {
                             ConnectionResult::Agent {
                                 purpose: ConnectionPurpose::Resume(pane),
                                 result: connect_agent(
@@ -2498,6 +2916,7 @@ async fn apply_update(
                                 .await,
                             }
                         });
+                        runtime.pending_resume = Some((resume, pane));
                     }
                     RootEffect::NewSession(model) => {
                         if !runtime.idle() {
@@ -2875,8 +3294,8 @@ mod tests {
     use nanocodex::Model;
     use nanocodex_managed::{
         AgentList, AgentSettings, AgentSummary, EventHistoryPage, ManagedApiKey, ManagedClient,
-        ManagedEvent, ManagedEventData, PromptInput, ReasoningMode as ManagedReasoningMode,
-        Thinking,
+        ManagedError, ManagedEvent, ManagedEventData, PromptInput,
+        ReasoningMode as ManagedReasoningMode, Thinking,
     };
     use serde_json::{json, value::to_raw_value};
     use std::{
@@ -2898,6 +3317,49 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn completed_cancelled_resume_cannot_finish_a_newer_switch() {
+        let mut runtime = history_runtime(HistoryWindow::default());
+        let old = runtime
+            .connection
+            .spawn(async { super::ConnectionResult::Disconnected(Ok(())) });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !old.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // Cancelling after completion leaves an Ok result queued in JoinSet.
+        old.abort();
+        let (release, ready) = tokio::sync::oneshot::channel::<()>();
+        let fresh = runtime.connection.spawn(async move {
+            ready.await.unwrap();
+            super::ConnectionResult::Disconnected(Ok(()))
+        });
+        let fresh_id = fresh.id();
+        runtime.pending_resume = Some((fresh, PaneId::Main));
+        let (old_id, _) = runtime
+            .connection
+            .join_next_with_id()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(old_id, old.id());
+        assert!(runtime.finish_resume(old_id).is_none());
+        assert_eq!(runtime.pending_resume.as_ref().unwrap().0.id(), fresh_id);
+        release.send(()).unwrap();
+        let (completed, _) = runtime
+            .connection
+            .join_next_with_id()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(runtime.finish_resume(completed), Some(PaneId::Main));
+        assert!(runtime.pending_resume.is_none());
+        assert!(runtime.finish_resume(completed).is_none());
+    }
+
     fn history_runtime(history: HistoryWindow) -> DriverRuntime {
         let mut history_sequences = HashMap::new();
         let mut sequence = 1;
@@ -2915,8 +3377,14 @@ mod tests {
         DriverRuntime {
             client: ManagedClient::new("http://127.0.0.1:9", api_key).unwrap(),
             agent: None,
+            startup_attach: false,
+            pending_resume: None,
             managed_events: None,
             managed_events_open: false,
+            recovery: None,
+            recovery_events: VecDeque::new(),
+            observed_cursor: "0".to_owned(),
+            last_recovery: None,
             connection_generation: 1,
             agent_id: "agent-1".to_owned(),
             settings: AgentSettings::default(),
@@ -2928,6 +3396,9 @@ mod tests {
             controls: HashMap::new(),
             local_managed_turns: HashMap::new(),
             submitted_turns: HashSet::new(),
+            detached_submissions: HashSet::new(),
+            unacknowledged_inputs: HashMap::new(),
+            confirmed_requests: HashSet::new(),
             managed_active_turns: ManagedActiveTurns::default(),
             admitting: HashSet::new(),
             cancel_after_admission: HashSet::new(),
@@ -2961,6 +3432,7 @@ mod tests {
             pending_submission: None,
             recent_prompts,
             connection: JoinSet::new(),
+            session_list_cancellations: HashMap::new(),
             retry_target: None,
         }
     }
@@ -3415,6 +3887,14 @@ mod tests {
                     .is_none()
             );
         }
+        runtime.submitted_turns.clear();
+        runtime.detached_submissions.insert("turn-42".to_owned());
+        assert!(
+            runtime
+                .project_managed_event(managed_turn("42", "start work"))
+                .unwrap()
+                .is_none()
+        );
         // Identical text from another client is still a separate message.
         assert!(
             runtime
@@ -3432,6 +3912,9 @@ mod tests {
             ..HistoryWindow::default()
         });
         runtime.submitted_turns.insert("old-turn".to_owned());
+        runtime
+            .detached_submissions
+            .insert("old-detached-turn".to_owned());
         runtime.shell_context.push("old shell output".to_owned());
         runtime.managed_events_open = true;
         let old_generation = runtime.history_generation;
@@ -3442,6 +3925,7 @@ mod tests {
         assert!(runtime.history_records.is_empty());
         assert!(runtime.recent_prompts.is_empty());
         assert!(runtime.submitted_turns.is_empty());
+        assert!(runtime.detached_submissions.is_empty());
         assert!(runtime.shell_context.is_empty());
         assert_ne!(runtime.history_generation, old_generation);
 
@@ -3622,7 +4106,6 @@ mod tests {
             next_sequence,
             history_records,
             vec![live_before],
-            true,
             "agent-1",
             Path::new("/workspace"),
             ReasoningEffort::Medium,
@@ -3664,27 +4147,16 @@ mod tests {
             has_more: true,
         };
         let sequences = HashMap::from([("5".to_owned(), 1)]);
-        let invalid = ManagedEvent {
-            cursor: "4".to_owned(),
-            created_at: Some(1_750_000_000.0),
-            turn_id: Some("turn-3".to_owned()),
-            data: ManagedEventData::Event {
-                event: to_raw_value(&json!({ "not": "an agent event" })).unwrap(),
-                agent_id: None,
-            },
-        };
-
         let error = match prepare_history_replay(
             EventHistoryPage {
-                data: vec![managed_turn("3", "older"), invalid],
-                has_more: false,
+                data: Vec::new(),
+                has_more: true,
                 latest_cursor: "5".to_owned(),
             },
             sequences.clone(),
             2,
             Vec::new(),
             Vec::new(),
-            true,
             "agent-1",
             Path::new("/workspace"),
             ReasoningEffort::Medium,
@@ -3693,7 +4165,7 @@ mod tests {
             Err(error) => error,
         };
 
-        assert!(error.to_string().contains("invalid retained agent event"));
+        assert!(error.to_string().contains("empty nonterminal page"));
         assert_eq!(history.before.as_deref(), Some("5"));
         assert!(history.has_more);
         assert_eq!(history.events.len(), 1);
@@ -3830,22 +4302,13 @@ mod tests {
             before: Some("9".to_owned()),
             has_more: true,
         });
-        let malformed = ManagedEvent {
-            cursor: "8".to_owned(),
-            created_at: Some(1_750_000_000.0),
-            turn_id: Some("turn-7".to_owned()),
-            data: ManagedEventData::Event {
-                event: to_raw_value(&json!({ "not": "an agent event" })).unwrap(),
-                agent_id: None,
-            },
-        };
         let first_before = runtime.history_prefetch.claim(&runtime.history).unwrap();
         runtime
             .history_prefetch
             .store(
                 &first_before,
                 EventHistoryPage {
-                    data: vec![managed_turn("7", "older"), malformed],
+                    data: vec![managed_turn("7", "older")],
                     has_more: true,
                     latest_cursor: "9".to_owned(),
                 },
@@ -3865,11 +4328,23 @@ mod tests {
             .unwrap();
 
         runtime.history_prefetch.request_replay();
-        runtime.start_requested_history_replay(PaneId::Main);
-        let (_, _, _, requested_before, result) =
-            runtime.history_replays.join_next().await.unwrap().unwrap();
+        let (requested_before, _) = runtime
+            .history_prefetch
+            .take_requested(runtime.history.before.as_deref())
+            .unwrap();
         assert_eq!(requested_before, "9");
-        assert!(runtime.finish_history_replay(PaneId::Main, result).is_err());
+        // A failed projection has consumed its page, while later pages remain
+        // buffered. Inject that failure at the completion boundary.
+        assert!(
+            runtime
+                .finish_history_replay(
+                    PaneId::Main,
+                    Err(ManagedError::Configuration(
+                        "history projection task failed".to_owned()
+                    ))
+                )
+                .is_err()
+        );
         assert_eq!(runtime.history.before.as_deref(), Some("9"));
         assert!(runtime.history_prefetch.owns("9"));
         assert_eq!(runtime.history_loads.len(), 1);
@@ -3901,7 +4376,6 @@ mod tests {
             next_sequence,
             history_records,
             Vec::new(),
-            true,
             "agent-1",
             Path::new("/workspace"),
             ReasoningEffort::Medium,
@@ -3918,7 +4392,6 @@ mod tests {
             first.next_sequence,
             first.history_records,
             Vec::new(),
-            true,
             "agent-1",
             Path::new("/workspace"),
             ReasoningEffort::Medium,
@@ -3939,7 +4412,69 @@ mod tests {
     }
 
     #[test]
-    fn older_page_without_a_prompt_is_ignored_after_a_coherent_tail() {
+    fn tool_result_loaded_before_its_call_is_restored_across_page_boundaries() {
+        use crate::tui::transcript::{EntryKind, ToolState, TranscriptModel};
+        let mut sequences = HashMap::new();
+        let mut next_sequence = 1;
+        let (records, _) = history_projection_with_sequences(
+            &[managed_turn("9", "newer")],
+            "agent-1",
+            Path::new("/workspace"),
+            &mut sequences,
+            &mut next_sequence,
+        )
+        .unwrap();
+        let nested = |cursor: &str, kind: &str, payload| {
+            ManagedEvent {
+            cursor: cursor.to_owned(), created_at: None, turn_id: Some("turn-6".to_owned()),
+            data: ManagedEventData::Event { event: to_raw_value(&json!({"protocol_version": 1, "request_id": "agent-1", "seq": cursor.parse::<u64>().unwrap(), "type": kind, "payload": payload})).unwrap(), agent_id: None },
+        }
+        };
+        let first = prepare_history_replay(
+            EventHistoryPage { data: vec![nested("8", "tool.result", json!({"call_id": "old-call", "tool": "read_file", "status": "completed", "duration_ns": 10, "result": {"text": "PAGE_BOUNDARY_RESULT"}, "structured_result": null, "metadata": null}))], has_more: true, latest_cursor: "9".to_owned() },
+            sequences, next_sequence, records, Vec::new(), "agent-1", Path::new("/workspace"), ReasoningEffort::Medium,
+        ).unwrap();
+        assert_eq!(first.history_records.len(), 2);
+        let result_sequence = first.history_records[0].sequence();
+        let second = prepare_history_replay(
+            EventHistoryPage { data: vec![managed_turn("6", "older"), nested("7", "tool.call", json!({"call_id": "old-call", "tool": "read_file", "arguments": {"path": "old.txt"}}))], has_more: false, latest_cursor: "9".to_owned() },
+            first.sequences, first.next_sequence, first.history_records, Vec::new(), "agent-1", Path::new("/workspace"), ReasoningEffort::Medium,
+        ).unwrap();
+        assert_eq!(
+            second
+                .history_records
+                .iter()
+                .find(|record| record.kind() == "tool.result")
+                .unwrap()
+                .sequence(),
+            result_sequence
+        );
+        let mut model = TranscriptModel::default();
+        for record in second.history_records {
+            model.apply(&record);
+        }
+        let tools = model
+            .entries()
+            .iter()
+            .filter_map(|entry| match &entry.kind {
+                EntryKind::Tool(tool) => Some(tool),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].state, ToolState::Succeeded);
+        assert!(
+            tools[0]
+                .result
+                .as_ref()
+                .unwrap()
+                .to_string()
+                .contains("PAGE_BOUNDARY_RESULT")
+        );
+    }
+
+    #[test]
+    fn older_page_without_a_prompt_is_preserved_before_the_retained_tail() {
         let retained = vec![managed_turn("5", "retained")];
         let mut sequences = HashMap::new();
         let mut next_sequence = 1;
@@ -3971,20 +4506,20 @@ mod tests {
             next_sequence,
             history_records,
             Vec::new(),
-            true,
             "agent-1",
             Path::new("/workspace"),
             ReasoningEffort::Medium,
         )
         .unwrap();
 
-        assert_eq!(prepared.history_records.len(), 1);
+        assert_eq!(prepared.history_records.len(), 2);
+        assert_eq!(prepared.history_records[0].kind(), "display.error");
         assert!(prepared.older_prompts.is_empty());
-        assert_eq!(prepared.sequences.len(), 1);
+        assert_eq!(prepared.sequences.len(), 2);
     }
 
     #[test]
-    fn replay_ignores_a_partial_turn_before_the_first_loaded_prompt() {
+    fn replay_preserves_records_before_the_first_loaded_prompt() {
         let partial = ManagedEvent {
             cursor: "4".to_owned(),
             created_at: Some(1_750_000_000.0),
@@ -4002,7 +4537,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(records.len(), 1);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].kind(), "display.error");
         assert_eq!(recent[0].text, "complete turn");
     }
 

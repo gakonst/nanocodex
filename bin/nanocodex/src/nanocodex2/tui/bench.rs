@@ -3,6 +3,10 @@
 //! Synthetic Criterion coverage for retained-history TUI hot paths.
 
 #![allow(dead_code, unused_imports)]
+#![allow(
+    clippy::too_many_arguments,
+    reason = "use the same reviewed Tact component ownership as the production binary"
+)]
 
 #[path = "components/mod.rs"]
 mod components;
@@ -34,7 +38,6 @@ use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use history::{
     HistoryPrefetch, HistoryWindow, history_projection, history_projection_with_sequences,
-    older_history_projection_with_sequences,
 };
 use nanocodex_agent::events::{AgentEvent, AgentEventKind};
 use nanocodex_managed::{EventHistoryPage, ManagedEvent, ManagedEventData, PromptInput};
@@ -220,18 +223,12 @@ impl PrependRun {
     }
 
     fn complete(mut self) -> (ReplayOutcome, Harness) {
-        let coherent_tail = self
-            .window
-            .events
-            .iter()
-            .any(|event| matches!(event.data, ManagedEventData::TurnAccepted { .. }));
         let older_len = self.older_page.data.len();
         self.window
             .prepend(self.older_page)
             .expect("older page should prepend");
-        let (mut older_records, _) = older_history_projection_with_sequences(
+        let (mut older_records, _) = history_projection_with_sequences(
             &self.window.events[..older_len],
-            coherent_tail,
             AGENT_ID,
             Path::new(WORKSPACE),
             &mut self.sequences,

@@ -20,7 +20,7 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-const ACTIONS: [Action; 9] = [
+const ACTIONS: [Action; 10] = [
     Action::Effort,
     Action::FastMode,
     Action::Theme,
@@ -30,6 +30,7 @@ const ACTIONS: [Action; 9] = [
     Action::DebugContext,
     Action::Reflection,
     Action::Model,
+    Action::AgentId,
 ];
 const KEY_BINDINGS: [(&str, &str); 3] = [("↑↓", "move"), ("enter/tab", "open"), ("esc", "close")];
 const SEARCH_LABEL: &str = "Search: ";
@@ -48,6 +49,7 @@ pub(super) struct ActionAvailability {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Action {
+    AgentId,
     Handoff,
     Review,
     Effort,
@@ -88,8 +90,8 @@ impl ActionsMenu {
         }
     }
 
-    pub(super) fn set_fork_available(&mut self, available: bool) {
-        self.availability.fork = available;
+    pub(super) fn set_availability(&mut self, availability: ActionAvailability) {
+        self.availability = availability;
     }
 
     fn update_key(&mut self, key: KeyEvent) -> ComponentUpdate<ActionsEffect> {
@@ -263,6 +265,7 @@ impl ActionsMenu {
 
     const fn is_enabled(&self, action: Action) -> bool {
         match action {
+            Action::AgentId => true,
             Action::Handoff | Action::Review | Action::Reflection => self.availability.new_session,
             Action::Effort | Action::FastMode => true,
             Action::Model => self.availability.model,
@@ -305,6 +308,7 @@ impl ActionsMenu {
 impl Action {
     const fn label(self) -> &'static str {
         match self {
+            Self::AgentId => "Show agent ID",
             Self::Handoff => "Prepare handoff",
             Self::Review => "Review changes",
             Self::Effort => "Change effort",
@@ -324,6 +328,7 @@ impl Action {
 
     const fn alias(self) -> Option<&'static str> {
         match self {
+            Self::AgentId => Some("id"),
             Self::Handoff => Some("handoff"),
             Self::Review => Some("review"),
             Self::Effort => Some("thinking"),
