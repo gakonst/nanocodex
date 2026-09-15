@@ -1020,7 +1020,7 @@ fn read_line(input: &mut impl BufRead) -> Result<Option<Value>> {
 }
 fn timeout_duration(args: &Value) -> Result<Duration> {
     match args.get("timeout_ms") {
-        None | Some(Value::Null) => Ok(Duration::from_secs(30)),
+        None | Some(Value::Null) => Ok(Duration::from_millis(9_007_199_254_740_991)),
         Some(v) => v
             .as_u64()
             .filter(|v| *v >= 1)
@@ -1085,7 +1085,7 @@ fn cua_tools() -> Value {
         {"name":"js","description":include_str!("cua_tool_description.md"),"inputSchema":{"additionalProperties":false,"type":"object","properties":{
             "code":{"description":"JavaScript to execute using the initialized CUA runtime.","type":"string"},
             "title":{"description":"Short user-facing description of what the code does.","type":"string","minLength":1},
-            "timeout_ms":{"description":"Optional execution timeout in milliseconds. Defaults to 30000 (30 seconds) when omitted.","type":"integer","minimum":1}
+            "timeout_ms":{"description":"Optional caller-selected execution timeout in milliseconds. Omitted calls have no artificial deadline.","type":"integer","minimum":1}
         },"required":["code"]}},
         {"name":"js_reset","description":include_str!("cua_reset_description.md"),"inputSchema":{"additionalProperties":false,"type":"object","properties":{}},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}}
     ]})

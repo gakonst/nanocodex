@@ -10,11 +10,11 @@ const context = (sessionId, signal = new AbortController().signal) => ({ session
 test("CUA input validation matches the Rust transport without artificial size caps", () => {
   for (const timeout_ms of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) assert.throws(() => validateInput({ code: "1", timeout_ms }));
   assert.equal(validateInput({ code: "1", timeout_ms: 300000 }).timeout_ms, 300000);
-  assert.equal(validateInput({ code: "1", title: null, timeout_ms: null }).timeout_ms, 30000);
+  assert.deepEqual(validateInput({ code: "1", title: null, timeout_ms: null }), { code: "1", title: null });
   assert.throws(() => validateInput({ code: "1", executable: "/bin/sh" }));
   assert.throws(() => validateInput({ code: "1" }, true));
   assert.equal(validateInput({ code: "🧪".repeat(262145) }).code.length, 524290);
-  assert.deepEqual(validateInput({ code: "1" }), { code: "1", timeout_ms: 30000 });
+  assert.deepEqual(validateInput({ code: "1" }), { code: "1" });
 });
 
 test("MCP images remain image inputs in Codex-compatible function outputs", () => {

@@ -65,7 +65,9 @@ export function createComputerTools({ executable, args = [], environment = {}, d
       const deadline = new AbortController();
       const operation = AbortSignal.any([signal, deadline.signal]);
       const abort = () => { session.process?.close(operation.reason); session.process = undefined; session.interrupted = true; };
-      const cancelTimeout = scheduleDeadline(() => deadline.abort(new Error("CUA runtime timed out; call cua_repl.js_reset before continuing")), (value.timeout_ms ?? 30_000) + 5_000);
+      const cancelTimeout = value.timeout_ms === undefined
+        ? () => {}
+        : scheduleDeadline(() => deadline.abort(new Error("CUA runtime timed out; call cua_repl.js_reset before continuing")), value.timeout_ms + 5_000);
       operation.addEventListener("abort", abort, { once: true });
       try {
         if (!session.process) {

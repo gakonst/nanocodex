@@ -6,7 +6,7 @@ export const CUA_PARAMETERS = Object.freeze({
   properties: {
     code: { type: "string", description: "JavaScript to execute using the initialized CUA runtime." },
     title: { type: "string", description: "Short user-facing description of what the code does.", minLength: 1 },
-    timeout_ms: { type: "integer", description: "Optional execution timeout in milliseconds. Defaults to 30000 (30 seconds) when omitted.", minimum: 1 },
+    timeout_ms: { type: "integer", description: "Optional caller-selected execution timeout in milliseconds. Omitted calls have no artificial deadline.", minimum: 1 },
   },
   required: ["code"], additionalProperties: false,
 });
@@ -21,7 +21,8 @@ export function validateInput(input, reset = false) {
   if (reset) return {};
   if (typeof input.code !== "string") throw new TypeError("CUA code must be a string");
   if (input.title != null && (typeof input.title !== "string" || !input.title.trim())) throw new TypeError("CUA title must be non-empty");
-  const timeout = input.timeout_ms ?? 30_000;
-  if (!Number.isSafeInteger(timeout) || timeout < 1) throw new RangeError("CUA timeout must be a positive safe integer in milliseconds");
-  return { ...input, timeout_ms: timeout };
+  const value = { ...input };
+  if (value.timeout_ms == null) delete value.timeout_ms;
+  else if (!Number.isSafeInteger(value.timeout_ms) || value.timeout_ms < 1) throw new RangeError("CUA timeout must be a positive safe integer in milliseconds");
+  return value;
 }

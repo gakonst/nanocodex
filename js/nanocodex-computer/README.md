@@ -22,9 +22,9 @@ transport requires `cua_repl.js_reset`. The named tools implement `releaseSessio
 queued calls; a new conversation with the same ID receives a fresh scope.
 Screenshot results are API image content with original detail, including when
 consumed through Code Mode. MCP result metadata and current Codex call metadata
-survive the adapter. Optional `title`/`timeout_ms` accept `null`; the default timeout
-is 30 seconds, and positive safe-integer deadlines are supported without Node's
-32-bit timer overflow.
+survive the adapter. Optional `title`/`timeout_ms` accept `null`; omitting the timeout
+does not create an artificial deadline, and positive safe-integer deadlines are
+supported without Node's 32-bit timer overflow.
 
 `createComputerTools` accepts trusted `args`, `environment` and a Linux Hand's
 private `desktopRuntime` directory. Those are host configuration, not model

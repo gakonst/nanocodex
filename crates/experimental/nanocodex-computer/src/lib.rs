@@ -119,7 +119,7 @@ fn deserialize_timeout<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Res
     Ok(Option::<u64>::deserialize(deserializer)?.unwrap_or_else(default_timeout))
 }
 fn default_timeout() -> u64 {
-    30_000
+    MAX_TIMEOUT_MS
 }
 
 impl ComputerRequest {
@@ -309,7 +309,7 @@ async fn run_session(
         let timeout = Duration::from_millis(
             request
                 .as_ref()
-                .map_or(30_000, |request| request.timeout_ms)
+                .map_or(MAX_TIMEOUT_MS, |request| request.timeout_ms)
                 + 5_000,
         );
         // Taking ownership ensures cancellation drops and kills the process.

@@ -30,7 +30,7 @@
               "type": "string"
             },
             "timeout_ms": {
-              "description": "Optional execution timeout in milliseconds. Defaults to 30000 (30 seconds) when omitted.",
+              "description": "Optional caller-selected execution timeout in milliseconds. Omitted calls have no artificial deadline.",
               "minimum": 1,
               "type": "integer"
             },
