@@ -28,6 +28,7 @@ struct InboxView: View {
     @State private var showOverview = false
     @State private var readingPositions = ConversationReadingPositions()
     @State private var showScheduledJobs = false
+    @State private var showConnectors = false
     @State private var showSettings = false
     @State private var showScreens = false
     @State private var screenFraction = 0.46
@@ -68,6 +69,13 @@ struct InboxView: View {
                     .navigationBarTitleDisplayMode(.inline)
                     #endif
                 }
+                .navigationDestination(isPresented: $showConnectors) {
+                    ConnectorsView(model: model)
+                        #if os(iOS)
+                        .toolbar(.visible, for: .navigationBar)
+                        .navigationBarTitleDisplayMode(.inline)
+                        #endif
+                }
                 .navigationDestination(isPresented: $showSettings) {
                     settings
                         #if os(iOS)
@@ -94,7 +102,7 @@ struct InboxView: View {
             if model.focused != nil { model.openThread() }
         }
         .onChange(of: model.connected) { _, connected in
-            if !connected { showScreens = false; showScheduledJobs = false; showSettings = false; showOverview = false; readingPositions.values.removeAll() }
+            if !connected { showScreens = false; showScheduledJobs = false; showConnectors = false; showSettings = false; showOverview = false; readingPositions.values.removeAll() }
         }
         .onChange(of: draggingTabs) { _, dragging in
             if !dragging { tabScrub = nil; tabScrubEdge = 0 }
@@ -279,6 +287,11 @@ struct InboxView: View {
                 Button { composerFocused = false; showScheduledJobs = true } label: {
                     Label("Scheduled jobs", systemImage: "clock")
                 }.accessibilityIdentifier("inbox-scheduled-jobs")
+                if !model.isDemo {
+                    Button { composerFocused = false; showConnectors = true } label: {
+                        Label("Connectors", systemImage: "link")
+                    }.accessibilityIdentifier("inbox-connectors")
+                }
                 Button { composerFocused = false; showSettings = true } label: {
                     Label("Account settings", systemImage: "gearshape")
                 }

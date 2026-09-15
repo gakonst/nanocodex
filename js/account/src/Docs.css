@@ -18,6 +18,10 @@
   backdrop-filter: blur(12px);
 }
 
+@media (prefers-reduced-transparency: reduce) {
+  .docs-mobile-toolbar { background: var(--surface); backdrop-filter: none; }
+}
+
 .docs-mobile-toolbar > button,
 .docs-copy-markdown {
   display: inline-flex;

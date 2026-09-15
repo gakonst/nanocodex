@@ -71,7 +71,7 @@ enum ManagedResponseCache {
 /// Native HTTP/SSE adapter for the existing /v1/agents contract. No embedded
 /// runtime, model credentials, or execution environment is owned by this client.
 public final class ManagedClient: @unchecked Sendable {
-    private let credential: AccountCredential
+    let credential: AccountCredential
     private let session: URLSession
     private let responseCache: URLCache?
     public init(credential: AccountCredential, configuration: URLSessionConfiguration? = nil) {

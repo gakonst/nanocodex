@@ -1,5 +1,9 @@
 const DNS_NAME = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const PRIVATE_SUFFIXES = [".internal", ".invalid", ".local", ".localhost", ".test", ".home.arpa"];
+const KNOWN_MCP_NAMES = new Map([
+  ["mercator.sh", "Mercator"],
+  ["mercator.tempo.xyz", "Mercator"],
+]);
 
 /**
  * Turns the one supported bare MCP host into its endpoint and verifies HTTPS
@@ -34,6 +38,6 @@ export function canonicalRemoteMcpTarget(value: unknown): Readonly<{
   if (endpoint.search) throw new Error("Remote MCP target cannot contain a query string.");
   return Object.freeze({
     endpoint: endpoint.href,
-    name: value === "mcp.linear.app" ? value : hostname,
+    name: KNOWN_MCP_NAMES.get(hostname) ?? (value === "mcp.linear.app" ? value : hostname),
   });
 }

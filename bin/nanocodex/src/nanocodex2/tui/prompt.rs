@@ -5,7 +5,7 @@
 
 use nanocodex::agent::input::{Prompt, UserInput};
 use nanocodex_managed::{PromptContent as ManagedPromptContent, PromptInput as ManagedPromptInput};
-use std::{fmt, ops::Range};
+use std::{fmt, ops::Range, sync::Arc};
 
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) struct Submission {
@@ -16,7 +16,7 @@ pub(crate) struct Submission {
 #[derive(Clone, Eq, PartialEq)]
 struct SubmissionImage {
     range: Range<usize>,
-    data_url: String,
+    data_url: Arc<str>,
 }
 
 impl Submission {
@@ -29,16 +29,19 @@ impl Submission {
 
     pub(crate) fn multimodal(
         text: String,
-        images: impl IntoIterator<Item = (Range<usize>, String)>,
+        images: impl IntoIterator<Item = (Range<usize>, impl Into<Arc<str>>)>,
     ) -> Self {
         let images = images
             .into_iter()
-            .map(|(range, data_url)| SubmissionImage { range, data_url })
+            .map(|(range, data_url)| SubmissionImage {
+                range,
+                data_url: data_url.into(),
+            })
             .collect();
         Self { text, images }
     }
 
-    pub(crate) fn into_parts(self) -> (String, impl Iterator<Item = (Range<usize>, String)>) {
+    pub(crate) fn into_parts(self) -> (String, impl Iterator<Item = (Range<usize>, Arc<str>)>) {
         (
             self.text,
             self.images
@@ -97,7 +100,7 @@ impl Submission {
                 });
             }
             content.push(UserInput::Image {
-                image_url: image.data_url.clone(),
+                image_url: image.data_url.to_string(),
                 detail: None,
             });
             cursor = image.range.end;
@@ -120,7 +123,7 @@ impl Submission {
                 });
             }
             content.push(ManagedPromptContent::Image {
-                image_url: image.data_url.clone(),
+                image_url: image.data_url.to_string(),
                 detail: None,
             });
             cursor = image.range.end;

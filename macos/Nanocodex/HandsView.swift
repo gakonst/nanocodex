@@ -4,76 +4,62 @@ import SwiftUI
 struct HandsView: View {
     @EnvironmentObject private var model: AppModel
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Hands").font(.system(size: 29, weight: .semibold)).tracking(-0.6)
-                        Text("Your connected computers and phones, with this Mac available automatically.").font(.system(size: 14)).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Remote Screens") { model.showingScreens = true }.disabled(model.remoteService == nil)
-                    Menu {
-                        Button("This Mac…") { model.editingHand = nil; model.showingHandSetup = true }
-                        Button("Virtual Machine…") { model.editingHand = Hand(id: "vm-\(UUID().uuidString.prefix(8).lowercased())", name: "Private VM", kind: "vm", workspace: model.state.defaults["workspace"].string); model.showingHandSetup = true }
-                        Button("Another Computer…") { model.showingRemoteSetup = true }
-                    } label: { Label("Add Hand", systemImage: "plus") }.menuStyle(.borderedButton).disabled(!model.state.connected)
-                }
-                HStack(spacing: 14) {
-                    Image(systemName: "brain").font(.system(size: 22)).frame(width: 42, height: 42).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 11))
-                    VStack(alignment: .leading, spacing: 5) { Text("Managed agents").font(.system(size: 14, weight: .medium)); Text("Durable threads, models, and connected tools. Always available.").font(.system(size: 12)).foregroundStyle(.secondary) }
-                    Spacer()
-                    HStack(spacing: 5) { Circle().fill(model.state.connected ? .green : .secondary).frame(width: 5, height: 5); Text(model.state.connected ? "Connected" : "Sign in") }.font(.system(size: 11)).foregroundStyle(.secondary).fixedSize()
-                }.padding(18).background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 13))
-                if model.state.defaultHandEnabled == false {
-                    Label("This Mac’s automatic Hand is disabled. Enable it in Settings or start a Hand below.", systemImage: "hand.raised.slash")
-                        .font(.system(size: 13)).foregroundStyle(.secondary)
-                } else if !model.state.hands.contains(where: { $0.kind == "local" }) {
-                    VStack(alignment: .leading, spacing: 15) {
-                        Label("Connecting this Mac…", systemImage: "laptopcomputer").font(.system(size: 18, weight: .medium))
-                        Text("Your Nanocodex workspace is being prepared automatically.").font(.system(size: 13)).foregroundStyle(.secondary)
-                    }.padding(22).frame(maxWidth: .infinity, alignment: .leading).overlay(RoundedRectangle(cornerRadius: 13).stroke(Color.primary.opacity(0.12)))
-                }
-                if !model.state.hands.isEmpty {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Your compute").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary).padding(.bottom, 3)
-                        ForEach(model.state.hands) { hand in HandCard(hand: hand) }
+        VStack(spacing: 0) {
+            HStack {
+                Text("Computers and phones").font(.title3.weight(.semibold))
+                Spacer()
+                Menu {
+                    Button("This Mac…") { model.editingHand = nil; model.showingHandSetup = true }
+                    Button("Virtual Machine…") { model.editingHand = Hand(id: "vm-\(UUID().uuidString.prefix(8).lowercased())", name: "Private VM", kind: "vm", workspace: model.state.defaults["workspace"].string); model.showingHandSetup = true }
+                    Button("Another Computer…") { model.showingRemoteSetup = true }
+                } label: { Label("Add Hand", systemImage: "plus") }
+                    .menuStyle(.borderedButton).disabled(!model.state.connected)
+            }.padding(.horizontal, 20).padding(.vertical, 12)
+            Form {
+                Section {
+                    LabeledContent {
+                        Label(model.state.connected ? "Connected" : "Sign in", systemImage: model.state.connected ? "checkmark.circle.fill" : "person.crop.circle")
+                            .foregroundStyle(model.state.connected ? Color.green : .secondary)
+                    } label: {
+                        Label("Managed agents", systemImage: "brain")
+                        Text("Durable conversations and connected tools.").foregroundStyle(.secondary)
                     }
                 }
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text("Other devices on your account").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Refresh") { Task { await model.refreshAccountHands() } }.disabled(!model.state.connected)
+                Section("On this Mac") {
+                    if model.state.defaultHandEnabled == false {
+                        LabeledContent {
+                            Button("Settings…") { model.showingSettings = true }
+                        } label: {
+                            Label("Automatic Hand disabled", systemImage: "hand.raised.slash")
+                        }
+                    } else if !model.state.hands.contains(where: { $0.kind == "local" }) {
+                        LabeledContent("Connecting this Mac…") { ProgressView().controlSize(.small) }
                     }
+                    ForEach(model.state.hands) { hand in HandCard(hand: hand) }
+                }
+                Section {
                     ForEach(model.otherAccountHands) { hand in
                         AccountHandRow(hand: hand) { model.useAccountHand(hand) }
                     }
                     if let error = model.state.accountHandsError {
-                        Text(error).font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text(error).foregroundStyle(.secondary)
                     } else if model.otherAccountHands.isEmpty {
-                        Text("Open the app on your phone or another computer while signed into this account. It appears here when connected.")
-                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text("Open Nanocodex on another computer or phone signed into your account to connect it.")
+                            .foregroundStyle(.secondary)
                     }
+                    Button("Refresh devices", systemImage: "arrow.clockwise") { Task { await model.refreshAccountHands() } }
+                        .disabled(!model.state.connected)
+                } header: { Text("Other devices") }
+                Section("Add a workspace") {
+                    LabeledContent {
+                        Button("Create…", action: model.createCloudHand).disabled(!model.state.connected)
+                    } label: { Label("Cloud Hand", systemImage: "cloud"); Text("A workspace hosted for you.").foregroundStyle(.secondary) }
+                    LabeledContent {
+                        Button("Connect…") { model.showingRemoteSetup = true }.disabled(!model.state.connected)
+                    } label: { Label("Another computer", systemImage: "desktopcomputer"); Text("Connect your server or laptop.").foregroundStyle(.secondary) }
                 }
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("More places to work").font(.system(size: 16, weight: .medium))
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 205), spacing: 12)], spacing: 12) {
-                        option("Cloud Hand", subtitle: "A workspace hosted for you.", icon: "cloud", action: model.createCloudHand)
-                        option("Another computer", subtitle: "Connect your server or laptop.", icon: "desktopcomputer", action: { model.showingRemoteSetup = true })
-                    }
-                    Button { model.discoverHands() } label: { Label("Find Hands already connected to my account", systemImage: "arrow.clockwise") }.buttonStyle(.link).font(.system(size: 12)).disabled(!model.state.connected)
-                }.padding(.top, 9)
-            }.frame(maxWidth: 780, alignment: .leading).padding(.horizontal, 30).padding(.vertical, 32).frame(maxWidth: .infinity)
-        }.accessibilityIdentifier("hands-page")
-    }
-    private func option(_ title: String, subtitle: String, icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 15) {
-                HStack { Image(systemName: icon).font(.system(size: 21)); Spacer(); Image(systemName: "arrow.up.right").font(.system(size: 11)).foregroundStyle(.tertiary) }
-                VStack(alignment: .leading, spacing: 5) { Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1); Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(2) }
-            }.padding(18).frame(maxWidth: .infinity, minHeight: 100, alignment: .leading).background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.035)))
-        }.buttonStyle(.plain).disabled(!model.state.connected)
+            }.formStyle(.grouped)
+        }.accessibilityElement(children: .contain).accessibilityIdentifier("hands-page")
     }
 }
 
@@ -100,7 +86,7 @@ struct AccountHandRow: View {
             if hand.isConnected {
                 Button(compact ? "Use" : "Use in a tab", action: use).controlSize(.small)
             }
-        }.padding(compact ? 12 : 18).background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 12))
+        }.padding(.vertical, compact ? 6 : 8)
             .accessibilityElement(children: .contain).accessibilityIdentifier("account-hand-\(hand.id)")
     }
 }
@@ -141,7 +127,7 @@ struct HandCard: View {
                 }.buttonStyle(.bordered).controlSize(.small).disabled(model.busyHands.contains(hand.id)).accessibilityIdentifier("toggle-hand-\(hand.id)")
             }
             if let error = hand.error { Text(error).font(.system(size: 12)).foregroundStyle(.orange).textSelection(.enabled) }
-        }.padding(18).background(Color.primary.opacity(0.012), in: RoundedRectangle(cornerRadius: 13)).overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(Color.primary.opacity(0.085))).accessibilityElement(children: .contain).accessibilityIdentifier("hand-\(hand.id)")
+        }.padding(.vertical, 8).accessibilityElement(children: .contain).accessibilityIdentifier("hand-\(hand.id)")
     }
     private var status: some View {
         HStack(spacing: 5) { Circle().fill(hand.status == "connected" ? .green : hand.status == "error" ? .orange : .secondary.opacity(0.5)).frame(width: 5, height: 5); Text(hand.status == "connecting" ? "Connecting…" : (hand.status ?? "stopped").capitalized).font(.system(size: 11)) }.foregroundStyle(.secondary).padding(.horizontal, 8).padding(.vertical, 5).background(Color.primary.opacity(0.035), in: Capsule()).fixedSize()

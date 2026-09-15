@@ -42,6 +42,38 @@ final class HandTests: XCTestCase {
         XCTAssertEqual(hand.catalog["machines"].array.first?["workspace"].string, "/workspace")
         XCTAssertEqual(Set(hand.catalog["tools"].array.map { $0["definition"]["name"].string }), Set(["device_info", "list_files", "read_file", "write_file"]))
     }
+    @MainActor
+    func testCatalogAdvertisesFlipperAsADeviceCapabilityWhenEnabled() throws {
+        let hand = try HandWorkspace(
+            id: "phone-flipper",
+            name: "iPhone",
+            root: directory(),
+            flipper: FlipperZeroBridge()
+        )
+        let names = Set(hand.catalog["tools"].array.map { $0["definition"]["name"].string })
+        XCTAssertTrue(FlipperZeroTools.names.isSubset(of: names))
+        let capabilities = Set(hand.catalog["machines"].array[0]["capabilities"].array.map(\.string))
+        XCTAssertTrue(Set(["bluetooth", "flipper_zero"]).isSubset(of: capabilities))
+        XCTAssertTrue(hand.catalog["tools"].array.filter {
+            FlipperZeroTools.names.contains($0["definition"]["name"].string)
+        }.allSatisfy { !$0["parallel_safe"].bool && $0["timeout_ms"].number == 180_000 })
+    }
+    @MainActor
+    func testCatalogAdvertisesProtocolNeutralBluetoothToolsWhenEnabled() throws {
+        let hand = try HandWorkspace(
+            id: "phone-bluetooth",
+            name: "iPhone",
+            root: directory(),
+            bluetooth: BluetoothLEBridge()
+        )
+        let names = Set(hand.catalog["tools"].array.map { $0["definition"]["name"].string })
+        XCTAssertTrue(BluetoothLETools.names.isSubset(of: names))
+        let capabilities = Set(hand.catalog["machines"].array[0]["capabilities"].array.map(\.string))
+        XCTAssertTrue(Set(["bluetooth_le", "gatt"]).isSubset(of: capabilities))
+        XCTAssertTrue(hand.catalog["tools"].array.filter {
+            BluetoothLETools.names.contains($0["definition"]["name"].string)
+        }.allSatisfy { !$0["parallel_safe"].bool && $0["timeout_ms"].number == 180_000 })
+    }
     func testMessageToolsQueryCapturedSourcesAndFenceAccountChanges() async throws {
         let root = try directory(), store = ContextStore(directory: try directory())
         try store.activate("account-a"); try store.setEnabled(true, scope: "account-a")

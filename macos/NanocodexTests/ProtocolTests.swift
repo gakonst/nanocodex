@@ -1,7 +1,454 @@
 import XCTest
+import SwiftUI
+import NanocodexRemote
 @testable import Nanocodex
 
 final class ProtocolTests: XCTestCase {
+    @MainActor
+    func testKeyboardLookupVisitsEachAncestorOnce() {
+        final class CountingView: NSView {
+            var reads = 0
+            override var subviews: [NSView] {
+                get { reads += 1; return super.subviews }
+                set { super.subviews = newValue }
+            }
+        }
+        let ancestors = (0..<16).map { _ in CountingView() }
+        for index in 0..<(ancestors.count - 1) { ancestors[index].addSubview(ancestors[index + 1]) }
+        let keyboard = WorkspaceKeyboardView()
+        ancestors.last?.addSubview(keyboard)
+        ancestors.forEach { $0.reads = 0 }
+        XCTAssertTrue(WorkspaceKeyboardView.find(in: ancestors[0]) === keyboard)
+        XCTAssertEqual(ancestors.reduce(0) { $0 + $1.reads }, ancestors.count,
+                       "Nested native hosts must not multiply keyboard-focus search work")
+    }
+
+    @MainActor
+    func testConversationColumnStaysCenteredAcrossWindowSizes() async throws {
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-column-fixture")
+        model.runtime.requestOverride = { _, _ in .null }
+        model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
+        model.tabs = [WorkspaceTab(id: "column", threadId: "column-thread", title: "Desktop layout")]
+        model.activeTabID = "column"; model.workspaceFilter = .all
+        model.snapshots["column-thread"] = ThreadSnapshot(id: "column-thread", events: [], hasMore: false, connected: true, activeTurns: [], settings: AgentSettings())
+        model.messages["column-thread"] = [
+            MessageEntry(id: "column-user", turnId: "column-turn", kind: .user, text: "Keep this conversation balanced."),
+            MessageEntry(id: "column-reply", turnId: "column-turn", kind: .assistant, text: "The conversation and composer should share one centered column, with balanced margins at every window size.")
+        ]
+        let host = NSHostingView(rootView: ContentView().environmentObject(model)); host.sizingOptions = []
+        let window = EvidenceWindow(contentRect: NSRect(x: 0, y: 0, width: 1600, height: 900), styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.toolbar = NSToolbar(identifier: "column-fixture-toolbar")
+        window.toolbarStyle = .unified
+        window.isReleasedWhenClosed = false; window.contentView = host; window.makeKeyAndOrderFront(nil)
+        defer { model.shutdown(); window.close() }
+        func find<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
+            ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { find(type, in: $0) }
+        }
+        var retainedEditor: ComposerTextView?
+        for (width, position) in [(CGFloat(1600), "top"), (1600, "left"), (1200, "left"), (820, "left"), (1200, "top"), (1600, "top")] {
+            model.setTabPosition(position)
+            window.setContentSize(NSSize(width: width, height: 900))
+            try await Task.sleep(for: .milliseconds(400)); host.layoutSubtreeIfNeeded()
+            let input = try XCTUnwrap(find(ComposerTextView.self, in: host).first)
+            if let retainedEditor { XCTAssertTrue(input === retainedEditor) } else { retainedEditor = input }
+            let marker = try XCTUnwrap(find(TranscriptItemAnchor.MarkerView.self, in: host).first { $0.itemID == "column-reply" })
+            let firstTurn = try XCTUnwrap(find(TranscriptItemAnchor.MarkerView.self, in: host).first { $0.itemID == "column-user" })
+            XCTAssertLessThanOrEqual(firstTurn.convert(firstTurn.bounds, to: nil).maxY, window.contentLayoutRect.maxY,
+                                     "The first user message stays below the native toolbar")
+            let row = marker.convert(marker.bounds, to: host)
+            let editor = input.convert(input.bounds, to: host)
+            if position == "left", let sidebar = find(NSTableView.self, in: host).first, !sidebar.visibleRect.isEmpty {
+                let sidebarBounds = sidebar.convert(sidebar.bounds, to: host)
+                XCTAssertEqual(row.midX, (sidebarBounds.maxX + host.bounds.maxX) / 2, accuracy: 12,
+                               "The transcript is centered beside the native sidebar")
+            } else {
+                XCTAssertEqual(row.midX, host.bounds.midX, accuracy: 2, "The transcript has balanced outer margins")
+            }
+            XCTAssertEqual(row.midX, editor.midX, accuracy: 2, "The composer and transcript share a center line")
+            XCTAssertLessThanOrEqual(row.width, 820)
+            XCTAssertGreaterThanOrEqual(row.minX, 24)
+            let scroll = try XCTUnwrap(marker.enclosingScrollView)
+            XCTAssertLessThanOrEqual(scroll.documentView?.bounds.height ?? .infinity, scroll.contentView.bounds.height + 2,
+                                     "A fully visible first reply must not create an empty screen of scrollable space")
+        }
+    }
+
+    @MainActor
+    func testTabOrientationRetainsEditorSelectionAndLayout() async throws {
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-tab-orientation")
+        model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
+        model.workspaceFilter = .all
+        model.tabs = [WorkspaceTab(id: "one", title: "First conversation", draft: "Keep this draft"), WorkspaceTab(id: "two", title: "Second conversation")]
+        model.activeTabID = "one"
+        var saved: JSONValue?
+        model.runtime.requestOverride = { method, args in if method == "saveLayout" { saved = args.first }; return .null }
+        let host = NSHostingView(rootView: ContentView().environmentObject(model)); host.sizingOptions = []
+        let window = EvidenceWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 840), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.makeKeyAndOrderFront(nil)
+        defer { model.shutdown(); window.close() }
+        func find<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
+            ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { find(type, in: $0) }
+        }
+        try await Task.sleep(for: .milliseconds(250))
+        let editor = try XCTUnwrap(find(ComposerTextView.self, in: host).first)
+        window.makeFirstResponder(editor); editor.setSelectedRange(NSRange(location: 5, length: 4))
+        for position in ["left", "top", "left", "top"] {
+            model.setTabPosition(position)
+            try await Task.sleep(for: .milliseconds(200)); host.layoutSubtreeIfNeeded()
+            XCTAssertTrue(find(ComposerTextView.self, in: host).contains { $0 === editor })
+            XCTAssertEqual(editor.selectedRange(), NSRange(location: 5, length: 4))
+            XCTAssertEqual(editor.string, "Keep this draft")
+            XCTAssertEqual(model.activeTabID, "one")
+            XCTAssertEqual(model.tabPosition, position)
+        }
+        model.setTabPosition("left")
+        try await Task.sleep(for: .milliseconds(200))
+        let sidebar = try XCTUnwrap(find(NSTableView.self, in: host).first)
+        window.makeFirstResponder(sidebar)
+        model.selectSidebarWorkspace(PaneNode(id: "two"))
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertTrue(window.firstResponder === sidebar, "Native sidebar selection must retain its arrow-key navigation")
+        XCTAssertEqual(model.workspaceFocus, .sidebar)
+        model.enterNavigation(in: window)
+        XCTAssertTrue(window.firstResponder is WorkspaceKeyboardView, "Escape returns to v/h pane navigation")
+        for (code, character) in [(UInt16(9), "v"), (UInt16(4), "h")] {
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                                     windowNumber: window.windowNumber, context: nil, characters: character,
+                                                     charactersIgnoringModifiers: character, isARepeat: false, keyCode: code))
+            window.firstResponder?.keyDown(with: event)
+        }
+        XCTAssertEqual(model.activePaneLayout?.leaves.count, 3, "Immediate v/h after leaving the sidebar must both reach pane navigation")
+        XCTAssertEqual(model.activePaneLayout?.axis, "horizontal")
+        XCTAssertEqual(model.activePaneLayout?.children[1].axis, "vertical")
+        try await Task.sleep(for: .milliseconds(250))
+        let surface = try XCTUnwrap(find(AgentSplitSurface.self, in: host).first)
+        let hosts = surface.hosts
+        for position in ["left", "top", "left"] {
+            model.setTabPosition(position)
+            try await Task.sleep(for: .milliseconds(200)); host.layoutSubtreeIfNeeded()
+            XCTAssertTrue(find(AgentSplitSurface.self, in: host).first === surface)
+            for (id, pane) in hosts { XCTAssertTrue(surface.hosts[id] === pane) }
+        }
+        model.setTabPosition("invalid")
+        XCTAssertEqual(model.tabPosition, "left")
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(try XCTUnwrap(saved).decode(TabLayout.self).tabPosition, "left")
+        let restored = AppModel(runtimeDirectory: "/tmp/nanocodex-tab-orientation-restored")
+        restored.runtime.requestOverride = { _, _ in .null }; defer { restored.shutdown() }
+        guard case .object(var state) = Self.connectedState else { return XCTFail("Missing fixture") }
+        state["layout"] = saved
+        var wire = try JSONEncoder().encode(JSONValue.object(["event": .object(["type": .string("state"), "state": .object(state)])])); wire.append(10)
+        restored.runtime.receiveForTesting(wire)
+        XCTAssertEqual(restored.tabPosition, "left")
+        XCTAssertEqual(restored.activePaneLayout, model.activePaneLayout)
+    }
+
+    @MainActor
+    func testPaneDragPublishesOnlyWhenPreviewChanges() {
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-drag-publications")
+        defer { model.shutdown() }
+        var changes = 0
+        let subscription = model.objectWillChange.sink { changes += 1 }
+        defer { subscription.cancel() }
+        for _ in 0..<100 { model.cancelPaneDrag() }
+        XCTAssertEqual(changes, 0, "Ordinary window focus changes cannot invalidate an idle workspace")
+        model.draggingPaneID = "one"
+        model.updatePaneDrop(target: "two", edge: .left)
+        let before = changes
+        for _ in 0..<100 { model.updatePaneDrop(target: "two", edge: .left) }
+        XCTAssertEqual(changes, before, "Pointer movement within one docking region must not republish the workspace")
+        model.updatePaneDrop(target: "two", edge: .right)
+        XCTAssertEqual(changes, before + 1)
+        XCTAssertEqual(model.paneDropEdge, .right)
+        model.cancelPaneDrag()
+        XCTAssertNil(model.draggingPaneID); XCTAssertNil(model.paneDropTarget); XCTAssertNil(model.paneDropEdge)
+    }
+
+    @MainActor
+    func testNativeWindowMovementAndResizeRetainContent() async throws {
+        func findEditor(_ view: NSView) -> ComposerTextView? {
+            if let editor = view as? ComposerTextView { return editor }
+            for child in view.subviews { if let found = findEditor(child) { return found } }
+            return nil
+        }
+        let phase = ProcessInfo.processInfo.environment["NANOCODEX_PERFORMANCE_PHASE"] ?? "after"
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-window-motion")
+        model.runtime.requestOverride = { _, _ in .null }
+        model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
+        model.tabs = [WorkspaceTab(id: "motion", threadId: "motion-thread", title: "Window performance", draft: "Retain this draft and selection")]
+        model.activeTabID = "motion"; model.workspaceFilter = .all
+        model.snapshots["motion-thread"] = ThreadSnapshot(id: "motion-thread", events: [], hasMore: false, connected: true, activeTurns: [], settings: AgentSettings())
+        model.messages["motion-thread"] = (0..<24).map { index in
+            MessageEntry(id: "motion-\(index)", turnId: "turn-\(index / 2)", kind: index.isMultiple(of: 2) ? .user : .assistant,
+                         text: index.isMultiple(of: 2) ? "Improve window movement and resizing." : "Keep the **native conversation** responsive while the window moves. Preserve the editor, selection, and history while the text wraps to fit the available space.\n\nThe same content should stay mounted throughout the gesture.")
+        }
+        let host = NSHostingView(rootView: ContentView().environmentObject(model)); host.sizingOptions = []
+        let window = EvidenceWindow(contentRect: NSRect(x: 100, y: 100, width: 1200, height: 840), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.makeKeyAndOrderFront(nil)
+        defer { model.shutdown(); window.close() }
+        try await Task.sleep(for: .milliseconds(300))
+        let editor = try XCTUnwrap(findEditor(host)); window.makeFirstResponder(editor)
+        editor.setSelectedRange(NSRange(location: 7, length: 4))
+        var publications = 0
+        let subscription = model.objectWillChange.sink { publications += 1 }
+        defer { subscription.cancel() }
+        var measurements: [String: [Double]] = [:]
+        for mode in ["move", "resize", "split-resize"] {
+            if mode == "split-resize" {
+                model.splitAgent(axis: "horizontal")
+                try await Task.sleep(for: .milliseconds(300))
+            }
+            let retained = try XCTUnwrap(findEditor(host))
+            publications = 0
+            var samples: [Double] = []
+            for step in 0..<40 {
+                let started = CFAbsoluteTimeGetCurrent()
+                if mode == "move" { window.setFrameOrigin(NSPoint(x: 100 + step * 2, y: 100 + step)) }
+                else { window.setContentSize(NSSize(width: 1200 - step * 8, height: 840 - step * 3)) }
+                host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+                samples.append((CFAbsoluteTimeGetCurrent() - started) * 1000)
+                try await Task.sleep(for: .milliseconds(16))
+            }
+            measurements[mode + "Ms"] = samples
+            measurements[mode + "Publications"] = [Double(publications)]
+            XCTAssertTrue(findEditor(host) === retained, "Window geometry must retain the actual text editor")
+            if mode != "split-resize" {
+                XCTAssertTrue(window.firstResponder === editor)
+                XCTAssertEqual(editor.selectedRange(), NSRange(location: 7, length: 4))
+            }
+        }
+        XCTAssertEqual(model.tab("motion")?.draft, "Retain this draft and selection")
+        let evidence = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: measurements, options: [.prettyPrinted, .sortedKeys])
+            .write(to: evidence.appendingPathComponent("native-window-motion-\(phase).json"))
+    }
+
+    @MainActor
+    func testManyTabsKeepNavigationAndDraftsResponsive() async throws {
+        let phase = ProcessInfo.processInfo.environment["NANOCODEX_PERFORMANCE_PHASE"] ?? "after"
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-many-tabs")
+        model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
+        model.runtime.requestOverride = { _, _ in .null }; model.workspaceFilter = .all
+        model.tabs = (0..<120).map { WorkspaceTab(id: "tab-\($0)", title: "Conversation \($0 + 1)", draft: "Draft \($0)") }
+        model.activeTabID = "tab-0"
+        let content = NSHostingView(rootView: ContentView().environmentObject(model).frame(width: 1200, height: 800))
+        content.sizingOptions = []
+        let window = EvidenceWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = content; window.makeKeyAndOrderFront(nil)
+        defer { model.shutdown(); window.close() }
+        try await Task.sleep(for: .milliseconds(250))
+        var switches: [Double] = [], edits: [Double] = []
+        for index in [119, 0, 60, 118, 1, 61, 117, 2, 62, 116, 3, 63] {
+            let start = CFAbsoluteTimeGetCurrent()
+            model.selectWorkspace(PaneNode(id: "tab-\(index)"))
+            content.layoutSubtreeIfNeeded(); content.displayIfNeeded()
+            switches.append((CFAbsoluteTimeGetCurrent() - start) * 1000)
+            try await Task.sleep(for: .milliseconds(60))
+            func editor(_ view: NSView) -> ComposerTextView? {
+                if let found = view as? ComposerTextView { return found }
+                for child in view.subviews { if let found = editor(child) { return found } }
+                return nil
+            }
+            let input = try XCTUnwrap(editor(content))
+            XCTAssertEqual(input.workspaceTabID, model.activeTabID)
+            XCTAssertEqual(input.string, "Draft \(index)")
+            window.makeFirstResponder(input)
+            let began = CFAbsoluteTimeGetCurrent()
+            input.insertText("!", replacementRange: NSRange(location: input.string.utf16.count, length: 0))
+            content.layoutSubtreeIfNeeded(); content.displayIfNeeded()
+            edits.append((CFAbsoluteTimeGetCurrent() - began) * 1000)
+            XCTAssertEqual(model.activeTab?.draft, "Draft \(index)!")
+        }
+        let metrics: [String: Any] = ["phase": phase, "tabs": 120,
+            "tabSwitchMedianMs": switches.sorted()[6], "tabSwitchP95Ms": switches.max()!,
+            "editorUpdateMedianMs": edits.sorted()[6], "editorUpdateP95Ms": edits.max()!,
+            "measurement": "Synchronous native selection/edit, layout and drawing; excludes the settling interval"]
+        let evidence = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: metrics, options: [.prettyPrinted, .sortedKeys])
+            .write(to: evidence.appendingPathComponent("native-many-tabs-\(phase).json"))
+    }
+
+    @MainActor
+    func testBrowserHistoryPreservesLayoutsDraftsAndReviewState() async throws {
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-browser-history-fixture")
+        model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
+        model.runtime.requestOverride = { _, _ in .null }
+        model.workspaceFilter = .all
+        model.tabs = [WorkspaceTab(id: "a", title: "First", draft: "First draft"),
+                      WorkspaceTab(id: "b", title: "Second", draft: "Second draft"),
+                      WorkspaceTab(id: "c", title: "Third"), WorkspaceTab(id: "d", title: "Fourth")]
+        model.activeTabID = "a"
+        defer { model.shutdown() }
+        model.openBeside("b")
+        let layout = try XCTUnwrap(model.activePaneLayout)
+        let agents = model.tabs
+        model.selectWorkspace(PaneNode(id: "c"))
+        model.selectWorkspace(PaneNode(id: "d"))
+        model.navigateHistory(back: true)
+        XCTAssertEqual(model.activeTabID, "c")
+        model.navigateHistory(back: true)
+        XCTAssertEqual(model.activeTabID, "b")
+        XCTAssertEqual(model.activePaneLayout, layout, "History restores the group instead of replacing a pane")
+        XCTAssertEqual(model.tabs, agents, "History must not mark updates seen or change drafts")
+        XCTAssertEqual(model.workspaceFocus, .navigation)
+        model.navigateHistory(back: false)
+        XCTAssertEqual(model.activeTabID, "c")
+        model.closeTab("d")
+        XCTAssertFalse(model.canGoForward, "Closed tabs are skipped without reopening them")
+        model.navigateHistory(back: true)
+        XCTAssertEqual(model.activeTabID, "b")
+        model.select("a")
+        XCTAssertFalse(model.canGoForward, "A new selection starts a new history branch")
+        let count = model.backTabs.count
+        model.composerFocused("a"); model.updateDraft("Continue typing", tabID: "a")
+        XCTAssertEqual(model.backTabs.count, count, "Typing must not add duplicate navigation entries")
+    }
+
+    @MainActor
+    func testTabOverviewRendersSplitGroupsAndDrafts() async throws {
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-overview-fixture")
+        model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
+        model.runtime.requestOverride = { _, _ in .null }; model.workspaceFilter = .all
+        model.tabs = [WorkspaceTab(id: "a", title: "Polish the desktop", draft: "Keep the remote screen open while we work"),
+                      WorkspaceTab(id: "b", title: "Review mobile parity"),
+                      WorkspaceTab(id: "c", title: "Explore the code", draft: "Check keyboard navigation")]
+        model.activeTabID = "a"; model.openBeside("b")
+        let content = NSHostingView(rootView: TabOverviewView().environmentObject(model).environment(\.colorScheme, .dark))
+        let window = EvidenceWindow(contentRect: NSRect(x: 0, y: 0, width: 728, height: 568), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = content; window.appearance = NSAppearance(named: .darkAqua); window.makeKeyAndOrderFront(nil)
+        defer { model.shutdown(); window.close() }
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(model.browserTabs.count, 2)
+        XCTAssertEqual(model.activeTab?.id, "b")
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        content.layoutSubtreeIfNeeded(); content.displayIfNeeded()
+        let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+        content.cacheDisplay(in: content.bounds, to: bitmap)
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: root.appendingPathComponent("native-tab-overview.png"))
+    }
+
+    @MainActor
+    func testScreenPaneResizesWithoutReplacingConversation() async throws {
+        guard ProcessInfo.processInfo.environment["NANOCODEX_SCREEN_FIXTURE"] == "1" else {
+            throw XCTSkip("Run apple/NanocodexInboxUITests/fixtures/remote-screen.mjs")
+        }
+        let service = try RemoteService(origin: URL(string: "http://127.0.0.1:18965")!) { _ in }
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-screen-pane-test", remoteService: service)
+        model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
+        model.runtime.requestOverride = { _, _ in .null }
+        model.tabs = [WorkspaceTab(title: "Review the workspace"), WorkspaceTab(title: "Check the layout")]
+        model.activeTabID = model.tabs[0].id; model.showingScreens = true
+        XCTAssertNotNil(model.remoteService)
+        XCTAssertFalse(model.showsOnboarding)
+        let content = NSHostingView(rootView: ContentView().environmentObject(model)
+            .environment(\.scenePhase, .active).environment(\.colorScheme, .dark).frame(width: 1280, height: 800))
+        content.sizingOptions = []
+        let window = EvidenceWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 800), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = content
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.setContentSize(NSSize(width: 1280, height: 800)); window.makeKeyAndOrderFront(nil)
+        defer { model.shutdown(); window.close() }
+        // SwiftUI's accessibility nodes expose Objective-C accessors without
+        // necessarily declaring conformance to the complete AppKit protocol.
+        func attribute(_ value: NSObject, _ name: String) -> Any? {
+            let selector = NSSelectorFromString(name)
+            guard value.responds(to: selector) else { return nil }
+            return value.perform(selector)?.takeUnretainedValue()
+        }
+        func find(_ value: Any, _ id: String) -> NSObject? {
+            var visited: [ObjectIdentifier: NSObject] = [:]
+            func visit(_ value: Any) -> NSObject? {
+                guard let element = value as? NSObject else { return nil }
+                let identity = ObjectIdentifier(element)
+                guard visited[identity] == nil else { return nil }
+                visited[identity] = element
+                if attribute(element, "accessibilityIdentifier") as? String == id { return element }
+                for child in (attribute(element, "accessibilityChildren") as? [Any]) ?? [] {
+                    if let found = visit(child) { return found }
+                }
+                for child in (element as? NSView)?.subviews ?? [] {
+                    if let found = visit(child) { return found }
+                }
+                return nil
+            }
+            return visit(value)
+        }
+        func editor(_ view: NSView) -> NSTextView? {
+            if let found = view as? ComposerTextView { return found }
+            for child in view.subviews { if let found = editor(child) { return found } }
+            return nil
+        }
+        for _ in 0..<50 {
+            if find(content, "remote-screen:fixture:desktop") != nil { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        let screen = try XCTUnwrap(find(content, "remote-screen:fixture:desktop"))
+        let pressSelector = NSSelectorFromString("accessibilityPerformPress")
+        XCTAssertTrue(screen.responds(to: pressSelector))
+        typealias Press = @convention(c) (AnyObject, Selector) -> Bool
+        let press = unsafeBitCast(screen.method(for: pressSelector), to: Press.self)
+        XCTAssertTrue(press(screen, pressSelector))
+        func canvas(_ view: NSView) -> MacRemoteCanvas? {
+            if let found = view as? MacRemoteCanvas { return found }
+            for child in view.subviews { if let found = canvas(child) { return found } }
+            return nil
+        }
+        for _ in 0..<50 {
+            if canvas(content)?.subviews.contains(where: { ($0 as? NSImageView)?.image != nil }) == true { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        let preview = try XCTUnwrap(canvas(content))
+        XCTAssertTrue(preview.subviews.contains { ($0 as? NSImageView)?.image != nil }, "The fixture must deliver a decoded screen frame")
+        let input = try XCTUnwrap(editor(content)); window.makeFirstResponder(input)
+        input.insertText("Keep the preview beside this draft", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let draft = model.activeTab?.draft
+        for position in ["left", "top"] {
+            model.setTabPosition(position)
+            try await Task.sleep(for: .milliseconds(200))
+            XCTAssertTrue(canvas(content) === preview, "Tab orientation must retain the connected screen")
+            XCTAssertTrue(editor(content) === input)
+        }
+        func split(_ view: NSView) -> NSSplitView? {
+            if let split = view as? NSSplitView,
+               let inputColumn = split.subviews.firstIndex(where: { editor($0) != nil }),
+               let screenColumn = split.subviews.firstIndex(where: { canvas($0) != nil }),
+               inputColumn != screenColumn { return split }
+            for child in view.subviews { if let found = split(child) { return found } }
+            return nil
+        }
+        let divider = try XCTUnwrap(split(content))
+        divider.setPosition(560, ofDividerAt: 0)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(editor(content) === input, "Resizing must retain the conversation editor")
+        XCTAssertEqual(model.activeTab?.draft, draft)
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        content.layoutSubtreeIfNeeded(); content.displayIfNeeded()
+        let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+        content.cacheDisplay(in: content.bounds, to: bitmap)
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: root.appendingPathComponent("native-screen-pane.png"))
+        divider.setPosition(940, ofDividerAt: 0)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(canvas(content) === preview, "A narrow screen pane keeps the same viewer")
+        XCTAssertTrue(editor(content) === input)
+        XCTAssertGreaterThan(preview.bounds.width, 250)
+        XCTAssertLessThan(preview.bounds.width, 360)
+        let narrow = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+        content.cacheDisplay(in: content.bounds, to: narrow)
+        try XCTUnwrap(narrow.representation(using: .png, properties: [:])).write(to: root.appendingPathComponent("native-screen-pane-narrow.png"))
+        model.select(model.tabs[1].id)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(canvas(content) === preview, "Switching conversations keeps the screen pane mounted")
+        model.showingScreens = false
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(canvas(content))
+        model.select(model.tabs[0].id)
+        XCTAssertEqual(model.activeTab?.draft, draft)
+    }
+
     func testStreamedAnswerSurvivesInterleavedEventsAndFinalization() throws {
         func output(_ cursor: String, _ type: String, _ text: String, agent: String? = nil) -> ManagedEvent {
             var data: [String: JSONValue] = ["type": .string("event"), "event": .object([
@@ -30,6 +477,154 @@ final class ProtocolTests: XCTestCase {
     }
 
     @MainActor
+    func testRuntimePipeBackpressureKeepsMainQueueResponsive() async throws {
+        let runtime = RuntimeClient(dataDirectory: "/tmp/nanocodex-pipe-backpressure")
+        defer { runtime.stop() }
+        try runtime.startForTesting(executable: URL(fileURLWithPath: "/usr/bin/python3"), arguments: ["-u", "-c", """
+        import json, sys, time
+        time.sleep(0.6)
+        request = json.loads(sys.stdin.readline())
+        print(json.dumps({"id": request["id"], "result": len(request["args"][0])}), flush=True)
+        """])
+        let started = CFAbsoluteTimeGetCurrent()
+        let request = Task { try await runtime.request("large", [.string(String(repeating: "x", count: 2_000_000))]) }
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertLessThan(CFAbsoluteTimeGetCurrent() - started, 0.4, "A full pipe must not block the main actor until the child reads")
+        let reply = try await request.value
+        XCTAssertEqual(reply, .number(2_000_000))
+    }
+
+    @MainActor
+    func testPreparedReplyRetainsRevisionAndRebuildsCorrections() async throws {
+        let runtime = RuntimeClient(dataDirectory: "/tmp/nanocodex-prepared-replies")
+        defer { runtime.stop() }
+        var text = "original", cursor = "1"
+        runtime.requestOverride = { _, _ in
+            .object(["id": .string("prepared"), "events": .array([.object(["cursor": .string("1"), "turnId": .string("turn"), "data": .object(["type": .string("turn_completed"), "final_message": .string(text)])])]), "hasMore": .bool(false), "connected": .bool(true), "activeTurns": .array([]), "settings": try .encoded(AgentSettings()), "cursor": .string(cursor)])
+        }
+        let first: ThreadSnapshot = try await runtime.call("openThread")
+        cursor = "2"
+        let replay: ThreadSnapshot = try await runtime.call("older")
+        XCTAssertNotNil(first.presentation)
+        XCTAssertEqual(first.presentation?.revision, replay.presentation?.revision)
+        XCTAssertEqual(replay.cursor, "2", "Metadata updates survive reuse of prepared content")
+        text = "corrected"
+        let correction: ThreadSnapshot = try await runtime.call("older")
+        XCTAssertNotEqual(replay.presentation?.revision, correction.presentation?.revision)
+        XCTAssertEqual(correction.presentation?.messages.last?.text, "corrected")
+        XCTAssertTrue(correction.presentation?.queue.finished.contains("turn") == true)
+    }
+
+    @MainActor
+    func testTranscriptPreparationMainQueueLatency() async throws {
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-main-thread-profile")
+        model.runtime.requestOverride = { _, _ in .null }
+        defer { model.shutdown() }
+        var events: [ManagedEvent] = []
+        for index in 0..<400 {
+            let payload: JSONValue = .object(["call_id": .string("call-\(index)"), "name": .string("exec_command"), "arguments": .string("{\"cmd\":\"echo benchmark\"}"), "output": .string(String(repeating: "benchmark output ", count: 100))])
+            events.append(ManagedEvent(cursor: "\(index * 2)", turnId: "turn-\(index)", data: .object(["type": .string("event"), "event": .object(["type": .string("tool.call"), "payload": payload])])))
+            events.append(ManagedEvent(cursor: "\(index * 2 + 1)", turnId: "turn-\(index)", data: .object(["type": .string("event"), "event": .object(["type": .string("tool.result"), "payload": payload])])))
+        }
+        let snapshot: JSONValue = .object(["id": .string("profile"), "events": try .encoded(events), "hasMore": .bool(false), "connected": .bool(true), "activeTurns": .array([]), "settings": try .encoded(AgentSettings()), "cursor": .string("complete")])
+        var frame = try JSONEncoder().encode(JSONValue.object(["event": .object(["type": .string("thread"), "thread": snapshot])]))
+        frame.append(10)
+        let start = CFAbsoluteTimeGetCurrent()
+        var previous = start, largestGap = 0.0
+        model.runtime.receiveAsynchronouslyForTesting(frame)
+        while model.snapshots["profile"]?.cursor != "complete", CFAbsoluteTimeGetCurrent() - start < 10 {
+            try await Task.sleep(for: .milliseconds(5))
+            let now = CFAbsoluteTimeGetCurrent(); largestGap = max(largestGap, now - previous); previous = now
+        }
+        XCTAssertEqual(model.snapshots["profile"]?.cursor, "complete")
+        XCTAssertEqual(model.messages["profile"]?.count, 400)
+        print("MAIN_QUEUE_PROFILE bytes=\(frame.count) total_ms=\((CFAbsoluteTimeGetCurrent() - start) * 1000) largest_gap_ms=\(largestGap * 1000)")
+    }
+
+    @MainActor
+    func testWorkspaceKeyboardZoomAndCancelledDocking() async throws {
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-keyboard-zoom-fixture")
+        model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
+        model.workspaceFilter = .all
+        model.runtime.requestOverride = { _, _ in .null }
+        model.tabs = [WorkspaceTab(id: "original", title: "Keyboard fixture", draft: "Keep this draft")]
+        model.activeTabID = "original"
+        let content = NSHostingView(rootView: ContentView().environmentObject(model).frame(width: 1440, height: 1000))
+        content.sizingOptions = []
+        let window = EvidenceWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 1000), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = content; window.makeKeyAndOrderFront(nil)
+        defer { model.shutdown(); window.close() }
+        func key(_ code: UInt16, _ text: String, _ modifiers: NSEvent.ModifierFlags = []) throws {
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: code))
+            window.firstResponder?.keyDown(with: event)
+        }
+        func editors(_ view: NSView) -> [ComposerTextView] { (view as? ComposerTextView).map { [$0] } ?? view.subviews.flatMap(editors) }
+        func surface(_ view: NSView) -> AgentSplitSurface? {
+            if let found = view as? AgentSplitSurface { return found }
+            for child in view.subviews { if let found = surface(child) { return found } }
+            return nil
+        }
+        try await Task.sleep(for: .milliseconds(250))
+        model.focusComposer()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(window.firstResponder is ComposerTextView)
+        try key(53, "\u{1b}"); try key(9, "v"); try key(4, "h")
+        XCTAssertEqual(model.tabs.count, 3, "Rapid Escape/v/h opens both split directions without typing into a draft")
+        XCTAssertEqual(model.workspaceFocus, .navigation)
+        let right = model.tabs[1].id, below = model.tabs[2].id
+        XCTAssertEqual(model.activePaneLayout?.children[1].axis, "vertical")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(window.firstResponder is WorkspaceKeyboardView)
+        try key(126, ""); XCTAssertEqual(model.activeTabID, right)
+        try key(4, "h", .control); XCTAssertEqual(model.activeTabID, "original")
+        try key(37, "l", .control); XCTAssertEqual(model.activeTabID, right)
+        try key(38, "j", .control); XCTAssertEqual(model.activeTabID, below)
+        let initial = try XCTUnwrap(model.activePaneLayout?.nearestSplit(to: below, axis: "vertical"))
+        try key(40, "K", .shift)
+        XCTAssertEqual(model.activePaneLayout?.nearestSplit(to: below, axis: "vertical")?.fraction, initial.fraction - 0.05)
+        try key(6, "z"); XCTAssertFalse(model.isTiled)
+        try key(6, "z"); XCTAssertTrue(model.isTiled)
+        try await Task.sleep(for: .milliseconds(300))
+        try key(36, "\r"); try key(9, "v"); try key(4, "h"); try key(7, "x")
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(model.tab(below)?.draft, "vhx", "Writing keeps unmodified pane shortcut letters")
+        XCTAssertEqual(model.tab("original")?.draft, "Keep this draft")
+        let split = try XCTUnwrap(surface(content)), hosts = split.hosts
+        for value in [3, -6, 20, -20] {
+            model.changeZoom(value)
+            try await Task.sleep(for: .milliseconds(120)); content.layoutSubtreeIfNeeded()
+            XCTAssertTrue((0.75...1.5).contains(model.workspaceZoom))
+            XCTAssertTrue(split === surface(content))
+            for (id, host) in hosts { XCTAssertTrue(host === split.hosts[id]) }
+            XCTAssertEqual(editors(content).first(where: { $0.workspaceTabID == below })?.string, "vhx")
+        }
+        model.resetZoom(); XCTAssertEqual(model.workspaceZoom, 1)
+        let keyboard = try XCTUnwrap(WorkspaceKeyboardView.find(in: content))
+        for (text, flags, expected) in [("=", NSEvent.ModifierFlags.command, 1.1), ("+", [.command, .shift], 1.2), ("-", .command, 1.1), ("0", .command, 1.0)] {
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: 24))
+            XCTAssertTrue(keyboard.handleZoomCommand(event))
+            XCTAssertEqual(model.workspaceZoom, expected, accuracy: 0.001)
+        }
+        model.draggingPaneID = right; model.paneDropTarget = below; model.paneDropEdge = .top
+        XCTAssertEqual(model.paneDropPreview(for: below), .top)
+        XCTAssertNil(model.paneDropPreview(for: right))
+        model.cancelPaneDrag(); XCTAssertNil(model.paneDropPreview(for: below))
+        model.draggingPaneID = right; XCTAssertNil(model.paneDropPreview(for: below), "A fresh drag cannot resurrect the previous target")
+        model.paneDropTarget = below; model.paneDropEdge = .bottom
+        NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApp)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNil(model.draggingPaneID)
+        XCTAssertNil(model.paneDropPreview(for: below))
+        try key(53, "\u{1b}"); try key(7, "x")
+        XCTAssertNil(model.tab(below))
+        XCTAssertEqual(model.tabs.count, 2)
+        XCTAssertEqual(model.workspaceFocus, .navigation)
+        XCTAssertEqual(model.tab("original")?.draft, "Keep this draft")
+        model.reopenTab()
+        XCTAssertEqual(model.tab(below)?.draft, "vhx", "Closing a pane keeps its draft recoverable")
+    }
+
+    @MainActor
     func testBrowserSplitLayoutsPersistReopenAndRetainEditors() async throws {
         let model = AppModel(runtimeDirectory: "/tmp/nanocodex-browser-fixture")
         model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
@@ -49,7 +644,11 @@ final class ProtocolTests: XCTestCase {
         window.isReleasedWhenClosed = false; window.contentView = content; window.makeKeyAndOrderFront(nil)
         defer { model.shutdown(); window.close() }
         try await Task.sleep(for: .milliseconds(200)); content.layoutSubtreeIfNeeded()
-        func find(_ view: NSView) -> AgentSplitSurface? { (view as? AgentSplitSurface) ?? view.subviews.lazy.compactMap(find).first }
+        func find(_ view: NSView) -> AgentSplitSurface? {
+            if let found = view as? AgentSplitSurface { return found }
+            for child in view.subviews { if let found = find(child) { return found } }
+            return nil
+        }
         let surface = try XCTUnwrap(find(content))
         let hosts = surface.hosts
         let initialWidth = try XCTUnwrap(hosts["one"]).frame.width
@@ -111,6 +710,164 @@ final class ProtocolTests: XCTestCase {
         XCTAssertLessThanOrEqual(status.statusItemSize.width, 32)
         let metrics: [String: Any] = ["timestamp": ISO8601DateFormatter().string(from: Date()), "dividerResizeMedianMs": timings.sorted()[15], "dividerResizeP95Ms": timings.sorted()[28], "menuBarItemWidthPt": status.statusItemSize.width, "network": "none; native window, editors, split layout and persistence"]
         try JSONSerialization.data(withJSONObject: metrics, options: [.prettyPrinted, .sortedKeys]).write(to: evidence.appendingPathComponent("native-browser-layout-metrics.json"))
+    }
+
+    @MainActor
+    func testPaneDockingPreservesIdentitiesDraftsAndDeepLayouts() throws {
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-dock-fixture")
+        model.runtime.requestOverride = { _, _ in .null }; defer { model.shutdown() }
+        model.state = try Self.connectedState.decode(DesktopState.self)
+        model.workspaceFilter = .all
+        model.tabs = (0..<80).map { WorkspaceTab(id: "pane-\($0)", title: "Agent \($0)", draft: "Draft \($0)") }
+        model.activeTabID = "pane-0"
+        model.pending = [PendingMessage(id: "queued", tabID: "pane-79", agentID: "durable-agent", text: "Preserve this follow-up", predecessor: "running-turn", phase: .queued)]
+        let pendingBefore = model.pending
+        for index in 1..<80 {
+            model.splitAxis = index.isMultiple(of: 2) ? "vertical" : "horizontal"
+            model.openBeside("pane-\(index)")
+        }
+        let original = try XCTUnwrap(model.activePaneLayout)
+        XCTAssertEqual(original.leaves.count, 80)
+        let decoded = try JSONDecoder().decode(PaneNode.self, from: JSONEncoder().encode(original))
+        XCTAssertEqual(decoded, original)
+        for edge in [PaneDock.left, .top, .right, .bottom, .center] {
+            model.dockPane("pane-79", at: "pane-0", edge: edge)
+            XCTAssertEqual(Set(try XCTUnwrap(model.activePaneLayout).leaves), Set(model.tabs.map(\.id)))
+            XCTAssertEqual(model.paneLayouts.flatMap(\.leaves).count, 80)
+            XCTAssertEqual(model.activeTabID, "pane-79")
+            for index in 0..<80 { XCTAssertEqual(model.tab("pane-\(index)")?.draft, "Draft \(index)") }
+        }
+        model.separatePane("pane-79")
+        XCTAssertFalse(model.isTiled)
+        XCTAssertEqual(model.browserTabs.count, 2)
+        model.dockPane("pane-79", at: "pane-0", edge: .top)
+        XCTAssertTrue(model.isTiled); XCTAssertEqual(model.browserTabs.count, 1)
+        XCTAssertEqual(model.pending, pendingBefore)
+        let beforeInvalid = model.paneLayouts
+        model.dockPane("pane-0", at: "pane-0", edge: .left)
+        model.dockPane("missing", at: "pane-0", edge: .right)
+        XCTAssertEqual(model.paneLayouts, beforeInvalid)
+        XCTAssertEqual(PaneDock.destination(at: CGPoint(x: 2, y: 150), size: CGSize(width: 400, height: 300)), .left)
+        XCTAssertEqual(PaneDock.destination(at: CGPoint(x: 200, y: 2), size: CGSize(width: 400, height: 300)), .top)
+        XCTAssertEqual(PaneDock.destination(at: CGPoint(x: 398, y: 150), size: CGSize(width: 400, height: 300)), .right)
+        XCTAssertEqual(PaneDock.destination(at: CGPoint(x: 200, y: 298), size: CGSize(width: 400, height: 300)), .bottom)
+        XCTAssertEqual(PaneDock.destination(at: CGPoint(x: 200, y: 150), size: CGSize(width: 400, height: 300)), .center)
+    }
+
+    @MainActor
+    func testPaneMotionCommitsSizeOnceAndLiveResizeCancelsMotion() throws {
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-pane-motion-fixture")
+        defer { model.shutdown() }
+        let surface = AgentSplitSurface(model: model)
+        let host = NSHostingView(rootView: AnyView(Text("A stable live editor")))
+        host.sizingOptions = []; host.wantsLayer = true
+        surface.addSubview(host)
+        surface.placeHost(host, in: NSRect(x: 0, y: 0, width: 800, height: 600), animated: false)
+        let final = NSRect(x: 410, y: 0, width: 390, height: 600)
+        surface.placeHost(host, in: final, animated: true)
+        XCTAssertEqual(host.frame, final, "Content adopts its final size before the transition starts")
+        XCTAssertEqual(host.bounds.size, final.size)
+        let motion = try XCTUnwrap(host.layer?.animation(forKey: "pane-position") as? CABasicAnimation)
+        XCTAssertEqual(motion.keyPath, "position")
+        XCTAssertNil(host.layer?.animation(forKey: "bounds"), "Animation must not reflow live text at every frame")
+        surface.placeHost(host, in: final, animated: false)
+        XCTAssertNotNil(host.layer?.animation(forKey: "pane-position"), "Redundant layout must not snap an active transition to its endpoint")
+        let resized = NSRect(x: 380, y: 0, width: 420, height: 600)
+        surface.placeHost(host, in: resized, animated: false)
+        XCTAssertEqual(host.frame, resized)
+        XCTAssertNil(host.layer?.animation(forKey: "pane-position"), "A real divider drag immediately takes ownership of geometry")
+    }
+
+    @MainActor
+    func testNativeDockingRetainsEditorsAndRendersGlass() async throws {
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-glass-fixture")
+        model.runtime.requestOverride = { _, _ in .null }
+        model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
+        model.workspaceFilter = .all
+        model.tabs = [WorkspaceTab(id: "plan", title: "Plan the release", draft: "Review the rollout plan"),
+                      WorkspaceTab(id: "build", title: "Build the workspace", draft: "Keep the editor state"),
+                      WorkspaceTab(id: "review", title: "Review the changes", draft: "Inspect the diff"),
+                      WorkspaceTab(id: "verify", title: "Verify on devices", draft: "Check the native interactions")]
+        model.activeTabID = "plan"
+        model.openBeside("build")
+        model.dockPane("review", at: "plan", edge: .bottom)
+        model.dockPane("verify", at: "build", edge: .bottom)
+        let content = NSHostingView(rootView: ContentView().environmentObject(model).preferredColorScheme(.light).frame(width: 1440, height: 1000))
+        content.sizingOptions = []
+        let window = EvidenceWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 1000), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = content; window.makeKeyAndOrderFront(nil)
+        defer { model.shutdown(); window.close() }
+        try await Task.sleep(for: .milliseconds(300)); content.layoutSubtreeIfNeeded()
+        func find(_ view: NSView) -> AgentSplitSurface? {
+            if let found = view as? AgentSplitSurface { return found }
+            for child in view.subviews { if let found = find(child) { return found } }
+            return nil
+        }
+        let surface = try XCTUnwrap(find(content)), hosts = surface.hosts
+        model.dockPane("verify", at: "plan", edge: .center)
+        try await Task.sleep(for: .milliseconds(350)); content.layoutSubtreeIfNeeded()
+        for (id, host) in hosts { XCTAssertTrue(host === surface.hosts[id], "Swapping keeps live editor identity") }
+        model.dockPane("verify", at: "build", edge: .top)
+        try await Task.sleep(for: .milliseconds(350)); content.layoutSubtreeIfNeeded()
+        for (id, host) in hosts { XCTAssertTrue(host === surface.hosts[id], "Redocking keeps live editor identity") }
+        XCTAssertLessThan(try XCTUnwrap(surface.hosts["verify"]).frame.minY, try XCTUnwrap(surface.hosts["build"]).frame.minY)
+        let root = try XCTUnwrap(model.activePaneLayout), divider = try XCTUnwrap(surface.dividers[root.id])
+        XCTAssertTrue(divider.accessibilityPerformIncrement())
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(try XCTUnwrap(model.activePaneLayout).fraction, 0.55, accuracy: 0.001)
+        let evidence = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        for (theme, name) in [(ColorScheme.light, "light"), (.dark, "dark")] {
+            window.appearance = NSAppearance(named: theme == .dark ? .darkAqua : .aqua)
+            content.rootView = ContentView().environmentObject(model).preferredColorScheme(theme).frame(width: 1440, height: 1000)
+            try await Task.sleep(for: .milliseconds(250)); content.layoutSubtreeIfNeeded(); content.displayIfNeeded()
+            let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: evidence.appendingPathComponent("native-glass-splits-\(name).png"))
+        }
+    }
+
+    @MainActor
+    func testAppearanceChangesRetainNativeComposerAndDraft() async throws {
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-accessible-glass-fixture")
+        model.runtime.requestOverride = { _, _ in .null }
+        model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
+        model.tabs = [WorkspaceTab(id: "accessible", title: "Accessible workspace", draft: "Keep this draft")]
+        model.activeTabID = "accessible"; model.workspaceFilter = .all
+        func page(_ theme: ColorScheme) -> some View {
+            WorkspacePane(tab: model.tabs[0]).environmentObject(model).environment(\.workspaceTabID, "accessible")
+                .environment(\.colorScheme, theme)
+                .frame(width: 820, height: 600)
+        }
+        let host = NSHostingView(rootView: page(.light)); host.sizingOptions = []
+        let window = EvidenceWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 600), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.makeKeyAndOrderFront(nil)
+        defer { model.shutdown(); window.close() }
+        try await Task.sleep(for: .milliseconds(150))
+        func findEditor(_ view: NSView) -> ComposerTextView? {
+            if let found = view as? ComposerTextView { return found }
+            for child in view.subviews { if let found = findEditor(child) { return found } }
+            return nil
+        }
+        let editor = try XCTUnwrap(findEditor(host))
+        window.makeFirstResponder(editor)
+        editor.setSelectedRange(NSRange(location: 5, length: 4))
+        for (theme, name) in [(ColorScheme.dark, "dark"), (.light, "light")] {
+            window.appearance = NSAppearance(named: theme == .dark ? .darkAqua : .aqua)
+            host.rootView = page(theme)
+            try await Task.sleep(for: .milliseconds(120)); host.layoutSubtreeIfNeeded()
+            XCTAssertTrue(findEditor(host) === editor, "Appearance changes preserve AppKit editor identity")
+            XCTAssertTrue(window.firstResponder === editor)
+            XCTAssertEqual(editor.selectedRange(), NSRange(location: 5, length: 4))
+            XCTAssertEqual(editor.string, "Keep this draft")
+            let evidence = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
+            try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: evidence.appendingPathComponent("native-appearance-\(name).png"))
+        }
+        editor.insertText("that", replacementRange: editor.selectedRange())
+        XCTAssertEqual(model.activeTab?.draft, "Keep that draft")
     }
 
     @MainActor
@@ -199,13 +956,14 @@ final class ProtocolTests: XCTestCase {
             try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: evidence.appendingPathComponent(name))
         }
         try await Task.sleep(for: .milliseconds(200)); try capture("native-activity-collapsed.png")
+        let collapsedHeight = transcript.documentView?.bounds.height ?? 0
         model.expandedMessages[tab.id] = ["activity-turn"]
         try await Task.sleep(for: .milliseconds(200)); try capture("native-activity-timeline.png")
         model.expandedMessages[tab.id]?.insert("tool-0")
         try await Task.sleep(for: .milliseconds(200)); try capture("native-activity-details.png")
         model.expandedMessages[tab.id] = []
         try await Task.sleep(for: .milliseconds(200))
-        XCTAssertEqual(transcript.documentView?.bounds.height ?? 0, initialHeight, accuracy: 2)
+        XCTAssertEqual(transcript.documentView?.bounds.height ?? 0, collapsedHeight, accuracy: 2, "Collapsing activity restores the height including the completed answer")
     }
 
     @MainActor
@@ -296,8 +1054,33 @@ final class ProtocolTests: XCTestCase {
     }
 
     @MainActor
+    func testBrowserRestoresReviewedConversationWithoutHiddenFiltering() async throws {
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-browser-default-filter")
+        defer { model.shutdown() }
+        let tab = WorkspaceTab(id: "read-tab", threadId: "read-thread", seenCursor: "1")
+        guard case .object(var state) = Self.connectedState else { return XCTFail("Missing state fixture") }
+        state["layout"] = try .encoded(TabLayout(tabs: [tab], activeTabId: tab.id))
+        model.runtime.requestOverride = { method, args in
+            if method == "openThread" {
+                return .object(["id": args[0], "events": .array([.object(["cursor": .string("1"), "turnId": .string("turn"), "data": .object(["type": .string("turn_completed")])])]), "hasMore": .bool(false), "connected": .bool(true), "activeTurns": .array([]), "settings": try .encoded(AgentSettings())])
+            }
+            return .null
+        }
+        var wire = try JSONEncoder().encode(JSONValue.object(["event": .object(["type": .string("state"), "state": .object(state)])])); wire.append(10)
+        model.runtime.receiveForTesting(wire)
+        for _ in 0..<30 where model.snapshots.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(model.workspaceFilter, .all)
+        XCTAssertEqual(model.activeTabID, tab.id)
+        XCTAssertEqual(model.canvasTabs.map(\.id), [tab.id])
+        XCTAssertFalse(model.update(for: tab).needsAttention(tab))
+        model.setFilter(.inbox)
+        XCTAssertTrue(model.canvasTabs.isEmpty, "Inbox filtering remains an explicit action")
+    }
+
+    @MainActor
     func testRestoredTiledSelectionIgnoresInboxFiltering() async throws {
         let model = AppModel(runtimeDirectory: "/tmp/nanocodex-isolated-restored-selection")
+        model.workspaceFilter = .inbox
         let tabs = [WorkspaceTab(id: "outside"), WorkspaceTab(id: "one", threadId: "thread-one", deferredCursor: "1"), WorkspaceTab(id: "two", threadId: "thread-two", seenCursor: "1", deferredCursor: "1")]
         guard case .object(var state) = Self.connectedState else { return XCTFail("Missing state fixture") }
         state["layout"] = try .encoded(TabLayout(tabs: tabs, activeTabId: "one", workspaceMode: "tiles", tiledTabIDs: ["one", "two"]))
@@ -322,6 +1105,7 @@ final class ProtocolTests: XCTestCase {
     @MainActor
     func testNativeTiledInboxKeepsEditorsActionsAndReviewIndependent() async throws {
         let model = AppModel(runtimeDirectory: "/tmp/nanocodex-isolated-tiles")
+        model.workspaceFilter = .inbox
         model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
         model.tabs = [
             WorkspaceTab(id: "design", threadId: "thread-design", title: "Refine the Inbox", draft: "Design draft"),
@@ -412,7 +1196,8 @@ final class ProtocolTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(100))
         func pageController(_ view: NSView) -> InboxPageController? {
             if let controller = view.nextResponder as? InboxPageController { return controller }
-            return view.subviews.lazy.compactMap(pageController).first
+            for child in view.subviews { if let found = pageController(child) { return found } }
+            return nil
         }
         let pager = try XCTUnwrap(pageController(content))
         let swipeStart = CFAbsoluteTimeGetCurrent()
@@ -485,6 +1270,7 @@ final class ProtocolTests: XCTestCase {
         XCTAssertTrue(model.visibleTabs.isEmpty)
         XCTAssertFalse(model.isTiled)
         let restored = AppModel(runtimeDirectory: "/tmp/nanocodex-isolated-restored-tiles")
+        restored.workspaceFilter = .inbox
         restored.tabs = model.tabs.map { tab in var copy = tab; copy.seenCursor = "101"; copy.deferredCursor = "101"; return copy }
         restored.activeTabID = "design"; restored.snapshots = model.snapshots
         XCTAssertTrue(restored.visibleTabs.isEmpty, "Restoration must not pin an already reviewed agent back into Inbox")
@@ -742,7 +1528,11 @@ final class ProtocolTests: XCTestCase {
             content.cacheDisplay(in: content.bounds, to: rep)
             try XCTUnwrap(rep.representation(using: .png, properties: [:])).write(to: evidence.appendingPathComponent("native-\(name)-\(phase).png"))
         }
-        func editor(in view: NSView) -> NSTextView? { if let found = view as? ComposerTextView { return found }; return view.subviews.lazy.compactMap { editor(in: $0) }.first }
+        func editor(in view: NSView) -> NSTextView? {
+            if let found = view as? ComposerTextView { return found }
+            for child in view.subviews { if let found = editor(in: child) { return found } }
+            return nil
+        }
         try await Task.sleep(for: .milliseconds(100))
         try capture("chat")
         let input = try XCTUnwrap(editor(in: content)); window.makeFirstResponder(input)
@@ -830,8 +1620,14 @@ final class ProtocolTests: XCTestCase {
         window.setContentSize(NSSize(width: 820, height: 700))
         try await Task.sleep(for: .milliseconds(100)); try capture("hands-narrow")
         content.rootView = AnyView(SettingsView().environmentObject(model).preferredColorScheme(.light))
-        window.setContentSize(NSSize(width: 575, height: 560))
+        window.setContentSize(NSSize(width: 600, height: 580))
         try await Task.sleep(for: .milliseconds(100)); try capture("settings")
+        content.rootView = AnyView(SettingsView(section: .appearance).environmentObject(model).preferredColorScheme(.light).id("appearance"))
+        window.setContentSize(NSSize(width: 600, height: 580))
+        try await Task.sleep(for: .milliseconds(100)); try capture("settings-appearance")
+        content.rootView = AnyView(SettingsView(section: .shortcuts).environmentObject(model).preferredColorScheme(.light).id("shortcuts"))
+        window.setContentSize(NSSize(width: 600, height: 580))
+        try await Task.sleep(for: .milliseconds(100)); try capture("settings-shortcuts")
         let history: [ManagedEvent] = (0..<800).map { index in
             .init(cursor: "\(index)", turnId: "benchmark", data: .object(["type": .string("event"), "event": .object(["type": .string("assistant.delta"), "payload": .object(["text": .string("A streamed response with durable history. ")])])]))
         }
@@ -1703,7 +2499,8 @@ final class NativeServiceTests: XCTestCase {
     @MainActor
     private func findEditor(_ view: NSView) -> ComposerTextView? {
         if let editor = view as? ComposerTextView { return editor }
-        return view.subviews.lazy.compactMap { self.findEditor($0) }.first
+        for child in view.subviews { if let found = findEditor(child) { return found } }
+        return nil
     }
     @MainActor
     private func capture(_ view: NSView, to url: URL) throws {

@@ -5,67 +5,110 @@ struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @State private var switchingAccount = false
+    @State var section: SettingsSection = .general
+    enum SettingsSection: String, CaseIterable { case general = "General", appearance = "Appearance", shortcuts = "Shortcuts" }
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(spacing: 0) {
             HStack {
-                Image(nsImage: NSImage(named: "icon") ?? NSImage()).resizable().frame(width: 34, height: 34)
-                Text("Settings").font(.system(size: 23, weight: .semibold))
+                Text("Settings").font(.title2.weight(.semibold))
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
-            }
-            Form {
-                Section("Account") {
-                    if model.state.connected {
-                        LabeledContent("Nanocodex account") { Label("Connected", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
-                        Button("Manage account and connections") { model.openAccount() }.buttonStyle(.link)
-                        HStack {
-                            Button("Switch Account…") { switchingAccount = true }.accessibilityIdentifier("switch-account")
-                            Button("Sign Out") { Task { await model.disconnect() } }.foregroundStyle(.secondary)
-                        }
-                    } else {
-                        Button("Sign In…") { switchingAccount = true }.buttonStyle(.borderedProminent).tint(.primary)
-                    }
+            }.padding(20)
+            Picker("Settings section", selection: $section) {
+                ForEach(SettingsSection.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }.pickerStyle(.segmented).labelsHidden().padding(.horizontal, 24)
+            Group {
+                switch section {
+                case .general: general
+                case .appearance: appearance
+                case .shortcuts: shortcuts
                 }
-                Section("Background Hands") {
-                    LaunchAtLoginSettings(launch: model.launchAtLogin)
-                    Toggle("Make this Mac available as a Hand", isOn: Binding(get: { model.state.defaultHandEnabled != false }, set: { enabled in Task { await model.setDeviceHandEnabled(enabled) } }))
-                        .disabled(!model.state.connected).accessibilityIdentifier("device-hand-enabled")
-                    MacScreenSharingSettings(host: model.remoteMacHost)
-                        .disabled(!model.state.connected)
-                    Toggle("Keep Mac awake while Hands are running", isOn: $model.keepMacAwake)
-                        .accessibilityIdentifier("keep-mac-awake")
-                    Text("Hands keep running when you close the window. Open Nanocodex or quit from the menu bar.")
-                    Text("Keeping awake prevents idle sleep and uses more battery. The display can turn off; closing the lid or choosing Sleep can still suspend Hands.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Section("Appearance") {
-                    Picker("Tabs", selection: $model.tabPosition) { Text("Sidebar").tag("left"); Text("Top").tag("top") }.pickerStyle(.segmented).onChange(of: model.tabPosition) { model.persistLayout() }
-                    Picker("Theme", selection: $model.theme) { Text("System").tag("system"); Text("Light").tag("light"); Text("Dark").tag("dark") }.onChange(of: model.theme) { model.persistLayout() }
-                }
-                Section("Keyboard shortcuts") {
-                    shortcut("New tab", keys: "⌘ T")
-                    shortcut("New agent to the right", keys: "⌘ \\")
-                    shortcut("Open existing agent to the right", keys: "⌘ ⇧ \\")
-                    shortcut("Leave composer / Start writing", keys: "Esc / ↩")
-                    shortcut("Navigate between agents", keys: "Tab / ⇧ Tab / Arrows")
-                    shortcut("Previous / Next agent", keys: "⌘ ⌥ ← / →")
-                    shortcut("Move pane left / right", keys: "⌘ ⌥ ⇧ ← / →")
-                    shortcut("Focus agent / Resume layout", keys: "⌘ ⇧ F")
-                    shortcut("Seen / Later", keys: "⌘ D / ⌘ ⇧ D")
-                    shortcut("Find a thread", keys: "⌘ K")
-                    shortcut("Send / New line", keys: "↩ / ⇧ ↩")
-                    shortcut("Reopen closed tab", keys: "⌘ ⇧ T")
-                }
-            }.formStyle(.grouped)
-            HStack { Text("Nanocodex \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0")"); Spacer(); Text("Made for macOS") }.font(.system(size: 11)).foregroundStyle(.tertiary)
-        }.padding(24).frame(width: 575, height: 560).background(Color(nsColor: .windowBackgroundColor))
+            }.padding(.bottom, 12)
+        }.frame(width: 600, height: 580)
+            .background(Color(nsColor: .windowBackgroundColor))
             .sheet(isPresented: $switchingAccount) {
                 SignInView(isSwitchingAccount: model.state.connected, onClose: { switchingAccount = false })
                     .padding(36).frame(width: 480, height: 640)
             }
     }
+    private var general: some View {
+        Form {
+            Section("Account") {
+                if model.state.connected {
+                    LabeledContent("Nanocodex account") { Label("Connected", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
+                    Button("Manage account and connections") { model.openAccount() }.buttonStyle(.link)
+                    HStack {
+                        Button("Switch Account…") { switchingAccount = true }.accessibilityIdentifier("switch-account")
+                        Button("Sign Out") { Task { await model.disconnect() } }
+                    }
+                } else {
+                    Button("Sign In…") { switchingAccount = true }.buttonStyle(.borderedProminent)
+                }
+            }
+            Section("Background Hands") {
+                LaunchAtLoginSettings(launch: model.launchAtLogin)
+                Toggle("Make this Mac available as a Hand", isOn: Binding(get: { model.state.defaultHandEnabled != false }, set: { enabled in Task { await model.setDeviceHandEnabled(enabled) } }))
+                    .disabled(!model.state.connected).accessibilityIdentifier("device-hand-enabled")
+                MacScreenSharingSettings(host: model.remoteMacHost).disabled(!model.state.connected)
+                Toggle("Keep Mac awake while Hands are running", isOn: $model.keepMacAwake).accessibilityIdentifier("keep-mac-awake")
+                Text("Hands keep running when you close the window. Open Nanocodex or quit from the menu bar.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Keeping awake prevents idle sleep and uses more battery. The display can turn off; closing the lid or choosing Sleep can still suspend Hands.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }.formStyle(.grouped)
+    }
+    private var appearance: some View {
+        Form {
+            Section("Appearance") {
+                Picker("Theme", selection: $model.theme) {
+                    Text("System").tag("system"); Text("Light").tag("light"); Text("Dark").tag("dark")
+                }.pickerStyle(.segmented).onChange(of: model.theme) { model.persistLayout() }
+                Text("System follows your Mac’s appearance. Transparency, contrast, and motion follow your accessibility settings.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Workspace") {
+                Picker("Tab layout", selection: Binding(get: { model.tabPosition }, set: model.setTabPosition)) {
+                    Text("Horizontal").tag("top")
+                    Text("Vertical sidebar").tag("left")
+                }.accessibilityIdentifier("tab-layout-preference")
+                LabeledContent("Zoom") {
+                    HStack {
+                        Button("Zoom out", systemImage: "minus") { model.changeZoom(-1) }.labelStyle(.iconOnly).disabled(model.workspaceZoom <= 0.75)
+                        Text(model.workspaceZoom, format: .percent.precision(.fractionLength(0))).monospacedDigit().frame(minWidth: 44)
+                        Button("Zoom in", systemImage: "plus") { model.changeZoom(1) }.labelStyle(.iconOnly).disabled(model.workspaceZoom >= 1.5)
+                        Button("Reset") { model.resetZoom() }.disabled(model.workspaceZoom == 1)
+                    }
+                }
+            }
+        }.formStyle(.grouped)
+    }
+    private var shortcuts: some View {
+        Form {
+            Section("Conversations") {
+                shortcut("New / Reopen closed tab", keys: "⌘ T / ⌘ ⇧ T")
+                shortcut("Back / Forward", keys: "⌘ [ / ⌘ ]")
+                shortcut("Tab overview", keys: "⌘ ⇧ O")
+                shortcut("Find a conversation", keys: "⌘ K")
+                shortcut("Remote screens", keys: "⌘ ⌥ S")
+                shortcut("Send / New line", keys: "↩ / ⇧ ↩")
+            }
+            Section("Workspace navigation") {
+                Text("Press Esc to leave the composer. Press Enter to write again.")
+                    .font(.caption).foregroundStyle(.secondary)
+                shortcut("Split right / below", keys: "v / h")
+                shortcut("Move between panes", keys: "Arrows / Tab / ⇧ Tab")
+                shortcut("Resize pane", keys: "⇧ H J K L")
+                shortcut("Focus / Restore layout", keys: "z")
+                shortcut("Close pane", keys: "x")
+                shortcut("Move pane left / right", keys: "{ / }")
+                shortcut("Seen / Later", keys: "⌘ D / ⌘ ⇧ D")
+                shortcut("All workspace shortcuts", keys: "?")
+            }
+        }.formStyle(.grouped)
+    }
     private func shortcut(_ title: String, keys: String) -> some View {
-        LabeledContent(title) { Text(keys).font(.system(size: 11, weight: .medium, design: .monospaced)).foregroundStyle(.secondary).padding(.horizontal, 7).padding(.vertical, 4).background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 5)) }
+        LabeledContent(title) { Text(keys).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary) }
     }
 }
 

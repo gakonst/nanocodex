@@ -1723,6 +1723,11 @@
   backdrop-filter: blur(3px);
 }
 
+@media (prefers-reduced-transparency: reduce) {
+  .connect-home-navigation { background: var(--surface); backdrop-filter: none; }
+  .vault-dialog-backdrop { background: var(--surface-subtle); backdrop-filter: none; }
+}
+
 .vault-dialog {
   width: min(560px, 100%);
   max-height: calc(100dvh - 48px);

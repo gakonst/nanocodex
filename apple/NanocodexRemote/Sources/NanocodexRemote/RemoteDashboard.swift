@@ -25,6 +25,10 @@ public struct RemoteDashboard: View {
     @State private var discoveryError: String?
     @State private var text = ""
     @State private var showKeyboard = false
+    @State private var screenQuery = ""
+    private var filteredHands: [RemoteHand] {
+        hands.filter { screenQuery.isEmpty || ($0.machineName + " " + $0.name).localizedCaseInsensitiveContains(screenQuery) }
+    }
 #if os(macOS)
     @StateObject private var host: RemoteMacHost
     @StateObject private var phoneHost: RemoteMacHost
@@ -51,15 +55,31 @@ public struct RemoteDashboard: View {
         _host = StateObject(wrappedValue: host); _phoneHost = StateObject(wrappedValue: phoneHost); ownsHosts = false
     }
 #endif
-    public var body: some View {
-        VStack(spacing: embedded ? 6 : 12) {
 #if os(macOS)
+    private var screenControls: some View {
+        VStack(spacing: 8) {
             HStack(spacing: 8) {
                 if let hand = viewer.hand {
                     Button { viewer.close() } label: { Label("Screens", systemImage: "chevron.left") }
                         .labelStyle(.iconOnly).frame(minWidth: 32, minHeight: 32)
+                        .help("Choose another screen").accessibilityIdentifier("remote-screen-back")
+#if os(macOS)
+                    Menu {
+                        ForEach(hands, id: \.identity) { candidate in
+                            Button(candidate.machineName + " · " + candidate.name) {
+                                guard candidate.identity != hand.identity else { return }
+                                Task { await viewer.connect(service: service, hand: candidate) }
+                            }
+                        }
+                    } label: {
+                        Text(hand.machineName + " · " + hand.name).lineLimit(1).font(.subheadline)
+                    }.menuStyle(.borderlessButton).help(hand.machineName + " · " + hand.name)
+                        .accessibilityLabel("Choose screen").accessibilityIdentifier("remote-screen-picker")
+#else
                     Text(hand.machineName + " · " + hand.name).lineLimit(1).font(.subheadline)
+#endif
                     Spacer(minLength: 0)
+#if !os(macOS)
                     if viewer.controlling {
                         Button("Release control") { viewer.releaseControl() }.font(.caption)
                     } else if hand.controllable {
@@ -68,6 +88,7 @@ public struct RemoteDashboard: View {
                     } else {
                         Text("View only").font(.caption).foregroundStyle(.secondary)
                     }
+#endif
                 } else {
                     Label("Screens", systemImage: "display").font(.headline)
                     Spacer()
@@ -79,12 +100,58 @@ public struct RemoteDashboard: View {
                         .accessibilityLabel("Close screen pane").accessibilityIdentifier("close-screen-pane")
                 }
             }
+#if os(macOS)
+            .buttonStyle(.borderless)
 #endif
             if viewer.hand != nil {
+#if os(macOS)
+                HStack(spacing: 8) {
+                    Label(viewer.controlling ? "Controlling" : "View only", systemImage: viewer.controlling ? "cursorarrow" : "eye")
+                        .font(.caption).foregroundStyle(viewer.controlling ? Color.accentColor : Color.secondary)
+                    Spacer(minLength: 0)
+                    if viewer.controlling {
+                        Button { showKeyboard.toggle() } label: { Image(systemName: "keyboard") }
+                            .help("Remote typing controls").accessibilityLabel("Remote keyboard")
+                            .accessibilityValue(showKeyboard ? "Visible" : "Hidden")
+                        Button("Release control") { viewer.releaseControl() }
+                            .accessibilityIdentifier("remote-release-control")
+                    } else if viewer.hand?.controllable == true {
+                        Button("Take control") { viewer.takeControl() }.buttonStyle(.borderedProminent).disabled(!viewer.connected)
+                            .accessibilityIdentifier("remote-take-control")
+                    }
+                }.controlSize(.small)
+#endif
+            }
+        }
+#if os(macOS)
+        .padding(10).modifier(RemoteControlSurface())
+#endif
+    }
+#endif
+    public var body: some View {
+        VStack(spacing: embedded ? 6 : 12) {
+#if os(macOS)
+            screenControls
+#endif
+            if viewer.hand != nil {
+
                 RemoteCanvas(viewer: viewer).accessibilityIdentifier("remote-canvas")
                     .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
+#if os(macOS)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+#endif
                     .overlay {
-                        if viewer.connecting { ProgressView(viewer.status).padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) }
+                        if viewer.connecting { ProgressView().accessibilityLabel(viewer.status).padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) }
+                    }
+                    .overlay {
+                        if !viewer.connected && !viewer.connecting {
+                            VStack(spacing: 10) {
+                                Image(systemName: "display.trianglebadge.exclamationmark").font(.title2)
+                                Text("Screen disconnected").font(.headline)
+                                Button("Reconnect") { Task { await viewer.reconnect() } }
+                                    .accessibilityIdentifier("remote-reconnect")
+                            }.padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        }
                     }
                 HStack {
                     Text(viewer.status).font(.caption).foregroundStyle(.secondary)
@@ -95,7 +162,10 @@ public struct RemoteDashboard: View {
                     }
                     Spacer()
 #if os(macOS)
-                    Text("⌘⇧Esc releases control").font(.caption).foregroundStyle(.secondary)
+                    if viewer.controlling {
+                        Text("Click screen to type · ⌘⇧Esc releases").font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
 #else
                     if viewer.controlling {
                         Button("Release control") { viewer.releaseControl() }
@@ -136,7 +206,7 @@ public struct RemoteDashboard: View {
                 }
             } else {
                 if !discoveryLoaded {
-                    ProgressView("Loading remote screens…")
+                    ProgressView().accessibilityLabel("Loading remote screens")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if hands.isEmpty {
                     VStack(spacing: 6) {
@@ -147,10 +217,13 @@ public struct RemoteDashboard: View {
                 } else {
 #if os(iOS)
                     List(hands, id: \.identity) { hand in screenRow(hand) }
-                    .listStyle(.plain)
-                    .refreshable { await refresh() }
+                        .listStyle(.plain)
+                        .refreshable { await refresh() }
 #else
-                    List(hands, id: \.identity) { hand in screenRow(hand) }
+                    TextField("Find a screen", text: $screenQuery).textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("remote-screen-search")
+                    List(filteredHands, id: \.identity) { hand in screenRow(hand) }
+                    if filteredHands.isEmpty { Text("No matching screens").font(.caption).foregroundStyle(.secondary) }
 #endif
                 }
                 if viewer.status != "Disconnected" { Text(viewer.status).font(.callout).foregroundStyle(.secondary) }
@@ -348,6 +421,22 @@ public struct RemoteSharingIndicator: View {
                     .accessibilityIdentifier("remote-stop-sharing")
                     .help("Stop sharing this Mac and any paired iPhone")
             }
+        }
+    }
+}
+#endif
+
+#if os(macOS)
+/// Screen actions share one glass surface; the streamed image remains unfiltered.
+private struct RemoteControlSurface: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            content.background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
+        } else if #available(macOS 26.0, *) {
+            content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18))
+        } else {
+            content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
         }
     }
 }

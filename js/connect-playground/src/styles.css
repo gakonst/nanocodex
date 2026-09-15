@@ -665,6 +665,13 @@ body > dialog[aria-label="Nanocodex Connect permissions"] > iframe {
   border-radius: 24px;
 }
 
+@media (prefers-reduced-transparency: reduce) {
+  body > dialog[aria-label="Nanocodex Connect permissions"]::backdrop {
+    background: var(--surface, Canvas);
+    backdrop-filter: none;
+  }
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;

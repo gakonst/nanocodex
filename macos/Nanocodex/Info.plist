@@ -20,4 +20,8 @@
 <key>NSLocalNetworkUsageDescription</key><string>Connect to your nearby Hands to view their screens and send keyboard, pointer, and touch input.</string>
 <key>NSSupportsAutomaticTermination</key><false/>
 <key>NSSupportsSuddenTermination</key><false/>
+<key>UTExportedTypeDeclarations</key><array>
+<dict><key>UTTypeIdentifier</key><string>xyz.paradigm.nanocodex.workspace-pane</string><key>UTTypeDescription</key><string>Nanocodex workspace pane</string><key>UTTypeConformsTo</key><array><string>public.data</string></array></dict>
+<dict><key>UTTypeIdentifier</key><string>xyz.paradigm.nanocodex.workspace-tab</string><key>UTTypeDescription</key><string>Nanocodex workspace tab</string><key>UTTypeConformsTo</key><array><string>public.data</string></array></dict>
+</array>
 </dict></plist>

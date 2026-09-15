@@ -9,6 +9,58 @@ const workerEnv = env as unknown as EgressEnv;
 const LINEAR_ENDPOINT = "https://mcp.linear.app/mcp";
 
 describe("generic remote MCP connection owner", () => {
+  it("connects Mercator without inventing OAuth and proxies its MCP tools", async () => {
+    const user = "mcp-mercator";
+    const id = connectionId("Q");
+    const ownerSubject = subject("mercator");
+    await materialize(user, id, "https://mercator.sh/mcp", "Mercator");
+
+    const started = await start(user, id);
+    expect(started.response.status).toBe(200);
+    expect(started.body).toEqual({
+      mcp_connections: [{ id, name: "Mercator", status: "connected" }],
+    });
+
+    await bindSubject(ownerSubject, user);
+    const listed = await SELF.fetch(mcpRequest(id, ownerSubject, {
+      method: "POST",
+      contentType: "application/json",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+    }));
+    expect(listed.status).toBe(200);
+    expect(await listed.json()).toEqual({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        tools: [{
+          name: "search_services",
+          description: "Discover services through Mercator.",
+          inputSchema: { type: "object", properties: { query: { type: "string" } } },
+        }],
+      },
+    });
+
+    const called = await SELF.fetch(mcpRequest(id, ownerSubject, {
+      method: "POST",
+      contentType: "application/json",
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "get_suggested_queries", arguments: {} },
+      }),
+    }));
+    expect(called.status).toBe(200);
+    expect(await called.json()).toEqual({
+      jsonrpc: "2.0",
+      id: 3,
+      result: {
+        content: [{ type: "text", text: "Mercator is connected." }],
+        structuredContent: { connected: true },
+      },
+    });
+  });
+
   it("materializes one immutable endpoint and denies cross-owner use", async () => {
     const id = connectionId("M");
     const created = await control(`/users/mcp-owner/mcp-connections/${id}`, "PUT", {

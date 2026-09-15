@@ -17,6 +17,13 @@ test("canonicalizes the Linear MCP shorthand without exposing credentials", () =
   });
 });
 
+test("canonicalizes Mercator's public MCP endpoint with a user-facing name", () => {
+  assert.deepEqual(canonicalRemoteMcpTarget("https://mercator.sh"), {
+    endpoint: "https://mercator.sh/mcp",
+    name: "Mercator",
+  });
+});
+
 test("accepts public HTTPS MCP URLs and rejects private or credential-bearing targets", () => {
   assert.equal(canonicalRemoteMcpTarget("https://example.com/custom/mcp").endpoint,
     "https://example.com/custom/mcp");

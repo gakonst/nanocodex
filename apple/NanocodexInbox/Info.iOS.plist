@@ -7,11 +7,13 @@
 	<key>CFBundleURLTypes</key>
 	<array><dict><key>CFBundleURLName</key><string>xyz.paradigm.centaur.activity</string><key>CFBundleURLSchemes</key><array><string>nanocodex</string></array></dict></array>
 	<key>UIBackgroundModes</key>
-	<array><string>fetch</string><string>processing</string></array>
+	<array><string>fetch</string><string>processing</string><string>bluetooth-central</string></array>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array><string>xyz.paradigm.centaur.hand.refresh</string><string>xyz.paradigm.centaur.hand.turn.*</string></array>
 	<key>NSCameraUsageDescription</key>
 	<string>Take a photo to attach to your message.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Connect to nearby Bluetooth Low Energy devices so your Nanocodex agent can inspect and control them.</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

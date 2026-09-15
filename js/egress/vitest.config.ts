@@ -401,6 +401,48 @@ export default defineConfig({
               },
             });
           }
+          if (url.hostname === "mercator.sh" && request.method === "POST"
+            && url.pathname === "/mcp") {
+            const body = await request.json() as { id?: unknown; method?: unknown };
+            if (request.headers.has("authorization")) {
+              return Response.json({ error: "unexpected_authorization" }, { status: 400 });
+            }
+            if (body.method === "initialize") {
+              return Response.json({
+                jsonrpc: "2.0",
+                id: body.id,
+                result: {
+                  protocolVersion: "2025-06-18",
+                  capabilities: { tools: { listChanged: true } },
+                  serverInfo: { name: "mercator", title: "Mercator", version: "0.5.0" },
+                },
+              });
+            }
+            if (body.method === "tools/list") {
+              return Response.json({
+                jsonrpc: "2.0",
+                id: body.id,
+                result: {
+                  tools: [{
+                    name: "search_services",
+                    description: "Discover services through Mercator.",
+                    inputSchema: { type: "object", properties: { query: { type: "string" } } },
+                  }],
+                },
+              });
+            }
+            if (body.method === "tools/call") {
+              return Response.json({
+                jsonrpc: "2.0",
+                id: body.id,
+                result: {
+                  content: [{ type: "text", text: "Mercator is connected." }],
+                  structuredContent: { connected: true },
+                },
+              });
+            }
+            return Response.json({ jsonrpc: "2.0", id: body.id, result: {} });
+          }
           if (["mcp-fixture.nanocodex.dev", "mcp.linear.app", "mcp-standard.nanocodex.dev"].includes(url.hostname)
             && request.method === "GET" && url.pathname === "/mcp") {
             const authorization = request.headers.get("authorization");
@@ -463,6 +505,16 @@ export default defineConfig({
           if (["mcp-fixture.nanocodex.dev", "mcp.linear.app", "mcp-standard.nanocodex.dev"].includes(url.hostname)
             && request.method === "POST" && url.pathname === "/mcp") {
             const authorization = request.headers.get("authorization");
+            if (!authorization) {
+              return new Response(null, {
+                status: 401,
+                headers: url.hostname === "mcp-standard.nanocodex.dev"
+                  ? {}
+                  : {
+                      "www-authenticate": `Bearer resource_metadata="${url.origin}/.well-known/oauth-protected-resource/mcp"`,
+                    },
+              });
+            }
             if (authorization === "Bearer mcp-stale-access") {
               return Response.json({ error: "expired" }, { status: 401 });
             }

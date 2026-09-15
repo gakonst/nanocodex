@@ -67,7 +67,10 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient {
         video.isHidden = !viewer.connected || track == nil
         snapshot.image = viewer.frame.map { NSImage(cgImage: $0, size: .zero) }
         snapshot.isHidden = !viewer.connected || viewer.frame == nil
-        if !viewer.controlling { pressed.removeAll(); dragging = false; unmarkText() }
+        if !viewer.controlling {
+            pressed.removeAll(); dragging = false; unmarkText()
+            if window?.firstResponder === self { window?.makeFirstResponder(nil) }
+        }
         needsLayout = true
     }
     public override func layout() { super.layout(); video.frame = fitted(surface, in: bounds); snapshot.frame = video.frame }

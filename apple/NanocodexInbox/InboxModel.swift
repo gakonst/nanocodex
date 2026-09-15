@@ -122,6 +122,8 @@ final class InboxModel: ObservableObject {
     let voice = VoiceSession()
     private var accountCredential: AccountCredential?
     private var deviceHand: HandSession?
+    private let flipperZero = FlipperZeroBridge.shared
+    private let bluetoothLE = BluetoothLEBridge.shared
     @Published private(set) var deviceHandConnected = false
     @Published var deviceHandEnabled = UserDefaults.standard.object(forKey: "inbox.hand.enabled") as? Bool ?? true {
         didSet {
@@ -703,6 +705,30 @@ final class InboxModel: ObservableObject {
         agentNotifications.update(account: "", threads: [], foreground: false)
         reset()
     }
+    func connectorOverview() async throws -> ConnectorOverview {
+        guard let client, connected, !isDemo else { throw APIError.invalidResponse }
+        return try await client.connectorOverview()
+    }
+    func beginConnectorAuthorization(_ provider: String) async throws -> ConnectorAuthorization {
+        guard let client, connected, !isDemo else { throw APIError.invalidResponse }
+        return try await client.beginConnectorAuthorization(provider: provider)
+    }
+    func disconnectConnector(_ provider: String, connectionID: String) async throws {
+        guard let client, connected, !isDemo else { throw APIError.invalidResponse }
+        try await client.disconnectConnector(provider: provider, connectionID: connectionID)
+    }
+    func addMcpConnection(_ target: String) async throws -> McpConnection {
+        guard let client, connected, !isDemo else { throw APIError.invalidResponse }
+        return try await client.addMcpConnection(target: target)
+    }
+    func beginMcpAuthorization(_ connectionID: String) async throws -> McpConnectionStart {
+        guard let client, connected, !isDemo else { throw APIError.invalidResponse }
+        return try await client.beginMcpAuthorization(connectionID: connectionID)
+    }
+    func disconnectMcpConnection(_ connectionID: String) async throws {
+        guard let client, connected, !isDemo else { throw APIError.invalidResponse }
+        try await client.disconnectMcpConnection(connectionID: connectionID)
+    }
     private func reset() {
         agentNotificationUpdate?.cancel(); agentNotificationUpdate = nil
         stopOverview()
@@ -810,7 +836,15 @@ final class InboxModel: ObservableObject {
             let name = UIDevice.current.model
             let platform = "ios"
             let messageContext = (try? ContextStore.shared()).map { ContextQuery(store: $0, scope: scope) }
-            let workspace = try HandWorkspace(id: id, name: name, root: root, platform: platform, messageContext: messageContext)
+            let workspace = try HandWorkspace(
+                id: id,
+                name: name,
+                root: root,
+                platform: platform,
+                messageContext: messageContext,
+                flipper: flipperZero,
+                bluetooth: bluetoothLE
+            )
             let hand = try HandSession(credential: credential, workspace: workspace)
             let epoch = generation
             hand.onConnectionChange = { [weak self] value in

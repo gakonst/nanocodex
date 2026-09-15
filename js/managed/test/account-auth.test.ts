@@ -103,6 +103,42 @@ describe("Connect grant assertions", () => {
 });
 
 describe("connector route compatibility", () => {
+  it("serves one authenticated provider catalog for every account client", async () => {
+    const local = portableEnv();
+    const sessionToken = "c".repeat(64);
+    local.set("webauthn", `session:${sessionToken}`, {
+      credentialId: CREDENTIAL_ID,
+      publicKey: PUBLIC_KEY,
+      userId: encodeUserId(USER_ID),
+      issuedAt: 1,
+      expiresAt: Math.floor(Date.now() / 1_000) + 60,
+    });
+    const url = new URL("https://nanocodex.example/v1/connectors/catalog");
+    const env = {
+      ...local.env,
+      NANOCODEX: {
+        async fetch() { return new Response(null, { status: 500 }); },
+      } as unknown as Fetcher,
+    };
+    const response = await routeConnectorRequest(new Request(url, {
+      headers: { cookie: `nanocodex_account=${sessionToken}` },
+    }), env, url);
+
+    expect(response?.status).toBe(200);
+    const body = await response?.json() as { providers: Array<Record<string, unknown>> };
+    expect(body.providers.map(({ id }) => id)).toEqual(["github", "google", "slack", "x"]);
+    expect(body.providers.find(({ id }) => id === "google")?.capabilities).toEqual([
+      { id: "gmail", name: "Gmail" },
+      { id: "gcalendar", name: "Google Calendar" },
+      { id: "gcontacts", name: "Google Contacts" },
+      { id: "gdocs", name: "Google Docs" },
+      { id: "gdrive", name: "Google Drive" },
+      { id: "gsheets", name: "Google Sheets" },
+      { id: "gslides", name: "Google Slides" },
+      { id: "gtasks", name: "Google Tasks" },
+    ]);
+  });
+
   it("forwards legacy provider-level DELETE to unified broker bulk revoke", async () => {
     const local = portableEnv();
     const sessionToken = "d".repeat(64);
@@ -121,7 +157,7 @@ describe("connector route compatibility", () => {
           requests.push(new Request(input, init));
           return new Response(null, { status: 204 });
         },
-      } as Fetcher,
+      } as unknown as Fetcher,
     };
     const url = new URL("https://nanocodex.example/v1/connectors/gmail");
     const response = await routeConnectorRequest(new Request(url, {
@@ -138,6 +174,50 @@ describe("connector route compatibility", () => {
     expect(requests[0]!.url).toBe(
       `https://broker.internal/users/${USER_ID}/connectors/google`,
     );
+  });
+
+  it("finishes an OAuth MCP in the native app without returning OAuth material", async () => {
+    const local = portableEnv();
+    const sessionToken = "e".repeat(64);
+    const attempt = "6f3eec23-8a1a-4de4-b498-1689a2829ca0";
+    local.set("webauthn", `session:${sessionToken}`, {
+      credentialId: CREDENTIAL_ID,
+      publicKey: PUBLIC_KEY,
+      userId: encodeUserId(USER_ID),
+      issuedAt: 1,
+      expiresAt: Math.floor(Date.now() / 1_000) + 60,
+    });
+    const requests: Request[] = [];
+    const env = {
+      ...local.env,
+      NANOCODEX: {
+        async fetch(input: RequestInfo | URL, init?: RequestInit) {
+          requests.push(new Request(input, init));
+          return Response.json({
+            return_to: `/v1/connectors/mcp-mobile-complete?attempt=${attempt}`,
+            mcp_connections: [{ id: CONNECT_MCP_ID, name: "Linear", status: "connected" }],
+          });
+        },
+      } as unknown as Fetcher,
+    };
+    const callbackUrl = new URL(
+      `https://nanocodex.example/v1/connectors/mcp-connections/${CONNECT_MCP_ID}/callback?code=private-code&state=private-state`,
+    );
+    const callback = await routeConnectorRequest(new Request(callbackUrl, {
+      headers: { cookie: `nanocodex_account=${sessionToken}` },
+    }), env, callbackUrl);
+
+    expect(callback?.status).toBe(303);
+    const completionUrl = new URL(callback!.headers.get("location")!);
+    expect(completionUrl.pathname).toBe("/v1/connectors/mcp-mobile-complete");
+    expect(completionUrl.searchParams.get("mcp_result")).toBe("connected");
+    expect(completionUrl.href).not.toMatch(/private-code|private-state/);
+    const native = await routeConnectorRequest(new Request(completionUrl), env, completionUrl);
+    expect(native?.status).toBe(303);
+    expect(native?.headers.get("location")).toBe(
+      `nanocodex://connectors/mcp-complete?attempt=${attempt}&mcp_connection=${CONNECT_MCP_ID}&mcp_result=connected`,
+    );
+    expect(requests).toHaveLength(1);
   });
 });
 

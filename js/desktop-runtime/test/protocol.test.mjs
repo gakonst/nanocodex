@@ -576,3 +576,16 @@ test("split layouts survive persistence and prune missing, duplicate, and malfor
   assert.deepEqual(restoredLayout({ ...value, paneLayouts: [{ ...tree, axis: "invalid" }] }).paneLayouts, []);
   assert.equal(restoredLayout({ ...value, paneLayouts: [{ ...tree, fraction: 999 }] }).paneLayouts[0].fraction, 0.85);
 });
+
+
+test("deep mixed split layouts retain every agent and draft through JSON persistence", () => {
+  const tabs = Array.from({ length: 96 }, (_, i) => ({ id: `agent-${i}`, draft: `Draft ${i}` }));
+  let tree = { id: tabs[0].id, children: [], fraction: 0.5 };
+  for (let i = 1; i < tabs.length; i++) tree = { id: `split-${i}`, axis: i % 2 ? "horizontal" : "vertical", fraction: 0.5,
+    children: [tree, { id: tabs[i].id, children: [], fraction: 0.5 }], selectedLeaf: tabs[i].id };
+  const saved = JSON.parse(JSON.stringify({ tabs, paneLayouts: [tree], tiledTabIDs: tabs.map(t => t.id), workspaceMode: "tiles" }));
+  const restored = restoredLayout(saved);
+  assert.deepEqual(restored.paneLayouts, [tree]);
+  assert.deepEqual(restored.tabs.map(t => t.draft), tabs.map(t => t.draft));
+  assert.equal(restored.tiledTabIDs.length, 96);
+});
