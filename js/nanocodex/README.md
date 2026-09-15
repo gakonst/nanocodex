@@ -1133,7 +1133,7 @@ package manager or build step:
 
 ```html
 <script type="module">
-  import { Agent, Transport } from "https://cdn.jsdelivr.net/npm/nanocodex@0.6.0/host/index.mjs";
+  import { Agent, Transport } from "https://cdn.jsdelivr.net/npm/nanocodex@0.6.1/host/index.mjs";
   const agent = await Agent.create({
     transport: Transport.hostManaged({
       websocketUrl: "/api/responses",
