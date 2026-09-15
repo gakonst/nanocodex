@@ -383,7 +383,7 @@ struct InboxView: View {
                     if let error = model.handBackgroundError { Text(error).font(.caption).foregroundStyle(.secondary) }
                 }
                 Section("Nanocodex updates") {
-                    LabeledContent("Installed", value: "\(Bundle.main.object(forInfoDictionaryKey: \"CFBundleShortVersionString\") as? String ?? \"—\") (\(Bundle.main.object(forInfoDictionaryKey: \"CFBundleVersion\") as? String ?? \"—\"))")
+                    LabeledContent("Installed", value: (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") + " (" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—") + ")")
                     Button("Install available update") {
                         guard let testFlight = URL(string: "itms-beta://") else { return }
                         UIApplication.shared.open(testFlight) { opened in
