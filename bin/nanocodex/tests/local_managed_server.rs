@@ -415,6 +415,23 @@ async fn nanocodex2_drives_durable_replay_detach_steer_and_cancel() -> Result<()
     let steer_receipt: Value = serde_json::from_slice(&steer.stdout)?;
     assert_eq!(steer_receipt["turn_id"], steer_turn);
     assert_eq!(steer_receipt["state"], "steered");
+    let http = reqwest::Client::new();
+    let control_url = format!("{}/v1/agents/{agent_id}/turns/{steer_turn}", client.origin);
+    http.post(format!("{control_url}/steer"))
+        .bearer_auth(&client.bearer)
+        .json(&json!({"message_id": "undo-this-steer", "input": "WITHDRAWN_STEER_MUST_NOT_REACH_MODEL"}))
+        .send().await?.error_for_status()?;
+    let withdrawn: Value = http
+        .post(format!("{control_url}/withdraw-steer"))
+        .bearer_auth(&client.bearer)
+        .json(&json!({"message_id": "undo-this-steer"}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(withdrawn["withdrawn"], true);
+    assert_eq!(withdrawn["message_id"], "undo-this-steer");
     steer_release
         .send(())
         .map_err(|()| eyre!("steer provider gate was already closed"))?;
@@ -1463,6 +1480,11 @@ async fn serve_provider(
 
     let steered = next_generation(&mut socket, &calls).await?;
     assert_request_contains(&steered, STEER_INPUT)?;
+    assert!(
+        !steered
+            .to_string()
+            .contains("WITHDRAWN_STEER_MUST_NOT_REACH_MODEL")
+    );
     assert_eq!(
         steered["previous_response_id"], "resp-managed-steer-boundary",
         "steered generation did not continue from the provider boundary: {steered}"
