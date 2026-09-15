@@ -193,7 +193,7 @@ impl Tool for ComputerTool {
         if self.reset {
             ToolDefinition::function(
                 "mcp__cua_repl__js_reset",
-                include_str!("../runtime/src/cua_reset_description.md"),
+                include_str!("reset_description.md"),
                 json!({"type":"object","properties":{},"additionalProperties":false}),
             )
         } else {

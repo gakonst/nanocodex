@@ -15,7 +15,7 @@ const packageJson = JSON.parse(await readFile(new URL("package.json", packageRoo
 
 test("the package owns the complete public Vite boundary", async () => {
   assert.equal(packageJson.name, "nanocodex-vite");
-  assert.equal(packageJson.peerDependencies.nanocodex, "^0.5.0");
+  assert.equal(packageJson.peerDependencies.nanocodex, `^${packageJson.version}`);
   assert.equal(packageJson.devDependencies.nanocodex, "workspace:*");
   assert.equal(packageJson.exports["."].import, "./index.mjs");
   assert.equal(packageJson.exports["./cloudflare"].import, "./cloudflare.mjs");

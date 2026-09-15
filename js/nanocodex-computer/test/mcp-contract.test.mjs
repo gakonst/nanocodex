@@ -38,6 +38,7 @@ test("Codex cua_repl MCP names, schemas, state and image blocks cross stdio unch
   assert.equal(catalog.tools[0].description, CUA_DESCRIPTION);
   assert.equal(catalog.tools[1].description, CUA_RESET_DESCRIPTION);
   assert.equal(await readFile(new URL("../../../crates/experimental/nanocodex-computer/src/description.md", import.meta.url), "utf8"), CUA_DESCRIPTION);
+  assert.equal(await readFile(new URL("../../../crates/experimental/nanocodex-computer/src/reset_description.md", import.meta.url), "utf8"), CUA_RESET_DESCRIPTION);
   const rustSchema = JSON.parse(await readFile(new URL("../../../crates/experimental/nanocodex-computer/src/js-schema.json", import.meta.url), "utf8"));
   assert.deepEqual(rustSchema, CUA_PARAMETERS);
   const adapter = createComputerTools({ executable, args: ["--fixture"] });
