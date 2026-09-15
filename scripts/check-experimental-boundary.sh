@@ -19,6 +19,8 @@ published="$(
     .packages[]
     | select(.manifest_path | startswith($experimental))
     | select(.publish != [])
+    # The computer client ships in 0.6 while retaining its experimental label.
+    | select(.name != "nanocodex-computer")
     | .name
   ' "$metadata_file"
 )"
@@ -45,6 +47,8 @@ violations="$(
       | .dependencies[]
       | select(.source == null)
       | select(.name as $dependency | $experimental_names | index($dependency))
+      # VM Hands consume the published experimental computer client.
+      | select($package.name != "nanocodex-vm" or .name != "nanocodex-computer")
       | "\($package.name) -> \(.name)"
     ' "$metadata_file"
 )"

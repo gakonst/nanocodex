@@ -89,7 +89,12 @@ jobs:
         shell: bash
         run: |
           notes_file=$(mktemp)
-          cp .github/RELEASE_TEMPLATE.md "$notes_file"
+          release_notes="docs/releases/${GITHUB_REF_NAME#v}.md"
+          if [[ -f "$release_notes" ]]; then
+            cp "$release_notes" "$notes_file"
+          else
+            cp .github/RELEASE_TEMPLATE.md "$notes_file"
+          fi
           printf '\n%s\n' "$CHANGELOG" >> "$notes_file"
 
           if is_draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null); then
