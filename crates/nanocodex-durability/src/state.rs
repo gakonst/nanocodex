@@ -1273,6 +1273,64 @@ mod continuation_tests {
     }
 
     #[test]
+    fn withdrawal_is_replayable_and_rejects_consumed_or_nonlatest_steers() -> Result<()> {
+        let mut state = DurableState::default();
+        let payload = EncodedPayload::encode(&"input")?;
+        let mut transitions = Vec::new();
+        let mut apply = |entry: Transition| {
+            state.apply_transition(state.revision() + 1, entry.clone())?;
+            transitions.push(entry);
+            Ok::<_, Error>(())
+        };
+        apply(Transition::OperationAccepted {
+            operation_id: "turn".into(),
+            input: payload.clone(),
+        })?;
+        for steer_index in 1..=2 {
+            apply(Transition::SteerAccepted {
+                operation_id: "turn".into(),
+                steer_index,
+                accepted_after_model_call_index: 1,
+                input: payload.clone(),
+            })?;
+        }
+        assert!(
+            apply(Transition::SteerWithdrawn {
+                operation_id: "turn".into(),
+                steer_index: 1
+            })
+            .is_err()
+        );
+        apply(Transition::SteerWithdrawn {
+            operation_id: "turn".into(),
+            steer_index: 2,
+        })?;
+        apply(Transition::SteerBound {
+            operation_id: "turn".into(),
+            steer_index: 1,
+            model_call_index: 2,
+        })?;
+        assert!(
+            apply(Transition::SteerWithdrawn {
+                operation_id: "turn".into(),
+                steer_index: 1
+            })
+            .is_err()
+        );
+        let mut replay = DurableState::default();
+        for entry in transitions {
+            let encoded = serde_json::to_string(&entry)?;
+            replay.apply_transition(replay.revision() + 1, serde_json::from_str(&encoded)?)?;
+        }
+        assert_eq!(replay.operation("turn").unwrap().steers.len(), 1);
+        assert_eq!(
+            replay.operation("turn").unwrap().steers[0].model_call_index,
+            Some(2)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn advancing_preserves_steer_consumption_and_rejects_pending_or_retired_work() -> Result<()> {
         let mut state = DurableState::default();
         let id = "turn".to_owned();
