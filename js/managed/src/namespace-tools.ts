@@ -157,7 +157,7 @@ export function createNamespaceExecutionRuntime(
       }, releaseSession, dispose,
     },
     exec_command: {
-      description: "Run a command in durable /brain using bounded Just Bash by default. Use an explicit hand workdir returned by mount or accountInfo only for native binaries, builds, or process sessions. No execution hand is attached by default.",
+      description: "Run a command in durable /brain using bounded Just Bash by default. Use an explicit hand workdir returned by mount or accountInfo only for native binaries, builds, or process sessions. A hand mount already represents its advertised workspace: if /laptop maps to /Users/me/repo, use /laptop for that workspace or /laptop/src for its src directory, never /laptop/Users/me/repo. No execution hand is attached by default.",
       parameters: EXEC_COMMAND_PARAMETERS,
       outputSchema: EXECUTION_OUTPUT_SCHEMA,
       supportsParallelToolCalls: true,
