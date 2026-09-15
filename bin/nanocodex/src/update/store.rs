@@ -111,12 +111,18 @@ impl VersionStore {
         nanocodex2: &[u8],
         vm_guest: Option<&[u8]>,
         computer: Option<&[u8]>,
+        voice: Option<&[u8]>,
     ) -> Result<()> {
         validate_key(key)?;
         fs::create_dir_all(self.versions_dir())
             .wrap_err("failed to create the Nanocodex version store")?;
+        let voice_cached = match voice {
+            Some(bytes) => self.is_cached_voice(key, Some(&hex::encode(Sha256::digest(bytes))))?,
+            None => true,
+        };
         if self.is_cached_bundle(key, vm_guest.is_some())?
             && (computer.is_none() || self.is_cached_computer(key)?)
+            && voice_cached
         {
             return Ok(());
         }
@@ -126,6 +132,9 @@ impl VersionStore {
             let installed_binary = fs::read(self.binary_path(key))
                 .wrap_err_with(|| format!("failed to read Nanocodex version {key}"))?;
             if self.is_cached(key)? && Sha256::digest(&installed_binary) == Sha256::digest(binary) {
+                if let Some(voice) = voice {
+                    super::voice::install(&directory, voice)?;
+                }
                 self.write_companion_files(&directory, nanocodex2, vm_guest, computer)?;
                 return Ok(());
             }
@@ -140,6 +149,9 @@ impl VersionStore {
             .prefix(".install-")
             .tempdir_in(self.versions_dir())
             .wrap_err("failed to stage the Nanocodex version")?;
+        if let Some(voice) = voice {
+            super::voice::install(staging.path(), voice)?;
+        }
         atomic_write(&staging.path().join(BINARY_NAME), binary, true)?;
         atomic_write(
             &staging.path().join(CHECKSUM_FILE),
@@ -191,6 +203,31 @@ impl VersionStore {
         )
     }
 
+    pub(super) fn voice_repair_directory(
+        &self,
+        key: &str,
+        executable: &Path,
+    ) -> Result<Option<PathBuf>> {
+        validate_key(key)?;
+        let installed = self.binary_path(key);
+        if !installed.is_file()
+            || executable.canonicalize()? != installed.canonicalize()?
+            || self.is_cached_voice(key, None)?
+        {
+            return Ok(None);
+        }
+        Ok(Some(self.version_dir(key)))
+    }
+
+    pub(super) fn is_cached_voice(
+        &self,
+        key: &str,
+        expected_archive: Option<&str>,
+    ) -> Result<bool> {
+        validate_key(key)?;
+        super::voice::cached(&self.version_dir(key), expected_archive)
+    }
+
     pub(super) fn is_cached_bundle(&self, key: &str, requires_vm_guest: bool) -> Result<bool> {
         Ok(self.is_cached(key)?
             && file_matches_checksum(
@@ -207,6 +244,14 @@ impl VersionStore {
     pub(super) fn activate(&self, key: &str) -> Result<()> {
         if !self.is_cached(key)? {
             bail!("Nanocodex version {key} is not installed or its checksum is invalid");
+        }
+        if self
+            .version_dir(key)
+            .join("nanocodex-voice.sha256")
+            .exists()
+            && !self.is_cached_voice(key, None)?
+        {
+            bail!("Nanocodex version {key} has an incomplete or corrupt voice runtime");
         }
 
         #[cfg(unix)]
@@ -535,7 +580,7 @@ fn file_matches_checksum(path: &Path, checksum_path: &Path) -> Result<bool> {
     Ok(hex::encode(Sha256::digest(contents)) == expected.to_ascii_lowercase())
 }
 
-fn atomic_write(path: &Path, contents: &[u8], executable: bool) -> Result<()> {
+pub(super) fn atomic_write(path: &Path, contents: &[u8], executable: bool) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| eyre!("{} has no parent directory", path.display()))?;
@@ -677,6 +722,7 @@ mod tests {
                 b"managed-cli",
                 Some(b"guest"),
                 Some(b"computer"),
+                None,
             )
             .unwrap();
         store.activate("nightly-build").unwrap();
@@ -735,7 +781,14 @@ mod tests {
         let store = VersionStore::at(directory.path());
 
         store
-            .install_bundle("0.5.0", b"stable-cli", b"stable-managed-cli", None, None)
+            .install_bundle(
+                "0.5.0",
+                b"stable-cli",
+                b"stable-managed-cli",
+                None,
+                None,
+                None,
+            )
             .unwrap();
         store.activate("0.5.0").unwrap();
 
@@ -768,7 +821,14 @@ mod tests {
         assert!(!directory.path().join("bin/nanocodex2").exists());
 
         store
-            .install_bundle("0.4.0", b"stable-cli", b"stable-managed-cli", None, None)
+            .install_bundle(
+                "0.4.0",
+                b"stable-cli",
+                b"stable-managed-cli",
+                None,
+                None,
+                None,
+            )
             .unwrap();
         assert!(store.is_cached_bundle("0.4.0", false).unwrap());
         assert!(!directory.path().join("bin/nanocodex2").exists());
@@ -779,5 +839,115 @@ mod tests {
             fs::read(directory.path().join("current/nanocodex2")).unwrap(),
             b"stable-managed-cli"
         );
+    }
+
+    #[test]
+    fn first_voice_use_repairs_only_the_running_managed_version() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = VersionStore::at(directory.path());
+        store
+            .install_bundle("release", b"cli", b"managed", None, None, None)
+            .unwrap();
+        let executable = store.binary_path("release");
+        assert_eq!(
+            store
+                .voice_repair_directory("release", &executable)
+                .unwrap(),
+            Some(store.version_dir("release"))
+        );
+        let custom = directory.path().join("custom-cli");
+        fs::write(&custom, b"cli").unwrap();
+        assert!(
+            store
+                .voice_repair_directory("release", &custom)
+                .unwrap()
+                .is_none()
+        );
+        super::super::voice::install(
+            &store.version_dir("release"),
+            &super::super::voice::fixture(None),
+        )
+        .unwrap();
+        assert!(
+            store
+                .voice_repair_directory("release", &executable)
+                .unwrap()
+                .is_none()
+        );
+        fs::remove_file(
+            store
+                .version_dir("release")
+                .join("nanocodex-resources/voice/runtime.json"),
+        )
+        .unwrap();
+        assert!(
+            store
+                .voice_repair_directory("release", &executable)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn runtime_repairs_legacy_cache_and_invalid_runtime_keeps_previous_version_active() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = VersionStore::at(directory.path());
+        store
+            .install_bundle("old", b"cli", b"managed", None, None, None)
+            .unwrap();
+        store.activate("old").unwrap();
+        assert!(!store.is_cached_voice("old", None).unwrap());
+        let voice = super::super::voice::fixture(None);
+        store
+            .install_bundle("old", b"cli", b"managed", None, None, Some(&voice))
+            .unwrap();
+        assert!(store.is_cached_voice("old", None).unwrap());
+        assert!(
+            store
+                .install_bundle("new", b"new", b"managed", None, None, Some(b"invalid"))
+                .is_err()
+        );
+        assert_eq!(store.active().unwrap().as_deref(), Some("old"));
+        assert!(!store.version_dir("new").exists());
+        fs::remove_file(
+            store
+                .version_dir("old")
+                .join("nanocodex-resources/voice/bin/nanocodex-voice-host"),
+        )
+        .unwrap();
+        assert!(!store.is_cached_voice("old", None).unwrap());
+        assert!(store.activate("old").is_err());
+        store
+            .install_bundle("old", b"cli", b"managed", None, None, Some(&voice))
+            .unwrap();
+        store.activate("old").unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires NANOCODEX_TEST_VOICE_ARCHIVE built by scripts/build-voice-release.py"]
+    fn installs_and_launches_the_real_release_runtime() {
+        let archive = fs::read(std::env::var_os("NANOCODEX_TEST_VOICE_ARCHIVE").unwrap()).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let store = VersionStore::at(directory.path());
+        store
+            .install_bundle("release", b"cli", b"managed", None, None, Some(&archive))
+            .unwrap();
+        store.activate("release").unwrap();
+        assert!(
+            store
+                .is_cached_voice("release", Some(&hex::encode(Sha256::digest(&archive))))
+                .unwrap()
+        );
+        let runtime = directory.path().join("current/nanocodex-resources/voice");
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(runtime.join("runtime.json")).unwrap()).unwrap();
+        assert_eq!(receipt["developmentOnly"], false);
+        assert_eq!(receipt["distribution"], "publicRelease");
+        let helper = std::process::Command::new(runtime.join("bin/nanocodex-voice-host"))
+            .arg("--build-commit")
+            .output()
+            .unwrap();
+        assert!(helper.status.success());
+        assert!(!helper.stdout.is_empty());
     }
 }

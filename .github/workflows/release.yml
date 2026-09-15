@@ -117,7 +117,7 @@ jobs:
     name: build ${{ matrix.target }}
     needs: prepare-release
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 90
     permissions:
       contents: read
     strategy:
@@ -148,6 +148,7 @@ jobs:
         env:
           TAG_NAME: ${{ github.ref_name }}
           VERGEN_GIT_SHA: ${{ github.sha }}
+          STABLE_GIT_COMMIT: ${{ github.sha }}
         run: |
           cargo build --locked --release \
             --package nanocodex-bin --bin nanocodex --features tempo \
@@ -169,10 +170,17 @@ jobs:
             --entitlements nanocodex-vm.entitlements \
             "target/${{ matrix.target }}/release/nanocodex2"
           codesign --verify --strict "target/${{ matrix.target }}/release/nanocodex2"
+      - uses: ./.github/actions/voice-release
+        env:
+          STABLE_GIT_COMMIT: ${{ github.sha }}
+        with:
+          target: ${{ matrix.target }}
+          output: voice-dist/nanocodex-voice-${{ matrix.target }}.tar.gz
       - name: Stage artifact
         shell: bash
         run: |
           mkdir dist
+          cp "voice-dist/nanocodex-voice-${{ matrix.target }}.tar.gz" dist/
           cp "target/${{ matrix.target }}/release/nanocodex" "dist/${{ matrix.artifact }}"
           cp "target/${{ matrix.target }}/release/nanocodex2" "dist/${{ matrix.companion }}"
           cp "crates/experimental/nanocodex-computer/runtime/target/${{ matrix.target }}/release/nanocodex-computer" "dist/nanocodex-computer-${{ matrix.target }}"

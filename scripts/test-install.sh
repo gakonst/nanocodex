@@ -86,6 +86,26 @@ printf '%s\n' '#!/bin/sh' 'printf "%s\n" "nanocodex2 1.2.3"' > "${binary_sources
 printf '%s\n' '#!/bin/sh' 'printf "%s\n" "nanocodex-computer 0.1.0"' > "${binary_sources[2]}"
 chmod +x "${binary_sources[@]}"
 
+voice_asset="nanocodex-voice-x86_64-unknown-linux-gnu.tar.gz"
+make_voice_fixture() {
+  python3 - "$1/$voice_asset" "${2:-valid}" <<'PY'
+import io, sys, tarfile
+with tarfile.open(sys.argv[1], 'w:gz', format=tarfile.USTAR_FORMAT) as archive:
+    names = ['bin/nanocodex-voice-host', 'runtime.json', 'manifest.json', 'sources.json', 'NOTICE.md', 'lib/libgstreamer-1.0.so.0', 'licenses/LGPL-2.1.txt']
+    if sys.argv[2] == 'incomplete': names.remove('bin/nanocodex-voice-host')
+    for name in names:
+        entry = tarfile.TarInfo('nanocodex-resources/voice/' + name)
+        data = b'fixture voice runtime\n'
+        entry.size = len(data); entry.mode = 0o755 if '/bin/' in entry.name else 0o644
+        archive.addfile(entry, io.BytesIO(data))
+    if sys.argv[2] in ['traversal', 'link']:
+        entry = tarfile.TarInfo('nanocodex-resources/voice/../../escape' if sys.argv[2] == 'traversal' else 'nanocodex-resources/voice/link')
+        if sys.argv[2] == 'link': entry.type = tarfile.SYMTYPE; entry.linkname = '/tmp'
+        archive.addfile(entry)
+PY
+  printf '%s  %s\n' "$(sha256_file "$1/$voice_asset")" "$voice_asset" >> "$1/SHA256SUMS"
+}
+
 run_case() {
   local format="$1"
   local case_root="$temporary_root/$format"
@@ -107,6 +127,7 @@ run_case() {
     digest="$(sha256_file "$fixture/$asset")"
     printf '%s  %s\n' "$digest" "$asset" >> "$fixture/SHA256SUMS"
   done
+  make_voice_fixture "$fixture"
 
   output="$(
     PATH="$mock_bin:$PATH" \
@@ -124,6 +145,20 @@ run_case() {
   [[ -f "$install_root/updater/nanocodex.sha256" ]]
   [[ -f "$install_root/versions/1.2.3/nanocodex.sha256" ]]
   [[ -f "$install_root/versions/1.2.3/nanocodex2.sha256" ]]
+  [[ -x "$install_root/current/nanocodex-resources/voice/bin/nanocodex-voice-host" ]]
+
+  rm "$install_root/current/nanocodex-resources/voice/bin/nanocodex-voice-host"
+  PATH="$mock_bin:$PATH" HOME="$case_root/home" SHELL=/bin/bash NANOCODEX_DIR="$install_root" \
+    NANOCODEX_INSTALL_FIXTURE="$fixture" bash "$workspace_root/install" >/dev/null
+  [[ -x "$install_root/current/nanocodex-resources/voice/bin/nanocodex-voice-host" ]]
+  [[ -f "$install_root/current/nanocodex-voice.sha256" ]]
+  [[ "$(cat "$install_root/current/nanocodex-voice.archive.sha256")" == "$(sha256_file "$fixture/$voice_asset")" ]]
+
+  # Repair the exact older binary bundle that originally omitted voice.
+  rm -r "$install_root/current/nanocodex-resources"
+  PATH="$mock_bin:$PATH" HOME="$case_root/home" SHELL=/bin/bash NANOCODEX_DIR="$install_root" \
+    NANOCODEX_INSTALL_FIXTURE="$fixture" bash "$workspace_root/install" >/dev/null
+  [[ -x "$install_root/current/nanocodex-resources/voice/bin/nanocodex-voice-host" ]]
 
   PATH=/usr/bin:/bin bash "$case_root/home/.bashrc"
   [[ ! -e "$marker" ]]
@@ -153,6 +188,14 @@ run_rejected_case() {
     fi
     printf '%s  %s\n' "$digest" "$asset" >> "$fixture/SHA256SUMS"
   done
+  if [[ "$failure" == voice-* ]]; then
+    make_voice_fixture "$fixture" "${failure#voice-}"
+    if [[ "$failure" == voice-checksum ]]; then printf 'corrupt' >> "$fixture/$voice_asset"; fi
+    if [[ "$failure" == voice-missing ]]; then rm "$fixture/$voice_asset"; fi
+    mkdir -p "$install_root/versions/previous"
+    printf 'previous installation' > "$install_root/versions/previous/marker"
+    ln -s versions/previous "$install_root/current"
+  fi
 
   if output="$(
     PATH="$mock_bin:$PATH" \
@@ -165,7 +208,12 @@ run_rejected_case() {
     echo "test-install: installer accepted $failure" >&2
     exit 1
   fi
-  [[ ! -e "$install_root/current" ]]
+  if [[ "$failure" == voice-* ]]; then
+    [[ "$(readlink "$install_root/current")" == versions/previous ]]
+    [[ "$(cat "$install_root/current/marker")" == 'previous installation' ]]
+  else
+    [[ ! -e "$install_root/current" ]]
+  fi
   [[ ! -e "$install_root/bin/nanocodex" ]]
   [[ ! -e "$install_root/bin/nanocodex2" ]]
   [[ ! -e "$install_root/bin/nanocodex-computer" ]]
@@ -185,6 +233,7 @@ run_rejected_case() {
     invalid-computer-checksum)
       grep -Fq 'checksum mismatch for nanocodex-computer-x86_64-unknown-linux-gnu' <<<"$output"
       ;;
+    voice-*) ;;
   esac
 }
 
@@ -195,5 +244,10 @@ run_rejected_case missing-companion-checksum
 run_rejected_case invalid-main-checksum
 run_rejected_case invalid-companion-checksum
 run_rejected_case invalid-computer-checksum
+run_rejected_case voice-checksum
+run_rejected_case voice-missing
+run_rejected_case voice-incomplete
+run_rejected_case voice-traversal
+run_rejected_case voice-link
 
-echo "installer atomically activates verified raw and gzip bundles including the computer companion"
+echo "installer verifies, installs and repairs voice alongside raw and gzip binary bundles"

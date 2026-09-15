@@ -88,6 +88,15 @@ ChatGPT desktop sessions use an isolated native helper with CPAL capture,
 Sonora echo cancellation/noise suppression/automatic gain control, Rubato
 resampling, Opus RTP, and a 60 ms GStreamer jitter buffer. Build the development
 runtime on macOS with `pnpm build:voice-native` (requires the GStreamer SDK).
+That stages the helper beside `target/debug` binaries. To test a local build with the installed CLI,
+use `pnpm build:voice-native --output "$HOME/.nanocodex/current"`; building in
+the checkout alone does not install the helper beside an already installed
+executable. Custom installations can pass their executable directory to
+`--output`. The full `nanocodex-resources/voice` directory must travel with the
+executable, including its private libraries and plugins.
+
+Release installation and `nanocodex update` install the packaged helper and its
+private libraries automatically; users do not need a native SDK or a build step.
 Prepared native runtimes support macOS, Windows, and Linux. Explicit WebSocket
 and Platform sessions retain the PCM path on macOS/Windows.
 

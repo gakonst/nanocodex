@@ -20,6 +20,7 @@ use crate::version;
 
 mod pr;
 mod store;
+mod voice;
 
 use store::VersionStore;
 
@@ -66,6 +67,43 @@ pub(crate) async fn linux_hand_artifacts() -> Result<serde_json::Value> {
         );
     }
     Ok(serde_json::json!({"release": release.tag_name, "artifacts": artifacts}))
+}
+
+/// Older updater binaries install executables without their voice archive.
+/// Repair only this exact managed stable installation, on first voice use.
+pub(crate) async fn ensure_installed_voice_runtime() -> Result<()> {
+    if version::IS_NIGHTLY || std::env::var_os("NANOCODEX_VOICE_PACKAGE").is_some() {
+        return Ok(());
+    }
+    let store = VersionStore::discover()?;
+    let key = env!("CARGO_PKG_VERSION");
+    let executable = std::env::current_exe()?;
+    let Some(directory) = store.voice_repair_directory(key, &executable)? else {
+        return Ok(());
+    };
+    let client = Client::builder()
+        .user_agent(format!("nanocodex/{}", version::SEMVER_VERSION))
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .build()?;
+    let release = fetch_release(
+        &client,
+        &format!("{TAGGED_RELEASE_API}/v{key}"),
+        &format!("Nanocodex {key} voice runtime"),
+    )
+    .await?;
+    let manifest = download(&client, find_asset(&release, CHECKSUMS_ASSET)?, false).await?;
+    let expected_binary = checksum_for(&manifest, binary_asset_name()?)?;
+    if hex::encode(Sha256::digest(fs::read(&executable)?)) != expected_binary {
+        bail!(
+            "installed CLI does not match the release; run nanocodex update --force to repair it"
+        );
+    }
+    let name = voice::asset_name(binary_asset_name()?);
+    let asset = find_asset(&release, &name)?;
+    let archive = download_verified(&client, asset, &manifest, false).await?;
+    voice::install(&directory, &archive)?;
+    Ok(())
 }
 
 pub(crate) fn prepare_legacy_nightly_bootstrap() -> Result<()> {
@@ -161,9 +199,14 @@ impl Update {
             return install_pr_binary(pr, &store, &previous).await;
         }
 
+        // Complete cached releases can still be selected offline. A legacy
+        // binary-only cache must consult release metadata to discover voice.
         if let Some(requested) = &self.version {
             let key = requested.to_string();
-            if !self.force && store.is_cached_bundle(&key, false)? {
+            if !self.force
+                && store.is_cached_bundle(&key, false)?
+                && store.is_cached_voice(&key, None)?
+            {
                 store.activate(&key)?;
                 maybe_promote_manager(&store, &key, requested, &manager_version)?;
                 report_activation(&previous, &key, false);
@@ -207,12 +250,23 @@ impl Update {
             &computer_asset_name_for(std::env::consts::OS, std::env::consts::ARCH)?,
         )
         .ok();
+        let voice_name = voice::asset_name(binary_asset_name()?);
+        let checksum_manifest =
+            download(&client, find_asset(&release, CHECKSUMS_ASSET)?, false).await?;
+        let voice_asset = optional_voice_asset(&release, &checksum_manifest, &voice_name)?;
+        let voice_checksum = voice_asset
+            .map(|asset| checksum_for(&checksum_manifest, &asset.name))
+            .transpose()?;
         let cached = if self.nightly {
             store.is_cached_bundle(&key, vm_guest_binary_asset_name().is_some())?
         } else {
             store.is_cached_bundle(&key, false)?
         };
-        if !self.force && cached && (computer.is_none() || store.is_cached_computer(&key)?) {
+        if !self.force
+            && cached
+            && (computer.is_none() || store.is_cached_computer(&key)?)
+            && (voice_asset.is_none() || store.is_cached_voice(&key, voice_checksum.as_deref())?)
+        {
             store.activate(&key)?;
             if self.nightly {
                 store.promote_manager(&key)?;
@@ -227,8 +281,10 @@ impl Update {
         let (binary, compressed) = find_preferred_asset(&release, binary_name)?;
         let (companion, companion_compressed) =
             find_preferred_asset(&release, nanocodex2_binary_asset_name()?)?;
-        let checksums = find_asset(&release, CHECKSUMS_ASSET)?;
-        let checksum_manifest = download(&client, checksums, false).await?;
+        let voice_contents = match voice_asset {
+            Some(asset) => Some(download_verified(&client, asset, &checksum_manifest, true).await?),
+            None => None,
+        };
         let archive = download_verified(&client, binary, &checksum_manifest, true).await?;
         let contents = unpack_release_asset(archive, &binary.name, compressed)?;
         let companion_archive =
@@ -264,6 +320,7 @@ impl Update {
             &companion_contents,
             guest_contents.as_deref(),
             computer_contents.as_deref(),
+            voice_contents.as_deref(),
         )?;
         store.activate(&key)?;
         if self.nightly {
@@ -368,8 +425,9 @@ async fn install_pr_binary(number: u64, store: &VersionStore, previous: &str) ->
             companion,
             None,
             artifact.computer.as_deref(),
+            artifact.voice.as_deref(),
         )?;
-    } else if artifact.computer.is_some() {
+    } else if artifact.computer.is_some() || artifact.voice.is_some() {
         bail!("PR artifact includes CUA without its nanocodex2 companion");
     } else {
         store.install(&key, &artifact.contents)?;
@@ -629,6 +687,24 @@ fn find_asset<'a>(release: &'a Release, name: &str) -> Result<&'a ReleaseAsset> 
         })
 }
 
+fn optional_voice_asset<'a>(
+    release: &'a Release,
+    manifest: &[u8],
+    name: &str,
+) -> Result<Option<&'a ReleaseAsset>> {
+    let advertised = std::str::from_utf8(manifest)?.lines().any(|line| {
+        line.split_whitespace()
+            .nth(1)
+            .map(|value| value.trim_start_matches('*'))
+            == Some(name)
+    });
+    if advertised || release.assets.iter().any(|asset| asset.name == name) {
+        checksum_for(manifest, name)?;
+        return find_asset(release, name).map(Some);
+    }
+    Ok(None) // Compatibility with releases that predate packaged voice.
+}
+
 fn find_preferred_asset<'a>(
     release: &'a Release,
     binary_name: &str,
@@ -883,6 +959,34 @@ mod tests {
         let (raw, compressed) = find_preferred_asset(&raw_release, "nanocodex-test").unwrap();
         assert_eq!(raw.id, 1);
         assert!(!compressed);
+    }
+
+    #[test]
+    fn advertised_voice_requires_both_the_asset_and_its_checksum() {
+        let name = voice::asset_name("nanocodex-aarch64-apple-darwin");
+        let mut release = Release {
+            tag_name: "v0.5.0".into(),
+            target_commitish: "master".into(),
+            assets: vec![],
+        };
+        assert!(
+            optional_voice_asset(&release, b"", &name)
+                .unwrap()
+                .is_none()
+        );
+        let manifest = format!("{}  {name}\n", "a".repeat(64));
+        assert!(optional_voice_asset(&release, manifest.as_bytes(), &name).is_err());
+        release.assets.push(ReleaseAsset {
+            id: 1,
+            name: name.clone(),
+            browser_download_url: "https://example.invalid/voice".into(),
+        });
+        assert!(optional_voice_asset(&release, b"", &name).is_err());
+        assert!(
+            optional_voice_asset(&release, manifest.as_bytes(), &name)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

@@ -1606,6 +1606,12 @@ impl AgentWorker {
             }));
             return;
         };
+        if let Err(error) = crate::update::ensure_installed_voice_runtime().await {
+            drop(self.updates.send(WorkerEvent::VoiceFailed {
+                error: format!("failed to repair installed voice runtime: {error:#}"),
+            }));
+            return;
+        }
         let mut builder = VoiceSessionBuilder::new(realtime, self.main.agent.clone())
             .session_id(Arc::clone(&self.main.request_id))
             .agent_control(self.voice_agent_control.clone());

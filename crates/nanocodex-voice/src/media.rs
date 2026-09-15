@@ -93,7 +93,7 @@ impl VoiceMedia {
             });
         }
         if !RealtimeWebrtcSession::is_supported() {
-            return Err(VoiceFailure::Native("Voice runtime unavailable. Run pnpm build:voice-native or install a voice-enabled package.".into()));
+            return Err(VoiceFailure::Native("Voice runtime is missing or incomplete. Reinstall or update Nanocodex to repair it.".into()));
         }
         for attempt in 0..2 {
             tracing::info!(target: "nanocodex_voice", attempt, "starting native voice transport");

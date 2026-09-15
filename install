@@ -123,6 +123,55 @@ for binary in "${binaries[@]}"; do
   binary_checksums+=("$(sha256_file "$binary_path")")
 done
 
+voice_asset="nanocodex-voice-$target.tar.gz"
+voice_archive_checksum="$(awk -v asset="$voice_asset" '$2 == asset || $2 == "*" asset { print $1; exit }' "$temporary_dir/SHA256SUMS")"
+voice_stage=""
+if [[ -n "$voice_archive_checksum" ]]; then
+  echo "Downloading $voice_asset..."
+  curl --fail --show-error --location --progress-bar "$release_url/$voice_asset" --output "$temporary_dir/$voice_asset"
+  if [[ "$(sha256_file "$temporary_dir/$voice_asset")" != "$voice_archive_checksum" ]]; then
+    echo "nanocodex: checksum mismatch for $voice_asset" >&2
+    exit 1
+  fi
+  # The release archive contains regular files only. Validate paths and entry
+  # types before tar can write anything; never follow archive links.
+  tar -tzf "$temporary_dir/$voice_asset" > "$temporary_dir/voice-files"
+  tar -tvzf "$temporary_dir/$voice_asset" > "$temporary_dir/voice-types"
+  if ! awk 'substr($1, 1, 1) != "-" { bad = 1 } END { exit bad }' "$temporary_dir/voice-types"; then
+    echo "nanocodex: voice archive must contain regular files only" >&2
+    exit 1
+  fi
+  while IFS= read -r name; do
+    if [[ ! "$name" =~ ^nanocodex-resources/voice/[A-Za-z0-9_+./-]+$ ]] ||
+      [[ "/$name/" == *"/../"* || "/$name/" == *"/./"* || "$name" == *"//"* ]]; then
+      echo "nanocodex: invalid voice archive path" >&2
+      exit 1
+    fi
+  done < "$temporary_dir/voice-files"
+  if [[ -n "$(tr '[:upper:]' '[:lower:]' < "$temporary_dir/voice-files" | sort | uniq -d)" ]]; then
+    echo "nanocodex: duplicate voice archive path" >&2
+    exit 1
+  fi
+  voice_stage="$temporary_dir/voice-stage"
+  mkdir "$voice_stage"
+  tar -xzf "$temporary_dir/$voice_asset" --no-same-owner -C "$voice_stage"
+  for required in bin/nanocodex-voice-host runtime.json NOTICE.md sources.json manifest.json; do
+    if [[ ! -f "$voice_stage/nanocodex-resources/voice/$required" ]]; then
+      echo "nanocodex: voice runtime archive is incomplete" >&2
+      exit 1
+    fi
+  done
+  if [[ ! -d "$voice_stage/nanocodex-resources/voice/lib" || ! -d "$voice_stage/nanocodex-resources/voice/licenses" ]]; then
+    echo "nanocodex: voice runtime libraries or licenses are missing" >&2
+    exit 1
+  fi
+  : > "$voice_stage/nanocodex-voice.sha256"
+  while IFS= read -r name; do
+    printf '%s  %s\n' "$(sha256_file "$voice_stage/$name")" "$name" >> "$voice_stage/nanocodex-voice.sha256"
+  done < "$temporary_dir/voice-files"
+  printf '%s\n' "$voice_archive_checksum" > "$voice_stage/nanocodex-voice.archive.sha256"
+fi
+
 version_dir="$versions_dir/$version"
 mkdir -p "$bin_dir" "$versions_dir" "$updater_dir"
 if [[ -e "$version_dir" || -L "$version_dir" ]]; then
@@ -134,6 +183,40 @@ if [[ -e "$version_dir" || -L "$version_dir" ]]; then
       exit 1
     fi
   done
+  if [[ -n "$voice_stage" ]]; then
+    if [[ -L "$version_dir/nanocodex-resources" || -L "$version_dir/nanocodex-resources/voice" ]]; then
+      echo "nanocodex: installed voice resources must not be symbolic links" >&2
+      exit 1
+    fi
+    voice_matches=true
+    if [[ -d "$version_dir/nanocodex-resources/voice" ]]; then
+      while IFS= read -r name; do
+        if [[ ! -f "$version_dir/$name" || -L "$version_dir/$name" ]] ||
+          [[ "$(sha256_file "$version_dir/$name")" != "$(sha256_file "$voice_stage/$name")" ]]; then
+          voice_matches=false
+          break
+        fi
+      done < "$temporary_dir/voice-files"
+    else
+      voice_matches=false
+    fi
+    if [[ ! -x "$version_dir/nanocodex-resources/voice/bin/nanocodex-voice-host" ]]; then
+      voice_matches=false
+    fi
+    if [[ "$voice_matches" == false ]]; then
+      mkdir -p "$version_dir/nanocodex-resources"
+      previous_voice="$version_dir/nanocodex-resources/.voice-previous-$$"
+      if [[ -e "$version_dir/nanocodex-resources/voice" ]]; then
+        mv "$version_dir/nanocodex-resources/voice" "$previous_voice"
+      fi
+      if ! mv "$voice_stage/nanocodex-resources/voice" "$version_dir/nanocodex-resources/voice"; then
+        if [[ -e "$previous_voice" ]]; then mv "$previous_voice" "$version_dir/nanocodex-resources/voice"; fi
+        exit 1
+      fi
+      if [[ -e "$previous_voice" ]]; then rm -r "$previous_voice"; fi
+    fi
+    cp "$voice_stage/"nanocodex-voice*.sha256 "$version_dir/"
+  fi
 else
   staged_version_dir="$temporary_dir/version"
   mkdir "$staged_version_dir"
@@ -142,6 +225,10 @@ else
     install -m 755 "${binary_paths[$index]}" "$staged_version_dir/$installed_name"
     printf '%s\n' "${binary_checksums[$index]}" > "$staged_version_dir/$installed_name.sha256"
   done
+  if [[ -n "$voice_stage" ]]; then
+    mv "$voice_stage/nanocodex-resources" "$staged_version_dir/"
+    cp "$voice_stage/"nanocodex-voice*.sha256 "$staged_version_dir/"
+  fi
   mv "$staged_version_dir" "$version_dir"
 fi
 install -m 755 "${binary_paths[0]}" "$updater_dir/nanocodex"

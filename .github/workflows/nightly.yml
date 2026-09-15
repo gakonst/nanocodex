@@ -25,7 +25,7 @@ jobs:
     if: github.repository == 'gakonst/nanocodex'
     name: build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 90
     permissions:
       contents: read
     strategy:
@@ -49,7 +49,9 @@ jobs:
           persist-credentials: false
       - name: Record exact source revision
         shell: bash
-        run: echo "BUILD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+        run: |
+          echo "BUILD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "STABLE_GIT_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: stable
@@ -99,12 +101,17 @@ jobs:
             --entitlements nanocodex-vm.entitlements \
             "target/${{ matrix.target }}/nightly/nanocodex2"
           codesign --verify --strict "target/${{ matrix.target }}/nightly/nanocodex2"
+      - uses: ./.github/actions/voice-release
+        with:
+          target: ${{ matrix.target }}
+          output: voice-dist/nanocodex-voice-${{ matrix.target }}.tar.gz
       - name: Stage artifact
         shell: bash
         env:
           PR_NUMBER: ${{ inputs.pr }}
         run: |
           mkdir dist
+          cp "voice-dist/nanocodex-voice-${{ matrix.target }}.tar.gz" dist/
           cp "target/${{ matrix.target }}/nightly/nanocodex" "dist/${{ matrix.artifact }}"
           cp "target/${{ matrix.target }}/nightly/nanocodex2" "dist/${{ matrix.companion }}"
           cp "crates/experimental/nanocodex-computer/runtime/target/${{ matrix.target }}/release/nanocodex-computer" "dist/nanocodex-computer-${{ matrix.target }}"
@@ -128,13 +135,14 @@ jobs:
           ARTIFACT: ${{ matrix.artifact }}
           COMPANION: ${{ matrix.companion }}
           COMPUTER: nanocodex-computer-${{ matrix.target }}
+          VOICE: nanocodex-voice-${{ matrix.target }}.tar.gz
           PR_NUMBER: ${{ inputs.pr }}
         run: |
           cd dist
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$ARTIFACT" "$COMPANION" "$COMPUTER" > "$ARTIFACT.sha256"
+            sha256sum "$ARTIFACT" "$COMPANION" "$COMPUTER" "$VOICE" > "$ARTIFACT.sha256"
           else
-            shasum -a 256 "$ARTIFACT" "$COMPANION" "$COMPUTER" > "$ARTIFACT.sha256"
+            shasum -a 256 "$ARTIFACT" "$COMPANION" "$COMPUTER" "$VOICE" > "$ARTIFACT.sha256"
           fi
           printf '{"repository":"%s","pr":%s,"sha":"%s","artifact":"%s","run_id":%s}\n' \
             "$GITHUB_REPOSITORY" "$PR_NUMBER" "$BUILD_SHA" "$ARTIFACT" \
@@ -279,6 +287,7 @@ jobs:
                 nanocodex2-x86_64-unknown-linux-gnu|nanocodex2-x86_64-unknown-linux-gnu.gz|\
                 nanocodex-computer-aarch64-apple-darwin|nanocodex-computer-aarch64-apple-darwin.gz|\
                 nanocodex-computer-x86_64-unknown-linux-gnu|nanocodex-computer-x86_64-unknown-linux-gnu.gz|\
+                nanocodex-voice-aarch64-apple-darwin.tar.gz|nanocodex-voice-x86_64-unknown-linux-gnu.tar.gz|\
                 nanocodex-vm-guest-x86_64-unknown-linux-musl|nanocodex-vm-guest-x86_64-unknown-linux-musl.gz)
                   ;;
                 *)

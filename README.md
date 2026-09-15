@@ -115,6 +115,13 @@ curl -fsSL https://nanocodex.paradigm.xyz | bash
 nanocodex
 ```
 
+Release bundles include the native voice helper, libraries, and plugins.
+Installation and updates verify and install them with the matching CLI version;
+voice users do not need to run a source build. The updater checks cached runtime
+files and repairs missing or corrupt resources before activating that release.
+For upgrades performed by an older updater, the CLI repairs its matching runtime
+automatically on first voice use.
+
 The CLI is a production consumer and a useful way to try the agent, not a
 process protocol that applications must adopt. See
 [`bin/nanocodex`](bin/nanocodex), the [examples index](examples/README.md), and

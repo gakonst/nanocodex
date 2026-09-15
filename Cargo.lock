@@ -5784,6 +5784,7 @@ dependencies = [
  "shlex 2.0.1",
  "syntect",
  "sysinfo",
+ "tar",
  "tempfile",
  "tempo-alloy",
  "thiserror 2.0.18",

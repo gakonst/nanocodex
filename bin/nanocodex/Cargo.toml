@@ -73,6 +73,7 @@ two-face.workspace = true
 sha2.workspace = true
 shlex.workspace = true
 tempfile.workspace = true
+tar.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 tokio = { workspace = true, features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }

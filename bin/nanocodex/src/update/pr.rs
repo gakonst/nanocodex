@@ -14,6 +14,7 @@ pub(super) struct Artifact {
     pub(super) contents: Vec<u8>,
     pub(super) companion: Option<Vec<u8>>,
     pub(super) computer: Option<Vec<u8>>,
+    pub(super) voice: Option<Vec<u8>>,
     pub(super) head_sha: String,
     pub(super) run_url: String,
 }
@@ -144,6 +145,11 @@ pub(super) async fn download(number: u64, asset_name: &str) -> Result<Artifact> 
             directory.path(),
             &checksum_manifest,
             &asset_name.replacen("nanocodex-", "nanocodex-computer-", 1),
+        )?,
+        voice: optional_binary(
+            directory.path(),
+            &checksum_manifest,
+            &super::voice::asset_name(asset_name),
         )?,
         head_sha: pull_request.head_ref_oid,
         run_url: run.url,
