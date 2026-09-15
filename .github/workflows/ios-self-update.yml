@@ -1,7 +1,14 @@
 name: Nanocodex iPhone delivery
-run-name: ${{ github.event_name == 'workflow_dispatch' && format('Nanocodex iPhone update {0}', inputs.request_id) || 'Validate Nanocodex iPhone delivery' }}
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('Nanocodex iPhone update {0}', inputs.request_id) || github.event_name == 'push' && format('Nanocodex iPhone update {0}', github.sha) || 'Validate Nanocodex iPhone delivery' }}
 
 on:
+  push:
+    branches: [master]
+    paths:
+      - apple/**
+      - crates/experimental/nanocodex-voice-ffi/**
+      - crates/experimental/nanocodex-voice-protocol/**
+      - .github/workflows/ios-self-update.yml
   workflow_dispatch:
     inputs:
       request_id:
@@ -26,7 +33,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ios-delivery-${{ github.event_name == 'workflow_dispatch' && inputs.request_id || github.event.pull_request.number }}
+  group: ios-delivery-${{ github.event_name == 'workflow_dispatch' && inputs.request_id || github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -36,7 +43,7 @@ jobs:
     timeout-minutes: 45
     env:
       BUNDLE_ID: xyz.paradigm.centaur
-      UPLOAD: ${{ github.event_name == 'workflow_dispatch' }}
+      UPLOAD: ${{ github.event_name != 'pull_request' }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -51,11 +58,16 @@ jobs:
           REQUEST_ID: ${{ inputs.request_id }}
           VERSION: ${{ inputs.version }}
           BUILD_VERSION: ${{ inputs.build_version }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [ "$UPLOAD" != true ]; then
+          if [ "$EVENT_NAME" = pull_request ]; then
             REQUEST_ID=$(printf '%s' "$GITHUB_SHA" | cut -c1-24)
             VERSION=0.1.0
             BUILD_VERSION=2
+          elif [ "$EVENT_NAME" = push ]; then
+            REQUEST_ID=$(printf '%s' "$GITHUB_SHA" | cut -c1-24)
+            VERSION=0.1.0
+            BUILD_VERSION=$(date -u +%s)
           fi
           [[ "$REQUEST_ID" =~ ^[0-9a-f]{24}$ ]]
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]
