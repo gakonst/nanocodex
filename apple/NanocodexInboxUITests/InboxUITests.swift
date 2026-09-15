@@ -80,14 +80,12 @@ final class InboxUITests: XCTestCase {
         let app = startupFixture()
         XCTAssertTrue(app.buttons["browser-tab:saved"].waitForExistence(timeout: 15))
         app.buttons["app-menu"].tap()
-        app.buttons["Account settings"].tap()
-        let connectors = app.buttons["account-connectors"]
+        let connectors = app.buttons["inbox-connectors"]
         XCTAssertTrue(connectors.waitForExistence(timeout: 5))
         connectors.tap()
 
         XCTAssertTrue(app.descendants(matching: .any)["connectors-list"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["connector-connected:google"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["2 accounts"].exists)
         XCTAssertTrue(app.buttons["connector-available:slack"].exists)
         capture(app, "mobile-connectors-multiple-accounts")
 

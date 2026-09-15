@@ -28,6 +28,7 @@ struct InboxView: View {
     @State private var showOverview = false
     @State private var readingPositions = ConversationReadingPositions()
     @State private var showScheduledJobs = false
+    @State private var showConnectors = false
     @State private var showSettings = false
     @State private var showScreens = false
     @State private var screenFraction = 0.46
@@ -68,6 +69,13 @@ struct InboxView: View {
                     .navigationBarTitleDisplayMode(.inline)
                     #endif
                 }
+                .navigationDestination(isPresented: $showConnectors) {
+                    ConnectorsView(model: model)
+                        #if os(iOS)
+                        .toolbar(.visible, for: .navigationBar)
+                        .navigationBarTitleDisplayMode(.inline)
+                        #endif
+                }
                 .navigationDestination(isPresented: $showSettings) {
                     settings
                         #if os(iOS)
@@ -94,7 +102,7 @@ struct InboxView: View {
             if model.focused != nil { model.openThread() }
         }
         .onChange(of: model.connected) { _, connected in
-            if !connected { showScreens = false; showScheduledJobs = false; showSettings = false; showOverview = false; readingPositions.values.removeAll() }
+            if !connected { showScreens = false; showScheduledJobs = false; showConnectors = false; showSettings = false; showOverview = false; readingPositions.values.removeAll() }
         }
         .onChange(of: draggingTabs) { _, dragging in
             if !dragging { tabScrub = nil; tabScrubEdge = 0 }
@@ -279,6 +287,11 @@ struct InboxView: View {
                 Button { composerFocused = false; showScheduledJobs = true } label: {
                     Label("Scheduled jobs", systemImage: "clock")
                 }.accessibilityIdentifier("inbox-scheduled-jobs")
+                if !model.isDemo {
+                    Button { composerFocused = false; showConnectors = true } label: {
+                        Label("Connectors", systemImage: "link")
+                    }.accessibilityIdentifier("inbox-connectors")
+                }
                 Button { composerFocused = false; showSettings = true } label: {
                     Label("Account settings", systemImage: "gearshape")
                 }
@@ -368,14 +381,6 @@ struct InboxView: View {
             Section("Account") {
                 Text(model.isDemo ? "Demo · sample agents" : model.connection == "Sign in again" ? "Sign in again to reconnect your account." : "Nanocodex account connected")
                 Text("Agents keep running when you switch conversations or close the app.").foregroundStyle(.secondary)
-                if !model.isDemo {
-                    NavigationLink {
-                        ConnectorsView(model: model)
-                    } label: {
-                        Label("Connectors", systemImage: "link")
-                    }
-                    .accessibilityIdentifier("account-connectors")
-                }
                 Button(model.isDemo ? "Connect account" : model.connection == "Sign in again" ? "Sign in again" : "Disconnect account") {
                     do { try model.disconnect(); showSettings = false } catch { model.error = error.localizedDescription }
                 }

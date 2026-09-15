@@ -42,12 +42,12 @@ struct ConnectorsView: View {
                         } label: {
                             ConnectorRow(
                                 provider: provider,
-                                detail: connectedDetail(provider),
                                 action: nil,
                                 busy: center.operation == provider.id
                             )
                         }
                         .accessibilityIdentifier("connector-connected:" + provider.id)
+                        .accessibilityValue(connectedDetail(provider))
                     }
                 }
             }
@@ -59,7 +59,6 @@ struct ConnectorsView: View {
                         } label: {
                             ConnectorRow(
                                 provider: provider,
-                                detail: provider.description,
                                 action: "Connect",
                                 busy: center.operation == provider.id
                             )
@@ -113,35 +112,20 @@ private struct ConnectorProviderView: View {
     var body: some View {
         List {
             Section {
-                HStack(alignment: .top, spacing: 14) {
-                    ConnectorLogo(provider: provider.id, size: 54)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(provider.name).font(.headline)
-                        Text(provider.description).font(.subheadline).foregroundStyle(.secondary)
-                    }
+                HStack(spacing: 12) {
+                    ConnectorLogo(provider: provider.id, size: 36)
+                    Text(provider.name).font(.body.weight(.medium)).lineLimit(1)
                 }
-                .padding(.vertical, 4)
             }
             if !connections.isEmpty {
                 Section(connections.count == 1 ? "Account" : "Accounts") {
                     ForEach(connections) { connection in
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(alignment: .firstTextBaseline) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(connection.label).font(.body.weight(.medium))
-                                    let capabilities = overview?.capabilityNames(for: connection, provider: provider) ?? []
-                                    if !capabilities.isEmpty {
-                                        Text(capabilities.joined(separator: " · "))
-                                            .font(.caption).foregroundStyle(.secondary)
-                                            .lineLimit(3)
-                                    }
-                                }
-                                Spacer(minLength: 12)
-                                Button("Revoke", role: .destructive) { pendingRevocation = connection }
-                                    .disabled(center.operation != nil)
-                            }
+                        HStack {
+                            Text(connection.label).font(.body.weight(.medium)).lineLimit(1)
+                            Spacer(minLength: 12)
+                            Button("Revoke", role: .destructive) { pendingRevocation = connection }
+                                .disabled(center.operation != nil)
                         }
-                        .padding(.vertical, 2)
                         .accessibilityIdentifier("connector-account:" + connection.id)
                     }
                 }
@@ -174,8 +158,6 @@ private struct ConnectorProviderView: View {
                 }
                 .disabled(center.operation != nil)
                 .accessibilityIdentifier("connector-add-account")
-            } footer: {
-                Text("Credentials stay in the account broker. Agents receive only the exact connector access you approve.")
             }
             if let error = center.error {
                 Section { Text(error).font(.subheadline).foregroundStyle(.secondary) }
@@ -222,23 +204,18 @@ private struct ConnectorProviderView: View {
 
 private struct ConnectorRow: View {
     let provider: ConnectorProviderDefinition
-    let detail: String
     let action: String?
     let busy: Bool
 
     var body: some View {
-        HStack(spacing: 14) {
-            ConnectorLogo(provider: provider.id, size: 42)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(provider.name).font(.body)
-                Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            }
+        HStack(spacing: 12) {
+            ConnectorLogo(provider: provider.id, size: 34)
+            Text(provider.name).font(.body).lineLimit(1)
             Spacer(minLength: 10)
             if busy { ProgressView() }
             else if let action { Text(action).font(.body.weight(.medium)).foregroundStyle(.blue) }
         }
         .contentShape(Rectangle())
-        .padding(.vertical, 3)
     }
 }
 
