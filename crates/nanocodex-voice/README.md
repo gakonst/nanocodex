@@ -1,6 +1,6 @@
 # nanocodex-voice
 
-`nanocodex-voice` is the experimental reusable desktop consumer for
+`nanocodex-voice` is the reusable desktop consumer for
 Nanocodex's device-neutral GPT Realtime API. It connects the default microphone
 and speaker, delegates repository work to an existing retained `Nanocodex`
 agent, and exposes lifecycle and transcript updates as typed events.

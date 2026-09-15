@@ -52,8 +52,8 @@ done
 codesign --force --sign - --entitlements nanocodex-vm.entitlements "$output/nanocodex2"
 codesign --verify --strict "$output/nanocodex2"
 image="nanocodex-desktop:mac-gpu-$(git rev-parse --short HEAD)"
-docker build --platform linux/arm64 -f crates/experimental/nanocodex-vm/image/Dockerfile.gpu -t "$image" crates/experimental/nanocodex-vm/image
-bash crates/experimental/nanocodex-vm/image/build-root.sh "$image" "$output/desktop.ext4" 16384
+docker build --platform linux/arm64 -f crates/nanocodex-vm/image/Dockerfile.gpu -t "$image" crates/nanocodex-vm/image
+bash crates/nanocodex-vm/image/build-root.sh "$image" "$output/desktop.ext4" 16384
 node --input-type=module - "$output" <<'JS'
 import {writeFileSync} from 'node:fs';
 import {join} from 'node:path';

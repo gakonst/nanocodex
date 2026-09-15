@@ -13,14 +13,14 @@ remote sandbox while preserving their model-visible names and schemas.
 
 ## Retained libkrun VM
 
-The experimental `nanocodex-vm` crate keeps a small, concentrated unsafe FFI
+The `nanocodex-vm` crate keeps a small, concentrated unsafe FFI
 surface around libkrun and owns image preparation, gvproxy and egress, a private
 host/guest protocol, and retained
 `exec_command`, `write_stdin`, `apply_patch`, and `view_image` tools. Web search,
 image generation, MCP, and planning remain host-side unless replaced separately.
 
-The VM crate and matching guest runtime are experimental and are not published
-as a complete installed SDK path. Do not pair the release CLI with an arbitrary
+The VM crate and matching guest runtime are supported source packages in 0.6.
+Their pinned libkrun dependency is not yet available from crates.io. Do not pair the release CLI with an arbitrary
 guest executable. Applications adopting this boundary must distribute a
 matched host/guest pair and own image, firmware, signing, KVM, and egress policy.
 
@@ -29,7 +29,7 @@ across a root agent tree by capturing clone-cheap VM tools in `tools_factory`;
 each driver still receives fresh agent-relative handlers. Network-disabled and
 composed egress leases are explicit policy. Read the
 [VM guide](https://github.com/gakonst/nanocodex/blob/master/docs/VM.md) and
-[crate contract](https://github.com/gakonst/nanocodex/blob/master/crates/experimental/nanocodex-vm/README.md).
+[crate contract](https://github.com/gakonst/nanocodex/blob/master/crates/nanocodex-vm/README.md).
 
 ## Hosted sandboxes
 

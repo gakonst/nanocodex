@@ -7,7 +7,7 @@ on:
       - 'js/managed/scripts/prepare-hand-image.mjs'
       - 'js/managed/scripts/bundle-hand-desktop.sh'
       - 'hands/remote/**'
-      - 'crates/experimental/nanocodex-vm/image/toolkit/**'
+      - 'crates/nanocodex-vm/image/toolkit/**'
       - '.github/workflows/sandbox-image.yml'
   workflow_dispatch:
 permissions:

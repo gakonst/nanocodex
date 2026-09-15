@@ -114,7 +114,7 @@ impl std::fmt::Display for VoiceSpeaker {
     }
 }
 
-/// One typed update from an experimental desktop voice lifecycle.
+/// One typed update from a desktop voice lifecycle.
 #[derive(Debug)]
 pub enum VoiceEvent {
     /// The Realtime transport is connecting.

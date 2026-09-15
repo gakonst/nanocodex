@@ -5,16 +5,16 @@ description: Realtime audio delegates coding work into one retained agent sessio
 
 # Voice
 
-The experimental `nanocodex-voice` crate connects GPT Realtime audio to the
+The `nanocodex-voice` crate connects GPT Realtime audio to the
 same retained coding-agent session used by text interfaces. It is a thin,
 optional modality: the agent continues to own conversation, tools, results,
 steering, and cleanup.
 
 ## Default devices
 
-The voice crate is experimental and unpublished. Applications that adopt it
-must pin a coherent revision and use ChatGPT authentication for the Realtime
-session; the public CLI installer does not add voice as an embeddable package.
+The voice crate is part of the 0.6 registry release. Applications must use
+ChatGPT authentication for the Realtime session and distribute the matching
+native audio helper.
 
 ```rust
 let (mut voice, mut voice_events) = VoiceSessionBuilder::new(openai, agent.clone())
@@ -38,8 +38,7 @@ codec, UI, wake-word, interruption, and media retention policy stay with the
 application.
 
 Voice currently uses shared Codex/ChatGPT authentication rather than the simple
-API-key quick start. It is experimental and should be pinned to a repository
-revision. See the [voice source guide](https://github.com/gakonst/nanocodex/blob/master/crates/experimental/nanocodex-voice/README.md),
+API-key quick start. See the [voice source guide](https://github.com/gakonst/nanocodex/blob/master/crates/nanocodex-voice/README.md),
 [device example](https://github.com/gakonst/nanocodex/blob/master/examples/voice.rs),
 and [pipe example](https://github.com/gakonst/nanocodex/blob/master/examples/realtime_pipe.rs).
 

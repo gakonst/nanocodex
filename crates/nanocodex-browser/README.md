@@ -1,9 +1,12 @@
 # Nanocodex Browser
 
+This supported package is distributed from source in 0.6; its pinned native or
+proxy dependency is not yet available with the required APIs on crates.io.
+
 Deterministic browser automation exposed as a normal Nanocodex Code Mode tool,
 with an optional isolated headed-browser VM lifecycle.
 
-`nanocodex-browser` is an experimental, unpublished, library-first crate. It
+`nanocodex-browser` is a supported, library-first crate. It
 owns the browser action protocol, Chromium DevTools controller, diagnostics,
 artifacts, and ordinary `BrowserTool`. Its named `vm` module composes those
 browser concerns with `nanocodex-vm`; it does not own a second VM runtime.
@@ -317,7 +320,8 @@ assert_eq!(capture.origin.as_str(), "https://example.com/");
 
 ## Current boundaries
 
-- This package is unpublished and its API is not stable. Its complete backend
+- This supported package is source-distributed while its VM dependency requires
+  unpublished native dependencies. Its complete backend
   targets native Unix hosts and Chromium's DevTools protocol. The focused iOS
   backend targets Mobile Safari through an operator-managed Appium/XCUITest
   server; it does not claim CDP feature parity. Firefox, WASM, Node, and Python

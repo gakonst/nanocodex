@@ -526,8 +526,8 @@ runtime includes the bounded OpenAI/Codex-compatible web-search boundary, and
 JavaScript hosts can use the matching `web()` factory. Applications decide
 which network tool to install and where credentials live.
 
-For full deterministic Chromium control, the unpublished experimental
-[`nanocodex-browser`](crates/experimental/nanocodex-browser/README.md) crate
+For full deterministic Chromium control, the supported source-distributed
+[`nanocodex-browser`](crates/nanocodex-browser/README.md) crate
 provides an ordinary deferred `BrowserTool`. It supports semantic/CSS/role/text
 targets, tabs and frames, bounded DOM/layout/style and network inspection,
 screenshots and pixel diffs, PDFs, traces, video, accessibility, performance,
@@ -562,8 +562,8 @@ agent runtimes.
 
 ### Retained VM workspaces
 
-The experimental, unpublished
-[`nanocodex-vm`](crates/experimental/nanocodex-vm/README.md) crate owns the
+The supported source-distributed
+[`nanocodex-vm`](crates/nanocodex-vm/README.md) crate owns the
 libkrun boundary. An application launches one private workspace, retains it
 across sequential turns, and swaps only `exec_command`, `write_stdin`,
 `apply_patch`, and `view_image` for guest-backed implementations with the same
@@ -592,8 +592,8 @@ Linux KVM, macOS signing, networking, and egress.
 
 ### Voice is another input to the retained agent
 
-The experimental, unpublished
-[`nanocodex-voice`](crates/experimental/nanocodex-voice/README.md) crate connects
+The supported
+[`nanocodex-voice`](crates/nanocodex-voice/README.md) crate connects
 GPT Realtime to an existing `Nanocodex` session. Speech while idle starts an
 independently awaitable coding turn; speech while work is active atomically
 steers it at the next safe model boundary. Typed work is mirrored back to the
@@ -680,26 +680,32 @@ the stable crates.
 
 ## What is stable
 
-“Experimental” below describes API stability and publication status, not a
-second-class quality bar. Experimental crates remain workspace members and pass
-the repository's formatting, Clippy, documentation, test, cancellation,
-tracing, and benchmark gates; stable crates never depend on them.
+“Experimental” describes API stability. Only computer and evaluation APIs retain
+that label. Computer is published for the supported VM integration; evaluation
+crates remain unpublished. Browser, VM, and egress are supported source packages
+while their pinned native/proxy dependencies are unavailable from crates.io.
 
 | Surface | Status | Owner |
 | --- | --- | --- |
 | [`nanocodex`](crates/nanocodex/README.md) | Stable, published | Thin Alloy-style facade and canonical imports; no runtime implementation. |
 | [`nanocodex-agent`](crates/nanocodex-agent/README.md) | Stable, published | Owned driver, turns/results/events, history policy, snapshots, compaction, branches, and cancellation. |
-| [`nanocodex-durability`](crates/nanocodex-durability/README.md) | Stable, source/Git-only, optional | Total execution state, deduplication, recovery policy, staged outcomes, checkpoints, and memory/SQLite/Postgres/host stores. |
+| [`nanocodex-durability`](crates/nanocodex-durability/README.md) | Supported, 0.6 registry release, optional | Total execution state, deduplication, recovery policy, staged outcomes, checkpoints, and memory/SQLite/Postgres/host stores. |
 | [`nanocodex-oai-api`](crates/nanocodex-oai-api/README.md) | Stable, published | OpenAI auth, typed Responses and Realtime boundaries, persistent transports, managed context, retry, pricing, and Tower client. |
 | [`nanocodex-tools`](crates/nanocodex-tools/README.md) | Stable, published | Tool contract, standard tools, shell/process lifecycle, Code Mode, deferred search, MCP, and remote dispatch. |
-| [`nanocodex-subagents`](crates/nanocodex-subagents/README.md) | Source/Git-only optional workspace extension | Task-tree lifecycle and the seven canonical child-agent tools above the core. |
+| [`nanocodex-subagents`](crates/nanocodex-subagents/README.md) | Supported, 0.6 registry release, optional | Task-tree lifecycle and the seven canonical child-agent tools above the core. |
 | [`nanocodex-observability`](crates/nanocodex-observability/README.md) | Stable, published, optional | Full-fidelity tracing and application-owned OpenTelemetry initialization. |
 | [`nanocodex` for JavaScript](js/nanocodex/README.md) | Published headless core binding; narrow source companions | Node/browser hosts around the Rust/WASM agent, plus React hooks, Vite integration, and optional terminal presentation under [`js/`](js/README.md). Agent lifecycle remains headless and caller-owned. |
 | [`nanocodex` for Python](py/bindings/README.md) | Source-distributed language binding | Native PyO3 consumer of the Rust-owned lifecycle, built and tested with Maturin. |
-| [`nanocodex-browser`](crates/experimental/nanocodex-browser/README.md) | Experimental, unpublished | Deterministic Chromium control and optional headed browser VM. |
-| [`nanocodex-vm`](crates/experimental/nanocodex-vm/README.md) | Experimental, unpublished | libkrun images, retained/ephemeral guests, and canonical VM-backed workspace tools. |
-| [`nanocodex-voice`](crates/experimental/nanocodex-voice/README.md) | Experimental, unpublished | Opinionated desktop GPT Realtime voice-to-agent lifecycle. |
-| [`nanocodex-egress`](crates/experimental/nanocodex-egress/README.md) | Experimental, unpublished | Authenticated loopback HTTP(S) proxy and application-owned outbound layers. |
+| [`nanocodex-browser`](crates/nanocodex-browser/README.md) | Supported, source-distributed | Deterministic Chromium control and optional headed browser VM. |
+| [`nanocodex-vm`](crates/nanocodex-vm/README.md) | Supported, source-distributed | libkrun images, retained/ephemeral guests, and canonical VM-backed workspace tools. |
+| [`nanocodex-voice`](crates/nanocodex-voice/README.md) | Supported, 0.6 registry release | Opinionated desktop GPT Realtime voice-to-agent lifecycle. |
+| [`nanocodex-egress`](crates/nanocodex-egress/README.md) | Supported, source-distributed | Authenticated loopback HTTP(S) proxy and application-owned outbound layers. |
+| [`nanocodex-hand`](crates/nanocodex-hand/README.md) | Supported, 0.6 registry release | Native capture and input boundary. |
+| [`nanocodex-managed`](crates/nanocodex-managed/README.md) | Supported, 0.6 registry release | Managed agent protocol and lifecycle. |
+| [`nanocodex-voice-protocol`](crates/nanocodex-voice-protocol/README.md) | Supported, 0.6 registry release | Shared realtime policy for native and browser clients. |
+| [`nanocodex-voice-ffi`](crates/nanocodex-voice-ffi/README.md) | Supported, 0.6 registry release | C interface for native voice clients. |
+| [`nanocodex-voice-native`](crates/nanocodex-voice-native/README.md) | Supported, 0.6 registry release | Native audio helper client. |
+| [`nanocodex-computer`](crates/experimental/nanocodex-computer/README.md) | Experimental, 0.6 registry release | Computer tool contract and helper client. |
 | [`nanocodex-eval`](crates/experimental/nanocodex-eval/README.md) | Experimental, unpublished | VM-isolated attempts, durable SQLite work, verification, retained evidence, and differential coordinates. |
 
 ## Design boundaries
@@ -729,7 +735,12 @@ crates/
 ├── nanocodex-agent/            owned agent lifecycle
 ├── nanocodex-subagents/        optional task-tree extension
 ├── nanocodex-observability/    optional tracing and OTLP setup
-└── experimental/               browser, VM, voice, egress, eval
+├── nanocodex-browser/          Chromium automation
+├── nanocodex-vm/               VM lifecycle and guest tools
+├── nanocodex-egress/           authenticated HTTP proxy
+├── nanocodex-hand/             native capture and input
+├── nanocodex-voice*/           voice lifecycle, protocol, native client, C ABI
+└── experimental/               computer, eval, eval adapters
 js/                             npm packages, account/Connect apps, Workers
 py/                             native Python binding
 bin/nanocodex/                  CLI and Ratatui product consumer

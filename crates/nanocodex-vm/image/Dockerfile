@@ -1,4 +1,4 @@
-# Build context: crates/experimental/nanocodex-vm/image.
+# Build context: crates/nanocodex-vm/image.
 FROM rust:1.97-alpine3.24 AS rust-toolchain
 RUN rustup component add clippy rustfmt && rustup target add wasm32-unknown-unknown
 FROM rust-toolchain AS computer-build

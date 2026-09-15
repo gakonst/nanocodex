@@ -4,7 +4,7 @@ on:
   pull_request:
     paths:
       - 'hands/remote/image/Dockerfile'
-      - 'crates/experimental/nanocodex-vm/image/toolkit/**'
+      - 'crates/nanocodex-vm/image/toolkit/**'
       - '.github/workflows/hand-image.yml'
   workflow_dispatch:
     inputs:

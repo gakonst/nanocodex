@@ -2,7 +2,12 @@
 name = "nanocodex-voice-native"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "Apache-2.0"
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+description = "Native realtime voice host client for Nanocodex"
+readme = "README.md"
 
 [lib]
 doctest = false

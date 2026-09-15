@@ -1,6 +1,9 @@
 # nanocodex-egress
 
-`nanocodex-egress` is Nanocodex's unpublished, experimental HTTP egress
+This supported package is distributed from source in 0.6; its pinned native or
+proxy dependency is not yet available with the required APIs on crates.io.
+
+`nanocodex-egress` is Nanocodex's HTTP egress
 transport. It owns the authenticated loopback proxy shared by application
 protocol layers and host-side secret replacement.
 
@@ -105,6 +108,6 @@ DNS server, or daemon control plane:
 
 `EgressProxy::route()` exposes the same short-lived proxy capability and public
 CA for a host child, VM, or container path. The repository's
-[`secret-egress`](../../../examples/secret_egress.rs) example runs a real
+[`secret-egress`](../../examples/secret_egress.rs) example runs a real
 Nanocodex Code Mode `Promise.all` curl fanout both on the host and in a retained
 libkrun TSI VM; model traffic remains outside the tool egress route.

@@ -16,9 +16,9 @@ The package does not own payment-provider policy, agent identity, secret
 resolution, or the caller's choice to enable VM tools.
 
 The crate's canonical public documentation is
-[`crates/experimental/nanocodex-vm/README.md`](../crates/experimental/nanocodex-vm/README.md).
+[`crates/nanocodex-vm/README.md`](../crates/nanocodex-vm/README.md).
 Its
-[host/guest RPC section](../crates/experimental/nanocodex-vm/README.md#hostguest-rpc-protocol)
+[host/guest RPC section](../crates/nanocodex-vm/README.md#hostguest-rpc-protocol)
 specifies every frame, limit, cancellation rule, and terminal failure in the
 private lockstep protocol.
 

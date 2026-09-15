@@ -6,8 +6,8 @@ on:
     branches: [master]
     paths:
       - apple/**
-      - crates/experimental/nanocodex-voice-ffi/**
-      - crates/experimental/nanocodex-voice-protocol/**
+      - crates/nanocodex-voice-ffi/**
+      - crates/nanocodex-voice-protocol/**
       - .github/workflows/ios-self-update.yml
   workflow_dispatch:
     inputs:

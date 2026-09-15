@@ -52,11 +52,13 @@ jobs:
       - name: Install native SDK
         run: brew install gstreamer
       - name: Test native media and process lifecycle
-        run: cargo test --locked --manifest-path third_party/codex-voice/Cargo.toml -p nanocodex-voice-host -p nanocodex-voice-native
+        run: |
+          cargo test --locked --manifest-path third_party/codex-voice/Cargo.toml -p nanocodex-voice-host
+          cargo test --locked -p nanocodex-voice-native
       - name: Stage private runtime
         run: python3 scripts/build-voice-native.py
       - name: Test relocated helper
-        run: cargo test --locked --manifest-path third_party/codex-voice/Cargo.toml -p nanocodex-voice-native --test packaged -- --ignored
+        run: cargo test --locked -p nanocodex-voice-native --test packaged -- --ignored
         env:
           NANOCODEX_TEST_VOICE_RUNTIME: ${{ github.workspace }}/target/debug/nanocodex-resources/voice
 
@@ -141,8 +143,8 @@ jobs:
           context=$(mktemp -d)
           trap 'rm -rf "$context"' EXIT
           cp target/${{ matrix.target }}/debug/nanocodex-vm-guest "$context/"
-          cp crates/experimental/nanocodex-vm/image/Dockerfile.hand "$context/Dockerfile"
-          cp -R crates/experimental/nanocodex-vm/image/toolkit "$context/toolkit"
+          cp crates/nanocodex-vm/image/Dockerfile.hand "$context/Dockerfile"
+          cp -R crates/nanocodex-vm/image/toolkit "$context/toolkit"
           docker build --tag nanocodex-hand:ci --build-context computer-source=crates/experimental/nanocodex-computer/runtime "$context"
       - name: Exercise offline toolkit with a read-only root and unprivileged user
         run: >-

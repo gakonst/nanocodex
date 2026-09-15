@@ -221,6 +221,7 @@ jobs:
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
           cache-on-failure: true
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
@@ -231,13 +232,15 @@ jobs:
       - name: Build and test the publishable package
         shell: bash
         run: |
-          npm ci --prefix js/nanocodex
-          npm ci --prefix js/nanocodex-vite
-          ./js/nanocodex-vite/scripts/build-js-package.sh --release
-          npm test --prefix js/nanocodex
-          npm test --prefix js/nanocodex-vite
-          (cd js/nanocodex && npm pack --dry-run)
-          (cd js/nanocodex-vite && npm pack --dry-run)
+          pnpm install --frozen-lockfile
+          pnpm --filter nanocodex-tools test
+          pnpm --filter nanocodex run build
+          pnpm --filter nanocodex test
+          pnpm --filter nanocodex-vite test
+          mkdir -p dist/npm
+          pnpm --filter nanocodex-tools pack --pack-destination "$PWD/dist/npm"
+          pnpm --filter nanocodex pack --pack-destination "$PWD/dist/npm"
+          pnpm --filter nanocodex-vite pack --pack-destination "$PWD/dist/npm"
       - name: Publish immutable npm versions
         shell: bash
         env:
@@ -261,7 +264,7 @@ jobs:
               return
             fi
 
-            if ! (cd "$package_dir" && npm publish --access public --provenance); then
+            if ! npm publish "dist/npm/$package_name-$version.tgz" --access public --provenance; then
               if is_published "$package_name" "$version"; then
                 echo "$package_name@$version was published despite the client error"
                 return
@@ -283,6 +286,7 @@ jobs:
             return 1
           }
 
+          publish_package js/nanocodex-tools
           publish_package js/nanocodex
           publish_package js/nanocodex-vite
 

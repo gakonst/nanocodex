@@ -1,12 +1,18 @@
-# Local stand-ins let the first synchronized release package crates that depend
-# on sibling packages before those versions exist in the crates.io index. This
-# config is passed only to the non-publishing package validation step.
+# Local stand-ins validate a synchronized release before sibling versions
+# exist in the registry. Never use this config to publish.
 [patch.crates-io]
-nanocodex = { path = "crates/nanocodex" }
-nanocodex-agent = { path = "crates/nanocodex-agent" }
-nanocodex-durability = { path = "crates/nanocodex-durability" }
+nanocodex-hand = { path = "crates/nanocodex-hand" }
 nanocodex-oai-api = { path = "crates/nanocodex-oai-api" }
 nanocodex-observability = { path = "crates/nanocodex-observability" }
-nanocodex-subagents = { path = "crates/nanocodex-subagents" }
-nanocodex-tools = { path = "crates/nanocodex-tools" }
 nanocodex-tools-macros = { path = "crates/nanocodex-tools/macros" }
+nanocodex-voice-native = { path = "crates/nanocodex-voice-native" }
+nanocodex-voice-protocol = { path = "crates/nanocodex-voice-protocol" }
+nanocodex-computer = { path = "crates/experimental/nanocodex-computer" }
+nanocodex-tools = { path = "crates/nanocodex-tools" }
+nanocodex-voice-ffi = { path = "crates/nanocodex-voice-ffi" }
+nanocodex-agent = { path = "crates/nanocodex-agent" }
+nanocodex-durability = { path = "crates/nanocodex-durability" }
+nanocodex-managed = { path = "crates/nanocodex-managed" }
+nanocodex-subagents = { path = "crates/nanocodex-subagents" }
+nanocodex = { path = "crates/nanocodex" }
+nanocodex-voice = { path = "crates/nanocodex-voice" }

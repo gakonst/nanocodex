@@ -9,17 +9,18 @@ members = [
     "crates/nanocodex",
     "crates/nanocodex-agent",
     "crates/nanocodex-managed",
-    "crates/experimental/nanocodex-hand",
+    "crates/nanocodex-hand",
     "crates/nanocodex-durability",
-    "crates/experimental/nanocodex-browser",
+    "crates/nanocodex-browser",
     "crates/experimental/nanocodex-computer",
-    "crates/experimental/nanocodex-egress",
-    "crates/experimental/nanocodex-voice",
-    "crates/experimental/nanocodex-voice-protocol",
-    "crates/experimental/nanocodex-voice-ffi",
+    "crates/nanocodex-egress",
+    "crates/nanocodex-voice",
+    "crates/nanocodex-voice-native",
+    "crates/nanocodex-voice-protocol",
+    "crates/nanocodex-voice-ffi",
     "crates/experimental/nanocodex-eval",
     "crates/experimental/nanocodex-eval-adapters",
-    "crates/experimental/nanocodex-vm",
+    "crates/nanocodex-vm",
     "crates/nanocodex-oai-api",
     "crates/nanocodex-observability",
     "crates/nanocodex-subagents",
@@ -49,6 +50,11 @@ categories = ["api-bindings", "asynchronous", "development-tools"]
 publish = true
 
 [workspace.dependencies]
+anyhow = "1"
+libc = "0.2"
+ctor = "0.6"
+futures = "0.3"
+pretty_assertions = "1"
 alloy = { version = "2.1.0", default-features = false, features = ["contract", "provider-http", "reqwest", "rpc-types", "sol-types", "std"] }
 arboard = "3"
 base64 = "0.22.1"
@@ -91,14 +97,15 @@ nanocodex-agent = { version = "0.5.0", path = "crates/nanocodex-agent" }
 nanocodex-managed = { version = "0.5.0", path = "crates/nanocodex-managed" }
 nanocodex-cli-auth = { version = "0.5.0", path = "bin/nanocodex/account-auth" }
 nanocodex-durability = { version = "0.5.0", path = "crates/nanocodex-durability" }
-nanocodex-browser = { version = "0.5.0", path = "crates/experimental/nanocodex-browser" }
+nanocodex-browser = { version = "0.5.0", path = "crates/nanocodex-browser" }
 nanocodex-computer = { version = "0.5.0", path = "crates/experimental/nanocodex-computer" }
-nanocodex-egress = { version = "0.5.0", path = "crates/experimental/nanocodex-egress" }
-nanocodex-voice = { version = "0.5.0", path = "crates/experimental/nanocodex-voice" }
-nanocodex-voice-protocol = { version = "0.5.0", path = "crates/experimental/nanocodex-voice-protocol" }
+nanocodex-egress = { version = "0.5.0", path = "crates/nanocodex-egress" }
+nanocodex-voice-native = { version = "0.5.0", path = "crates/nanocodex-voice-native" }
+nanocodex-voice = { version = "0.5.0", path = "crates/nanocodex-voice" }
+nanocodex-voice-protocol = { version = "0.5.0", path = "crates/nanocodex-voice-protocol" }
 nanocodex-eval = { version = "0.5.0", path = "crates/experimental/nanocodex-eval" }
 nanocodex-eval-adapters = { version = "0.5.0", path = "crates/experimental/nanocodex-eval-adapters" }
-nanocodex-vm = { version = "0.5.0", path = "crates/experimental/nanocodex-vm" }
+nanocodex-vm = { version = "0.5.0", path = "crates/nanocodex-vm" }
 nanocodex-oai-api = { version = "0.5.0", path = "crates/nanocodex-oai-api" }
 nanocodex-observability = { version = "0.5.0", path = "crates/nanocodex-observability" }
 nanocodex-subagents = { version = "0.5.0", path = "crates/nanocodex-subagents" }

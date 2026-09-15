@@ -192,39 +192,35 @@ impl Setup {
         for (name, content) in [
             (
                 "toolkit/install-alpine.sh",
-                include_str!(
-                    "../../../crates/experimental/nanocodex-vm/image/toolkit/install-alpine.sh"
-                ),
+                include_str!("../../../crates/nanocodex-vm/image/toolkit/install-alpine.sh"),
             ),
             (
                 "toolkit/install-paths.sh",
-                include_str!(
-                    "../../../crates/experimental/nanocodex-vm/image/toolkit/install-paths.sh"
-                ),
+                include_str!("../../../crates/nanocodex-vm/image/toolkit/install-paths.sh"),
             ),
             (
                 "toolkit/python.txt",
-                include_str!("../../../crates/experimental/nanocodex-vm/image/toolkit/python.txt"),
+                include_str!("../../../crates/nanocodex-vm/image/toolkit/python.txt"),
             ),
             (
                 "toolkit/check.py",
-                include_str!("../../../crates/experimental/nanocodex-vm/image/toolkit/check.py"),
+                include_str!("../../../crates/nanocodex-vm/image/toolkit/check.py"),
             ),
             (
                 "Dockerfile",
-                include_str!("../../../crates/experimental/nanocodex-vm/image/Dockerfile"),
+                include_str!("../../../crates/nanocodex-vm/image/Dockerfile"),
             ),
             (
                 "Dockerfile.ext4",
-                include_str!("../../../crates/experimental/nanocodex-vm/image/Dockerfile.ext4"),
+                include_str!("../../../crates/nanocodex-vm/image/Dockerfile.ext4"),
             ),
             (
                 "populate-ext4.sh",
-                include_str!("../../../crates/experimental/nanocodex-vm/image/populate-ext4.sh"),
+                include_str!("../../../crates/nanocodex-vm/image/populate-ext4.sh"),
             ),
             (
                 "build-root.sh",
-                include_str!("../../../crates/experimental/nanocodex-vm/image/build-root.sh"),
+                include_str!("../../../crates/nanocodex-vm/image/build-root.sh"),
             ),
         ] {
             fs::write(temporary.path().join(name), content)?;

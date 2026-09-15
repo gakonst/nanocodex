@@ -1,25 +1,18 @@
 # Experimental crates
 
-This directory contains complete Nanocodex components whose APIs are still
-being exercised and revised:
+Only computer and evaluation packages remain experimental:
 
-- [`nanocodex-voice`](nanocodex-voice/README.md): default-device desktop audio
-  and an owned GPT Realtime voice-to-agent lifecycle.
-- [`nanocodex-vm`](nanocodex-vm/README.md): VM lifecycle and image preparation
-  plus retained guest-backed workspace tools.
-- [`nanocodex-browser`](nanocodex-browser/README.md): deterministic browser
-  control, diagnostics, artifacts, and headed-browser VM composition.
-- [`nanocodex-egress`](nanocodex-egress/README.md): authenticated loopback
-  HTTP(S) forwarding, application-owned middleware, and host-owned secrets.
-- [`nanocodex-eval`](nanocodex-eval/README.md): VM-backed benchmark
-  scheduling, verification, durable evidence, and live stock-Codex
-  differential analysis.
+- [`nanocodex-computer`](nanocodex-computer/README.md): persistent computer-use
+  tools and the separately built native runtime. The library is published as an
+  explicitly experimental dependency of the supported VM integration.
+- [`nanocodex-eval`](nanocodex-eval/README.md): VM-backed benchmark scheduling,
+  verification, durable evidence, and differential analysis.
+- `nanocodex-eval-adapters`: application-specific evaluation adapters.
 
-Experimental means API stability, not reduced engineering standards. These
-packages remain workspace members and must pass the normal formatting, Clippy,
-documentation, test, cancellation, tracing, and benchmark gates. They are not
-published as part of the stable crates.io release.
+Evaluation crates remain unpublished. Experimental describes API stability;
+these packages still pass the applicable formatting, Clippy, documentation,
+test, cancellation, tracing, and benchmark checks.
 
-Stable crates may not depend on experimental crates. Executables and examples
-may consume them so that the APIs can mature against real workloads before
-promotion into `crates/`.
+Browser, egress, Hand, VM, and voice packages now live directly under `crates/`.
+The VM package's explicit dependency on the published experimental computer
+library is supported; it does not promote the computer API to stable status.

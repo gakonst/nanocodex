@@ -1,8 +1,8 @@
 [files]
 extend-exclude = [
     ".nanocodex/",
-    "crates/experimental/nanocodex-browser/assets/axe.js",
-    "crates/experimental/nanocodex-browser/assets/react_diagnostics.js",
+    "crates/nanocodex-browser/assets/axe.js",
+    "crates/nanocodex-browser/assets/react_diagnostics.js",
     # Preserve upstream sources and captured protocol/encoding fixture bytes.
     "crates/experimental/nanocodex-computer/runtime/vendor/",
     "crates/experimental/nanocodex-computer/runtime/tests/oracles/",

@@ -10,7 +10,7 @@ done
 mkdir -p "$target_dir/voice-core/macos" "$target_dir/voice-core/simulator"
 xcrun lipo -create "$target_dir/aarch64-apple-darwin/release/libnanocodex_voice_ffi.a" "$target_dir/x86_64-apple-darwin/release/libnanocodex_voice_ffi.a" -output "$target_dir/voice-core/macos/libnanocodex_voice_ffi.a"
 xcrun lipo -create "$target_dir/aarch64-apple-ios-sim/release/libnanocodex_voice_ffi.a" "$target_dir/x86_64-apple-ios/release/libnanocodex_voice_ffi.a" -output "$target_dir/voice-core/simulator/libnanocodex_voice_ffi.a"
-headers="$repository_root/crates/experimental/nanocodex-voice-ffi/include"
+headers="$repository_root/crates/nanocodex-voice-ffi/include"
 artifact="$repository_root/apple/NanocodexVoice/Artifacts/NanocodexVoiceCore.xcframework"
 rm -rf "$artifact"
 xcodebuild -create-xcframework \

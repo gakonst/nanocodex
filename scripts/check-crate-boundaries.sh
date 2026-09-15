@@ -14,13 +14,21 @@ done
 public_packages='[
   "nanocodex",
   "nanocodex-agent",
+  "nanocodex-browser",
   "nanocodex-durability",
+  "nanocodex-egress",
+  "nanocodex-hand",
   "nanocodex-managed",
   "nanocodex-oai-api",
   "nanocodex-observability",
   "nanocodex-subagents",
   "nanocodex-tools",
-  "nanocodex-tools-macros"
+  "nanocodex-tools-macros",
+  "nanocodex-vm",
+  "nanocodex-voice",
+  "nanocodex-voice-ffi",
+  "nanocodex-voice-native",
+  "nanocodex-voice-protocol"
 ]'
 metadata="$(cargo metadata --locked --no-deps --format-version 1)"
 
@@ -42,7 +50,7 @@ assert_snapshot() {
   exit 1
 }
 
-expected_packages=$'nanocodex\nnanocodex-agent\nnanocodex-durability\nnanocodex-managed\nnanocodex-oai-api\nnanocodex-observability\nnanocodex-subagents\nnanocodex-tools\nnanocodex-tools-macros'
+expected_packages=$'nanocodex\nnanocodex-agent\nnanocodex-browser\nnanocodex-durability\nnanocodex-egress\nnanocodex-hand\nnanocodex-managed\nnanocodex-oai-api\nnanocodex-observability\nnanocodex-subagents\nnanocodex-tools\nnanocodex-tools-macros\nnanocodex-vm\nnanocodex-voice\nnanocodex-voice-ffi\nnanocodex-voice-native\nnanocodex-voice-protocol'
 actual_packages="$(
   jq -r '
     .packages[]
@@ -52,7 +60,7 @@ actual_packages="$(
 )"
 assert_snapshot "public package set" "$expected_packages" "$actual_packages"
 
-expected_edges=$'nanocodex\tnanocodex-agent\tnormal\tall\nnanocodex\tnanocodex-durability\tnormal\tall\nnanocodex\tnanocodex-managed\tnormal\tcfg(not(target_family = "wasm"))\nnanocodex\tnanocodex-oai-api\tnormal\tall\nnanocodex\tnanocodex-observability\tnormal\tcfg(not(target_family = "wasm"))\nnanocodex\tnanocodex-tools\tnormal\tall\nnanocodex-agent\tnanocodex-oai-api\tnormal\tall\nnanocodex-agent\tnanocodex-tools\tnormal\tall\nnanocodex-durability\tnanocodex-agent\tnormal\tall\nnanocodex-managed\tnanocodex-agent\tnormal\tall\nnanocodex-managed\tnanocodex-oai-api\tnormal\tall\nnanocodex-managed\tnanocodex-tools\tnormal\tall\nnanocodex-subagents\tnanocodex-agent\tnormal\tall\nnanocodex-subagents\tnanocodex-tools\tnormal\tall\nnanocodex-tools\tnanocodex-oai-api\tnormal\tall\nnanocodex-tools\tnanocodex-tools-macros\tnormal\tcfg(not(target_family = "wasm"))'
+expected_edges=$'nanocodex\tnanocodex-agent\tnormal\tall\nnanocodex\tnanocodex-durability\tnormal\tall\nnanocodex\tnanocodex-managed\tnormal\tcfg(not(target_family = "wasm"))\nnanocodex\tnanocodex-oai-api\tnormal\tall\nnanocodex\tnanocodex-observability\tnormal\tcfg(not(target_family = "wasm"))\nnanocodex\tnanocodex-tools\tnormal\tall\nnanocodex-agent\tnanocodex-oai-api\tnormal\tall\nnanocodex-agent\tnanocodex-tools\tnormal\tall\nnanocodex-browser\tnanocodex-oai-api\tnormal\tall\nnanocodex-browser\tnanocodex-tools\tnormal\tall\nnanocodex-browser\tnanocodex-vm\tnormal\tcfg(any(all(target_os = "linux", not(target_env = "musl")), all(target_os = "macos", target_arch = "aarch64")))\nnanocodex-durability\tnanocodex-agent\tnormal\tall\nnanocodex-managed\tnanocodex-agent\tnormal\tall\nnanocodex-managed\tnanocodex-oai-api\tnormal\tall\nnanocodex-managed\tnanocodex-tools\tnormal\tall\nnanocodex-subagents\tnanocodex-agent\tnormal\tall\nnanocodex-subagents\tnanocodex-tools\tnormal\tall\nnanocodex-tools\tnanocodex-oai-api\tnormal\tall\nnanocodex-tools\tnanocodex-tools-macros\tnormal\tcfg(not(target_family = "wasm"))\nnanocodex-vm\tnanocodex-computer\tnormal\tall\nnanocodex-vm\tnanocodex-tools\tnormal\tall\nnanocodex-voice\tnanocodex\tnormal\tall\nnanocodex-voice\tnanocodex-voice-native\tnormal\tall\nnanocodex-voice\tnanocodex-voice-protocol\tnormal\tall\nnanocodex-voice-ffi\tnanocodex-voice-protocol\tnormal\tall'
 actual_edges="$(
   jq -r --argjson public "$public_packages" '
     .packages[]

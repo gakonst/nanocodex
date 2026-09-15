@@ -5,9 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
+publish.workspace = true
 description = "Experimental persistent CUA tools for local and attached Nanocodex computers"
-include = ["src/**", "tests/**", "README.md", "Cargo.toml"]
+include = ["src/**", "tests/**", "README.md", "CHANGELOG.md", "Cargo.toml"]
 
 [dependencies]
 async-trait.workspace = true

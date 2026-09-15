@@ -10,6 +10,10 @@ It replaces the earlier macOS-only proposal in PR #102. The companion is a
 separate process and Cargo workspace and uses the published `rquickjs` crate.
 See [runtime provenance](runtime/README.md).
 
+The Rust client is included in the 0.6 registry release with an experimental
+label. Its API and companion protocol may change; distribute a matching
+companion when embedding it. The native runtime remains a separate build.
+
 ## Install and run
 
 From the repository root:

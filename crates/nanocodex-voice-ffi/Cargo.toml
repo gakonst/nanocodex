@@ -1,10 +1,14 @@
 [package]
+readme = "README.md"
 name = "nanocodex-voice-ffi"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish = false
+publish.workspace = true
 license.workspace = true
+repository.workspace = true
+
+description = "C ABI for the shared Nanocodex voice protocol"
 
 [lib]
 crate-type = ["staticlib", "rlib"]

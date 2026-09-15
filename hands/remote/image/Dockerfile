@@ -35,7 +35,7 @@ COPY --from=node-toolchain /usr/local /opt/node
 COPY --from=remote /usr/local/go /usr/local/go
 COPY --from=ghcr.io/astral-sh/uv:0.8.11 /uv /uvx /usr/local/bin/
 ENV RUSTUP_HOME=/opt/rustup PATH=/opt/hand-python/bin:/opt/node/bin:/opt/cargo/bin:/usr/local/go/bin:$PATH
-COPY crates/experimental/nanocodex-vm/image/toolkit /opt/hand-toolkit
+COPY crates/nanocodex-vm/image/toolkit /opt/hand-toolkit
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates labwc foot chromium ffmpeg grim libwayland-client0 libxkbcommon0 \
       dbus-x11 wlr-randr xwayland fonts-dejavu-core curl procps \
