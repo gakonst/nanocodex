@@ -108,6 +108,58 @@ pub struct McpLogin {
     completion: tokio::task::JoinHandle<Result<usize, McpControlError>>,
 }
 
+/// The result of one direct MCP tool call made through [`McpHandle::call_tool`].
+///
+/// This value intentionally does not implement `Debug`: a tool result can carry
+/// session URLs, tokens, or other short-lived secrets that must not reach
+/// diagnostics.
+pub struct McpToolCall {
+    is_error: bool,
+    structured_content: Option<Value>,
+    text: String,
+}
+
+impl McpToolCall {
+    /// Returns whether the server reported the call as failed.
+    #[must_use]
+    pub const fn is_error(&self) -> bool {
+        self.is_error
+    }
+
+    /// Returns the server's structured content when it sent any.
+    #[must_use]
+    pub const fn structured_content(&self) -> Option<&Value> {
+        self.structured_content.as_ref()
+    }
+
+    /// Returns every text content block, joined by newlines.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Returns the structured content, falling back to text parsed as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the call has neither structured content nor text
+    /// that parses as JSON.
+    pub fn json(&self) -> Result<Value, String> {
+        if let Some(structured_content) = self
+            .structured_content
+            .as_ref()
+            .filter(|content| !content.is_null())
+        {
+            return Ok(structured_content.clone());
+        }
+        if self.text.trim().is_empty() {
+            return Err("MCP tool result has no structured content and no text".to_owned());
+        }
+        serde_json::from_str(&self.text)
+            .map_err(|error| format!("MCP tool result text is not JSON: {error}"))
+    }
+}
+
 /// Failure while controlling an already configured MCP provider.
 #[derive(Debug, thiserror::Error)]
 pub enum McpControlError {
@@ -137,6 +189,16 @@ pub enum McpControlError {
     /// The spawned login task stopped before returning its result.
     #[error("MCP OAuth login task stopped: {0}")]
     LoginTask(String),
+    /// A direct tool call could not be delivered or was rejected.
+    #[error("MCP tool `{server}`/`{tool}` failed: {error}")]
+    ToolCall {
+        /// Configured server name.
+        server: String,
+        /// Remote tool name.
+        tool: String,
+        /// Connection, transport, or tool error.
+        error: String,
+    },
 }
 
 /// Invalid MCP provider configuration.
@@ -398,6 +460,80 @@ impl McpHandle {
                 })
             }
         }
+    }
+
+    /// Calls one tool on a configured server by its remote name.
+    ///
+    /// This is the programmatic path used by embedders that drive an MCP server
+    /// themselves instead of exposing its tools to a model. The call waits for
+    /// the provider's startup discovery, refreshes OAuth credentials when the
+    /// server uses them, and is bounded by the server's configured tool
+    /// timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the server name is unknown, the server is not
+    /// connected, or the call fails, times out, or is reported as an error by
+    /// the server.
+    pub async fn call_tool(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        arguments: serde_json::Map<String, Value>,
+    ) -> Result<McpToolCall, McpControlError> {
+        let server = self
+            .servers
+            .iter()
+            .find(|server| server.name == server_name)
+            .ok_or_else(|| McpControlError::UnknownServer(server_name.to_owned()))?;
+        let failed = |error: String| McpControlError::ToolCall {
+            server: server_name.to_owned(),
+            tool: tool_name.to_owned(),
+            error,
+        };
+        let client = self
+            .state
+            .ready_client(server_name)
+            .await
+            .map_err(&failed)?;
+        client.refresh_oauth().await.map_err(&failed)?;
+        let timeout = server.config.tool_timeout;
+        let params = CallToolRequestParams::new(tool_name.to_owned()).with_arguments(arguments);
+        let span = info_span!(
+            target: "nanocodex_tools",
+            "mcp.tool_call",
+            otel.kind = "client",
+            otel.status_code = tracing::field::Empty,
+            mcp.server = server_name,
+            mcp.tool = tool_name,
+            status = tracing::field::Empty,
+        );
+        let result =
+            match tokio::time::timeout(timeout, client.call_tool(params).instrument(span.clone()))
+                .await
+            {
+                Ok(Ok(result)) => result,
+                Ok(Err(error)) => {
+                    span.record("status", "failed");
+                    span.record("otel.status_code", "ERROR");
+                    return Err(failed(error));
+                }
+                Err(_) => {
+                    span.record("status", "timeout");
+                    span.record("otel.status_code", "ERROR");
+                    return Err(failed(format!(
+                        "call exceeded {:.1} seconds",
+                        timeout.as_secs_f64()
+                    )));
+                }
+            };
+        let call = tool_call_from_mcp_result(result);
+        span.record("status", if call.is_error { "failed" } else { "completed" });
+        span.record(
+            "otel.status_code",
+            if call.is_error { "ERROR" } else { "OK" },
+        );
+        Ok(call)
     }
 
     /// Starts an OAuth browser login for one server.
@@ -681,6 +817,24 @@ async fn execute_mcp_entry(entry: &ToolEntry, input: Value, timeout: Duration) -
             span.record("otel.status_code", "ERROR");
             ToolOutput::error(format!("failed to encode MCP tool result: {error}"))
         }
+    }
+}
+
+/// Flattens a tool result into text plus structured content for direct callers.
+fn tool_call_from_mcp_result(result: CallToolResult) -> McpToolCall {
+    let text = result
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    McpToolCall {
+        is_error: result.is_error.unwrap_or(false),
+        structured_content: result.structured_content,
+        text,
     }
 }
 

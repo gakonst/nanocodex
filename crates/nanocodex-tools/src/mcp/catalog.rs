@@ -306,6 +306,19 @@ impl ProviderState {
         self.entry(name)
     }
 
+    /// Returns the connected client for one server, waiting out startup first.
+    pub(crate) async fn ready_client(&self, server_name: &str) -> Result<Client, String> {
+        self.wait_for_startup().await;
+        let catalog = self.catalog();
+        if let Some(client) = catalog.clients.get(server_name) {
+            return Ok(Arc::clone(client));
+        }
+        if let Some(error) = catalog.failures.get(server_name) {
+            return Err(error.clone());
+        }
+        Err("server is not connected".to_owned())
+    }
+
     pub(crate) async fn prepared_entries(&self) -> Result<Vec<Arc<ToolEntry>>, String> {
         self.wait_for_startup().await;
         let catalog = self.catalog();

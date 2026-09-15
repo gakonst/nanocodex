@@ -94,6 +94,10 @@ name = "browser-agent"
 path = "browser_agent.rs"
 
 [[bin]]
+name = "popcorn-agent"
+path = "popcorn_agent.rs"
+
+[[bin]]
 name = "realtime-pipe"
 path = "realtime_pipe.rs"
 
