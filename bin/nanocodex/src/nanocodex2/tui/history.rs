@@ -178,28 +178,29 @@ pub(super) fn live_managed_projection(
             };
             (record, Some(prompt))
         }
-        ManagedEventData::Event { event, .. } => {
-            let event: AgentEvent = serde_json::from_str(event.get()).map_err(|error| {
-                ManagedError::Configuration(format!(
-                    "invalid live agent event in TUI stream: {error}"
-                ))
-            })?;
-            (
-                TranscriptRecord::from_agent(*next_sequence, timestamp, event),
-                None,
-            )
-        }
-        ManagedEventData::TurnFailed { error, .. } => {
-            let record = TranscriptRecord::from_local(
-                *next_sequence,
-                timestamp,
-                LocalEvent::ManagedTurnFailed { error },
-            )
-            .map_err(|error| {
-                ManagedError::Configuration(format!("TUI managed event error: {error}"))
-            })?;
-            (record, None)
-        }
+        ManagedEventData::Event {
+            event: nested,
+            agent_id: child,
+        } => (
+            project_agent_record(&nested, &event.cursor, *next_sequence, timestamp)?
+                .with_managed_turn_id(event.turn_id.as_deref())
+                .with_managed_agent_id(child),
+            None,
+        ),
+        ManagedEventData::TurnCompleted {
+            id, final_message, ..
+        } => (
+            final_message_record(*next_sequence, timestamp, id, final_message)?,
+            None,
+        ),
+        ManagedEventData::TurnFailed { id, error } => (
+            stopped_turn_record(*next_sequence, timestamp, id, Some(error))?,
+            None,
+        ),
+        ManagedEventData::TurnCancelled { id } => (
+            stopped_turn_record(*next_sequence, timestamp, id, None)?,
+            None,
+        ),
         ManagedEventData::TurnRetryable { error, .. } => {
             let record = TranscriptRecord::from_local(
                 *next_sequence,
@@ -216,8 +217,6 @@ pub(super) fn live_managed_projection(
         }
         ManagedEventData::AgentCreated { .. }
         | ManagedEventData::TurnCancelling { .. }
-        | ManagedEventData::TurnCompleted { .. }
-        | ManagedEventData::TurnCancelled { .. }
         | ManagedEventData::StreamFailed { .. } => return Ok(None),
     };
     *next_sequence = next_sequence.saturating_add(1);
@@ -248,51 +247,13 @@ pub(super) fn history_projection_with_sequences(
     sequences: &mut HashMap<String, u64>,
     next_sequence: &mut u64,
 ) -> Result<(Vec<Arc<TranscriptRecord>>, Vec<RecentPrompt>), ManagedError> {
-    history_projection_range_with_sequences(
-        history,
-        false,
-        agent_id,
-        workspace,
-        sequences,
-        next_sequence,
-    )
-}
-
-pub(super) fn older_history_projection_with_sequences(
-    older: &[ManagedEvent],
-    coherent_tail: bool,
-    agent_id: &str,
-    workspace: &Path,
-    sequences: &mut HashMap<String, u64>,
-    next_sequence: &mut u64,
-) -> Result<(Vec<Arc<TranscriptRecord>>, Vec<RecentPrompt>), ManagedError> {
-    history_projection_range_with_sequences(
-        older,
-        coherent_tail,
-        agent_id,
-        workspace,
-        sequences,
-        next_sequence,
-    )
-}
-
-fn history_projection_range_with_sequences(
-    history: &[ManagedEvent],
-    coherent_tail: bool,
-    agent_id: &str,
-    workspace: &Path,
-    sequences: &mut HashMap<String, u64>,
-    next_sequence: &mut u64,
-) -> Result<(Vec<Arc<TranscriptRecord>>, Vec<RecentPrompt>), ManagedError> {
     let mut records = Vec::new();
     let mut recent = Vec::new();
     let initial_next_sequence = *next_sequence;
     let mut inserted_cursors = Vec::new();
-    let coherent_start = history
-        .iter()
-        .position(|event| matches!(event.data, ManagedEventData::TurnAccepted { .. }))
-        .unwrap_or(if coherent_tail { history.len() } else { 0 });
-    for (index, event) in history.iter().enumerate().skip(coherent_start) {
+    // Page boundaries can split a turn anywhere. Retain every event so a later
+    // prepend can reconnect its prompt, tool call, streamed text, and terminal.
+    for (index, event) in history.iter().enumerate() {
         let sequence = if let Some(sequence) = sequences.get(&event.cursor) {
             *sequence
         } else {
@@ -326,30 +287,41 @@ fn history_projection_range_with_sequences(
                     };
                     Ok(Some((Arc::new(record), Some(prompt))))
                 }
-                ManagedEventData::Event { event, .. } => {
-                    let event: AgentEvent = serde_json::from_str(event.get()).map_err(|error| {
-                        ManagedError::Configuration(format!(
-                            "invalid retained agent event in TUI history: {error}"
-                        ))
-                    })?;
-                    Ok(Some((
-                        Arc::new(TranscriptRecord::from_agent(sequence, timestamp, event)),
-                        None,
-                    )))
-                }
-                ManagedEventData::TurnFailed { error, .. } => {
-                    let record = TranscriptRecord::from_local(
+                ManagedEventData::Event {
+                    event: nested,
+                    agent_id: child,
+                } => Ok(Some((
+                    Arc::new(
+                        project_agent_record(nested, &event.cursor, sequence, timestamp)?
+                            .with_managed_turn_id(event.turn_id.as_deref())
+                            .with_managed_agent_id(*child),
+                    ),
+                    None,
+                ))),
+                ManagedEventData::TurnCompleted {
+                    id, final_message, ..
+                } => Ok(Some((
+                    Arc::new(final_message_record(
                         sequence,
                         timestamp,
-                        LocalEvent::ManagedTurnFailed {
-                            error: error.clone(),
-                        },
-                    )
-                    .map_err(|error| {
-                        ManagedError::Configuration(format!("TUI history error: {error}"))
-                    })?;
-                    Ok(Some((Arc::new(record), None)))
-                }
+                        id.clone(),
+                        final_message.clone(),
+                    )?),
+                    None,
+                ))),
+                ManagedEventData::TurnFailed { id, error } => Ok(Some((
+                    Arc::new(stopped_turn_record(
+                        sequence,
+                        timestamp,
+                        id.clone(),
+                        Some(error.clone()),
+                    )?),
+                    None,
+                ))),
+                ManagedEventData::TurnCancelled { id } => Ok(Some((
+                    Arc::new(stopped_turn_record(sequence, timestamp, id.clone(), None)?),
+                    None,
+                ))),
                 ManagedEventData::TurnRetryable { error, .. } => {
                     let record = TranscriptRecord::from_local(
                         sequence,
@@ -366,8 +338,6 @@ fn history_projection_range_with_sequences(
                 }
                 ManagedEventData::AgentCreated { .. }
                 | ManagedEventData::TurnCancelling { .. }
-                | ManagedEventData::TurnCompleted { .. }
-                | ManagedEventData::TurnCancelled { .. }
                 | ManagedEventData::StreamFailed { .. } => Ok(None),
             }
         })();
@@ -390,6 +360,53 @@ fn history_projection_range_with_sequences(
     }
     recent.reverse();
     Ok((records, recent))
+}
+
+fn stopped_turn_record(
+    sequence: u64,
+    timestamp: u64,
+    turn_id: String,
+    error: Option<String>,
+) -> Result<TranscriptRecord, ManagedError> {
+    TranscriptRecord::from_local(
+        sequence,
+        timestamp,
+        LocalEvent::ManagedTurnStopped { turn_id, error },
+    )
+    .map_err(|error| ManagedError::Configuration(format!("TUI managed event error: {error}")))
+}
+
+fn final_message_record(
+    sequence: u64,
+    timestamp: u64,
+    turn_id: String,
+    text: String,
+) -> Result<TranscriptRecord, ManagedError> {
+    TranscriptRecord::from_local(
+        sequence,
+        timestamp,
+        LocalEvent::ManagedFinalMessage { turn_id, text },
+    )
+    .map_err(|error| ManagedError::Configuration(format!("TUI final message error: {error}")))
+}
+
+fn project_agent_record(
+    nested: &serde_json::value::RawValue,
+    cursor: &str,
+    sequence: u64,
+    timestamp: u64,
+) -> Result<TranscriptRecord, ManagedError> {
+    match serde_json::from_str::<AgentEvent>(nested.get()) {
+        Ok(event) => Ok(TranscriptRecord::from_agent(sequence, timestamp, event)),
+        Err(error) => TranscriptRecord::from_local(
+            sequence,
+            timestamp,
+            LocalEvent::DisplayError {
+                message: format!("Could not display session update {cursor}: {error}"),
+            },
+        )
+        .map_err(|error| ManagedError::Configuration(format!("TUI display error: {error}"))),
+    }
 }
 
 fn prompt_input_text(input: &PromptInput) -> String {
@@ -434,41 +451,192 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn managed_failure_is_visible_without_nested_run_events_live_and_replayed() {
-        use crate::tui::transcript::{EntryKind, TranscriptModel};
-        use std::path::Path;
-
-        let failure = ManagedEvent {
-            cursor: "46".to_owned(),
-            created_at: Some(1000.0),
-            turn_id: Some("failed-turn".to_owned()),
-            data: ManagedEventData::TurnFailed {
-                id: "failed-turn".to_owned(),
-                error: "durability state cannot be restored".to_owned(),
-            },
-        };
-        let (retained, _, _) =
-            super::history_projection(vec![failure.clone()], "agent", Path::new(".")).unwrap();
-        let mut sequence = 1;
-        let (live, _) =
-            super::live_managed_projection(failure, "agent", Path::new("."), &mut sequence)
-                .unwrap()
-                .unwrap();
-        for record in [live, retained[0].clone()] {
-            let mut model = TranscriptModel::default();
-            model.apply(&record);
-            model.apply(&record);
-            assert_eq!(
-                model.entries().len(),
-                1,
-                "replay must not duplicate the failure"
-            );
-            assert!(
-                matches!(&model.entries()[0].kind, EntryKind::Error { message }
-                if message == "durability state cannot be restored")
-            );
-            assert!(!model.is_active());
+    fn durable_stop_projection_preserves_other_work_and_keeps_retries_active() {
+        use crate::tui::transcript::{EntryKind, ToolState, TranscriptModel, TranscriptRecord};
+        for kind in ["turn_failed", "turn_cancelled", "turn_retryable"] {
+            for retained in [false, true] {
+                let nested = |cursor: u64,
+                              turn: &str,
+                              child: Option<u64>,
+                              kind: &str,
+                              payload: serde_json::Value| {
+                    serde_json::from_value::<ManagedEvent>(json!({
+                        "cursor": cursor.to_string(), "turn_id": turn, "type": "event", "agent_id": child,
+                        "event": {"protocol_version": 1, "request_id": "agent", "seq": cursor, "type": kind, "payload": payload}
+                    })).unwrap()
+                };
+                let mut history = Vec::new();
+                for (index, turn, child) in
+                    [(0, "root", None), (1, "root", Some(7)), (2, "other", None)]
+                {
+                    history.push(nested(index * 2 + 1, turn, child, "run.started", json!({})));
+                    history.push(nested(index * 2 + 2, turn, child, "tool.call", json!({"call_id": format!("call-{index}"), "tool": "read_file", "arguments": {"path": "file"}})));
+                }
+                history.push(nested(
+                    7,
+                    "root",
+                    None,
+                    "assistant.delta",
+                    json!({"model_call_index": 1, "phase": "final_answer", "text": "partial text"}),
+                ));
+                history.push(serde_json::from_value(json!({"cursor": "8", "turn_id": "root", "type": kind, "id": "root", "error": "retained failure reason"})).unwrap());
+                let records = if retained {
+                    super::history_projection(history, "agent", std::path::Path::new("/workspace"))
+                        .unwrap()
+                        .0
+                } else {
+                    let mut sequence = 1;
+                    history
+                        .into_iter()
+                        .filter_map(|event| {
+                            super::live_managed_projection(
+                                event,
+                                "agent",
+                                std::path::Path::new("/workspace"),
+                                &mut sequence,
+                            )
+                            .unwrap()
+                            .map(|(record, _)| record)
+                        })
+                        .collect()
+                };
+                let mut model = TranscriptModel::default();
+                // Exercise the on-disk record representation as well as both projection paths.
+                for record in &records {
+                    let roundtrip: TranscriptRecord =
+                        serde_json::from_str(&serde_json::to_string(record).unwrap()).unwrap();
+                    model.apply(&roundtrip);
+                }
+                model.apply(records.last().unwrap());
+                let states = model
+                    .entries()
+                    .iter()
+                    .filter_map(|entry| match &entry.kind {
+                        EntryKind::Tool(tool) => Some(tool.state),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    states,
+                    [
+                        if kind == "turn_retryable" {
+                            ToolState::Running
+                        } else {
+                            ToolState::Failed
+                        },
+                        ToolState::Running,
+                        ToolState::Running
+                    ],
+                    "{kind}, retained={retained}"
+                );
+                let errors = model.entries().iter().filter(|entry| matches!(&entry.kind, EntryKind::Error { message } if message == "retained failure reason")).count();
+                assert_eq!(errors, usize::from(kind == "turn_failed"));
+                assert!(model.entries().iter().any(|entry| matches!(&entry.kind, EntryKind::Assistant { text, .. } if text == "partial text")));
+                let mut sequence = 9;
+                for (cursor, turn, child) in [(9, "root", Some(7)), (10, "other", None)] {
+                    let (record, _) = super::live_managed_projection(
+                        nested(cursor, turn, child, "run.completed", json!({})),
+                        "agent",
+                        std::path::Path::new("/workspace"),
+                        &mut sequence,
+                    )
+                    .unwrap()
+                    .unwrap();
+                    model.apply(&record);
+                }
+                assert_eq!(
+                    model.is_active(),
+                    kind == "turn_retryable",
+                    "{kind}, retained={retained}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn retained_completion_preserves_the_answer_without_a_nested_final_message() {
+        use crate::tui::transcript::{EntryKind, TranscriptModel};
+        let history = vec![
+            serde_json::from_value::<ManagedEvent>(json!({"cursor": "1", "turn_id": "turn", "type": "turn_accepted", "id": "turn", "input": "question", "replayed": false})).unwrap(),
+            serde_json::from_value::<ManagedEvent>(json!({"cursor": "2", "turn_id": "turn", "type": "turn_completed", "id": "turn", "final_message": "retained final answer", "usage": null, "citations": []})).unwrap(),
+        ];
+        let (records, _, _) =
+            super::history_projection(history, "agent", std::path::Path::new("/workspace"))
+                .unwrap();
+        let mut model = TranscriptModel::default();
+        for record in records {
+            model.apply(&record);
+        }
+        assert!(model.entries().iter().any(|entry| matches!(&entry.kind, EntryKind::Assistant { text, complete: true } if text == "retained final answer")));
+    }
+
+    #[test]
+    fn retained_answers_keep_their_turn_scope_when_call_numbers_restart() {
+        use crate::tui::transcript::{EntryKind, TranscriptModel};
+        let mut history = Vec::new();
+        for (turn, text) in [("first", "first answer"), ("second", "second answer")] {
+            let cursor = history.len() + 1;
+            history.push(serde_json::from_value::<ManagedEvent>(json!({"cursor": cursor.to_string(), "turn_id": turn, "type": "turn_accepted", "id": turn, "input": turn, "replayed": false})).unwrap());
+            history.push(serde_json::from_value::<ManagedEvent>(json!({"cursor": (cursor + 1).to_string(), "turn_id": turn, "type": "event", "event": {"protocol_version": 1, "request_id": "agent", "seq": cursor, "type": "assistant.message", "payload": {"model_call_index": 1, "item_id": null, "phase": "final_answer", "text": text}}})).unwrap());
+        }
+        let (records, _, _) =
+            super::history_projection(history, "agent", std::path::Path::new("/workspace"))
+                .unwrap();
+        let mut model = TranscriptModel::default();
+        for record in records {
+            model.apply(&record);
+        }
+        let answers = model
+            .entries()
+            .iter()
+            .filter_map(|entry| match &entry.kind {
+                EntryKind::Assistant { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(answers, ["first answer", "second answer"]);
+    }
+
+    #[test]
+    fn unrecognized_nested_update_keeps_surrounding_history_and_stable_sequences() {
+        let history: Vec<ManagedEvent> = [
+            json!({"cursor": "1", "turn_id": "turn-1", "type": "turn_accepted", "id": "turn-1", "input": "original", "replayed": false}),
+            json!({"cursor": "2", "turn_id": "turn-1", "type": "event", "event": {"protocol_version": 1, "request_id": "agent-1", "seq": 1, "type": "unrecognized.session.update", "payload": {}}}),
+            json!({"cursor": "3", "turn_id": "turn-1", "type": "event", "event": {"protocol_version": 1, "request_id": "agent-1", "seq": 2, "type": "assistant.message", "payload": {"model_call_index": 0, "item_id": "final", "phase": "final_answer", "text": "retained result"}}}),
+        ].into_iter().map(|event| serde_json::from_value(event).unwrap()).collect();
+        let mut sequences = std::collections::HashMap::new();
+        let mut next_sequence = 1;
+        for _ in 0..2 {
+            let (records, prompts) = super::history_projection_with_sequences(
+                &history,
+                "agent-1",
+                std::path::Path::new("/workspace"),
+                &mut sequences,
+                &mut next_sequence,
+            )
+            .unwrap();
+            assert_eq!(
+                records
+                    .iter()
+                    .map(|record| record.kind())
+                    .collect::<Vec<_>>(),
+                ["user.submitted", "display.error", "assistant.message"]
+            );
+            assert_eq!(prompts.len(), 1);
+            assert_eq!(prompts[0].text, "original");
+            assert_eq!(records[1].sequence(), 2);
+            assert_eq!(next_sequence, 4);
+        }
+        let (record, prompt) = super::live_managed_projection(
+            history[1].clone(),
+            "agent-1",
+            std::path::Path::new("/workspace"),
+            &mut next_sequence,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(record.kind(), "display.error");
+        assert!(prompt.is_none());
     }
 
     #[test]

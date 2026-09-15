@@ -53,6 +53,7 @@ use ratatui::{
 };
 use semver::Version;
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -139,6 +140,7 @@ impl Notification {
 }
 
 pub(crate) enum RootEvent {
+    ShowAgentId(String),
     Terminal(Event),
     PasteImage(String),
     #[cfg(test)]
@@ -146,6 +148,13 @@ pub(crate) enum RootEvent {
     Transcript(Arc<TranscriptRecord>),
     ExternalTranscript(Arc<TranscriptRecord>),
     AgentStreamClosed,
+    AgentConnecting,
+    AgentReconnected {
+        active_turns: usize,
+        pending_local: bool,
+        reasoning_mode: ReasoningMode,
+    },
+    AgentReconnectFailed(String),
     Subagent(AgentUpdate),
     ReplaceDraft(String),
     HandoffFinished(String),
@@ -165,7 +174,14 @@ pub(crate) enum RootEvent {
     TurnsCancelled,
     ForkReady,
     NewSessionFailed(String),
-    SessionsLoaded(Vec<SessionSummary>),
+    SessionsLoaded {
+        request_id: u64,
+        sessions: Vec<SessionSummary>,
+    },
+    SessionListFailed {
+        request_id: u64,
+        error: String,
+    },
     RecentPromptsLoaded {
         session_id: String,
         prompts: Vec<RecentPrompt>,
@@ -173,6 +189,7 @@ pub(crate) enum RootEvent {
     RecentPromptLoadFailed(String),
     SessionLoadFailed(String),
     SessionRestored {
+        draft_reset: DraftReset,
         projection: Box<RestoredSessionProjection>,
         effort: ReasoningEffort,
         reasoning_mode: ReasoningMode,
@@ -200,6 +217,11 @@ pub(crate) enum RootEvent {
         error: String,
     },
     SteerUnconfirmed(QueueId),
+    RetainPrompt {
+        request_id: String,
+        prompt: Submission,
+    },
+    PromptConfirmed(String),
     SteerFailed {
         id: QueueId,
     },
@@ -219,6 +241,9 @@ impl RestoredSessionProjection {
         records: impl IntoIterator<Item = Arc<TranscriptRecord>>,
     ) {
         for record in records {
+            if self.transcript.ignores_finished_run_event(&record) {
+                continue;
+            }
             if let Some(prompt) = recent_prompt(&record) {
                 self.recent_prompts.push(prompt);
             }
@@ -249,6 +274,7 @@ pub(crate) enum SessionListKind {
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum RootEffect {
+    ShowAgentId,
     Submit(Submission),
     Reflect(Submission),
     RunShell(String),
@@ -258,7 +284,12 @@ pub(crate) enum RootEffect {
     OpenLink(String),
     ReloadConfig,
     NewSession(Model),
-    LoadSessions(SessionListKind),
+    LoadSessions {
+        request_id: u64,
+        kind: SessionListKind,
+    },
+    CancelSessionList(u64),
+    CancelSessionResume,
     LoadRecentPrompts(Vec<RecentPromptDraft>),
     LoadOlderHistory,
     ResumeSession(String),
@@ -272,6 +303,7 @@ pub(crate) enum RootEffect {
     PersistSteerWithdrawal {
         text: String,
     },
+    Reconnect,
     PersistSteer {
         id: QueueId,
         text: String,
@@ -297,6 +329,7 @@ pub(crate) enum RootEffect {
 }
 
 enum Overlay {
+    AgentId(String),
     Actions(Node<ActionsMenu>),
     ContextDiagnostics(Node<ContextDiagnosticsPanel>),
     Effort(Node<EffortSelector>),
@@ -378,12 +411,18 @@ pub(crate) struct RootNode {
     fork_available: bool,
     skills: Arc<[Skill]>,
     interactive: bool,
+    resuming_session: bool,
+    reconnecting: Option<bool>,
+    unconfirmed_prompts: HashMap<String, QueueId>,
+    confirmed_queue_edit: Option<QueueId>,
     theme_mode: ThemeMode,
     preferred_reasoning_mode: ReasoningMode,
     subagents: SubagentTree,
     context_diagnostics: ContextDiagnostics,
     recent_prompts: Vec<RecentPromptDraft>,
     pending_session_mention: Option<usize>,
+    pending_session_list: Option<u64>,
+    next_session_list: u64,
     reflection_input: bool,
 }
 
@@ -425,12 +464,18 @@ impl RootNode {
             fork_available: true,
             skills: Arc::from([]),
             interactive: true,
+            resuming_session: false,
+            reconnecting: None,
+            unconfirmed_prompts: HashMap::new(),
+            confirmed_queue_edit: None,
             theme_mode: ThemeMode::Auto,
             preferred_reasoning_mode: ReasoningMode::Standard,
             subagents,
             context_diagnostics: ContextDiagnostics::default(),
             recent_prompts: Vec::new(),
             pending_session_mention: None,
+            pending_session_list: None,
+            next_session_list: 0,
             reflection_input: false,
         }
     }
@@ -468,10 +513,7 @@ impl RootNode {
 
     pub(crate) fn set_fork_available(&mut self, available: bool) {
         self.fork_available = available;
-        let can_fork = self.can_fork();
-        if let Some(Overlay::Actions(actions)) = &mut self.overlay {
-            actions.component_mut().set_fork_available(can_fork);
-        }
+        self.refresh_actions();
     }
 
     pub(crate) fn set_skills(&mut self, skills: Arc<[Skill]>) {
@@ -538,7 +580,9 @@ impl RootNode {
         let fork_available = self.fork_available;
         let theme_mode = self.theme_mode;
         let max_subagents = self.subagents.max_subagents();
+        let next_session_list = self.next_session_list;
         *self = Self::new(workspace, thinking);
+        self.next_session_list = next_session_list;
         self.set_reasoning_modes(reasoning_mode, preferred_reasoning_mode);
         self.discarded_draft = discarded_draft;
         self.withdrawn_draft = withdrawn_draft;
@@ -634,9 +678,10 @@ impl RootNode {
         fast_mode: bool,
         mut projection: RestoredSessionProjection,
     ) {
-        let preserve_active_submission = self.has_active_turns()
-            || !self.queue.component().is_empty()
-            || self.queue.component().has_pending_steer();
+        let preserve_active_submission = !self.resuming_session
+            && (self.has_active_turns()
+                || !self.queue.component().is_empty()
+                || self.queue.component().has_pending_steer());
         let started = preserve_active_submission || !projection.recent_prompts.is_empty();
         if preserve_active_submission {
             self.workspace = workspace.to_path_buf();
@@ -720,6 +765,7 @@ impl RootNode {
     }
 
     fn render_root(&mut self, frame: &mut Frame<'_>, area: Rect, theme: &Theme, focused: bool) {
+        self.refresh_actions();
         let height = self
             .composer
             .component_mut()
@@ -792,6 +838,17 @@ impl RootNode {
             .render_chrome(frame, transcript_area, theme);
         if let Some(overlay) = &mut self.overlay {
             match overlay {
+                Overlay::AgentId(id) => {
+                    let layout =
+                        Floating::new("Agent ID", 58, 7, &[("enter", "copy"), ("esc", "close")])
+                            .render(frame, area, theme);
+                    frame.render_widget(
+                        Paragraph::new(id.as_str())
+                            .style(Style::default().fg(theme.accent()))
+                            .wrap(Wrap { trim: false }),
+                        layout.body,
+                    );
+                }
                 Overlay::Actions(actions) => actions.render(frame, area, theme),
                 Overlay::ContextDiagnostics(panel) => panel.render(frame, area, theme),
                 Overlay::Effort(selector) => selector.render(frame, area, theme),
@@ -835,6 +892,20 @@ impl RootNode {
         }
         if is_confirmation_key_repeat(&event) {
             return ComponentUpdate::none();
+        }
+        if self.pending_session_list.is_some() && (is_escape(&event) || is_control_c(&event)) {
+            return self.cancel_session_list();
+        }
+        if self.resuming_session && (is_escape(&event) || is_control_c(&event)) {
+            self.resuming_session = false;
+            self.key_confirmation = None;
+            let mut update = self.restore_session_activity();
+            self.notification = Some(Notification::plain(
+                "Session switch cancelled.".to_owned(),
+                Color::Yellow,
+            ));
+            update.effects.push(RootEffect::CancelSessionResume);
+            return update;
         }
         if self.reflection_input && is_escape(&event) {
             return self.cancel_reflection();
@@ -885,13 +956,65 @@ impl RootNode {
         &mut self,
         mut event: Event,
     ) -> ComponentUpdate<RootEffect> {
-        if !self.interactive {
+        if self.resuming_session {
+            return ComponentUpdate::none();
+        }
+        if let Some(connecting) = self.reconnecting {
+            // Local editing and shell controls remain available while Enter
+            // is reserved for reconnecting to the managed agent.
+            if self.queue_edit.is_some() && is_escape(&event) {
+                return self.finish_queue_edit(false);
+            }
+            if is_escape(&event) {
+                if self.selection.clear() {
+                    self.selection_auto_scroll = None;
+                    self.key_confirmation = None;
+                    return ComponentUpdate::render(RenderRequest::Immediate);
+                }
+                if self.overlay.is_none() {
+                    if self.queue.component().focused() {
+                        self.key_confirmation = None;
+                        return self.update_queue(event);
+                    }
+                    if self.transcript.component().expandables_focused() {
+                        self.key_confirmation = None;
+                        return self.update_transcript(TranscriptEvent::BlurExpandables);
+                    }
+                    if self.in_flight_shells > 0 {
+                        return self.update_key_confirmation(
+                            ConfirmationAction::Interrupt,
+                            Instant::now(),
+                        );
+                    }
+                }
+            }
+            if is_submit_enter(&event) {
+                if connecting {
+                    return ComponentUpdate::none();
+                }
+                self.reconnecting = Some(true);
+                let mut update = self.reconnection_status("Reconnecting…");
+                update.effects.push(RootEffect::Reconnect);
+                return update;
+            }
+            if is_focus_toggle(&event) {
+                return ComponentUpdate::none();
+            }
+            // Draft editing stays available while submission is paused.
+            if matches!(&event, Event::Paste(_))
+                || matches!(&event, Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat))
+            {
+                return self.edit_composer(ComposerEvent::Terminal(event));
+            }
+            return self.update_composer(ComposerEvent::Terminal(event), RenderRequest::Immediate);
+        }
+        if !self.interactive || self.pending_session_list.is_some() {
             return ComponentUpdate::none();
         }
         if self.queue_edit.is_some() {
             return self.update_queue_editor(event);
         }
-        if self.reflection_input && is_plain_enter(&event) {
+        if self.reflection_input && is_submit_enter(&event) {
             return self.submit_reflection();
         }
         if let Some(Overlay::Subagents(SubagentOverlay::Transcript(id))) = self.overlay
@@ -1067,17 +1190,8 @@ impl RootNode {
             && self.composer.component().draft().is_empty()
             && is_actions_trigger(&event)
         {
-            let new_session_enabled = !self.has_active_turns()
-                && self.in_flight_shells == 0
-                && self.blocking_task.is_none()
-                && self.queue.component().is_empty();
             self.overlay = Some(Overlay::Actions(Node::new(ActionsMenu::new(
-                ActionAvailability {
-                    new_session: new_session_enabled,
-                    fork: self.can_fork(),
-                    fast_mode: self.composer.component().fast_mode(),
-                    model: self.thread == ThreadState::New,
-                },
+                self.action_availability(),
             ))));
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
@@ -1206,7 +1320,10 @@ impl RootNode {
             {
                 let surface = self.selection.surface()?;
                 self.selection_auto_scroll = None;
-                let span = self.selection_span_on(surface, position)?;
+                let Some(span) = self.selection_span_on(surface, position) else {
+                    self.selection.clear();
+                    return Some(ComponentUpdate::render(RenderRequest::Immediate));
+                };
                 if !self.selection.finish(span) {
                     mouse.kind = MouseEventKind::Down(MouseButton::Left);
                     return None;
@@ -1319,6 +1436,7 @@ impl RootNode {
 
     fn update_overlay(&mut self, event: Event, now: Instant) -> ComponentUpdate<RootEffect> {
         match &self.overlay {
+            Some(Overlay::AgentId(_)) => self.update_agent_id(event),
             Some(Overlay::Actions(_)) => self.update_actions(event),
             Some(Overlay::ContextDiagnostics(_)) => self.update_context_diagnostics(event),
             Some(Overlay::Effort(_)) => self.update_effort(EffortEvent::Terminal { event, now }),
@@ -1528,13 +1646,40 @@ impl RootNode {
             .map(str::to_owned)
     }
 
+    fn action_availability(&self) -> ActionAvailability {
+        ActionAvailability {
+            new_session: !self.has_active_turns()
+                && self.in_flight_shells == 0
+                && self.blocking_task.is_none()
+                && self.queue.component().is_empty(),
+            fork: self.can_fork(),
+            fast_mode: self.composer.component().fast_mode(),
+            model: self.thread == ThreadState::New,
+        }
+    }
+
+    fn refresh_actions(&mut self) {
+        let availability = self.action_availability();
+        if let Some(Overlay::Actions(actions)) = &mut self.overlay {
+            actions.component_mut().set_availability(availability);
+        }
+    }
+
     fn update_actions(&mut self, event: Event) -> ComponentUpdate<RootEffect> {
+        self.refresh_actions();
         let Some(Overlay::Actions(actions)) = &mut self.overlay else {
             return ComponentUpdate::none();
         };
         let update = actions.update(ActionsEvent::Terminal(event));
         match update.effects.into_iter().next() {
             Some(ActionsEffect::Dismiss) => self.overlay = None,
+            Some(ActionsEffect::Trigger(Action::AgentId)) => {
+                self.overlay = None;
+                return ComponentUpdate {
+                    effects: vec![RootEffect::ShowAgentId],
+                    render: RenderRequest::Immediate,
+                };
+            }
             Some(ActionsEffect::Settings(command)) => {
                 self.overlay = None;
                 return self.apply_settings_command(command);
@@ -1758,39 +1903,75 @@ impl RootNode {
     }
 
     pub(super) fn load_sessions(&mut self) -> ComponentUpdate<RootEffect> {
-        self.overlay = None;
         self.pending_session_mention = None;
-        self.interactive = false;
-        let _ = self
-            .composer
-            .component_mut()
-            .update(ComposerEvent::Activity {
-                active: true,
-                status: Some("Loading sessions…".to_owned()),
-                now: Instant::now(),
-            });
+        self.start_session_list(SessionListKind::Resume)
+    }
+
+    fn load_session_mentions(&mut self, start: usize) -> ComponentUpdate<RootEffect> {
+        self.pending_session_mention = Some(start);
+        self.start_session_list(SessionListKind::Mention)
+    }
+
+    fn start_session_list(&mut self, kind: SessionListKind) -> ComponentUpdate<RootEffect> {
+        self.overlay = None;
+        let request_id = self.next_session_list;
+        self.next_session_list = self.next_session_list.wrapping_add(1);
+        let previous = self.pending_session_list.replace(request_id);
+        let _ = self.session_lookup_status();
         ComponentUpdate {
-            effects: vec![RootEffect::LoadSessions(SessionListKind::Resume)],
+            effects: previous
+                .into_iter()
+                .map(RootEffect::CancelSessionList)
+                .chain([RootEffect::LoadSessions { request_id, kind }])
+                .collect(),
             render: RenderRequest::Immediate,
         }
     }
 
-    fn load_session_mentions(&mut self, start: usize) -> ComponentUpdate<RootEffect> {
-        self.overlay = None;
-        self.pending_session_mention = Some(start);
+    fn session_lookup_status(&mut self) -> RenderRequest {
+        self.session_loading_status("Loading sessions… · Esc cancel")
+    }
+
+    fn session_resume_status(&mut self) -> RenderRequest {
+        self.session_loading_status("Resuming session… · Esc cancel")
+    }
+
+    fn session_loading_status(&mut self, status: &str) -> RenderRequest {
         self.interactive = false;
-        let _ = self
+        let update = self
             .composer
             .component_mut()
             .update(ComposerEvent::Activity {
                 active: true,
-                status: Some("Loading sessions…".to_owned()),
+                status: Some(status.to_owned()),
                 now: Instant::now(),
             });
-        ComponentUpdate {
-            effects: vec![RootEffect::LoadSessions(SessionListKind::Mention)],
-            render: RenderRequest::Immediate,
+        if update.changed {
+            RenderRequest::Immediate
+        } else {
+            RenderRequest::None
         }
+    }
+
+    fn cancel_session_list(&mut self) -> ComponentUpdate<RootEffect> {
+        let Some(request_id) = self.pending_session_list.take() else {
+            return ComponentUpdate::none();
+        };
+        self.pending_session_mention = None;
+        self.key_confirmation = None;
+        let mut update = self.resume_after_session_lookup();
+        update
+            .effects
+            .push(RootEffect::CancelSessionList(request_id));
+        update
+    }
+
+    fn resume_after_session_lookup(&mut self) -> ComponentUpdate<RootEffect> {
+        let mut update = self.restore_session_activity();
+        // A turn can finish while lookup input is paused. Releasing that pause
+        // must also release ready follow-ups, without consuming the draft.
+        update.effects.extend(self.submit_next_queued().effects);
+        update
     }
 
     fn load_recent_prompts(&mut self) -> ComponentUpdate<RootEffect> {
@@ -1815,15 +1996,7 @@ impl RootNode {
         session_id: String,
         prompts: Vec<RecentPrompt>,
     ) -> ComponentUpdate<RootEffect> {
-        self.interactive = true;
-        let _ = self
-            .composer
-            .component_mut()
-            .update(ComposerEvent::Activity {
-                active: false,
-                status: None,
-                now: Instant::now(),
-            });
+        self.restore_session_activity();
         self.overlay = Some(Overlay::RecentPrompts(Node::new(RecentPromptPicker::new(
             prompts, session_id,
         ))));
@@ -1855,28 +2028,20 @@ impl RootNode {
     }
 
     fn recent_prompt_load_failed(&mut self, message: String) -> ComponentUpdate<RootEffect> {
-        self.interactive = true;
         self.notification = Some(Notification::plain(message, Color::Red));
-        self.update_composer(
-            ComposerEvent::Activity {
-                active: false,
-                status: None,
-                now: Instant::now(),
-            },
-            RenderRequest::Immediate,
-        )
+        self.restore_session_activity()
     }
 
-    fn sessions_loaded(&mut self, sessions: Vec<SessionSummary>) -> ComponentUpdate<RootEffect> {
-        self.interactive = true;
-        let _ = self
-            .composer
-            .component_mut()
-            .update(ComposerEvent::Activity {
-                active: false,
-                status: None,
-                now: Instant::now(),
-            });
+    fn sessions_loaded(
+        &mut self,
+        request_id: u64,
+        sessions: Vec<SessionSummary>,
+    ) -> ComponentUpdate<RootEffect> {
+        if self.pending_session_list != Some(request_id) {
+            return ComponentUpdate::none();
+        }
+        self.pending_session_list = None;
+        let update = self.resume_after_session_lookup();
         let mode = if self.pending_session_mention.is_some() {
             SessionPickerMode::Mention
         } else {
@@ -1885,7 +2050,7 @@ impl RootNode {
         self.overlay = Some(Overlay::Sessions(Node::new(SessionPicker::new(
             sessions, mode,
         ))));
-        ComponentUpdate::render(RenderRequest::Immediate)
+        update
     }
 
     fn update_session_picker(&mut self, event: Event) -> ComponentUpdate<RootEffect> {
@@ -1901,15 +2066,8 @@ impl RootNode {
             }
             Some(SessionPickerEffect::Resume(session_id)) => {
                 self.overlay = None;
-                self.interactive = false;
-                let _ = self
-                    .composer
-                    .component_mut()
-                    .update(ComposerEvent::Activity {
-                        active: true,
-                        status: Some("Resuming session…".to_owned()),
-                        now: Instant::now(),
-                    });
+                self.resuming_session = true;
+                self.session_resume_status();
                 ComponentUpdate {
                     effects: vec![RootEffect::ResumeSession(session_id)],
                     render: RenderRequest::Immediate,
@@ -1920,9 +2078,19 @@ impl RootNode {
                 let Some(start) = self.pending_session_mention.take() else {
                     return ComponentUpdate::none();
                 };
+                let cursor = self.composer.component().cursor();
+                if !self
+                    .composer
+                    .component()
+                    .draft()
+                    .get(start..cursor)
+                    .is_some_and(|query| query.starts_with("@@"))
+                {
+                    return ComponentUpdate::render(RenderRequest::Immediate);
+                }
                 self.update_composer(
                     ComposerEvent::ReplaceRange {
-                        range: start..self.composer.component().cursor(),
+                        range: start..cursor,
                         text: format!("@@{session_id} "),
                     },
                     RenderRequest::Immediate,
@@ -1936,30 +2104,15 @@ impl RootNode {
     }
 
     fn session_load_failed(&mut self, message: String) -> ComponentUpdate<RootEffect> {
+        self.resuming_session = false;
         self.pending_session_mention = None;
-        self.interactive = true;
-        let _ = self
-            .composer
-            .component_mut()
-            .update(ComposerEvent::Activity {
-                active: false,
-                status: None,
-                now: Instant::now(),
-            });
+        self.restore_session_activity();
         self.notification = Some(Notification::plain(message, Color::Red));
         ComponentUpdate::render(RenderRequest::Immediate)
     }
 
     fn new_session_failed(&mut self, message: String) -> ComponentUpdate<RootEffect> {
-        self.interactive = true;
-        let _ = self
-            .composer
-            .component_mut()
-            .update(ComposerEvent::Activity {
-                active: false,
-                status: None,
-                now: Instant::now(),
-            });
+        self.restore_session_activity();
         self.notification = Some(Notification::plain(
             format!("Could not start a new session: {message}"),
             Color::Red,
@@ -1979,6 +2132,24 @@ impl RootNode {
             });
         debug_assert!(update.changed);
         ComponentUpdate::render(RenderRequest::Immediate)
+    }
+
+    fn update_agent_id(&mut self, event: Event) -> ComponentUpdate<RootEffect> {
+        let Some(Overlay::AgentId(id)) = &self.overlay else {
+            return ComponentUpdate::none();
+        };
+        let effects = if is_submit_enter(&event) {
+            vec![RootEffect::Copy(id.clone())]
+        } else if is_escape(&event) {
+            Vec::new()
+        } else {
+            return ComponentUpdate::none();
+        };
+        self.overlay = None;
+        ComponentUpdate {
+            effects,
+            render: RenderRequest::Immediate,
+        }
     }
 
     fn update_keybindings(&mut self, event: Event) -> ComponentUpdate<RootEffect> {
@@ -2118,8 +2289,8 @@ impl RootNode {
         for effect in update.effects {
             match effect {
                 QueueEffect::Blur => {}
-                QueueEffect::Edit { id, text } => {
-                    let edit = self.begin_queue_edit(id, text);
+                QueueEffect::Edit { id, prompt } => {
+                    let edit = self.begin_queue_edit(id, prompt);
                     effects.extend(edit.effects);
                     render = render.max(edit.render);
                 }
@@ -2131,14 +2302,14 @@ impl RootNode {
         ComponentUpdate { effects, render }
     }
 
-    fn begin_queue_edit(&mut self, id: QueueId, text: String) -> ComponentUpdate<RootEffect> {
+    fn begin_queue_edit(&mut self, id: QueueId, prompt: Submission) -> ComponentUpdate<RootEffect> {
         let original_input_mode = self
             .composer
             .component()
             .input_mode()
             .map(ToOwned::to_owned);
         let original_draft = self.composer.component_mut().take_draft();
-        self.composer.component_mut().replace_draft(text);
+        self.composer.component_mut().restore_draft(prompt.into());
         let _ = self
             .composer
             .component_mut()
@@ -2157,7 +2328,7 @@ impl RootNode {
         if is_escape(&event) {
             return self.finish_queue_edit(false);
         }
-        if is_plain_enter(&event) {
+        if is_submit_enter(&event) {
             return self.finish_queue_edit(true);
         }
         self.update_composer(ComposerEvent::Terminal(event), RenderRequest::Immediate)
@@ -2167,7 +2338,18 @@ impl RootNode {
         let Some(edit) = self.queue_edit.take() else {
             return ComponentUpdate::none();
         };
-        let text = save.then(|| self.composer.component().draft().to_owned());
+        if save {
+            // A saved revision is a new instruction. A late receipt for the
+            // original request must not remove it from the queue.
+            self.unconfirmed_prompts.retain(|_, id| *id != edit.id);
+        }
+        let prompt = save.then(|| {
+            self.composer
+                .component_mut()
+                .take_draft()
+                .map(ComposerDraft::into_submission)
+                .unwrap_or_else(|| Submission::text(String::new()))
+        });
         self.composer.component_mut().replace_draft(String::new());
         if let Some(draft) = edit.original_draft {
             self.composer.component_mut().restore_draft(draft);
@@ -2177,14 +2359,36 @@ impl RootNode {
             .component_mut()
             .update(ComposerEvent::InputMode(edit.original_input_mode));
 
-        let restored = match text {
-            Some(text) => self.queue.component_mut().finish_edit(edit.id, text),
-            None => self.queue.component_mut().cancel_edit(edit.id),
+        let confirmed = self.confirmed_queue_edit.take() == Some(edit.id);
+        let restored = if confirmed && !save {
+            self.queue.component_mut().steer_admitted(edit.id).is_some()
+        } else {
+            match prompt {
+                Some(prompt) => self.queue.component_mut().finish_edit(edit.id, prompt),
+                None => self.queue.component_mut().cancel_edit(edit.id),
+            }
         };
         if !restored {
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
         self.submit_next_queued()
+    }
+
+    fn edit_composer(&mut self, event: ComposerEvent) -> ComponentUpdate<RootEffect> {
+        // Offline editing and image paste act on the draft rather than a picker.
+        // Drop any saved mention position before that edit changes its bounds.
+        let mut update = self.cancel_session_list();
+        self.overlay = None;
+        self.pending_session_mention = None;
+        let composer = if matches!(&event, ComposerEvent::Terminal(event) if is_control_key(event, 'z'))
+        {
+            self.restore_discarded_draft()
+        } else {
+            self.update_composer(event, RenderRequest::Immediate)
+        };
+        update.effects.extend(composer.effects);
+        update.render = update.render.max(composer.render);
+        update
     }
 
     fn update_composer(
@@ -2212,6 +2416,7 @@ impl RootNode {
             render = render.max(self.update_transcript(TranscriptEvent::FollowTail).render);
         }
         let effects = match update.effect {
+            Some(ComposerEffect::ShowAgentId) => vec![RootEffect::ShowAgentId],
             Some(ComposerEffect::Submit(prompt)) if self.has_active_turns() => {
                 let (id, prompt) = self.queue.component_mut().begin_steer(prompt);
                 vec![RootEffect::Steer { id, prompt }]
@@ -2247,7 +2452,13 @@ impl RootNode {
                 .component_mut()
                 .update(ComposerEvent::Activity {
                     active: true,
-                    status: Some("Thinking…".to_owned()),
+                    status: Some(
+                        self.transcript
+                            .component()
+                            .activity()
+                            .status
+                            .unwrap_or_else(|| "Thinking…".to_owned()),
+                    ),
                     now: Instant::now(),
                 });
             if activity.changed {
@@ -2400,7 +2611,13 @@ impl RootNode {
             .component_mut()
             .update(ComposerEvent::Activity {
                 active,
-                status: active.then(|| "Thinking…".to_owned()),
+                status: active.then(|| {
+                    self.transcript
+                        .component()
+                        .activity()
+                        .status
+                        .unwrap_or_else(|| "Thinking…".to_owned())
+                }),
                 now: Instant::now(),
             });
         if activity.changed {
@@ -2416,30 +2633,121 @@ impl RootNode {
         update
     }
 
-    fn agent_stream_closed(&mut self) -> ComponentUpdate<RootEffect> {
-        self.managed_active_turns = 0;
-        self.interactive = false;
-        self.key_confirmation = None;
+    fn restore_session_activity(&mut self) -> ComponentUpdate<RootEffect> {
+        if self.resuming_session {
+            self.session_resume_status();
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        if let Some(connecting) = self.reconnecting {
+            return self.reconnection_status(if connecting {
+                "Reconnecting…"
+            } else {
+                "Connection lost · Enter to reconnect"
+            });
+        }
+        if self.pending_session_list.is_some() {
+            let _ = self.session_lookup_status();
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        self.interactive = true;
         let active = self.has_active_turns();
-        let mut update = self.update_transcript(TranscriptEvent::AgentStreamClosed);
-        let activity = self.update_composer(
+        let status = active.then(|| {
+            self.transcript
+                .component()
+                .activity()
+                .status
+                .unwrap_or_else(|| "Thinking…".to_owned())
+        });
+        let mut update = self.update_composer(
             ComposerEvent::Activity {
                 active,
-                status: active.then(|| "Thinking…".to_owned()),
+                status,
                 now: Instant::now(),
             },
             RenderRequest::Immediate,
         );
-        update.effects.extend(activity.effects);
-        update.render = update.render.max(activity.render);
-        if !active {
-            let timers =
-                self.update_composer(ComposerEvent::TurnsCleared, RenderRequest::Immediate);
-            update.effects.extend(timers.effects);
-            update.render = update.render.max(timers.render);
-        }
-        update.render = update.render.max(self.sync_live_controls());
+        update.render = RenderRequest::Immediate;
         update
+    }
+
+    fn reconnection_status(&mut self, status: &str) -> ComponentUpdate<RootEffect> {
+        self.composer
+            .component_mut()
+            .update(ComposerEvent::SubmissionPaused(true));
+        self.update_composer(
+            ComposerEvent::Activity {
+                active: true,
+                status: Some(status.to_owned()),
+                now: Instant::now(),
+            },
+            RenderRequest::Immediate,
+        )
+    }
+
+    fn agent_stream_closed(&mut self) -> ComponentUpdate<RootEffect> {
+        self.managed_active_turns = 0;
+        self.interactive = false;
+        self.reconnecting = Some(true);
+        self.key_confirmation = None;
+        self.withdrawing_steer = None;
+        self.withdrawing_prompt = None;
+        self.queue.component_mut().connection_lost();
+        let mut update = self.update_transcript(TranscriptEvent::AgentStreamClosed);
+        let status = self.reconnection_status("Reconnecting…");
+        update.effects.extend(status.effects);
+        update.render = RenderRequest::Immediate;
+        update
+    }
+
+    fn agent_reconnected(
+        &mut self,
+        active_turns: usize,
+        pending_local: bool,
+        reasoning_mode: ReasoningMode,
+    ) -> ComponentUpdate<RootEffect> {
+        self.set_reasoning_modes(reasoning_mode, reasoning_mode);
+        self.reconnecting = None;
+        self.interactive = self.pending_session_list.is_none() && !self.resuming_session;
+        self.composer
+            .component_mut()
+            .update(ComposerEvent::SubmissionPaused(false));
+        self.in_flight_turns = usize::from(pending_local);
+        self.unmatched_worker_turns = 0;
+        self.unmatched_agent_turns = 0;
+        self.notification = Some(Notification::plain("Reconnected".to_owned(), Color::Green));
+        self.managed_active_turns(active_turns)
+    }
+
+    fn retain_prompt(
+        &mut self,
+        request_id: String,
+        prompt: Submission,
+    ) -> ComponentUpdate<RootEffect> {
+        if !self.unconfirmed_prompts.contains_key(&request_id) {
+            let (id, _) = self.queue.component_mut().begin_steer(prompt);
+            self.queue.component_mut().steer_unconfirmed(id);
+            self.unconfirmed_prompts.insert(request_id, id);
+        }
+        ComponentUpdate::render(RenderRequest::Immediate)
+    }
+
+    fn confirm_prompt(&mut self, request_id: &str) -> ComponentUpdate<RootEffect> {
+        let Some(id) = self.unconfirmed_prompts.remove(request_id) else {
+            return ComponentUpdate::none();
+        };
+        if self.queue_edit.as_ref().is_some_and(|edit| edit.id == id) {
+            self.confirmed_queue_edit = Some(id);
+            self.notification = Some(Notification::plain(
+                "Original prompt delivered. Save to send your edit, or Esc to dismiss it."
+                    .to_owned(),
+                Color::Green,
+            ));
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        // Its original submission is already in the transcript. A durable receipt
+        // confirms this exact request ID without creating a second user message.
+        self.queue.component_mut().steer_admitted(id);
+        self.submit_next_queued()
     }
 
     fn undo_latest_message(&mut self) -> ComponentUpdate<RootEffect> {
@@ -2602,10 +2910,17 @@ impl RootNode {
             .composer
             .component_mut()
             .update(ComposerEvent::LiveControls(active));
-        if update.changed {
+        let render = if update.changed {
             RenderRequest::Immediate
         } else {
             RenderRequest::None
+        };
+        if self.resuming_session {
+            render.max(self.session_resume_status())
+        } else if self.pending_session_list.is_some() && self.reconnecting.is_none() {
+            render.max(self.session_lookup_status())
+        } else {
+            render
         }
     }
 
@@ -2617,6 +2932,14 @@ impl RootNode {
         let update = self.transcript.update(event);
         let mut render = update.render;
         for effect in update.effects {
+            // Background activity must not replace the foreground status while
+            // reconnection or a session lookup owns the input controls.
+            if self.reconnecting.is_some()
+                || self.pending_session_list.is_some()
+                || self.resuming_session
+            {
+                continue;
+            }
             // Local submission is rendered before the server starts the run.
             // An idle transcript must not clear that pending turn's activity.
             let active = effect.active || self.has_active_turns();
@@ -2783,6 +3106,13 @@ impl RootNode {
     }
 
     fn transcript_record(&mut self, record: Arc<TranscriptRecord>) -> ComponentUpdate<RootEffect> {
+        if self
+            .transcript
+            .component()
+            .ignores_finished_run_event(&record)
+        {
+            return ComponentUpdate::none();
+        }
         if let Some(prompt) = recent_prompt(&record) {
             self.recent_prompts.push(prompt);
         }
@@ -2832,14 +3162,11 @@ impl Component for RootNode {
             RootEvent::PasteImage(data_url) => {
                 if self.blocking_task.is_some()
                     || self.overlay.is_some()
-                    || self.queue.component().focused()
+                    || (self.queue.component().focused() && self.queue_edit.is_none())
                 {
                     ComponentUpdate::none()
                 } else {
-                    self.update_composer(
-                        ComposerEvent::PasteImage(data_url),
-                        RenderRequest::Immediate,
-                    )
+                    self.edit_composer(ComposerEvent::PasteImage(data_url))
                 }
             }
             #[cfg(test)]
@@ -2851,6 +3178,21 @@ impl Component for RootNode {
                 self.transcript_record(record)
             }
             RootEvent::AgentStreamClosed => self.agent_stream_closed(),
+            RootEvent::AgentConnecting => {
+                self.interactive = false;
+                self.reconnecting = Some(true);
+                self.reconnection_status("Connecting…")
+            }
+            RootEvent::AgentReconnected {
+                active_turns,
+                pending_local,
+                reasoning_mode,
+            } => self.agent_reconnected(active_turns, pending_local, reasoning_mode),
+            RootEvent::AgentReconnectFailed(error) => {
+                self.reconnecting = Some(false);
+                self.notification = Some(Notification::plain(error, Color::Red));
+                self.reconnection_status("Connection lost · Enter to reconnect")
+            }
             RootEvent::Subagent(update) => self.apply_subagent_update(update),
             RootEvent::ReplaceDraft(draft) => {
                 self.update_composer(ComposerEvent::ReplaceDraft(draft), RenderRequest::Immediate)
@@ -2998,7 +3340,19 @@ impl Component for RootNode {
             RootEvent::TurnsCancelled => self.turns_cancelled(),
             RootEvent::ForkReady => self.fork_ready(),
             RootEvent::NewSessionFailed(message) => self.new_session_failed(message),
-            RootEvent::SessionsLoaded(sessions) => self.sessions_loaded(sessions),
+            RootEvent::SessionsLoaded {
+                request_id,
+                sessions,
+            } => self.sessions_loaded(request_id, sessions),
+            RootEvent::SessionListFailed { request_id, error } => {
+                if self.pending_session_list != Some(request_id) {
+                    return ComponentUpdate::none();
+                }
+                self.pending_session_list = None;
+                self.pending_session_mention = None;
+                self.notification = Some(Notification::plain(error, Color::Red));
+                self.resume_after_session_lookup()
+            }
             RootEvent::RecentPromptsLoaded {
                 session_id,
                 prompts,
@@ -3006,6 +3360,7 @@ impl Component for RootNode {
             RootEvent::RecentPromptLoadFailed(message) => self.recent_prompt_load_failed(message),
             RootEvent::SessionLoadFailed(message) => self.session_load_failed(message),
             RootEvent::SessionRestored {
+                draft_reset,
                 projection,
                 effort,
                 reasoning_mode,
@@ -3014,6 +3369,17 @@ impl Component for RootNode {
                 model,
                 skills,
             } => {
+                // Startup restoration installs history for the session already
+                // being edited. Preserve the complete draft, not just its text.
+                self.reconnecting = None;
+                self.interactive = true;
+                self.composer
+                    .component_mut()
+                    .update(ComposerEvent::SubmissionPaused(false));
+                let draft = match draft_reset {
+                    DraftReset::Preserve => self.composer.component_mut().take_draft(),
+                    DraftReset::Clear => None,
+                };
                 let workspace = self.workspace.clone();
                 self.install_session_projection(
                     &workspace,
@@ -3023,6 +3389,9 @@ impl Component for RootNode {
                     fast_mode,
                     *projection,
                 );
+                if let Some(draft) = draft {
+                    self.composer.component_mut().restore_draft(draft);
+                }
                 self.set_model(model);
                 self.set_skills(skills);
                 ComponentUpdate::render(RenderRequest::Immediate)
@@ -3032,27 +3401,21 @@ impl Component for RootNode {
                 fast_mode,
                 model,
             } => {
-                self.interactive = true;
                 self.transcript.component_mut().set_effort(effort);
                 self.subagents.set_effort(effort);
-                let _ = self
-                    .composer
+                self.composer
                     .component_mut()
                     .update(ComposerEvent::SetEffort(effort));
-                let _ = self
-                    .composer
-                    .component_mut()
-                    .update(ComposerEvent::Activity {
-                        active: false,
-                        status: None,
-                        now: Instant::now(),
-                    });
                 self.set_fast_mode(fast_mode);
                 self.set_model(model);
-                ComponentUpdate::render(RenderRequest::Immediate)
+                self.restore_session_activity()
             }
             RootEvent::HistoryReplayed { projection } => {
                 self.replay_history(*projection);
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
+            RootEvent::ShowAgentId(id) => {
+                self.overlay = Some(Overlay::AgentId(id));
                 ComponentUpdate::render(RenderRequest::Immediate)
             }
             RootEvent::NotifyError(message) => {
@@ -3084,6 +3447,10 @@ impl Component for RootNode {
                 ComponentUpdate::render(RenderRequest::Immediate)
             }
             RootEvent::SteerUnconfirmed(id) => self.steer_unconfirmed(id),
+            RootEvent::RetainPrompt { request_id, prompt } => {
+                self.retain_prompt(request_id, prompt)
+            }
+            RootEvent::PromptConfirmed(request_id) => self.confirm_prompt(&request_id),
             RootEvent::SteerFailed { id } => self.steer_failed(id),
             RootEvent::AnimationFrame(now) => self.update_animation(now),
         }
@@ -3386,6 +3753,17 @@ fn is_escape(event: &Event) -> bool {
         && key.modifiers.is_empty()
 }
 
+fn is_submit_enter(event: &Event) -> bool {
+    let Event::Key(key) = event else {
+        return false;
+    };
+    matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+        && key.code == KeyCode::Enter
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL)
+}
+
 fn is_plain_enter(event: &Event) -> bool {
     let Event::Key(key) = event else {
         return false;
@@ -3563,156 +3941,143 @@ mod live_control_tests {
         RootEvent::Terminal(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)))
     }
 
-    fn undo_message() -> RootEvent {
-        RootEvent::Terminal(Event::Key(KeyEvent::new(
-            KeyCode::Char('u'),
-            KeyModifiers::ALT,
-        )))
-    }
-
-    #[test]
-    fn undo_latest_queued_message_uses_submission_order() {
-        let mut root = root_with_draft("");
-        root.in_flight_turns = 1;
-        root.queue.component_mut().push("older followup".to_owned());
-        let (id, _) = root
-            .queue
-            .component_mut()
-            .begin_steer("newer steer".to_owned().into());
-        root.queue.component_mut().steer_failed(id);
-        let update = root.update(undo_message());
-        assert!(update.effects.is_empty());
-        assert_eq!(root.composer.component().draft(), "newer steer");
-        assert_eq!(root.queue.component().len(), 1);
-    }
-
-    #[test]
-    fn undo_queued_image_message_restores_the_original_image_payload() {
-        use nanocodex::agent::input::{PromptInput, UserInput};
-        let mut root = root_with_draft("inspect ");
-        root.update(RootEvent::PasteImage(
-            "data:image/png;base64,original".to_owned(),
-        ));
-        let draft = root.composer.component_mut().take_draft().unwrap();
-        root.in_flight_turns = 1;
-        root.queue.component_mut().push(draft.into_submission());
-        root.update(undo_message());
-        assert!(root.composer.component().has_images());
-        let draft = root.composer.component_mut().take_draft().unwrap();
-        let PromptInput::Content(content) = draft.into_submission().agent_prompt().instruction
-        else {
-            panic!("expected content")
-        };
-        assert!(content.iter().any(|item| matches!(item, UserInput::Image { image_url, .. } if image_url == "data:image/png;base64,original")));
-    }
-
-    #[test]
-    fn undo_steer_waits_for_confirmed_withdrawal_and_ignores_duplicate_shortcut() {
-        let mut root = root_with_draft("change direction");
-        root.update(RootEvent::ManagedActiveTurns(1));
-        let sent = root.update(key(KeyCode::Enter));
-        let [RootEffect::Steer { id, .. }] = sent.effects.as_slice() else {
-            panic!("expected steer")
-        };
-        let id = *id;
-        let update = root.update(undo_message());
-        assert_eq!(update.effects, [RootEffect::WithdrawSteer { id }]);
-        assert!(root.composer.component().draft().is_empty());
-        assert_eq!(root.queue.component().len(), 1);
-        assert!(root.update(undo_message()).effects.is_empty());
-        root.update(RootEvent::SteerAdmitted(id));
-        assert!(root.composer.component().draft().is_empty());
-        root.update(RootEvent::SteerWithdrawn(id));
-        assert_eq!(root.composer.component().draft(), "change direction");
-        assert!(root.queue.component().is_empty());
-        assert!(root.last_admitted_steer.is_none());
-    }
-
-    #[test]
-    fn undo_failure_never_restores_or_removes_the_steer() {
-        let mut root = root_with_draft("already received");
-        root.update(RootEvent::ManagedActiveTurns(1));
-        let sent = root.update(key(KeyCode::Enter));
-        let [RootEffect::Steer { id, .. }] = sent.effects.as_slice() else {
-            panic!("expected steer")
-        };
-        let id = *id;
-        root.update(undo_message());
-        root.update(RootEvent::SteerWithdrawalFailed {
-            id,
-            error: "Already received by the model".to_owned(),
-        });
-        assert!(root.composer.component().draft().is_empty());
-        assert_eq!(root.queue.component().len(), 1);
-        assert!(root.withdrawing_steer.is_none());
-    }
-
-    #[test]
-    fn undo_preserves_its_prompt_when_a_newer_steer_is_admitted() {
-        let mut root = root_with_draft("withdraw first");
-        root.update(RootEvent::ManagedActiveTurns(1));
-        let sent = root.update(key(KeyCode::Enter));
-        let [RootEffect::Steer { id, .. }] = sent.effects.as_slice() else {
-            panic!("expected steer")
-        };
-        let id = *id;
-        root.update(RootEvent::SteerAdmitted(id));
-        root.update(undo_message());
-        root.composer
-            .component_mut()
-            .replace_draft("new steer".to_owned());
-        let sent = root.update(key(KeyCode::Enter));
-        let [RootEffect::Steer { id: newer, .. }] = sent.effects.as_slice() else {
-            panic!("expected steer")
-        };
-        let newer = *newer;
-        root.update(RootEvent::SteerAdmitted(newer));
-        root.update(RootEvent::SteerWithdrawn(id));
-        assert_eq!(root.composer.component().draft(), "withdraw first");
-        assert_eq!(root.last_admitted_steer.as_ref().unwrap().0, newer);
-    }
-
-    #[test]
-    fn confirmed_undo_preserves_an_image_only_composer() {
-        let mut root = root_with_draft("withdraw me");
-        root.update(RootEvent::ManagedActiveTurns(1));
-        let sent = root.update(key(KeyCode::Enter));
-        let [RootEffect::Steer { id, .. }] = sent.effects.as_slice() else {
-            panic!("expected steer")
-        };
-        let id = *id;
-        root.update(RootEvent::SteerAdmitted(id));
-        root.update(undo_message());
-        root.update(RootEvent::PasteImage(
-            "data:image/png;base64,new-image".to_owned(),
-        ));
-        let image_draft = root.composer.component().draft().to_owned();
-        root.update(RootEvent::SteerWithdrawn(id));
-        root.restore_discarded_draft();
-        assert_eq!(root.composer.component().draft(), image_draft);
-        assert!(root.composer.component().has_images());
-        assert!(root.withdrawn_draft.is_some());
-        let draft = root.composer.component_mut().take_draft().unwrap();
-        let nanocodex::agent::input::PromptInput::Content(content) =
-            draft.into_submission().agent_prompt().instruction
-        else {
-            panic!("expected image content")
-        };
-        assert!(content.iter().any(|item| matches!(item,
-            nanocodex::agent::input::UserInput::Image { image_url, .. }
-                if image_url == "data:image/png;base64,new-image")));
-        root.restore_discarded_draft();
-        assert_eq!(root.composer.component().draft(), "withdraw me");
-        assert!(!root.composer.component().has_images());
-        assert!(root.withdrawn_draft.is_none());
-    }
-
     fn root_with_draft(draft: &str) -> RootNode {
         let mut root = RootNode::new(Path::new("/workspace"), ReasoningEffort::Medium);
         root.composer
             .component_mut()
             .replace_draft(draft.to_owned());
         root
+    }
+
+    #[test]
+    fn finished_run_telemetry_does_not_replace_live_or_restored_context_usage() {
+        let completed = |total| {
+            json!({
+                "call_index": 1, "model": "gpt-6-astra", "attempt": 1,
+                "connection_generation": 1, "status": "completed", "duration_ns": 1,
+                "time_to_first_event_ns": 1, "tool_calls": 0,
+                "usage": {"total_tokens": total},
+            })
+        };
+        let agent = |sequence, turn, kind, payload| {
+            Arc::new(
+                TranscriptRecord::from_agent(
+                    sequence,
+                    sequence * 10,
+                    AgentEvent {
+                        protocol_version: 1,
+                        request_id: Arc::from("request"),
+                        seq: sequence,
+                        kind,
+                        payload: to_raw_value(&payload).unwrap().into(),
+                    },
+                )
+                .with_managed_turn_id(Some(turn)),
+            )
+        };
+        let records = vec![
+            agent(1, "old", AgentEventKind::RunStarted, json!({})),
+            Arc::new(
+                TranscriptRecord::from_local(
+                    2,
+                    20,
+                    LocalEvent::ManagedFinalMessage {
+                        turn_id: "old".to_owned(),
+                        text: "finished".to_owned(),
+                    },
+                )
+                .unwrap(),
+            ),
+            agent(3, "current", AgentEventKind::RunStarted, json!({})),
+            agent(
+                4,
+                "current",
+                AgentEventKind::ModelCallCompleted,
+                completed(42),
+            ),
+            agent(
+                5,
+                "old",
+                AgentEventKind::ApiEvent,
+                json!({"phase": "generation", "direction": "inbound", "event": {"type": "response.completed", "response": {"usage": {"total_tokens": 9000}}}}),
+            ),
+            agent(6, "old", AgentEventKind::RunStarted, json!({})),
+            agent(
+                7,
+                "old",
+                AgentEventKind::ModelCallCompleted,
+                completed(90000),
+            ),
+        ];
+        let mut root = root_with_draft("preserve this draft");
+        for record in &records[..4] {
+            root.update(RootEvent::ExternalTranscript(Arc::clone(record)));
+        }
+        assert_eq!(root.context_diagnostics.usage.unwrap().total, 42);
+        for record in &records[4..] {
+            root.update(RootEvent::ExternalTranscript(Arc::clone(record)));
+        }
+        assert_eq!(root.context_diagnostics.usage.unwrap().total, 42);
+        assert_eq!(root.composer.component().draft(), "preserve this draft");
+        let restored = RootNode::project_open_session(ReasoningEffort::Medium, records);
+        assert_eq!(restored.context_tokens, Some(42));
+        assert_eq!(restored.context_diagnostics.usage.unwrap().total, 42);
+    }
+
+    #[test]
+    fn restored_session_applies_the_draft_policy_without_losing_images_or_cursor() {
+        use nanocodex::agent::input::{PromptInput, UserInput};
+        for preserve in [false, true] {
+            let mut root = root_with_draft("inspect ");
+            root.composer
+                .component_mut()
+                .update(super::ComposerEvent::PasteImage(
+                    "data:image/png;base64,attached".to_owned(),
+                ));
+            root.update(key(KeyCode::Home));
+            root.update(key(KeyCode::Right));
+            root.update(key(KeyCode::Right));
+            let text = root.composer.component().draft().to_owned();
+            let cursor = root.composer.component().cursor();
+            if preserve {
+                root.update(RootEvent::AgentConnecting);
+            }
+            root.update(RootEvent::SessionRestored {
+                draft_reset: if preserve {
+                    super::DraftReset::Preserve
+                } else {
+                    super::DraftReset::Clear
+                },
+                projection: Box::new(RootNode::project_open_session(
+                    ReasoningEffort::Medium,
+                    Vec::new(),
+                )),
+                effort: ReasoningEffort::Medium,
+                reasoning_mode: ReasoningMode::Standard,
+                preferred_reasoning_mode: ReasoningMode::Standard,
+                fast_mode: false,
+                model: Model::Sol,
+                skills: Arc::from([]),
+            });
+            assert!(root.interactive);
+            assert!(root.reconnecting.is_none());
+            if preserve {
+                assert!(root.discarded_draft.is_none());
+            } else {
+                assert!(root.composer.component().draft().is_empty());
+                root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+                    KeyCode::Char('z'),
+                    KeyModifiers::CONTROL,
+                ))));
+            }
+            assert_eq!(root.composer.component().draft(), text);
+            assert_eq!(root.composer.component().cursor(), cursor);
+            let submission = root.composer.component_mut().take_submission().unwrap();
+            let PromptInput::Content(content) = submission.agent_prompt().instruction else {
+                panic!("restoring a draft must retain its attachment");
+            };
+            assert!(content.iter().any(|item| matches!(item, UserInput::Image { image_url, .. } if image_url.ends_with("attached"))));
+        }
     }
 
     #[test]
@@ -3872,6 +4237,172 @@ mod live_control_tests {
         ));
         assert_eq!(root.composer.component().effort(), ReasoningEffort::High);
         assert_eq!(root.in_flight_turns, 0);
+    }
+
+    fn undo_message() -> RootEvent {
+        RootEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::ALT,
+        )))
+    }
+
+    #[test]
+    fn undo_latest_queued_message_uses_submission_order() {
+        let mut root = root_with_draft("");
+        root.in_flight_turns = 1;
+        root.queue.component_mut().push("older followup".to_owned());
+        let (id, _) = root
+            .queue
+            .component_mut()
+            .begin_steer("newer steer".to_owned().into());
+        root.queue.component_mut().steer_failed(id);
+        let update = root.update(undo_message());
+        assert!(update.effects.is_empty());
+        assert_eq!(root.composer.component().draft(), "newer steer");
+        assert_eq!(root.queue.component().len(), 1);
+    }
+
+    #[test]
+    fn undo_queued_image_message_restores_the_original_image_payload() {
+        use nanocodex::agent::input::{PromptInput, UserInput};
+        let mut root = root_with_draft("inspect ");
+        root.update(RootEvent::PasteImage(
+            "data:image/png;base64,original".to_owned(),
+        ));
+        let draft = root.composer.component_mut().take_draft().unwrap();
+        root.in_flight_turns = 1;
+        root.queue.component_mut().push(draft.into_submission());
+        root.update(undo_message());
+        assert!(root.composer.component().has_images());
+        let draft = root.composer.component_mut().take_draft().unwrap();
+        let PromptInput::Content(content) = draft.into_submission().agent_prompt().instruction
+        else {
+            panic!("expected content")
+        };
+        assert!(content.iter().any(|item| matches!(item, UserInput::Image { image_url, .. } if image_url == "data:image/png;base64,original")));
+    }
+
+    #[test]
+    fn undo_steer_waits_for_confirmed_withdrawal_and_ignores_duplicate_shortcut() {
+        let mut root = root_with_draft("change direction");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        let sent = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id, .. }] = sent.effects.as_slice() else {
+            panic!("expected steer")
+        };
+        let id = *id;
+        let update = root.update(undo_message());
+        assert_eq!(update.effects, [RootEffect::WithdrawSteer { id }]);
+        assert!(root.composer.component().draft().is_empty());
+        assert_eq!(root.queue.component().len(), 1);
+        assert!(root.update(undo_message()).effects.is_empty());
+        root.update(RootEvent::SteerAdmitted(id));
+        assert!(root.composer.component().draft().is_empty());
+        root.update(RootEvent::SteerWithdrawn(id));
+        assert_eq!(root.composer.component().draft(), "change direction");
+        assert!(root.queue.component().is_empty());
+        assert!(root.last_admitted_steer.is_none());
+    }
+
+    #[test]
+    fn undo_failure_never_restores_or_removes_the_steer() {
+        let mut root = root_with_draft("already received");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        let sent = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id, .. }] = sent.effects.as_slice() else {
+            panic!("expected steer")
+        };
+        let id = *id;
+        root.update(undo_message());
+        root.update(RootEvent::SteerWithdrawalFailed {
+            id,
+            error: "Already received by the model".to_owned(),
+        });
+        assert!(root.composer.component().draft().is_empty());
+        assert_eq!(root.queue.component().len(), 1);
+        assert!(root.withdrawing_steer.is_none());
+    }
+
+    #[test]
+    fn undo_preserves_its_prompt_when_a_newer_steer_is_admitted() {
+        let mut root = root_with_draft("withdraw first");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        let sent = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id, .. }] = sent.effects.as_slice() else {
+            panic!("expected steer")
+        };
+        let id = *id;
+        root.update(RootEvent::SteerAdmitted(id));
+        root.update(undo_message());
+        root.composer
+            .component_mut()
+            .replace_draft("new steer".to_owned());
+        let sent = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id: newer, .. }] = sent.effects.as_slice() else {
+            panic!("expected steer")
+        };
+        let newer = *newer;
+        root.update(RootEvent::SteerAdmitted(newer));
+        root.update(RootEvent::SteerWithdrawn(id));
+        assert_eq!(root.composer.component().draft(), "withdraw first");
+        assert_eq!(root.last_admitted_steer.as_ref().unwrap().0, newer);
+    }
+
+    #[test]
+    fn confirmed_undo_preserves_an_image_only_composer() {
+        let mut root = root_with_draft("withdraw me");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        let sent = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id, .. }] = sent.effects.as_slice() else {
+            panic!("expected steer")
+        };
+        let id = *id;
+        root.update(RootEvent::SteerAdmitted(id));
+        root.update(undo_message());
+        root.update(RootEvent::PasteImage(
+            "data:image/png;base64,new-image".to_owned(),
+        ));
+        let image_draft = root.composer.component().draft().to_owned();
+        root.update(RootEvent::SteerWithdrawn(id));
+        root.restore_discarded_draft();
+        assert_eq!(root.composer.component().draft(), image_draft);
+        assert!(root.composer.component().has_images());
+        assert!(root.withdrawn_draft.is_some());
+        let draft = root.composer.component_mut().take_draft().unwrap();
+        let nanocodex::agent::input::PromptInput::Content(content) =
+            draft.into_submission().agent_prompt().instruction
+        else {
+            panic!("expected image content")
+        };
+        assert!(content.iter().any(|item| matches!(item,
+            nanocodex::agent::input::UserInput::Image { image_url, .. }
+                if image_url == "data:image/png;base64,new-image")));
+        root.restore_discarded_draft();
+        assert_eq!(root.composer.component().draft(), "withdraw me");
+        assert!(!root.composer.component().has_images());
+        assert!(root.withdrawn_draft.is_none());
+    }
+
+    #[test]
+    fn confirmed_undo_preserves_a_draft_typed_during_withdrawal() {
+        let mut root = root_with_draft("withdraw me");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        let sent = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { id, .. }] = sent.effects.as_slice() else {
+            panic!("expected steer")
+        };
+        let id = *id;
+        root.update(RootEvent::SteerAdmitted(id));
+        root.update(undo_message());
+        root.composer
+            .component_mut()
+            .replace_draft("new draft".to_owned());
+        root.update(RootEvent::SteerWithdrawn(id));
+        assert_eq!(root.composer.component().draft(), "new draft");
+        root.discard_draft();
+        root.restore_discarded_draft();
+        assert_eq!(root.composer.component().draft(), "withdraw me");
+        assert!(root.discarded_draft.is_some());
     }
 
     #[test]
@@ -4082,6 +4613,975 @@ mod live_control_tests {
         assert_eq!(root.in_flight_turns, 1);
         assert_eq!(root.unmatched_worker_turns, 1);
         assert_eq!(root.unmatched_agent_turns, 0);
+    }
+
+    #[test]
+    fn unknown_image_steering_supports_explicit_edit_retry_and_cancellation() {
+        use crate::tui::Submission;
+        use nanocodex::agent::input::{PromptInput, UserInput};
+        for save in [false, true] {
+            let mut root = root_with_draft("preserved draft ");
+            root.update(RootEvent::PasteImage(
+                "data:image/png;base64,preserved".to_owned(),
+            ));
+            root.update(RootEvent::ManagedActiveTurns(1));
+            let original = Submission::multimodal(
+                "inspect [Image #3]".to_owned(),
+                [(8..18, "data:image/png;base64,original".to_owned())],
+            );
+            let (id, _) = root.queue.component_mut().begin_steer(original);
+            root.update(RootEvent::SteerUnconfirmed(id));
+            root.queue.component_mut().set_focused(true);
+            root.update(key(KeyCode::Char('e')));
+            assert!(
+                root.queue_edit.is_some(),
+                "unknown image input needs an explicit retry path"
+            );
+            assert!(root.composer.component().has_images());
+            root.update(key(KeyCode::Home));
+            root.update(RootEvent::Terminal(Event::Paste("updated ".to_owned())));
+            root.update(key(KeyCode::End));
+            root.update(RootEvent::PasteImage(
+                "data:image/png;base64,added".to_owned(),
+            ));
+            assert_eq!(
+                root.composer.component().draft(),
+                "updated inspect [Image #3][Image #4]"
+            );
+            assert!(
+                root.update(key(if save { KeyCode::Enter } else { KeyCode::Esc }))
+                    .effects
+                    .is_empty()
+            );
+            assert_eq!(
+                root.composer.component().draft(),
+                "preserved draft [Image #1]"
+            );
+            assert!(root.composer.component().has_images());
+            let mut update = root.update(RootEvent::ManagedActiveTurns(0));
+            if !save {
+                assert!(
+                    update.effects.is_empty(),
+                    "cancelled unknown input must not be retried automatically"
+                );
+                root.update(key(KeyCode::Char('e')));
+                update = root.update(key(KeyCode::Enter));
+            }
+            let [RootEffect::Submit(prompt)] = update.effects.as_slice() else {
+                panic!("explicitly saving the image input should submit it once");
+            };
+            assert_eq!(
+                prompt.display_text(),
+                if save {
+                    "updated inspect [Image #3][Image #4]"
+                } else {
+                    "inspect [Image #3]"
+                }
+            );
+            let PromptInput::Content(content) = prompt.agent_prompt().instruction else {
+                panic!("retry must contain image content");
+            };
+            let images = content
+                .iter()
+                .filter_map(|item| match item {
+                    UserInput::Image { image_url, .. } => Some(image_url.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                images,
+                if save {
+                    vec![
+                        "data:image/png;base64,original",
+                        "data:image/png;base64,added",
+                    ]
+                } else {
+                    vec!["data:image/png;base64,original"]
+                }
+            );
+            assert!(root.queue.component().is_empty());
+        }
+    }
+
+    #[test]
+    fn saving_a_queue_edit_preserves_images_recalled_from_prompt_history() {
+        use nanocodex::agent::input::{PromptInput, UserInput};
+        let mut root = root_with_draft("inspect ");
+        root.update(RootEvent::PasteImage(
+            "data:image/png;base64,recalled".to_owned(),
+        ));
+        root.update(key(KeyCode::Enter));
+        root.update(RootEvent::WorkerTurnFinished {
+            terminal_expected: false,
+        });
+        root.update(RootEvent::ManagedActiveTurns(1));
+        root.queue
+            .component_mut()
+            .push("replace this instruction".to_owned());
+        root.queue.component_mut().set_focused(true);
+        root.update(key(KeyCode::Char('e')));
+        root.update(key(KeyCode::Up));
+        assert!(root.composer.component().has_images());
+        root.update(key(KeyCode::Home));
+        root.update(RootEvent::Terminal(Event::Paste("  ".to_owned())));
+        root.update(key(KeyCode::End));
+        root.update(RootEvent::Terminal(Event::Paste("  ".to_owned())));
+        assert!(root.update(key(KeyCode::Enter)).effects.is_empty());
+        let update = root.update(RootEvent::ManagedActiveTurns(0));
+        let [RootEffect::Submit(prompt)] = update.effects.as_slice() else {
+            panic!("the saved queue revision should submit after the current turn");
+        };
+        let PromptInput::Content(content) = prompt.agent_prompt().instruction else {
+            panic!("the saved revision must remain multimodal");
+        };
+        assert!(
+            matches!(content.as_slice(), [UserInput::Text { text }, UserInput::Image { image_url, .. }, UserInput::Text { text: trailing }]
+            if text == "  inspect " && image_url == "data:image/png;base64,recalled" && trailing == "  ")
+        );
+    }
+
+    #[test]
+    fn history_navigation_keeps_images_in_a_queued_followup() {
+        use nanocodex::agent::input::{PromptInput, UserInput};
+        let mut root = root_with_draft("earlier prompt");
+        assert!(matches!(
+            root.update(key(KeyCode::Enter)).effects.as_slice(),
+            [RootEffect::Submit(_)]
+        ));
+        root.update(RootEvent::WorkerTurnFinished {
+            terminal_expected: false,
+        });
+        root.update(RootEvent::ManagedActiveTurns(1));
+        root.update(RootEvent::ReplaceDraft("inspect ".to_owned()));
+        root.update(RootEvent::PasteImage(
+            "data:image/png;base64,queued-image".to_owned(),
+        ));
+        root.update(key(KeyCode::Up));
+        assert_eq!(root.composer.component().draft(), "earlier prompt");
+        root.update(key(KeyCode::Down));
+        assert!(root.update(key(KeyCode::Tab)).effects.is_empty());
+        let update = root.update(RootEvent::ManagedActiveTurns(0));
+        let [RootEffect::Submit(prompt)] = update.effects.as_slice() else {
+            panic!("the followup should submit after the active turn ends");
+        };
+        let PromptInput::Content(content) = prompt.agent_prompt().instruction else {
+            panic!("queued followup must retain image content");
+        };
+        assert!(
+            matches!(content.as_slice(), [UserInput::Text { text }, UserInput::Image { image_url, .. }]
+            if text == "inspect " && image_url == "data:image/png;base64,queued-image")
+        );
+    }
+
+    #[test]
+    fn reflection_submit_shortcuts_keep_the_reflection_action_and_close_its_editor() {
+        for modifiers in [KeyModifiers::NONE, KeyModifiers::SUPER] {
+            let mut root = root_with_draft("");
+            root.update(key(KeyCode::Char('/')));
+            root.update(RootEvent::Terminal(Event::Paste("reflection".to_owned())));
+            root.update(key(KeyCode::Enter));
+            assert!(root.reflection_input);
+            root.update(RootEvent::ReplaceDraft(
+                "review the failed attempts".to_owned(),
+            ));
+
+            let update = root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                modifiers,
+            ))));
+            assert!(
+                matches!(update.effects.as_slice(), [RootEffect::Reflect(prompt)]
+                if prompt.display_text() == "review the failed attempts")
+            );
+            assert!(!root.reflection_input);
+            assert!(root.composer.component().input_mode().is_none());
+            assert!(root.composer.component().draft().is_empty());
+        }
+    }
+
+    #[test]
+    fn disconnected_queue_editor_can_cancel_without_sending_or_reconnecting() {
+        for reconnect_failed in [false, true] {
+            let mut root = root_with_draft("preserved composer draft");
+            root.update(RootEvent::ManagedActiveTurns(1));
+            root.queue
+                .component_mut()
+                .push("original instruction".to_owned());
+            root.queue.component_mut().set_focused(true);
+            root.update(key(KeyCode::Char('e')));
+            root.composer
+                .component_mut()
+                .replace_draft("unsaved revision".to_owned());
+            root.update(RootEvent::AgentStreamClosed);
+            if reconnect_failed {
+                root.update(RootEvent::AgentReconnectFailed("offline".to_owned()));
+            }
+
+            assert!(root.update(key(KeyCode::Esc)).effects.is_empty());
+            assert!(
+                root.queue_edit.is_none(),
+                "local cancellation must work while disconnected"
+            );
+            assert_eq!(
+                root.composer.component().draft(),
+                "preserved composer draft"
+            );
+            assert_eq!(root.reconnecting, Some(!reconnect_failed));
+            assert!(!root.interactive);
+
+            let update = root.update(RootEvent::AgentReconnected {
+                active_turns: 0,
+                pending_local: false,
+                reasoning_mode: ReasoningMode::Standard,
+            });
+            assert!(
+                matches!(update.effects.as_slice(), [RootEffect::Submit(prompt)]
+                if prompt.display_text() == "original instruction")
+            );
+            assert!(root.queue.component().is_empty());
+        }
+    }
+
+    #[test]
+    fn tab_in_queue_editor_keeps_the_revision_unsent_until_explicit_save() {
+        for save in [false, true] {
+            let mut root = root_with_draft("preserved draft");
+            root.update(RootEvent::ManagedActiveTurns(1));
+            root.queue
+                .component_mut()
+                .push("original instruction".to_owned());
+            root.queue.component_mut().set_focused(true);
+            root.update(key(KeyCode::Char('e')));
+            assert!(root.queue_edit.is_some());
+            root.composer
+                .component_mut()
+                .replace_draft("unfinished revision".to_owned());
+
+            assert!(root.update(key(KeyCode::Tab)).effects.is_empty());
+            assert_eq!(root.composer.component().draft(), "unfinished revision");
+            assert_eq!(root.queue.component().len(), 1);
+            assert!(
+                root.update(key(if save { KeyCode::Enter } else { KeyCode::Esc }))
+                    .effects
+                    .is_empty()
+            );
+            assert_eq!(root.composer.component().draft(), "preserved draft");
+
+            let update = root.update(RootEvent::ManagedActiveTurns(0));
+            let [RootEffect::Submit(prompt)] = update.effects.as_slice() else {
+                panic!("exactly one queued instruction should be submitted");
+            };
+            assert_eq!(
+                prompt.display_text(),
+                if save {
+                    "unfinished revision"
+                } else {
+                    "original instruction"
+                }
+            );
+            assert!(root.queue.component().is_empty());
+        }
+    }
+
+    #[test]
+    fn prompt_confirmation_during_edit_preserves_the_draft_and_requires_explicit_resubmission() {
+        for save in [false, true] {
+            let mut root = root_with_draft("preserved draft");
+            root.retain_prompt("request-1".to_owned(), "original".to_owned().into());
+            root.queue.component_mut().set_focused(true);
+            root.update(key(KeyCode::Char('e')));
+            root.composer
+                .component_mut()
+                .replace_draft("revised input".to_owned());
+            root.confirm_prompt("request-1");
+            let update = root.update(key(if save { KeyCode::Enter } else { KeyCode::Esc }));
+            assert_eq!(root.composer.component().draft(), "preserved draft");
+            assert!(root.queue.component().is_empty());
+            if save {
+                assert!(
+                    matches!(update.effects.as_slice(), [RootEffect::Submit(prompt)] if prompt.display_text() == "revised input")
+                );
+            } else {
+                assert!(
+                    update.effects.is_empty(),
+                    "cancelling an edit must not repeat confirmed delivery"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn late_original_receipt_does_not_discard_an_explicitly_saved_revision() {
+        let mut root = root_with_draft("preserved draft");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        root.retain_prompt("request-1".to_owned(), "original".to_owned().into());
+        root.queue.component_mut().set_focused(true);
+        root.update(key(KeyCode::Char('e')));
+        root.composer
+            .component_mut()
+            .replace_draft("revised input".to_owned());
+        assert!(
+            root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::SUPER
+            ))))
+            .effects
+            .is_empty()
+        );
+        assert!(root.queue_edit.is_none());
+        root.confirm_prompt("request-1");
+        let update = root.update(RootEvent::ManagedActiveTurns(0));
+        assert!(
+            matches!(update.effects.as_slice(), [RootEffect::Submit(prompt)] if prompt.display_text() == "revised input")
+        );
+        assert_eq!(root.composer.component().draft(), "preserved draft");
+    }
+
+    #[test]
+    fn connecting_blocks_modified_submit_keys_but_keeps_multiline_editing() {
+        for connecting in [RootEvent::AgentConnecting, RootEvent::AgentStreamClosed] {
+            let mut root = root_with_draft("preserved");
+            root.update(connecting);
+            let modified_enter = |modifiers| {
+                RootEvent::Terminal(Event::Key(KeyEvent::new(KeyCode::Enter, modifiers)))
+            };
+            let update = root.update(modified_enter(KeyModifiers::SUPER));
+            assert!(update.effects.is_empty());
+            assert!(root.update(key(KeyCode::Tab)).effects.is_empty());
+            assert_eq!(root.composer.component().draft(), "preserved");
+            root.update(modified_enter(KeyModifiers::SHIFT));
+            root.update(modified_enter(KeyModifiers::ALT));
+            assert_eq!(root.composer.component().draft(), "preserved\n\n");
+            root.update(RootEvent::AgentReconnectFailed("offline".to_owned()));
+            let update = root.update(modified_enter(KeyModifiers::SUPER));
+            assert!(matches!(update.effects.as_slice(), [RootEffect::Reconnect]));
+            assert_eq!(root.composer.component().draft(), "preserved\n\n");
+        }
+    }
+
+    #[test]
+    fn offline_draft_restore_preserves_images_and_cursor() {
+        use nanocodex::agent::input::{PromptInput, UserInput};
+        for connecting in [true, false] {
+            let mut root = root_with_draft("inspect 短 ");
+            root.update(RootEvent::PasteImage(
+                "data:image/png;base64,attached".to_owned(),
+            ));
+            root.update(key(KeyCode::Home));
+            root.update(key(KeyCode::Right));
+            let text = root.composer.component().draft().to_owned();
+            let cursor = root.composer.component().cursor();
+            root.update(RootEvent::AgentStreamClosed);
+            if !connecting {
+                root.update(RootEvent::AgentReconnectFailed("offline".to_owned()));
+            }
+            let control = |letter| {
+                RootEvent::Terminal(Event::Key(KeyEvent::new(
+                    KeyCode::Char(letter),
+                    KeyModifiers::CONTROL,
+                )))
+            };
+            assert!(root.update(control('c')).effects.is_empty());
+            assert!(root.composer.component().draft().is_empty());
+            assert!(root.update(control('z')).effects.is_empty());
+            assert_eq!(root.composer.component().draft(), text);
+            assert_eq!(root.composer.component().cursor(), cursor);
+            assert_eq!(root.reconnecting, Some(connecting));
+            let submission = root.composer.component_mut().take_submission().unwrap();
+            let PromptInput::Content(content) = submission.agent_prompt().instruction else {
+                panic!("offline draft restoration must retain its attachment");
+            };
+            assert!(content.iter().any(|item| matches!(item, UserInput::Image { image_url, .. } if image_url.ends_with("attached"))));
+        }
+    }
+
+    #[test]
+    fn open_actions_menu_tracks_current_activity() {
+        use crate::tui::theme::Theme;
+        use ratatui::{Terminal, backend::TestBackend};
+        for starts_active in [false, true] {
+            let mut root = root_with_draft("");
+            root.update(RootEvent::ManagedActiveTurns(usize::from(starts_active)));
+            root.update(key(KeyCode::Char('/')));
+            root.update(RootEvent::Terminal(Event::Paste("restore".to_owned())));
+            root.update(RootEvent::ManagedActiveTurns(usize::from(!starts_active)));
+            let mut terminal = Terminal::new(TestBackend::new(160, 32)).unwrap();
+            terminal
+                .draw(|frame| root.render_focused(frame, frame.area(), &Theme::default(), true))
+                .unwrap();
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert_eq!(
+                screen.contains("Resume session · finish"),
+                !starts_active,
+                "{screen}"
+            );
+            let update = root.update(key(KeyCode::Enter));
+            if starts_active {
+                assert!(matches!(
+                    update.effects.as_slice(),
+                    [RootEffect::LoadSessions { .. }]
+                ));
+            } else {
+                assert!(update.effects.is_empty());
+                assert!(matches!(root.overlay, Some(super::Overlay::Actions(_))));
+            }
+        }
+    }
+
+    #[test]
+    fn resuming_a_session_keeps_input_paused_during_background_updates() {
+        use crate::tui::{session::SessionSummary, theme::Theme};
+        use ratatui::{Terminal, backend::TestBackend};
+        for outcome in ["failure", "success", "escape", "control-c"] {
+            let mut root = root_with_draft("preserve the old draft");
+            root.load_sessions();
+            root.sessions_loaded(
+                root.pending_session_list.unwrap(),
+                vec![SessionSummary {
+                    session_id: "selected-agent".to_owned(),
+                    started_at_unix_ms: 0,
+                    model: "gpt-6-astra".to_owned(),
+                    effort: ReasoningEffort::Low,
+                    reasoning_mode: ReasoningMode::Standard,
+                    workspace: root.workspace.clone(),
+                    preview: "selected session".to_owned(),
+                }],
+            );
+            assert!(
+                matches!(root.update(key(KeyCode::Enter)).effects.as_slice(),
+            [RootEffect::ResumeSession(id)] if id == "selected-agent")
+            );
+            for event in [
+                RootEvent::SettingsHydrated {
+                    effort: ReasoningEffort::High,
+                    fast_mode: false,
+                    model: Model::Astra,
+                },
+                RootEvent::ManagedActiveTurns(0),
+                RootEvent::ManagedActiveTurns(1),
+            ] {
+                assert!(root.update(event).effects.is_empty());
+                assert!(!root.interactive);
+                assert!(root.update(key(KeyCode::Char('!'))).effects.is_empty());
+                assert!(root.update(key(KeyCode::Enter)).effects.is_empty());
+                assert_eq!(root.composer.component().draft(), "preserve the old draft");
+                let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+                terminal
+                    .draw(|frame| root.render_focused(frame, frame.area(), &Theme::default(), true))
+                    .unwrap();
+                let screen: String = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect();
+                assert!(screen.contains("Resuming session"), "{screen}");
+            }
+            if outcome == "success" {
+                root.update(RootEvent::SessionRestored {
+                    draft_reset: super::DraftReset::Clear,
+                    projection: Box::new(RootNode::project_open_session(
+                        ReasoningEffort::Low,
+                        Vec::new(),
+                    )),
+                    effort: ReasoningEffort::Low,
+                    reasoning_mode: ReasoningMode::Standard,
+                    preferred_reasoning_mode: ReasoningMode::Standard,
+                    fast_mode: false,
+                    model: Model::Astra,
+                    skills: Arc::from([]),
+                });
+                assert!(!root.resuming_session);
+                assert!(
+                    !root.has_active_turns(),
+                    "old-session activity must not survive a successful resume"
+                );
+                assert!(root.composer.component().draft().is_empty());
+                root.composer
+                    .component_mut()
+                    .replace_draft("preserve the old draft".to_owned());
+            } else {
+                if outcome == "failure" {
+                    root.update(RootEvent::SessionLoadFailed("resume failed".to_owned()));
+                } else {
+                    let cancel = if outcome == "escape" {
+                        key(KeyCode::Esc)
+                    } else {
+                        RootEvent::Terminal(Event::Key(KeyEvent::new(
+                            KeyCode::Char('c'),
+                            KeyModifiers::CONTROL,
+                        )))
+                    };
+                    assert!(matches!(
+                        root.update(cancel).effects.as_slice(),
+                        [RootEffect::CancelSessionResume]
+                    ));
+                    assert!(!root.resuming_session);
+                    assert!(root.key_confirmation.is_none());
+                    assert_eq!(root.composer.component().draft(), "preserve the old draft");
+                }
+                assert!(root.has_active_turns());
+                root.update(RootEvent::ManagedActiveTurns(0));
+            }
+            assert!(root.interactive);
+            assert!(
+                matches!(root.update(key(KeyCode::Enter)).effects.as_slice(),
+            [RootEffect::Submit(prompt)] if prompt.display_text() == "preserve the old draft")
+            );
+        }
+    }
+
+    #[test]
+    fn local_shell_interruption_stays_available_while_disconnected() {
+        let mut root = root_with_draft("!sleep 30");
+        assert!(matches!(
+            root.update(key(KeyCode::Enter)).effects.as_slice(),
+            [RootEffect::RunShell(_)]
+        ));
+        root.update(RootEvent::AgentStreamClosed);
+        root.update(RootEvent::AgentReconnectFailed("offline".to_owned()));
+        root.transcript.component_mut().focus_expandables();
+        assert!(root.update(key(KeyCode::Esc)).effects.is_empty());
+        assert!(!root.transcript.component().expandables_focused());
+        assert!(root.key_confirmation.is_none());
+        assert!(root.update(key(KeyCode::Esc)).effects.is_empty());
+        assert!(
+            matches!(
+                root.update(key(KeyCode::Esc)).effects.as_slice(),
+                [RootEffect::CancelTurns]
+            ),
+            "disconnecting the managed service must not disable local shell cancellation"
+        );
+    }
+
+    #[test]
+    fn dragging_below_the_draft_finishes_copy_and_releases_the_composer() {
+        use crate::tui::theme::Theme;
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        use ratatui::{Terminal, backend::TestBackend};
+        for (beyond_area, clear) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut root = root_with_draft("copy 短 this");
+            root.update(RootEvent::ManagedActiveTurns(1));
+            let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+            terminal
+                .draw(|frame| root.render_focused(frame, frame.area(), &Theme::default(), true))
+                .unwrap();
+            let area = root.composer_content_area;
+            assert!(area.height > 1);
+            let mouse = |kind, row| {
+                RootEvent::Terminal(Event::Mouse(MouseEvent {
+                    kind,
+                    column: area.x,
+                    row,
+                    modifiers: KeyModifiers::NONE,
+                }))
+            };
+            root.update(mouse(MouseEventKind::Down(MouseButton::Left), area.y));
+            let row = if beyond_area {
+                area.bottom() + 5
+            } else {
+                area.y + 1
+            };
+            root.update(mouse(MouseEventKind::Drag(MouseButton::Left), row));
+            if clear {
+                root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+                    KeyCode::Char('c'),
+                    KeyModifiers::CONTROL,
+                ))));
+                assert!(root.composer.component().draft().is_empty());
+            }
+            let update = root.update(mouse(MouseEventKind::Up(MouseButton::Left), row));
+            if clear {
+                assert!(
+                    update.effects.is_empty(),
+                    "a cleared draft must not copy stale text"
+                );
+                root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+                    KeyCode::Char('z'),
+                    KeyModifiers::CONTROL,
+                ))));
+            } else {
+                assert!(
+                    matches!(update.effects.as_slice(), [RootEffect::Copy(text)] if text == "copy 短 this"),
+                    "releasing below the last text line must finish the copy"
+                );
+            }
+            assert_eq!(root.composer.component().draft(), "copy 短 this");
+            assert!(root.selection.surface().is_none());
+            assert!(root.selection_auto_scroll.is_none());
+            root.update(key(KeyCode::Char('!')));
+            let update = root.update(key(KeyCode::Enter));
+            assert!(
+                matches!(update.effects.as_slice(), [RootEffect::Steer { prompt, .. }] if prompt.display_text() == "copy 短 this!")
+            );
+        }
+    }
+
+    #[test]
+    fn offline_edits_dismiss_pending_and_open_session_pickers() {
+        for loaded in [false, true] {
+            let mut root = root_with_draft("original long draft @@");
+            root.update(RootEvent::ManagedActiveTurns(1));
+            root.load_session_mentions("original long draft ".len());
+            let request_id = root.pending_session_list.unwrap();
+            if loaded {
+                root.update(RootEvent::SessionsLoaded {
+                    request_id,
+                    sessions: Vec::new(),
+                });
+                assert!(root.overlay.is_some());
+            }
+            root.update(RootEvent::AgentStreamClosed);
+            let update = root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+                KeyCode::Char('u'),
+                KeyModifiers::CONTROL,
+            ))));
+            assert_eq!(
+                update
+                    .effects
+                    .iter()
+                    .filter(|effect| matches!(effect, RootEffect::CancelSessionList(_)))
+                    .count(),
+                usize::from(!loaded)
+            );
+            root.update(RootEvent::Terminal(Event::Paste("短".to_owned())));
+            assert!(root.pending_session_list.is_none());
+            assert!(root.pending_session_mention.is_none());
+            assert!(root.overlay.is_none());
+            root.update(RootEvent::SessionsLoaded {
+                request_id,
+                sessions: Vec::new(),
+            });
+            assert!(
+                root.overlay.is_none(),
+                "late lookup must not cover the edited draft"
+            );
+            root.update(RootEvent::AgentReconnected {
+                active_turns: 1,
+                pending_local: false,
+                reasoning_mode: ReasoningMode::Standard,
+            });
+            let update = root.update(key(KeyCode::Enter));
+            assert!(
+                matches!(update.effects.as_slice(), [RootEffect::Steer { prompt, .. }] if prompt.display_text() == "短")
+            );
+        }
+    }
+
+    #[test]
+    fn pasting_an_image_cancels_a_pending_session_mention_without_losing_the_image() {
+        use nanocodex::agent::input::{PromptInput, UserInput};
+        let mut root = root_with_draft("inspect @@");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        root.load_session_mentions("inspect ".len());
+        let request_id = root.pending_session_list.unwrap();
+        let update = root.update(RootEvent::PasteImage(
+            "data:image/png;base64,kept".to_owned(),
+        ));
+        assert!(
+            matches!(update.effects.as_slice(), [RootEffect::CancelSessionList(id)] if *id == request_id)
+        );
+        root.update(RootEvent::SessionsLoaded {
+            request_id,
+            sessions: Vec::new(),
+        });
+        assert!(root.overlay.is_none());
+        let update = root.update(key(KeyCode::Enter));
+        let [RootEffect::Steer { prompt, .. }] = update.effects.as_slice() else {
+            panic!("edited prompt should steer");
+        };
+        let PromptInput::Content(content) = prompt.agent_prompt().instruction else {
+            panic!("expected image content");
+        };
+        assert!(
+            matches!(content.as_slice(), [UserInput::Text { text }, UserInput::Image { image_url, .. }]
+            if text == "inspect @@" && image_url == "data:image/png;base64,kept")
+        );
+    }
+
+    #[test]
+    fn pending_session_lookup_keeps_its_input_and_status_during_live_updates() {
+        use crate::tui::theme::Theme;
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut root = root_with_draft("preserved @@");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        root.load_session_mentions("preserved ".len());
+        let request_id = root.pending_session_list.unwrap();
+        root.update(RootEvent::SettingsHydrated {
+            effort: ReasoningEffort::High,
+            fast_mode: false,
+            model: Model::Astra,
+        });
+        assert!(
+            !root.interactive,
+            "settings must not release the pending lookup's input pause"
+        );
+        root.update(key(KeyCode::Char('u')));
+        assert_eq!(root.composer.component().draft(), "preserved @@");
+        root.update(RootEvent::ManagedActiveTurns(0));
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| root.render_focused(frame, frame.area(), &Theme::default(), true))
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            screen.contains("Loading sessions") && screen.contains("Esc cancel"),
+            "{screen}"
+        );
+        root.update(RootEvent::SessionsLoaded {
+            request_id,
+            sessions: Vec::new(),
+        });
+        assert!(root.interactive);
+        root.update(key(KeyCode::Esc));
+        root.update(key(KeyCode::Char('x')));
+        assert_eq!(root.composer.component().draft(), "preserved @@x");
+    }
+
+    #[test]
+    fn session_lookup_can_be_cancelled_while_a_turn_is_running() {
+        let mut root = root_with_draft("steering draft");
+        root.update(RootEvent::ManagedActiveTurns(1));
+        root.load_sessions();
+        root.update(key(KeyCode::Esc));
+        assert!(root.interactive, "Esc must release a slow session lookup");
+        assert_eq!(root.composer.component().draft(), "steering draft");
+        let update = root.update(key(KeyCode::Enter));
+        assert!(
+            matches!(update.effects.as_slice(), [RootEffect::Steer { prompt, .. }] if prompt.display_text() == "steering draft")
+        );
+    }
+
+    #[test]
+    fn session_lookup_resolution_releases_ready_followups_without_sending_the_draft() {
+        for resolution in 0..3 {
+            let mut root = root_with_draft("unfinished steering draft");
+            root.update(RootEvent::ManagedActiveTurns(1));
+            root.queue
+                .component_mut()
+                .push("queued after lookup".to_owned());
+            root.load_session_mentions(0);
+            let request_id = root.pending_session_list.unwrap();
+            assert!(
+                root.update(RootEvent::ManagedActiveTurns(0))
+                    .effects
+                    .is_empty()
+            );
+            let event = match resolution {
+                0 => key(KeyCode::Esc),
+                1 => RootEvent::SessionsLoaded {
+                    request_id,
+                    sessions: Vec::new(),
+                },
+                _ => RootEvent::SessionListFailed {
+                    request_id,
+                    error: "lookup failed".to_owned(),
+                },
+            };
+            let update = root.update(event);
+            let submitted: Vec<_> = update
+                .effects
+                .iter()
+                .filter_map(|effect| match effect {
+                    RootEffect::Submit(prompt) => Some(prompt.display_text()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                submitted,
+                ["queued after lookup"],
+                "ready followup stuck after lookup resolution {resolution}"
+            );
+            assert_eq!(
+                root.composer.component().draft(),
+                "unfinished steering draft"
+            );
+            assert!(root.queue.component().is_empty());
+        }
+    }
+
+    #[test]
+    fn cancelled_session_results_cannot_replace_a_newer_lookup() {
+        let mut root = root_with_draft("preserved draft");
+        root.load_session_mentions(0);
+        let first = root.pending_session_list.unwrap();
+        root.update(key(KeyCode::Esc));
+        root.reset_session(
+            Path::new("/workspace"),
+            ReasoningEffort::Medium,
+            ReasoningMode::Standard,
+            ReasoningMode::Standard,
+            super::DraftReset::Preserve,
+        );
+        root.load_sessions();
+        let second = root.pending_session_list.unwrap();
+        assert_ne!(first, second, "session reset must not reuse lookup IDs");
+        for event in [
+            RootEvent::SessionsLoaded {
+                request_id: first,
+                sessions: Vec::new(),
+            },
+            RootEvent::SessionListFailed {
+                request_id: first,
+                error: "late lookup failure".to_owned(),
+            },
+        ] {
+            assert!(root.update(event).effects.is_empty());
+            assert_eq!(root.pending_session_list, Some(second));
+            assert!(!root.interactive);
+            assert!(root.overlay.is_none());
+        }
+        root.update(RootEvent::SessionsLoaded {
+            request_id: second,
+            sessions: Vec::new(),
+        });
+        assert!(root.interactive);
+        assert!(root.overlay.is_some());
+        assert_eq!(root.composer.component().draft(), "preserved draft");
+    }
+
+    #[test]
+    fn loading_callbacks_restore_current_activity_without_losing_drafts() {
+        use crate::tui::theme::Theme;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let callbacks: [fn() -> RootEvent; 6] = [
+            || RootEvent::RecentPromptsLoaded {
+                session_id: "session".to_owned(),
+                prompts: Vec::new(),
+            },
+            || RootEvent::RecentPromptLoadFailed("lookup failed".to_owned()),
+            || RootEvent::SessionsLoaded {
+                request_id: 0,
+                sessions: Vec::new(),
+            },
+            || RootEvent::SessionLoadFailed("lookup failed".to_owned()),
+            || RootEvent::NewSessionFailed("still active".to_owned()),
+            || RootEvent::SettingsHydrated {
+                effort: ReasoningEffort::High,
+                fast_mode: false,
+                model: Model::Astra,
+            },
+        ];
+        for state in 0..4 {
+            for callback in callbacks {
+                let mut root = root_with_draft("preserved input");
+                root.update(RootEvent::ManagedActiveTurns(usize::from(state != 0)));
+                let record = TranscriptRecord::from_agent(
+                    1,
+                    1,
+                    AgentEvent {
+                        protocol_version: 1,
+                        request_id: Arc::from("agent"),
+                        seq: 1,
+                        kind: AgentEventKind::ModelWarmupStarted,
+                        payload: to_raw_value(&json!({})).unwrap().into(),
+                    },
+                );
+                root.update(RootEvent::ExternalTranscript(Arc::new(record)));
+                if state >= 2 {
+                    root.update(RootEvent::AgentStreamClosed);
+                }
+                if state == 3 {
+                    root.update(RootEvent::AgentReconnectFailed("offline".to_owned()));
+                }
+                let event = callback();
+                if matches!(event, RootEvent::SessionsLoaded { .. }) {
+                    root.pending_session_list = Some(0);
+                }
+                assert!(root.update(event).effects.is_empty());
+                root.overlay = None;
+                assert_eq!(root.composer.component().draft(), "preserved input");
+                assert_eq!(root.interactive, state < 2);
+                let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+                terminal
+                    .draw(|frame| root.render_focused(frame, frame.area(), &Theme::default(), true))
+                    .unwrap();
+                let screen: String = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect();
+                match state {
+                    0 => assert!(
+                        !screen.contains("Warming model") && !screen.contains("Thinking"),
+                        "{screen}"
+                    ),
+                    1 => assert!(screen.contains("Warming model"), "{screen}"),
+                    2 => assert!(screen.contains("Reconnecting"), "{screen}"),
+                    _ => assert!(screen.contains("Connection lost"), "{screen}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn history_and_settings_updates_preserve_the_connection_status() {
+        use crate::tui::theme::Theme;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        for failed in [false, true] {
+            let mut root = root_with_draft("pending");
+            root.update(key(KeyCode::Enter));
+            root.update(RootEvent::AgentStreamClosed);
+            if failed {
+                root.update(RootEvent::AgentReconnectFailed("offline".to_owned()));
+            }
+            root.update(RootEvent::SettingsHydrated {
+                effort: ReasoningEffort::High,
+                fast_mode: false,
+                model: Model::Astra,
+            });
+            let record = TranscriptRecord::from_agent(
+                1,
+                1,
+                AgentEvent {
+                    protocol_version: 1,
+                    request_id: Arc::from("managed-agent"),
+                    seq: 1,
+                    kind: AgentEventKind::RunFailed,
+                    payload: to_raw_value(&json!({"error": "missed failure"}))
+                        .unwrap()
+                        .into(),
+                },
+            );
+            root.update(RootEvent::ExternalTranscript(Arc::new(record)));
+            let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+            terminal
+                .draw(|frame| root.render_focused(frame, frame.area(), &Theme::default(), true))
+                .unwrap();
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(
+                screen.contains(if failed {
+                    "Connection lost"
+                } else {
+                    "Reconnecting"
+                }),
+                "{screen}"
+            );
+            assert!(!root.interactive);
+        }
     }
 
     #[test]

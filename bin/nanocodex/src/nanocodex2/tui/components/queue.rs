@@ -35,7 +35,7 @@ impl QueueId {
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum QueueEffect {
     Blur,
-    Edit { id: QueueId, text: String },
+    Edit { id: QueueId, prompt: Submission },
     Steer { id: QueueId, prompt: Submission },
 }
 
@@ -48,6 +48,7 @@ struct QueueItem {
     id: QueueId,
     prompt: Submission,
     state: QueueItemState,
+    steer_lane: bool,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -87,6 +88,7 @@ impl MessageQueue {
             id: QueueId(self.next_id),
             prompt: prompt.into(),
             state: QueueItemState::Queued,
+            steer_lane: false,
         });
         self.next_id = self.next_id.saturating_add(1);
         self.selected = self.items.len() - 1;
@@ -101,6 +103,7 @@ impl MessageQueue {
                 id,
                 prompt: prompt.clone(),
                 state: QueueItemState::SubmittingSteer,
+                steer_lane: true,
             },
         );
         self.selected = self.steer_lane_len().saturating_sub(1);
@@ -129,16 +132,17 @@ impl MessageQueue {
         prompt
     }
 
-    pub(super) fn finish_edit(&mut self, id: QueueId, text: String) -> bool {
+    pub(super) fn finish_edit(&mut self, id: QueueId, prompt: impl Into<Submission>) -> bool {
         let Some(index) = self.items.iter().position(|item| item.id == id) else {
             return false;
         };
-        if text.trim().is_empty() {
+        let prompt = prompt.into();
+        if prompt.display_text().trim().is_empty() {
             self.items.remove(index);
             self.repair_selection();
             return true;
         }
-        self.items[index].prompt = text.into();
+        self.items[index].prompt = prompt;
         self.items[index].state = QueueItemState::Queued;
         self.selected = index;
         true
@@ -196,6 +200,15 @@ impl MessageQueue {
         self.items
             .iter()
             .any(|item| item.state == QueueItemState::SubmittingSteer)
+    }
+
+    pub(super) fn connection_lost(&mut self) {
+        for item in &mut self.items {
+            if item.state == QueueItemState::SubmittingSteer {
+                item.state = QueueItemState::UnconfirmedSteer;
+            }
+        }
+        self.sync_steering_wave();
     }
 
     pub(super) fn steer_admitted(&mut self, id: QueueId) -> Option<(QueueId, Submission)> {
@@ -269,11 +282,11 @@ impl MessageQueue {
     }
 
     fn steer_lane_len(&self) -> usize {
-        // A failed steer stays in place as queued input. New steering belongs after
-        // every still-pending instruction, including any queued gaps between them.
+        // Recovery can return every pending steer to queued state. Keep their
+        // ordering even then, while new steering still precedes regular follow-ups.
         self.items
             .iter()
-            .rposition(|item| item.state == QueueItemState::SubmittingSteer)
+            .rposition(|item| item.steer_lane)
             .map_or(0, |index| index + 1)
     }
 
@@ -353,9 +366,6 @@ impl MessageQueue {
                 ) {
                     return ComponentUpdate::none();
                 }
-                if item.prompt.has_images() {
-                    return ComponentUpdate::none();
-                }
                 item.state = if item.state == QueueItemState::UnconfirmedSteer {
                     QueueItemState::EditingUnconfirmed
                 } else {
@@ -364,7 +374,7 @@ impl MessageQueue {
                 return ComponentUpdate {
                     effects: vec![QueueEffect::Edit {
                         id: item.id,
-                        text: item.prompt.display_text().to_owned(),
+                        prompt: item.prompt.clone(),
                     }],
                     render: RenderRequest::Immediate,
                 };
@@ -379,6 +389,7 @@ impl MessageQueue {
 
                 let mut item = self.items.remove(self.selected);
                 item.state = QueueItemState::SubmittingSteer;
+                item.steer_lane = true;
                 let id = item.id;
                 let prompt = item.prompt.clone();
                 let index = self.steer_lane_len();
@@ -422,12 +433,6 @@ impl MessageQueue {
                 &["↑↓ select", "e edit", "enter steer", "d delete", "esc back"],
                 &["↑↓ select", "enter steer", "esc back"],
                 &["↑↓ select", "esc back"],
-            ]
-        } else if selected.state == QueueItemState::UnconfirmedSteer && selected.prompt.has_images()
-        {
-            &[
-                &["delivery unknown", "d dismiss", "esc back"],
-                &["d dismiss", "esc back"],
             ]
         } else if selected.state == QueueItemState::UnconfirmedSteer {
             &[
@@ -885,6 +890,27 @@ mod tests {
     }
 
     #[test]
+    fn recovered_steers_keep_order_when_new_steering_arrives() {
+        let mut queue = MessageQueue::default();
+        let (_, _) = queue.begin_steer("uncertain".to_owned().into());
+        let (waiting, _) = queue.begin_steer("before disconnect".to_owned().into());
+        queue.connection_lost();
+        queue.steer_failed(waiting);
+        queue.push("regular followup".to_owned());
+        let (new, _) = queue.begin_steer("after reconnect".to_owned().into());
+        queue.steer_failed(new);
+        assert_eq!(
+            queue
+                .drain_ready()
+                .iter()
+                .map(Submission::display_text)
+                .collect::<Vec<_>>(),
+            ["before disconnect", "after reconnect", "regular followup"]
+        );
+        assert_eq!(queue.len(), 1);
+    }
+
+    #[test]
     fn failed_steer_does_not_split_the_pending_steer_lane() {
         let mut queue = MessageQueue::default();
         queue.push("first steer".to_owned());
@@ -940,24 +966,32 @@ mod tests {
             update.effects,
             [QueueEffect::Edit {
                 id: QueueId::new(0),
-                text: "edit me".to_owned(),
+                prompt: "edit me".to_owned().into(),
             }]
         );
     }
 
     #[test]
-    fn multimodal_items_cannot_enter_the_text_only_queue_editor() {
+    fn multimodal_queue_edit_preserves_images_when_cancelled() {
         let mut queue = MessageQueue::default();
-        queue.push(Submission::multimodal(
+        let prompt = Submission::multimodal(
             "see [Image #1]".to_owned(),
             [(4..14, "data:image/png;base64,a".to_owned())],
-        ));
+        );
+        queue.push(prompt.clone());
 
         let update = queue.update(key(KeyCode::Char('e'), KeyModifiers::NONE));
 
-        assert!(update.effects.is_empty());
-        let prompt = queue.drain_ready().pop().unwrap();
-        assert!(prompt.has_images());
+        assert_eq!(
+            update.effects,
+            [QueueEffect::Edit {
+                id: QueueId::new(0),
+                prompt: prompt.clone(),
+            }]
+        );
+        assert!(queue.drain_ready().is_empty());
+        assert!(queue.cancel_edit(QueueId::new(0)));
+        assert_eq!(queue.drain_ready(), [prompt]);
     }
 
     #[test]

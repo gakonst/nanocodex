@@ -46,6 +46,26 @@ pub(crate) enum AppEvent {
         record: Arc<TranscriptRecord>,
     },
     AgentStreamClosed(PaneId),
+    AgentConnecting(PaneId),
+    RetainPrompt {
+        pane: PaneId,
+        request_id: String,
+        prompt: crate::tui::prompt::Submission,
+    },
+    PromptConfirmed {
+        pane: PaneId,
+        request_id: String,
+    },
+    AgentReconnected {
+        pane: PaneId,
+        active_turns: usize,
+        pending_local: bool,
+        reasoning_mode: ReasoningMode,
+    },
+    AgentReconnectFailed {
+        pane: PaneId,
+        error: String,
+    },
     Subagent {
         pane: PaneId,
         update: AgentUpdate,
@@ -136,7 +156,13 @@ pub(crate) enum AppEvent {
     },
     SessionsLoaded {
         pane: PaneId,
+        request_id: u64,
         sessions: Vec<SessionSummary>,
+    },
+    SessionListFailed {
+        pane: PaneId,
+        request_id: u64,
+        error: String,
     },
     RecentPromptsLoaded {
         pane: PaneId,
@@ -153,6 +179,7 @@ pub(crate) enum AppEvent {
     },
     SessionRestored {
         pane: PaneId,
+        draft_reset: DraftReset,
         projection: Box<RestoredSessionProjection>,
         effort: ReasoningEffort,
         reasoning_mode: ReasoningMode,
@@ -170,6 +197,10 @@ pub(crate) enum AppEvent {
     HistoryReplayed {
         pane: PaneId,
         projection: Box<RestoredSessionProjection>,
+    },
+    ShowAgentId {
+        pane: PaneId,
+        id: String,
     },
     NotifyError {
         pane: PaneId,
@@ -252,8 +283,33 @@ impl AppNode {
             AppEvent::ExternalTranscript { pane, record } => {
                 self.update_root(pane, RootEvent::ExternalTranscript(record))
             }
+            AppEvent::RetainPrompt {
+                pane,
+                request_id,
+                prompt,
+            } => self.update_root(pane, RootEvent::RetainPrompt { request_id, prompt }),
+            AppEvent::PromptConfirmed { pane, request_id } => {
+                self.update_root(pane, RootEvent::PromptConfirmed(request_id))
+            }
             AppEvent::AgentStreamClosed(pane) => {
                 self.update_root(pane, RootEvent::AgentStreamClosed)
+            }
+            AppEvent::AgentConnecting(pane) => self.update_root(pane, RootEvent::AgentConnecting),
+            AppEvent::AgentReconnected {
+                pane,
+                active_turns,
+                pending_local,
+                reasoning_mode,
+            } => self.update_root(
+                pane,
+                RootEvent::AgentReconnected {
+                    active_turns,
+                    pending_local,
+                    reasoning_mode,
+                },
+            ),
+            AppEvent::AgentReconnectFailed { pane, error } => {
+                self.update_root(pane, RootEvent::AgentReconnectFailed(error))
             }
             AppEvent::Subagent { pane, update } => {
                 self.update_root(pane, RootEvent::Subagent(update))
@@ -372,9 +428,22 @@ impl AppNode {
             AppEvent::NewSessionFailed { pane, error } => {
                 self.update_root(pane, RootEvent::NewSessionFailed(error))
             }
-            AppEvent::SessionsLoaded { pane, sessions } => {
-                self.update_root(pane, RootEvent::SessionsLoaded(sessions))
-            }
+            AppEvent::SessionsLoaded {
+                pane,
+                request_id,
+                sessions,
+            } => self.update_root(
+                pane,
+                RootEvent::SessionsLoaded {
+                    request_id,
+                    sessions,
+                },
+            ),
+            AppEvent::SessionListFailed {
+                pane,
+                request_id,
+                error,
+            } => self.update_root(pane, RootEvent::SessionListFailed { request_id, error }),
             AppEvent::RecentPromptsLoaded {
                 pane,
                 session_id,
@@ -394,6 +463,7 @@ impl AppNode {
             }
             AppEvent::SessionRestored {
                 pane,
+                draft_reset,
                 projection,
                 effort,
                 reasoning_mode,
@@ -404,6 +474,7 @@ impl AppNode {
             } => self.update_root(
                 pane,
                 RootEvent::SessionRestored {
+                    draft_reset,
                     projection,
                     effort,
                     reasoning_mode,
@@ -428,6 +499,9 @@ impl AppNode {
             ),
             AppEvent::HistoryReplayed { pane, projection } => {
                 self.update_root(pane, RootEvent::HistoryReplayed { projection })
+            }
+            AppEvent::ShowAgentId { pane, id } => {
+                self.update_root(pane, RootEvent::ShowAgentId(id))
             }
             AppEvent::NotifyError { pane, error } => {
                 self.update_root(pane, RootEvent::NotifyError(error))

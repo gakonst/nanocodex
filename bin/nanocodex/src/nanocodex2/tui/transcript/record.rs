@@ -68,10 +68,10 @@ pub(crate) enum LocalEvent {
         id: TurnId,
         text: String,
     },
-    UserSteerWithdrawn {
+    UserSteered {
         text: String,
     },
-    UserSteered {
+    UserSteerWithdrawn {
         text: String,
     },
     ReflectionStarted {
@@ -109,15 +109,23 @@ pub(crate) enum LocalEvent {
         id: TurnId,
         error: Option<String>,
     },
-    ManagedTurnFailed {
-        error: String,
-    },
     WorkerTurnsInterrupted {
         count: usize,
         error: Option<String>,
     },
     WorkerSteerFailed {
         error: String,
+    },
+    DisplayError {
+        message: String,
+    },
+    ManagedFinalMessage {
+        turn_id: String,
+        text: String,
+    },
+    ManagedTurnStopped {
+        turn_id: String,
+        error: Option<String>,
     },
     WorkerStopped {
         error: Option<String>,
@@ -143,6 +151,10 @@ struct AgentMetadata {
     protocol_version: u32,
     request_id: Arc<str>,
     sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    managed_turn_id: Option<Arc<str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    managed_agent_id: Option<u64>,
 }
 
 impl TranscriptRecord {
@@ -157,6 +169,8 @@ impl TranscriptRecord {
                 protocol_version: event.protocol_version,
                 request_id: event.request_id,
                 sequence: event.seq,
+                managed_turn_id: None,
+                managed_agent_id: None,
             }),
             payload: event.payload,
         }
@@ -172,11 +186,11 @@ impl TranscriptRecord {
             LocalEvent::UserSubmitted { id, text } => {
                 ("user.submitted", to_raw_value(&UserSubmitted { id, text })?)
             }
-            LocalEvent::UserSteerWithdrawn { text } => {
-                ("user.steer_withdrawn", to_raw_value(&UserSteered { text })?)
-            }
             LocalEvent::UserSteered { text } => {
                 ("user.steered", to_raw_value(&UserSteered { text })?)
+            }
+            LocalEvent::UserSteerWithdrawn { text } => {
+                ("user.steer_withdrawn", to_raw_value(&UserSteered { text })?)
             }
             LocalEvent::ReflectionStarted { id } => (
                 "reflection.started",
@@ -236,9 +250,6 @@ impl TranscriptRecord {
                 "worker.turn_finished",
                 to_raw_value(&WorkerTurnFinished { id, error })?,
             ),
-            LocalEvent::ManagedTurnFailed { error } => {
-                ("managed.turn_failed", to_raw_value(&EventError { error })?)
-            }
             LocalEvent::WorkerTurnsInterrupted { count, error } => (
                 "worker.turns_interrupted",
                 to_raw_value(&WorkerTurnsInterrupted { count, error })?,
@@ -246,6 +257,17 @@ impl TranscriptRecord {
             LocalEvent::WorkerSteerFailed { error } => {
                 ("worker.steer_failed", to_raw_value(&EventError { error })?)
             }
+            LocalEvent::DisplayError { message } => {
+                ("display.error", to_raw_value(&DisplayError { message })?)
+            }
+            LocalEvent::ManagedFinalMessage { turn_id, text } => (
+                "managed.final_message",
+                to_raw_value(&ManagedFinalMessage { turn_id, text })?,
+            ),
+            LocalEvent::ManagedTurnStopped { turn_id, error } => (
+                "managed.turn_stopped",
+                to_raw_value(&ManagedTurnStopped { turn_id, error })?,
+            ),
             LocalEvent::WorkerStopped { error } => {
                 ("worker.stopped", to_raw_value(&WorkerStopped { error })?)
             }
@@ -286,6 +308,30 @@ impl TranscriptRecord {
         self.agent
             .as_ref()
             .map(|metadata| Arc::clone(&metadata.request_id))
+    }
+
+    pub(crate) fn with_managed_turn_id(mut self, turn_id: Option<&str>) -> Self {
+        if let Some(agent) = &mut self.agent {
+            agent.managed_turn_id = turn_id.map(Arc::from);
+        }
+        self
+    }
+
+    pub(crate) fn managed_turn_id(&self) -> Option<Arc<str>> {
+        self.agent
+            .as_ref()
+            .and_then(|agent| agent.managed_turn_id.clone())
+    }
+
+    pub(crate) fn with_managed_agent_id(mut self, agent_id: Option<u64>) -> Self {
+        if let Some(agent) = &mut self.agent {
+            agent.managed_agent_id = agent_id;
+        }
+        self
+    }
+
+    pub(crate) fn managed_agent_id(&self) -> Option<u64> {
+        self.agent.as_ref().and_then(|agent| agent.managed_agent_id)
     }
 
     pub(crate) fn payload_json(&self) -> &str {
@@ -375,6 +421,23 @@ struct WorkerTurnsInterrupted {
 #[derive(Serialize)]
 struct EventError {
     error: String,
+}
+
+#[derive(Serialize)]
+struct ManagedTurnStopped {
+    turn_id: String,
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ManagedFinalMessage {
+    turn_id: String,
+    text: String,
+}
+
+#[derive(Serialize)]
+struct DisplayError {
+    message: String,
 }
 
 #[derive(Serialize)]

@@ -39,6 +39,7 @@ use std::{
     mem,
     ops::Range,
     path::Path,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -50,6 +51,7 @@ const DEVELOPMENT_BADGE: &str = " ◉ dev ";
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum ComposerEffect {
+    ShowAgentId,
     Submit(Submission),
     Queue(Submission),
     RunShell(String),
@@ -126,6 +128,7 @@ pub(crate) enum ComposerEvent {
     SetFastMode(bool),
     InputMode(Option<String>),
     LiveControls(bool),
+    SubmissionPaused(bool),
     Activity {
         active: bool,
         status: Option<String>,
@@ -165,6 +168,7 @@ pub(crate) struct Composer {
     fast_mode: bool,
     input_mode: Option<String>,
     live_controls: bool,
+    submission_paused: bool,
     activity_active: bool,
     activity_wave: Option<WavedText>,
     activity_status: Option<String>,
@@ -180,6 +184,7 @@ pub(crate) struct Composer {
     history: PromptHistory,
 }
 
+#[derive(Clone)]
 pub(crate) struct ComposerDraft {
     text: String,
     images: Vec<PastedImage>,
@@ -187,9 +192,21 @@ pub(crate) struct ComposerDraft {
     cursor: usize,
 }
 
+#[derive(Clone)]
 struct PastedImage {
     range: Range<usize>,
-    data_url: String,
+    data_url: Arc<str>,
+}
+
+impl From<String> for ComposerDraft {
+    fn from(text: String) -> Self {
+        Self {
+            cursor: text.len(),
+            text,
+            images: Vec::new(),
+            next_image: 1,
+        }
+    }
 }
 
 impl From<Submission> for ComposerDraft {
@@ -304,6 +321,7 @@ impl Composer {
             fast_mode: false,
             input_mode: None,
             live_controls: false,
+            submission_paused: false,
             activity_active: false,
             activity_wave: None,
             activity_status: None,
@@ -396,6 +414,13 @@ impl Composer {
                     return ComposerUpdate::unchanged();
                 }
                 self.live_controls = active;
+                ComposerUpdate::changed()
+            }
+            ComposerEvent::SubmissionPaused(paused) => {
+                if self.submission_paused == paused {
+                    return ComposerUpdate::unchanged();
+                }
+                self.submission_paused = paused;
                 ComposerUpdate::changed()
             }
             ComposerEvent::Activity {
@@ -641,7 +666,12 @@ impl Composer {
         );
         let row = self.scroll + usize::from(position.y - area.y);
         let column = usize::from(position.x - area.x);
-        let line = self.visual_layout(width).lines.get(row)?.clone();
+        let Some(line) = self.visual_layout(width).lines.get(row).cloned() else {
+            // Releasing a drag below the last text row still selects through
+            // the end of the draft, including the blank composer rows.
+            let end = self.draft.len();
+            return Some(TextSpan::new(0, end, end));
+        };
         let range = grapheme_at_column(&self.draft, &line, column);
         Some(TextSpan::new(0, range.start, range.end))
     }
@@ -709,6 +739,7 @@ impl Composer {
     }
 
     pub(crate) fn replace_draft(&mut self, draft: String) {
+        self.history.detach();
         self.draft = if draft.contains('\r') {
             normalize_line_endings(&draft).into_owned()
         } else {
@@ -723,6 +754,18 @@ impl Composer {
     }
 
     pub(crate) fn take_submission(&mut self) -> Option<Submission> {
+        self.take_submission_draft()
+            .map(ComposerDraft::into_submission)
+    }
+
+    fn take_recorded_submission(&mut self) -> Option<Submission> {
+        let draft = self.take_submission_draft()?;
+        let prompt = draft.clone().into_submission();
+        self.history.record(draft);
+        Some(prompt)
+    }
+
+    fn take_submission_draft(&mut self) -> Option<ComposerDraft> {
         let trimmed = self.draft.trim();
         if trimmed.is_empty() {
             return None;
@@ -730,20 +773,18 @@ impl Composer {
 
         let start = self.draft.len() - self.draft.trim_start().len();
         let end = start + trimmed.len();
-        let text = trimmed.to_owned();
-        let images = self
-            .images
-            .iter()
-            .filter(|image| image.range.start >= start && image.range.end <= end)
-            .map(|image| {
-                (
-                    image.range.start - start..image.range.end - start,
-                    image.data_url.clone(),
-                )
-            });
-        let prompt = Submission::multimodal(text, images);
-        self.replace_draft(String::new());
-        Some(prompt)
+        let mut draft = self.take_draft()?;
+        draft.text = draft.text[start..end].to_owned();
+        draft.images.retain_mut(|image| {
+            if image.range.start < start || image.range.end > end {
+                return false;
+            }
+            image.range.start -= start;
+            image.range.end -= start;
+            true
+        });
+        draft.cursor = draft.text.len();
+        Some(draft)
     }
 
     pub(crate) fn take_draft(&mut self) -> Option<ComposerDraft> {
@@ -765,11 +806,15 @@ impl Composer {
     }
 
     pub(crate) fn restore_draft(&mut self, draft: ComposerDraft) {
+        self.history.detach();
+        self.replace_composer_draft(draft);
+    }
+
+    fn replace_composer_draft(&mut self, draft: ComposerDraft) {
         self.draft = draft.text;
         self.images = draft.images;
         self.next_image = draft.next_image;
         self.cursor = draft.cursor;
-        self.history.detach();
         self.preferred_column = None;
         self.scroll = 0;
         self.layout = None;
@@ -887,7 +932,7 @@ impl Composer {
             return ComposerUpdate::unchanged();
         }
 
-        if let Some(command) = self.take_settings_command() {
+        if let Some(command) = self.take_local_command() {
             return command;
         }
 
@@ -903,34 +948,38 @@ impl Composer {
         }
 
         let prompt = self
-            .take_submission()
+            .take_recorded_submission()
             .expect("non-empty composer draft must produce a submission");
-        self.history.record(prompt.display_text().to_owned());
         ComposerUpdate::effect(ComposerEffect::Submit(prompt), true)
     }
 
     fn queue(&mut self) -> ComposerUpdate {
-        if let Some(command) = self.take_settings_command() {
+        // An editor owns its save/cancel boundary. Tab must not consume its
+        // draft as a separate message or interpret it as a settings command.
+        if self.input_mode.is_some() {
+            return ComposerUpdate::unchanged();
+        }
+        if let Some(command) = self.take_local_command() {
             return command;
         }
-        let Some(prompt) = self.take_submission() else {
+        let Some(prompt) = self.take_recorded_submission() else {
             return ComposerUpdate::unchanged();
         };
-        self.history.record(prompt.display_text().to_owned());
         ComposerUpdate::effect(ComposerEffect::Queue(prompt), true)
     }
 
-    fn take_settings_command(&mut self) -> Option<ComposerUpdate> {
+    fn take_local_command(&mut self) -> Option<ComposerUpdate> {
         if !self.images.is_empty() {
             return None;
         }
-        let command = SettingsCommand::parse(self.draft.trim())?;
+        let effect = if self.draft.trim() == "/id" {
+            ComposerEffect::ShowAgentId
+        } else {
+            ComposerEffect::Settings(SettingsCommand::parse(self.draft.trim())?)
+        };
         self.history.record(self.draft.trim().to_owned());
         self.replace_draft(String::new());
-        Some(ComposerUpdate::effect(
-            ComposerEffect::Settings(command),
-            true,
-        ))
+        Some(ComposerUpdate::effect(effect, true))
     }
 
     fn move_up(&mut self) -> bool {
@@ -938,10 +987,16 @@ impl Composer {
             return true;
         }
 
-        let Some(prompt) = self.history.previous(&self.draft) else {
+        let Some(prompt) = self.history.previous(|| ComposerDraft {
+            text: self.draft.clone(),
+            images: self.images.clone(),
+            next_image: self.next_image,
+            // History has always returned to the end of the unsent draft.
+            cursor: self.draft.len(),
+        }) else {
             return false;
         };
-        self.replace_draft(prompt);
+        self.replace_composer_draft(prompt);
         true
     }
 
@@ -953,7 +1008,7 @@ impl Composer {
         let Some(prompt) = self.history.next() else {
             return false;
         };
-        self.replace_draft(prompt);
+        self.replace_composer_draft(prompt);
         true
     }
 
@@ -972,29 +1027,55 @@ impl Composer {
         self.layout = None;
     }
 
-    fn move_left(&mut self) -> bool {
-        let Some(previous) = self.draft[..self.cursor].grapheme_indices(true).next_back() else {
-            return false;
-        };
-        self.cursor = self
+    // Segment text separately from attachments: Unicode grapheme rules can
+    // otherwise join adjacent text to an image marker's opening or closing bracket.
+    fn previous_cursor_boundary(&self) -> Option<usize> {
+        let start = match self
             .images
             .iter()
-            .find(|image| image.range.contains(&previous.0))
-            .map_or(previous.0, |image| image.range.start);
+            .rev()
+            .find(|image| image.range.start < self.cursor)
+        {
+            Some(image) if self.cursor <= image.range.end => return Some(image.range.start),
+            Some(image) => image.range.end,
+            None => 0,
+        };
+        self.draft[start..self.cursor]
+            .grapheme_indices(true)
+            .next_back()
+            .map(|(index, _)| start + index)
+    }
+
+    fn next_cursor_boundary(&self) -> Option<usize> {
+        let end = match self
+            .images
+            .iter()
+            .find(|image| self.cursor < image.range.end)
+        {
+            Some(image) if self.cursor >= image.range.start => return Some(image.range.end),
+            Some(image) => image.range.start,
+            None => self.draft.len(),
+        };
+        self.draft[self.cursor..end]
+            .graphemes(true)
+            .next()
+            .map(|grapheme| self.cursor + grapheme.len())
+    }
+
+    fn move_left(&mut self) -> bool {
+        let Some(previous) = self.previous_cursor_boundary() else {
+            return false;
+        };
+        self.cursor = previous;
         self.preferred_column = None;
         true
     }
 
     fn move_right(&mut self) -> bool {
-        let Some(next) = self.draft[self.cursor..].graphemes(true).next() else {
+        let Some(next) = self.next_cursor_boundary() else {
             return false;
         };
-        let target = self.cursor + next.len();
-        self.cursor = self
-            .images
-            .iter()
-            .find(|image| image.range.start < target && target < image.range.end)
-            .map_or(target, |image| image.range.end);
+        self.cursor = next;
         self.preferred_column = None;
         true
     }
@@ -1009,11 +1090,7 @@ impl Composer {
             self.remove_range(range);
             return true;
         }
-        let Some(previous) = self.draft[..self.cursor]
-            .grapheme_indices(true)
-            .next_back()
-            .map(|(index, _)| index)
-        else {
+        let Some(previous) = self.previous_cursor_boundary() else {
             return false;
         };
         self.remove_range(previous..self.cursor);
@@ -1149,10 +1226,10 @@ impl Composer {
             self.remove_range(range);
             return true;
         }
-        let Some(next) = self.draft[self.cursor..].graphemes(true).next() else {
+        let Some(next) = self.next_cursor_boundary() else {
             return false;
         };
-        self.remove_range(self.cursor..self.cursor + next.len());
+        self.remove_range(self.cursor..next);
         true
     }
 
@@ -1163,7 +1240,7 @@ impl Composer {
         self.insert(&marker);
         self.images.push(PastedImage {
             range: start..self.cursor,
-            data_url,
+            data_url: data_url.into(),
         });
         self.images.sort_by_key(|image| image.range.start);
         self.next_image = self.next_image.saturating_add(1);
@@ -1220,6 +1297,17 @@ impl Composer {
         let layout = VisualLayout::new(&self.draft, self.cursor, self.last_width.max(1));
         let line = &layout.lines[layout.cursor_row];
         let target = if end { line.end } else { line.start };
+        let target = self
+            .images
+            .iter()
+            .find(|image| image.range.start < target && target < image.range.end)
+            .map_or(target, |image| {
+                if end {
+                    image.range.end
+                } else {
+                    image.range.start
+                }
+            });
         if target == self.cursor {
             return false;
         }
@@ -1565,6 +1653,8 @@ impl Composer {
             self.draft.is_empty(),
             self.activity_active,
             self.live_controls,
+            self.submission_paused,
+            self.input_mode.is_some(),
             hint_space,
         );
         if entry_hint.width() <= hint_space {
@@ -1575,7 +1665,7 @@ impl Composer {
                 u16::try_from(hint_space).unwrap_or(u16::MAX),
             );
         }
-        if shell_mode {
+        if shell_mode && self.input_mode.is_none() {
             buffer.set_stringn(
                 content_start,
                 bottom,
@@ -1620,9 +1710,23 @@ fn entry_hint(
     include_actions: bool,
     activity_active: bool,
     live_controls: bool,
+    submission_paused: bool,
+    editing: bool,
     max_width: usize,
 ) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")];
+    if submission_paused {
+        return Line::from(Span::styled(
+            " send paused · keep editing ",
+            Style::default().fg(theme.muted()),
+        ));
+    }
+    if editing {
+        return Line::from(Span::styled(
+            " Enter confirm · Esc cancel ",
+            Style::default().fg(theme.muted()),
+        ));
+    }
     if live_controls {
         spans.extend([
             Span::styled("Enter", Style::reset()),
@@ -2243,6 +2347,214 @@ mod tests {
     }
 
     #[test]
+    fn replaced_drafts_do_not_restore_stale_history_backups() {
+        for replacement in ["", "replacement draft"] {
+            let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+            composer.replace_draft("earlier prompt".to_owned());
+            composer.update(key(KeyCode::Enter, KeyModifiers::NONE));
+            composer.replace_draft("abandoned ".to_owned());
+            composer.update(ComposerEvent::PasteImage(
+                "data:image/png;base64,abandoned".to_owned(),
+            ));
+            composer.update(key(KeyCode::Up, KeyModifiers::NONE));
+            composer.replace_draft(replacement.to_owned());
+            composer.update(key(KeyCode::Down, KeyModifiers::NONE));
+            assert_eq!(composer.draft(), replacement);
+            assert!(!composer.has_images());
+            composer.update(key(KeyCode::Up, KeyModifiers::NONE));
+            assert_eq!(composer.draft(), "earlier prompt");
+            composer.update(key(KeyCode::Down, KeyModifiers::NONE));
+            assert_eq!(composer.draft(), replacement);
+            assert!(!composer.has_images());
+        }
+    }
+
+    #[test]
+    fn recalling_sent_or_queued_image_prompts_preserves_editable_image_content() {
+        for submit in [KeyCode::Enter, KeyCode::Tab] {
+            let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+            composer.replace_draft("  inspect ".to_owned());
+            composer.update(ComposerEvent::PasteImage(
+                "data:image/png;base64,first".to_owned(),
+            ));
+            composer.update(ComposerEvent::PasteImage(
+                "data:image/png;base64,removed".to_owned(),
+            ));
+            composer.update(key(KeyCode::Backspace, KeyModifiers::NONE));
+            composer.update(ComposerEvent::Terminal(Event::Paste("  ".to_owned())));
+            composer.update(key(submit, KeyModifiers::NONE));
+            composer.replace_draft("newer prompt".to_owned());
+            composer.update(key(submit, KeyModifiers::NONE));
+            composer.replace_draft("unsent ".to_owned());
+            composer.update(ComposerEvent::PasteImage(
+                "data:image/png;base64,unsent".to_owned(),
+            ));
+
+            composer.update(key(KeyCode::Up, KeyModifiers::NONE));
+            composer.update(key(KeyCode::Up, KeyModifiers::NONE));
+            assert_eq!(composer.draft(), "inspect [Image #1]");
+            assert!(
+                composer.has_images(),
+                "recalled prompt must retain its image data"
+            );
+            composer.update(key(KeyCode::Down, KeyModifiers::NONE));
+            assert!(!composer.has_images());
+            composer.update(key(KeyCode::Down, KeyModifiers::NONE));
+            assert_eq!(composer.draft(), "unsent [Image #1]");
+            assert!(composer.has_images());
+            composer.update(key(KeyCode::Up, KeyModifiers::NONE));
+            composer.update(key(KeyCode::Up, KeyModifiers::NONE));
+            composer.update(key(KeyCode::Home, KeyModifiers::NONE));
+            composer.update(ComposerEvent::Terminal(Event::Paste("Δ ".to_owned())));
+            composer.update(key(KeyCode::End, KeyModifiers::NONE));
+            composer.update(ComposerEvent::PasteImage(
+                "data:image/png;base64,third".to_owned(),
+            ));
+            let effect = composer
+                .update(key(submit, KeyModifiers::NONE))
+                .effect
+                .unwrap();
+            let prompt = match effect {
+                ComposerEffect::Submit(prompt) | ComposerEffect::Queue(prompt) => prompt,
+                _ => panic!("the recalled prompt must submit normally"),
+            };
+            assert_eq!(prompt.display_text(), "Δ inspect [Image #1][Image #3]");
+            let PromptInput::Content(content) = prompt.agent_prompt().instruction else {
+                panic!("the recalled prompt must submit image content");
+            };
+            assert!(
+                matches!(content.as_slice(), [UserInput::Text { text }, UserInput::Image { image_url: first, .. }, UserInput::Image { image_url: third, .. }]
+                if text == "Δ inspect " && first == "data:image/png;base64,first" && third == "data:image/png;base64,third")
+            );
+        }
+    }
+
+    #[test]
+    fn browsing_prompt_history_restores_unsent_images_and_their_numbering() {
+        for (up, down, modifiers) in [
+            (KeyCode::Up, KeyCode::Down, KeyModifiers::NONE),
+            (
+                KeyCode::Char('p'),
+                KeyCode::Char('n'),
+                KeyModifiers::CONTROL,
+            ),
+        ] {
+            let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+            for text in ["older prompt", "newer prompt"] {
+                composer.replace_draft(text.to_owned());
+                composer.update(key(KeyCode::Enter, KeyModifiers::NONE));
+            }
+            composer.replace_draft("inspect ".to_owned());
+            composer.update(ComposerEvent::PasteImage(
+                "data:image/png;base64,first".to_owned(),
+            ));
+            composer.update(ComposerEvent::PasteImage(
+                "data:image/png;base64,removed".to_owned(),
+            ));
+            composer.update(key(KeyCode::Backspace, KeyModifiers::NONE));
+            for _ in 0..2 {
+                composer.update(key(up, modifiers));
+                composer.update(key(up, modifiers));
+                assert_eq!(composer.draft(), "older prompt");
+                composer.update(key(down, modifiers));
+                composer.update(key(down, modifiers));
+                assert_eq!(composer.draft(), "inspect [Image #1]");
+                assert!(
+                    composer.has_images(),
+                    "returning from history must restore image content"
+                );
+            }
+            composer.update(ComposerEvent::PasteImage(
+                "data:image/png;base64,third".to_owned(),
+            ));
+            let prompt = composer.take_submission().unwrap();
+            assert_eq!(prompt.display_text(), "inspect [Image #1][Image #3]");
+            let PromptInput::Content(content) = prompt.agent_prompt().instruction else {
+                panic!("draft must retain multimodal content");
+            };
+            let images = content
+                .iter()
+                .filter_map(|item| match item {
+                    UserInput::Image { image_url, .. } => Some(image_url.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                images,
+                ["data:image/png;base64,first", "data:image/png;base64,third"]
+            );
+        }
+    }
+
+    #[test]
+    fn unicode_text_after_an_image_can_be_deleted_without_corrupting_the_attachment() {
+        for text in ["\u{0301}", "\u{fe0f}", "\u{200d}"] {
+            let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+            composer.update(ComposerEvent::PasteImage(
+                "data:image/png;base64,first".to_owned(),
+            ));
+            composer.update(ComposerEvent::Terminal(Event::Paste(text.to_owned())));
+            composer.update(ComposerEvent::PasteImage(
+                "data:image/png;base64,second".to_owned(),
+            ));
+            composer.update(key(KeyCode::Left, KeyModifiers::NONE));
+            composer.update(key(KeyCode::Backspace, KeyModifiers::NONE));
+            assert_eq!(
+                composer.draft(),
+                "[Image #1][Image #2]",
+                "deleting {text:?} damaged an image"
+            );
+            let prompt = composer.take_submission().unwrap().agent_prompt();
+            let PromptInput::Content(content) = prompt.instruction else {
+                panic!("expected images");
+            };
+            assert!(
+                matches!(content.as_slice(), [UserInput::Image { image_url: first, .. }, UserInput::Image { image_url: second, .. }]
+                if first == "data:image/png;base64,first" && second == "data:image/png;base64,second")
+            );
+        }
+    }
+
+    #[test]
+    fn unicode_text_before_an_image_can_be_deleted_without_corrupting_the_attachment() {
+        let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+        composer.update(ComposerEvent::Terminal(Event::Paste("\u{0600}".to_owned())));
+        composer.update(ComposerEvent::PasteImage(
+            "data:image/png;base64,attached".to_owned(),
+        ));
+        composer.update(key(KeyCode::Home, KeyModifiers::NONE));
+        composer.update(key(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(composer.draft(), "[Image #1]");
+        let prompt = composer.take_submission().unwrap().agent_prompt();
+        let PromptInput::Content(content) = prompt.instruction else {
+            panic!("expected image");
+        };
+        assert!(
+            matches!(content.as_slice(), [UserInput::Image { image_url, .. }] if image_url == "data:image/png;base64,attached")
+        );
+    }
+
+    #[test]
+    fn unicode_cursor_movement_stops_at_both_sides_of_an_attachment() {
+        let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+        composer.update(ComposerEvent::Terminal(Event::Paste("\u{0600}".to_owned())));
+        composer.update(ComposerEvent::PasteImage(
+            "data:image/png;base64,attached".to_owned(),
+        ));
+        composer.update(ComposerEvent::Terminal(Event::Paste("\u{0301}".to_owned())));
+        composer.update(key(KeyCode::Home, KeyModifiers::NONE));
+        for expected in [2, 12, 14] {
+            composer.update(key(KeyCode::Right, KeyModifiers::NONE));
+            assert_eq!(composer.cursor(), expected);
+        }
+        for expected in [12, 2, 0] {
+            composer.update(key(KeyCode::Left, KeyModifiers::NONE));
+            assert_eq!(composer.cursor(), expected);
+        }
+        assert_eq!(composer.draft(), "\u{0600}[Image #1]\u{0301}");
+    }
+
+    #[test]
     fn pasted_images_render_as_numbered_blue_tokens_and_submit_as_images() {
         let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
         composer.update(ComposerEvent::Terminal(Event::Paste("inspect ".to_owned())));
@@ -2462,6 +2774,35 @@ mod tests {
     }
 
     #[test]
+    fn wrapped_image_markers_stay_atomic_at_visual_line_edges() {
+        for end in [false, true] {
+            let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+            composer.update(ComposerEvent::Terminal(Event::Paste("x ".to_owned())));
+            composer.update(ComposerEvent::PasteImage(
+                "data:image/png;base64,attached".to_owned(),
+            ));
+            render(&mut composer, 10, 6);
+            if end {
+                composer.update(key(KeyCode::Left, KeyModifiers::NONE));
+            }
+            composer.update(key(
+                if end { KeyCode::End } else { KeyCode::Home },
+                KeyModifiers::NONE,
+            ));
+            composer.update(key(
+                KeyCode::Char(if end { 'u' } else { 'k' }),
+                KeyModifiers::CONTROL,
+            ));
+            assert_eq!(
+                composer.draft(),
+                if end { "" } else { "x " },
+                "line deletion must not leave a fragment of an image marker"
+            );
+            assert!(!composer.has_images());
+        }
+    }
+
+    #[test]
     fn readline_word_movement_treats_images_as_atomic() {
         let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
         composer.update(ComposerEvent::Terminal(Event::Paste("inspect ".to_owned())));
@@ -2577,6 +2918,32 @@ mod tests {
     }
 
     #[test]
+    fn input_modes_keep_tab_from_consuming_text_or_settings_commands() {
+        for text in ["unfinished revision", "/effort high"] {
+            let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+            composer.replace_draft(text.to_owned());
+            composer.update(ComposerEvent::InputMode(Some(
+                "enter save · esc cancel".to_owned(),
+            )));
+            composer.update(ComposerEvent::LiveControls(true));
+            let footer = &rows(&render(&mut composer, 90, 5))[4];
+            assert!(footer.contains("Enter confirm · Esc cancel"));
+            assert!(!footer.contains("Tab queue"));
+            let update = composer.update(key(KeyCode::Tab, KeyModifiers::NONE));
+            assert_eq!(update.effect, None);
+            assert_eq!(composer.draft(), text);
+            assert_eq!(composer.cursor(), text.len());
+            composer.update(ComposerEvent::InputMode(None));
+            assert!(
+                composer
+                    .update(key(KeyCode::Tab, KeyModifiers::NONE))
+                    .effect
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
     fn tab_queues_nonempty_input_and_preserves_empty_input() {
         let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
         composer.replace_draft("  follow up  ".to_owned());
@@ -2613,6 +2980,13 @@ mod tests {
         let footer = &rows(&render(&mut composer, 90, 5))[4];
         assert!(footer.contains("Enter steer · Tab queue · Esc Esc stop"));
         assert!(!footer.contains("read only"));
+
+        composer.update(ComposerEvent::SubmissionPaused(true));
+        let footer = &rows(&render(&mut composer, 90, 5))[4];
+        assert!(footer.contains("send paused · keep editing"));
+        assert!(!footer.contains("Enter steer"));
+        composer.update(ComposerEvent::SubmissionPaused(false));
+        assert!(rows(&render(&mut composer, 90, 5))[4].contains("Enter steer"));
     }
 
     #[test]

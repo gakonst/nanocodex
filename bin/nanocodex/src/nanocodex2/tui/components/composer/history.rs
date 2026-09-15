@@ -3,31 +3,36 @@
 
 //! Session-local prompt history and restoration of the draft being edited.
 
+use super::ComposerDraft;
+
 #[derive(Default)]
 pub(super) struct PromptHistory {
-    entries: Vec<String>,
+    entries: Vec<ComposerDraft>,
     browsing: Option<Browsing>,
 }
 
 struct Browsing {
     index: usize,
-    saved_draft: String,
+    saved_draft: ComposerDraft,
 }
 
 impl PromptHistory {
-    pub(super) fn record(&mut self, prompt: String) {
-        self.entries.push(prompt);
+    pub(super) fn record(&mut self, prompt: impl Into<ComposerDraft>) {
+        self.entries.push(prompt.into());
         self.browsing = None;
     }
 
-    pub(super) fn previous(&mut self, draft: &str) -> Option<String> {
+    pub(super) fn previous(
+        &mut self,
+        draft: impl FnOnce() -> ComposerDraft,
+    ) -> Option<ComposerDraft> {
         if self.entries.is_empty() {
             return None;
         }
 
         let browsing = self.browsing.get_or_insert_with(|| Browsing {
             index: self.entries.len(),
-            saved_draft: draft.to_owned(),
+            saved_draft: draft(),
         });
         if browsing.index == 0 {
             return None;
@@ -37,7 +42,7 @@ impl PromptHistory {
         Some(self.entries[browsing.index].clone())
     }
 
-    pub(super) fn next(&mut self) -> Option<String> {
+    pub(super) fn next(&mut self) -> Option<ComposerDraft> {
         let browsing = self.browsing.as_mut()?;
         browsing.index += 1;
         if browsing.index < self.entries.len() {

@@ -61,13 +61,18 @@ in again replaces the saved key without revoking previous account keys.
 
 ## Working in a running session
 
+Use `/id` to open the agent ID popup. Press Enter to copy the full ID to the
+clipboard, or Esc to close it. Resume it later with `nanocodex2 attach AGENT_ID`.
+
 Press Enter to send steering input during a response, or Tab to queue a
 follow-up for when the current turn finishes. Esc twice interrupts the turn.
-Press Alt+U to undo the latest queued or steered message before the model receives it.
-Confirmed withdrawal restores the message and its images to the composer. If you
-are already writing another draft, clear the composer and press Ctrl+Z to restore
-the withdrawn message. Failed or unconfirmed withdrawals preserve the original.
-
+Press Alt+U to undo the latest queued message or steering instruction before
+the model receives it. A successful undo restores the text and images to the
+composer. If the composer already has a draft, it stays intact; clear it and
+press Ctrl+Z to restore the withdrawn message. Steering is withdrawn only after
+the server confirms it is still pending; if it has already been consumed, undo
+leaves it in the conversation.
+Ctrl+Z continues to restore the last cleared draft.
 Rapid steering instructions are sent in order. The terminal records its own
 successful acknowledgements as **steering accepted**. This confirms admission,
 not application at a model boundary. Shared steering telemetry can originate
@@ -81,11 +86,66 @@ until that turn ends, then known-unsent follow-ups continue in order. This avoid
 duplicating potentially delivered instructions across clients.
 Queued follow-ups also run when an agent resumed with `attach` finishes work
 that started in another client.
+In the queue editor, Enter saves the revision and Esc cancels it. Tab leaves the
+revision in the editor; it does not enqueue a separate message.
+Queued messages and unknown-delivery retries retain their images in the editor.
+You can change the text, remove attachments, or paste additional images before saving.
+Esc can also cancel an edit while disconnected, restoring the original composer
+draft without sending anything. Enter remains the reconnect action while offline.
+While `attach` loads the session, sending is paused and the draft stays editable.
+Text and image attachments survive loading. Press Enter after connecting to send
+or steer; pressing it during loading does not start a parallel turn.
+
+If the connection fails, the terminal reconnects to the same agent and catches
+up on missed history. Your draft stays editable, queued input stays in order,
+and remote work continues. A prompt whose delivery cannot be confirmed remains
+visible as **delivery unknown** for explicit retry or dismissal. If reconnecting
+fails or the replacement connection immediately fails again, press Enter to
+retry; this keeps the draft without sending it. Once connected, Enter resumes
+its usual send/steer behavior.
+Ctrl+C clears an unfinished draft and Ctrl+Z restores it, including its images
+and cursor position, even while disconnected or reconnecting.
+An update the terminal cannot decode appears as a transcript error; other
+history remains available and the draft is preserved.
+Completed answers are recovered from the durable result when streamed final
+text is missing. Partial text is completed in place and repeated final messages
+remain a single answer. Successful, failed, and cancelled turns stop unfinished
+tool spinners even when their streaming terminal events are missing. Commands
+that returned a running process ID stay connected for polling in later turns.
+Late lifecycle and usage events cannot restart a finished turn's activity or
+replace the current turn's context count. Background output and child-agent
+updates remain available.
+Durable failure reasons replace provisional errors from the same run in place.
+Earlier retry attempts keep their own errors; other turns and child agents keep
+running.
 
 Scrolling back through older history keeps typing and live updates responsive.
+If the session picker takes too long to load, Esc or Ctrl+C cancels the lookup
+and restores the draft. A cancelled lookup cannot reopen or replace a newer picker.
+If the current turn finishes during a lookup, ready follow-ups resume when the
+lookup completes, fails, or is cancelled; the unfinished draft stays in the composer.
+Editing while offline dismisses open pickers and cancels pending lookups, so late
+results cannot replace the edited draft after reconnecting.
+Browsing earlier prompts with Up/Down or Ctrl+P/Ctrl+N preserves image attachments
+when you return to the unfinished draft.
+Messages sent or queued in the current terminal session also retain their images
+when recalled, edited, and submitted again.
+Answers and tool results remain available when a long turn spans history pages.
+Streaming progress summaries stay with their own turn and child agent when
+steering acknowledgements, other turns, or local output arrive between chunks.
 Local `!` commands can also be stopped with Esc twice; captured output remains
 in the transcript and is included with the next prompt. On macOS and Linux,
 cancellation stops the shell's process group, including its child processes.
+Local shell cancellation remains available while the managed connection is down.
+Pending local shell output stays with its session: successfully resuming another
+session clears it, while a failed resume keeps it available for the original session.
+While a selected session loads, input remains paused even if the old connection
+drops. The terminal waits for that switch; if it fails, it recovers the original
+connection instead. Background activity from the old session does not carry over.
+Esc or Ctrl+C cancels a slow session switch and keeps the original draft. Late
+results from the cancelled switch cannot replace the current or newly selected session.
+An open Actions menu updates as work starts or finishes, so session actions become
+available without reopening the menu.
 
 ## Headless controls
 
