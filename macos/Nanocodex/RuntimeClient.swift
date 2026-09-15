@@ -31,9 +31,28 @@ private final class RuntimeFrameDecoder: @unchecked Sendable {
     private let queue = DispatchQueue(label: "xyz.paradigm.nanocodex.runtime.decode", qos: .userInitiated)
     private var buffer = Data()
     private let decoder = JSONDecoder()
+    private var presentations = ThreadPresentationCache()
+    private var accountScope: String?
+    private func updateScope(_ state: DesktopState) {
+        if accountScope != state.accountScope { presentations = ThreadPresentationCache(); accountScope = state.accountScope }
+    }
+    func decodeResult<T: Decodable & Sendable>(_ value: JSONValue, as type: T.Type) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                assert(!Thread.isMainThread)
+                do {
+                    let result = try value.decode(type)
+                    if let state = result as? DesktopState { self.updateScope(state) }
+                    if let snapshot = result as? ThreadSnapshot {
+                        continuation.resume(returning: self.presentations.prepare(snapshot) as! T)
+                    } else { continuation.resume(returning: result) }
+                } catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
 
     func receive(_ data: Data, deliver: @escaping @Sendable ([RuntimeFrame]) -> Void) {
-        queue.async { deliver(self.decode(data)) }
+        queue.async { assert(!Thread.isMainThread); deliver(self.decode(data)) }
     }
     func finish(_ completion: @escaping @Sendable () -> Void) { queue.async(execute: completion) }
     #if DEBUG
@@ -44,12 +63,33 @@ private final class RuntimeFrameDecoder: @unchecked Sendable {
         buffer.append(data)
         var frames: [RuntimeFrame] = [], consumed = buffer.startIndex
         while let newline = buffer[consumed...].firstIndex(of: 0x0a) {
-            if let value = try? decoder.decode(RuntimeFrame.self, from: buffer[consumed..<newline]) { frames.append(value) }
+            if var value = try? decoder.decode(RuntimeFrame.self, from: buffer[consumed..<newline]) {
+                if case .state(let state) = value.event { updateScope(state) }
+                if case .thread(let snapshot) = value.event { value.event = .thread(presentations.prepare(snapshot)) }
+                frames.append(value)
+            }
             consumed = buffer.index(after: newline)
         }
         if consumed != buffer.startIndex { buffer.removeSubrange(..<consumed) }
         return frames
     }
+}
+
+/// Encoding and a blocked stdin pipe must never stall input or rendering.
+/// Closing runs after queued writes, preserving the final durable layout save.
+private final class RuntimeFrameWriter: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "xyz.paradigm.nanocodex.runtime.write", qos: .userInitiated)
+    func send(_ message: JSONValue, to input: FileHandle, completion: @escaping @Sendable (Error?) -> Void) {
+        queue.async {
+            assert(!Thread.isMainThread)
+            do {
+                var data = try JSONEncoder().encode(message); data.append(0x0a)
+                try input.write(contentsOf: data)
+                completion(nil)
+            } catch { completion(error) }
+        }
+    }
+    func close(_ input: FileHandle?) { queue.async { try? input?.close() } }
 }
 
 @MainActor
@@ -63,6 +103,7 @@ final class RuntimeClient {
     private var pending: [String: CheckedContinuation<JSONValue, Error>] = [:]
     private var deadlines: [String: Task<Void, Never>] = [:]
     private let decoder = RuntimeFrameDecoder()
+    private let writer = RuntimeFrameWriter()
     private var stopped = false
     private var processExited = false
     private var outputEnded = false
@@ -141,9 +182,9 @@ final class RuntimeClient {
         process = child; input = stdin.fileHandleForWriting; output = stdout.fileHandleForReading; diagnostics = stderr.fileHandleForReading
     }
 
-    func call<T: Decodable>(_ method: String, _ args: [JSONValue] = [], as type: T.Type = T.self) async throws -> T {
+    func call<T: Decodable & Sendable>(_ method: String, _ args: [JSONValue] = [], as type: T.Type = T.self) async throws -> T {
         let result = try await request(method, args)
-        return try result.decode(type)
+        return try await decoder.decodeResult(result, as: type)
     }
     @discardableResult
     func request(_ method: String, _ args: [JSONValue] = []) async throws -> JSONValue {
@@ -153,7 +194,6 @@ final class RuntimeClient {
         guard let input, !stopped else { throw RuntimeFailure(message: "The Nanocodex runtime is unavailable. Quit and reopen Nanocodex.") }
         nextID += 1; let id = String(nextID)
         let message: JSONValue = .object(["id": .string(id), "method": .string(method), "args": .array(args)])
-        var data = try JSONEncoder().encode(message); data.append(0x0a)
         return try await withCheckedThrowingContinuation { continuation in
             pending[id] = continuation
             deadlines[id] = Task { [weak self] in
@@ -162,8 +202,13 @@ final class RuntimeClient {
                 self.pending.removeValue(forKey: id)?.resume(throwing: RuntimeFailure(message: "Nanocodex’s runtime did not respond. Reopen the app to reconnect."))
                 self.deadlines.removeValue(forKey: id)
             }
-            do { try input.write(contentsOf: data) }
-            catch { deadlines.removeValue(forKey: id)?.cancel(); pending.removeValue(forKey: id)?.resume(throwing: error) }
+            writer.send(message, to: input) { [weak self] error in
+                guard let error else { return }
+                Task { @MainActor [weak self] in
+                    self?.deadlines.removeValue(forKey: id)?.cancel()
+                    self?.pending.removeValue(forKey: id)?.resume(throwing: error)
+                }
+            }
         }
     }
     private func receive(_ frames: [RuntimeFrame]) {
@@ -181,7 +226,7 @@ final class RuntimeClient {
         guard processExited, outputEnded else { return }
         let expected = stopped
         stopped = true
-        try? input?.close(); input = nil
+        writer.close(input); input = nil
         output?.readabilityHandler = nil; diagnostics?.readabilityHandler = nil
         for continuation in pending.values { continuation.resume(throwing: RuntimeFailure(message: "Nanocodex’s runtime stopped. Reopen the app to reconnect.")) }
         pending.removeAll()
@@ -190,7 +235,7 @@ final class RuntimeClient {
     }
     func stop() {
         guard !stopped else { return }; stopped = true
-        try? input?.close(); input = nil
+        writer.close(input); input = nil
         output?.readabilityHandler = nil
         diagnostics?.readabilityHandler = nil
         outputEnded = true
@@ -203,7 +248,7 @@ final class RuntimeClient {
 
 enum AccountKeychain {
     private static let service = "xyz.paradigm.nanocodex.native.account"
-    struct Credential: Codable { var baseUrl: String; var apiKey: String }
+    struct Credential: Codable, Sendable { var baseUrl: String; var apiKey: String }
     static func environmentCredential() -> Credential? {
         var values: [String: String] = [:]
         var file = ProcessInfo.processInfo.environment["NANOCODEX_ENV_FILE"]

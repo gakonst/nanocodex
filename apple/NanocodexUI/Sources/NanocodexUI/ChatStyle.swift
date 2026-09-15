@@ -6,10 +6,17 @@ import UIKit
 #endif
 
 public enum ChatPalette {
+    #if os(macOS)
+    public static let background = Color(nsColor: .textBackgroundColor)
+    public static let sidebar = Color(nsColor: .windowBackgroundColor)
+    public static let composer = Color(nsColor: .controlBackgroundColor)
+    public static let userBubble = Color(nsColor: .quaternaryLabelColor).opacity(0.5)
+    #else
     public static let background = adaptive(light: 0xffffff, dark: 0x212121)
     public static let sidebar = adaptive(light: 0xf9f9f9, dark: 0x191919)
     public static let composer = adaptive(light: 0xffffff, dark: 0x303030)
     public static let userBubble = adaptive(light: 0xf4f4f4, dark: 0x303030)
+    #endif
 
     private static func adaptive(light: Int, dark: Int) -> Color {
         #if os(macOS)
