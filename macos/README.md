@@ -64,7 +64,12 @@ approval is required. Explicit app or system opt-outs are preserved. Tests,
 isolated development sessions, and builds outside `/Applications` never register
 a login item.
 
-**Hands → Remote Screens** opens the shared native WebRTC viewer. Desktop-enabled
+The **Screens** button beside the tabs (or **Hands → Remote Screens**) opens the
+shared native viewer as a resizable pane beside the conversation. The split
+divider adjusts the workspace and screen widths. Agent tabs, history, and the
+composer remain usable while viewing, and switching tabs retains the screen.
+The pane's **×** closes the viewer. Mac/iPhone publishing controls are under
+**Share a screen**, and app-owned sharing continues when the viewer closes. Desktop-enabled
 factory VMs appear automatically once their publisher connects. The same screens
 are available from the iPhone/iPad inbox and conversations. Mac screen sharing
 starts automatically after sign-in when Screen Recording permission is available,
@@ -116,23 +121,55 @@ can still turn off. Closing the lid, choosing Sleep, or low battery can still
 suspend the Mac; this option does not run Hands through forced sleep or after
 quitting. Keeping the Mac awake uses more battery.
 
+**Screens** (`⌘⌥S`, or `s` after Escape) stays beside the conversation while
+switching tabs. Search the screen list or use the selected screen's title menu
+to switch devices. Viewing and control are shown separately; click the screen
+after **Take control** to type, and use `⌘⇧Esc` to release. Remote keyboard
+shortcuts, including browser zoom, belong to the remote screen while it has
+keyboard focus. The keyboard button exposes text entry and special keys.
+Disconnected screens show a reconnect action directly over the preview.
+
 ## Browser tabs and agent panes
 
-The desktop uses top tabs and a full-width conversation canvas. Each browser tab
-holds one agent or a saved split layout. Search is at the left of the tab strip;
-**+** creates a separate tab. The **…** menu opens Hands, Remote Screens,
-Connections, history, and Settings. Translucent chrome, thin pane headers, and
-subtle focus borders leave more room for conversations.
+The desktop supports horizontal browser tabs and a resizable native sidebar.
+Use the sidebar button in the window toolbar, or Settings → Appearance → Tab
+layout, to switch. The preference persists; switching retains drafts, selections,
+split panes, and the screen viewer. Each tab holds one agent or a saved split
+layout. The native window toolbar contains Back/Forward, Search, New
+Conversation, Tab Overview, arrangement actions, and the screen-pane toggle.
+The **…** menu opens Hands, Connections, keyboard help, and Settings. Window
+controls keep their standard macOS size when you zoom the workspace.
+On macOS 26, native toolbar groups, selected horizontal tabs, screen controls,
+and the Send action use Apple's Liquid Glass. Conversation filters live in the
+arrangement menu; there is no extra filter strip above the conversation.
+Settings navigation uses a system segmented control; Settings and Hands use grouped forms.
+Docking previews, tab changes, and layout transitions honor Reduce Motion. Older macOS versions use native material; Reduce Transparency uses
+opaque controls and Reduce Motion disables layout/preview motion. Chat content
+keeps an opaque, readable surface.
 
 **Split Right** (`⌘\`) and **Split Below** (`⌘⌥J`) divide the active agent's pane
 and create another agent. **Open beside** (`⌘⇧\`) brings an existing open agent
-into the layout. Splits can be nested in either direction. Drag the gap between
-panes to resize; double-click it to balance the split. Editors and viewports
+into the layout. Splits can be nested in either direction without a fixed pane or nesting cap.
+Use the **Layout** menu for splits, opening an existing agent beside the current
+one, focus, renaming, and review actions. Single conversations omit the duplicate
+pane header; split layouts retain handles, titles, and per-pane controls.
+Drag a pane's six-dot handle to any edge
+of another pane. The highlighted half previews the destination; dropping in the
+center swaps the agents. Drop a handle onto the top tab strip to make a separate
+tab. Agents, drafts, queues, editors, and reading positions keep their identities.
+Drag the gap between panes to resize; it snaps near quarter, half, and
+three-quarter proportions. Double-click to balance the split. Resize handles
+also expose accessibility increment/decrement actions. Editors and viewports
 retain their identity throughout resizing. Small windows scroll the layout when
 its panes cannot fit at a usable minimum size.
 
 - Top tabs switch between saved layouts and remember the last focused pane.
   Drag a tab to reorder the entire group. `⌘⇧[` / `⌘⇧]` cycles browser tabs.
+- Back / Forward (`⌘[` / `⌘]`) revisits selected conversations, restoring their
+  split group and focused pane without changing drafts or review state. Closed
+  tabs are skipped. The tab-count button (`⌘⇧O`) opens a searchable overview of
+  open conversations, split groups, status, and drafts; Return opens the first
+  match. Durable history remains available through `⌘K`.
 - `⌘T` / `⌘N` creates a separate conversation. `⌘W` or the tab's **×** closes
   that browser tab; `⌘⇧T` restores its agents, drafts, and split arrangement.
   Closing a view does not delete durable conversation history or stop its tasks.
@@ -142,6 +179,12 @@ its panes cannot fit at a usable minimum size.
 - `⌘⌥←` / `⌘⌥→` navigates panes. Escape enters navigation; Tab and arrows move
   between agents; Enter returns to the active composer without sending.
   While writing, arrows edit text normally. `⌘⌥⇧←` / `⌘⌥⇧→` reorders panes.
+- After Escape, `v` / `%` splits right and `h` / `"` splits below. `Ctrl H/J/K/L`
+  selects a pane by direction; `Shift H/J/K/L` resizes its divider, and
+  `Ctrl Shift H/J/K/L` resizes while writing. `z` focuses/restores the layout,
+  `x` closes the pane, and `{` / `}` moves it. `?` opens the shortcut reference,
+  also available in the Workspace menu. Unmodified letters remain ordinary text
+  in the composer.
 - **Inbox / Running / All** keeps the single-agent review flow. Swipe through
   agents with AppKit's native page transitions and retained editor/scroll cache.
   Live output never reorders conversations. **Seen** (`⌘D`) records an update;
@@ -208,6 +251,26 @@ for measured comparisons and installed-app evidence.
   the existing account page.
 
 ## Verification
+
+The [September 12 native design pass](../docs/DESKTOP_LIQUID_GLASS_2026_09_12.md)
+records the Apple guidance, SwiftUI skills, native control changes, performance
+measurements, and validation limits. The UI-test target has a Debug-only fixture
+that exercises the real window toolbar without starting account services.
+
+
+The [September 12 cleanup loop](../docs/DESKTOP_CLEANUP_2026_09_12.md) measured
+120 open tabs before and after simplification. Median edit/layout work fell from
+99.5 to 24.6 ms and tab selection work from 206.2 to 93.0 ms in the native Debug
+fixture. All 48 local native checks passed; the live account journey was skipped.
+
+September 12 desktop parity validation: 47 native tests passed; the live account
+journey was skipped. The local screen fixture verified decoded frames, wide and
+narrow pane resizing, retained editors/drafts, and the same viewer after tab
+switches. Browser history preserved split layouts and review state; rapid
+Escape → `v` → `h` and immediate typing passed. All 11 shared remote viewer
+tests and the iOS simulator build passed. Screenshots are in
+`build/evidence/native-screen-pane.png`, `native-screen-pane-narrow.png`, and
+`native-tab-overview.png`.
 
 Current evidence (2026-09-06):
 
@@ -386,3 +449,43 @@ Use `NANOCODEX_DESKTOP_DATA` for isolated development sessions. Such sessions
 never read, write, or delete the normal account's Keychain entry. Normal
 preferences live in `~/Library/Application Support/Nanocodex/Native`, and are
 scoped to the connected account.
+
+### Workspace keyboard and zoom
+
+Press **Esc** to navigate and **Enter** to write. In navigation mode, **v**
+splits right, **h** splits below, arrows select spatial neighbors, Tab/Shift-Tab
+cycle panes, **z** focuses the selected pane or restores its layout, and **{ / }**
+swap panes. **x** closes the selected pane; Command-Shift-T reopens it with its
+draft. **Ctrl-H/J/K/L** selects left/down/up/right even from a composer;
+**Shift-H/J/K/L** moves the nearest matching divider, with Ctrl added while
+writing. **?** opens the shortcut reference. Unmodified letters stay text while
+writing. Splits opened with v/h stay in navigation mode, allowing repeated splits.
+
+**Command-plus/minus** zooms the workspace from 75–150%; **Command-0** restores
+actual size. Zoom persists locally and preserves native editors and drafts.
+Pane focus (z) is separate from display zoom. Dock previews belong to one active
+drag and clear on cancellation, drop, Escape, and window/application deactivation.
+The composer keeps an opaque writing surface and native macOS 26 glass actions,
+with bordered actions for Reduce Transparency. Voice settings use a grouped, scrollable form with a bounded
+speaking-style editor, so labels and actions remain visible.
+
+### Keeping the UI responsive
+
+The runtime's serial decode worker prepares transcript rows, tool-output media,
+voice transcript expansion, activity labels, review status, and queue-reconciliation
+facts before delivering snapshots to the main actor. Exact event revisions reuse
+prepared data; replay, history prepends, and corrections still pass through the
+canonical reducer. Per-thread reducer retention is bounded to 24 threads and
+clears across account scopes. Typed RPC response decoding also runs on this worker.
+
+A separate serial writer encodes RPC frames and writes stdin, so pipe backpressure
+cannot block input or rendering. Closing stdin stays ordered behind the last save.
+Layout encoding runs off the main actor with cancellation checks before submitting
+debounced saves. Save acknowledgements cannot overwrite the live layout or trigger
+another workspace-wide update. Transcript views compare their actual render inputs,
+so composer changes and updates in other panes do not rebuild their view trees.
+
+Shared Markdown parsing uses a background actor and bounded cache, coalescing
+streaming updates for 32 ms. Only current, uncancelled parses publish blocks.
+AppKit, SwiftUI rendering, input routing, and observable state commits remain on
+macOS's main actor.

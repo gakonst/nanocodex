@@ -4,6 +4,15 @@ import NanocodexVoice
 import NanocodexUI
 import InboxCore
 
+enum DesktopConversationLayout {
+    static let textWidth: CGFloat = 820
+    static let composerWidth: CGFloat = textWidth + 32
+    static let horizontalInset: CGFloat = 24
+    static func textWidth(in viewport: CGFloat) -> CGFloat {
+        min(textWidth, max(0, viewport - horizontalInset * 2))
+    }
+}
+
 private struct WorkspaceTabKey: EnvironmentKey { static let defaultValue: String? = nil }
 extension EnvironmentValues {
     var workspaceTabID: String? {
@@ -37,7 +46,9 @@ struct ChatView: View {
                     Text("What should we work on?").font(.system(size: 20, weight: .medium)).padding(.horizontal, 24)
                 }
             } else { TranscriptView(initiallyFollowing: model.readingPositions[paneID ?? model.activeTabID]?.followsOutput ?? true) }
-            ComposerView().frame(maxWidth: 780).padding(.horizontal, 26).padding(.top, showingWelcome ? 24 : 14).padding(.bottom, 18)
+            ComposerView().frame(maxWidth: DesktopConversationLayout.composerWidth)
+                .padding(.horizontal, DesktopConversationLayout.horizontalInset)
+                .padding(.top, showingWelcome ? 24 : 14).padding(.bottom, 18)
             if showingWelcome { Spacer(minLength: 24) }
         }.frame(maxWidth: .infinity, maxHeight: .infinity).background(ChatPalette.background)
     }
@@ -48,8 +59,7 @@ struct WelcomeView: View {
     @Environment(\.workspaceTabID) private var paneID
     var body: some View {
         VStack(alignment: .center, spacing: 13) {
-            Text("What should we work on?").font(.system(size: 28, weight: .medium)).tracking(-0.7)
-            Text("Ask a question, explore your code, or start building.").font(.system(size: 15, weight: .regular)).foregroundStyle(.secondary)
+            Text("What should we work on?").font(.system(size: 24, weight: .medium)).tracking(-0.5)
             if !model.state.connected && !model.isStarting {
                 Button { model.showingSettings = true } label: { Label("Connect your account", systemImage: "person.crop.circle.badge.checkmark") }
                     .buttonStyle(.borderedProminent).tint(.primary).padding(.top, 12)
@@ -67,34 +77,55 @@ struct WelcomeView: View {
                         .font(.system(size: 13)).foregroundStyle(.secondary)
                 }.menuStyle(.borderlessButton).fixedSize().padding(.top, 9)
             }
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { suggestionButtons }
-                VStack(spacing: 8) { suggestionButtons }
-            }.padding(.top, 12)
         }.frame(maxWidth: 728, alignment: .center).padding(.horizontal, 26).multilineTextAlignment(.center)
-    }
-    private var suggestionButtons: some View {
-        Group {
-                suggestion("Build something", icon: "hammer") { model.updateDraft("Help me build ", tabID: paneID) }
-                suggestion("Explore my code", icon: "chevron.left.forwardslash.chevron.right") { model.updateDraft("Explore my codebase and explain how it works.", tabID: paneID) }
-                suggestion("Plan a task", icon: "list.bullet") { model.updateDraft("Help me plan ", tabID: paneID) }
-        }
-    }
-    private func suggestion(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) { Label(title, systemImage: icon).font(.system(size: 12)).lineLimit(1).foregroundStyle(.secondary).padding(.horizontal, 13).padding(.vertical, 10).background(Color.primary.opacity(0.025), in: Capsule()).overlay(Capsule().stroke(Color.primary.opacity(0.07))) }.buttonStyle(.plain)
     }
 }
 
 struct TranscriptView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.workspaceTabID) private var paneID
+    let initiallyFollowing: Bool
+    var body: some View {
+        let id = paneID ?? model.activeTabID
+        let snapshot = model.snapshot(id)
+        TranscriptContent(model: model, paneID: id,
+                          revision: TranscriptContent.Revision(messages: model.displayedTranscript(id),
+                              threadID: model.tab(id)?.threadId, hasSnapshot: snapshot != nil,
+                              activeTurns: snapshot?.activeTurns ?? [], working: model.working(id),
+                              hasMore: snapshot?.hasMore ?? false, historyStart: snapshot?.events.first?.cursor,
+                              error: model.threadError(id), expanded: model.expandedMessages[id] ?? []),
+                          initiallyFollowing: initiallyFollowing).equatable()
+    }
+}
+
+/// AppModel publishes composer changes too. This boundary keeps another pane's
+/// typing, focus, and layout updates out of the expensive transcript view tree.
+private struct TranscriptContent: View, Equatable {
+    let model: AppModel
+    let paneID: String?
+    struct Revision: Equatable {
+        var messages: [MessageEntry]
+        var threadID: String?
+        var hasSnapshot: Bool
+        var activeTurns: [String]
+        var working: Bool
+        var hasMore: Bool
+        var historyStart: String?
+        var error: String?
+        var expanded: Set<String>
+    }
+    let revision: Revision
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.paneID == rhs.paneID && lhs.revision == rhs.revision }
     @State private var nearBottom = true
     @State private var loadingHistory = false
-    init(initiallyFollowing: Bool = true) { _nearBottom = State(initialValue: initiallyFollowing) }
+    init(model: AppModel, paneID: String?, revision: Revision, initiallyFollowing: Bool) {
+        self.model = model; self.paneID = paneID; self.revision = revision
+        _nearBottom = State(initialValue: initiallyFollowing)
+    }
     private struct Turn: Identifiable { var id: String; var messages: [MessageEntry] }
     private var turns: [Turn] {
         var result: [Turn] = []
-        for message in model.displayedTranscript(paneID) {
+        for message in revision.messages {
             if result.last?.id == message.turnId { result[result.count - 1].messages.append(message) }
             else { result.append(Turn(id: message.turnId, messages: [message])) }
         }
@@ -127,7 +158,7 @@ struct TranscriptView: View {
                             }
                             // Reserve the space below the newest prompt. Replies
                             // grow downward without pushing that prompt upward.
-                            .frame(maxWidth: .infinity, minHeight: turn.id == groups.last?.id ? max(0, geometry.size.height - 32) : 0, alignment: .topLeading)
+                            .frame(maxWidth: .infinity, minHeight: groups.count > 1 && turn.id == groups.last?.id ? max(0, geometry.size.height - 32) : 0, alignment: .topLeading)
                             .id(turn.id)
                         }
                         if let conversationID = model.tab(paneID)?.threadId {
@@ -138,7 +169,9 @@ struct TranscriptView: View {
                         }
                         Color.clear.frame(height: 1).id("bottom")
                     }
-                    .frame(maxWidth: 728, alignment: .leading).padding(.horizontal, 26).padding(.top, 20).padding(.bottom, 12).frame(maxWidth: .infinity)
+                    .frame(width: DesktopConversationLayout.textWidth(in: geometry.size.width), alignment: .leading)
+                    .padding(.horizontal, DesktopConversationLayout.horizontalInset).padding(.top, 20).padding(.bottom, 12)
+                    .frame(width: geometry.size.width, alignment: .center)
                     .background(TranscriptScrollObserver(restoreOffset: model.readingPositions[paneID ?? model.activeTabID]?.offset,
                                                          threadID: model.tab(paneID)?.threadId,
                                                          historyStart: model.snapshot(paneID)?.events.first?.cursor,
@@ -509,10 +542,10 @@ struct MessageView: View, Equatable {
 }
 
 /// A first fetch uses the transcript's own surface, never the new-chat welcome.
-/// Static placeholders avoid a spinner or shimmer flashing during a quick load.
+/// Match the mobile loading state without suggesting content that isn't loaded.
 private struct ThreadLoadingView: View {
     var body: some View {
-        ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding(.vertical, 12)
+        ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding(.vertical, 24)
             .accessibilityLabel("Loading conversation")
             .accessibilityIdentifier("thread-loading")
     }
@@ -546,9 +579,8 @@ struct ComposerView: View {
                 }
             }.padding(.horizontal, 16).padding(.bottom, 12).padding(.top, 3)
         }
-        .background(ChatPalette.composer, in: RoundedRectangle(cornerRadius: 28))
-        .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(Color.primary.opacity(editorFocused ? 0.27 : 0.14), lineWidth: 1))
-        .shadow(color: Color.black.opacity(editorFocused ? 0.045 : 0.025), radius: 8, y: 3)
+        .background(ChatPalette.composer, in: RoundedRectangle(cornerRadius: 24))
+        .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(editorFocused ? Color.accentColor.opacity(0.5) : Color(nsColor: .separatorColor), lineWidth: 1))
     }
     private var contextControls: some View {
         HStack(spacing: 8) {
@@ -569,21 +601,46 @@ struct ComposerView: View {
         }
     }
     private var responseControls: some View {
-        let voiceTabID = paneID ?? model.activeTabID
-        return HStack(spacing: 8) {
-                NanocodexVoiceControl(session: model.voice) {
-                    try await model.voiceConfiguration(tabID: voiceTabID)
-                }
-                .disabled(!model.state.connected)
-                if !model.controllableTurns(paneID).isEmpty {
-                    Button { let id = paneID ?? model.activeTabID; Task { await model.cancel(tabID: id) } } label: { Image(systemName: "stop.fill").font(.system(size: 11)).frame(width: 36, height: 36).background(Color.primary.opacity(0.07), in: Circle()) }.buttonStyle(.plain).help("Stop current turn (⌘.)").accessibilityIdentifier("stop-turn")
-                }
-                Button { let id = paneID ?? model.activeTabID; Task { await model.send(tabID: id) } } label: {
-                    Image(systemName: "arrow.up").font(.system(size: 14, weight: .semibold)).foregroundStyle(Color(nsColor: .textBackgroundColor)).frame(width: 36, height: 36).background(Color.primary.opacity(model.hasDraft(paneID) ? 1 : 0.18), in: Circle())
-                }.buttonStyle(.plain).disabled(!model.hasDraft(paneID) || !model.canSend(paneID)).help(model.running(paneID) ? "Queue a follow-up" : "Send message (Return)").accessibilityIdentifier("send-message")
+        ComposerResponseControls(model: model, tabID: paneID ?? model.activeTabID,
+                                 hasDraft: model.hasDraft(paneID), canSend: model.canSend(paneID),
+                                 running: model.running(paneID), canStop: !model.controllableTurns(paneID).isEmpty,
+                                 connected: model.state.connected).equatable()
+    }
+}
+
+/// Keystrokes update the editor; the glass controls only update when their
+/// enabled state or target changes. Voice maintains its own observation.
+private struct ComposerResponseControls: View, Equatable {
+    let model: AppModel
+    let tabID: String
+    let hasDraft: Bool
+    let canSend: Bool
+    let running: Bool
+    let canStop: Bool
+    let connected: Bool
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.model === rhs.model && lhs.tabID == rhs.tabID && lhs.hasDraft == rhs.hasDraft
+            && lhs.canSend == rhs.canSend && lhs.running == rhs.running
+            && lhs.canStop == rhs.canStop && lhs.connected == rhs.connected
+    }
+    var body: some View {
+        HStack(spacing: 8) {
+            NanocodexVoiceControl(session: model.voice) { try await model.voiceConfiguration(tabID: tabID) }
+                .disabled(!connected)
+            if canStop {
+                Button { Task { await model.cancel(tabID: tabID) } } label: {
+                    Image(systemName: "stop.fill").font(.system(size: 12)).frame(width: 16, height: 16)
+                }.workspaceAction().buttonBorderShape(.circle).controlSize(.large)
+                    .accessibilityLabel("Stop current turn").help("Stop current turn (⌘.)").accessibilityIdentifier("stop-turn")
+            }
+            Button { Task { await model.send(tabID: tabID) } } label: {
+                Image(systemName: "arrow.up").font(.system(size: 14, weight: .semibold)).frame(width: 16, height: 16)
+            }.workspaceAction(prominent: true).buttonBorderShape(.circle).controlSize(.large)
+                .disabled(!hasDraft || !canSend)
+                .accessibilityLabel(running ? "Queue follow-up" : "Send message")
+                .help(running ? "Queue a follow-up" : "Send message (Return)").accessibilityIdentifier("send-message")
         }
     }
-
 }
 
 /// A waiting follow-up stays here until its own turn starts, including across
@@ -738,6 +795,7 @@ final class ComposerTextView: NSTextView {
         return accepted
     }
     override func keyDown(with event: NSEvent) {
+        if !hasMarkedText(), WorkspaceKeyboardView.find(in: window?.contentView)?.handlePaneControl(event) == true { return }
         if event.keyCode == 53, !hasMarkedText() {
             escape?()
             if let navigation = WorkspaceKeyboardView.find(in: window?.contentView) { window?.makeFirstResponder(navigation) }

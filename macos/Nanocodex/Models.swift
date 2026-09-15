@@ -1,4 +1,5 @@
 import Foundation
+import InboxCore
 import NanocodexUI
 import InboxCore
 
@@ -113,11 +114,18 @@ struct PaneNode: Codable, Equatable, Sendable, Identifiable {
         guard ids.count > 1, let rest = row(Array(ids.dropFirst())) else { return PaneNode(id: first) }
         return PaneNode(id: UUID().uuidString, axis: "horizontal", fraction: 1 / Double(ids.count), children: [PaneNode(id: first), rest])
     }
-    func inserting(_ leaf: String, after target: String, axis: String) -> PaneNode {
+    func inserting(_ leaf: String, after target: String, axis: String, before: Bool = false) -> PaneNode {
         if children.isEmpty, id == target {
-            return PaneNode(id: UUID().uuidString, axis: axis, children: [self, PaneNode(id: leaf)])
+            return PaneNode(id: UUID().uuidString, axis: axis, children: before ? [PaneNode(id: leaf), self] : [self, PaneNode(id: leaf)])
         }
-        var copy = self; copy.children = children.map { $0.inserting(leaf, after: target, axis: axis) }; return copy
+        var copy = self; copy.children = children.map { $0.inserting(leaf, after: target, axis: axis, before: before) }; return copy
+    }
+    func swapping(_ first: String, _ second: String) -> PaneNode {
+        var copy = self
+        if children.isEmpty { copy.id = id == first ? second : id == second ? first : id }
+        copy.children = children.map { $0.swapping(first, second) }
+        if let selectedLeaf { copy.selectedLeaf = selectedLeaf == first ? second : selectedLeaf == second ? first : selectedLeaf }
+        return copy
     }
     func replacing(_ old: String, with new: String) -> PaneNode {
         var copy = self
@@ -129,10 +137,65 @@ struct PaneNode: Codable, Equatable, Sendable, Identifiable {
         var copy = self; copy.children = children.compactMap { $0.removing(leaf) }
         return copy.children.count == 1 ? copy.children[0] : copy.children.isEmpty ? nil : copy
     }
+    func nearestSplit(to leaf: String, axis: String) -> PaneNode? {
+        guard children.count == 2, let child = children.first(where: { $0.leaves.contains(leaf) }) else { return nil }
+        return child.nearestSplit(to: leaf, axis: axis) ?? (self.axis == axis ? self : nil)
+    }
+    // Unit rectangles preserve the split topology for spatial keyboard navigation.
+    func paneRects(in rect: CGRect = CGRect(x: 0, y: 0, width: 1, height: 1)) -> [(String, CGRect)] {
+        guard children.count == 2 else { return [(id, rect)] }
+        let horizontal = axis != "vertical"
+        let first = CGRect(x: rect.minX, y: rect.minY, width: horizontal ? rect.width * fraction : rect.width, height: horizontal ? rect.height : rect.height * fraction)
+        let second = CGRect(x: horizontal ? first.maxX : rect.minX, y: horizontal ? rect.minY : first.maxY, width: horizontal ? rect.width - first.width : rect.width, height: horizontal ? rect.height : rect.height - first.height)
+        return children[0].paneRects(in: first) + children[1].paneRects(in: second)
+    }
+    func neighbor(of leaf: String, toward direction: PaneDock) -> String? {
+        let rects = paneRects()
+        guard direction != .center, let origin = rects.first(where: { $0.0 == leaf })?.1 else { return nil }
+        let horizontal = direction.axis == "horizontal"
+        return rects.filter { id, rect in
+            guard id != leaf else { return false }
+            switch direction {
+            case .left: return rect.maxX <= origin.minX + 0.0001 && min(rect.maxY, origin.maxY) > max(rect.minY, origin.minY)
+            case .right: return rect.minX >= origin.maxX - 0.0001 && min(rect.maxY, origin.maxY) > max(rect.minY, origin.minY)
+            case .top: return rect.maxY <= origin.minY + 0.0001 && min(rect.maxX, origin.maxX) > max(rect.minX, origin.minX)
+            case .bottom: return rect.minY >= origin.maxY - 0.0001 && min(rect.maxX, origin.maxX) > max(rect.minX, origin.minX)
+            case .center: return false
+            }
+        }.min { a, b in
+            func score(_ rect: CGRect) -> CGFloat {
+                let along = horizontal ? abs(rect.midX - origin.midX) : abs(rect.midY - origin.midY)
+                let across = horizontal ? abs(rect.midY - origin.midY) : abs(rect.midX - origin.midX)
+                return along + across * 0.25
+            }
+            return score(a.1) < score(b.1)
+        }?.0
+    }
     func resizing(_ split: String, to value: Double) -> PaneNode {
         var copy = self
         if id == split { copy.fraction = min(0.85, max(0.15, value)) }
         copy.children = children.map { $0.resizing(split, to: value) }; return copy
+    }
+}
+
+enum PaneDock: String, CaseIterable {
+    case left, right, top, bottom, center
+    var axis: String { self == .top || self == .bottom ? "vertical" : "horizontal" }
+    var before: Bool { self == .left || self == .top }
+    var label: String {
+        switch self {
+        case .left: "Move to left"
+        case .right: "Move to right"
+        case .top: "Move above"
+        case .bottom: "Move below"
+        case .center: "Swap panes"
+        }
+    }
+    static func destination(at point: CGPoint, size: CGSize) -> PaneDock {
+        let x = point.x / max(1, size.width), y = point.y / max(1, size.height)
+        let edges: [(PaneDock, CGFloat)] = [(.left, x), (.right, 1 - x), (.top, y), (.bottom, 1 - y)]
+        let nearest = edges.min { $0.1 < $1.1 }!
+        return nearest.1 < 0.25 ? nearest.0 : .center
     }
 }
 
@@ -257,8 +320,67 @@ struct ThreadSnapshot: Decodable, Sendable {
     var error: String?
     var acceptedTurns: Int?
     var cursor: String?
+    // Local render data is prepared by the runtime worker, never encoded on the wire.
+    var presentation: ThreadPresentation? = nil
+    private enum CodingKeys: String, CodingKey { case id, events, hasMore, connected, activeTurns, settings, error, acceptedTurns, cursor }
     var hasAcceptedTurn: Bool {
         (acceptedTurns ?? 0) > 0 || !activeTurns.isEmpty || events.contains { $0.data["type"].string == "turn_accepted" }
+    }
+}
+
+struct ThreadPresentation: Sendable {
+    let revision: UUID
+    let events: [ManagedEvent]
+    let messages: [MessageEntry]
+    let displayedMessages: [MessageEntry]
+    let terminalType: String?
+    let queue: ThreadQueueFacts
+}
+
+struct ThreadQueueFacts: Sendable {
+    var accepted: [String: String] = [:]
+    var started = Set<String>()
+    var finished = Set<String>()
+    var cancelled: [String] = []
+    init(_ events: [ManagedEvent]) {
+        for event in events {
+            let id = event.turnId ?? event.data["id"].string, type = event.data["type"].string
+            if type == "turn_accepted", accepted[id] == nil { accepted[id] = event.cursor }
+            if ["turn_completed", "turn_failed", "turn_cancelled"].contains(type) { finished.insert(id); started.insert(id) }
+            if type == "turn_cancelled" { cancelled.append(id) }
+            if type == "event", ["run.started", "assistant.delta", "assistant.message", "reasoning.summary.delta", "tool.call", "tool.result"].contains(event.data["event"]["type"].string) { started.insert(id) }
+        }
+    }
+}
+
+/// Owned exclusively by the runtime's serial worker. Bound retained reducer
+/// state; re-opening an evicted thread rebuilds from its authoritative snapshot.
+struct ThreadPresentationCache {
+    private struct Entry { var events: [ManagedEvent]; var reducer: TimelineProjection; var presentation: ThreadPresentation }
+    private var entries: [String: Entry] = [:]
+    private var recent: [String] = []
+    mutating func prepare(_ snapshot: ThreadSnapshot) -> ThreadSnapshot {
+        var copy = snapshot
+        recent.removeAll { $0 == snapshot.id }; recent.append(snapshot.id)
+        if let entry = entries[snapshot.id], entry.events == snapshot.events {
+            copy.presentation = entry.presentation; return copy
+        }
+        var reducer = entries[snapshot.id]?.reducer ?? TimelineProjection()
+        let events = conversationEvents(snapshot.events)
+        let messages = reducer.project(events).map { entry in
+            var copy = entry
+            copy.preparedActivityTitle = entry.activityTitle
+            copy.preparedActivitySubject = entry.activitySubject
+            return copy
+        }
+        let presentation = ThreadPresentation(revision: UUID(), events: events, messages: messages,
+                                              displayedMessages: messages.flatMap { $0.expandingVoiceTranscript() },
+                                              terminalType: events.last { ["turn_completed", "turn_failed", "turn_cancelled"].contains($0.data["type"].string) }?.data["type"].string,
+                                              queue: ThreadQueueFacts(snapshot.events))
+        entries[snapshot.id] = Entry(events: snapshot.events, reducer: reducer, presentation: presentation)
+        while recent.count > 24 { entries.removeValue(forKey: recent.removeFirst()) }
+        copy.presentation = presentation
+        return copy
     }
 }
 
@@ -287,8 +409,25 @@ struct MessageEntry: Identifiable, Equatable, Sendable {
     var phase: String?
     var itemID: String?
     var cursor: String?
+    // Prepared labels are a cache, not part of a message's protocol identity.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id && lhs.turnId == rhs.turnId && lhs.kind == rhs.kind && lhs.text == rhs.text &&
+        lhs.name == rhs.name && lhs.output == rhs.output && lhs.generatedOutputs == rhs.generatedOutputs &&
+        lhs.status == rhs.status && lhs.streaming == rhs.streaming && lhs.agent == rhs.agent &&
+        lhs.phase == rhs.phase && lhs.itemID == rhs.itemID && lhs.cursor == rhs.cursor
+    }
     var isActivity: Bool { kind == .reasoning || kind == .tool || (kind == .assistant && (phase == "commentary" || agent != nil)) }
+    var preparedActivityTitle: String? = nil
+    var preparedActivitySubject: String? = nil
+    func expandingVoiceTranscript() -> [MessageEntry] {
+        guard kind == .user || kind == .assistant, let spoken = RealtimeTranscript.project(text) else { return [self] }
+        return spoken.enumerated().map { index, turn in
+            MessageEntry(id: id + ":voice:\(index)", turnId: turnId, kind: turn.speaker == "user" ? .user : .assistant,
+                         text: turn.text, streaming: streaming, cursor: cursor)
+        }
+    }
     var activityTitle: String {
+        if let preparedActivityTitle { return preparedActivityTitle }
         guard kind == .tool else { return kind == .reasoning ? "Thinking" : "Progress update" }
         let family = name.components(separatedBy: "__").last?.replacingOccurrences(of: "functions.", with: "") ?? name
         let titles = ["exec": "Run code", "exec_command": "Run command", "write_stdin": "Read process output",
@@ -303,6 +442,7 @@ struct MessageEntry: Identifiable, Equatable, Sendable {
         return words.isEmpty ? "Tool call" : words.prefix(1).uppercased() + words.dropFirst()
     }
     var activitySubject: String {
+        if let preparedActivitySubject { return preparedActivitySubject }
         if kind != .tool { return String(text.split(whereSeparator: \.isNewline).first ?? "").replacingOccurrences(of: "**", with: "") }
         guard let payload = try? JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)) else { return "" }
         return ["title", "description", "path", "file_path", "query", "url", "command", "cmd"]

@@ -7,7 +7,7 @@ import NanocodexRemote
 @MainActor
 final class AppModel: ObservableObject {
     enum Screen { case chat, hands }
-    enum WorkspaceFocus { case navigation, writing }
+    enum WorkspaceFocus { case navigation, writing, sidebar }
     @Published var state = DesktopState() {
         didSet { updateBackgroundActivity() }
     }
@@ -27,18 +27,47 @@ final class AppModel: ObservableObject {
         didSet { if oldValue != activeTabID { enterNavigation() } }
     }
     @Published var tabPosition = "top"
+    func setTabPosition(_ position: String) {
+        guard ["top", "left"].contains(position), tabPosition != position else { return }
+        tabPosition = position
+        persistLayout()
+    }
     @Published var theme = "system"
     @Published var workspaceMode = "single"
     @Published var tiledTabIDs: [String] = []
     @Published var paneLayouts: [PaneNode] = []
     @Published var splitAxis = "horizontal"
+    @Published var draggingPaneID: String? {
+        didSet { if oldValue != draggingPaneID { updatePaneDrop(target: nil, edge: nil) } }
+    }
+    @Published var paneDropTarget: String?
+    @Published var paneDropEdge: PaneDock?
+    @Published var workspaceZoom = 1.0 {
+        didSet { backgroundPreferences?.set(workspaceZoom, forKey: "workspaceZoom") }
+    }
+    @Published var showingKeyboardHelp = false
+    func changeZoom(_ steps: Int) { workspaceZoom = min(1.5, max(0.75, (workspaceZoom * 100 + Double(steps * 10)).rounded() / 100)) }
+    func resetZoom() { workspaceZoom = 1 }
+    func cancelPaneDrag() {
+        if draggingPaneID != nil { draggingPaneID = nil }
+        else { updatePaneDrop(target: nil, edge: nil) }
+    }
+    func updatePaneDrop(target: String?, edge: PaneDock?) {
+        if paneDropTarget != target { paneDropTarget = target }
+        if paneDropEdge != edge { paneDropEdge = edge }
+    }
+    func paneDropPreview(for target: String) -> PaneDock? {
+        guard let source = draggingPaneID, source != target, tab(source) != nil, tab(target) != nil,
+              paneDropTarget == target else { return nil }
+        return paneDropEdge
+    }
     @Published var showingPanePicker = false
     @Published var paneWidth = 0.0
     @Published private(set) var editorFocusRequest = 0
     @Published private(set) var requestedEditorTabID: String?
     @Published private(set) var workspaceFocus: WorkspaceFocus = .navigation
     @Published private(set) var navigationFocusRequest = 1
-    @Published var workspaceFilter: WorkspaceFilter = .inbox
+    @Published var workspaceFilter: WorkspaceFilter = .all
     @Published var screen: Screen = .chat
     @Published var snapshots: [String: ThreadSnapshot] = [:]
     @Published private(set) var threadErrors: [String: String] = [:]
@@ -51,6 +80,30 @@ final class AppModel: ObservableObject {
     @Published var error: String?
     @Published var showingSettings = false
     @Published var showingSearch = false
+    @Published var showingTabOverview = false
+    @Published private(set) var backTabs: [String] = []
+    @Published private(set) var forwardTabs: [String] = []
+    private var navigatingHistory = false
+    var canGoBack: Bool { backTabs.contains { tab($0) != nil && $0 != activeTabID } }
+    var canGoForward: Bool { forwardTabs.contains { tab($0) != nil && $0 != activeTabID } }
+
+    func navigateHistory(back: Bool) {
+        var source = back ? backTabs : forwardTabs
+        var destination: String?
+        while let id = source.popLast() {
+            if id != activeTabID, tab(id) != nil { destination = id; break }
+        }
+        if back { backTabs = source } else { forwardTabs = source }
+        guard let destination, let workspace = browserTabs.first(where: { $0.leaves.contains(destination) }) else { return }
+        if tab(activeTabID) != nil {
+            if back { forwardTabs.append(activeTabID) } else { backTabs.append(activeTabID) }
+        }
+        navigatingHistory = true
+        selectWorkspace(workspace)
+        select(destination)
+        navigatingHistory = false
+        enterNavigation()
+    }
     @Published var showingHandSetup = false
     @Published var showingRemoteSetup = false
     @Published var showingScreens = false
@@ -125,7 +178,6 @@ final class AppModel: ObservableObject {
     private var accountTransition = false
     private var inboxOrder: [String] = []
     private var reviewEvents: [String: [ManagedEvent]] = [:]
-    private var timelineProjections: [String: TimelineProjection] = [:]
     private var pinnedPaneID: String?
     struct ReadingPosition { var anchor: String?; var followsOutput: Bool; var offset: CGFloat? = nil }
     var readingPositions: [String: ReadingPosition] = [:]
@@ -133,7 +185,15 @@ final class AppModel: ObservableObject {
 
     private func requestEditorFocus(_ id: String) { workspaceFocus = .writing; requestedEditorTabID = id; editorFocusRequest += 1 }
     func enterNavigation() {
-        requestedEditorTabID = nil; workspaceFocus = .navigation; navigationFocusRequest += 1
+        cancelPaneDrag(); requestedEditorTabID = nil; workspaceFocus = .navigation; navigationFocusRequest += 1
+    }
+    /// Escape from a native sidebar must transfer the responder before the next
+    /// key arrives; waiting for SwiftUI layout lets tab type-selection eat v/h.
+    func enterNavigation(in window: NSWindow?) {
+        enterNavigation()
+        guard let window, window.attachedSheet == nil,
+              let navigation = WorkspaceKeyboardView.find(in: window.contentView), navigation.model === self else { return }
+        window.makeFirstResponder(navigation)
     }
     func focusComposer() {
         guard tab(activeTabID) != nil, !canvasTabs.isEmpty else { return }
@@ -160,15 +220,9 @@ final class AppModel: ObservableObject {
     func displayedTranscript(_ id: String? = nil) -> [MessageEntry] {
         let queued = pendingMessages(id)
         let waiting = Set(queued.filter { !$0.predecessor.isEmpty }.map(\.id))
-        let rows = transcript(id).filter { !waiting.contains($0.turnId) }.flatMap { entry -> [MessageEntry] in
-            guard entry.kind == .user || entry.kind == .assistant,
-                  let spoken = RealtimeTranscript.project(entry.text) else { return [entry] }
-            return spoken.enumerated().map { index, turn in
-                MessageEntry(id: entry.id + ":voice:\(index)", turnId: entry.turnId,
-                             kind: turn.speaker == "user" ? .user : .assistant, text: turn.text,
-                             streaming: entry.streaming, cursor: entry.cursor)
-            }
-        }
+        let prepared = snapshot(id)?.presentation?.displayedMessages ?? transcript(id).flatMap { $0.expandingVoiceTranscript() }
+        guard !queued.isEmpty else { return prepared }
+        let rows = waiting.isEmpty ? prepared : prepared.filter { !waiting.contains($0.turnId) }
         let known = Set(rows.map(\.id))
         return rows + queued.filter { $0.predecessor.isEmpty && !known.contains(MessageEntry.userID($0.id)) }.map {
             .init(id: MessageEntry.userID($0.id), turnId: $0.id, kind: .user, text: $0.text)
@@ -189,11 +243,11 @@ final class AppModel: ObservableObject {
     func update(for tab: WorkspaceTab) -> WorkspaceUpdate {
         let snapshot = tab.threadId.flatMap { snapshots[$0] }
         let events = tab.threadId.flatMap { reviewEvents[$0] } ?? snapshot?.events ?? []
-        let terminal = events.last { ["turn_completed", "turn_failed", "turn_cancelled"].contains($0.data["type"].string) }
+        let terminalType = snapshot?.presentation != nil ? snapshot?.presentation?.terminalType : events.last { ["turn_completed", "turn_failed", "turn_cancelled"].contains($0.data["type"].string) }?.data["type"].string
         let cursor = events.last?.cursor ?? "0"
         return WorkspaceUpdate(cursor: cursor, running: working(tab.id),
-                               checked: snapshot != nil, failed: terminal?.data["type"].string == "turn_failed" || pendingMessages(tab.id).contains { $0.phase == .failed },
-                               completed: terminal?.data["type"].string == "turn_completed")
+                               checked: snapshot != nil, failed: terminalType == "turn_failed" || pendingMessages(tab.id).contains { $0.phase == .failed },
+                               completed: terminalType == "turn_completed")
     }
     func hasAttentionError(_ tab: WorkspaceTab) -> Bool {
         let update = update(for: tab)
@@ -210,21 +264,28 @@ final class AppModel: ObservableObject {
     var visibleTabs: [WorkspaceTab] {
         let visible = tabs.filter { matchesFilter($0) || $0.id == pinnedPaneID }
         guard workspaceFilter == .inbox else { return visible }
+        var ranks: [String: Int] = [:]
+        for (index, tab) in tabs.enumerated() { ranks[tab.id] = index }
+        for (index, id) in inboxOrder.enumerated().reversed() { ranks[id] = index }
         return visible.sorted {
-            (inboxOrder.firstIndex(of: $0.id) ?? tabs.firstIndex(of: $0) ?? 0) <
-            (inboxOrder.firstIndex(of: $1.id) ?? tabs.firstIndex(of: $1) ?? 0)
+            (ranks[$0.id] ?? 0) < (ranks[$1.id] ?? 0)
         }
     }
     var isTiled: Bool { workspaceMode == "tiles" && tiledTabIDs.count > 1 }
     var canvasTabs: [WorkspaceTab] {
         if isTiled { return tiledTabIDs.compactMap { tab($0) } }
-        return (visibleTabs.first { $0.id == activeTabID } ?? visibleTabs.first).map { [$0] } ?? []
+        let visible = visibleTabs
+        return (visible.first { $0.id == activeTabID } ?? visible.first).map { [$0] } ?? []
     }
     var browserTabs: [PaneNode] {
+        var layouts: [String: PaneNode] = [:]
+        for node in paneLayouts {
+            for id in node.leaves where layouts[id] == nil { layouts[id] = node }
+        }
         var used = Set<String>()
         return tabs.compactMap { tab in
             guard !used.contains(tab.id) else { return nil }
-            let node = paneLayouts.first { $0.leaves.contains(tab.id) } ?? PaneNode(id: tab.id)
+            let node = layouts[tab.id] ?? PaneNode(id: tab.id)
             used.formUnion(node.leaves); return node
         }
     }
@@ -237,6 +298,11 @@ final class AppModel: ObservableObject {
         workspaceMode = node.children.isEmpty ? "single" : "tiles"
         select(node.leaves.contains(activeTabID) ? activeTabID : node.selectedLeaf.flatMap { node.leaves.contains($0) ? $0 : nil } ?? node.leaves[0])
         persistLayout()
+    }
+    func selectSidebarWorkspace(_ node: PaneNode) {
+        selectWorkspace(node)
+        requestedEditorTabID = nil
+        workspaceFocus = .sidebar
     }
     func detachPane(_ id: String) {
         paneLayouts = paneLayouts.compactMap { $0.removing(id) }.filter { $0.leaves.count > 1 }
@@ -254,7 +320,41 @@ final class AppModel: ObservableObject {
         workspaceMode = "tiles"
         select(id); requestEditorFocus(id); persistLayout()
     }
-    func splitAgent(axis: String) { splitAxis = axis; newTab(beside: true) }
+    func splitAgent(axis: String, focusEditor: Bool = true) {
+        splitAxis = axis; newTab(beside: true)
+        if !focusEditor { enterNavigation() }
+    }
+    func navigatePane(_ direction: PaneDock) {
+        guard isTiled, let tree = activePaneLayout else { cyclePane(direction.before ? -1 : 1, focusEditor: false); return }
+        if let next = tree.neighbor(of: activeTabID, toward: direction) { select(next); enterNavigation() }
+    }
+    func resizeActivePane(_ direction: PaneDock) {
+        guard isTiled, let tree = activePaneLayout,
+              let split = tree.nearestSplit(to: activeTabID, axis: direction.axis) else { return }
+        resizeSplit(split.id, fraction: split.fraction + (direction.before ? -0.05 : 0.05))
+    }
+    /// Move existing identities, never recreate agents or their drafts/queues.
+    func dockPane(_ id: String, at target: String, edge: PaneDock) {
+        guard id != target, tab(id) != nil, tab(target) != nil else { return }
+        if edge == .center {
+            paneLayouts = paneLayouts.map { $0.swapping(id, target) }
+            // Standalone tabs also have positions in the browser strip.
+            if let a = tabs.firstIndex(where: { $0.id == id }), let b = tabs.firstIndex(where: { $0.id == target }) {
+                tabs.swapAt(a, b)
+            }
+        } else {
+            detachPane(id)
+            let tree = paneLayouts.first { $0.leaves.contains(target) } ?? PaneNode(id: target)
+            paneLayouts.removeAll { $0.leaves.contains(target) }
+            paneLayouts.append(tree.inserting(id, after: target, axis: edge.axis, before: edge.before))
+        }
+        let next = paneLayouts.first { $0.leaves.contains(id) } ?? PaneNode(id: id)
+        selectWorkspace(next); select(id); enterNavigation(); persistLayout()
+    }
+    func separatePane(_ id: String) {
+        guard tab(id) != nil else { return }
+        detachPane(id); selectWorkspace(PaneNode(id: id))
+    }
     func resizeSplit(_ id: String, fraction: Double) {
         paneLayouts = paneLayouts.map { $0.resizing(id, to: fraction) }; persistLayout()
     }
@@ -361,12 +461,16 @@ final class AppModel: ObservableObject {
     var selectableHands: [Hand] { connectedHands.filter { $0.agentId == nil || $0.agentId == activeTab?.threadId } }
     var showsOnboarding: Bool { !state.connected || (phoneSignInActive && !phoneSignInStartedConnected) }
 
-    init(runtimeDirectory: String? = nil, backgroundPreferences: UserDefaults? = nil) {
+    init(runtimeDirectory: String? = nil, backgroundPreferences: UserDefaults? = nil, remoteService: RemoteService? = nil) {
+        self.remoteService = remoteService
         runtime = RuntimeClient(dataDirectory: runtimeDirectory)
         isolatedSession = runtimeDirectory != nil || ProcessInfo.processInfo.environment["NANOCODEX_DESKTOP_DATA"] != nil || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
         self.backgroundPreferences = backgroundPreferences ?? (isolatedSession ? nil : .standard)
         launchAtLogin = LaunchAtLogin.installed(isolatedSession: isolatedSession, preferences: self.backgroundPreferences)
         keepMacAwake = self.backgroundPreferences?.object(forKey: "keepMacAwakeWhileHandsRunning") as? Bool ?? true
+        if let saved = self.backgroundPreferences?.object(forKey: "workspaceZoom") as? Double, saved.isFinite {
+            workspaceZoom = min(1.5, max(0.75, saved))
+        }
         activeTabID = tabs[0].id
         runtime.onEvent = { [weak self] event in self?.receive(event) }
         runtime.onFailure = { [weak self] message in
@@ -411,14 +515,20 @@ final class AppModel: ObservableObject {
         }
     }
     private func apply(_ next: DesktopState) {
-        guard next != state else { return }
+        if restoredLayout, next.accountScope == state.accountScope {
+            // A save acknowledgement contains the entire persisted layout. It
+            // cannot change this live layout or invalidate every pane on typing.
+            var oldVisible = state, newVisible = next
+            oldVisible.layout = nil; newVisible.layout = nil
+            guard oldVisible != newVisible else { return }
+        } else { guard next != state else { return } }
         let accountChanged = state.accountScope != nil && state.accountScope != next.accountScope
         if accountChanged { resetAccount() }
         let wasConnected = state.connected
         state = next
         if !restoredLayout, let layout = next.layout, !layout.tabs.isEmpty {
             tabs = layout.tabs; activeTabID = tabs.contains(where: { $0.id == layout.activeTabId }) ? layout.activeTabId : tabs[0].id
-            tabPosition = "top"; theme = layout.theme
+            tabPosition = layout.tabPosition == "left" ? "left" : "top"; theme = layout.theme
             paneLayouts = layout.paneLayouts ?? []
             tiledTabIDs = (layout.tiledTabIDs ?? []).filter { id in tabs.contains { $0.id == id } }
             if paneLayouts.isEmpty, tiledTabIDs.count > 1, let tree = PaneNode.row(tiledTabIDs) { paneLayouts = [tree] }
@@ -439,7 +549,7 @@ final class AppModel: ObservableObject {
     }
     private func apply(_ thread: ThreadSnapshot) {
         let previous = snapshots[thread.id]
-        let eventsChanged = previous?.events != thread.events
+        let eventsChanged = previous?.presentation?.revision != thread.presentation?.revision
         let needsReconciliation = pending.contains { $0.agentID == thread.id }
         if !eventsChanged, !needsReconciliation, previous?.hasMore == thread.hasMore, previous?.connected == thread.connected,
            previous?.activeTurns == thread.activeTurns, previous?.settings == thread.settings,
@@ -447,9 +557,10 @@ final class AppModel: ObservableObject {
         snapshots[thread.id] = thread
         if thread.connected { threadErrors.removeValue(forKey: thread.id) }
         if eventsChanged {
-            let events = conversationEvents(thread.events)
-            reviewEvents[thread.id] = events
-            messages[thread.id] = timelineProjections[thread.id, default: TimelineProjection()].project(events)
+            if let presentation = thread.presentation {
+                reviewEvents[thread.id] = presentation.events
+                messages[thread.id] = presentation.messages
+            }
         }
         reconcilePending(thread)
         if activeTab?.threadId == thread.id, settings != thread.settings { settings = thread.settings }
@@ -480,6 +591,11 @@ final class AppModel: ObservableObject {
     }
     func select(_ id: String) {
         guard tabs.contains(where: { $0.id == id }), id != activeTabID || screen != .chat || pinnedPaneID != id else { return }
+        if id != activeTabID, !navigatingHistory {
+            if tab(activeTabID) != nil { backTabs.append(activeTabID) }
+            if backTabs.count > 100 { backTabs.removeFirst(backTabs.count - 100) }
+            forwardTabs = []
+        }
         if isTiled, !tiledTabIDs.contains(id), let slot = tiledTabIDs.firstIndex(of: activeTabID) {
             detachPane(id)
             paneLayouts = paneLayouts.map { $0.replacing(activeTabID, with: id) }
@@ -511,7 +627,6 @@ final class AppModel: ObservableObject {
         if activeTabID == id { activeTabID = tabs[min(index, tabs.count - 1)].id; pinnedPaneID = activeTabID; requestEditorFocus(activeTabID) }
         if let threadID = tab.threadId, !tabs.contains(where: { $0.threadId == threadID }), !pending.contains(where: { $0.agentID == threadID }) {
             observation.remove(threadID)
-            timelineProjections.removeValue(forKey: threadID)
             Task { try? await runtime.request("closeThread", [.string(threadID)]) }
         }
         persistLayout()
@@ -564,15 +679,24 @@ final class AppModel: ObservableObject {
         persistence = Task {
             try? await Task.sleep(for: .milliseconds(350))
             guard !Task.isCancelled else { return }
-            do { try await runtime.request("saveLayout", [try Self.layoutPayload(layout, scope: scope)]) }
+            do {
+                let payload = try await Self.layoutPayload(layout, scope: scope)
+                try Task.checkCancellation()
+                try await runtime.request("saveLayout", [payload])
+            } catch is CancellationError { }
             catch { self.error = error.localizedDescription }
         }
     }
-    private static func layoutPayload(_ layout: TabLayout, scope: String?) throws -> JSONValue {
-        let payload = try JSONValue.encoded(layout)
-        guard case .object(var fields) = payload else { return payload }
-        if let scope { fields["accountScope"] = .string(scope) }
-        return .object(fields)
+    nonisolated private static func layoutPayload(_ layout: TabLayout, scope: String?) async throws -> JSONValue {
+        let task = Task.detached(priority: .utility) {
+            try Task.checkCancellation()
+            let payload = try JSONValue.encoded(layout)
+            try Task.checkCancellation()
+            guard case .object(var fields) = payload else { return payload }
+            if let scope { fields["accountScope"] = .string(scope) }
+            return .object(fields)
+        }
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
     func chooseFolder(tabID: String? = nil) {
         let tabID = tabID ?? activeTabID
@@ -585,7 +709,7 @@ final class AppModel: ObservableObject {
     private func saveQueue() async throws {
         persistence?.cancel()
         let layout = TabLayout(tabs: tabs, activeTabId: activeTabID, tabPosition: tabPosition, theme: theme, workspaceMode: workspaceMode, paneWidth: paneWidth, tiledTabIDs: tiledTabIDs, pendingMessages: pending, paneLayouts: paneLayouts)
-        try await runtime.request("saveLayout", [try Self.layoutPayload(layout, scope: state.accountScope)])
+        try await runtime.request("saveLayout", [try await Self.layoutPayload(layout, scope: state.accountScope)])
     }
     private func changePending(_ id: String, _ change: (inout PendingMessage) -> Void) {
         guard let index = pending.firstIndex(where: { $0.id == id }) else { return }
@@ -599,13 +723,13 @@ final class AppModel: ObservableObject {
         pending.removeAll { $0.id == id }
     }
     private func reconcilePending(_ thread: ThreadSnapshot) {
+        guard pending.contains(where: { $0.agentID == thread.id }) else { return }
+        let facts = thread.presentation?.queue ?? ThreadQueueFacts(thread.events)
         let before = pending
-        for event in thread.events where event.data["type"].string == "turn_cancelled" {
-            removeCancelledPending(event.turnId ?? event.data["id"].string)
-        }
+        for id in facts.cancelled { removeCancelledPending(id) }
         for index in pending.indices where pending[index].agentID == thread.id {
-            if let accepted = thread.events.first(where: { $0.data["type"].string == "turn_accepted" && ($0.turnId ?? $0.data["id"].string) == pending[index].id }) {
-                pending[index].acceptedCursor = accepted.cursor
+            if let accepted = facts.accepted[pending[index].id] {
+                pending[index].acceptedCursor = accepted
                 if pending[index].phase == .submitting || pending[index].phase == .failed {
                     pending[index].phase = .queued; pending[index].error = nil
                 }
@@ -614,11 +738,9 @@ final class AppModel: ObservableObject {
         pending.removeAll { message in
             guard message.agentID == thread.id else { return false }
             if message.phase == .cancelling {
-                return message.hasFinished(in: thread) || thread.events.contains {
-                    ($0.turnId ?? $0.data["id"].string) == message.id && ["turn_completed", "turn_failed", "turn_cancelled"].contains($0.data["type"].string)
-                }
+                return message.hasFinished(in: thread) || facts.finished.contains(message.id)
             }
-            return message.hasStarted(in: thread.events) || message.hasFinished(in: thread)
+            return facts.started.contains(message.id) || message.hasFinished(in: thread)
         }
         if before != pending { persistLayout() }
     }
@@ -914,9 +1036,9 @@ final class AppModel: ObservableObject {
         accountHandDiscovery?.cancel(); accountHandDiscovery = nil
         defaultHandConnection?.cancel(); defaultHandConnection = nil
         resetRemoteSharing(); showingScreens = false
+        backTabs = []; forwardTabs = []; showingTabOverview = false
         persistence?.cancel()
-        timelineProjections.removeAll()
-        requestedEditorTabID = nil; readingPositions = [:]; expandedMessages = [:]; inboxOrder = []; pinnedPaneID = nil; workspaceFilter = .inbox; workspaceMode = "single"; tiledTabIDs = []; paneLayouts = []; showingPanePicker = false; paneWidth = 0
+        requestedEditorTabID = nil; readingPositions = [:]; expandedMessages = [:]; inboxOrder = []; pinnedPaneID = nil; workspaceFilter = .all; workspaceMode = "single"; tiledTabIDs = []; paneLayouts = []; showingPanePicker = false; paneWidth = 0
         generation += 1; busyMessages = []; snapshots = [:]; reviewEvents = [:]; threadErrors = [:]; messages = [:]; pending = []; observation = []; closedTabs = []; tabs = [WorkspaceTab()]; activeTabID = tabs[0].id; restoredLayout = false
     }
     func useThisMac() async {
@@ -994,7 +1116,7 @@ final class AppModel: ObservableObject {
         await remoteMacHost.stop(); await remotePhoneHost.stop(); remoteService?.close()
         persistence?.cancel()
         try? await cancelPhoneSignIn()
-        _ = try? await runtime.request("saveLayout", [try Self.layoutPayload(TabLayout(tabs: tabs, activeTabId: activeTabID, tabPosition: tabPosition, theme: theme, workspaceMode: workspaceMode, paneWidth: paneWidth, tiledTabIDs: tiledTabIDs, pendingMessages: pending, paneLayouts: paneLayouts), scope: state.accountScope)])
+        _ = try? await runtime.request("saveLayout", [try await Self.layoutPayload(TabLayout(tabs: tabs, activeTabId: activeTabID, tabPosition: tabPosition, theme: theme, workspaceMode: workspaceMode, paneWidth: paneWidth, tiledTabIDs: tiledTabIDs, pendingMessages: pending, paneLayouts: paneLayouts), scope: state.accountScope)])
         runtime.stop()
     }
     func shutdown() { resetRemoteSharing(); backgroundActivityStopped = true; backgroundActivity.stop(); voice.stop(); defaultHandConnection?.cancel(); accountHandDiscovery?.cancel(); persistence?.cancel(); runtime.stop() }
