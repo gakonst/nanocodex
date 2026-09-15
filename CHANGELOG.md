@@ -7,8 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.6.0](https://github.com/gakonst/nanocodex/releases/tag/v0.6.0) - 2026-09-15
 
+### Rust API migration
+
+Read the [0.5 → 0.6 Rust API changelog and migration guide](https://github.com/gakonst/nanocodex/blob/v0.6.0/docs/MIGRATING_0_6.md) before upgrading.
+
+- **Breaking:** turn usage and snapshots are optional; session IDs are strings; prompt wrappers now target `PromptRequest`.
+- **Breaking:** `hosted` tool APIs move to `embedded`; Code Mode execution/wait returns `Result`; protocol literals gain asynchronous fields.
+- **Behavior:** default model/reasoning changes to Astra/low; resumed sessions use current instructions and tools; billing-uncertainty metrics and generic MCP resource helpers are removed.
+- **Optional SDK layers:** durable execution with caller-owned storage, reusable subagent orchestration, and a managed backend. Browser, egress, VM, and voice leave experimental paths; computer and evals retain the label.
+
 ### Bug Fixes
 
+- [release] Include the computer reset contract in crate archives
+- [managed] Share cache keys without unsupported cache options
 - [web] Respect reduced motion and transparency preferences ([#322](https://github.com/gakonst/nanocodex/issues/322))
 - [managed] Clarify workspace-relative hand paths ([#321](https://github.com/gakonst/nanocodex/issues/321))
 - [ci] Recognize the TestFlight URL scheme ([#328](https://github.com/gakonst/nanocodex/issues/328))
@@ -627,6 +638,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- Update the browser CDN example for 0.6.0
 - [hand] Keep Cloudflare toolkit scratch off R2 ([#314](https://github.com/gakonst/nanocodex/issues/314))
 - [vm] Record installed Mac GPU Hand validation
 - Record deployment and final mobile refresh validation
@@ -669,6 +681,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Features
 
+- [browser] Add frame-aware WebMCP tools ([#331](https://github.com/gakonst/nanocodex/issues/331))
 - [packages] Promote browser, egress, VM, Hand, and voice packages ([#329](https://github.com/gakonst/nanocodex/issues/329))
 - [connectors] Add native account and MCP management ([#319](https://github.com/gakonst/nanocodex/issues/319))
 - [apple] Add generic Bluetooth LE and Flipper Zero support ([#317](https://github.com/gakonst/nanocodex/issues/317))
@@ -928,6 +941,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Miscellaneous Tasks
 
+- Prepare release 0.6.0
 - [apple] Update PhoneNumberKit to 5.0.9 ([#325](https://github.com/gakonst/nanocodex/issues/325))
 - [ci] Recognize the Mesa Zink driver name
 - [ci] Satisfy workspace formatting and Rust 1.97 checks
@@ -1102,6 +1116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- [managed] Reduce memory hops and cache static prompt prefixes
 - [ios] Reuse account-scoped native history HTTP caches
 - [apple] Cache rendered code and markdown with NSCache
 - [managed] Revalidate history and cache immutable archive segments

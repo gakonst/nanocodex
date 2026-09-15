@@ -753,7 +753,8 @@ Further reading:
 
 - [Facade API documentation](https://docs.rs/nanocodex)
 - [Examples and runnable commands](examples/README.md)
-- [Migration guide](docs/MIGRATING.md)
+- [Rust 0.5 → 0.6 API changelog and migration guide](docs/MIGRATING_0_6.md)
+- [Older migration guide (0.2.x)](docs/MIGRATING.md)
 - [Responses + Tower design](docs/RESPONSES_TOWER.md)
 - [Observability contract](docs/OBSERVABILITY.md)
 - [Subagent design](docs/SUBAGENTS.md)

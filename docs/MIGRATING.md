@@ -1,5 +1,7 @@
 # Migrating from Nanocodex 0.2.x
 
+For the current release, see the [Rust 0.5 → 0.6 API changelog and migration guide](MIGRATING_0_6.md).
+
 PR #50 replaces the old monolithic crate surface with a library-first stack.
 It is source-breaking and must ship under a version newer than the published
 `0.2.0`; the workspace version on the refactor branch is not a release claim.

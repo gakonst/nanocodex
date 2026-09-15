@@ -6,6 +6,9 @@ This crate contains no second runtime implementation. It re-exports the owned
 agent lifecycle and gives the lower-level crates stable, named module paths.
 Depending on `nanocodex-agent` directly creates the same agent.
 
+Upgrading from 0.5? Read the [Rust API changelog and migration guide](https://github.com/gakonst/nanocodex/blob/v0.6.0/docs/MIGRATING_0_6.md)
+for breaking signatures, changed defaults, and snapshot/tool migrations.
+
 ## Quick start
 
 Build one owned agent, keep its cheap cloneable handle, and await typed turn
