@@ -1,0 +1,27 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nanocodex-user-data-test",
+  "main": "test/user-data-worker.ts",
+  "compatibility_date": "2026-07-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "r2_buckets": [
+    {
+      "binding": "NANOCODEX_USER_DATA_OBJECTS",
+      "bucket_name": "nanocodex-user-data-test"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "NANOCODEX_USER_DATA",
+        "class_name": "UserDataScope"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "user-data-test-v1",
+      "new_sqlite_classes": ["UserDataScope"]
+    }
+  ]
+}

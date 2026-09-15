@@ -63,6 +63,8 @@ const optionalResources = new Set([
   "urn:nanocodex:agent:trace:read",
   agentPortabilityResource,
   "urn:nanocodex:history:read",
+  "urn:nanocodex:data:read",
+  "urn:nanocodex:data:write",
   "urn:nanocodex:memory:read",
   "urn:nanocodex:memory:write",
   "urn:nanocodex:capability:mercator:boost",
@@ -365,6 +367,16 @@ export function managedMemoryCapability(
   if (operation === "list") return "memory:read";
   if (operation === "scan" || operation === "read") return "memory:read";
   if (operation === "put" || operation === "delete") return "memory:write";
+  return undefined;
+}
+
+export function managedUserDataCapability(operation: unknown): "data:read" | "data:write" | undefined {
+  if (operation === "document_get" || operation === "document_list" || operation === "timeseries_list"
+    || operation === "timeseries_query" || operation === "timeseries_aggregate"
+    || operation === "object_get" || operation === "object_list") return "data:read";
+  if (operation === "document_put" || operation === "document_delete"
+    || operation === "timeseries_write"
+    || operation === "object_put" || operation === "object_delete") return "data:write";
   return undefined;
 }
 

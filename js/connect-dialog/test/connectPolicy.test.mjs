@@ -193,12 +193,16 @@ test("a signed durable conversation is visible as a separate approval", () => {
   ]), []);
 });
 
-test("hosted history and memory remain separate signed permissions", () => {
+test("hosted history, personal data, and memory remain separate signed permissions", () => {
   assert.deepEqual(appVisibilityPermissions([
     "urn:nanocodex:history:read",
+    "urn:nanocodex:data:read",
+    "urn:nanocodex:data:write",
     "urn:nanocodex:memory:read",
     "urn:nanocodex:memory:write",
-  ]).map(({ label }) => label), ["Hosted history", "Memory read", "Memory write"]);
+  ]).map(({ label }) => label), [
+    "Hosted history", "Personal data read", "Personal data write", "Memory read", "Memory write",
+  ]);
 });
 
 test("an exact signed browser tool catalog is visible without implying broad tool access", () => {

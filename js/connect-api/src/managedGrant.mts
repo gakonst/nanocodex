@@ -1,7 +1,13 @@
 import type { HostPrincipal } from "./hostPrincipal.mts";
 
 const managedBaseCapabilities = ["agents:read", "agents:write", "tools:use"];
-const managedOptionalCapabilities = ["history:read", "memory:read", "memory:write"];
+const managedOptionalCapabilities = [
+  "data:read",
+  "data:write",
+  "history:read",
+  "memory:read",
+  "memory:write",
+];
 const managedPortabilityGrantCapabilities = [
   "agent.durability.portability",
   "agent.history.read",

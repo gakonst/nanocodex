@@ -50,6 +50,10 @@
       "bucket_name": "nanocodex-managed-history"
     },
     {
+      "binding": "NANOCODEX_USER_DATA_OBJECTS",
+      "bucket_name": "nanocodex-user-data"
+    },
+    {
       "binding": "NANOCODEX_WORKSPACES",
       "bucket_name": "nanocodex-sandbox-workspaces"
     },
@@ -119,6 +123,10 @@
         "class_name": "MemoryScope"
       },
       {
+        "name": "NANOCODEX_USER_DATA",
+        "class_name": "UserDataScope"
+      },
+      {
         "name": "NANOCODEX_SANDBOXES",
         "class_name": "Sandbox"
       },
@@ -161,6 +169,10 @@
     {
       "tag": "v8",
       "new_sqlite_classes": ["VmHostPool"]
+    },
+    {
+      "tag": "v9",
+      "new_sqlite_classes": ["UserDataScope"]
     }
   ],
   "vars": {
@@ -192,6 +204,7 @@
       ],
       "r2_buckets": [
         { "binding": "NANOCODEX_HISTORY", "bucket_name": "nanocodex-managed-history" },
+        { "binding": "NANOCODEX_USER_DATA_OBJECTS", "bucket_name": "nanocodex-user-data" },
         { "binding": "NANOCODEX_WORKSPACES", "bucket_name": "nanocodex-sandbox-workspaces" },
         { "binding": "NANOCODEX_BRAIN", "bucket_name": "nanocodex-sandbox-workspaces" },
         { "binding": "NANOCODEX_WORKSPACES_0", "bucket_name": "nanocodex-sandbox-workspaces" },
@@ -223,6 +236,7 @@
           { "name": "NANOCODEX_USERS", "class_name": "UserAccount" },
           { "name": "NANOCODEX_API_KEYS", "class_name": "ApiKeyRecord" },
           { "name": "NANOCODEX_MEMORY", "class_name": "MemoryScope" },
+          { "name": "NANOCODEX_USER_DATA", "class_name": "UserDataScope" },
           { "name": "NANOCODEX_SANDBOXES", "class_name": "Sandbox" },
           { "name": "NANOCODEX_ORGANIZATIONS", "class_name": "Organization" }
         ]

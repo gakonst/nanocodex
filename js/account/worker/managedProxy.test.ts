@@ -33,6 +33,11 @@ test("the removed model capabilities route is not projected", () => {
   assert.equal(isManagedRoutePath("/v1/model-capabilities"), false);
 });
 
+test("the per-user data API is projected without widening its path", () => {
+  assert.equal(isManagedRoutePath("/v1/data"), true);
+  assert.equal(isManagedRoutePath("/v1/data/other"), false);
+});
+
 test("the account hand WebSocket stays on the managed service boundary", async () => {
   assert.equal(isManagedRoutePath("/v1/account/tool-host"), true);
   const request = new Request("https://nanocodex.localhost/v1/account/tool-host", {

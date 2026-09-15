@@ -746,6 +746,7 @@ Further reading:
 - [Responses + Tower design](docs/RESPONSES_TOWER.md)
 - [Observability contract](docs/OBSERVABILITY.md)
 - [Subagent design](docs/SUBAGENTS.md)
+- [Per-user documents, objects, and time series](docs/USER_DATA.md)
 - [VM operations](docs/VM.md)
 - [Benchmarks and executable regression gates](benchmarks/)
 

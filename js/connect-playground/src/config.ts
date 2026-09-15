@@ -28,6 +28,8 @@ export const apiHost = localBrowserApiHost
 export const CONNECT_RESOURCES = [
   "urn:nanocodex:agent:run",
   "urn:nanocodex:history:read",
+  "urn:nanocodex:data:read",
+  "urn:nanocodex:data:write",
   "urn:nanocodex:memory:read",
   "urn:nanocodex:memory:write",
   "urn:nanocodex:capability:mercator:boost",

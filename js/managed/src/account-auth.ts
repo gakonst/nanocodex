@@ -88,6 +88,8 @@ export type OrganizationCapability =
   | "agents:write"
   | "api_keys:read"
   | "api_keys:write"
+  | "data:read"
+  | "data:write"
   | "history:read"
   | "memory:read"
   | "memory:write"
@@ -112,6 +114,8 @@ const OWNER_CAPABILITIES = [
   "agents:write",
   "api_keys:read",
   "api_keys:write",
+  "data:read",
+  "data:write",
   "history:read",
   "memory:read",
   "memory:write",
@@ -2160,6 +2164,8 @@ export function isOrganizationCapabilities(value: unknown): value is readonly Or
     || capability === "agents:write"
     || capability === "api_keys:read"
     || capability === "api_keys:write"
+    || capability === "data:read"
+    || capability === "data:write"
     || capability === "history:read"
     || capability === "memory:read"
     || capability === "memory:write"
@@ -2173,6 +2179,8 @@ const CONNECT_CAPABILITIES = new Set<OrganizationCapability>([
   "agents:read",
   "agents:portability",
   "agents:write",
+  "data:read",
+  "data:write",
   "history:read",
   "memory:read",
   "memory:write",
