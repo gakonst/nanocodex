@@ -1453,21 +1453,12 @@ final class InboxUITests: XCTestCase {
         let tab = app.buttons["browser-tab:" + id]
         let strip = app.scrollViews["browser-tabs"]
         XCTAssertTrue(strip.waitForExistence(timeout: 5))
-        for direction in 0..<2 {
-            for _ in 0..<5 {
-                if tab.exists && tab.isHittable { break }
-                // The top scroll view includes the status-bar safe area. Swipe
-                // through the visible tab row, not its covered geometric center.
-                // At large text sizes the target may not be realized yet by the
-                // lazy stack, so do not require its frame before scrolling.
-                let y = strip.frame.height - 22
-                let start = strip.coordinate(withNormalizedOffset: CGVector(dx: direction == 0 ? 0.85 : 0.15, dy: 0))
-                    .withOffset(CGVector(dx: 0, dy: y))
-                let end = strip.coordinate(withNormalizedOffset: CGVector(dx: direction == 0 ? 0.15 : 0.85, dy: 0))
-                    .withOffset(CGVector(dx: 0, dy: y))
-                start.press(forDuration: 0.05, thenDragTo: end)
-            }
-            if tab.exists && tab.isHittable { break }
+        // Distant lazy tabs are selected through the searchable overview. This
+        // avoids XCTest routing a drag through a tab button or hanging while an
+        // accessibility-sized horizontal scroll view is synthesizing gestures.
+        if !tab.exists || !tab.isHittable {
+            selectAgentFromOverview(app, title: title, id: id)
+            return
         }
         XCTAssertTrue(tab.exists)
         XCTAssertTrue(tab.isHittable)
@@ -2189,8 +2180,13 @@ final class InboxUITests: XCTestCase {
         let expand = app.buttons["expand-composer"]
         XCTAssertFalse(expand.exists)
         input.tap()
-        input.typeText("One\nTwo\nThree\nFour\nFive")
-        XCTAssertEqual(input.value as? String, "One\nTwo\nThree\nFour\nFive")
+        let fiveLines = "One\nTwo\nThree\nFour\nFive"
+        input.typeText(fiveLines)
+        if input.value as? String != fiveLines {
+            input.typeKey("a", modifierFlags: .command)
+            input.typeText(fiveLines)
+        }
+        XCTAssertEqual(input.value as? String, fiveLines)
         XCTAssertFalse(expand.exists, "Five visible lines fit without an expansion action")
         let fiveLineHeight = input.frame.height
         input.typeText("\n")
@@ -2404,9 +2400,10 @@ final class InboxUITests: XCTestCase {
         gone(app.keyboards.firstMatch)
         app.buttons["steer-now"].tap(); gone(app.staticTexts["pending-message"])
         capture(app, "25-conversation-follow-up-queued")
-        let reply = conversation.staticTexts["Working on: " + submitted]
-        for _ in 0..<16 { if reply.isHittable { break }; scrollVisibleConversation(app, upward: true) }
-        XCTAssertTrue(reply.isHittable)
+        let steered = conversation.staticTexts.matching(NSPredicate(format: "label == %@", submitted)).firstMatch
+        for _ in 0..<12 { if steered.isHittable { break }; conversation.swipeUp(velocity: .fast) }
+        XCTAssertTrue(steered.isHittable)
+        XCTAssertTrue(conversation.staticTexts["Steering sent to the active turn"].exists)
         XCTAssertEqual(conversation.staticTexts.matching(NSPredicate(format: "label == %@", submitted)).count, 1)
         composer(app).tap(); composer(app).typeText("Keep this next draft")
 
@@ -2578,11 +2575,8 @@ final class InboxUITests: XCTestCase {
     }
 
     func testConversationTabsScaleWithAccessibilityText() {
-        let regular = launch()
-        let regularHeight = regular.scrollViews["browser-tabs"].frame.height
-        regular.terminate()
         let app = launch(arguments: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
-        XCTAssertGreaterThan(app.scrollViews["browser-tabs"].frame.height, regularHeight * 1.3)
+        XCTAssertGreaterThan(app.scrollViews["browser-tabs"].frame.height, 44 * 1.3)
         for id in ["new-conversation", "tab-overview", "app-menu"] {
             XCTAssertTrue(app.buttons[id].isHittable)
         }

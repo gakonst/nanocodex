@@ -1,0 +1,4225 @@
+{
+  "retrieved_at": "2026-09-11T11:04:10.593536+00:00",
+  "window": {
+    "start": "2026-09-11T09:30:00Z",
+    "end": "2026-09-11T11:04:07Z"
+  },
+  "namespaces": [
+    {
+      "id": "33513c83aca24d78aa63d2f0243989db",
+      "name": "nanocodex-perf-egress-0911_UserCredentialBroker",
+      "script": "nanocodex-perf-egress-0911",
+      "class": "UserCredentialBroker",
+      "use_sqlite": true
+    },
+    {
+      "id": "e307eade5bc44cb59f1d930a7776f168",
+      "name": "nanocodex-perf-egress-0911_AgentSubjectDirectory",
+      "script": "nanocodex-perf-egress-0911",
+      "class": "AgentSubjectDirectory",
+      "use_sqlite": true
+    },
+    {
+      "id": "b139baae9b844b38918f0b76c7c5dc79",
+      "name": "nanocodex-perf-egress-0911_McpConnectionDirectory",
+      "script": "nanocodex-perf-egress-0911",
+      "class": "McpConnectionDirectory",
+      "use_sqlite": true
+    },
+    {
+      "id": "18bcd4a425eb4197a6bf0a8f6c935b14",
+      "name": "nanocodex-perf-egress-0911_UserConnectorBroker",
+      "script": "nanocodex-perf-egress-0911",
+      "class": "UserConnectorBroker",
+      "use_sqlite": true
+    },
+    {
+      "id": "0b9a35e27287467dad4fcf3c4f80c7da",
+      "name": "nanocodex-perf-managed-0911_MultiplayerQuota",
+      "script": "nanocodex-perf-managed-0911",
+      "class": "MultiplayerQuota",
+      "use_sqlite": true
+    },
+    {
+      "id": "f807b0945c5640c68617e584e9fb49e8",
+      "name": "nanocodex-perf-managed-0911_MultiplayerRoom",
+      "script": "nanocodex-perf-managed-0911",
+      "class": "MultiplayerRoom",
+      "use_sqlite": true
+    },
+    {
+      "id": "6beb99ee2c2c41a08d10e696ed6fd152",
+      "name": "nanocodex-perf-managed-0911_NonceStorage",
+      "script": "nanocodex-perf-managed-0911",
+      "class": "NonceStorage",
+      "use_sqlite": true
+    },
+    {
+      "id": "c6d26d6e647c417d945c8f31f6f3dbe3",
+      "name": "nanocodex-perf-managed-0911_AccountHostedTools",
+      "script": "nanocodex-perf-managed-0911",
+      "class": "AccountHostedTools",
+      "use_sqlite": true
+    },
+    {
+      "id": "bc3bf95ca52149e085e070534395fa9f",
+      "name": "nanocodex-perf-managed-0911_UserAccount",
+      "script": "nanocodex-perf-managed-0911",
+      "class": "UserAccount",
+      "use_sqlite": true
+    },
+    {
+      "id": "08447d4511244abcb090bb76a363cc64",
+      "name": "nanocodex-perf-managed-0911_VmHostPool",
+      "script": "nanocodex-perf-managed-0911",
+      "class": "VmHostPool",
+      "use_sqlite": true
+    },
+    {
+      "id": "46b63c1881064b3f966d103335912838",
+      "name": "nanocodex-perf-managed-0911_Organization",
+      "script": "nanocodex-perf-managed-0911",
+      "class": "Organization",
+      "use_sqlite": true
+    },
+    {
+      "id": "7eaa57fa1061436db9002b82c48fcb6c",
+      "name": "nanocodex-perf-managed-0911_ApiKeyRecord",
+      "script": "nanocodex-perf-managed-0911",
+      "class": "ApiKeyRecord",
+      "use_sqlite": true
+    },
+    {
+      "id": "30c4a9b036ff450c9dc09efdb25414c1",
+      "name": "nanocodex-perf-managed-0911_DurableAgentSession",
+      "script": "nanocodex-perf-managed-0911",
+      "class": "DurableAgentSession",
+      "use_sqlite": true
+    },
+    {
+      "id": "28db9813d0db4b618c77fc02430099de",
+      "name": "nanocodex-perf-managed-0911_MemoryScope",
+      "script": "nanocodex-perf-managed-0911",
+      "class": "MemoryScope",
+      "use_sqlite": true
+    },
+    {
+      "id": "3a60677bf7ee436abdcf0c08067e13f2",
+      "name": "nanocodex-perf-managed-0911_Sandbox",
+      "script": "nanocodex-perf-managed-0911",
+      "class": "Sandbox",
+      "use_sqlite": true,
+      "use_containers": true
+    }
+  ],
+  "query": "{viewer{accounts(filter:{accountTag:\"16ce0442a940f01beefdb15a196a43ea\"}){\nperiodic:durableObjectsPeriodicGroups(filter:{datetime_geq:\"2026-09-11T09:30:00Z\",datetime_lt:\"2026-09-11T11:04:07Z\",namespaceId_in:[\"33513c83aca24d78aa63d2f0243989db\", \"e307eade5bc44cb59f1d930a7776f168\", \"b139baae9b844b38918f0b76c7c5dc79\", \"18bcd4a425eb4197a6bf0a8f6c935b14\", \"0b9a35e27287467dad4fcf3c4f80c7da\", \"f807b0945c5640c68617e584e9fb49e8\", \"6beb99ee2c2c41a08d10e696ed6fd152\", \"c6d26d6e647c417d945c8f31f6f3dbe3\", \"bc3bf95ca52149e085e070534395fa9f\", \"08447d4511244abcb090bb76a363cc64\", \"46b63c1881064b3f966d103335912838\", \"7eaa57fa1061436db9002b82c48fcb6c\", \"30c4a9b036ff450c9dc09efdb25414c1\", \"28db9813d0db4b618c77fc02430099de\", \"3a60677bf7ee436abdcf0c08067e13f2\"]},limit:1000){\n dimensions{namespaceId coloCode}\n sum{duration activeTime cpuTime rowsRead rowsWritten subrequests exceededCpuErrors exceededMemoryErrors fatalInternalErrors}\n max{memoryUsageBytes}\n}\ninvocations:durableObjectsInvocationsAdaptiveGroups(filter:{datetime_geq:\"2026-09-11T09:30:00Z\",datetime_lt:\"2026-09-11T11:04:07Z\",namespaceId_in:[\"33513c83aca24d78aa63d2f0243989db\", \"e307eade5bc44cb59f1d930a7776f168\", \"b139baae9b844b38918f0b76c7c5dc79\", \"18bcd4a425eb4197a6bf0a8f6c935b14\", \"0b9a35e27287467dad4fcf3c4f80c7da\", \"f807b0945c5640c68617e584e9fb49e8\", \"6beb99ee2c2c41a08d10e696ed6fd152\", \"c6d26d6e647c417d945c8f31f6f3dbe3\", \"bc3bf95ca52149e085e070534395fa9f\", \"08447d4511244abcb090bb76a363cc64\", \"46b63c1881064b3f966d103335912838\", \"7eaa57fa1061436db9002b82c48fcb6c\", \"30c4a9b036ff450c9dc09efdb25414c1\", \"28db9813d0db4b618c77fc02430099de\", \"3a60677bf7ee436abdcf0c08067e13f2\"]},limit:1000){\n dimensions{namespaceId coloCode type status}\n sum{requests errors responseBodySize}\n}\nstorage:durableObjectsSqlStorageGroups(filter:{datetime_geq:\"2026-09-11T09:30:00Z\",datetime_lt:\"2026-09-11T11:04:07Z\",namespaceId_in:[\"33513c83aca24d78aa63d2f0243989db\", \"e307eade5bc44cb59f1d930a7776f168\", \"b139baae9b844b38918f0b76c7c5dc79\", \"18bcd4a425eb4197a6bf0a8f6c935b14\", \"0b9a35e27287467dad4fcf3c4f80c7da\", \"f807b0945c5640c68617e584e9fb49e8\", \"6beb99ee2c2c41a08d10e696ed6fd152\", \"c6d26d6e647c417d945c8f31f6f3dbe3\", \"bc3bf95ca52149e085e070534395fa9f\", \"08447d4511244abcb090bb76a363cc64\", \"46b63c1881064b3f966d103335912838\", \"7eaa57fa1061436db9002b82c48fcb6c\", \"30c4a9b036ff450c9dc09efdb25414c1\", \"28db9813d0db4b618c77fc02430099de\", \"3a60677bf7ee436abdcf0c08067e13f2\"]},limit:1000){dimensions{namespaceId}max{storedBytes}}\nsessions:durableObjectsPeriodicGroups(filter:{datetime_geq:\"2026-09-11T09:30:00Z\",datetime_lt:\"2026-09-11T11:04:07Z\",namespaceId:\"30c4a9b036ff450c9dc09efdb25414c1\"},limit:1000){dimensions{name objectId coloCode}sum{duration cpuTime rowsRead rowsWritten}}workers:workersInvocationsAdaptive(filter:{datetime_geq:\"2026-09-11T09:30:00Z\",datetime_lt:\"2026-09-11T11:04:07Z\",scriptName_in:[\"nanocodex-perf-egress-0911\", \"nanocodex-perf-front-0911\", \"nanocodex-perf-managed-0911\"]},limit:1000){dimensions{scriptName status}sum{requests cpuTimeUs errors clientDisconnects}}r2:r2OperationsAdaptiveGroups(filter:{datetime_geq:\"2026-09-11T09:30:00Z\",datetime_lt:\"2026-09-11T11:04:07Z\",bucketName:\"nanocodex-perf-0911\"},limit:1000){dimensions{actionType actionStatus storageClass}sum{requests}}}}}",
+  "data": {
+    "invocations": [
+      {
+        "dimensions": {
+          "coloCode": "WAW",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2",
+          "status": "success",
+          "type": "alarm"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 18,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1",
+          "status": "success",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 736,
+          "responseBodySize": 1350912
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1",
+          "status": "success",
+          "type": "alarm"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 103,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "AMS",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2",
+          "status": "success",
+          "type": "alarm"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 30,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1",
+          "status": "success",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 400,
+          "responseBodySize": 886006
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1",
+          "status": "success",
+          "type": "alarm"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 56,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "namespaceId": "33513c83aca24d78aa63d2f0243989db",
+          "status": "success",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 293,
+          "responseBodySize": 58454
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "CDG",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2",
+          "status": "success",
+          "type": "alarm"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 9,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1",
+          "status": "success",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 759,
+          "responseBodySize": 1826782
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "AMS",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2",
+          "status": "success",
+          "type": "jsrpc"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 90,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "namespaceId": "28db9813d0db4b618c77fc02430099de",
+          "status": "success",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 1294,
+          "responseBodySize": 17120
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "WAW",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2",
+          "status": "success",
+          "type": "jsrpc"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 54,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1",
+          "status": "success",
+          "type": "alarm"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 52,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2",
+          "status": "success",
+          "type": "alarm"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 93,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "CDG",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2",
+          "status": "success",
+          "type": "jsrpc"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 27,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "namespaceId": "46b63c1881064b3f966d103335912838",
+          "status": "success",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 2138,
+          "responseBodySize": 726781
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2",
+          "status": "success",
+          "type": "jsrpc"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 129,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1",
+          "status": "clientDisconnected",
+          "type": "alarm"
+        },
+        "sum": {
+          "errors": 1,
+          "requests": 1,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1",
+          "status": "clientDisconnected",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 61,
+          "requests": 61,
+          "responseBodySize": 12243271
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1",
+          "status": "clientDisconnected",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 54,
+          "requests": 54,
+          "responseBodySize": 17020598
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "namespaceId": "bc3bf95ca52149e085e070534395fa9f",
+          "status": "success",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 3068,
+          "responseBodySize": 386797
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2",
+          "status": "success",
+          "type": "jsrpc"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 9,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1",
+          "status": "clientDisconnected",
+          "type": "alarm"
+        },
+        "sum": {
+          "errors": 1,
+          "requests": 1,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1",
+          "status": "success",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 1167,
+          "responseBodySize": 2675280
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1",
+          "status": "clientDisconnected",
+          "type": "alarm"
+        },
+        "sum": {
+          "errors": 1,
+          "requests": 1,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2",
+          "status": "success",
+          "type": "jsrpc"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 30,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2",
+          "status": "success",
+          "type": "alarm"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 3,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2",
+          "status": "success",
+          "type": "jsrpc"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 278,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2",
+          "status": "success",
+          "type": "alarm"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 22,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1",
+          "status": "clientDisconnected",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 31,
+          "requests": 31,
+          "responseBodySize": 5693720
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2",
+          "status": "success",
+          "type": "jsrpc"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 66,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2",
+          "status": "success",
+          "type": "alarm"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 10,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1",
+          "status": "success",
+          "type": "alarm"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 159,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1",
+          "status": "clientDisconnected",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 29,
+          "requests": 29,
+          "responseBodySize": 5316601
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "namespaceId": "7eaa57fa1061436db9002b82c48fcb6c",
+          "status": "success",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 2135,
+          "responseBodySize": 1201462
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1",
+          "status": "success",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 371,
+          "responseBodySize": 529483
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "namespaceId": "18bcd4a425eb4197a6bf0a8f6c935b14",
+          "status": "success",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 53,
+          "responseBodySize": 13166
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1",
+          "status": "clientDisconnected",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 85,
+          "requests": 85,
+          "responseBodySize": 21278018
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2",
+          "status": "clientDisconnected",
+          "type": "alarm"
+        },
+        "sum": {
+          "errors": 1,
+          "requests": 1,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2",
+          "status": "success",
+          "type": "alarm"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 43,
+          "responseBodySize": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "namespaceId": "c6d26d6e647c417d945c8f31f6f3dbe3",
+          "status": "success",
+          "type": "http"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 26,
+          "responseBodySize": 546
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1",
+          "status": "success",
+          "type": "alarm"
+        },
+        "sum": {
+          "errors": 0,
+          "requests": 108,
+          "responseBodySize": 0
+        }
+      }
+    ],
+    "periodic": [
+      {
+        "dimensions": {
+          "coloCode": "CDG",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2"
+        },
+        "max": {
+          "memoryUsageBytes": 26951314
+        },
+        "sum": {
+          "activeTime": 1326184,
+          "cpuTime": 96038,
+          "duration": 0.169751552,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 27,
+          "rowsWritten": 81,
+          "subrequests": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1"
+        },
+        "max": {
+          "memoryUsageBytes": 59559076
+        },
+        "sum": {
+          "activeTime": 991624376,
+          "cpuTime": 65939127,
+          "duration": 126.92792012800001,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 646386,
+          "rowsWritten": 130846,
+          "subrequests": 463
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2"
+        },
+        "max": {
+          "memoryUsageBytes": 32063122
+        },
+        "sum": {
+          "activeTime": 1779100,
+          "cpuTime": 125984,
+          "duration": 0.22772480000000003,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 30,
+          "rowsWritten": 90,
+          "subrequests": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2"
+        },
+        "max": {
+          "memoryUsageBytes": 35561106
+        },
+        "sum": {
+          "activeTime": 7663456,
+          "cpuTime": 325147,
+          "duration": 0.980922368,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 129,
+          "rowsWritten": 387,
+          "subrequests": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "namespaceId": "33513c83aca24d78aa63d2f0243989db"
+        },
+        "max": {
+          "memoryUsageBytes": 15597379
+        },
+        "sum": {
+          "activeTime": 663330,
+          "cpuTime": 199926,
+          "duration": 0.08490623999999998,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 159,
+          "rowsWritten": 1,
+          "subrequests": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2"
+        },
+        "max": {
+          "memoryUsageBytes": 26947218
+        },
+        "sum": {
+          "activeTime": 470532,
+          "cpuTime": 24756,
+          "duration": 0.060228095999999995,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 9,
+          "rowsWritten": 27,
+          "subrequests": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "namespaceId": "bc3bf95ca52149e085e070534395fa9f"
+        },
+        "max": {
+          "memoryUsageBytes": 32190055
+        },
+        "sum": {
+          "activeTime": 16733448,
+          "cpuTime": 1040054,
+          "duration": 2.1418813439999997,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 2846,
+          "rowsWritten": 1389,
+          "subrequests": 1
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2"
+        },
+        "max": {
+          "memoryUsageBytes": 26951314
+        },
+        "sum": {
+          "activeTime": 4391992,
+          "cpuTime": 236738,
+          "duration": 0.5621749760000001,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 66,
+          "rowsWritten": 198,
+          "subrequests": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2"
+        },
+        "max": {
+          "memoryUsageBytes": 26951314
+        },
+        "sum": {
+          "activeTime": 15879103,
+          "cpuTime": 848730,
+          "duration": 2.0325251840000003,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 279,
+          "rowsWritten": 837,
+          "subrequests": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "AMS",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2"
+        },
+        "max": {
+          "memoryUsageBytes": 26951314
+        },
+        "sum": {
+          "activeTime": 5641521,
+          "cpuTime": 283131,
+          "duration": 0.722114688,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 90,
+          "rowsWritten": 270,
+          "subrequests": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "namespaceId": "c6d26d6e647c417d945c8f31f6f3dbe3"
+        },
+        "max": {
+          "memoryUsageBytes": 26947408
+        },
+        "sum": {
+          "activeTime": 69338,
+          "cpuTime": 23134,
+          "duration": 0.008875264,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 78,
+          "rowsWritten": 1,
+          "subrequests": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "namespaceId": "7eaa57fa1061436db9002b82c48fcb6c"
+        },
+        "max": {
+          "memoryUsageBytes": 29044370
+        },
+        "sum": {
+          "activeTime": 1405304,
+          "cpuTime": 834506,
+          "duration": 0.179878912,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 2102,
+          "rowsWritten": 0,
+          "subrequests": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1"
+        },
+        "max": {
+          "memoryUsageBytes": 50281623
+        },
+        "sum": {
+          "activeTime": 1131355076,
+          "cpuTime": 55301772,
+          "duration": 144.81344972800002,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 851240,
+          "rowsWritten": 180362,
+          "subrequests": 455
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1"
+        },
+        "max": {
+          "memoryUsageBytes": 51264663
+        },
+        "sum": {
+          "activeTime": 731110885,
+          "cpuTime": 28582176,
+          "duration": 93.58219327999998,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 287518,
+          "rowsWritten": 60053,
+          "subrequests": 240
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1"
+        },
+        "max": {
+          "memoryUsageBytes": 52383442
+        },
+        "sum": {
+          "activeTime": 1897491886,
+          "cpuTime": 68788867,
+          "duration": 242.878961408,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 1097901,
+          "rowsWritten": 232736,
+          "subrequests": 715
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "namespaceId": "28db9813d0db4b618c77fc02430099de"
+        },
+        "max": {
+          "memoryUsageBytes": 27213458
+        },
+        "sum": {
+          "activeTime": 15308297,
+          "cpuTime": 979777,
+          "duration": 1.9594620159999996,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 3848,
+          "rowsWritten": 5401,
+          "subrequests": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "namespaceId": "46b63c1881064b3f966d103335912838"
+        },
+        "max": {
+          "memoryUsageBytes": 31403623
+        },
+        "sum": {
+          "activeTime": 1565528,
+          "cpuTime": 1001080,
+          "duration": 0.20038758400000004,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 6421,
+          "rowsWritten": 0,
+          "subrequests": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1"
+        },
+        "max": {
+          "memoryUsageBytes": 45509444
+        },
+        "sum": {
+          "activeTime": 416114850,
+          "cpuTime": 27963116,
+          "duration": 53.262700800000005,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 313533,
+          "rowsWritten": 62991,
+          "subrequests": 225
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "WAW",
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2"
+        },
+        "max": {
+          "memoryUsageBytes": 26951314
+        },
+        "sum": {
+          "activeTime": 3720057,
+          "cpuTime": 173161,
+          "duration": 0.476167296,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 54,
+          "rowsWritten": 162,
+          "subrequests": 0
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "namespaceId": "18bcd4a425eb4197a6bf0a8f6c935b14"
+        },
+        "max": {
+          "memoryUsageBytes": 14995577
+        },
+        "sum": {
+          "activeTime": 100485,
+          "cpuTime": 31232,
+          "duration": 0.01286208,
+          "exceededCpuErrors": 0,
+          "exceededMemoryErrors": 0,
+          "fatalInternalErrors": 0,
+          "rowsRead": 0,
+          "rowsWritten": 0,
+          "subrequests": 0
+        }
+      }
+    ],
+    "r2": [
+      {
+        "dimensions": {
+          "actionStatus": "success",
+          "actionType": "HeadBucket",
+          "storageClass": "Standard"
+        },
+        "sum": {
+          "requests": 95
+        }
+      },
+      {
+        "dimensions": {
+          "actionStatus": "success",
+          "actionType": "ListObjects",
+          "storageClass": "Standard"
+        },
+        "sum": {
+          "requests": 1140
+        }
+      },
+      {
+        "dimensions": {
+          "actionStatus": "success",
+          "actionType": "DeleteBucket",
+          "storageClass": "Standard"
+        },
+        "sum": {
+          "requests": 1
+        }
+      }
+    ],
+    "sessions": [
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "9816fd89-20a9-8dc1-bfd1-ef9969b73650",
+          "objectId": "03d8d7e0f43704c2a451b37cbead616f1793940a343dc393e72a02e831d8a707"
+        },
+        "sum": {
+          "cpuTime": 431042,
+          "duration": 1.651383936,
+          "rowsRead": 6719,
+          "rowsWritten": 1179
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "4b922746-9dbb-8047-9f48-d300622b76c3",
+          "objectId": "51d433d52e0e0aec93e50d11e8886a44542318969ca17b32123a6292ed807eb0"
+        },
+        "sum": {
+          "cpuTime": 431950,
+          "duration": 1.310142848,
+          "rowsRead": 6721,
+          "rowsWritten": 1179
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "a3fd9630-2df9-871c-b981-9bef2c2f3dfb",
+          "objectId": "983f08139e3e9092ac292894b0f5197aa75cf3cbeb50f194a97ad3a7909b928b"
+        },
+        "sum": {
+          "cpuTime": 549021,
+          "duration": 1.718179584,
+          "rowsRead": 6721,
+          "rowsWritten": 1179
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "dfd8eb12-ec89-84b8-a60e-1cba5c247b4f",
+          "objectId": "a30b665217aef03b1d01b8c7a1dbc533b5a5dcbc97fcee3eb77eff151ccc004f"
+        },
+        "sum": {
+          "cpuTime": 379785,
+          "duration": 0.858639488,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "c86d7816-dedd-8139-ab14-40166ee6fabf",
+          "objectId": "e227b9ca47f64280ada64954f92b929f43687c0672b0db39fa3038f931e0e4a9"
+        },
+        "sum": {
+          "cpuTime": 3318023,
+          "duration": 3.264965632,
+          "rowsRead": 31383,
+          "rowsWritten": 6983
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "662dbd53-d029-81ed-917c-75cb969f9e67",
+          "objectId": "47b7133211cbc7a03f9e1990df5add5fb0e3018824eacd75c8edf66fe14aa3d6"
+        },
+        "sum": {
+          "cpuTime": 1237491,
+          "duration": 9.225268608,
+          "rowsRead": 9388,
+          "rowsWritten": 2396
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "19e0f39c-4593-8f51-8a66-2748ba7e8eae",
+          "objectId": "24577ba3b0fce356d6e287e469affc85de27fb13f6575337c39b2cfdf7d198eb"
+        },
+        "sum": {
+          "cpuTime": 587769,
+          "duration": 7.088667392,
+          "rowsRead": 6088,
+          "rowsWritten": 1145
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "41688176-a129-8e3e-88b1-75b800b179f6",
+          "objectId": "1efbc9f251eaef60b13c49b0be17e3b0efa3f4f4cf594ba2218de433887e6656"
+        },
+        "sum": {
+          "cpuTime": 711214,
+          "duration": 1.703619328,
+          "rowsRead": 12206,
+          "rowsWritten": 2165
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "c39be20c-1414-8df0-b5f6-20555d7d4b41",
+          "objectId": "6feee84d9a8c918227c0e743d2e3409ecdb4ff743ffcca1a8f0a9f6e4c550d02"
+        },
+        "sum": {
+          "cpuTime": 407071,
+          "duration": 0.917023488,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "873b4030-32de-87e1-a250-b0312060f608",
+          "objectId": "61c4072cccc52293d10bac5e8717189921dfa400120dc0431b44de7eca6cd0bf"
+        },
+        "sum": {
+          "cpuTime": 2193152,
+          "duration": 4.0905312,
+          "rowsRead": 31387,
+          "rowsWritten": 6983
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "15b463cd-3cbb-8165-b3bd-9b2997b45c61",
+          "objectId": "e438b35b19115277e5c0f059842cee414726d9369971aa71fc3cfc6ce5f1a97a"
+        },
+        "sum": {
+          "cpuTime": 399617,
+          "duration": 1.194200192,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "066b0eab-0998-88eb-9033-663b37a706b0",
+          "objectId": "8df34e048d61069ca2b2ea89bf3a8fc35538e6be62f0be2efd971676da859c82"
+        },
+        "sum": {
+          "cpuTime": 361984,
+          "duration": 1.325325056,
+          "rowsRead": 5478,
+          "rowsWritten": 887
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "8f6f6f1e-eae8-863d-ae50-3f1571c85724",
+          "objectId": "cad8daef748158e67eb97b848bdc783ad8bfb8d83700f6bad0b18ddadc6352eb"
+        },
+        "sum": {
+          "cpuTime": 326994,
+          "duration": 1.113994112,
+          "rowsRead": 5476,
+          "rowsWritten": 886
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "02c93073-a523-8227-a5c2-ac41a2a2e414",
+          "objectId": "0c28c110a175b0d46da79d719aa59cd34f43d3e722558178b4d45e407358c0ca"
+        },
+        "sum": {
+          "cpuTime": 1979726,
+          "duration": 3.36597632,
+          "rowsRead": 31385,
+          "rowsWritten": 6984
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "067f501d-bd6f-8bc7-ad01-b845c8c18e9f",
+          "objectId": "a12d8dd9966fd03b1b064db7dc567d7a0e2942efc9e3d2be11c9d84892568d68"
+        },
+        "sum": {
+          "cpuTime": 1972219,
+          "duration": 2.362534016,
+          "rowsRead": 31377,
+          "rowsWritten": 6982
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "2e101473-d1ce-8766-a511-74a836cce961",
+          "objectId": "b4a6d98605fdb0fe4b0d14995995a87f79c24aa8ef8a118fd6e2a22007a219a1"
+        },
+        "sum": {
+          "cpuTime": 705415,
+          "duration": 4.71212288,
+          "rowsRead": 7003,
+          "rowsWritten": 1308
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "6a930f58-3170-8e6f-9fc4-1bf2fd729f1a",
+          "objectId": "f56553fcfe3da6f826cc61f702415a707c49a9ff13a364ecb3cf8af41a174e7b"
+        },
+        "sum": {
+          "cpuTime": 1844347,
+          "duration": 2.802032896,
+          "rowsRead": 31381,
+          "rowsWritten": 6983
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "a5f834c2-c4e0-83c4-9595-7c0861c1b14c",
+          "objectId": "77519b9b172f93b3e8ab07790ce9cc7e2873c9951c397dae5925ad1b3716dc85"
+        },
+        "sum": {
+          "cpuTime": 1843859,
+          "duration": 4.565842048,
+          "rowsRead": 31385,
+          "rowsWritten": 6983
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "1b047bd8-69f2-84c0-a8cd-ed9a061db1be",
+          "objectId": "70c8c9116365d6c9e78b54fe57c564871ca82cd10f5f52b4fc94c848a418f9f3"
+        },
+        "sum": {
+          "cpuTime": 332088,
+          "duration": 1.338370432,
+          "rowsRead": 5474,
+          "rowsWritten": 886
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "dfa096b5-d8cb-8a18-bb5b-39779e07e3c4",
+          "objectId": "a6172c63082ebb5de71fba3427d5886f06236db186dc022ff3066a75b428acbc"
+        },
+        "sum": {
+          "cpuTime": 512543,
+          "duration": 4.79687296,
+          "rowsRead": 7085,
+          "rowsWritten": 1343
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "20cfefea-1769-85f2-a239-7c82b31c524b",
+          "objectId": "49ec0ff77059df552bb45d93177e04de2f18f0fd969f7b25fb31e969c4ab259f"
+        },
+        "sum": {
+          "cpuTime": 1186467,
+          "duration": 2.289681408,
+          "rowsRead": 12229,
+          "rowsWritten": 2167
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "af86bc26-b395-8ccf-8448-13dbee40fbe0",
+          "objectId": "cda916aa911755f962b4c790f6675b57b44da1562ecec3b3ea26c8fe9da71b63"
+        },
+        "sum": {
+          "cpuTime": 819692,
+          "duration": 1.06541248,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "388401c1-9ae0-8d7d-bb63-eae8249f5319",
+          "objectId": "f8b47f737a951a701d86731932bacde4cb02350faee084c44afa39312afcb2b2"
+        },
+        "sum": {
+          "cpuTime": 2111196,
+          "duration": 2.936739072,
+          "rowsRead": 31377,
+          "rowsWritten": 6981
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "037f7f5e-d7e5-8cd2-93e8-95d27b938906",
+          "objectId": "4a40c8bfaa9f5593b65a439243916f759cfe1b963c52f6a19692488f85d4fa69"
+        },
+        "sum": {
+          "cpuTime": 2102850,
+          "duration": 8.02004992,
+          "rowsRead": 31497,
+          "rowsWritten": 7010
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "99890e16-cd34-8548-9ff4-d3467855bd13",
+          "objectId": "952c615d3f55fd0879f0a0e01eb5b13e6c4b0dfe1d414e7adfddba8e8e6a5483"
+        },
+        "sum": {
+          "cpuTime": 1964944,
+          "duration": 2.41434176,
+          "rowsRead": 31375,
+          "rowsWritten": 6982
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "dc99edbe-5cda-8dba-8d1f-d5ee77cbfed3",
+          "objectId": "2aeb685574dce133b134a02869ce436efc157cbbd89d953e3bc5852a98a77f8e"
+        },
+        "sum": {
+          "cpuTime": 543657,
+          "duration": 1.26843072,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "b01d3645-5968-885e-9d9c-cf4b13f04f43",
+          "objectId": "e00def5396b811572f8a3ee9b08049652cd31f320b56df0213886f929716e85f"
+        },
+        "sum": {
+          "cpuTime": 630701,
+          "duration": 0.86608192,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "75d14fcf-bf76-86bc-a74a-df467051b775",
+          "objectId": "b680d1da59d4c0e67e266c40c75ada45a3fd47462ba13f40e307a8376f543e1f"
+        },
+        "sum": {
+          "cpuTime": 2563906,
+          "duration": 3.075967488,
+          "rowsRead": 31381,
+          "rowsWritten": 6983
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "b8f94b02-f1f8-8480-947d-a0682a4aa55d",
+          "objectId": "57e374d29f3e3b0a165b7c4c4314c71c777ff0f0bb1c93d783ffff897a20b6d2"
+        },
+        "sum": {
+          "cpuTime": 647830,
+          "duration": 0.980724352,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "01509813-c84f-8cd0-bf86-6cd779b68cae",
+          "objectId": "27fc063262c20b8a96301b0b6d4834e44695b30f33a19b2578bcc9869d0cd572"
+        },
+        "sum": {
+          "cpuTime": 774836,
+          "duration": 2.381569792,
+          "rowsRead": 5529,
+          "rowsWritten": 909
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "a88a5b12-5611-8b50-9067-f941d0ff7d20",
+          "objectId": "c66eb6b26ddc86260cb28ad7109dd73a84b38b81b8e6690e1e596cef2e60d252"
+        },
+        "sum": {
+          "cpuTime": 753660,
+          "duration": 1.563266048,
+          "rowsRead": 6721,
+          "rowsWritten": 1179
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "63b17edc-ff6a-8b5a-9879-a32764432b97",
+          "objectId": "b9170ae63e8a2e7abc0444496a438b5ce4464e5bc1cc5337888ab28e18b4868c"
+        },
+        "sum": {
+          "cpuTime": 672092,
+          "duration": 2.203305472,
+          "rowsRead": 6768,
+          "rowsWritten": 1199
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "5f494df2-3e54-872e-8297-b2da14cb1430",
+          "objectId": "e8e2a0de9102944b1a03d256242f5afc9365b10b03be9d7b8fc6af713c70376a"
+        },
+        "sum": {
+          "cpuTime": 1784480,
+          "duration": 2.390400256,
+          "rowsRead": 31377,
+          "rowsWritten": 6982
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "3475964a-1f39-8b7e-b77c-92aa58264683",
+          "objectId": "8b22b319d7b237f215d615849e2faa41034c4dd222dab61a8110c902a2bd37fc"
+        },
+        "sum": {
+          "cpuTime": 642019,
+          "duration": 1.15226752,
+          "rowsRead": 5476,
+          "rowsWritten": 886
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "9e28cf61-57b2-8cc5-b042-a0e8651e1563",
+          "objectId": "45e423fe55e3f4e377ab584a229569176e40b6be417dbd6e625c61f880d6597e"
+        },
+        "sum": {
+          "cpuTime": 3552342,
+          "duration": 7.150225792,
+          "rowsRead": 31405,
+          "rowsWritten": 6989
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "7db991db-76e9-8fb7-8010-f6d71f4aa41e",
+          "objectId": "745fa86f3b20b4e49175f7b2ef4375a5cf35e3dad5df08b26e23db1caf1c61cd"
+        },
+        "sum": {
+          "cpuTime": 1739545,
+          "duration": 4.139785728,
+          "rowsRead": 31436,
+          "rowsWritten": 7010
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "ddb9f088-f72f-88e8-a8ea-8d7550429b4c",
+          "objectId": "8b03ce93fa70b33f1a3123f17c529f65b47baa75ead883eecaca572a0e857dc2"
+        },
+        "sum": {
+          "cpuTime": 1872464,
+          "duration": 5.758493952,
+          "rowsRead": 31397,
+          "rowsWritten": 6987
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "790efe10-39d1-856e-bd5c-1c9b3447a42d",
+          "objectId": "062d46d24c6bae77a91ad1ea8e7b992b60ba36793bf930f03ded6b85ec404dc3"
+        },
+        "sum": {
+          "cpuTime": 749295,
+          "duration": 0.963423872,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "50ee6b5a-b25f-88ca-995c-355d435bfbf3",
+          "objectId": "e349ece1c358e7652f40c319721fe687b6e77c2371bb8a0a05718d99f24684ff"
+        },
+        "sum": {
+          "cpuTime": 351586,
+          "duration": 4.019510528,
+          "rowsRead": 5504,
+          "rowsWritten": 895
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "e34a56f0-4ebd-8fee-bb21-dd228c786140",
+          "objectId": "f21dc1dc32089b6c89c36d748ed531cfbd08c529dfd56d28b66c0ed49ce216a5"
+        },
+        "sum": {
+          "cpuTime": 3390289,
+          "duration": 4.964297344,
+          "rowsRead": 31444,
+          "rowsWritten": 7013
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "d7e04e55-b4db-86ea-94ca-e532babc9c09",
+          "objectId": "4244d058182206f48cee6535b955c3182ff68b399753b7b55e0d969841096364"
+        },
+        "sum": {
+          "cpuTime": 498421,
+          "duration": 1.382702848,
+          "rowsRead": 5480,
+          "rowsWritten": 887
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "86bf0c2a-b3cd-8128-8e53-3f021622ae3e",
+          "objectId": "2318c9c8b49ab21298418a1588ddc67af38abd2a274760a8d9e0af14ae344f6b"
+        },
+        "sum": {
+          "cpuTime": 616534,
+          "duration": 1.042018432,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "49127803-4694-8d09-a7e7-efa07e06dda2",
+          "objectId": "78a348cb6721f2436a4a795c6b6d08e8c1c55949a9f80079c27ffe035ab27f70"
+        },
+        "sum": {
+          "cpuTime": 388215,
+          "duration": 0.865732224,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "f4022e5e-552c-8da1-a2f2-199c56d93103",
+          "objectId": "53ce649cbb9df4213c44028734e079346cd55cc2d8d32cf94146eb50b37e37ad"
+        },
+        "sum": {
+          "cpuTime": 369782,
+          "duration": 2.165966848,
+          "rowsRead": 5486,
+          "rowsWritten": 892
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "709b9274-c9f1-8187-9312-428f03b6f430",
+          "objectId": "2d00919f6924d072d44692c696b06b9a5642c31bc877cb04ab50731f6183a9ee"
+        },
+        "sum": {
+          "cpuTime": 553463,
+          "duration": 3.04224512,
+          "rowsRead": 5490,
+          "rowsWritten": 891
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "91e3afeb-c4e8-8b82-be14-925650bfcfd1",
+          "objectId": "e8c8c9a1012a611727141a3994a7327f3026410b2113069b78bcd58400c100a2"
+        },
+        "sum": {
+          "cpuTime": 429324,
+          "duration": 1.238408192,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "868d72ae-ef9d-8c71-b285-33918c0f8114",
+          "objectId": "06772296bb87ec89401602a1903d225522ec368a726d9cbaf74fc64591b0c015"
+        },
+        "sum": {
+          "cpuTime": 449883,
+          "duration": 0.84592512,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "ff88b493-52ae-8dc8-b3d6-6492f62555b0",
+          "objectId": "9c36318488a0deb5439c76746c4b8d0390f096527480f8d34ce470be46b14284"
+        },
+        "sum": {
+          "cpuTime": 3042664,
+          "duration": 2.096279936,
+          "rowsRead": 31375,
+          "rowsWritten": 6982
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "769964e8-6f90-8cbc-9bab-72f536f54600",
+          "objectId": "f3b23827c1bf18871accb6d10e89059de25213ad2c9bba039c4894ea2748d75a"
+        },
+        "sum": {
+          "cpuTime": 1952290,
+          "duration": 5.051481088,
+          "rowsRead": 32413,
+          "rowsWritten": 7228
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "36673b28-7499-88cc-b5d5-2f127e764b3f",
+          "objectId": "ca74fe32811cc3d9c1a05832b0496c3ef612c8ee9fac5d0e6bc4b9d78a7bbfd3"
+        },
+        "sum": {
+          "cpuTime": 936798,
+          "duration": 12.656506367999999,
+          "rowsRead": 9266,
+          "rowsWritten": 2182
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "b64e87d9-29d4-804c-81a6-1ac539449a52",
+          "objectId": "df8152bc9818bc5a7780cdad434217ce7a3a11ca9d0f1ea43806e0153e0ade82"
+        },
+        "sum": {
+          "cpuTime": 615977,
+          "duration": 1.65419456,
+          "rowsRead": 6719,
+          "rowsWritten": 1179
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "c7db2dc9-0966-8777-8eaa-db0bd28792fd",
+          "objectId": "ff42d32aeb65671c58cbd79d7ac9a8544e510e697aa6bd7eecc522268397c242"
+        },
+        "sum": {
+          "cpuTime": 455034,
+          "duration": 1.110092928,
+          "rowsRead": 5478,
+          "rowsWritten": 888
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "ac02d3e3-9f0f-8672-b66c-322f6252d19f",
+          "objectId": "c60f24e27e761ac4b004207cb21bfd739e7feaef2cee1a5cf56cac1cf1655b0c"
+        },
+        "sum": {
+          "cpuTime": 373511,
+          "duration": 0.760837632,
+          "rowsRead": 6711,
+          "rowsWritten": 1177
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "6515bead-6723-8a25-8359-7d5a3e609c85",
+          "objectId": "ec0c4cf65041a4b58a5364926bdcb2b8dde82d094ce0e562188a8fbeff99216e"
+        },
+        "sum": {
+          "cpuTime": 804178,
+          "duration": 5.807370368,
+          "rowsRead": 8952,
+          "rowsWritten": 2063
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "cbc90ad5-9c0d-80ee-9d7c-c91690a470f1",
+          "objectId": "399bb4fa68dd00dc729f416088a163ed75d5972d4e67391b12234512c7fed47d"
+        },
+        "sum": {
+          "cpuTime": 370406,
+          "duration": 4.341422848,
+          "rowsRead": 5498,
+          "rowsWritten": 893
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "5ea80a3a-3fea-8129-ad8a-c124d9ccabdc",
+          "objectId": "4cc1934cbc00976d950a6391098a1515227bf2510ce9e8afb23a9ec24dc1e004"
+        },
+        "sum": {
+          "cpuTime": 362209,
+          "duration": 1.226766336,
+          "rowsRead": 5474,
+          "rowsWritten": 886
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "df339cd6-9f7b-8ac7-9637-51a81fead1ac",
+          "objectId": "8efbf09e58a96f9612ce0194ba5ebc48c439febe6a848121d7853a1702c42ac1"
+        },
+        "sum": {
+          "cpuTime": 477673,
+          "duration": 2.038478464,
+          "rowsRead": 5488,
+          "rowsWritten": 892
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "4a4a9695-6d46-8492-a7a4-5018bbea6b87",
+          "objectId": "ff366bc95348679a138eb123e4825cc35d27d20e410e54c98629d8c430abcc61"
+        },
+        "sum": {
+          "cpuTime": 1579758,
+          "duration": 5.055927808,
+          "rowsRead": 31391,
+          "rowsWritten": 6986
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "1184cc43-266c-89a2-b474-d1f16876eca5",
+          "objectId": "3e7f5b628d4c48a120b38f8a725d9aa09f01686ae21439f0a2b00778a77b37e0"
+        },
+        "sum": {
+          "cpuTime": 785039,
+          "duration": 3.876921088,
+          "rowsRead": 12247,
+          "rowsWritten": 2170
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "237eaf40-f737-8ddb-a988-f1d2503d90ae",
+          "objectId": "7f1b6619e6a7578883e0d0b90673c4fcf8a004dfda540e0b6304adb70210b7cc"
+        },
+        "sum": {
+          "cpuTime": 394003,
+          "duration": 1.0999104,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "cad70a83-e7d2-8b4c-ae55-4757d0716d23",
+          "objectId": "35c61301643ef1d97b244008cd179ba551f5b4de29de8be97262179aeab625e8"
+        },
+        "sum": {
+          "cpuTime": 787134,
+          "duration": 1.752742784,
+          "rowsRead": 6721,
+          "rowsWritten": 1179
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "26e32eff-2a73-84e1-a872-39dc2dc43096",
+          "objectId": "f6b588c6683da5b6ab7849afff6e7385cc65c4dc6356e7796fada856dba5f642"
+        },
+        "sum": {
+          "cpuTime": 1092617,
+          "duration": 4.882845568,
+          "rowsRead": 6962,
+          "rowsWritten": 1289
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "23151c36-c2b3-8a74-8a8e-aa2f98bacdef",
+          "objectId": "7dae55738bd01b0d5cfe4f66dec5a3de9dc9c2530819ae0ec5c6276254b806bb"
+        },
+        "sum": {
+          "cpuTime": 402884,
+          "duration": 1.256545536,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "bf8f13f9-53a0-8fa8-b627-a2f5ec4f1d0f",
+          "objectId": "d3f6a3ce6a224532e8ac0d303e4c789015aac707aed58d7d190423fcdec925be"
+        },
+        "sum": {
+          "cpuTime": 440006,
+          "duration": 0.964470016,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "843da84d-88d4-8e51-88cd-8f6402f563f4",
+          "objectId": "5bfaf8d75b8068efda3da6284efb1f7993148723d0f858f64d8709fe1c02947a"
+        },
+        "sum": {
+          "cpuTime": 293939,
+          "duration": 0.951813376,
+          "rowsRead": 5474,
+          "rowsWritten": 886
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "11be4416-ff37-88e8-9d48-f5125bc335d9",
+          "objectId": "b42d3482a65744f82e6e4440f8e009ba6c8d3263e4055a14b3e01d048ad03ded"
+        },
+        "sum": {
+          "cpuTime": 332654,
+          "duration": 1.585679488,
+          "rowsRead": 5501,
+          "rowsWritten": 895
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "3fe4954f-92da-80e8-a72f-44a2b0d57c02",
+          "objectId": "6ce3cda6d192bbba80c9d833538788dd42a6c4dcd28521ea636397d2438fb60a"
+        },
+        "sum": {
+          "cpuTime": 278748,
+          "duration": 1.66950912,
+          "rowsRead": 5482,
+          "rowsWritten": 891
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "2c1105ed-da88-8816-9a13-c54f7bfb389a",
+          "objectId": "019b2cbbeab0bede7c80bf6378ced39d766b5f3ade76fe2229001d1d37d046fd"
+        },
+        "sum": {
+          "cpuTime": 2682799,
+          "duration": 2.944463488,
+          "rowsRead": 31381,
+          "rowsWritten": 6983
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "404487b9-fbc2-8333-8f19-66f898dfeadc",
+          "objectId": "74209394c98e0bf3ff9338c33860be84e349ef24f2939045a247c349a0693528"
+        },
+        "sum": {
+          "cpuTime": 338048,
+          "duration": 1.552310656,
+          "rowsRead": 5482,
+          "rowsWritten": 889
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "5f776a48-f5c6-828a-86ff-03ff8aec9e23",
+          "objectId": "3de6703b4641a08fcb9afb60bee8f22436750441e833dd01b453b1c5786807bc"
+        },
+        "sum": {
+          "cpuTime": 456850,
+          "duration": 1.678709248,
+          "rowsRead": 5482,
+          "rowsWritten": 889
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "f24b5012-da6c-8ec8-b964-164259db1e73",
+          "objectId": "53017dfb26c70a58f12159ac32638eb980f9edcd1c124f17a5142cee78c483aa"
+        },
+        "sum": {
+          "cpuTime": 432412,
+          "duration": 1.016044288,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "da7ad043-d6b4-8517-af84-c0e2c92614da",
+          "objectId": "f439b36a7d3acf02e6b8483080cd7d6e29bf72b7e9fdf21bf52c698aba4029bf"
+        },
+        "sum": {
+          "cpuTime": 439910,
+          "duration": 1.080412672,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "b4c58c6f-1cc7-881c-acc0-a56787c427fa",
+          "objectId": "04d5bb15407d14ced5ce42c22f778841fe4498650a1c4b084eef043dc757a52b"
+        },
+        "sum": {
+          "cpuTime": 421150,
+          "duration": 1.709541888,
+          "rowsRead": 5523,
+          "rowsWritten": 906
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "18c2401d-0f3d-81dc-a256-15e8079fe3f2",
+          "objectId": "9c2c55d3cb696a26bcb0e0b2f8fe1dd5e036457bd86c8711c53b0f4a9ffd5b38"
+        },
+        "sum": {
+          "cpuTime": 422207,
+          "duration": 1.024073856,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "ef82cd07-ab3b-8861-9d5f-0b9611ed2c6c",
+          "objectId": "bdc936a3bc680dd5955269f31c5aed06090ab6efcabf99a3124234171a9d206c"
+        },
+        "sum": {
+          "cpuTime": 452019,
+          "duration": 1.15738112,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "008c08bd-8579-826f-bc58-1b42d335e3a4",
+          "objectId": "e1470f43a285de7a157f837acee9056dd9884f092d4efc8f01bb5bfeca4ba089"
+        },
+        "sum": {
+          "cpuTime": 825850,
+          "duration": 5.984020352,
+          "rowsRead": 12714,
+          "rowsWritten": 2359
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "4b278200-9d42-869f-ac95-90b48c50a556",
+          "objectId": "d6d5b85b6a98e94633f706e95080b28c1bc85eeaaf0a948cfbc326f9ebf33745"
+        },
+        "sum": {
+          "cpuTime": 2590859,
+          "duration": 2.088085248,
+          "rowsRead": 31375,
+          "rowsWritten": 6982
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "88c3056c-1e9b-8517-95ce-618336d8c7c8",
+          "objectId": "ac05866dfb9183c2715b8d46ab658fed19b9622da1deb755fe2c8eb4fec89f27"
+        },
+        "sum": {
+          "cpuTime": 993086,
+          "duration": 6.791008768,
+          "rowsRead": 8402,
+          "rowsWritten": 2021
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "0ffb7ec6-ae0b-8d3a-afea-d6a2d79ab9b6",
+          "objectId": "b852f4f3ff67226b741dbef417ce9fedffd4521013c6ff5e6f7de994e803d34d"
+        },
+        "sum": {
+          "cpuTime": 501433,
+          "duration": 14.901191552,
+          "rowsRead": 5960,
+          "rowsWritten": 918
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "8a50fe97-1834-8ce0-a204-13351e145cf4",
+          "objectId": "07ee211d7b569f2aed44c4a44e6cddd4debc0dcb098a33d2f5bb0e647f3995b6"
+        },
+        "sum": {
+          "cpuTime": 1858439,
+          "duration": 2.514194048,
+          "rowsRead": 31375,
+          "rowsWritten": 6982
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "2db3f4e2-4f6c-8ce4-99c4-c7de024d8817",
+          "objectId": "34379d82e00cd8dc577af47bd347ac4efcab52ef08f3a9a9e88d48c7934a577e"
+        },
+        "sum": {
+          "cpuTime": 325640,
+          "duration": 1.717677824,
+          "rowsRead": 5478,
+          "rowsWritten": 887
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "7facbdad-d455-8c15-8289-c89f02104257",
+          "objectId": "dc9877711cbd12ed0144b80966226b7fb27af8954e0709be029e7aced51c4aa7"
+        },
+        "sum": {
+          "cpuTime": 563496,
+          "duration": 1.099687296,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "d181fafa-a8d2-8b44-87cc-4a210a0fff03",
+          "objectId": "52b372f97112ca4d5ebae2f6c8dc1f0a256b5f787f7c4e3b1456d7d04d7756fe"
+        },
+        "sum": {
+          "cpuTime": 342097,
+          "duration": 1.799927424,
+          "rowsRead": 5482,
+          "rowsWritten": 889
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "51aac8d1-dee4-840d-a78e-a98371319c2e",
+          "objectId": "68251aee00b11d2d116cbae1fc8e30cf18af07aaa7e35c0bc5590e0901b5a615"
+        },
+        "sum": {
+          "cpuTime": 1910177,
+          "duration": 8.32681472,
+          "rowsRead": 31497,
+          "rowsWritten": 7010
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "933ed0f1-d1a6-8bd7-bcc4-45f07135877e",
+          "objectId": "c85341753f517bf94aa41114f50865a6e5ae8e996e8a1e06a50fb965ff67fd3c"
+        },
+        "sum": {
+          "cpuTime": 708665,
+          "duration": 1.965824768,
+          "rowsRead": 5480,
+          "rowsWritten": 887
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "e7c9d0f5-73fc-8a0f-982f-4850bdc26e95",
+          "objectId": "cbb9f5b8d381cf1cfec98f5efde232fccd4152badd5176c2c2cdca8d55c06fbc"
+        },
+        "sum": {
+          "cpuTime": 365627,
+          "duration": 1.921096064,
+          "rowsRead": 5478,
+          "rowsWritten": 887
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "8c1f2750-18dd-8602-bdec-9aeb0517889b",
+          "objectId": "bf7df6bb2e036a0b4211330d9deab1c81eb20f34bb6c1591eb8217182cbfc297"
+        },
+        "sum": {
+          "cpuTime": 1843848,
+          "duration": 2.398459136,
+          "rowsRead": 31377,
+          "rowsWritten": 6982
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "3a80409f-9389-8fce-9080-77d6853fb78c",
+          "objectId": "8794c0b13bf96b5f20a5f68814262a8bf4000b4beb1477a298a384dd1583dd37"
+        },
+        "sum": {
+          "cpuTime": 1822483,
+          "duration": 2.806848,
+          "rowsRead": 31422,
+          "rowsWritten": 7002
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "749c595f-b470-80c1-80c5-79bc66d94283",
+          "objectId": "217d5481ebb074debc022ab7aa87e4d7ecc77ee08762b47a7b6a4000cd4ceafb"
+        },
+        "sum": {
+          "cpuTime": 775249,
+          "duration": 1.181043456,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "a54da74f-b850-8389-81fb-d33825e82fb8",
+          "objectId": "2ed2b41f72b0f82accda67ba85403c3c223fb8930bfe3e7e58f801b81e08ccf4"
+        },
+        "sum": {
+          "cpuTime": 107978,
+          "duration": 0.410772736,
+          "rowsRead": 1698,
+          "rowsWritten": 195
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "92f80ea2-fb57-8ba6-961c-251e9c2d2d2e",
+          "objectId": "72625034b7dd8e6903bc81449a992e73803fdb3379d6c0963f9e33686be915ed"
+        },
+        "sum": {
+          "cpuTime": 173105,
+          "duration": 1.026020864,
+          "rowsRead": 5478,
+          "rowsWritten": 888
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "2633c74d-87ad-80b2-8c92-a5a77f4828d1",
+          "objectId": "8c4b2a33bc644e46ee687e648f354ee04d50b8feb73ecfc43fdf86b33f378ddf"
+        },
+        "sum": {
+          "cpuTime": 1206929,
+          "duration": 5.784559872,
+          "rowsRead": 8525,
+          "rowsWritten": 1924
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "5166167a-9e61-88c1-b000-a54e029c79fc",
+          "objectId": "7900f98c9941f58706e2e5aabaf8ad5410468a730093e1221bf930af86efa2be"
+        },
+        "sum": {
+          "cpuTime": 325355,
+          "duration": 1.188037888,
+          "rowsRead": 5474,
+          "rowsWritten": 886
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "490457b8-b445-8a3d-b7ec-572e413abd6e",
+          "objectId": "717fce2beb3562caef45e182a2b1134e23f5e5c625742db988dc19faaf78e023"
+        },
+        "sum": {
+          "cpuTime": 2991423,
+          "duration": 3.178768256,
+          "rowsRead": 31385,
+          "rowsWritten": 6983
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "d3103713-b313-880f-86ae-0e85da16768e",
+          "objectId": "09948fa06a9595c6d19cd5f6c6b71463317512d3d37eca3aa975d87ae805b9b1"
+        },
+        "sum": {
+          "cpuTime": 368943,
+          "duration": 5.269726464,
+          "rowsRead": 5504,
+          "rowsWritten": 896
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "3d96c009-b122-86ee-92d4-db198c338fdf",
+          "objectId": "7e354836f7b5e042e8e543f0de69f5a252088dda22b1e5af12cf93ed5c33b3ea"
+        },
+        "sum": {
+          "cpuTime": 1853134,
+          "duration": 3.112496896,
+          "rowsRead": 31381,
+          "rowsWritten": 6983
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "180a6e4c-3cd8-8d6b-9659-180993b90674",
+          "objectId": "dca5ceb4af6e61257cf789af81a68767fd0051f21436442920d3fd5bdbe369d9"
+        },
+        "sum": {
+          "cpuTime": 2109816,
+          "duration": 4.937125376,
+          "rowsRead": 31401,
+          "rowsWritten": 6986
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "0331d4e6-af82-8036-b7ae-211b72e69a7e",
+          "objectId": "1d5df0947970e144f8cedf69e704ae0bf6203cad7abf8842063a0a83eafada25"
+        },
+        "sum": {
+          "cpuTime": 465551,
+          "duration": 1.818518912,
+          "rowsRead": 6721,
+          "rowsWritten": 1179
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "e4b82cec-26c6-8ba5-af05-f1dc5c90f795",
+          "objectId": "4f839579882207fc05a7ba5dfc98bfc74da2bdddc8e518ca078ab7a586211dcd"
+        },
+        "sum": {
+          "cpuTime": 605585,
+          "duration": 1.405880576,
+          "rowsRead": 5480,
+          "rowsWritten": 887
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "c7645888-431d-8010-b857-014bb0e0b5f0",
+          "objectId": "6cfaa3d5e241f22a44c0f213e9de35ed801be55cb044dd8ed52da7b0df53bfe2"
+        },
+        "sum": {
+          "cpuTime": 716649,
+          "duration": 3.797708288,
+          "rowsRead": 12244,
+          "rowsWritten": 2168
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "d53ba52a-fdce-85dd-8e2a-5274bcc50ed1",
+          "objectId": "7f8e085c2e076026e7b55a78e90f14046479c498f9238e73dc4b76cfb911dffd"
+        },
+        "sum": {
+          "cpuTime": 424596,
+          "duration": 2.007655296,
+          "rowsRead": 6723,
+          "rowsWritten": 1180
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "f9ffca40-a498-8c5e-a14f-ca7de2aca39d",
+          "objectId": "bdee9b069485f6c65fc0ff07c9aef2160cfa8e53a5ffe1aa62bab7d406859642"
+        },
+        "sum": {
+          "cpuTime": 586483,
+          "duration": 1.025933696,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "17742436-b4ba-81fd-a434-714afb21da4e",
+          "objectId": "09ce7c11aeba543fd5e0cd8891f5cbcac807523cd70a95b072f2ac113e1b0f66"
+        },
+        "sum": {
+          "cpuTime": 399364,
+          "duration": 3.32898624,
+          "rowsRead": 5490,
+          "rowsWritten": 890
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "94601f1f-67cd-8dc7-88b6-3d9e93384d90",
+          "objectId": "dd04d59b1ddf147bc1b20761a32edbd4a69f0488d14630e86e20348eab6139f0"
+        },
+        "sum": {
+          "cpuTime": 323652,
+          "duration": 1.3242464,
+          "rowsRead": 5480,
+          "rowsWritten": 889
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "2097b348-85a7-899a-b778-652f82f02db5",
+          "objectId": "8f9545483c7645848b78071d6181b4bb70d60aa4492d09cd56a7c5a721c448b8"
+        },
+        "sum": {
+          "cpuTime": 1732741,
+          "duration": 2.501429504,
+          "rowsRead": 31375,
+          "rowsWritten": 6982
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "29c6193a-49b1-842e-b77e-92ac4c620172",
+          "objectId": "5748effe8c0d012a9040d2f794788b6347dc41718ed08ffe4080181d434284a9"
+        },
+        "sum": {
+          "cpuTime": 325626,
+          "duration": 1.327083776,
+          "rowsRead": 5476,
+          "rowsWritten": 886
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "6ead273d-5c37-822c-8019-5ea83bcc6e7f",
+          "objectId": "1bc44fee8e3fb40af2e319cc67d2e33e762c27ca7d5f8430d0106c920fa48f7f"
+        },
+        "sum": {
+          "cpuTime": 1970193,
+          "duration": 4.988552064,
+          "rowsRead": 31399,
+          "rowsWritten": 6986
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "d3c92b1f-9f9b-864e-8f59-452d7e0ceaba",
+          "objectId": "ddc74d3ad10977b41be1f5b33f9a9427363c2f6c275988bbe502aaca59b08aeb"
+        },
+        "sum": {
+          "cpuTime": 2550327,
+          "duration": 2.136715008,
+          "rowsRead": 31375,
+          "rowsWritten": 6982
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "5c45a02b-96e2-8adb-b8c6-711303610a38",
+          "objectId": "131362aa1d70b37982fbe4742e1115c0d28e7eea1ce29192d96f650bd7531059"
+        },
+        "sum": {
+          "cpuTime": 2985194,
+          "duration": 3.228218368,
+          "rowsRead": 31381,
+          "rowsWritten": 6983
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "0c52e47c-8120-8d63-b148-3ad487ba26fe",
+          "objectId": "3fa00d459f82424250be5535422da7e2efc5ff2291d2eb0e5a91cbbd5b362c7c"
+        },
+        "sum": {
+          "cpuTime": 641013,
+          "duration": 1.190585728,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "79652105-b327-8aed-a018-d586a135920a",
+          "objectId": "47c9b330e25c2fd702b61209f82a5feb87a800b08cc7ec885a819247e41d0d97"
+        },
+        "sum": {
+          "cpuTime": 610311,
+          "duration": 6.991308672,
+          "rowsRead": 5557,
+          "rowsWritten": 918
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "0c0f4ee2-83e9-84ea-9343-482c2bc0967e",
+          "objectId": "06babd897bd51c176d4bbb0f0c6ec29fab45e30cc5f9e16ba01df80e41d5cb8b"
+        },
+        "sum": {
+          "cpuTime": 1168430,
+          "duration": 1.479440768,
+          "rowsRead": 12200,
+          "rowsWritten": 2164
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "a794b3e1-1d5f-8c47-8e0e-05b6b2a7e928",
+          "objectId": "0b4c4152a093f04e0d86270e667f460707f87ad00afa3fc27b59dd5559caa828"
+        },
+        "sum": {
+          "cpuTime": 745936,
+          "duration": 1.336331904,
+          "rowsRead": 12202,
+          "rowsWritten": 2164
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "6130f5fc-25ea-835d-bd9c-ef7e7976a2f3",
+          "objectId": "f4e827d4bfa0e075a826e8f4d2d81e4166bce871cdd8077af7485d0f695aa535"
+        },
+        "sum": {
+          "cpuTime": 631358,
+          "duration": 1.033500032,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "71841fd7-0f81-8478-a7f2-4620fda0b769",
+          "objectId": "662c3862e6e1e00b65d202e5cf013113ae3978e4cd0e956f8745c5772df0e349"
+        },
+        "sum": {
+          "cpuTime": 383554,
+          "duration": 0.848953472,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "459c17aa-2e02-8e9d-a4d2-4383da839c98",
+          "objectId": "dcf329a1a8e9c34b665d0527aa0a67c0e4381e731fc1e12be026afab612fe1af"
+        },
+        "sum": {
+          "cpuTime": 562393,
+          "duration": 2.325889408,
+          "rowsRead": 5484,
+          "rowsWritten": 888
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "7cc63569-a794-8579-8dcd-1da8abb109a4",
+          "objectId": "5891670e04f398d977a00689f0a75a03630b9980adaf35e7bd2fa08ba1da8052"
+        },
+        "sum": {
+          "cpuTime": 406156,
+          "duration": 0.86862336,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "5d23edd5-8a73-8e8c-be78-f7dad36d3dd1",
+          "objectId": "85d749d0619ec6ec32cc18c3ca7b47ee8f2841ea41e5507530da92a37fb72ff7"
+        },
+        "sum": {
+          "cpuTime": 1738672,
+          "duration": 2.334006272,
+          "rowsRead": 31375,
+          "rowsWritten": 6982
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "4946d1df-d64f-8fad-9cb8-90de9e8de9f8",
+          "objectId": "2a72bf024a6bda5dc986c920a257a3c99fd6e2ec9c14a1d9cfbbf42d935ad1f6"
+        },
+        "sum": {
+          "cpuTime": 445313,
+          "duration": 1.089873152,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "79ba8643-a8ba-83b0-8b4e-0485bf18971a",
+          "objectId": "162901c38d9c44b41080377284348f3d24560d17ed1dcd22f5ee7c83d8dd17be"
+        },
+        "sum": {
+          "cpuTime": 2060996,
+          "duration": 5.882164992,
+          "rowsRead": 31405,
+          "rowsWritten": 6987
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "046fae29-10c4-8ba9-8d75-84e8fd9b89f6",
+          "objectId": "d55d845353e52cff99ad0798403673c39f187c51827b8b5f975bdbc61d48823a"
+        },
+        "sum": {
+          "cpuTime": 728856,
+          "duration": 7.290266752,
+          "rowsRead": 5557,
+          "rowsWritten": 918
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "4bdf2431-eed3-81a8-a7bb-86e9fca6e1d0",
+          "objectId": "dfdb967531875b6d80953966b386be6e39633d5e3a85d31a0519b5db6c14aa69"
+        },
+        "sum": {
+          "cpuTime": 499771,
+          "duration": 1.657339008,
+          "rowsRead": 6764,
+          "rowsWritten": 1198
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "e0c3d775-6a8d-86f7-b165-239d24c6a65e",
+          "objectId": "69e629569b0e900030cdb2a5a16fbd5bafbb321e418dbc4c41d379c990de9f85"
+        },
+        "sum": {
+          "cpuTime": 856266,
+          "duration": 1.221114624,
+          "rowsRead": 6758,
+          "rowsWritten": 1197
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "d1212d4b-88b0-8087-9fb8-68bce6924e0e",
+          "objectId": "75f151bf7d89fb2e7d04cdffcbb0bd368cfef0854feaba955929a9ee12608568"
+        },
+        "sum": {
+          "cpuTime": 1783608,
+          "duration": 2.388203136,
+          "rowsRead": 31377,
+          "rowsWritten": 6982
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "fda86da0-9023-8aff-9c1d-88a7db39cff2",
+          "objectId": "59d1cce0d2efbc11360d31100631f15d4f3b6ca407d976d4aabbbbe941f7a324"
+        },
+        "sum": {
+          "cpuTime": 377416,
+          "duration": 1.748532224,
+          "rowsRead": 5523,
+          "rowsWritten": 906
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "0f6c5d9a-2a5f-8a41-8359-e14eaaeb91fe",
+          "objectId": "15a8524958aedbefb5a0d49581e4a9f885cb098e43230e55e55f75b933cc4db1"
+        },
+        "sum": {
+          "cpuTime": 469503,
+          "duration": 2.41706112,
+          "rowsRead": 5488,
+          "rowsWritten": 894
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "9853e2dd-ed6d-8179-b22e-40dd50ac5304",
+          "objectId": "319d02920df2a189deda6f43224e4684efbfeb8fece3202a538f2bed0a3d182e"
+        },
+        "sum": {
+          "cpuTime": 2013712,
+          "duration": 1.983639168,
+          "rowsRead": 31373,
+          "rowsWritten": 6981
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "efe906bb-ef7d-895c-92b0-593e9e20677f",
+          "objectId": "f89b1fd33886bef543f1b9658cb733377b95603c6a80b166aaed0134d54e99f3"
+        },
+        "sum": {
+          "cpuTime": 613860,
+          "duration": 1.126315776,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "b31dfeaa-efd2-88ea-9304-4ff814de526c",
+          "objectId": "c79c66c9fbe5c33026c086aa4202b3d7e307bffda0078a5a2d9be6350cb77ccf"
+        },
+        "sum": {
+          "cpuTime": 521551,
+          "duration": 1.90024896,
+          "rowsRead": 12237,
+          "rowsWritten": 2169
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "a8b3a496-57cc-89e4-8d64-3910cabf4b75",
+          "objectId": "85f3c667b89cd7193a53cf0a544786654e5f7ef2d0e2897b159a3507709543a9"
+        },
+        "sum": {
+          "cpuTime": 502454,
+          "duration": 1.11801472,
+          "rowsRead": 12225,
+          "rowsWritten": 2165
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "a1d908f0-94ac-8a3e-b1c0-2e1459e35380",
+          "objectId": "56c0bb0fd52b46961c07a6664141622c1daf5d38f64e82ab7c346c2789329325"
+        },
+        "sum": {
+          "cpuTime": 642417,
+          "duration": 1.142646528,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "8b8dfc24-d162-8a64-8889-5856e5ae0da7",
+          "objectId": "c468adf0e702707af3f124480272c338d0591a5ea1bb35806aedab1dfe70f568"
+        },
+        "sum": {
+          "cpuTime": 1816282,
+          "duration": 7.913681664,
+          "rowsRead": 31454,
+          "rowsWritten": 7010
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "26815c50-e417-895a-8cf7-5552bb7a81c3",
+          "objectId": "9d4307b3090a07f6de20b3efb1697912e0812afd90d7fb728670cfea42a90617"
+        },
+        "sum": {
+          "cpuTime": 515320,
+          "duration": 1.300296192,
+          "rowsRead": 6721,
+          "rowsWritten": 1179
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "150d0896-3df5-811e-b21a-c70de7f15e53",
+          "objectId": "f6b1eb4b23a6d206645d0d412393cbbcd702ee7ad8bdeb145bf1ed03b1341fe8"
+        },
+        "sum": {
+          "cpuTime": 743848,
+          "duration": 1.772276608,
+          "rowsRead": 6719,
+          "rowsWritten": 1179
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "4fce29d1-9b9a-860f-901f-caca110c5b29",
+          "objectId": "b62dd8afdcbdbb06275dd0f01dba2e5f13911d4445ae7e6f9fe2c602bfad1e39"
+        },
+        "sum": {
+          "cpuTime": 1922620,
+          "duration": 3.218031232,
+          "rowsRead": 31381,
+          "rowsWritten": 6983
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "17d5d60e-a227-8b0b-8f08-201856afaee7",
+          "objectId": "94f50f0ef70b73da45e1ee07e1f2acfcb88d6b6338d8b43697653215d88eed7d"
+        },
+        "sum": {
+          "cpuTime": 1742807,
+          "duration": 4.015403136,
+          "rowsRead": 31430,
+          "rowsWritten": 7004
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "3e614571-90ae-86c1-a513-f946ea6b33aa",
+          "objectId": "a80140da368df46558a9441308e0beeea41bf6d698d32a662f25ac40fab484b7"
+        },
+        "sum": {
+          "cpuTime": 403176,
+          "duration": 1.368303104,
+          "rowsRead": 5480,
+          "rowsWritten": 887
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "12df1abb-8f4d-8b44-8f77-dadc6615ad78",
+          "objectId": "875a6770163c2d8fdfbb519b10a54abc167dcf94f22690eaa02d9cf241185fb7"
+        },
+        "sum": {
+          "cpuTime": 3959269,
+          "duration": 4.253576192,
+          "rowsRead": 32411,
+          "rowsWritten": 7227
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "ae9a666a-5a3a-89cf-a440-b6fb58fe1a80",
+          "objectId": "15157e0123e80524a35567e7b53bca30c1dcfe051858b9ed7f33ad27d2c7f00e"
+        },
+        "sum": {
+          "cpuTime": 2082545,
+          "duration": 3.288573696,
+          "rowsRead": 31381,
+          "rowsWritten": 6983
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "beea936e-6cc0-8c53-957b-67092530e8d1",
+          "objectId": "0c639b9b6359dbd7fa25864875079986be26b3f3b41b0e6e9b54f9550048e235"
+        },
+        "sum": {
+          "cpuTime": 392076,
+          "duration": 1.241256192,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "07135afd-ea6a-8058-9e53-811f943c78c8",
+          "objectId": "2beb56df3fdeeae00437ef7717e8a85736324df9908381800e937231c39b1b14"
+        },
+        "sum": {
+          "cpuTime": 1761758,
+          "duration": 13.84933696,
+          "rowsRead": 10657,
+          "rowsWritten": 2702
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "4c1fbfaf-d245-81ca-b699-017291bc77c1",
+          "objectId": "b480b2c4559e017d9fc77d59d293a6c8dc53197d36bf2aef3ce037409e0ea321"
+        },
+        "sum": {
+          "cpuTime": 622256,
+          "duration": 1.125039872,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "ffdf3704-c46b-8c1a-87fa-86e62d14a3fe",
+          "objectId": "6df9927e34ee71eb463fa8552d7022358c6eb7b977ca7eb221c7af3aab9c01fd"
+        },
+        "sum": {
+          "cpuTime": 3624822,
+          "duration": 3.894224128,
+          "rowsRead": 31385,
+          "rowsWritten": 6986
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "0747f343-4ded-8692-af7d-ff301fd3de77",
+          "objectId": "e32852e087a6d836a628e0ca7e225c5a598ab4644760cc39acec684b4bfcdd81"
+        },
+        "sum": {
+          "cpuTime": 419637,
+          "duration": 1.042583296,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "6db32617-6c6c-8719-aba5-83d76f67689e",
+          "objectId": "9388a7c25ac808470932c615022f7994ac07b19a4b2bc9f10a3997502b97c48f"
+        },
+        "sum": {
+          "cpuTime": 325744,
+          "duration": 1.242563712,
+          "rowsRead": 5474,
+          "rowsWritten": 886
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "ac51d980-3ead-81b2-a726-7fb3677070cf",
+          "objectId": "37c68337913a728a8ad81d22c5d68d13830c4ac884bbc95ef6b9a9a07a4305ce"
+        },
+        "sum": {
+          "cpuTime": 1161563,
+          "duration": 1.453510656,
+          "rowsRead": 12202,
+          "rowsWritten": 2166
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "cca33e1f-f00c-8072-983b-734ad34e162f",
+          "objectId": "085fc84f1bfcd6aae033d5b0e332cb00827f55051251faec3e58daebe603fbb6"
+        },
+        "sum": {
+          "cpuTime": 2258952,
+          "duration": 3.852167936,
+          "rowsRead": 31385,
+          "rowsWritten": 6984
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "bd9a9850-bd44-8697-b67e-037594b4cad8",
+          "objectId": "78878d2f4a8d980e14c787c0deb59ba632891189916518edb9654a403c552113"
+        },
+        "sum": {
+          "cpuTime": 328925,
+          "duration": 1.642483328,
+          "rowsRead": 5486,
+          "rowsWritten": 893
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "68d0a378-2cbe-8a5f-9ffa-1664dc8fc8a8",
+          "objectId": "22aa79c46ffdc7437d5f2063d079c6d089140faa63156a666197d5e9c3a96ba5"
+        },
+        "sum": {
+          "cpuTime": 405928,
+          "duration": 1.797234048,
+          "rowsRead": 5480,
+          "rowsWritten": 887
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "66b05dd2-0e2d-8900-9842-78c02412a0e4",
+          "objectId": "7e956a2f9c879f2989a37867fe7a549714e0aed8ef603244c46c98195fe10c5b"
+        },
+        "sum": {
+          "cpuTime": 317816,
+          "duration": 1.598065536,
+          "rowsRead": 5480,
+          "rowsWritten": 887
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "5f427daa-1186-8824-bd5a-d440b1db9da5",
+          "objectId": "d134a8fe6029056d72affe5eba5bc762728e07a2194b289932359484e1f158a2"
+        },
+        "sum": {
+          "cpuTime": 804344,
+          "duration": 1.295080192,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "2b099dd4-cb1a-8215-8cf4-0607130d1e05",
+          "objectId": "73f0b8a9a2e6f32426e7ca5464992e8187965103b829960b4995e86fefbebdf7"
+        },
+        "sum": {
+          "cpuTime": 927276,
+          "duration": 1.315978752,
+          "rowsRead": 12216,
+          "rowsWritten": 2165
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "d90c422b-a817-8b48-9964-0c39dccd2ab4",
+          "objectId": "3088e323992e14b12c6146a60674767ecfe6ebbab913be1b48a13ce3d8a540eb"
+        },
+        "sum": {
+          "cpuTime": 617053,
+          "duration": 0.95932928,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "a4f563a1-bee0-82b1-ba53-fff907ce7b10",
+          "objectId": "d3a5561c26e6daa5ccfd7362d91ae326950fd1905df42ce869002322d91b8f83"
+        },
+        "sum": {
+          "cpuTime": 2579318,
+          "duration": 6.980857856,
+          "rowsRead": 35165,
+          "rowsWritten": 8493
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "c5bde88b-f5f7-8954-992d-7a23deff60ea",
+          "objectId": "aa4e19e13302e9f7fe01f3af8c53d420065c4b2ae7f2bcace1afdd1d52290609"
+        },
+        "sum": {
+          "cpuTime": 373435,
+          "duration": 1.229397376,
+          "rowsRead": 5492,
+          "rowsWritten": 887
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "d7129f4f-b053-86eb-b977-d64be095223f",
+          "objectId": "86b2f9bab68f5626124a7e2709ad30aa3b71ae9f4204e20c63e2c1439b139bd1"
+        },
+        "sum": {
+          "cpuTime": 7888827,
+          "duration": 18.23624448,
+          "rowsRead": 43229,
+          "rowsWritten": 11494
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "24ba0be1-a105-80e2-9c6e-8308e9b910ec",
+          "objectId": "c6501d68cefa524554579aae78828ad55327e7d3fdf5934ae73c6163c39175df"
+        },
+        "sum": {
+          "cpuTime": 362495,
+          "duration": 0.973184512,
+          "rowsRead": 5474,
+          "rowsWritten": 886
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "c7853b1b-0fbf-8cc8-be01-a0f147bd2398",
+          "objectId": "bed4c996414f63f5e9ce8371c675aab900d0e8e47ba4da64769596756e2c4402"
+        },
+        "sum": {
+          "cpuTime": 393475,
+          "duration": 2.060476288,
+          "rowsRead": 5529,
+          "rowsWritten": 909
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "2166942c-eb21-8f85-898b-485e3b9ebec6",
+          "objectId": "fe62d294d1570938c7d943da351ce1a843d350edbd137de24cfd8bb504fc359f"
+        },
+        "sum": {
+          "cpuTime": 1996677,
+          "duration": 3.868144512,
+          "rowsRead": 31385,
+          "rowsWritten": 6984
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "5dfd7377-ade2-8ba6-a4ec-2f3ce1cd51b8",
+          "objectId": "bebf49e727d087b2db524c4119242a674636a5cadef0503e21092f2996f83ddd"
+        },
+        "sum": {
+          "cpuTime": 618206,
+          "duration": 1.346331136,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "b7a296d1-b7d6-86d8-9b7a-7f79419555c4",
+          "objectId": "4a53857750fca8ef93b40f9ebf59abd3f2735a9ef880cab0e67d70c8aa165e01"
+        },
+        "sum": {
+          "cpuTime": 1960493,
+          "duration": 5.183682304,
+          "rowsRead": 31391,
+          "rowsWritten": 6986
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "9e08957b-c961-86a7-a8a4-d6aba7e14cf2",
+          "objectId": "98be42bc8c94b43e8a484ab8f34f81f5ec2c8cd9a6a8a26e206e04ac47f92905"
+        },
+        "sum": {
+          "cpuTime": 221943,
+          "duration": 1.38889856,
+          "rowsRead": 5482,
+          "rowsWritten": 889
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "a39c5d6e-0afe-83d0-867e-2568f9f213ec",
+          "objectId": "ff7abc1adbb1830d0902bc7753598f9650cd8a999a19c903b3a2eff3ffac87bb"
+        },
+        "sum": {
+          "cpuTime": 1957704,
+          "duration": 5.193610624,
+          "rowsRead": 32413,
+          "rowsWritten": 7228
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "f3e79f46-f328-82d8-815c-d9f810c03a96",
+          "objectId": "fdecd89ac755d2840290e6e682b6a5c2f7efe9578d1c8e2bc657f8654ec05e42"
+        },
+        "sum": {
+          "cpuTime": 414312,
+          "duration": 0.90767808,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "3d5589ab-feec-855b-be74-c1e535a918b1",
+          "objectId": "345c1134b36e802be118d7e961e99895e68904d715eb72667fc4d48132de9e6c"
+        },
+        "sum": {
+          "cpuTime": 704662,
+          "duration": 5.489473792,
+          "rowsRead": 7536,
+          "rowsWritten": 1535
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "6a30323f-84c2-8dc6-9bc9-b65a14f64577",
+          "objectId": "59b4962a5d8ba458d39ac0c2f93ffff913393c5317bd8919d6144f2caec7eeaa"
+        },
+        "sum": {
+          "cpuTime": 1789108,
+          "duration": 2.86831808,
+          "rowsRead": 31379,
+          "rowsWritten": 6983
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "550d2fe7-bf7e-8542-adbb-9c057375dd7e",
+          "objectId": "e4d65ec60da61dd45e2341aab4ac0a94a4daa07835d28ce0657b3b5392d28ae6"
+        },
+        "sum": {
+          "cpuTime": 4065409,
+          "duration": 21.154267263999998,
+          "rowsRead": 26953,
+          "rowsWritten": 9080
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "7388126a-a805-8c23-8a92-233a7870bdd7",
+          "objectId": "e8da8824bf462484dfce00d73b3c2491d48d8acbe12a255480391797cbe52782"
+        },
+        "sum": {
+          "cpuTime": 2059486,
+          "duration": 7.133186432,
+          "rowsRead": 31403,
+          "rowsWritten": 6989
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "8d8e75c1-cbc2-8b8a-a1c4-108bbe92ec39",
+          "objectId": "eaed27dfeda4fc37a46a1273f2b9dedf569317bb44e65716c5701760e04ab561"
+        },
+        "sum": {
+          "cpuTime": 2657530,
+          "duration": 2.327155584,
+          "rowsRead": 31377,
+          "rowsWritten": 6982
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "715a5f3b-90ba-87dc-990a-861a9b2bdece",
+          "objectId": "646f33ac587300fd396d8e552590a42898e76d3ca1c18a25fec7972db2951035"
+        },
+        "sum": {
+          "cpuTime": 2054565,
+          "duration": 5.273409152,
+          "rowsRead": 31405,
+          "rowsWritten": 6992
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "d0ca2a60-946d-8e3d-a976-7465253b5e49",
+          "objectId": "15bad36536ebcf14a35240c49202214e8cc6b02b33bab8c9ebb4e1629a68dff8"
+        },
+        "sum": {
+          "cpuTime": 386408,
+          "duration": 2.105856512,
+          "rowsRead": 5488,
+          "rowsWritten": 892
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "86011169-963c-8149-b9bc-10c1aaf782f8",
+          "objectId": "5a1e61d871659abcf9a501db7d13960f7fa0a812a30783a3bf43843229813fc1"
+        },
+        "sum": {
+          "cpuTime": 2103429,
+          "duration": 6.211189504,
+          "rowsRead": 31401,
+          "rowsWritten": 6988
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "80e3ff63-bdb7-8484-8853-a68d931b8a06",
+          "objectId": "5bd467924380ec240c48dcbfd904d72060f7c45872bbdc576ba806a3c02abdd3"
+        },
+        "sum": {
+          "cpuTime": 1222871,
+          "duration": 5.66011904,
+          "rowsRead": 12775,
+          "rowsWritten": 2374
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "0778cc32-feb4-82f8-b387-2fd13dcaa4bd",
+          "objectId": "797ce178b0d6845d58b2ad547727f8b453cded7717fdd2d44d035e8908fcc461"
+        },
+        "sum": {
+          "cpuTime": 633366,
+          "duration": 1.077597568,
+          "rowsRead": 5478,
+          "rowsWritten": 888
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "72ab4b87-bc21-8708-8b5a-cfc743fce1fb",
+          "objectId": "bea96e01bce4f6480345735b4af8900e2a3d612066619f75775b5314cd531b48"
+        },
+        "sum": {
+          "cpuTime": 2469462,
+          "duration": 15.327138304,
+          "rowsRead": 35562,
+          "rowsWritten": 8602
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "10730aa5-97b0-8afc-8a95-6ff246b837b6",
+          "objectId": "2af75871b6e65131b4afc5d9c43a21d1b81846064681d47aa3436f6b3c27c3f3"
+        },
+        "sum": {
+          "cpuTime": 587444,
+          "duration": 0.900158208,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "5b936697-e0ee-895b-ac2f-e6fdc98fdaea",
+          "objectId": "bbe58a5f481b0de854a13c0509884124771ac3def948ff7aaeba1d77e23edb2f"
+        },
+        "sum": {
+          "cpuTime": 435557,
+          "duration": 1.094952576,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "2eb42b6c-ee6f-8253-acd1-68c981ddacb5",
+          "objectId": "b6d988445f311cad4624785129478a596be757f172b912b6a7430db5f5115787"
+        },
+        "sum": {
+          "cpuTime": 899024,
+          "duration": 4.627739904,
+          "rowsRead": 6962,
+          "rowsWritten": 1289
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "67ae16fc-5bbc-866c-8b7b-06dfb46d14b6",
+          "objectId": "4da54cb8302a743687d563d534af7732884803e6cf1695db86787c1c03b1b304"
+        },
+        "sum": {
+          "cpuTime": 464176,
+          "duration": 1.044153472,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "d4c80b44-206d-871f-9f71-354a23546b78",
+          "objectId": "2fd1ba7fa13eee7a8db955b5f4ab9c9fc1f1cf88d8441708ea9802ddecc6d238"
+        },
+        "sum": {
+          "cpuTime": 292925,
+          "duration": 1.075878016,
+          "rowsRead": 5478,
+          "rowsWritten": 888
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "4a5f5b0e-68a7-88ca-b6cf-3ec2f3388b91",
+          "objectId": "d825cc8f86bd235aa5161f5abd89c765238b449ef9a85bf63bb08f99a6f1e136"
+        },
+        "sum": {
+          "cpuTime": 640531,
+          "duration": 1.278473984,
+          "rowsRead": 12204,
+          "rowsWritten": 2166
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "cc4f6d72-f43b-8a62-988e-aa8e40fffdd0",
+          "objectId": "d5b3d20f540e501c1763a6b31f837fe627444122b409b219f9bee86a845b5b51"
+        },
+        "sum": {
+          "cpuTime": 431320,
+          "duration": 1.094010496,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "d5538c1a-1546-89e0-9c57-33c4d481438a",
+          "objectId": "015931ad7e5bfb99ef69cfb48d4c9e1fd15075c31968bd430b3d64766e616e24"
+        },
+        "sum": {
+          "cpuTime": 3601674,
+          "duration": 3.338182912,
+          "rowsRead": 31385,
+          "rowsWritten": 6984
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "61b584b1-cf5a-834a-8388-47eee0bb1e0d",
+          "objectId": "06b8339749e3628df02f37bcbf460f5dc956b0e95578cfc8b995940324acd6c6"
+        },
+        "sum": {
+          "cpuTime": 2687055,
+          "duration": 2.124908416,
+          "rowsRead": 31375,
+          "rowsWritten": 6982
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "a4a47464-8043-8ec6-bc12-c27ab079fc90",
+          "objectId": "a1215eac8ed9b4f324644aa9cee16725df2ec4534b361cade63a21a8fe28a16c"
+        },
+        "sum": {
+          "cpuTime": 356076,
+          "duration": 1.557495424,
+          "rowsRead": 5523,
+          "rowsWritten": 908
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "5951b64d-459c-87c5-93a5-9263bde33f66",
+          "objectId": "a8afe52d180ca218b45166061566de56a0d84b37d3c02018df5a11929e8da119"
+        },
+        "sum": {
+          "cpuTime": 607711,
+          "duration": 1.781504512,
+          "rowsRead": 5480,
+          "rowsWritten": 889
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "03221db8-8cb1-8a07-958e-c455e9e752b0",
+          "objectId": "30fdf971d7d1cd1017c1bfd91688be44204719611133dba658b941d0525936fe"
+        },
+        "sum": {
+          "cpuTime": 1962971,
+          "duration": 2.728860416,
+          "rowsRead": 31379,
+          "rowsWritten": 6983
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "52d8f3fc-66cf-8c58-bd85-4587a59a1f44",
+          "objectId": "b06ba2f7d33d7aa29a5bff52e238c3f86710c6b62f177411910495b1f4b4aa68"
+        },
+        "sum": {
+          "cpuTime": 590216,
+          "duration": 1.07036608,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "fd1d5512-e599-81dc-ac42-467b4885bb53",
+          "objectId": "0a1a688004513c6253c2ed81571b39c592170a8d1a8d5305b77e6dbda70ec236"
+        },
+        "sum": {
+          "cpuTime": 1367502,
+          "duration": 5.320532352,
+          "rowsRead": 12668,
+          "rowsWritten": 2333
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "3c9919f7-13c7-8bd6-b971-d6aad22999cb",
+          "objectId": "6a2665b32e7ac736e28563ff937516d6eba540aa8444e4b702e057d6d9abc5b9"
+        },
+        "sum": {
+          "cpuTime": 730682,
+          "duration": 1.513611008,
+          "rowsRead": 12225,
+          "rowsWritten": 2165
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "3c662ae9-eb17-8dd3-bd71-96e0675fb243",
+          "objectId": "5f1931d86632692282a166c089060f34a567e266b162a57c1a1ae3148c675e42"
+        },
+        "sum": {
+          "cpuTime": 632539,
+          "duration": 1.371863296,
+          "rowsRead": 6717,
+          "rowsWritten": 1179
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "db32b84a-b214-893d-a005-e5805c80bf0d",
+          "objectId": "35c54afb40a049b4df5bf7db44dbf3a381439868b418e196055ed300a589e2ab"
+        },
+        "sum": {
+          "cpuTime": 2290055,
+          "duration": 14.560129536,
+          "rowsRead": 16169,
+          "rowsWritten": 5025
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "9bd9a678-5093-8ec7-8eee-b4501310ad2a",
+          "objectId": "3ab9c14678670547e65e3f09809e4a5045c21e4ef76325ba7d0585cb2ae4c54a"
+        },
+        "sum": {
+          "cpuTime": 404464,
+          "duration": 0.927334912,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "8fb88e5d-998d-879c-930e-fb0194acc900",
+          "objectId": "8e8cc101963ead1bba32c7eac35c956aeefe25f95ee102fdc0e583ae419d8cb4"
+        },
+        "sum": {
+          "cpuTime": 418244,
+          "duration": 1.393484416,
+          "rowsRead": 6713,
+          "rowsWritten": 1179
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "d58315b8-697f-8398-81fa-2213a5684b40",
+          "objectId": "1e63acae184b5cab718b681559f882c94b68fd7f212777e32dae9a6e41ad83b6"
+        },
+        "sum": {
+          "cpuTime": 433726,
+          "duration": 0.934802688,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "db6bacbf-8e7b-8b06-8693-6f286dcbe856",
+          "objectId": "f8c49a3f351dd984bcc2a09b0c64e702e690e58a9b8d5d81fe51b4860394e9ce"
+        },
+        "sum": {
+          "cpuTime": 1862206,
+          "duration": 3.07914432,
+          "rowsRead": 31424,
+          "rowsWritten": 7002
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "4808b788-7d29-8c48-b9a5-b6e281b0f26c",
+          "objectId": "b8fa0b7be404a9bd747fcd57aaaa20ec7dc043a0b921089ec2fcead31c2e7625"
+        },
+        "sum": {
+          "cpuTime": 3731534,
+          "duration": 3.619542528,
+          "rowsRead": 31389,
+          "rowsWritten": 6986
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "ca023778-7b6c-8704-ab7e-661de4750284",
+          "objectId": "b0ad08154262e2028431f8520bbe9f04a24825ea76900a4f79fbc3b133c174fa"
+        },
+        "sum": {
+          "cpuTime": 619756,
+          "duration": 1.880104448,
+          "rowsRead": 5480,
+          "rowsWritten": 889
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "dbd00c20-ab27-8619-bff4-23fb7b3fb9c2",
+          "objectId": "9cc23aa55746274b98f2dba379eb2f55d30557391b0027cd7169bbcc675bea01"
+        },
+        "sum": {
+          "cpuTime": 327997,
+          "duration": 0.883210496,
+          "rowsRead": 5476,
+          "rowsWritten": 886
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "efbcfff0-2a87-87e7-838a-dcf3e63ac9c8",
+          "objectId": "c451f62aa7302da25da06901774c1b0540fa589966ef0969f2caa9007e2c8fdc"
+        },
+        "sum": {
+          "cpuTime": 537645,
+          "duration": 1.398610176,
+          "rowsRead": 5480,
+          "rowsWritten": 889
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "72b0076f-d356-85b7-871f-4a34f5efa634",
+          "objectId": "b1ae80541ec790179e726e331b00fc49b5433d8a6114a6c7f65e5e2ac3eec674"
+        },
+        "sum": {
+          "cpuTime": 749269,
+          "duration": 1.863964544,
+          "rowsRead": 6762,
+          "rowsWritten": 1198
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "98405063-6f44-8e6f-a4b6-bf979da29b75",
+          "objectId": "cde69d9c8a2af44feecffa7e6e0bf69281935092a5951bef118b0ae92c3172ef"
+        },
+        "sum": {
+          "cpuTime": 364826,
+          "duration": 1.352957312,
+          "rowsRead": 5478,
+          "rowsWritten": 887
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "b506566c-698a-80ab-b97a-def848639b36",
+          "objectId": "344d9f5c912a6e17381a3369d65e65404c80b54eecd28f418e666c97fda45fba"
+        },
+        "sum": {
+          "cpuTime": 424555,
+          "duration": 0.861956992,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "fbb80eee-707e-8839-bad5-54f2cf389ccf",
+          "objectId": "d2ff5d1b6e998cbbc464497f94a3d3ccbb23fc26896d1c04548025eb24968bfb"
+        },
+        "sum": {
+          "cpuTime": 369696,
+          "duration": 0.834769792,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "7d8f48bc-9c8f-8c24-9958-75acf75a36f1",
+          "objectId": "92d82262f30a7ea8c85231585f43328fa8a2583ff7149f07c81d1e2fea109451"
+        },
+        "sum": {
+          "cpuTime": 1012731,
+          "duration": 1.327258752,
+          "rowsRead": 12202,
+          "rowsWritten": 2166
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "66668398-49bc-8bd8-9d30-ec7e1d76336b",
+          "objectId": "eca4ea3d4013f9fe9cb080437dc173c047ec880ee58293c8efdf3d08ed0fdcfb"
+        },
+        "sum": {
+          "cpuTime": 471046,
+          "duration": 1.611135744,
+          "rowsRead": 6721,
+          "rowsWritten": 1179
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "e3314611-6dd8-8837-ba19-3bdd9b39bc2e",
+          "objectId": "fd5f4c8f79e1b43bcd77ca6e03ed3351c162208fe412f61c7e195e2aea344bcc"
+        },
+        "sum": {
+          "cpuTime": 457401,
+          "duration": 1.32654592,
+          "rowsRead": 6719,
+          "rowsWritten": 1179
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "6ae4a288-5929-8efa-af23-6d0f45b87bf6",
+          "objectId": "7d7b61eedd14e8ab62a76ec24f7fe4deb2d234a726d93190b9aeed63c9e55cab"
+        },
+        "sum": {
+          "cpuTime": 397361,
+          "duration": 5.276350592,
+          "rowsRead": 5514,
+          "rowsWritten": 900
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "a678708f-4842-8e4c-9818-8664624b42af",
+          "objectId": "d60f5964c2e9cedf2121824b3b4a007f972effd2b7976e95719a3d95a535f6d4"
+        },
+        "sum": {
+          "cpuTime": 352001,
+          "duration": 5.914374912,
+          "rowsRead": 5506,
+          "rowsWritten": 897
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "41585f8c-53d9-851e-b725-032ba2b137ea",
+          "objectId": "69c0db5ec54e68ca4387fc4b455b5bc2372fe35c55afeb2c87ab42b347cbd561"
+        },
+        "sum": {
+          "cpuTime": 1610839,
+          "duration": 2.483017344,
+          "rowsRead": 31381,
+          "rowsWritten": 6988
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "18a34c38-d6a7-8c41-a625-148459a1d77f",
+          "objectId": "107aaa1c24d9de98fa77b54c7f49bd9bb53d7ee7a3e4075e37cd6fc175d2356e"
+        },
+        "sum": {
+          "cpuTime": 779266,
+          "duration": 1.705004672,
+          "rowsRead": 12222,
+          "rowsWritten": 2166
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "eb5a6de5-9acc-85f8-82d9-9b410e1dd2ad",
+          "objectId": "f2c85b3fa57fe068707846ac7df2ac2638cab895b5d10f25deb1b309b9483122"
+        },
+        "sum": {
+          "cpuTime": 472448,
+          "duration": 1.113293824,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "0c62c015-28ae-8002-98cb-b914b1605906",
+          "objectId": "dff138a9236fe78c4b4e02ca4da10f37ede6e8379c37e699f355228ed959c0a8"
+        },
+        "sum": {
+          "cpuTime": 381809,
+          "duration": 2.382544128,
+          "rowsRead": 5488,
+          "rowsWritten": 892
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "18253a84-ace0-8300-ada6-ab8801d4a849",
+          "objectId": "06e17a19efc886a8d656b360695ee8fed8882e662e435d550d6ff36ae2c4ba61"
+        },
+        "sum": {
+          "cpuTime": 683606,
+          "duration": 1.156550656,
+          "rowsRead": 6715,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "463e8180-d5f3-8366-bc60-fce1425bc799",
+          "objectId": "bbcc0d473f879f1f585f2382422e6a5d268dfaad3afecdac88c89b634098f9c8"
+        },
+        "sum": {
+          "cpuTime": 644243,
+          "duration": 1.959755008,
+          "rowsRead": 12220,
+          "rowsWritten": 2166
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "PRG",
+          "name": "a6deabb1-5a09-8718-a0e8-c02ae8e7fd69",
+          "objectId": "e3a87055f86333e7e2c2ff13cb1504ce5b7409a3b8aaea62d78d2369cd92648c"
+        },
+        "sum": {
+          "cpuTime": 445530,
+          "duration": 0.881180672,
+          "rowsRead": 6709,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "7cbd17f3-7d44-8484-b3aa-732e54d6b07c",
+          "objectId": "53280e591520954cbd2c0ff96abb6d43d74c27fdb4d87846e5afcb502523a332"
+        },
+        "sum": {
+          "cpuTime": 389578,
+          "duration": 0.978471296,
+          "rowsRead": 6760,
+          "rowsWritten": 1197
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "4cd9751e-d4dd-855e-8125-2c8b831c7372",
+          "objectId": "cfb701a70ac7a750b76935f4b0191686ea9d265c367d2f246fc504bd1c6a620b"
+        },
+        "sum": {
+          "cpuTime": 1716067,
+          "duration": 1.71150592,
+          "rowsRead": 31373,
+          "rowsWritten": 6981
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "dd61398e-ef0b-8500-891b-d54bd61cb552",
+          "objectId": "5bba7b46d2d3d55795fded8e93b7065d6cd2813059cb50a57ddd797afec81492"
+        },
+        "sum": {
+          "cpuTime": 642847,
+          "duration": 1.325970816,
+          "rowsRead": 5476,
+          "rowsWritten": 886
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "fe708c06-d22e-803b-8459-5848589ae085",
+          "objectId": "db1330cf82741f5060c7cce7de36fb3d14473f000adb68f2fca090fad70ef561"
+        },
+        "sum": {
+          "cpuTime": 1674781,
+          "duration": 2.004750976,
+          "rowsRead": 31375,
+          "rowsWritten": 6982
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MRS",
+          "name": "62e08409-ec48-8c5d-a0f7-c3f967b27e03",
+          "objectId": "6decbb0338fef097c98e5505ea8ee31c42e680f0e97c1a7b50b80e00d5bb4e65"
+        },
+        "sum": {
+          "cpuTime": 3105572,
+          "duration": 5.389255552,
+          "rowsRead": 31401,
+          "rowsWritten": 6986
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "4df8a018-6d96-8b0d-9676-a6e8122e9fc9",
+          "objectId": "13eb54a435101df62b4cdfe5614e67eede46e0f2fc040df01a7b5993ea37c5b7"
+        },
+        "sum": {
+          "cpuTime": 850212,
+          "duration": 1.898825088,
+          "rowsRead": 6764,
+          "rowsWritten": 1198
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "VIE",
+          "name": "72a41404-84dd-8b22-8492-b734be93a897",
+          "objectId": "4cf300f2b8abe351e037aa3d4c524193df7bd52d2d90605c19f8bffe8ed11b27"
+        },
+        "sum": {
+          "cpuTime": 740873,
+          "duration": 1.48735808,
+          "rowsRead": 6717,
+          "rowsWritten": 1178
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "MXP",
+          "name": "8994f03d-89e1-8b7e-a1b6-dade8d675d32",
+          "objectId": "b4efaece2557a00126773cb72f1aedd07970b1d3db0e24eb247612ae4431b1ec"
+        },
+        "sum": {
+          "cpuTime": 394345,
+          "duration": 2.265115776,
+          "rowsRead": 6723,
+          "rowsWritten": 1180
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "45c8203d-360d-8ef6-b4d6-a4af493b6183",
+          "objectId": "a9b42adcb41116e29564d5a4001da62c6c56f611036c07a49a755fff2ef14a3a"
+        },
+        "sum": {
+          "cpuTime": 328811,
+          "duration": 0.973812736,
+          "rowsRead": 5474,
+          "rowsWritten": 886
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "4b433f84-c73c-8161-a2a7-061430305f53",
+          "objectId": "aba3b8b1e1993bd37f93a695f3ed840703086fe8346da076c9c7bd163ecebfb4"
+        },
+        "sum": {
+          "cpuTime": 1804893,
+          "duration": 2.286194688,
+          "rowsRead": 31377,
+          "rowsWritten": 6982
+        }
+      },
+      {
+        "dimensions": {
+          "coloCode": "FRA",
+          "name": "390e36fc-43a5-81c1-9509-6a4feb811952",
+          "objectId": "cbe6c6428ba62b33fb558651490295cb785154b950a53cf6d76e41b64734fe29"
+        },
+        "sum": {
+          "cpuTime": 2169385,
+          "duration": 2.795261824,
+          "rowsRead": 31379,
+          "rowsWritten": 6981
+        }
+      }
+    ],
+    "storage": [
+      {
+        "dimensions": {
+          "namespaceId": "33513c83aca24d78aa63d2f0243989db"
+        },
+        "max": {
+          "storedBytes": 12288
+        }
+      },
+      {
+        "dimensions": {
+          "namespaceId": "3a60677bf7ee436abdcf0c08067e13f2"
+        },
+        "max": {
+          "storedBytes": 5234688
+        }
+      },
+      {
+        "dimensions": {
+          "namespaceId": "bc3bf95ca52149e085e070534395fa9f"
+        },
+        "max": {
+          "storedBytes": 65536
+        }
+      },
+      {
+        "dimensions": {
+          "namespaceId": "46b63c1881064b3f966d103335912838"
+        },
+        "max": {
+          "storedBytes": 12288
+        }
+      },
+      {
+        "dimensions": {
+          "namespaceId": "30c4a9b036ff450c9dc09efdb25414c1"
+        },
+        "max": {
+          "storedBytes": 149884930
+        }
+      },
+      {
+        "dimensions": {
+          "namespaceId": "28db9813d0db4b618c77fc02430099de"
+        },
+        "max": {
+          "storedBytes": 172032
+        }
+      },
+      {
+        "dimensions": {
+          "namespaceId": "7eaa57fa1061436db9002b82c48fcb6c"
+        },
+        "max": {
+          "storedBytes": 12288
+        }
+      },
+      {
+        "dimensions": {
+          "namespaceId": "c6d26d6e647c417d945c8f31f6f3dbe3"
+        },
+        "max": {
+          "storedBytes": 32768
+        }
+      }
+    ],
+    "workers": [
+      {
+        "dimensions": {
+          "scriptName": "nanocodex-perf-front-0911",
+          "status": "success"
+        },
+        "sum": {
+          "clientDisconnects": 0,
+          "cpuTimeUs": 1230472,
+          "errors": 0,
+          "requests": 1796
+        }
+      },
+      {
+        "dimensions": {
+          "scriptName": "nanocodex-perf-managed-0911",
+          "status": "success"
+        },
+        "sum": {
+          "clientDisconnects": 0,
+          "cpuTimeUs": 5085992,
+          "errors": 0,
+          "requests": 1859
+        }
+      },
+      {
+        "dimensions": {
+          "scriptName": "nanocodex-perf-egress-0911",
+          "status": "success"
+        },
+        "sum": {
+          "clientDisconnects": 0,
+          "cpuTimeUs": 3106,
+          "errors": 0,
+          "requests": 1
+        }
+      },
+      {
+        "dimensions": {
+          "scriptName": "nanocodex-perf-front-0911",
+          "status": "clientDisconnected"
+        },
+        "sum": {
+          "clientDisconnects": 338,
+          "cpuTimeUs": 221452,
+          "errors": 0,
+          "requests": 338
+        }
+      },
+      {
+        "dimensions": {
+          "scriptName": "nanocodex-perf-managed-0911",
+          "status": "clientDisconnected"
+        },
+        "sum": {
+          "clientDisconnects": 256,
+          "cpuTimeUs": 602732,
+          "errors": 0,
+          "requests": 256
+        }
+      }
+    ]
+  },
+  "totals": {
+    "activeTime": 5244414748,
+    "cpuTime": 252798452,
+    "duration": 671.2850877440001,
+    "exceededCpuErrors": 0,
+    "exceededMemoryErrors": 0,
+    "fatalInternalErrors": 0,
+    "rowsRead": 3212716,
+    "rowsWritten": 675832,
+    "subrequests": 2099
+  },
+  "observed_invocations": 14093,
+  "worker_totals": {
+    "requests": 4250,
+    "cpuTimeUs": 7143754,
+    "errors": 0,
+    "clientDisconnects": 594
+  },
+  "unrounded_paid_rate_components_usd": {
+    "duration": 0.0083910635968,
+    "sqlite_rows_read": 0.003212716,
+    "sqlite_rows_written": 0.675832,
+    "observed_invocations": 0.00211395
+  },
+  "unrounded_component_subtotal_usd": 0.6895497295967999,
+  "additional_unrounded_components_usd": {
+    "workers_cpu_only": 0.00014287508,
+    "r2_known_standard_operations": 0.0051642
+  },
+  "r2_unpriced_actions": [],
+  "additional_pricing_sources": [
+    "https://developers.cloudflare.com/workers/platform/pricing/",
+    "https://developers.cloudflare.com/r2/pricing/"
+  ],
+  "pricing_checked": "2026-09-11",
+  "pricing_source": "https://developers.cloudflare.com/durable-objects/platform/pricing/",
+  "limitations": [
+    "Namespace analytics may arrive late or be adaptively sampled",
+    "Not an invoice: before included allocations and account-level rounding",
+    "DO subtotal excludes separately priced Worker CPU/R2 operations, Worker request fees, container/image storage and SQL/R2 GB-month storage; service-binding request counts are not additional billed Worker requests",
+    "Observed invocation request charge excludes any separately metered incoming WebSocket messages",
+    "Do not add request wall spans to duration; periodic.duration is the GB-second counter",
+    "Memory is per isolate, possibly shared by several objects"
+  ]
+}

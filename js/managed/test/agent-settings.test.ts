@@ -4,6 +4,7 @@ import {
   DEFAULT_AGENT_SETTINGS,
   agentSettingsQuery,
   parseAgentCreateBody,
+  parseAgentRunBody,
   parseAgentSettingsPatch,
   parseAgentSettingsQuery,
   parseCompleteAgentSettings,
@@ -101,6 +102,37 @@ describe("managed agent settings", () => {
       .toThrow("does not support pro");
     for (const encoded of ["{}", "[]", JSON.stringify({ settings: { ...settings, extra: true } })]) {
       expect(() => parseAgentCreateBody(encoded)).toThrow();
+    }
+  });
+
+  it("validates and splits combined create-and-prompt bodies before mutation", () => {
+    const settings = {
+      model: "gpt-5.6-luna",
+      thinking: "low",
+      reasoning_mode: "standard",
+      fast_mode: false,
+    } as const;
+    const run = parseAgentRunBody(JSON.stringify({
+      configuration: { tools: [] },
+      settings,
+      input: "Start now",
+    }));
+    expect(JSON.parse(run.creationBody)).toEqual({
+      configuration: { tools: [] },
+      settings,
+    });
+    expect(run.input).toBe("Start now");
+    expect(parseAgentRunBody(JSON.stringify({ input: "Use defaults" }))).toEqual({
+      creationBody: "",
+      input: "Use defaults",
+    });
+    for (const encoded of [
+      "",
+      "[]",
+      "{}",
+      JSON.stringify({ input: "x", unsupported: true }),
+    ]) {
+      expect(() => parseAgentRunBody(encoded)).toThrow();
     }
   });
 });

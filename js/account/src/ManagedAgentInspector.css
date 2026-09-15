@@ -1,0 +1,8 @@
+.managed-inspector { padding: 1rem; overflow: auto; max-height: 65vh; border-bottom: 1px solid var(--border-color, #8885); font-size: .875rem; }
+.managed-inspector header { display: flex; align-items: center; gap: .75rem; }
+.managed-inspector header strong { margin-right: auto; }
+.managed-inspector table { width: 100%; text-align: left; border-collapse: collapse; }
+.managed-inspector td, .managed-inspector th { padding: .5rem; border-bottom: 1px solid #8883; overflow-wrap: anywhere; }
+.managed-inspector details { padding: .5rem 0; border-bottom: 1px solid #8883; }
+.managed-inspector pre { overflow: auto; max-height: 30rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.managed-inspector small { overflow-wrap: anywhere; }

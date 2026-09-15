@@ -1901,6 +1901,7 @@ private struct ConversationActivityView: View {
                 }.tint(Ink.muted)
                     .accessibilityIdentifier("activity-disclosure")
                     .accessibilityLabel("Activity")
+                    .accessibilityValue(Text(expanded ? "Expanded" : "Collapsed"))
                     .accessibilityHint("\(item.activity.count) steps, \(failures) issues")
             }
         }.frame(maxWidth: .infinity, alignment: .leading)

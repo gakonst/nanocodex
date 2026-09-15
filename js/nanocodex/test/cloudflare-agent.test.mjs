@@ -357,6 +357,26 @@ test("Cloudflare Agent accepts complete hosted policy only through its internal 
   }), /internal configuration is invalid/);
 });
 
+test("host delegation prohibition reaches Rust and overrides caller subagent extensions", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  for (const tools of [[], [...Subagents.create({ maxConcurrency: 2 })]]) {
+    const storage = new MemoryStorage();
+    const agent = await create(module, durableOwner(storage), {
+      tools,
+      [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { subagentsEnabled: false },
+    });
+    try {
+      await assert.rejects(Subagents.spawn(agent, {
+        role: "disabled-check", task: "This task must never start.", outputSchema: { type: "object" },
+      }), /not created with the subagent extension/);
+      assert.equal(storage.subagents.size, 0);
+    } finally { await agent.session.shutdown(); }
+  }
+  await assert.rejects(create(module, durableOwner(new MemoryStorage()), {
+    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { subagentsEnabled: "false" },
+  }), /subagentsEnabled must be a boolean/);
+});
+
 test("Cloudflare ephemeral Agent owns transport without durable state", async () => {
   const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
   const storage = new MemoryStorage();

@@ -33,22 +33,74 @@ const eventEncoder = new TextEncoder();
 
 /** Create a new managed agent owned by the authenticated account. */
 export async function create(options = {}) {
-  const { clientOptions, requestBody } = managedCreateOptions(options);
+  const { clientOptions, requestBody, creationKey } = managedCreateOptions(options);
   const client = managedClient(clientOptions);
-  const idempotencyKey = `managed-create:${globalThis.crypto.randomUUID()}`;
+  const idempotencyKey = creationKey ?? `managed-create:${globalThis.crypto.randomUUID()}`;
+  const receipt = await retryCreateMutation(
+    client,
+    "/v1/agents",
+    idempotencyKey,
+    requestBody,
+  );
+  return agentHandle(client, requiredString(receipt, "agent_id"));
+}
+
+/** Create a managed agent and durably admit its first turn in one request. */
+export async function createAndPrompt(options) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("managed create-and-prompt options must be an object");
+  }
+  const { input, signal, ...createOptions } = options;
+  if (signal !== undefined && !(signal instanceof AbortSignal)) {
+    throw new TypeError("managed create-and-prompt signal must be an AbortSignal");
+  }
+  const { clientOptions, requestBody, creationKey } = managedCreateOptions(createOptions);
+  if (creationKey === undefined) {
+    throw new TypeError("managed create-and-prompt requires an idempotency key");
+  }
+  const client = managedClient(clientOptions);
+  const creation = requestBody === undefined ? {} : JSON.parse(requestBody);
+  const receipt = await retryCreateMutation(
+    client,
+    "/v1/agent-runs",
+    creationKey,
+    JSON.stringify({ ...creation, input }),
+    signal,
+  );
+  const agentId = requiredString(receipt, "agent_id");
+  const turnId = requiredString(receipt, "turn_id");
+  const turnKey = requiredString(receipt, "turn_idempotency_key");
+  requiredCursor(receipt, "accepted_cursor");
+  if (!TURN_ID.test(turnId) || !IDEMPOTENCY_KEY.test(turnKey)) {
+    throw new ManagedError("invalid_response", "managed create-and-prompt receipt is malformed");
+  }
+  const eventStream = replayableEventStream(client, agentId);
+  const agent = agentHandle(client, agentId, undefined, eventStream);
+  const turn = managedTurn(client, agentId, eventStream, {
+    id: turnId,
+    idempotencyKey: turnKey,
+    input,
+    signal,
+  }, Promise.resolve(receipt));
+  return Object.freeze({ agent, turn });
+}
+
+async function retryCreateMutation(client, path, idempotencyKey, requestBody, signal) {
   let receipt;
   let failure;
   for (let attempt = 0; attempt < 8; attempt += 1) {
     try {
-      receipt = await client.json("/v1/agents", {
+      receipt = await client.json(path, {
         method: "POST",
         idempotencyKey,
         ...(requestBody === undefined ? {} : { body: requestBody }),
+        ...(signal === undefined ? {} : { signal }),
       });
       break;
     } catch (error) {
       failure = error;
-      if (!(error instanceof ManagedError)
+      if (signal?.aborted
+        || !(error instanceof ManagedError)
         || (error.code !== "network_error"
           && error.status !== 408
           && error.status !== 429
@@ -56,22 +108,28 @@ export async function create(options = {}) {
         || attempt === 7) {
         throw error;
       }
-      await new Promise((resolve) => setTimeout(
-        resolve,
-        createRetryDelayMs(attempt),
-      ));
+      await delay(createRetryDelayMs(attempt), signal);
     }
   }
   if (!receipt) throw failure;
-  return agentHandle(client, requiredString(receipt, "agent_id"));
+  return receipt;
 }
 
 function managedCreateOptions(options) {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw new TypeError("managed agent options must be an object");
   }
-  const { settings, ...clientOptions } = options;
-  if (settings === undefined) return { clientOptions, requestBody: undefined };
+  const { settings, configuration, definitionId, environmentTemplateId, idempotencyKey: creationKey, ...clientOptions } = options;
+  if (creationKey !== undefined && (typeof creationKey !== "string" || !IDEMPOTENCY_KEY.test(creationKey))) {
+    throw new TypeError("invalid managed creation idempotency key");
+  }
+  const extensions = {
+    ...(configuration === undefined ? {} : { configuration }),
+    ...(definitionId === undefined ? {} : { definition_id: templateId(definitionId) }),
+    ...(environmentTemplateId === undefined ? {} : { environment_template_id: templateId(environmentTemplateId) }),
+  };
+  if (configuration !== undefined && (!configuration || typeof configuration !== "object" || Array.isArray(configuration))) throw new TypeError("configuration must be an object");
+  if (settings === undefined) return { clientOptions, creationKey, requestBody: Object.keys(extensions).length ? JSON.stringify(extensions) : undefined };
   const keys = settings && typeof settings === "object" && !Array.isArray(settings)
     ? Object.keys(settings)
     : [];
@@ -92,7 +150,9 @@ function managedCreateOptions(options) {
   }
   return {
     clientOptions,
+    creationKey,
     requestBody: JSON.stringify({
+      ...extensions,
       settings: {
         model: settings.model,
         thinking: settings.thinking,
@@ -107,6 +167,21 @@ function createRetryDelayMs(attempt) {
   const ceiling = Math.min(2_000, 250 * 2 ** attempt);
   return Math.floor(Math.random() * (ceiling + 1));
 }
+
+function templateId(id) {
+  if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw new TypeError("invalid template ID");
+  return id;
+}
+function templateCatalog(kind) {
+  return Object.freeze({
+    list: (options = {}) => managedClient(options).json(`/v1/${kind}`),
+    get: (id, options = {}) => managedClient(options).json(`/v1/${kind}/${templateId(id)}`),
+    put: (id, configuration, options = {}) => managedClient(options).json(`/v1/${kind}/${templateId(id)}`, { method: "PUT", body: JSON.stringify(configuration) }),
+    delete: (id, options = {}) => managedClient(options).empty(`/v1/${kind}/${templateId(id)}`, { method: "DELETE" }),
+  });
+}
+export const definitions = templateCatalog("agent-definitions");
+export const environments = templateCatalog("environment-templates");
 
 /** List handles for every managed agent owned by the authenticated account. */
 export async function list(options = {}) {
@@ -215,9 +290,9 @@ export async function updateOrganization(request, options = {}) {
   return managedOrganization(body);
 }
 
-function agentHandle(client, id, summary) {
+function agentHandle(client, id, summary, retainedEventStream) {
   validateAgentId(id);
-  const eventStream = replayableEventStream(client, id);
+  const eventStream = retainedEventStream ?? replayableEventStream(client, id);
   const events = Object.freeze({
     page: (options = {}) => eventHistoryPage(client, id, options),
     watch: (options = {}) => eventStream.subscribe(options),
@@ -227,6 +302,31 @@ function agentHandle(client, id, summary) {
     id,
     ...(summary === undefined ? {} : { summary }),
     events,
+    requiredActions: Object.freeze({
+      list: () => client.json(`${agentPath(id)}/required-actions`),
+      submit: (callId, outcome) => {
+        if (!/^[A-Za-z0-9._:-]{1,256}$/.test(callId)) throw new TypeError("invalid call ID");
+        return client.empty(`${agentPath(id)}/required-actions/${callId}/result`, { method: "POST", body: JSON.stringify(outcome) });
+      },
+    }),
+    configuration: () => client.json(`${agentPath(id)}/configuration`),
+    environment: () => client.json(`${agentPath(id)}/environment`),
+    requests: (options = {}) => client.json(`${agentPath(id)}/usage/requests?after=${encodeURIComponent(options.after ?? "0")}${options.agentId === undefined ? "" : `&agent_id=${encodeURIComponent(options.agentId)}`}`),
+    usage: (options = {}) => client.json(`${agentPath(id)}/usage?after=${encodeURIComponent(options.after ?? "0")}`),
+    webhook: Object.freeze({
+      get: () => client.json(`${agentPath(id)}/webhook`),
+      create: (url) => client.json(`${agentPath(id)}/webhook`, { method: "PUT", body: JSON.stringify({ url }) }),
+      delete: () => client.empty(`${agentPath(id)}/webhook`, { method: "DELETE" }),
+    }),
+    artifacts: Object.freeze({
+      list: (options = {}) => client.json(`${agentPath(id)}/artifacts${options.turnId === undefined ? "" : `?turn_id=${encodeURIComponent(options.turnId)}`}`),
+      download: async (artifactId) => {
+        if (!/^[a-f0-9]{64}$/.test(artifactId)) throw new TypeError("invalid artifact ID");
+        const result = await client.response(`${agentPath(id)}/artifacts/${artifactId}/content`);
+        if (!result.ok) throw new ManagedError("artifact_download_failed", `Artifact download failed (${result.status})`, { status: result.status });
+        return result.arrayBuffer();
+      },
+    }),
     turn: Object.freeze({
       prompt: (options) => managedTurn(client, id, eventStream, options),
     }),
@@ -440,7 +540,7 @@ async function eventHistoryPage(client, agentId, options) {
   return Object.freeze({ data: Object.freeze(data), hasMore: body.has_more, latestCursor });
 }
 
-function managedTurn(client, agentId, eventStream, options) {
+function managedTurn(client, agentId, eventStream, options, acceptedSubmission) {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw new TypeError("managed prompt options must be an object");
   }
@@ -453,7 +553,7 @@ function managedTurn(client, agentId, eventStream, options) {
     throw new TypeError("managed idempotency key must be 1-256 visible ASCII characters");
   }
 
-  const submission = retrySubmission(client, agentId, {
+  const submission = acceptedSubmission ?? retrySubmission(client, agentId, {
     id,
     idempotencyKey,
     input,
@@ -1705,4 +1805,20 @@ function delay(milliseconds, signal) {
 function abortError(reason) {
   if (reason instanceof Error) return reason;
   return new DOMException("The operation was aborted", "AbortError");
+}
+
+export async function verifyWebhook(request, secret) {
+  const id = request.headers.get("webhook-id");
+  const timestamp = request.headers.get("webhook-timestamp");
+  const signature = request.headers.get("webhook-signature");
+  if (typeof secret !== "string" || secret.length < 32 || !id || !/^[0-9]{1,12}$/.test(timestamp ?? "")
+    || Math.abs(Date.now() / 1000 - Number(timestamp)) > 300 || !/^v1,[a-f0-9]{64}$/.test(signature ?? "")) throw new Error("invalid webhook signature or timestamp");
+  const body = await request.text();
+  if (body.length > 16384) throw new Error("webhook payload too large");
+  const key = await crypto.subtle.importKey("raw", UTF8.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+  const bytes = Uint8Array.from(signature.slice(3).match(/../g), pair => Number.parseInt(pair, 16));
+  if (!await crypto.subtle.verify("HMAC", key, bytes, UTF8.encode(`${id}.${timestamp}.${body}`))) throw new Error("invalid webhook signature");
+  const event = JSON.parse(body);
+  if (event.id !== id || typeof event.type !== "string" || typeof event.agent_id !== "string" || typeof event.cursor !== "string") throw new Error("invalid webhook payload");
+  return Object.freeze(event);
 }

@@ -127,6 +127,9 @@ export function createDefaultManagedTools(
   mcp: McpServers = defaultManagedMcpServers(),
   catalogProvider?: (serverName: string) => string | undefined,
 ): Promise<Tools> {
+  // Explicit allowlists and restricted environments have no MCP discovery.
+  // The SDK rejects both an empty map and mcpOptions when MCP is disabled.
+  if (Object.keys(mcp).length === 0) return createTools({ tools, mcp: false });
   return createTools({
     tools,
     mcp,

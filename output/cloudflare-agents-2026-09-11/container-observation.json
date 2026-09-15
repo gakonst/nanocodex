@@ -1,0 +1,38 @@
+{
+  "retrieved_at": "2026-09-11T10:54:03.250476+00:00",
+  "application": {
+    "id": "a03faa41-aea9-4760-b221-468a5a597b66",
+    "name": "nanocodex-perf-managed-0911-sandbox",
+    "state": "ready",
+    "instances": 2,
+    "image": "registry.cloudflare.com/16ce0442a940f01beefdb15a196a43ea/nanocodex-durable-agent-sandbox@sha256:41927b3c3f7dc3fd9a868cba14bf4dac460d9ebdf812d5c99a1926ad03edfa34",
+    "version": 1,
+    "updated_at": "2026-09-11T09:32:37.108999936Z",
+    "created_at": "2026-09-11T09:32:36.888999936Z"
+  },
+  "usage_query": "{sum:__type(name:\"AccountContainersUsageAdaptiveGroupsSum\"){fields{name description}}viewer{accounts(filter:{accountTag:\"16ce0442a940f01beefdb15a196a43ea\"}){containersUsageAdaptiveGroups(filter:{applicationId:\"a03faa41-aea9-4760-b221-468a5a597b66\",datetime_geq:\"2026-09-11T09:30:00Z\",datetime_lt:\"2026-09-11T10:53:35Z\"},limit:1000){dimensions{applicationId instanceId location region}sum{allocatedDisk allocatedMemory cpuTimeSec txBytes}}}}}",
+  "usage": [],
+  "field_units": [
+    {
+      "description": "Sum of allocated disk in byte-seconds",
+      "name": "allocatedDisk"
+    },
+    {
+      "description": "Sum of allocated memory in byte-seconds",
+      "name": "allocatedMemory"
+    },
+    {
+      "description": "Sum of CPU time in seconds",
+      "name": "cpuTimeSec"
+    },
+    {
+      "description": "Sum of bytes transmitted",
+      "name": "txBytes"
+    }
+  ],
+  "limitations": [
+    "Wrangler reports ready rather than active; its instances field is not a billing-duration counter",
+    "The usage query returned no rows; this is not proof of zero charges",
+    "Container and image charges are not included in the reported DO subtotal"
+  ]
+}

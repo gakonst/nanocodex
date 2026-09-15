@@ -5,6 +5,8 @@ export type {
   CronTrigger as ManagedCronTrigger,
   CronTriggerConfig as ManagedCronTriggerConfig,
   CreateOptions as ManagedCreateOptions,
+  CreateAndPromptOptions as ManagedCreateAndPromptOptions,
+  CreateAndPromptResult as ManagedCreateAndPromptResult,
   CreateSettings as ManagedCreateSettings,
   Event as ManagedEvent,
   EventData as ManagedEventData,

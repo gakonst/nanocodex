@@ -1,0 +1,45 @@
+{
+  "runtime_commit": "a02f85a0",
+  "tests": [
+    {
+      "suite": "managed policy/admission/completion/realtime",
+      "passed": 74
+    },
+    {
+      "suite": "durable stream recovery",
+      "passed": 4
+    },
+    {
+      "suite": "Cloudflare SDK/runtime and wire contract",
+      "passed": 29
+    },
+    {
+      "suite": "SDK stream reconnect",
+      "passed": 5
+    }
+  ],
+  "checks_passed": [
+    "managed full TypeScript check",
+    "benchmark fixture TypeScript check",
+    "nanocodex public declaration checks",
+    "nanocodex package export checks",
+    "benchmark JavaScript syntax",
+    "Python analysis script compilation"
+  ],
+  "deployment_validation": "Final real Worker upload and successful fresh/warm delegation-disabled pilot; native Docker image reused",
+  "limitations": [
+    "Platform replacement was not forced live; stale-storage behavior is covered in the Workers runtime test"
+  ],
+  "data_audit": {
+    "trials": 600,
+    "unique_trial_keys": 600,
+    "fixture_results_revalidated": true,
+    "client_clock_ordering_valid": true,
+    "journaled_sessions_confirmed_deleted": 430,
+    "planned_unique_hosted_sessions": 424,
+    "final_nanocodex_trials_without_tool_calls": 24
+  },
+  "candidate_files_secret_scanned": 232,
+  "credential_matches": 0,
+  "deployment_versions_verified_from_construction_traces": true
+}

@@ -1,0 +1,109 @@
+{
+  "started_at": "2026-09-11T08:59:08.096Z",
+  "finished_at": "2026-09-11T08:59:33.565Z",
+  "records": [
+    {
+      "path": "nanocodex_node",
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "ttft_ms": null,
+      "completion_ms": 3820.6266670000005,
+      "correct": true,
+      "usage": {
+        "input_tokens": 6016,
+        "input_tokens_details": {
+          "cached_tokens": 0,
+          "cache_write_tokens": 6013
+        },
+        "output_tokens": 17,
+        "output_tokens_details": {
+          "reasoning_tokens": 10
+        },
+        "total_tokens": 6033
+      },
+      "session_id": null,
+      "cleanup": null,
+      "ttft_from_recorded_trace_ms": 3741.41575,
+      "note": "Pilot recorder checked delta instead of text; full matrix uses the correct field. Pilot excluded from matrix statistics.",
+      "estimated_cost_low_usd": 0.00152425,
+      "estimated_cost_high_usd": 0.00152425
+    },
+    {
+      "path": "openai_agents",
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "ttft_ms": 10958.804124999999,
+      "completion_ms": 13062.031459,
+      "correct": true,
+      "usage": {
+        "input_tokens": 6077,
+        "input_tokens_details": {
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 6082
+      },
+      "session_id": "sess_0f37528dcb21d0ef006aa3c2e2cc6c8191a046752f02e7cdf4",
+      "cleanup": [
+        {
+          "status": 200
+        }
+      ],
+      "estimated_cost_low_usd": 0.0012214,
+      "estimated_cost_high_usd": 0.0015252500000000001
+    },
+    {
+      "path": "responses_http",
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "ttft_ms": 827.4282910000002,
+      "completion_ms": 950.060207999999,
+      "correct": true,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "session_id": null,
+      "cleanup": null,
+      "estimated_cost_low_usd": 1.3199999999999999e-05,
+      "estimated_cost_high_usd": 1.3199999999999999e-05
+    },
+    {
+      "path": "responses_ws",
+      "model": "gpt-5.6-luna",
+      "tier": "default",
+      "ttft_ms": 653.7721249999995,
+      "completion_ms": 757.5015840000015,
+      "correct": true,
+      "usage": {
+        "input_tokens": 36,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 5,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 41
+      },
+      "session_id": null,
+      "cleanup": null,
+      "estimated_cost_low_usd": 1.3199999999999999e-05,
+      "estimated_cost_high_usd": 1.3199999999999999e-05
+    }
+  ],
+  "estimated_model_subtotal_low_usd": 0.0027720500000000003,
+  "estimated_model_subtotal_high_usd": 0.0030759000000000003
+}

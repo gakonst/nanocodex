@@ -1176,3 +1176,10 @@ cd examples/node
 npm install
 OPENAI_API_KEY=... npm start
 ```
+
+Managed clients can save `Agent.definitions` and `Agent.environments`, select them
+with `Agent.create({ definitionId, environmentTemplateId, configuration })`, and
+inspect `agent.configuration()`, `environment()`, `usage()`, `requests()`,
+`artifacts`, `webhook`, and `requiredActions`. See the
+[managed configuration and operations guide](../../docs/MANAGED_AGENT_CONFIGURATION.md)
+for examples, authorization, delivery semantics, and runtime limits.

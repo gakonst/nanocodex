@@ -11,14 +11,17 @@ In a browser, authentication uses the current origin's HttpOnly account cookie:
 ```js
 import { Agent } from "nanocodex/managed";
 
-const agent = await Agent.create();
-const turn = agent.turn.prompt({
+const { agent, turn } = await Agent.createAndPrompt({
+  idempotencyKey: `run:${job.id}`,
   input: "Inspect the repository and summarize it.",
-  idempotencyKey: crypto.randomUUID(),
 });
 const result = await turn.result();
 console.log(result.finalMessage);
 ```
+
+`createAndPrompt` sends one client mutation. Its required key identifies both
+the new session and the admitted first turn across retries or a lost response.
+Later turns still use `agent.turn.prompt(...)`.
 
 New managed agents may be created with an atomic settings object. Existing
 agents retain their model and reasoning mode after their first accepted turn.

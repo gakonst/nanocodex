@@ -12,6 +12,11 @@ import { createCronTool } from "../src/cron-tool";
 import { browseX } from "nanocodex-tools/x";
 
 describe("durable managed default MCP catalog", () => {
+  it("constructs and closes a tool-free runtime without an MCP server", async () => {
+    const tools = await createDefaultManagedTools([], {});
+    await tools.close();
+  });
+
   it("matches the canonical five public MCP servers", () => {
     expect(DEFAULT_MANAGED_MCP_CATALOG).toEqual({
       openaiDeveloperDocs: {

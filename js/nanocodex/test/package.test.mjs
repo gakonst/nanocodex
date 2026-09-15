@@ -96,6 +96,7 @@ test("the packed package ships and resolves every public entry point", async () 
 
       assert.equal(typeof Actions.turn.prompt, "function");
       assert.equal(typeof ManagedAgent.create, "function");
+      assert.equal(typeof ManagedAgent.createAndPrompt, "function");
       assert.equal(typeof ManagedAgent.list, "function");
       assert.equal(typeof Principal.host, "function");
       assert.equal(typeof HostPrincipal.create, "function");
