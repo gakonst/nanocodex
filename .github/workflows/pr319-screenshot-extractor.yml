@@ -17,14 +17,14 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: gakonst/nanocodex
           run-id: 34924227528
-      - name: Keep exported screenshots only
+      - name: Keep exported attachment manifest only
         run: |
-          mkdir -p screenshot-only
-          find evidence -type f -path '*screenshots*' \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \) -exec cp --parents '{}' screenshot-only/ ';'
-          find screenshot-only -type f -print
-          test -n "$(find screenshot-only -type f -print -quit)"
+          mkdir -p manifest-only
+          find evidence -type f -path '*screenshots*' ! -iname '*.png' ! -iname '*.jpg' ! -iname '*.jpeg' -exec cp --parents '{}' manifest-only/ ';'
+          find manifest-only -type f -print
+          test -n "$(find manifest-only -type f -print -quit)"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: pr319-screenshots
-          path: screenshot-only
+          name: pr319-screenshot-manifest
+          path: manifest-only
           if-no-files-found: error
