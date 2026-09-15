@@ -1,0 +1,30 @@
+name: PR 319 screenshot extractor
+on:
+  pull_request:
+    paths: ['.github/workflows/pr319-screenshot-extractor.yml']
+permissions:
+  actions: read
+  contents: read
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: native-inbox-evidence
+          path: evidence
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: gakonst/nanocodex
+          run-id: 34931292576
+      - name: Keep exported screenshots only
+        run: |
+          mkdir -p screenshot-only
+          find evidence -type f -path '*screenshots*' \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \) -exec cp --parents '{}' screenshot-only/ ';'
+          find screenshot-only -type f -print
+          test -n "$(find screenshot-only -type f -print -quit)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr319-mcp-screenshots
+          path: screenshot-only
+          if-no-files-found: error
