@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import sys
 import tarfile
@@ -78,6 +79,14 @@ def main():
     package = work / "package"
     env = os.environ.copy()
     env["PKG_CONFIG_PATH"] = str(native / "prefix/lib/pkgconfig")
+    # Native ALSA metadata can add /usr/lib before the private GLib search path.
+    # Put the prepared runtime first so GStreamer never links an older system GLib.
+    rustflags = env.get("CARGO_ENCODED_RUSTFLAGS")
+    if rustflags is None:
+        rustflags = "\x1f".join(shlex.split(env.pop("RUSTFLAGS", "")))
+    env["CARGO_ENCODED_RUSTFLAGS"] = "-L\x1fnative=" + str(native / "prefix/lib")
+    if rustflags:
+        env["CARGO_ENCODED_RUSTFLAGS"] += "\x1f" + rustflags
     run(sys.executable, ROOT / "scripts/build-voice-native.py", "--runtime", runtime,
         "--target", args.target, "--release", "--output", package, env=env)
     voice = package / "nanocodex-resources/voice"
