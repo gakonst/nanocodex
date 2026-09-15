@@ -54,7 +54,7 @@ base64.workspace = true
 filetime.workspace = true
 futures-util = { workspace = true, optional = true }
 landlock = { workspace = true, optional = true }
-nanocodex-tools = { path = "../nanocodex-tools", version = "0.6.0", default-features = false }
+nanocodex-tools = { path = "../nanocodex-tools", version = "0.6.1", default-features = false }
 nix = { workspace = true, optional = true, features = ["fs", "mount", "poll"] }
 rtnetlink = { workspace = true, optional = true }
 rustix = { workspace = true, optional = true }

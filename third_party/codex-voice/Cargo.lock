@@ -449,7 +449,7 @@ dependencies = [
 
 [[package]]
 name = "codex-process-hardening"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "libc",
  "pretty_assertions",
@@ -1617,7 +1617,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-voice-host"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "codex-process-hardening",
@@ -1642,7 +1642,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-voice-native"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "futures",
