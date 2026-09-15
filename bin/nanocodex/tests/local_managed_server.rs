@@ -226,6 +226,7 @@ async fn http_steer_withdrawal_removes_only_latest_unconsumed_input() -> Result<
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "manual compiled-binary E2E for the loopback managed server and nanocodex2"]
 async fn nanocodex2_drives_durable_replay_detach_steer_and_cancel() -> Result<()> {
+    nanocodex::oai::transport::install_default_rustls_crypto_provider();
     let fixture = tempfile::tempdir()?;
     let workspace = fixture.path().join("workspace");
     let client_home = fixture.path().join("nanocodex2-home");
@@ -1138,13 +1139,13 @@ async fn cold_replay_deduplicates_nested_and_managed_terminal_projection() -> Re
     let mut provider_socket = accept_async(provider_stream).await?;
     let generation = next_generation(&mut provider_socket, &AtomicUsize::new(0)).await?;
     assert_request_contains(&generation, PROMPT)?;
+    let turn_id = wait_for_active_turn(&client, &agent_id, PROMPT).await?;
     send_completed(
         &mut provider_socket,
         "resp-terminal-projection",
         "terminal projection answer",
     )
     .await?;
-    let turn_id = wait_for_active_turn(&client, &agent_id, PROMPT).await?;
     wait_for_nested_terminal_count(&managed_sqlite, &turn_id, 1).await?;
     wait_for_terminal_transaction_barrier(&managed_sqlite, &turn_id).await?;
 

@@ -140,6 +140,7 @@ fn router(state: AppState) -> Router {
         )
         .route("/v1/agents/{agent}/turns/{turn}/cancel", post(cancel_turn))
         .route("/v1/agents/{agent}/events", get(events))
+        .route("/v1/agents/{agent}/ws", get(agent_socket))
         .route("/v1/agents/{agent}/events/history", get(event_history))
         .route("/v1/agents/{agent}/tool-host", get(tool_host))
         .with_state(state)
@@ -931,6 +932,18 @@ struct ToolCatalog {
     #[serde(rename = "type")]
     kind: String,
     tools: Vec<ToolCatalogEntry>,
+    attachment_id: Option<String>,
+    #[serde(default)]
+    machines: Vec<ToolCatalogMachine>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolCatalogMachine {
+    id: String,
+    name: String,
+    workspace: String,
+    capabilities: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -1262,6 +1275,144 @@ async fn event_history(
         json!({"data":rows.iter().map(StoredEvent::envelope).collect::<Vec<_>>(),"has_more":has_more,"latest_cursor":latest}),
     ))
 }
+async fn agent_socket(
+    State(state): State<AppState>,
+    Path(agent): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<EventQuery>,
+    upgrade: WebSocketUpgrade,
+) -> ApiResult<Response> {
+    state.authorize(&headers)?;
+    let cursor = parse_cursor(query.cursor.as_deref().unwrap_or("0"))?;
+    let mut ready = state.database.state(&agent, false, 0).await?;
+    ready["type"] = json!("ready");
+    ready["restored"] = ready["has_snapshot"].clone();
+    // Retain the existing database counter for either durable-event transport.
+    state.database.note_sse_connection(&agent).await?;
+    let changed = state.changed.subscribe();
+    let shutdown = state.shutdown.subscribe();
+    Ok(upgrade
+        .on_upgrade(move |socket| async move {
+            let _ = serve_agent_socket(
+                socket, state, agent, headers, cursor, ready, changed, shutdown,
+            )
+            .await;
+        })
+        .into_response())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn serve_agent_socket(
+    mut socket: WebSocket,
+    state: AppState,
+    agent: String,
+    headers: HeaderMap,
+    mut cursor: i64,
+    ready: Value,
+    mut changed: broadcast::Receiver<String>,
+    mut shutdown: watch::Receiver<bool>,
+) -> ApiResult<()> {
+    socket
+        .send(Message::Text(ready.to_string().into()))
+        .await
+        .map_err(ApiError::internal)?;
+    loop {
+        if *shutdown.borrow() {
+            return Ok(());
+        }
+        let rows = state
+            .database
+            .events_after(&agent, cursor, EVENT_PAGE)
+            .await?;
+        if !rows.is_empty() {
+            for row in rows {
+                cursor = row.cursor;
+                socket
+                    .send(Message::Text(row.envelope().to_string().into()))
+                    .await
+                    .map_err(ApiError::internal)?;
+            }
+            continue;
+        }
+        let message = tokio::select! {
+            _ = shutdown.changed() => return Ok(()),
+            update = changed.recv() => {
+                if matches!(update, Err(broadcast::error::RecvError::Closed)) { return Ok(()); }
+                continue;
+            }
+            message = socket.recv() => message,
+        };
+        let Some(Ok(message)) = message else {
+            return Ok(());
+        };
+        match message {
+            Message::Text(encoded) => {
+                let value: Value = serde_json::from_str(&encoded).map_err(ApiError::internal)?;
+                let reply = match value["type"].as_str() {
+                    Some("ping") => Some(json!({"type": "pong"})),
+                    Some("prompt") => {
+                        let body: Submission =
+                            serde_json::from_value(value).map_err(ApiError::internal)?;
+                        let id = body
+                            .id
+                            .clone()
+                            .ok_or_else(|| ApiError::bad("invalid_id", "prompt requires id"))?;
+                        let mut request_headers = headers.clone();
+                        request_headers
+                            .insert("idempotency-key", id.parse().map_err(ApiError::internal)?);
+                        match submit_turn(
+                            State(state.clone()),
+                            Path(agent.clone()),
+                            request_headers,
+                            Json(body),
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                // A retry must acknowledge an already-retained turn even
+                                // when its event precedes this connection's replay cursor.
+                                let turn = state.database.turn(&id).await?;
+                                let acknowledgement =
+                                    turn.terminal_cursor.unwrap_or(turn.accepted_cursor);
+                                if acknowledgement <= cursor {
+                                    state
+                                        .database
+                                        .events_after(&agent, acknowledgement - 1, 1)
+                                        .await?
+                                        .first()
+                                        .map(StoredEvent::envelope)
+                                } else {
+                                    // Deliver new events in cursor order, including the
+                                    // nested terminal before its managed completion.
+                                    None
+                                }
+                            }
+                            Err(error) => Some(
+                                json!({"type": "error", "code": error.code, "message": error.message}),
+                            ),
+                        }
+                    }
+                    _ => Some(
+                        json!({"type": "error", "code": "invalid_command", "message": "unsupported command"}),
+                    ),
+                };
+                if let Some(reply) = reply {
+                    socket
+                        .send(Message::Text(reply.to_string().into()))
+                        .await
+                        .map_err(ApiError::internal)?;
+                }
+            }
+            Message::Ping(payload) => socket
+                .send(Message::Pong(payload))
+                .await
+                .map_err(ApiError::internal)?,
+            Message::Close(_) => return Ok(()),
+            _ => {}
+        }
+    }
+}
+
 async fn events(
     State(state): State<AppState>,
     Path(agent): Path<String>,
@@ -1508,12 +1659,28 @@ fn valid_tool_catalog(encoded: &str) -> bool {
     if catalog.kind != "catalog" || catalog.tools.len() > 256 {
         return false;
     }
+    if catalog
+        .attachment_id
+        .is_some_and(|id| nanocodex::tools::attachment::AttachmentMetadata::named(id).is_err())
+        || catalog.machines.len() > 1
+        || catalog.machines.into_iter().any(|machine| {
+            nanocodex::tools::attachment::AttachmentMachine::new(
+                machine.id,
+                machine.name,
+                machine.workspace,
+                machine.capabilities,
+            )
+            .is_err()
+        })
+    {
+        return false;
+    }
     let mut names = HashSet::new();
     let mut identities = HashSet::new();
     for entry in catalog.tools {
         if validate_id(&entry.provider).is_err()
             || validate_id(&entry.remote_name).is_err()
-            || !(1..=120_000).contains(&entry.timeout_ms)
+            || !(1..=9_007_199_254_740_991).contains(&entry.timeout_ms)
             || entry
                 .summary
                 .as_ref()
@@ -1774,6 +1941,38 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tool_catalog_accepts_current_attachment_metadata_and_rejects_invalid_values() {
+        let mut catalog = json!({
+            "type": "catalog", "tools": [], "attachment_id": "laptop",
+            "machines": [{"id": "laptop", "name": "Laptop", "workspace": "/workspace", "capabilities": ["exec"]}]
+        });
+        assert!(valid_tool_catalog(&catalog.to_string()));
+        catalog["machines"][0]["workspace"] = json!("");
+        assert!(!valid_tool_catalog(&catalog.to_string()));
+        catalog["machines"] = json!([]);
+        catalog["attachment_id"] = json!("invalid/id");
+        assert!(!valid_tool_catalog(&catalog.to_string()));
+        assert!(valid_tool_catalog(r#"{"type":"catalog","tools":[]}"#));
+        assert!(!valid_tool_catalog(
+            r#"{"type":"catalog","tools":[],"unknown":true}"#
+        ));
+    }
+
+    #[test]
+    fn tool_catalog_accepts_the_runtime_timeout_range() {
+        let mut catalog = json!({"type": "catalog", "tools": [{
+            "provider": "native", "remote_name": "exec_command", "parallel_safe": true,
+            "timeout_ms": 9_007_199_254_740_991_u64,
+            "definition": {"type": "function", "name": "exec_command", "description": "Run a command", "strict": false, "parameters": {}}
+        }]});
+        assert!(valid_tool_catalog(&catalog.to_string()));
+        for invalid in [0, 9_007_199_254_740_992_u64] {
+            catalog["tools"][0]["timeout_ms"] = json!(invalid);
+            assert!(!valid_tool_catalog(&catalog.to_string()));
+        }
+    }
+
     #[test]
     fn bearer_and_cursor_validation_are_exact() {
         assert!(
