@@ -994,12 +994,11 @@ body.agent-viewport-locked {
 }
 
 .button--medium {
-  background: color-mix(in srgb, var(--grey-300) 60%, transparent);
-  backdrop-filter: blur(12px);
+  background: var(--grey-300);
 }
 
 html[data-theme="dark"] .button--medium {
-  background: color-mix(in srgb, var(--grey-600) 58%, transparent);
+  background: var(--grey-700);
 }
 
 .button--medium:hover,
@@ -3319,7 +3318,15 @@ html[data-theme="dark"] .tui-syntax .shiki span {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
   }
+}
+
+/* Keep translucency on navigation/overlays, with an opaque reading surface
+   when the system asks for less transparency. */
+@media (prefers-reduced-transparency: reduce) {
+  :root, html[data-theme="light"] { --surface-overlay: var(--surface-subtle); }
+  .overlay { backdrop-filter: none; }
 }
 
 /* Compact full-height workspaces for Code and Commits. */
