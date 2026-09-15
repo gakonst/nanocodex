@@ -872,7 +872,11 @@ async fn terminal_long_session_keeps_steering_queue_edits_and_reconnects_usable(
             .terminal
             .wait_no_text("editing queued message")
             .await;
+        fixture.terminal.wait_text("e edit").await;
         fixture.terminal.input("\t");
+        // Observe the focus change before disconnecting: offline input handling
+        // intentionally ignores Tab, so a queued key can otherwise lose the race.
+        fixture.terminal.wait_no_text("e edit").await;
 
         let instruction = format!("LONG_SESSION_STEER_{round:02}");
         if round % 12 == 11 {
