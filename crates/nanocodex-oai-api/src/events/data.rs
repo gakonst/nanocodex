@@ -75,7 +75,7 @@ pub enum AssistantEvent {
 pub struct AssistantDelta {
     /// Logical model-call index.
     pub model_call_index: u32,
-    /// Provider output-item identity when supplied.
+    /// Stable output-item identity; uses the provider identity when available.
     pub item_id: Option<String>,
     /// Commentary or final-answer phase when supplied.
     pub phase: Option<MessagePhase>,
@@ -88,7 +88,7 @@ pub struct AssistantDelta {
 pub struct AssistantMessage {
     /// Logical model-call index.
     pub model_call_index: u32,
-    /// Provider output-item identity when supplied.
+    /// Stable output-item identity; uses the provider identity when available.
     pub item_id: Option<String>,
     /// Commentary or final-answer phase when supplied.
     pub phase: Option<MessagePhase>,

@@ -121,6 +121,9 @@ pub(super) struct SessionContextWindow {
 
 #[derive(Serialize)]
 pub(super) struct SessionMeta {
+    pub(super) root_session_id: String,
+    pub(super) conversation_role: &'static str,
+    pub(super) origin_kind: String,
     pub(super) session_id: String,
     pub(super) id: String,
     pub(super) prompt_cache_key: String,

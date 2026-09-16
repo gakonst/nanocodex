@@ -89,12 +89,15 @@ impl Execution {
         &self,
         prompt: &nanocodex_oai_api::Prompt,
         effort: nanocodex_oai_api::Thinking,
+        turn_id: Option<&str>,
     ) -> Turn {
-        Turn(
-            self.recorder
-                .as_ref()
-                .map(|_| RolloutTurn::started(prompt, effort)),
-        )
+        Turn(self.recorder.as_ref().map(|_| {
+            let mut turn = RolloutTurn::started(prompt, effort);
+            if let Some(id) = turn_id {
+                turn.set_id(id);
+            }
+            turn
+        }))
     }
 
     pub(super) fn start_compaction(&self, effort: nanocodex_oai_api::Thinking) -> Turn {

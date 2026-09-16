@@ -682,6 +682,42 @@ async fn records_compaction_as_a_replacement_history_boundary() {
 }
 
 #[tokio::test]
+async fn lineage_distinguishes_side_conversations_and_preserves_the_root_across_forks() {
+    let home = tempdir().unwrap();
+    let config = RolloutConfig::new(home.path());
+    let independent = config.clone();
+    let root = "019c0d31-c308-7d91-bff4-5dca82d15ac4";
+    let parent = "019c0d31-c308-7d91-bff4-5dca82d15ac5";
+    config.root_session_id.set(root.into()).unwrap();
+    assert!(independent.root_session_id.get().is_none());
+    let child_config = config.for_new_thread();
+    let recorder = RolloutRecorder::create(
+        &Handle::current(),
+        RolloutCreate {
+            config: &child_config,
+            thread_id: "019c0d31-c308-7d91-bff4-5dca82d15ac6",
+            prompt_cache_key: "cache",
+            cwd: Path::new("/worktree"),
+            instructions: "instructions",
+            origin: RolloutOrigin {
+                kind: "side_conversation",
+                parent_thread_id: Some(parent),
+            },
+            resume_history_len: None,
+        },
+    )
+    .unwrap();
+    let records = lines(&recorder);
+    assert_eq!(records[0]["payload"]["root_session_id"], root);
+    assert_eq!(records[0]["payload"]["parent_thread_id"], parent);
+    assert_eq!(
+        records[0]["payload"]["conversation_role"],
+        "side_conversation"
+    );
+    assert_eq!(records[0]["payload"]["origin_kind"], "fork");
+}
+
+#[tokio::test]
 async fn fork_metadata_retains_parent_identity() {
     let home = tempdir().expect("temporary Codex home");
     let parent = "019c0d31-c308-7d91-bff4-5dca82d15ac5";

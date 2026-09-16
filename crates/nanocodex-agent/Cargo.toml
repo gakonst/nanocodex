@@ -47,10 +47,10 @@ tokio = { workspace = true, features = ["macros", "sync"] }
 tower = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 web-time = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
-uuid = { workspace = true, optional = true }
 
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
 wasm-bindgen-futures = { workspace = true, optional = true }

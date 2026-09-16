@@ -1,5 +1,6 @@
 import { beginHandTiming, finishHandTiming, timeHandStage } from "./hand-timing";
 import { PreparedPersonalizationCache, personalizedVoiceContext, type PersonalizationScope, type PersonalizationSnapshot } from "./personalization";
+import { CommandReceipts } from "./command-receipts";
 import { prepareEnvironment } from "./environment-setup";
 import { SessionOperations } from "./session-operations";
 import { accountToolsEnabled, parseConfiguration, type AgentConfiguration } from "./agent-configuration";
@@ -2325,7 +2326,7 @@ async function managedFetchRoute(
       );
     }
     const turnMatch = resource.match(
-      /^turns\/([^/]+)(?:\/(steer|withdraw-steer|cancel))?$/,
+      /^turns\/([^/]+)(?:\/(steer|withdraw-steer|cancel|command-status))?$/,
     );
     if (turnMatch) {
       // SDK paths percent-encode ':' in cron and other stable turn IDs.
@@ -2337,7 +2338,7 @@ async function managedFetchRoute(
         return json({ error: "invalid_turn_id" }, { status: 400 });
       }
       const action = turnMatch[2];
-      const expectedMethod = action === undefined ? "GET" : "POST";
+      const expectedMethod = action === undefined || action === "command-status" ? "GET" : "POST";
       if (request.method !== expectedMethod) {
         return json({ error: "method_not_allowed" }, { status: 405 });
       }
@@ -2882,10 +2883,12 @@ export class DurableAgentSession extends DurableComputerSession {
   #deletionTask?: Promise<void>;
   #deletionGeneration = 0;
   #runtimeOwnershipGeneration = 0;
+  readonly #commandReceipts: CommandReceipts;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx = this.ctx;
+    this.#commandReceipts = new CommandReceipts(ctx.storage);
     initializeTurnInputs(ctx.storage, "managed_history_projection_chunks");
     this.#cronTriggers = new CronTriggers(ctx.storage);
     this.#startupContext = new ManagedStartupContext(ctx.storage);
@@ -3645,7 +3648,7 @@ export class DurableAgentSession extends DurableComputerSession {
         headers: { "cache-control": "no-store" },
       });
     }
-    const turnRoute = url.pathname.match(/^\/turns\/([A-Za-z0-9._:-]{1,128})(?:\/(steer|withdraw-steer|cancel))?$/);
+    const turnRoute = url.pathname.match(/^\/turns\/([A-Za-z0-9._:-]{1,128})(?:\/(steer|withdraw-steer|cancel|command-status))?$/);
     if (turnRoute) {
       if (this.#deleting) return json({ error: "agent_deleting" }, { status: 409 });
       const turnId = turnRoute[1]!;
@@ -3657,6 +3660,9 @@ export class DurableAgentSession extends DurableComputerSession {
           return managedErrorResponse(error, "turn_archive_unavailable");
         }
       }
+      if (request.method === "GET" && turnRoute[2] === "command-status") {
+        return this.#commandReceipts.status(turnId, request.headers.get("idempotency-key") ?? "", this.#commandAuthority(turnAuthorization));
+      }
       if (request.method === "POST" && turnRoute[2] === "steer") {
         return this.#steerHttpTurn(turnId, request, turnAuthorization);
       }
@@ -3664,7 +3670,9 @@ export class DurableAgentSession extends DurableComputerSession {
         return this.#withdrawSteerHttpTurn(turnId, request, turnAuthorization);
       }
       if (request.method === "POST" && turnRoute[2] === "cancel") {
-        return this.#cancelHttpTurn(turnId);
+        const key = request.headers.get("idempotency-key");
+        return key ? this.#commandReceipts.run(turnId, key, this.#commandAuthority(turnAuthorization), "cancel", null,
+          () => this.#cancelHttpTurn(turnId)) : this.#cancelHttpTurn(turnId);
       }
       return json({ error: "method_not_allowed" }, { status: 405 });
     }
@@ -5523,6 +5531,10 @@ export class DurableAgentSession extends DurableComputerSession {
     }
   }
 
+  #commandAuthority(authorization: TurnAuthorization): string {
+    return authorization.connectGrant === undefined ? "account" : JSON.stringify(authorization);
+  }
+
   async #steerHttpTurn(
     id: string,
     request: Request,
@@ -5543,8 +5555,14 @@ export class DurableAgentSession extends DurableComputerSession {
       if (value.message_id !== undefined && (typeof value.message_id !== "string" || !TURN_ID.test(value.message_id))) {
         throw new ProtocolError("invalid_request", "message_id must be a valid identifier");
       }
-      await this.#steerManagedTurn(id, value.input as PromptInput, authorization, value.message_id as string | undefined);
-      return json({ turn_id: id, state: "steering" }, { status: 202 });
+      const execute = async () => {
+        try {
+          await this.#steerManagedTurn(id, value.input as PromptInput, authorization, value.message_id as string | undefined);
+          return json({ turn_id: id, state: "steering" }, { status: 202 });
+        } catch (error) { return managedErrorResponse(error, "steer_failed"); }
+      };
+      const key = request.headers.get("idempotency-key");
+      return key ? await this.#commandReceipts.run(id, key, this.#commandAuthority(authorization), "steer", value, execute) : await execute();
     } catch (error) {
       if (error instanceof SyntaxError)
         return json({ error: "invalid_json" }, { status: 400 });
@@ -6584,6 +6602,7 @@ export class DurableAgentSession extends DurableComputerSession {
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_deliveries");
       this.ctx.storage.sql.exec("DELETE FROM managed_turns");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_cancel_intents");
+      this.ctx.storage.sql.exec("DELETE FROM managed_command_receipts");
       this.ctx.storage.sql.exec("DELETE FROM history_projection_outbox");
       this.ctx.storage.sql.exec("DELETE FROM turn_history_citations");
       this.#eventLog.clear();

@@ -1,6 +1,7 @@
 mod app;
 mod clipboard;
 mod composer;
+mod control;
 mod diff;
 mod eval_attach;
 mod external_editor;
@@ -140,6 +141,12 @@ impl InitialPrompt {
 }
 
 enum WorkerCommand {
+    AttachControl(nanocodex_tui_control::Bridge),
+    Control {
+        command: nanocodex_tui_control::Command,
+        target: PaneId,
+        input_id: Option<u64>,
+    },
     Prompt {
         target: PaneId,
         prompt_id: u64,
@@ -203,6 +210,12 @@ enum WorkerCommand {
 }
 
 enum WorkerEvent {
+    ExternalRejected {
+        target: PaneId,
+        input_id: u64,
+        steer: bool,
+        error: String,
+    },
     TurnTraceStarted {
         target: PaneId,
         id: u64,
@@ -391,6 +404,7 @@ struct BtwWorker {
 }
 
 struct TrackedTurn {
+    canonical_id: String,
     id: u64,
     prompt_id: u64,
     control: TurnControl,
@@ -469,6 +483,7 @@ enum UiUpdate {
 }
 
 struct UiModel {
+    control: Option<nanocodex_tui_control::Bridge>,
     app: App,
     root_session_id: Arc<str>,
     agent_events_open: bool,
@@ -520,6 +535,7 @@ impl MouseScrollBurst {
 impl UiModel {
     const fn new(app: App, root_session_id: Arc<str>) -> Self {
         Self {
+            control: None,
             app,
             root_session_id,
             agent_events_open: true,
@@ -551,6 +567,18 @@ impl UiModel {
         action: UiAction,
         commands: &mpsc::UnboundedSender<WorkerCommand>,
     ) -> Result<UiUpdate> {
+        if let Some(bridge) = &self.control {
+            match &action {
+                UiAction::Agent(event) => {
+                    bridge.publish("agent.event", serde_json::to_value(event)?)
+                }
+                UiAction::Worker(
+                    WorkerEvent::BtwAgentEvent { event, .. }
+                    | WorkerEvent::MainBranchAgentEvent { event, .. },
+                ) => bridge.publish("agent.event", serde_json::to_value(&event.event)?),
+                _ => {}
+            }
+        }
         match action {
             UiAction::Terminal(event) => {
                 let mouse_scroll = match event {
@@ -784,16 +812,29 @@ pub(crate) async fn run(
     app.set_math_renderer(math_renderer.clone());
     app.restore_transcript(restored_transcript);
     let mut ui = UiModel::new(app, Arc::clone(&root_session_id));
+    let mut control_server = if nanocodex_tui_control::Server::enabled() {
+        Some(nanocodex_tui_control::Server::start("native")?)
+    } else {
+        None
+    };
+    if let Some(server) = &control_server {
+        ui.control = Some(server.bridge.clone());
+        worker_tx.send(WorkerCommand::AttachControl(server.bridge.clone()))?;
+    }
     let mut scheduler = RenderScheduler::new(STREAM_FRAME_INTERVAL, Instant::now());
     let mut stream_telemetry = StreamTelemetry::default();
     let mut view_telemetry = ViewTelemetry::new(Arc::clone(&root_session_id));
     let mut notifier = Notifier::from_env();
     let mut subagent_completion_tracker = SubagentCompletionTracker::default();
+    let mut control_subagents = HashMap::new();
 
     submit_initial_prompt(&mut ui.app, &root_session_id, &worker_tx, initial_prompt)?;
 
     let loop_result: Result<()> = async {
         loop {
+            if let Some(bridge) = &ui.control {
+                bridge.state(active_session_id(&ui.app, &root_session_id), ui.app.control_snapshot());
+            }
             view_telemetry.observe(&ui.app);
             render_due_frame(
                 &mut ui,
@@ -806,6 +847,9 @@ pub(crate) async fn run(
 
             let render_deadline = scheduler.deadline();
             tokio::select! {
+            command = async { match &mut control_server { Some(server) => server.commands.recv().await, None => std::future::pending().await } } => {
+                if let Some(command) = command { control::dispatch(&mut ui, command, &worker_tx)?; scheduler.request_immediate(Instant::now()); }
+            }
             () = async {
                 if let Some(deadline) = render_deadline {
                     sleep_until(deadline.into()).await;
@@ -820,6 +864,10 @@ pub(crate) async fn run(
                     math_renderer.reupload_all();
                     ui.app.invalidate_math_layouts();
                 } else if update == UiUpdate::ExternalEditor {
+                    if let Some(bridge)=&ui.control {
+                        let mut state=ui.app.control_snapshot(); state["ui_blocked"]=serde_json::json!(true); state["menu"]=serde_json::json!("external_editor");
+                        bridge.state(active_session_id(&ui.app,&root_session_id),state);
+                    }
                     input_events = run_external_editor(input_events, &mut terminal, &mut ui.app).await?;
                     math_renderer.reupload_all();
                     ui.app.invalidate_math_layouts();
@@ -863,6 +911,17 @@ pub(crate) async fn run(
             }
             update = receive_subagent_update(&mut subagent_updates) => {
                 if let Some(update) = update {
+                    if let Some(bridge)=&ui.control {
+                        match &update.update {
+                            AgentUpdate::Event {event,..} => bridge.publish("agent.event",serde_json::to_value(event)?),
+                            AgentUpdate::Added(agent) => {
+                                let parent=agent.parent.and_then(|id|control_subagents.get(&id).cloned()).unwrap_or_else(||update.root_session_id.clone());
+                                control_subagents.insert(agent.id,agent.session_id.clone());
+                                bridge.conversation(nanocodex_tui_control::Conversation {session_id:agent.session_id.clone(),root_session_id:Some(update.root_session_id.clone()),parent_session_id:Some(parent),origin:"spawn".into(),role:"subagent".into(),rollout_path:None});
+                            }
+                            _ => {}
+                        }
+                    }
                     if handle_subagent_update(
                         &mut subagent_completion_tracker,
                         update,
@@ -1199,6 +1258,12 @@ fn handle_worker_update(
             request_navigated_branch_switch(app, commands)?;
         }
         WorkerEvent::TurnTraceStarted { .. } | WorkerEvent::TurnTraceRejected { .. } => {}
+        WorkerEvent::ExternalRejected {
+            target,
+            input_id,
+            steer,
+            error,
+        } => app.reject_external(target, input_id, steer, error),
         WorkerEvent::SteerAdmitted { target, id } => app.steer_admitted(target, id),
         WorkerEvent::SteerQueued { target, id, prompt } => {
             app.steer_queued(target, id, prompt);
@@ -1380,6 +1445,7 @@ fn spawn_agent_worker(
     tokio::spawn(async move {
         let (finished_tx, mut finished_rx) = mpsc::unbounded_channel::<FinishedTurn>();
         let mut worker = AgentWorker {
+            control: None,
             main: MainWorkerBranch {
                 id: 0,
                 request_id: root_session_id,
@@ -1471,6 +1537,7 @@ fn forward_voice_events(
 }
 
 struct AgentWorker {
+    control: Option<nanocodex_tui_control::Bridge>,
     main: MainWorkerBranch,
     archived_main: Vec<MainWorkerBranch>,
     next_turn_id: u64,
@@ -1488,6 +1555,40 @@ struct AgentWorker {
 impl AgentWorker {
     async fn handle_command(&mut self, command: WorkerCommand) {
         match command {
+            WorkerCommand::AttachControl(bridge) => self.control = Some(bridge),
+            WorkerCommand::Control {
+                command,
+                target,
+                input_id,
+            } => {
+                if let Some(input_id) = input_id {
+                    let steer = command.request.method == "steer";
+                    let (reply, receive) = tokio::sync::oneshot::channel();
+                    self.control_command(
+                        nanocodex_tui_control::Command {
+                            request: command.request.clone(),
+                            reply,
+                        },
+                        target,
+                        Some(input_id),
+                    )
+                    .await;
+                    let result = receive
+                        .await
+                        .unwrap_or_else(|_| nanocodex_tui_control::unknown("worker stopped"));
+                    if result["status"] != "accepted" {
+                        let _ = self.updates.send(WorkerEvent::ExternalRejected {
+                            target,
+                            input_id,
+                            steer,
+                            error: result.to_string(),
+                        });
+                    }
+                    command.finish(result);
+                } else {
+                    self.control_command(command, target, None).await;
+                }
+            }
             WorkerCommand::Prompt {
                 target,
                 prompt_id,
@@ -1543,6 +1644,7 @@ impl AgentWorker {
             }
             WorkerCommand::Voice(control) => self.control_voice(control).await,
         }
+        self.publish_control_conversations();
     }
 
     async fn control_voice(&mut self, control: VoiceControl) {
@@ -2100,7 +2202,13 @@ impl AgentWorker {
             tui.btw.session_id = tracing::field::Empty,
             status = tracing::field::Empty,
         );
-        match self.main.agent.fork().instrument(span.clone()).await {
+        match self
+            .main
+            .agent
+            .fork_side_conversation()
+            .instrument(span.clone())
+            .await
+        {
             Ok((agent, events)) => {
                 let request_id = Arc::<str>::from(events.request_id());
                 span.record("tui.btw.session_id", request_id.as_ref());
@@ -2383,6 +2491,24 @@ impl AgentWorker {
     fn finish_turn(&mut self, finished: FinishedTurn) {
         let main_branch_id = finished.main_branch_id;
         let completed_durably = finished.result.is_some() && finished.error.is_none();
+        if completed_durably && let Some(bridge) = &self.control {
+            let branch = match finished.target {
+                PaneId::Main => std::iter::once(&self.main)
+                    .chain(&self.archived_main)
+                    .find(|branch| branch.id == main_branch_id.unwrap_or(self.main.id))
+                    .map(|branch| (&branch.agent, &branch.turns)),
+                PaneId::Btw(id) => self
+                    .btw
+                    .as_ref()
+                    .filter(|branch| branch.id == id)
+                    .map(|branch| (&branch.agent, &branch.turns)),
+            };
+            if let Some((agent, turns)) = branch
+                && let Some(turn) = turns.iter().find(|turn| turn.id == finished.id)
+            {
+                bridge.publish("history.committed",serde_json::json!({"session_id":agent.session_id(),"turn_id":turn.canonical_id}));
+            }
+        }
         match finished.target {
             PaneId::Main => {
                 let branch_id = main_branch_id.unwrap_or(self.main.id);
@@ -2451,6 +2577,7 @@ async fn start_turn(
     {
         Ok(turn) => {
             *next_turn_id = next_turn_id.saturating_add(1);
+            let canonical_id = turn.id().to_owned();
             let control = turn.control();
             let finished = finished.clone();
             let agent = agent.clone();
@@ -2487,6 +2614,7 @@ async fn start_turn(
                 .instrument(span.clone()),
             );
             Some(TrackedTurn {
+                canonical_id,
                 id,
                 prompt_id,
                 control,

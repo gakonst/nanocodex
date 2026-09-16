@@ -128,6 +128,10 @@ enum RolloutTurnStatus {
 }
 
 impl RolloutTurn {
+    pub(crate) fn set_id(&mut self, id: &str) {
+        self.turn_id = id.to_owned();
+    }
+
     pub(crate) fn started(prompt: &Prompt, effort: Thinking) -> Self {
         Self {
             turn_id: uuid::Uuid::now_v7().to_string(),
@@ -204,6 +208,13 @@ impl RolloutRecorder {
             resume_history_len,
         } = request;
         if let Some(path) = &config.resume_path {
+            if let Ok(file) = File::open(path)
+                && let Some(Ok(line)) = BufReader::new(file).lines().next()
+                && let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
+                && let Some(root) = value["payload"]["root_session_id"].as_str()
+            {
+                let _ = config.root_session_id.set(root.to_owned());
+            }
             let history_len = resume_history_len.ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -226,10 +237,26 @@ impl RolloutRecorder {
         let timestamp = timestamp();
         let parent_thread_id = origin.parent_thread_id.map(ToOwned::to_owned);
         let meta = SessionMeta {
+            root_session_id: config
+                .root_session_id
+                .get_or_init(|| thread_id.to_owned())
+                .clone(),
+            origin_kind: if origin.kind == "side_conversation" {
+                "fork"
+            } else {
+                origin.kind
+            }
+            .to_owned(),
+            conversation_role: match origin.kind {
+                "spawn" => "subagent",
+                "fork" => "branch",
+                "side_conversation" => "side_conversation",
+                _ => "root",
+            },
             session_id: thread_id.to_owned(),
             id: thread_id.to_owned(),
             prompt_cache_key: prompt_cache_key.to_owned(),
-            forked_from_id: (origin.kind == "fork")
+            forked_from_id: (matches!(origin.kind, "fork" | "side_conversation"))
                 .then(|| parent_thread_id.clone())
                 .flatten(),
             parent_thread_id,

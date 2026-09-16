@@ -31,6 +31,7 @@ impl Execution {
         &self,
         _prompt: &nanocodex_oai_api::Prompt,
         _effort: nanocodex_oai_api::Thinking,
+        _turn_id: Option<&str>,
     ) -> Turn {
         Turn
     }

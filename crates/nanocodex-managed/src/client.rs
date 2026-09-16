@@ -689,8 +689,8 @@ impl ManagedClient {
                 if *status == reqwest::StatusCode::SERVICE_UNAVAILABLE && code == "turn_recovering")
             {
                 // The service returns this only before calling turn.steer.
-                // A transport failure is ambiguous and must never be retried
-                // here because steering has no durable idempotency key.
+                // A transport failure is ambiguous. Identified commands retain a
+                // service receipt and must use command_status to reconcile it.
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
@@ -707,6 +707,43 @@ impl ManagedClient {
     pub async fn cancel(&self, agent_id: &str, turn_id: &str) -> Result<TurnAction, ManagedError> {
         self.turn_action(agent_id, turn_id, "cancel", None, None)
             .await
+    }
+
+    /// Cancels an exact turn with a durable service command receipt.
+    ///
+    /// # Errors
+    /// Returns a validation, transport, or backend failure; unknown delivery must not be retried under a new ID.
+    pub async fn cancel_with_id(
+        &self,
+        agent_id: &str,
+        turn_id: &str,
+        command_id: &str,
+    ) -> Result<TurnAction, ManagedError> {
+        validate_id("command", command_id)?;
+        self.turn_action(agent_id, turn_id, "cancel", None, Some(command_id))
+            .await
+    }
+
+    /// Reads the retained admission disposition of an identified steering or cancellation command.
+    ///
+    /// # Errors
+    /// Returns a validation, transport or HTTP failure.
+    pub async fn command_status(
+        &self,
+        agent_id: &str,
+        turn_id: &str,
+        command_id: &str,
+    ) -> Result<serde_json::Value, ManagedError> {
+        validate_id("agent", agent_id)?;
+        validate_id("turn", turn_id)?;
+        validate_id("command", command_id)?;
+        self.json(
+            Method::GET,
+            &format!("{}/turns/{turn_id}/command-status", agent_path(agent_id)),
+            None,
+            Some(command_id),
+        )
+        .await
     }
 
     /// Atomically withdraws an identified steer if it is still pending.
@@ -776,7 +813,7 @@ impl ManagedClient {
             Method::POST,
             &format!("{}/turns/{turn_id}/{action}", agent_path(agent_id)),
             body.as_deref(),
-            None,
+            message_id,
         )
         .await
     }
@@ -1254,7 +1291,8 @@ mod tests {
     #[tokio::test]
     async fn identified_steers_and_withdrawals_preserve_identity() {
         let app = Router::new()
-            .route("/v1/agents/agent-1/turns/turn-1/steer", axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
+            .route("/v1/agents/agent-1/turns/turn-1/steer", axum::routing::post(|headers: axum::http::HeaderMap, axum::Json(body): axum::Json<serde_json::Value>| async move {
+                assert_eq!(headers["idempotency-key"], "pending");
                 assert_eq!(body, serde_json::json!({"input": "correction", "message_id": "pending"}));
                 axum::Json(serde_json::json!({"turn_id": "turn-1", "state": "steering"}))
             }))

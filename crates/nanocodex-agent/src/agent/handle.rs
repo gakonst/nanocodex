@@ -156,7 +156,7 @@ impl AgentHandle {
     /// after the containing agent driver has stopped.
     pub async fn fork(&self) -> Result<(Nanocodex, AgentEvents)> {
         let commands = self.commands()?;
-        request_fork(&commands, &self.shutdown, None).await
+        request_fork(&commands, &self.shutdown, None, false).await
     }
 
     fn commands(&self) -> Result<mpsc::Sender<Command>> {
@@ -282,6 +282,11 @@ impl Nanocodex {
         }
         let key = BackendTurnKey(self.next_turn.fetch_add(1, Ordering::Relaxed));
         let (events, event_stream) = self.events.mirrored_channel();
+        #[cfg(feature = "openai")]
+        let turn_id = uuid::Uuid::now_v7().to_string();
+        #[cfg(not(feature = "openai"))]
+        let turn_id = format!("{}:{}", self.session_id, key.0);
+        let events = events.with_turn_id(turn_id.clone());
         let BackendTurn { request_id, result } = self
             .backend
             .submit(BackendPrompt {
@@ -293,6 +298,7 @@ impl Nanocodex {
             })
             .await?;
         Ok(Turn {
+            turn_id: self.canonical_turn_id(turn_id, request_id.as_deref()),
             control: TurnControl {
                 key,
                 backend: Arc::clone(&self.backend),
@@ -301,6 +307,14 @@ impl Nanocodex {
             events: event_stream,
             result,
         })
+    }
+
+    fn canonical_turn_id(&self, generated: String, request_id: Option<&str>) -> String {
+        #[cfg(feature = "openai")]
+        if self.local_session_id.is_some() {
+            return generated;
+        }
+        request_id.map(str::to_owned).unwrap_or(generated)
     }
 
     /// Routes live input into the active turn or starts a new turn when idle.
@@ -324,6 +338,11 @@ impl Nanocodex {
             .map_err(|error| NanocodexError::InvalidRequest(error.to_string()))?;
         let key = BackendTurnKey(self.next_turn.fetch_add(1, Ordering::Relaxed));
         let (events, event_stream) = self.events.mirrored_channel();
+        #[cfg(feature = "openai")]
+        let turn_id = uuid::Uuid::now_v7().to_string();
+        #[cfg(not(feature = "openai"))]
+        let turn_id = format!("{}:{}", self.session_id, key.0);
+        let events = events.with_turn_id(turn_id.clone());
         match self
             .backend
             .route(BackendPrompt {
@@ -337,6 +356,7 @@ impl Nanocodex {
         {
             Ok(BackendPromptRoute::Started(BackendTurn { request_id, result })) => {
                 Ok(PromptRoute::Started(Turn {
+                    turn_id: self.canonical_turn_id(turn_id, request_id.as_deref()),
                     control: TurnControl {
                         key,
                         backend: Arc::clone(&self.backend),
@@ -497,13 +517,18 @@ impl Nanocodex {
         self.backend.fork(None).await
     }
 
-    /// Forks from an exact historical completed turn while this agent may keep
-    /// advancing on its current branch.
+    /// Forks a separately identified side conversation from the latest safe boundary.
     ///
     /// # Errors
+    /// Returns an error when the backend cannot fork a side conversation.
+    pub async fn fork_side_conversation(&self) -> Result<(Self, AgentEvents)> {
+        self.backend.fork_side_conversation().await
+    }
+
+    /// Forks from an exact historical completed turn.
     ///
-    /// Returns an error when the result belongs to another conversation or the
-    /// driver stopped.
+    /// # Errors
+    /// Returns an error if the checkpoint belongs to another conversation.
     pub async fn fork_from(&self, completed: &TurnResult) -> Result<(Self, AgentEvents)> {
         self.backend.fork(Some(completed.clone())).await
     }
@@ -514,8 +539,10 @@ pub(super) async fn request_fork(
     commands: &mpsc::Sender<Command>,
     shutdown: &DriverShutdown,
     checkpoint: Option<Arc<CommittedSession>>,
+    side_conversation: bool,
 ) -> Result<(Nanocodex, AgentEvents)> {
     request_command(commands, shutdown, |result| Command::Fork {
+        side_conversation,
         checkpoint,
         result,
     })

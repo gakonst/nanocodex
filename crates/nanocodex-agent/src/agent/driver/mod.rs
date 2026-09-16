@@ -1070,9 +1070,12 @@ where
                     );
                 });
             }
-            let execution_turn =
-                self.execution
-                    .start_turn(&prompt, thinking, execution_operation.clone());
+            let execution_turn = self.execution.start_turn(
+                &prompt,
+                thinking,
+                execution_operation.clone(),
+                events.turn_id(),
+            );
             let retained_steers = match execution_turn.begin().await {
                 Ok(steers) => steers,
                 Err(error) => {

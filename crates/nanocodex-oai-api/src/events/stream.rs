@@ -647,15 +647,35 @@ fn wait_for_terminal_claim(state: &AtomicU64, observed: u64) {
 #[derive(Clone)]
 pub struct AgentEventPublisher {
     channel: EventChannel,
+    turn_id: Option<Arc<str>>,
 }
 
 impl AgentEventPublisher {
+    /// Associates newly emitted local events with a stable turn identity.
+    #[must_use]
+    pub fn with_turn_id(mut self, id: impl Into<Arc<str>>) -> Self {
+        self.turn_id = Some(id.into());
+        self
+    }
+
+    /// Canonical local turn identity, when this publisher belongs to a turn.
+    #[must_use]
+    pub fn turn_id(&self) -> Option<&str> {
+        self.turn_id.as_deref()
+    }
+
     /// Creates a publisher and its independently consumed session event stream.
     #[must_use]
     pub fn channel(request_id: impl Into<Arc<str>>) -> (Self, AgentEvents) {
         let request_id = request_id.into();
         let (channel, events) = EventChannel::channel(request_id);
-        (Self { channel }, events)
+        (
+            Self {
+                channel,
+                turn_id: None,
+            },
+            events,
+        )
     }
 
     /// Returns the stable request/session identity accepted by this publisher.
@@ -679,7 +699,13 @@ impl AgentEventPublisher {
     #[must_use]
     pub fn mirrored_channel(&self) -> (Self, AgentEvents) {
         let (channel, events) = self.channel.mirrored_channel();
-        (Self { channel }, events)
+        (
+            Self {
+                channel,
+                turn_id: self.turn_id.clone(),
+            },
+            events,
+        )
     }
 
     /// Validates and publishes one already-formed canonical event.
@@ -734,6 +760,12 @@ pub struct EventSink {
 
 #[cfg(feature = "client")]
 impl EventSink {
+    /// Canonical turn identity of this emitter.
+    #[must_use]
+    pub fn turn_id(&self) -> Option<&str> {
+        self.publisher.turn_id()
+    }
+
     /// Creates an emission handle and its independently consumed event stream.
     #[must_use]
     pub fn channel(request_id: String) -> (Self, AgentEvents) {
@@ -798,7 +830,24 @@ impl EventSink {
             return Ok(seq);
         }
 
-        let payload = Arc::from(to_raw_value(&payload).map_err(EventError::Encode)?);
+        let payload = if let Some(turn_id) = self.publisher.turn_id.as_deref() {
+            // Flatten typed semantic payloads without parsing retained provider JSON.
+            #[derive(Serialize)]
+            struct TurnPayload<'a, P> {
+                #[serde(flatten)]
+                payload: &'a P,
+                turn_id: &'a str,
+            }
+            Arc::from(
+                to_raw_value(&TurnPayload {
+                    payload: &payload,
+                    turn_id,
+                })
+                .map_err(EventError::Encode)?,
+            )
+        } else {
+            Arc::from(to_raw_value(&payload).map_err(EventError::Encode)?)
+        };
         let seq = self.publisher.channel.allocate_sequence()?;
         let event = TimedAgentEvent {
             event: AgentEvent {

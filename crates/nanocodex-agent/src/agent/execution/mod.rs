@@ -642,9 +642,10 @@ impl Execution {
         prompt: &nanocodex_oai_api::Prompt,
         effort: nanocodex_oai_api::Thinking,
         operation_id: Option<String>,
+        turn_id: Option<&str>,
     ) -> ExecutionTurn {
         ExecutionTurn {
-            platform: self.platform.start_turn(prompt, effort),
+            platform: self.platform.start_turn(prompt, effort, turn_id),
             policy: self.policy.clone(),
             operation_id,
             operation_input: Some(ExecutionInput::Prompt(prompt.clone())),
