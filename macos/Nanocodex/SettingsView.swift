@@ -37,6 +37,10 @@ struct SettingsView: View {
                 if model.state.connected {
                     LabeledContent("Nanocodex account") { Label("Connected", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
                     Button("Manage account and connections") { model.openAccount() }.buttonStyle(.link)
+                    Button("Manage ChatGPT accounts…") { model.openAccount(chatGpt: true) }
+                        .buttonStyle(.link).accessibilityIdentifier("chatgpt-accounts")
+                    Text("Add accounts and view account status in your browser. Use the same Nanocodex account as this app.")
+                        .font(.caption).foregroundStyle(.secondary)
                     HStack {
                         Button("Switch Account…") { switchingAccount = true }.accessibilityIdentifier("switch-account")
                         Button("Sign Out") { Task { await model.disconnect() } }

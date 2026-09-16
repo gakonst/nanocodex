@@ -45,9 +45,25 @@ struct ConnectorsView: View {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return query.isEmpty || "Add MCP server".localizedCaseInsensitiveContains(query)
     }
+    private var showsChatGpt: Bool {
+        query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || "ChatGPT accounts model subscriptions".localizedCaseInsensitiveContains(query.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
 
     var body: some View {
         List {
+            if showsChatGpt, let url = model.chatGptAccountsURL {
+                Section {
+                    Link(destination: url) {
+                        Label("ChatGPT accounts", systemImage: "person.crop.circle.badge.plus")
+                    }
+                    .accessibilityIdentifier("chatgpt-accounts")
+                } header: {
+                    Text("Model access")
+                } footer: {
+                    Text("Add accounts and view account status on the web. Sign in with the same Nanocodex account you use here.")
+                }
+            }
             if center.loading, center.overview == nil {
                 HStack { Spacer(); ProgressView("Loading connectors"); Spacer() }
                     .listRowBackground(Color.clear)
@@ -135,7 +151,7 @@ struct ConnectorsView: View {
                     }
                 }
             }
-            if center.overview != nil, providers.isEmpty, mcpConnections.isEmpty, !showsAddMcp {
+            if center.overview != nil, providers.isEmpty, mcpConnections.isEmpty, !showsAddMcp, !showsChatGpt {
                 ContentUnavailableView.search(text: query)
                     .listRowBackground(Color.clear)
             }

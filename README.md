@@ -135,8 +135,18 @@ keys are separate from `nanocodex auth` (ChatGPT provider credentials) and
 [CLI account sign-in guide](bin/nanocodex/nanocodex2/README.md#account-sign-in)
 for environment overrides, storage, and key revocation.
 
-To connect multiple ChatGPT subscriptions to the same Nanocodex account, import
-one Codex login at a time and approve each connection:
+To connect multiple ChatGPT subscriptions, open **Connect → ChatGPT → Add account**
+on the web. Sign in to the additional ChatGPT account, enter the displayed code,
+then return to Nanocodex. The card lists every account ID, the default account,
+and any quota reset time. Adding an account preserves existing connections;
+**Disconnect all ChatGPT accounts** removes the entire pool.
+
+On iPhone and iPad, open **Connectors → ChatGPT accounts**. On Mac, open
+**Settings → Account → Manage ChatGPT accounts** (or **Connections** in the app
+menu). These open the same web page; sign in there with the same Nanocodex account
+used in the native app.
+
+From the CLI, import one Codex login at a time and approve each connection:
 
 ```sh
 nanocodex connect chatgpt --auth-file /path/to/account-one/auth.json

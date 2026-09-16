@@ -1,3 +1,5 @@
+import { ChatGptAccounts } from "./ChatGptAccounts";
+import { decodeCredentialStatus, decodeChatGptLogin, type CredentialStatus } from "./modelCredentials";
 import { useAccountQuery } from "./useAccountQuery";
 import { Check, CircleUserRound, Copy, X } from "lucide-react";
 import {
@@ -37,22 +39,6 @@ type ApiKeyMetadata = Readonly<{
 type NewApiKey = Readonly<{
   token: string;
   metadata: ApiKeyMetadata;
-}>;
-
-type CredentialStatus = Readonly<{
-  ready: boolean;
-  active: "openai" | "chatgpt" | null;
-  openai: { connected: boolean };
-  chatgpt: {
-    connected: boolean;
-    accountId?: string;
-    login?: {
-      verificationUrl: string;
-      userCode: string;
-      expiresAt: number;
-      pollAfterMs: number;
-    };
-  };
 }>;
 
 const API_KEY_ID = /^[A-Za-z0-9_-]{12}$/;
@@ -362,7 +348,7 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
                 {credentials?.chatgpt.login ? (
                   <div className="new-api-key" role="status">
                     <strong>Finish ChatGPT sign-in</strong>
-                    <p>Enter this code on the OpenAI page, then leave this panel open.</p>
+                    <p>Sign in to the ChatGPT account you want to add, enter this code, then return here. If the wrong account appears, switch accounts on the sign-in page.</p>
                     <code>{credentials.chatgpt.login.userCode}</code>
                     <a href={credentials.chatgpt.login.verificationUrl} target="_blank" rel="noreferrer">Open sign-in page</a>
                   </div>
@@ -402,18 +388,11 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
               />
               {credentials ? (
                 <>
-                  <AccountConnectionCard
-                    action={credentials.chatgpt.connected ? "Disconnect" : "Connect"}
-                    connected={credentials.chatgpt.connected}
-                    detail={credentials.chatgpt.connected
-                      ? credentials.chatgpt.accountId ?? "Connected to your ChatGPT account"
-                      : "Use your ChatGPT subscription for model access"}
+                  <ChatGptAccounts
+                    status={credentials.chatgpt}
                     disabled={providerOperation !== null}
-                    logo={<ConnectionLogo id="chatgpt" />}
-                    onClick={() => void (credentials.chatgpt.connected
-                      ? disconnectProvider("chatgpt")
-                      : startChatGpt())}
-                    title="ChatGPT"
+                    onAdd={() => void startChatGpt()}
+                    onDisconnect={() => void disconnectProvider("chatgpt")}
                   />
                   <AccountConnectionCard
                     action={credentials.openai.connected ? "Disconnect" : openAiExpanded ? "Close" : "Add key"}
@@ -610,41 +589,16 @@ function AccountMenuContent({ inline }: { inline: boolean }) {
                 >
                   {credentials ? (
                     <>
-                      {inline ? <AccountConnectionCard
-                        action={credentials.chatgpt.connected ? "Disconnect" : "Connect"}
-                        connected={credentials.chatgpt.connected}
-                        detail={credentials.chatgpt.connected
-                          ? credentials.chatgpt.accountId ?? "Connected to your ChatGPT account"
-                          : "Use your ChatGPT subscription for model access"}
+                      <ChatGptAccounts
+                        status={credentials.chatgpt}
                         disabled={!accountPersistent || providerOperation !== null}
-                        logo={<ConnectionLogo id="chatgpt" />}
-                        onClick={() => void (credentials.chatgpt.connected
-                          ? disconnectProvider("chatgpt")
-                          : startChatGpt())}
-                        title="ChatGPT"
-                      /> : <button
-                        className={`connection-card${credentials.chatgpt.connected ? " is-connected" : ""}${accountPersistent ? "" : " is-locked"}`}
-                        disabled={!accountPersistent || providerOperation !== null}
-                        onClick={() => void (credentials.chatgpt.connected
-                          ? disconnectProvider("chatgpt")
-                          : startChatGpt())}
-                        type="button"
-                      >
-                        <ConnectionLogo id="chatgpt" />
-                        <span className="connection-card-copy">
-                          <strong>ChatGPT</strong>
-                          <span>{credentials.chatgpt.connected
-                            ? credentials.chatgpt.accountId ?? "Connected to your ChatGPT account"
-                            : "Use your ChatGPT subscription for model access"}</span>
-                        </span>
-                        <span className="connection-card-action">
-                          {credentials.chatgpt.connected ? "Disconnect" : "Connect"}
-                        </span>
-                      </button>}
+                        onAdd={() => void startChatGpt()}
+                        onDisconnect={() => void disconnectProvider("chatgpt")}
+                      />
                       {credentials.chatgpt.login ? (
                         <div className="new-api-key" role="status">
                           <strong>Finish ChatGPT sign-in</strong>
-                          <p>Enter this code on the OpenAI page, then leave this panel open.</p>
+                          <p>Sign in to the ChatGPT account you want to add, enter this code, then return here. If the wrong account appears, switch accounts on the sign-in page.</p>
                           <code>{credentials.chatgpt.login.userCode}</code>
                           <a href={credentials.chatgpt.login.verificationUrl} target="_blank" rel="noreferrer">Open sign-in page</a>
                         </div>
@@ -863,48 +817,6 @@ function decodeApiKey(value: unknown): ApiKeyMetadata {
     || !Number.isFinite(createdAt)
   ) throw new Error("Invalid API key response.");
   return { id, label, prefix, createdAt };
-}
-
-function decodeCredentialStatus(value: unknown): CredentialStatus {
-  if (!isRecord(value) || !isRecord(value.openai) || !isRecord(value.chatgpt)) {
-    throw new Error("Invalid model connection response.");
-  }
-  const active = value.active === "openai" || value.active === "chatgpt" ? value.active : null;
-  if (typeof value.ready !== "boolean"
-    || typeof value.openai.connected !== "boolean"
-    || typeof value.chatgpt.connected !== "boolean") {
-    throw new Error("Invalid model connection response.");
-  }
-  const login = value.chatgpt.login === undefined
-    ? undefined
-    : decodeChatGptLogin(value.chatgpt.login);
-  return {
-    ready: value.ready,
-    active,
-    openai: { connected: value.openai.connected },
-    chatgpt: {
-      connected: value.chatgpt.connected,
-      ...(typeof value.chatgpt.account_id === "string" ? { accountId: value.chatgpt.account_id } : {}),
-      ...(login ? { login } : {}),
-    },
-  };
-}
-
-function decodeChatGptLogin(value: unknown): NonNullable<CredentialStatus["chatgpt"]["login"]> {
-  if (!isRecord(value)
-    || value.state !== "pending"
-    || typeof value.verification_url !== "string"
-    || typeof value.user_code !== "string"
-    || typeof value.expires_at !== "number"
-    || typeof value.poll_after_ms !== "number") {
-    throw new Error("Invalid ChatGPT sign-in response.");
-  }
-  return {
-    verificationUrl: value.verification_url,
-    userCode: value.user_code,
-    expiresAt: value.expires_at,
-    pollAfterMs: value.poll_after_ms,
-  };
 }
 
 function shortIdentity(id: string): string {

@@ -122,6 +122,10 @@ final class InboxModel: ObservableObject {
     private var client: ManagedClient?
     let voice = VoiceSession()
     private var accountCredential: AccountCredential?
+    var chatGptAccountsURL: URL? {
+        guard connected, !isDemo, let accountCredential else { return nil }
+        return URL(string: "/connect#chatgpt-accounts", relativeTo: URL(string: accountCredential.origin))?.absoluteURL
+    }
     private var deviceHand: HandSession?
     private let flipperZero = FlipperZeroBridge.shared
     private let bluetoothLE = BluetoothLEBridge.shared

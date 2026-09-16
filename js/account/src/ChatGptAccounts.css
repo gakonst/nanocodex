@@ -1,0 +1,19 @@
+.chatgpt-accounts { min-width: 0; scroll-margin-top: 24px; }
+.chatgpt-accounts > .connection-card { width: 100%; }
+.chatgpt-account-details { padding: 12px 14px; }
+.chatgpt-account-details ul { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.chatgpt-account-details li { display: grid; gap: 4px; }
+.chatgpt-account-details code { font-size: 12px; overflow-wrap: anywhere; user-select: all; }
+.chatgpt-account-details span, .chatgpt-account-details p { font-size: 12px; color: var(--text-muted); }
+.chatgpt-account-details button {
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chatgpt-account-details button:disabled { cursor: default; opacity: 0.5; }
