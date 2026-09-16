@@ -28,7 +28,7 @@
       "states": [
         {
           "ms": 842.3999999761581,
-          "status": "Connecting\u2026",
+          "status": "Connecting…",
           "connected": false,
           "controlling": false,
           "connecting": true
@@ -49,7 +49,7 @@
         },
         {
           "ms": 6348,
-          "status": "Reconnecting\u2026",
+          "status": "Reconnecting…",
           "connected": false,
           "controlling": false,
           "connecting": true
@@ -63,14 +63,14 @@
         },
         {
           "ms": 18180.099999964237,
-          "status": "Reconnecting\u2026",
+          "status": "Reconnecting…",
           "connected": false,
           "controlling": false,
           "connecting": true
         },
         {
           "ms": 19184.599999964237,
-          "status": "Reconnecting\u2026",
+          "status": "Reconnecting…",
           "connected": false,
           "controlling": false,
           "connecting": true
@@ -121,7 +121,7 @@
       "states": [
         {
           "ms": 394.19999998807907,
-          "status": "Connecting\u2026",
+          "status": "Connecting…",
           "connected": false,
           "controlling": false,
           "connecting": true
@@ -179,7 +179,7 @@
       "states": [
         {
           "ms": 480.19999998807907,
-          "status": "Connecting\u2026",
+          "status": "Connecting…",
           "connected": false,
           "controlling": false,
           "connecting": true
@@ -244,5 +244,28 @@
         }
       ]
     }
+  },
+  "published_app": {
+    "commit": "e425cc33153136808d515ef0275da3a2c0c2c261",
+    "workerVersion": "482baaa8-714d-4086-851a-7056e23f813b",
+    "asset": "index-BVm6TPRc.js",
+    "assetSha256": "bf27d5b1121adeb851e23bc3cebd9951e029e47092b74293a1c3a9b6a79c3b7a",
+    "method": "Actual published full app at /connect, real account response and production APIs through authenticated local proxy; no component fixture.",
+    "durationSeconds": 35,
+    "faults": [
+      "500 ms synthetic document visibility change",
+      "one synthetic HTTP503 renewal"
+    ],
+    "catalogAfterOpenMs": 45.80000001192093,
+    "openToVisibleMs": 1856.8999999761581,
+    "selectionToVisibleMs": 1811.0999999642372,
+    "viewerSocketOpens": 1,
+    "viewerSocketCloses": 0,
+    "statuses": [],
+    "lastStatus": "Watching",
+    "canvasWidth": 1280,
+    "canvasHeight": 800,
+    "successfulRenewals": 3,
+    "pageErrors": 0
   }
 }

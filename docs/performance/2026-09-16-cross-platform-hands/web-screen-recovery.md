@@ -39,6 +39,22 @@ baseline sessions on both publishers had no spontaneous reconnects over 65 secon
 the failing conditions were deliberately reproduced rather than attributed to a
 planned VM restart. Physical phone behavior has not been measured here.
 
+## Published app verification
+
+The account app was deployed from `e425cc33`, including master `9c072415`, as
+Cloudflare version `482baaa8-714d-4086-851a-7056e23f813b`. Container rollout was
+disabled. The published `index-BVm6TPRc.js` asset exactly matched the local build
+(SHA-256 `bf27d5b1121adeb851e23bc3cebd9951e029e47092b74293a1c3a9b6a79c3b7a`).
+
+A separate Chromium run loaded the full published app at `/connect` through the
+same authenticated proxy, using the real account response and no component
+fixture. After two idle seconds, the screen list appeared 45.8 ms after opening
+Screens and the WAN Linux desktop appeared after 1,856.9 ms. Over the next
+35 seconds, a synthetic 500 ms document-visibility change and one injected HTTP
+503 renewal kept the same viewer socket open. The toolbar stayed Watching with
+no intervening status changes, socket closes, or page errors. The renewal retry
+and subsequent renewals returned 200; the canvas remained 1280 by 800.
+
 ## Verification
 
 42 viewer tests cover the existing protocol and the new transient-disconnect,
