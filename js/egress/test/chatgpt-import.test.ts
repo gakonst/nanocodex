@@ -56,7 +56,11 @@ describe("Service-Binding-only ChatGPT credential import", () => {
     const first = await stub.resolveModelCredential(false);
     expect(first).toMatchObject({ status: 200, credential: { kind: "chatgpt", accountId: "rpc-account" } });
     expect(first.resolve_id).toMatch(/^[0-9a-f-]{36}$/);
-    expect(info).toHaveBeenCalledWith({ type: "egress.credential.rpc", resolve_id: first.resolve_id, status: 200 });
+    expect(info).toHaveBeenCalledWith({
+      type: "egress.credential.rpc", resolve_id: first.resolve_id, status: 200,
+      queue_ms: expect.any(Number), operation_ms: expect.any(Number),
+      activation_ms: expect.any(Number), activation_age_ms: expect.any(Number),
+    });
     expect(first.credential).toEqual((await internalCredential(stub)).body);
     // A recovery for an old revision must use the newer credential, not refresh it.
     expect((await stub.resolveModelCredential(true, -1)).credential).toEqual(first.credential);
