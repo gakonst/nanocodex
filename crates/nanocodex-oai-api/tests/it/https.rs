@@ -13,6 +13,23 @@ use tokio::{
 
 const TURN_STATE_HEADER: &str = "x-codex-turn-state";
 
+enum HttpsRetryFailure {
+    ServerError,
+    DisconnectBeforeHeaders,
+}
+
+impl HttpsRetryFailure {
+    async fn fail(self, stream: TcpStream) -> Result<()> {
+        match self {
+            Self::ServerError => send_http_status(stream, 500, "Internal Server Error").await,
+            Self::DisconnectBeforeHeaders => {
+                drop(stream);
+                Ok(())
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn https_invalid_tool_schema_identifies_the_failed_request_definition() -> Result<()> {
     let definition = json!({
@@ -101,6 +118,16 @@ async fn https_invalid_tool_schema_identifies_the_failed_request_definition() ->
 
 #[tokio::test]
 async fn https_turn_state_is_scoped_to_one_logical_turn_and_survives_retry() -> Result<()> {
+    assert_https_turn_state_survives_retry(HttpsRetryFailure::ServerError).await
+}
+
+#[tokio::test]
+async fn https_disconnect_before_response_headers_retries_with_history_and_turn_state() -> Result<()>
+{
+    assert_https_turn_state_survives_retry(HttpsRetryFailure::DisconnectBeforeHeaders).await
+}
+
+async fn assert_https_turn_state_survives_retry(failure: HttpsRetryFailure) -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let api_base_url = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
@@ -110,7 +137,7 @@ async fn https_turn_state_is_scoped_to_one_logical_turn_and_survives_retry() -> 
         send_http_events(
             first.stream,
             Some("sticky-turn-1"),
-            [completed_response("resp-first", "first")],
+            [completed_response("resp-first", "initial response")],
         )
         .await?;
 
@@ -124,7 +151,7 @@ async fn https_turn_state_is_scoped_to_one_logical_turn_and_survives_retry() -> 
             "HTTPS turn state belongs in the private request header, not the JSON body"
         );
         observed.push(turn_state(&continuation.headers));
-        send_http_status(continuation.stream, 500, "Internal Server Error").await?;
+        failure.fail(continuation.stream).await?;
 
         let retry = read_http_json(&listener).await?;
         assert!(
@@ -132,11 +159,18 @@ async fn https_turn_state_is_scoped_to_one_logical_turn_and_survives_retry() -> 
             "the SDK-owned retry must still switch to full-history replay"
         );
         assert!(!retry.body.to_string().contains("sticky-turn-1"));
+        let replay = retry.body["input"].to_string();
+        for retained in ["initial prompt", "initial response", "continuation prompt"] {
+            assert!(
+                replay.contains(retained),
+                "full-history retry omitted `{retained}`: {replay}"
+            );
+        }
         observed.push(turn_state(&retry.headers));
         send_http_events(
             retry.stream,
             None,
-            [completed_response("resp-second", "second")],
+            [completed_response("resp-second", "continuation response")],
         )
         .await?;
 
@@ -150,7 +184,7 @@ async fn https_turn_state_is_scoped_to_one_logical_turn_and_survives_retry() -> 
         send_http_events(
             next_turn.stream,
             Some("sticky-turn-2"),
-            [completed_response("resp-third", "third")],
+            [completed_response("resp-third", "new-turn response")],
         )
         .await?;
         Result::<Vec<Option<String>>>::Ok(observed)
@@ -167,12 +201,22 @@ async fn https_turn_state_is_scoped_to_one_logical_turn_and_survives_retry() -> 
 
     {
         let mut turn = session.turn();
-        assert_eq!(turn.create("first").await?.output_text(), "first");
-        assert_eq!(turn.create("continue").await?.output_text(), "second");
+        assert_eq!(
+            turn.create("initial prompt").await?.output_text(),
+            "initial response"
+        );
+        assert_eq!(
+            turn.create("continuation prompt").await?.output_text(),
+            "continuation response"
+        );
     }
     assert_eq!(
-        session.turn().create("new turn").await?.output_text(),
-        "third"
+        session
+            .turn()
+            .create("new-turn prompt")
+            .await?
+            .output_text(),
+        "new-turn response"
     );
 
     let observed = timeout(std::time::Duration::from_secs(5), server)
@@ -187,6 +231,32 @@ async fn https_turn_state_is_scoped_to_one_logical_turn_and_survives_retry() -> 
             None,
         ]
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn https_malformed_base_url_builder_error_is_terminal() -> Result<()> {
+    let openai = OpenAi::builder("test-key")
+        .transport(ResponsesTransport::Https)
+        .api_base_url("http://[::1")
+        .build()?;
+    let mut session = openai.instructions("Answer briefly.").build()?;
+    let mut turn = session.turn();
+    let error = timeout(std::time::Duration::from_secs(1), turn.create("question"))
+        .await
+        .map_err(|_| eyre!("malformed base URL did not fail promptly"))?
+        .expect_err("malformed base URL must fail");
+    let Some(ResponsesError::HttpRequest {
+        detail,
+        retryable,
+        timeout,
+    }) = error.responses_error()
+    else {
+        return Err(eyre!("expected an HTTPS request error, got {error}"));
+    };
+    assert!(detail.contains("builder error"), "{detail}");
+    assert!(!retryable);
+    assert!(!timeout);
     Ok(())
 }
 

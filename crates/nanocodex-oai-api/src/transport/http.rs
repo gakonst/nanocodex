@@ -204,7 +204,7 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
 
 fn map_http_error(error: reqwest::Error) -> ResponsesError {
     ResponsesError::HttpRequest {
-        retryable: error.is_connect() || error.is_body(),
+        retryable: error.is_connect() || error.is_body() || error.is_request(),
         timeout: error.is_timeout(),
         detail: error.to_string(),
     }
