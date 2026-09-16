@@ -147,6 +147,7 @@ Return/Tab/Esc controls below the video.
 | Send / ⌘Return | Submit one durable follow-up; queue behind current work and dismiss the iPhone/iPad keyboard |
 | Steer now on queued message | Inject the queued input into the active turn through the steering API |
 | Voice | Start an interactive spoken conversation with this agent; minimize the panel to keep talking |
+| Open Nanocodex in CarPlay | Start voice with the selected conversation; switch conversations from Agents, and mute or end from the voice screen |
 | Stop turn | Immediately cancel the selected turn from the send button |
 | Bottom menu → Account settings | Manage the account and device Hand |
 | Bottom menu → Scheduled jobs | View active and paused jobs across the account, inspect their schedule, or open the source chat and latest run |
@@ -267,6 +268,25 @@ Native voice automatically retries a confirmed agent egress startup timeout, up
 to three attempts on the same call. Only this failure before voice admission gets
 a fresh operation identity; transport retries keep their identity, and ambiguous
 operations remain fenced. Ending voice cancels pending startup recovery.
+
+## CarPlay voice
+
+On iOS 26.4 or later, Nanocodex uses Apple's voice-based conversational CarPlay
+category. Opening it in CarPlay restores the same signed-in account and starts
+the currently selected conversation in the native voice control template. The
+car display receives only the conversation title, high-level status, and voice
+controls; credentials, transcripts, tool calls, and generated content stay out
+of the CarPlay template. Leaving that template or disconnecting CarPlay ends
+microphone ownership. The phone may remain locked or backgrounded while the
+CarPlay scene is active.
+
+The entitlement is managed by Apple. Before a physical-device or TestFlight
+build can be signed, request the **CarPlay voice-based conversational app**
+capability for `xyz.paradigm.centaur`, enable it on the App ID, and regenerate
+the app provisioning profile. The committed entitlement is
+`com.apple.developer.carplay-voice-based-conversation`; CI rejects a release
+profile that does not contain it. Simulator builds can exercise the scene and
+template lifecycle without an App Store provisioning profile.
 
 Voice settings on iPhone, iPad, and Mac save the built-in voice, pace, speaking
 style, spoken-update preference, and acknowledgement preference. Changing them

@@ -97,6 +97,8 @@ jobs:
         run: swift test --package-path apple/NanocodexContext
       - name: Native Hand boundaries
         run: swift test --package-path apple/NanocodexHand
+      - name: CarPlay voice scene contract
+        run: python3 apple/scripts/check-carplay.py
       - name: Build iPhone app
         run: xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath apple/build/ios CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build
       - name: Native iPhone journey

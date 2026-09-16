@@ -87,6 +87,12 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
 @MainActor public final class VoiceSession: ObservableObject {
     @Published public var settings = VoiceSettings.load() { didSet { settings.save() } }
     public enum Phase: Equatable { case idle, connecting, active, ended, failed }
+    /// Presentation-neutral voice activity shared by the phone, Mac, and
+    /// constrained surfaces such as CarPlay. Keep provider and transcript
+    /// details out of this state: a driving UI may show only call activity.
+    public enum Activity: String, CaseIterable, Equatable, Sendable {
+        case ready, connecting, listening, reconnecting, muted, speaking, working, failed
+    }
     @Published public private(set) var phase: Phase = .idle
     @Published public private(set) var isMuted = false
     @Published public private(set) var transcripts: [VoiceTranscript] = []
@@ -101,15 +107,33 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     @Published public private(set) var conversationTitle: String?
     public let transcriptFeed = VoiceTranscriptFeed()
     public var isEngaged: Bool { phase == .connecting || phase == .active }
+    public var activity: Activity {
+        Self.activity(phase: phase, isMuted: isMuted, isReconnecting: isReconnecting,
+                      outputLevel: outputLevel, isWorking: isWorking)
+    }
     public var status: String {
-        if phase == .connecting { return "Connecting…" }
-        if phase == .failed { return "Voice paused" }
-        if phase == .ended || phase == .idle { return "Ready to talk" }
-        if isReconnecting { return "Reconnecting…" }
-        if isMuted { return "Microphone muted" }
-        if outputLevel > 0.015 { return "Speaking" }
-        if isWorking { return "Working on it" }
-        return "Listening"
+        switch activity {
+        case .ready: "Ready to talk"
+        case .connecting: "Connecting…"
+        case .listening: "Listening"
+        case .reconnecting: "Reconnecting…"
+        case .muted: "Microphone muted"
+        case .speaking: "Speaking"
+        case .working: "Working on it"
+        case .failed: "Voice paused"
+        }
+    }
+
+    static func activity(phase: Phase, isMuted: Bool, isReconnecting: Bool,
+                         outputLevel: Double, isWorking: Bool) -> Activity {
+        if phase == .connecting { return .connecting }
+        if phase == .failed { return .failed }
+        if phase == .ended || phase == .idle { return .ready }
+        if isReconnecting { return .reconnecting }
+        if isMuted { return .muted }
+        if outputLevel > 0.015 { return .speaking }
+        if isWorking { return .working }
+        return .listening
     }
 
     private var generation = UUID()
