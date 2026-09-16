@@ -42,8 +42,7 @@ describe("Session-owned credential authority", () => {
     expect(model.fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("reads the persisted voice strategy and rejects mismatched identities", async () => {
-    it("uses retained pins for both subject strategies and rejects caller overrides", async () => {
+  it("uses retained pins for both subject strategies and rejects caller overrides", async () => {
     for (const subject of [storageId, active.subject]) {
       for (const pin of [undefined, "account-a"]) {
         const received: Request[] = [];
@@ -61,7 +60,8 @@ describe("Session-owned credential authority", () => {
     }
   });
 
-  for (const direct of [false, true]) {
+  it("reads the persisted voice strategy and rejects mismatched identities", async () => {
+    for (const direct of [false, true]) {
       const subject = direct ? active.subject : storageId;
       expect(await readSessionCredentialSubject(Response.json({
         subject, strategy: direct ? "session_v1" : "directory_v1",
