@@ -98,7 +98,7 @@ struct Inner {
     snapshots: VecDeque<(String, Vec<Value>)>,
     projection_truncated: bool,
     settings_override: Option<Value>,
-    managed_cursors: HashMap<String, u64>,
+    managed_cursors: HashMap<String, String>,
     active_turns: HashMap<String, Vec<String>>,
 }
 
@@ -302,18 +302,18 @@ impl Bridge {
     pub fn publish(&self, kind: &str, data: Value) {
         let mut inner = self.inner.lock().unwrap();
         if kind == "managed.event" {
-            if let (Some(session), Some(cursor)) = (
-                data["session_id"].as_str(),
-                data["cursor"].as_str().and_then(|v| v.parse::<u64>().ok()),
-            ) {
-                if inner
-                    .managed_cursors
-                    .get(session)
-                    .is_some_and(|last| *last >= cursor)
-                {
+            if let (Some(session), Some(cursor)) =
+                (data["session_id"].as_str(), data["cursor"].as_str())
+            {
+                if inner.managed_cursors.get(session).is_some_and(|last| {
+                    last.len() > cursor.len()
+                        || (last.len() == cursor.len() && last.as_str() >= cursor)
+                }) {
                     return;
                 }
-                inner.managed_cursors.insert(session.to_owned(), cursor);
+                inner
+                    .managed_cursors
+                    .insert(session.to_owned(), cursor.to_owned());
             }
         }
         if kind == "managed.event" && data["agent_id"].is_number() {
@@ -726,7 +726,7 @@ mod tests {
     #[tokio::test]
     async fn managed_reconnect_deduplicates_delta_and_large_history_cannot_stall_pagination() {
         let (bridge, _) = bridge();
-        let event = json!({"session_id":"session","cursor":"1","turn_id":"turn","event":{
+        let event = json!({"session_id":"session","cursor":"18446744073709551616","turn_id":"turn","event":{
             "type":"assistant.delta","request_id":"session","payload":{"text":"once","item_id":"message"}}});
         bridge.publish("managed.event", event.clone());
         bridge.publish("managed.event", event);

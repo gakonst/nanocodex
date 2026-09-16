@@ -585,6 +585,47 @@ async fn appends_only_the_new_committed_delta() {
 }
 
 #[tokio::test]
+async fn legacy_resume_roots_new_children_at_the_resumed_session() {
+    let home = tempdir().unwrap();
+    let original = recorder(home.path());
+    let path = original.info().path().to_path_buf();
+    let thread = original.info().thread_id().to_owned();
+    original.shutdown().await.unwrap();
+    let mut records = lines(&original);
+    records[0]["payload"]
+        .as_object_mut()
+        .unwrap()
+        .remove("root_session_id");
+    std::fs::write(
+        &path,
+        records
+            .iter()
+            .map(|line| format!("{line}\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    let config = RolloutConfig::new(home.path()).resumed(path);
+    let resumed = RolloutRecorder::create(
+        &Handle::current(),
+        RolloutCreate {
+            config: &config,
+            thread_id: &thread,
+            prompt_cache_key: "cache",
+            cwd: Path::new("/worktree"),
+            instructions: "instructions",
+            origin: RolloutOrigin {
+                kind: "resume",
+                parent_thread_id: None,
+            },
+            resume_history_len: Some(0),
+        },
+    )
+    .unwrap();
+    assert_eq!(config.for_new_thread().root_session_id.get(), Some(&thread));
+    resumed.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn resumed_writer_repairs_a_rollout_behind_the_durable_boundary() {
     let home = tempdir().expect("temporary Codex home");
     let original = recorder(home.path());

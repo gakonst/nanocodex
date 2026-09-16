@@ -184,7 +184,8 @@ New native `session_meta` records add `root_session_id`, `conversation_role`,
 and `origin_kind` while preserving existing `source`, parent, and fork fields.
 Roles are `root`, `branch`, `side_conversation`, and `subagent`. `/btw` uses a
 side-conversation fork; ordinary and historical forks remain branches. Resume
-preserves recorded root identity. Older rollouts remain readable. Managed
+preserves recorded root identity. Older rollouts remain readable; without recorded
+root metadata, new descendants use the resumed session as their lineage root. Managed
 sessions have remote history, so their local `rollout_path` is null; subagent
 parent identity is null when the service event does not provide it.
 

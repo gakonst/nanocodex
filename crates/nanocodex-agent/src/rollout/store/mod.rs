@@ -215,6 +215,8 @@ impl RolloutRecorder {
             {
                 let _ = config.root_session_id.set(root.to_owned());
             }
+            // A legacy recording starts the discovered lineage at its resumed owner.
+            let _ = config.root_session_id.set(thread_id.to_owned());
             let history_len = resume_history_len.ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
