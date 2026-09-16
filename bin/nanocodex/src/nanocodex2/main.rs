@@ -461,7 +461,7 @@ struct Run {
     #[arg(value_parser = NonEmptyStringValueParser::new())]
     prompt: String,
     /// Resume this account-owned agent. A new one is created when omitted.
-    #[arg(long, conflicts_with_all = ["model", "thinking", "reasoning_mode", "fast_mode"])]
+    #[arg(long, conflicts_with_all = ["model", "thinking", "reasoning_mode", "fast_mode", "chatgpt_account"])]
     agent: Option<String>,
     /// Stable idempotency key. The managed backend generates one when omitted.
     #[arg(long)]
@@ -601,7 +601,17 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         Some(Command::HandDesktop(_)) => unreachable!("handled before managed client setup"),
         Some(Command::Host(_)) => unreachable!("handled before managed client setup"),
         Some(Command::New(settings)) => {
-            write_json(&client.create_with_settings(settings.resolve()).await?)
+            let account = settings.chatgpt_account.clone();
+            let settings = settings.resolve();
+            let receipt = match account {
+                Some(account) => {
+                    client
+                        .create_with_chatgpt_account(settings, &account)
+                        .await?
+                }
+                None => client.create_with_settings(settings).await?,
+            };
+            write_json(&receipt)
         }
         Some(Command::Settings(command)) => command.run(&client).await,
         Some(Command::Cron(command)) => command.run(&client).await,
@@ -893,14 +903,19 @@ fn supported_agent_page_origin(url: &Url) -> bool {
 
 async fn run_turn(client: &ManagedClient, command: Run) -> Result<(), ManagedError> {
     let created = command.agent.is_none();
-    let (agent, mut events, agent_id, _) = open_workspace_agent_with_settings(
-        client,
-        command.agent,
-        None,
-        command.settings.resolve(),
-        None,
-    )
-    .await?;
+    let account = command.settings.chatgpt_account.clone();
+    let settings = command.settings.resolve();
+    let requested_agent = match account {
+        Some(account) => Some(
+            client
+                .create_with_chatgpt_account(settings, &account)
+                .await?
+                .agent_id,
+        ),
+        None => command.agent,
+    };
+    let (agent, mut events, agent_id, _) =
+        open_workspace_agent_with_settings(client, requested_agent, None, settings, None).await?;
     if created {
         eprintln!("Managed agent: {agent_id}");
     }

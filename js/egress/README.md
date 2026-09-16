@@ -261,3 +261,9 @@ encrypted user tokens, and rotates the single-use refresh token. Verify the
 connection with `soundcloud_request` reads of `/me` and `/me/playlists` before
 reporting it connected. OAuth transport tests use fixtures and do not replace
 this authenticated production check.
+
+Managed sessions may retain `configuration.chatgpt_account_id` at creation. Their
+private egress uses `x-nanocodex-chatgpt-account-id` to select that account from the
+owner's pool, without changing its preferred account. This pin disables failover
+and sponsored fallback; missing accounts fail closed and quota exhaustion returns
+`chatgpt_account_exhausted`. The selector is stripped before provider forwarding.

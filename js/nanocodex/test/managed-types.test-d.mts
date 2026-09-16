@@ -204,3 +204,5 @@ async function configurationContracts() {
   await Agent.environments.put("bad", { network: { access: "wildcard" } });
 }
 void configurationContracts;
+
+void Agent.create({ baseUrl: "https://managed.example", configuration: { chatgpt_account_id: "account-a" } });

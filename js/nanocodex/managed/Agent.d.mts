@@ -141,6 +141,8 @@ export type Environment = Readonly<{
   network?: NetworkPolicy;
 }>;
 export type Configuration = Readonly<{
+  /** Pin this session to one connected ChatGPT account; disables automatic account failover. */
+  chatgpt_account_id?: string;
   settings?: Readonly<{ model: CreateSettings["model"]; thinking: CreateSettings["thinking"]; reasoning_mode: "standard" | "pro"; fast_mode: boolean }>;
   instructions?: string;
   tools?: readonly string[];

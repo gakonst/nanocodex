@@ -20,6 +20,9 @@ pub(crate) struct InitialSettings {
     /// Enable fast processing for the new agent.
     #[arg(long)]
     fast_mode: bool,
+    /// Pin the new session to this connected ChatGPT account (disables failover).
+    #[arg(long)]
+    pub(crate) chatgpt_account: Option<String>,
 }
 
 impl InitialSettings {

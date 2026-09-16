@@ -20,6 +20,7 @@ export const environmentSchema = z.object({
   network: networkSchema.default({ access: "enabled" }),
 }).strict();
 export const configurationSchema = z.object({
+  chatgpt_account_id: z.string().regex(/^[\x21-\x7e]{1,256}$/).optional(),
   settings: z.object({
     model: z.enum(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]),
     thinking: z.enum(["none", "low", "medium", "high", "xhigh", "max"]),

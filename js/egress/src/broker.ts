@@ -351,7 +351,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   }
 
   /** Read the live snapshot under the same serialization and recovery as HTTP. */
-  async resolveModelCredential(recover: boolean, revision?: number): Promise<{
+  async resolveModelCredential(recover: boolean, revision?: number, accountId?: string): Promise<{
     status: number;
     credential: UserCredentialSnapshot | null;
     resolve_ms: number;
@@ -367,7 +367,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       operationAt = Date.now();
       try {
         return { status: 200, credential: await this.#credential(
-          recover === true, Number.isSafeInteger(revision) ? revision : undefined,
+          recover === true, Number.isSafeInteger(revision) ? revision : undefined, accountId,
         ) };
       } catch (error) {
         const problem = await this.#recoverFailedOperation(error);
@@ -968,6 +968,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
           await this.#persist();
         }
         if (this.#credentials.active !== "chatgpt") return json({ available: false }, 200);
+        if (body?.select === false) return json({ available: false }, 200);
         const available = await this.#selectChatGpt();
         return json({ available: Boolean(available && available.accountId !== accountId) }, 200);
       }
@@ -975,7 +976,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         const body = await readJson(request, 1_024);
         const recover = body?.recover === true;
         const revision = numberField(body, "revision");
-        return json(await this.#credential(recover, revision), 200);
+        return json(await this.#credential(recover, revision, stringField(body, "account_id")), 200);
       }
       return jsonError(404, "not_found");
     } catch (error) {
@@ -1328,16 +1329,21 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     return selected;
   }
 
-  async #credential(recover: boolean, revision: number | undefined): Promise<UserCredentialSnapshot> {
-    if (this.#credentials.active === "openai" && this.#credentials.openai) {
+  async #credential(recover: boolean, revision: number | undefined, accountId?: string): Promise<UserCredentialSnapshot> {
+    if (accountId !== undefined && (typeof accountId !== "string" || !/^[\x21-\x7e]{1,256}$/.test(accountId))) {
+      throw new BrokerFailure(400, "invalid_chatgpt_account");
+    }
+    if (!accountId && this.#credentials.active === "openai" && this.#credentials.openai) {
       return {
         kind: "openai",
         secret: this.#credentials.openai.secret,
         revision: this.#credentials.openai.revision,
       };
     }
-    const current = await this.#selectChatGpt() ?? this.#credentials.chatgpt;
-    if (this.#credentials.active !== "chatgpt" || !current) {
+    const current = accountId
+      ? this.#chatGptAccounts().find((account) => account.accountId === accountId)
+      : await this.#selectChatGpt() ?? this.#credentials.chatgpt;
+    if ((!accountId && this.#credentials.active !== "chatgpt") || !current) {
       throw new BrokerFailure(404, "credential_not_configured");
     }
     if (current.deadReason) throw new BrokerFailure(422, "chatgpt_credential_dead");

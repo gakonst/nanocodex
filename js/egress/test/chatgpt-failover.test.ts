@@ -40,6 +40,71 @@ describe("ChatGPT subscription failover", () => {
     expect(new Set(bodies).size).toBe(1);
   });
 
+  it("pins a backup account without changing other sessions and strips its private selector", async () => {
+    const subject = await setup();
+    const accounts: (string | null)[] = [];
+    const upstream = vi.fn(async (request: Request) => {
+      accounts.push(request.headers.get("chatgpt-account-id"));
+      expect(request.headers.has("x-nanocodex-chatgpt-account-id")).toBe(false);
+      return Response.json({ results: [] });
+    });
+    const pinned = searchRequest(subject);
+    pinned.headers.set("x-nanocodex-chatgpt-account-id", "account-a");
+    for (const request of [pinned, searchRequest(subject)]) {
+      const response = await handleEgress(request, directEnv, undefined, upstream as typeof fetch);
+      expect(response.status).toBe(200);
+      await response.body?.cancel();
+    }
+    expect(accounts).toEqual(["account-a", "account-b"]);
+  });
+
+  it("fails closed for an unavailable pin and never switches an exhausted pinned session", async () => {
+    const subject = await setup();
+    const accounts: (string | null)[] = [];
+    const upstream = vi.fn(async (request: Request) => {
+      const account = request.headers.get("chatgpt-account-id");
+      accounts.push(account);
+      return account === "account-a" ? exhausted() : Response.json({ results: [] });
+    });
+    for (const [account, status, error] of [
+      ["unknown-account", 409, "chatgpt_account_unavailable"],
+      ["account-a", 429, "chatgpt_account_exhausted"],
+      ["account-a", 429, "chatgpt_account_exhausted"],
+    ] as const) {
+      const request = searchRequest(subject);
+      request.headers.set("x-nanocodex-chatgpt-account-id", account);
+      const response = await handleEgress(request, directEnv, undefined, upstream as typeof fetch);
+      expect(response.status).toBe(status);
+      expect(await response.json()).toMatchObject({ error });
+    }
+    const other = await handleEgress(searchRequest(subject), directEnv, undefined, upstream as typeof fetch);
+    expect(other.status).toBe(200);
+    await other.body?.cancel();
+    expect(accounts).toEqual(["account-a", "account-b"]);
+  });
+
+  it("preserves a pinned WebSocket quota error instead of requesting account recovery", async () => {
+    const subject = await setup();
+    const upstream = vi.fn(async (request: Request) => {
+      expect(request.headers.get("chatgpt-account-id")).toBe("account-a");
+      const [client, server] = Object.values(new WebSocketPair());
+      server.accept();
+      server.addEventListener("message", () => server.send(JSON.stringify({
+        type: "error", error: { code: "usage_limit_reached" },
+      })));
+      return new Response(null, { status: 101, webSocket: client });
+    });
+    const request = socketRequest(subject);
+    request.headers.set("x-nanocodex-chatgpt-account-id", "account-a");
+    const response = await handleEgress(request, directEnv, undefined, upstream as typeof fetch);
+    const socket = response.webSocket!;
+    socket.accept();
+    const rejected = message(socket);
+    socket.send(JSON.stringify({ type: "response.create", input: [] }));
+    expect(await rejected).toMatchObject({ type: "error", error: { code: "usage_limit_reached" } });
+    socket.close();
+  });
+
   it("does not rotate on an ordinary 429 or a denied request", async () => {
     for (const status of [429, 403]) {
       const subject = await setup();

@@ -154,6 +154,25 @@ reconnect with their full conversation history when switching before output
 begins; a failure after output begins is surfaced to avoid replaying partial
 work. Disconnecting ChatGPT removes all connected ChatGPT accounts.
 
+To test a specific connected account, pin a new session using its `account_id`
+from the connector status (`chatgpt.accounts`):
+
+```sh
+nanocodex2 new --chatgpt-account <account-id>
+nanocodex2 run --chatgpt-account <account-id> "Reply with hello"
+```
+
+The pin stays with the session across reconnects and resumes. Pinned sessions
+surface that account's subscription limit instead of switching accounts, and do
+not change the preferred account for other sessions. Unknown or disconnected
+account IDs fail without falling back to another account or provider. New
+sessions without a pin keep automatic failover.
+
+Managed API callers can set `configuration.chatgpt_account_id` when creating an
+agent (including `Agent.create` / `Agent.createAndPrompt` in JavaScript). Rust
+callers can use `ManagedClient::create_with_chatgpt_account(settings, account_id)`.
+
+
 ### Linux Hands and VM factories
 
 From a host already signed in to your Nanocodex account:

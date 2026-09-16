@@ -184,6 +184,36 @@ impl ManagedClient {
         validate_agent_receipt(receipt)
     }
 
+    /// Creates an agent pinned to one connected ChatGPT account.
+    ///
+    /// The pin is retained for the session and disables automatic account failover.
+    ///
+    /// # Errors
+    ///
+    /// Returns an identifier/settings-validation, transport, HTTP, or response-schema failure.
+    pub async fn create_with_chatgpt_account(
+        &self,
+        settings: AgentSettings,
+        account_id: &str,
+    ) -> Result<AgentReceipt, ManagedError> {
+        if account_id.is_empty()
+            || account_id.len() > 256
+            || !account_id.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+        {
+            return Err(ManagedError::InvalidResponse("invalid ChatGPT account ID"));
+        }
+        let settings = settings.validate()?;
+        let body = serde_json::to_vec(&serde_json::json!({
+            "settings": settings,
+            "configuration": { "chatgpt_account_id": account_id },
+        }))
+        .map_err(|_| ManagedError::InvalidResponse("failed to encode agent configuration"))?;
+        let receipt = self
+            .json(Method::POST, "v1/agents", Some(&body), None)
+            .await?;
+        validate_agent_receipt(receipt)
+    }
+
     /// Lists account-owned managed agents.
     ///
     /// # Errors

@@ -375,6 +375,15 @@ async fn run_flushes_each_assistant_delta_before_completion() {
 
 #[tokio::test]
 async fn run_uses_managed_lifecycle_with_the_configured_local_workspace() {
+    run_workspace_lifecycle(false).await;
+}
+
+#[tokio::test]
+async fn pinned_run_creates_once_then_opens_the_saved_session() {
+    run_workspace_lifecycle(true).await;
+}
+
+async fn run_workspace_lifecycle(pinned: bool) {
     let api_key = format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -393,6 +402,19 @@ async fn run_uses_managed_lifecycle_with_the_configured_local_workspace() {
         catalogs: Arc::new(Mutex::new(Vec::new())),
     };
     let app = Router::new()
+        .route(
+            "/v1/agents",
+            post(
+                |axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    assert_eq!(body["configuration"]["chatgpt_account_id"], "account-a");
+                    axum::Json(serde_json::json!({
+                        "agent_id": AGENT_ID, "session_id": AGENT_ID,
+                        "events_url": format!("/v1/agents/{AGENT_ID}/events"),
+                        "websocket_url": format!("/v1/agents/{AGENT_ID}/live"),
+                    }))
+                },
+            ),
+        )
         .route("/v1/agents/live", get(create_live_socket))
         .route("/v1/agents/{agent}", get(agent_state))
         .route("/v1/agents/{agent}/tool-host", get(tool_host))
@@ -426,6 +448,11 @@ async fn run_uses_managed_lifecycle_with_the_configured_local_workspace() {
                 "--idempotency-key",
                 "stable-request",
             ])
+            .args(if pinned {
+                vec!["--chatgpt-account", "account-a"]
+            } else {
+                vec![]
+            })
             .env("NANOCODEX_MANAGED_URL", &state.origin)
             .env("NC_API_KEY", &api_key)
             .env_remove("NANOCODEX_API_KEY")
@@ -1742,7 +1769,16 @@ async fn headless_settings_and_cron_use_the_managed_contract() {
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let cwd = tempfile::tempdir().unwrap();
     for args in [
-        vec!["new", "--model", "sol", "--thinking", "high", "--fast-mode"],
+        vec![
+            "new",
+            "--model",
+            "sol",
+            "--thinking",
+            "high",
+            "--fast-mode",
+            "--chatgpt-account",
+            "account-a",
+        ],
         vec!["settings", AGENT_ID, "thinking", "high"],
         vec![
             "cron",
@@ -1789,6 +1825,16 @@ async fn headless_settings_and_cron_use_the_managed_contract() {
         vec!["run", "hello", "--agent", AGENT_ID, "--model", "sol"],
         vec!["cron", "get", AGENT_ID, "../escape"],
         vec!["new", "--model", "astra", "--thinking", "none"],
+        vec![
+            "run",
+            "hello",
+            "--agent",
+            AGENT_ID,
+            "--chatgpt-account",
+            "account-a",
+        ],
+        vec!["new", "--chatgpt-account", ""],
+        vec!["new", "--chatgpt-account", "with space"],
     ] {
         let output = tokio::time::timeout(
             PROCESS_TIMEOUT,
@@ -1810,6 +1856,10 @@ async fn headless_settings_and_cron_use_the_managed_contract() {
     assert_eq!(
         requests[0].2["settings"],
         json!({"model": "gpt-5.6-sol", "thinking": "high", "reasoning_mode": "standard", "fast_mode": true})
+    );
+    assert_eq!(
+        requests[0].2["configuration"],
+        json!({"chatgpt_account_id": "account-a"})
     );
     assert_eq!(requests[1].2, json!({"thinking": "high"}));
     assert_eq!(requests[2].0, "PUT");

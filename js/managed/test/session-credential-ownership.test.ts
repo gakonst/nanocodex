@@ -43,7 +43,25 @@ describe("Session-owned credential authority", () => {
   });
 
   it("reads the persisted voice strategy and rejects mismatched identities", async () => {
-    for (const direct of [false, true]) {
+    it("uses retained pins for both subject strategies and rejects caller overrides", async () => {
+    for (const subject of [storageId, active.subject]) {
+      for (const pin of [undefined, "account-a"]) {
+        const received: Request[] = [];
+        const binding = { fetch: async (request: Request) => {
+          received.push(request);
+          return new Response(null, { status: 204 });
+        } } as unknown as Fetcher;
+        const scoped = scopedManagedModelEgress(binding, storageId, subject, undefined, pin);
+        await scoped.fetch("https://nanocodex.internal/v1/responses", { headers: {
+          "x-nanocodex-subject": storageId, "x-nanocodex-chatgpt-account-id": "spoofed",
+        } });
+        expect(received[0]!.headers.get("x-nanocodex-chatgpt-account-id")).toBe(pin ?? null);
+        expect(received[0]!.headers.get("x-nanocodex-subject")).toBe(subject);
+      }
+    }
+  });
+
+  for (const direct of [false, true]) {
       const subject = direct ? active.subject : storageId;
       expect(await readSessionCredentialSubject(Response.json({
         subject, strategy: direct ? "session_v1" : "directory_v1",
@@ -148,6 +166,8 @@ describe("Session-owned credential authority", () => {
             singleton, session_id, owner_id, runtime_profile, state
           ) VALUES (1, ?, ?, 'managed', ?)`, sessionId, ownerId,
           lifecycle === "deleted" ? "deleted" : "active");
+          state.storage.sql.exec("INSERT INTO managed_configuration (singleton, body) VALUES (1, ?)",
+            JSON.stringify({ chatgpt_account_id: "account-a" }));
           await state.storage.put("nanocodex:credential-binding", {
             owner_id: ownerId, session_id: sessionId, subject: state.id.toString(),
             cleanup_at: Date.now(), state: "active", ...(direct ? { strategy: "session_v1" } : {}),
@@ -174,6 +194,7 @@ describe("Session-owned credential authority", () => {
         };
         const expected = lifecycle === "active" ? {
           subject: direct ? subject : stub.id.toString(), strategy: direct ? "session_v1" : "directory_v1",
+          chatgpt_account_id: "account-a",
         } : undefined;
         expect(await stub.resolveCredentialSubject(assertions)).toEqual(expected);
         if (voice.ok) expect(await voice.json()).toEqual(expected);

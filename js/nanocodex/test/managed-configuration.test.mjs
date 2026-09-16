@@ -11,7 +11,7 @@ test("caller-owned creation keys survive retries and separate SDK invocations", 
     if (requests.length === 1) throw new Error("lost creation receipt");
     return Response.json({ agent_id: id });
   } };
-  const configuration = { tools: [], multi_agent: { enabled: false } };
+  const configuration = { tools: [], multi_agent: { enabled: false }, chatgpt_account_id: "account-a" };
   const first = await Agent.create({ ...options, configuration });
   const recovered = await Agent.create({ ...options, configuration });
   assert.equal(first.id, recovered.id);

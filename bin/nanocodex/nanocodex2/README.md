@@ -156,6 +156,10 @@ nanocodex2 new --model astra --thinking high
 nanocodex2 run "Inspect this repository" --model sol --thinking high
 nanocodex2 run "Continue the review" --agent AGENT_ID
 
+# Pin a new session to one connected ChatGPT account for testing.
+nanocodex2 new --chatgpt-account ACCOUNT_ID
+nanocodex2 run "Reply with hello" --chatgpt-account ACCOUNT_ID
+
 # Read settings or update one field for subsequent turns.
 nanocodex2 settings AGENT_ID
 nanocodex2 settings AGENT_ID model astra

@@ -12,6 +12,12 @@ const inside = (fn: (state: DurableObjectState) => Promise<void>) => runInDurabl
 const req = (path: string, method = "GET", body?: unknown) => new Request(`https://session.internal${path}`, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 
 describe("agent configuration", () => {
+  it("validates explicit ChatGPT account pins", () => {
+    expect(parseConfiguration({ chatgpt_account_id: "account-a" }).chatgpt_account_id).toBe("account-a");
+    for (const chatgpt_account_id of [null, 42, "", "with space", "line\nbreak", "é", "x".repeat(257)]) {
+      expect(() => parseConfiguration({ chatgpt_account_id })).toThrow();
+    }
+  });
   it("validates explicit delegation without accepting contradictory or unbounded numeric values", () => {
     expect(parseConfiguration({}).multi_agent).toBeUndefined();
     expect(parseConfiguration({ multi_agent: { enabled: false } }).multi_agent).toEqual({ enabled: false });

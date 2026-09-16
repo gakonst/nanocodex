@@ -116,7 +116,7 @@ export async function routeManagedRealtimeTransport(
   }
 
   if (resource === "calls") {
-    const response = await realtimeCall(callBody!, env, agentId, voiceSessionId, subject, voiceRelayRegion(request), principal.userId);
+    const response = await realtimeCall(callBody!, env, agentId, voiceSessionId, subject, voiceRelayRegion(request), principal.userId, owned.accountId);
     response.headers.append("server-timing", [
       `voice_auth;dur=${(authenticated - began).toFixed(1)}`,
       `voice_validate;dur=${(validatedAt - authenticated).toFixed(1)}`,
@@ -125,7 +125,7 @@ export async function routeManagedRealtimeTransport(
     ].join(", "));
     return response;
   }
-  return realtimeSideband(callId!, env, agentId, voiceSessionId, subject);
+  return realtimeSideband(callId!, env, agentId, voiceSessionId, subject, owned.accountId);
 }
 
 async function validatedCallBody(request: Request, url: URL): Promise<string | Response> {
@@ -156,8 +156,10 @@ async function realtimeCall(
   subject: string,
   region: string | undefined,
   verifiedOwner: string | undefined,
+  accountId?: string,
 ): Promise<Response> {
   const headers = internalHeaders(agentId, voiceSessionId, subject, false);
+  if (accountId) headers.set("x-nanocodex-chatgpt-account-id", accountId);
   if (region) headers.set("x-nanocodex-voice-region", region);
   const binding = verifiedOwner && env.NANOCODEX_REALTIME ? env.NANOCODEX_REALTIME : env.NANOCODEX;
   if (binding === env.NANOCODEX_REALTIME) headers.set("x-nanocodex-realtime-owner", verifiedOwner!);
@@ -213,12 +215,15 @@ function realtimeSideband(
   agentId: string,
   voiceSessionId: string,
   subject: string,
+  accountId?: string,
 ): Promise<Response> {
+  const headers = internalHeaders(agentId, voiceSessionId, subject, true, callId);
+  if (accountId) headers.set("x-nanocodex-chatgpt-account-id", accountId);
   // Return the binding response itself: reconstructing a 101 Response severs
   // Cloudflare's upgraded WebSocket from its provider peer.
   return env.NANOCODEX.fetch(new Request(
     "https://nanocodex.internal/v1/realtime/sideband",
-    { headers: internalHeaders(agentId, voiceSessionId, subject, true, callId) },
+    { headers },
   ));
 }
 
