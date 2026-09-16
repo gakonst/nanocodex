@@ -135,6 +135,25 @@ keys are separate from `nanocodex auth` (ChatGPT provider credentials) and
 [CLI account sign-in guide](bin/nanocodex/nanocodex2/README.md#account-sign-in)
 for environment overrides, storage, and key revocation.
 
+To connect multiple ChatGPT subscriptions to the same Nanocodex account, import
+one Codex login at a time and approve each connection:
+
+```sh
+nanocodex connect chatgpt --auth-file /path/to/account-one/auth.json
+nanocodex connect chatgpt --auth-file /path/to/account-two/auth.json
+```
+
+Without `--auth-file`, the command uses the current Codex login. Each distinct
+ChatGPT account is retained (up to 20); reconnecting the same account does not
+create a duplicate. The most recently connected account is preferred. Hosted
+model requests automatically switch to another connected account when ChatGPT
+reports subscription exhaustion. Exhausted accounts become eligible again at
+the provider's reset time, or after one minute if no reset time is supplied.
+Ordinary request-rate limits do not switch accounts. Existing Nanocodex sessions
+reconnect with their full conversation history when switching before output
+begins; a failure after output begins is surfaced to avoid replaying partial
+work. Disconnecting ChatGPT removes all connected ChatGPT accounts.
+
 ### Linux Hands and VM factories
 
 From a host already signed in to your Nanocodex account:

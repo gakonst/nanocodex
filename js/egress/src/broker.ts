@@ -47,6 +47,7 @@ const MAX_PROVIDER_RESPONSE_BYTES = 16 * 1024;
 const MAX_IMPORTED_TOKEN_BYTES = 32 * 1024;
 const MAX_IMPORTED_ACCOUNT_ID_BYTES = 256;
 const MAX_VAULT_ENTRIES = 100;
+const MAX_CHATGPT_ACCOUNTS = 20;
 const MAX_VAULT_BODY_BYTES = 12 * 1024;
 const VAULT_ID = /^[A-Za-z0-9_-]{22,64}$/;
 const VAULT_ENTRY_KEY_PREFIX = "vault-entry:";
@@ -111,6 +112,8 @@ type ChatGptCredential = {
   refreshAfter?: number;
   refreshAttempts?: number;
   deadReason: string | null;
+  limitedUntil?: number;
+  authorizationRevision?: number;
 };
 type PendingLogin = {
   deviceAuthId: string;
@@ -171,6 +174,8 @@ type CredentialState = {
   active: "openai" | "chatgpt" | null;
   openai?: ApiKeyCredential;
   chatgpt?: ChatGptCredential;
+  chatgptBackups?: ChatGptCredential[];
+  chatgptRevision?: number;
   login?: PendingLogin;
   ssh?: Record<string, BrokeredSshIdentity>;
   vault?: Record<string, VaultEntryMetadata>;
@@ -388,17 +393,18 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         delete this.#credentials.login;
         await this.#persist();
       }
-      const credential = this.#credentials.chatgpt;
-      if (credential && !credential.deadReason && credential.refreshToken
-        && credential.expiresAt <= Date.now() + REFRESH_EARLY_MS
-        && (credential.refreshAfter ?? 0) <= Date.now()) {
-        try {
-          await this.#refreshChatGpt(credential);
-        } catch (error) {
-          console.warn({
-            type: "user_credential.refresh_failed",
-            code: failure(error).code,
-          });
+      for (const credential of this.#chatGptAccounts()) {
+        if (credential && !credential.deadReason && credential.refreshToken
+          && credential.expiresAt <= Date.now() + REFRESH_EARLY_MS
+          && (credential.refreshAfter ?? 0) <= Date.now()) {
+          try {
+            await this.#refreshChatGpt(credential);
+          } catch (error) {
+            console.warn({
+              type: "user_credential.refresh_failed",
+              code: failure(error).code,
+            });
+          }
         }
       }
       await this.#schedule();
@@ -918,6 +924,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       }
       if (request.method === "DELETE" && url.pathname === "/v1/chatgpt") {
         delete this.#credentials.chatgpt;
+        delete this.#credentials.chatgptBackups;
         delete this.#credentials.login;
         if (this.#credentials.active === "chatgpt") {
           this.#credentials.active = this.#credentials.openai ? "openai" : null;
@@ -943,6 +950,26 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         }
         await this.#importChatGpt(body);
         return new Response(null, { status: 204, headers: noStoreHeaders() });
+      }
+      if (request.method === "POST" && url.pathname === "/v1/chatgpt/limit") {
+        const body = await readJson(request, 1_024);
+        const accountId = stringField(body, "account_id");
+        const revision = numberField(body, "revision");
+        const resetAt = numberField(body, "reset_at");
+        if (!accountId || !Number.isSafeInteger(revision)
+          || !resetAt || !Number.isSafeInteger(resetAt) || resetAt <= Date.now()) {
+          return jsonError(400, "invalid_chatgpt_limit");
+        }
+        const limited = this.#chatGptAccounts().find((item) => item.accountId === accountId);
+        // Old sockets remain valid across refresh, but not across reauthorization.
+        if (limited && revision! >= (limited.authorizationRevision ?? 0)
+          && revision! <= limited.revision) {
+          this.#setChatGpt({ ...limited, limitedUntil: Math.max(limited.limitedUntil ?? 0, resetAt) });
+          await this.#persist();
+        }
+        if (this.#credentials.active !== "chatgpt") return json({ available: false }, 200);
+        const available = await this.#selectChatGpt();
+        return json({ available: Boolean(available && available.accountId !== accountId) }, 200);
       }
       if (request.method === "POST" && url.pathname === "/v1/credential") {
         const body = await readJson(request, 1_024);
@@ -972,7 +999,15 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       active: this.#credentials.active,
       openai: { connected: Boolean(this.#credentials.openai) },
       chatgpt: {
-        connected: Boolean(this.#credentials.chatgpt && !this.#credentials.chatgpt.deadReason),
+        connected: this.#chatGptAccounts().some((account) => !account.deadReason),
+        accounts: this.#chatGptAccounts().map((account) => ({
+          account_id: account.accountId,
+          connected: !account.deadReason,
+          active: this.#credentials.active === "chatgpt"
+            && this.#credentials.chatgpt?.accountId === account.accountId,
+          ...(account.limitedUntil && account.limitedUntil > Date.now()
+            ? { limited_until: account.limitedUntil } : {}),
+        })),
         ...(this.#credentials.chatgpt?.accountId
           ? { account_id: this.#credentials.chatgpt.accountId }
           : {}),
@@ -1246,6 +1281,53 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     return wallet;
   }
 
+  #chatGptAccounts(): ChatGptCredential[] {
+    return [
+      ...(this.#credentials.chatgpt ? [this.#credentials.chatgpt] : []),
+      ...(this.#credentials.chatgptBackups ?? []),
+    ];
+  }
+
+  #nextChatGptRevision(): number {
+    const revision = Math.max(this.#credentials.chatgptRevision ?? -1,
+      ...this.#chatGptAccounts().map((account) => account.revision)) + 1;
+    this.#credentials.chatgptRevision = revision;
+    return revision;
+  }
+
+  #setChatGpt(credential: ChatGptCredential, activate = false): void {
+    if (activate || !this.#credentials.chatgpt
+      || this.#credentials.chatgpt.accountId === credential.accountId) {
+      const backups = this.#chatGptAccounts().filter((account) => account.accountId !== credential.accountId);
+      this.#credentials.chatgpt = credential;
+      if (backups.length) this.#credentials.chatgptBackups = backups;
+      else delete this.#credentials.chatgptBackups;
+    } else {
+      this.#credentials.chatgptBackups = (this.#credentials.chatgptBackups ?? [])
+        .map((account) => account.accountId === credential.accountId ? credential : account);
+    }
+  }
+
+  #checkChatGptCapacity(accountId: string): void {
+    const accounts = this.#chatGptAccounts();
+    if (accounts.length >= MAX_CHATGPT_ACCOUNTS
+      && !accounts.some((account) => account.accountId === accountId)) {
+      throw new BrokerFailure(409, "chatgpt_account_limit");
+    }
+  }
+
+  async #selectChatGpt(): Promise<ChatGptCredential | undefined> {
+    const now = Date.now();
+    const selected = this.#chatGptAccounts().find((account) => !account.deadReason
+      && (account.limitedUntil ?? 0) <= now
+      && (account.expiresAt > now || (account.refreshToken && (account.refreshAfter ?? 0) <= now)));
+    if (selected && selected.accountId !== this.#credentials.chatgpt?.accountId) {
+      this.#setChatGpt(selected, true);
+      await this.#persist();
+    }
+    return selected;
+  }
+
   async #credential(recover: boolean, revision: number | undefined): Promise<UserCredentialSnapshot> {
     if (this.#credentials.active === "openai" && this.#credentials.openai) {
       return {
@@ -1254,12 +1336,15 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         revision: this.#credentials.openai.revision,
       };
     }
-    const current = this.#credentials.chatgpt;
+    const current = await this.#selectChatGpt() ?? this.#credentials.chatgpt;
     if (this.#credentials.active !== "chatgpt" || !current) {
       throw new BrokerFailure(404, "credential_not_configured");
     }
     if (current.deadReason) throw new BrokerFailure(422, "chatgpt_credential_dead");
     const now = Date.now();
+    if ((current.limitedUntil ?? 0) > now) {
+      throw new BrokerFailure(429, "chatgpt_accounts_exhausted");
+    }
     const refreshNeeded = recover
       ? revision === current.revision
       : current.expiresAt <= now + REFRESH_EARLY_MS;
@@ -1372,12 +1457,14 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       throw new BrokerFailure(503, "invalid_chatgpt_login_response");
     }
     const tokens = await exchangeAuthorizationCode(issuer, authorizationCode, codeVerifier);
-    this.#credentials.chatgpt = credentialFromTokens(tokens, undefined, 0, "user");
+    const credential = credentialFromTokens(tokens, undefined, this.#nextChatGptRevision(), "user");
+    this.#checkChatGptCapacity(credential.accountId);
+    this.#setChatGpt(credential, true);
     this.#credentials.active = "chatgpt";
     delete this.#credentials.login;
     await this.#persist();
     await this.#schedule();
-    return { state: "authenticated", account_id: this.#credentials.chatgpt.accountId };
+    return { state: "authenticated", account_id: credential.accountId };
   }
 
   async #claimLocalBootstrap(provenance: "user" | "sponsor"): Promise<void> {
@@ -1403,17 +1490,19 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       await this.#persist();
       return;
     }
-    this.#credentials.chatgpt = {
+    const revision = this.#nextChatGptRevision();
+    this.#setChatGpt({
       accessToken,
       refreshToken: stringField(parsed, "refresh_token") ?? "",
       accountId,
       fedramp: parsed.fedramp === true,
       expiresAt,
-      revision: (current?.revision ?? -1) + 1,
+      revision,
+      authorizationRevision: revision,
       provenance,
       refreshState: "ready",
       deadReason: null,
-    };
+    }, true);
     this.#credentials.active = "chatgpt";
     delete this.#credentials.login;
     await this.#persist();
@@ -1421,47 +1510,35 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   }
 
   async #importChatGpt(imported: ChatGptCredentialImport): Promise<void> {
-    const current = this.#credentials.chatgpt;
-    if (current && !current.deadReason) {
-      if (current.accountId !== imported.account_id) {
-        throw new BrokerFailure(409, "chatgpt_account_conflict");
-      }
-      if (current.provenance !== "user") {
-        this.#credentials.chatgpt = { ...current, provenance: "user" };
-        await this.#persist();
-      }
-      return;
-    }
-
-    const previous = this.#credentials;
-    const { login: _pendingLogin, ...withoutLogin } = previous;
-    this.#credentials = {
-      ...withoutLogin,
-      active: "chatgpt",
-      chatgpt: {
+    this.#checkChatGptCapacity(imported.account_id);
+    const current = this.#chatGptAccounts().find((account) => account.accountId === imported.account_id);
+    // Never replace a live rotating refresh token with a replayed auth file.
+    if (current && !current.deadReason && current.expiresAt > Date.now()) {
+      this.#setChatGpt({ ...current, provenance: "user" }, true);
+    } else {
+      const revision = this.#nextChatGptRevision();
+      this.#setChatGpt({
         accessToken: imported.access_token,
         refreshToken: imported.refresh_token,
         accountId: imported.account_id,
         fedramp: imported.fedramp,
         expiresAt: imported.expires_at,
-        revision: (current?.revision ?? -1) + 1,
+        revision,
+        authorizationRevision: revision,
         provenance: "user",
         refreshState: "ready",
         deadReason: null,
-      },
-    };
-    try {
-      await this.#persistAndSchedule();
-    } catch (error) {
-      this.#credentials = previous;
-      throw error;
+      }, true);
     }
+    this.#credentials.active = "chatgpt";
+    delete this.#credentials.login;
+    await this.#persistAndSchedule();
   }
 
   async #refreshChatGpt(current: ChatGptCredential): Promise<ChatGptCredential> {
     if (!current.refreshToken) throw new BrokerFailure(503, "chatgpt_refresh_unavailable");
     const claimed = { ...current, refreshState: "in_flight" as const };
-    this.#credentials.chatgpt = claimed;
+    this.#setChatGpt(claimed);
     await this.#persist();
     let response: Response;
     try {
@@ -1488,12 +1565,12 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
           now,
           refreshAttempts,
         );
-        this.#credentials.chatgpt = {
+        this.#setChatGpt({
           ...current,
           refreshState: "ready",
           refreshAfter,
           refreshAttempts,
-        };
+        });
         await finishRateLimitedRefresh(
           response,
           () => this.#persist(),
@@ -1507,12 +1584,12 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     }
     try {
       const tokens = await providerJson(response);
-      const next = credentialFromTokens(tokens, current, current.revision + 1);
+      const next = credentialFromTokens(tokens, current, this.#nextChatGptRevision());
       if (next.accountId !== current.accountId) {
         await this.#markDead(claimed, "account_changed");
         throw new BrokerFailure(422, "chatgpt_credential_dead");
       }
-      this.#credentials.chatgpt = next;
+      this.#setChatGpt(next);
       await this.#persist();
       await this.#schedule();
       return next;
@@ -1524,8 +1601,9 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   }
 
   async #markDead(current: ChatGptCredential, reason: string): Promise<void> {
-    this.#credentials.chatgpt = { ...current, refreshState: "ready", deadReason: reason };
-    if (this.#credentials.active === "chatgpt") {
+    this.#setChatGpt({ ...current, refreshState: "ready", deadReason: reason });
+    if (this.#credentials.active === "chatgpt"
+      && !this.#chatGptAccounts().some((account) => !account.deadReason)) {
       this.#credentials.active = this.#credentials.openai ? "openai" : null;
     }
     await this.#persist();
@@ -1632,11 +1710,12 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       delete restored.browserCookieJars;
     }
     this.#credentials = restored;
-    const chatgpt = restored.chatgpt;
-    if (chatgpt?.refreshState === "in_flight") {
-      chatgpt.refreshState = "ready";
-      chatgpt.deadReason = "refresh_outcome_unknown";
-      changed = true;
+    for (const chatgpt of this.#chatGptAccounts()) {
+      if (chatgpt?.refreshState === "in_flight") {
+        chatgpt.refreshState = "ready";
+        chatgpt.deadReason = "refresh_outcome_unknown";
+        changed = true;
+      }
     }
     return {
       changed,
@@ -1667,13 +1746,14 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   #nextAlarm(): number | undefined {
     const times: number[] = [];
     if (this.#credentials.login) times.push(this.#credentials.login.expiresAt);
-    const chatgpt = this.#credentials.chatgpt;
-    if (chatgpt?.refreshToken && !chatgpt.deadReason) {
-      times.push(Math.max(
-        Date.now() + 1_000,
-        chatgpt.expiresAt - REFRESH_EARLY_MS,
-        chatgpt.refreshAfter ?? 0,
-      ));
+    for (const chatgpt of this.#chatGptAccounts()) {
+      if (chatgpt?.refreshToken && !chatgpt.deadReason) {
+        times.push(Math.max(
+          Date.now() + 1_000,
+          chatgpt.expiresAt - REFRESH_EARLY_MS,
+          chatgpt.refreshAfter ?? 0,
+        ));
+      }
     }
     return times.length ? Math.min(...times) : undefined;
   }
@@ -1970,6 +2050,8 @@ function credentialFromTokens(
     ...(provenance ? { provenance } : {}),
     refreshState: "ready",
     deadReason: null,
+    ...(previous?.limitedUntil ? { limitedUntil: previous.limitedUntil } : {}),
+    authorizationRevision: previous?.authorizationRevision ?? previous?.revision ?? revision,
   };
 }
 

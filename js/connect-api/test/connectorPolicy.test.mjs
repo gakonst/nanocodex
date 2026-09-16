@@ -328,3 +328,14 @@ test("music connectors route reads and writes only to their own resource APIs", 
     }
   }
 });
+
+test("ChatGPT account pools expose only bounded public metadata", () => {
+  const account = { account_id: "chatgpt-a", connected: true, active: false, limited_until: 1_900_000_000_000 };
+  assert.deepEqual(publicConnectorStatus({ connected: true, account_id: "chatgpt-b", accounts: [
+    { ...account, accessToken: "secret", refreshToken: "secret" },
+  ] }), { connected: true, connections: [], account_id: "chatgpt-b", accounts: [account] });
+  for (const accounts of ["bad", Array(21).fill(account), [{ ...account, limited_until: Infinity }],
+    [{ ...account, account_id: "" }], [{ ...account, active: "true" }]]) {
+    assert.throws(() => publicConnectorStatus({ connected: true, accounts }), ConnectorPolicyFailure);
+  }
+});

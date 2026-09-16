@@ -43,6 +43,24 @@ Chief of Staff deployments also require `CHIEF_OF_STAFF_OPENAI_API_KEY` on
 this broker. The named RPC copies it directly into the generated user's
 encrypted credential vault; the value is never returned to managed or Chief.
 
+ChatGPT credentials form a per-user encrypted pool of up to 20 distinct account
+IDs. Repeated CLI imports add accounts; importing a live account again retains
+its rotating refresh token and subscription cooldown. Existing single-account
+state remains readable. Device login also adds accounts. Token refresh and
+refresh backoff are tracked independently for each account.
+
+For user-owned credentials, egress reports explicit subscription exhaustion
+(`usage_limit_reached`, `usage_limit_exceeded`, or `insufficient_quota`) to the
+broker. The broker serializes selection and persists account cooldowns, fenced
+by credential revision. HTTP rejections can be retried once per eligible account.
+The Responses WebSocket forwards a retryable error after a successful switch,
+using the SDK's existing reconnect/full-history recovery so provider checkpoint
+IDs do not cross accounts. Once output has started, the original error is kept.
+Generic 429s, authorization denials, and sponsored quota do not trigger this
+pool failover. Public credential status includes account IDs, active/connected
+flags, and `limited_until` timestamps, never tokens. ChatGPT disconnect removes
+the complete pool.
+
 The optional homepage demo sponsor is an ordinary Nanocodex account whose
 ChatGPT connection remains in its own encrypted broker. After connecting that
 account through the Account UI, configure its stable account ID on egress:

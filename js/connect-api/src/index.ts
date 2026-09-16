@@ -2030,7 +2030,9 @@ async function createConnection(
   });
   requireRequestedConnectors(connectors, requested);
   if (credentialImport
-    && liveConnectorStatuses.chatgpt.account_id !== credentialImport.account_id) {
+    && liveConnectorStatuses.chatgpt.account_id !== credentialImport.account_id
+    && !liveConnectorStatuses.chatgpt.accounts?.some((account) =>
+      account.connected && account.account_id === credentialImport.account_id)) {
     throw new ApiFailure(
       409,
       "chatgpt_credential_mismatch",
@@ -2278,8 +2280,8 @@ async function importChatGptCredential(
     if (response.status === 409) {
       throw new ApiFailure(
         409,
-        "chatgpt_credential_conflict",
-        "A different live ChatGPT account is already connected.",
+        "chatgpt_account_limit",
+        "The maximum number of ChatGPT accounts is already connected.",
       );
     }
     throw new ApiFailure(502, "chatgpt_credential_import_failed", "The credential broker rejected the import.");

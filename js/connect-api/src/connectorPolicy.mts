@@ -29,6 +29,12 @@ export type ConnectorConnection = Readonly<{
 export type ConnectorStatus = Readonly<{
   connected: boolean;
   connections: readonly ConnectorConnection[];
+  accounts?: readonly Readonly<{
+    account_id: string;
+    connected: boolean;
+    active: boolean;
+    limited_until?: number;
+  }>[];
   label?: string;
   account_id?: string;
 }>;
@@ -153,6 +159,18 @@ export function publicConnectorStatus(value: unknown): ConnectorStatus {
     return Object.freeze({ connected: false, connections: Object.freeze([]) });
   }
 
+  const accounts = value.accounts;
+  if (accounts !== undefined && (!Array.isArray(accounts) || accounts.length > 20
+    || accounts.some((account) => !record(account) || !optionalDisplayString(account.account_id)
+      || typeof account.connected !== "boolean" || typeof account.active !== "boolean"
+      || (account.limited_until !== undefined && (!Number.isSafeInteger(account.limited_until)
+        || (account.limited_until as number) <= 0))))) invalidBrokerMetadata();
+  const publicAccounts = Array.isArray(accounts) ? accounts.map((account) => Object.freeze({
+    account_id: account.account_id as string,
+    connected: account.connected as boolean,
+    active: account.active as boolean,
+    ...(account.limited_until === undefined ? {} : { limited_until: account.limited_until as number }),
+  })) : undefined;
   const legacyLabel = optionalDisplayString(value.label);
   const legacyAccountId = optionalDisplayString(value.account_id);
   let connections: ConnectorConnection[] = [];
@@ -185,6 +203,7 @@ export function publicConnectorStatus(value: unknown): ConnectorStatus {
   return Object.freeze({
     connected: true,
     connections: frozenConnections,
+    ...(publicAccounts ? { accounts: Object.freeze(publicAccounts) } : {}),
     ...(label ? { label } : {}),
     ...(accountId ? { account_id: accountId } : {}),
   });
