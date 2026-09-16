@@ -101,10 +101,12 @@ async fn terminal_control_discovers_preserves_draft_and_deduplicates_prompt() {
         .write_all(format!("{steer}\n").as_bytes())
         .await
         .unwrap();
-    let (input, ack) = tokio::time::timeout(TIMEOUT, fixture.steers.recv())
-        .await
-        .unwrap()
-        .unwrap();
+    let (input, ack) = tokio::time::timeout(TIMEOUT, async {
+        tokio::select! {
+            command = fixture.steers.recv() => command.unwrap(),
+            response = lines.next_line() => panic!("steer was resolved before backend admission: {response:?}"),
+        }
+    }).await.unwrap();
     assert_eq!(input["message_id"], "external-steer");
     assert_eq!(input["turn_id"], turn);
     ack.send(true).unwrap();
@@ -127,10 +129,12 @@ async fn terminal_control_discovers_preserves_draft_and_deduplicates_prompt() {
         .await
         .unwrap();
     assert_eq!(
-        tokio::time::timeout(TIMEOUT, fixture.cancellations.recv())
-            .await
-            .unwrap()
-            .unwrap(),
+        tokio::time::timeout(TIMEOUT, async {
+            tokio::select! {
+                command = fixture.cancellations.recv() => command.unwrap(),
+                response = lines.next_line() => panic!("cancel was resolved before backend admission: {response:?}"),
+            }
+        }).await.unwrap(),
         turn
     );
     let reply: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();

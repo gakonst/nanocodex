@@ -1574,6 +1574,10 @@ async fn run_inner(
                         request_render(app.update(AppEvent::SettingsHydrated {pane:PaneId::Main,
                             effort:effort_from_thinking(settings.thinking),fast_mode:settings.fast_mode,model:settings.model}), &mut scheduler);
                     }
+                    // Publish readiness and revisions before a client can act on this acknowledgement.
+                    if let Some(server) = &control_server {
+                        control::snapshot(&server.bridge, &app, &runtime, !control_tasks.is_empty());
+                    }
                     command.finish(result);
                 }
             }
