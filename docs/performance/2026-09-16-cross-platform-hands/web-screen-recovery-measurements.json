@@ -1,0 +1,248 @@
+{
+  "date": "2026-09-16",
+  "baseline": "9c072415",
+  "method": "Actual Chromium, production screen catalog and publishers, local bearer-authenticated proxy. React component timing uses an account-context fixture; media and lease APIs are real. One sample per scenario, not percentiles. No screen images or credentials retained.",
+  "screen_dialog": {
+    "before": {
+      "catalogAfterOpenMs": 1366.5,
+      "openToVisibleMs": 3190.9,
+      "selectionToVisibleMs": 1824.4
+    },
+    "after": {
+      "catalogAfterOpenMs": 76,
+      "openToVisibleMs": 1894.9,
+      "selectionToVisibleMs": 1818.9
+    }
+  },
+  "recovery": {
+    "wan_before": {
+      "transport": "frames-v1",
+      "durationSeconds": 35,
+      "faults": [
+        "500 ms background switch at 5 s",
+        "one synthetic HTTP 503 on first renewal"
+      ],
+      "firstFrameMs": 1359.1,
+      "decodedFrames": 281,
+      "viewerSocketOpens": 3,
+      "states": [
+        {
+          "ms": 842.3999999761581,
+          "status": "Connecting\u2026",
+          "connected": false,
+          "controlling": false,
+          "connecting": true
+        },
+        {
+          "ms": 2203.099999964237,
+          "status": "Watching",
+          "connected": true,
+          "controlling": false,
+          "connecting": false
+        },
+        {
+          "ms": 5844,
+          "status": "Paused",
+          "connected": false,
+          "controlling": false,
+          "connecting": false
+        },
+        {
+          "ms": 6348,
+          "status": "Reconnecting\u2026",
+          "connected": false,
+          "controlling": false,
+          "connecting": true
+        },
+        {
+          "ms": 8417.799999952316,
+          "status": "Watching",
+          "connected": true,
+          "controlling": false,
+          "connecting": false
+        },
+        {
+          "ms": 18180.099999964237,
+          "status": "Reconnecting\u2026",
+          "connected": false,
+          "controlling": false,
+          "connecting": true
+        },
+        {
+          "ms": 19184.599999964237,
+          "status": "Reconnecting\u2026",
+          "connected": false,
+          "controlling": false,
+          "connecting": true
+        },
+        {
+          "ms": 21101.5,
+          "status": "Watching",
+          "connected": true,
+          "controlling": false,
+          "connecting": false
+        },
+        {
+          "ms": 35847.299999952316,
+          "status": "Disconnected",
+          "connected": false,
+          "controlling": false,
+          "connecting": false
+        }
+      ],
+      "http": [
+        {
+          "path": "/v1/account/hands/screens",
+          "status": 200,
+          "duration": 485
+        },
+        {
+          "path": "/v1/account/hands/screens",
+          "status": 200,
+          "duration": 514
+        },
+        {
+          "path": "/v1/account/hands/renew",
+          "status": 200,
+          "duration": 460
+        }
+      ]
+    },
+    "wan_after": {
+      "transport": "frames-v1",
+      "durationSeconds": 35,
+      "faults": [
+        "500 ms background switch at 5 s",
+        "one synthetic HTTP 503 on first renewal"
+      ],
+      "firstFrameMs": 1560.3,
+      "decodedFrames": 332,
+      "viewerSocketOpens": 1,
+      "states": [
+        {
+          "ms": 394.19999998807907,
+          "status": "Connecting\u2026",
+          "connected": false,
+          "controlling": false,
+          "connecting": true
+        },
+        {
+          "ms": 1955.5,
+          "status": "Watching",
+          "connected": true,
+          "controlling": false,
+          "connecting": false
+        },
+        {
+          "ms": 5396,
+          "status": "Watching",
+          "connected": true,
+          "controlling": false,
+          "connecting": false
+        },
+        {
+          "ms": 35398.799999952316,
+          "status": "Disconnected",
+          "connected": false,
+          "controlling": false,
+          "connecting": false
+        }
+      ],
+      "http": [
+        {
+          "path": "/v1/account/hands/renew",
+          "status": 200,
+          "duration": 475
+        },
+        {
+          "path": "/v1/account/hands/renew",
+          "status": 200,
+          "duration": 470
+        },
+        {
+          "path": "/v1/account/hands/renew",
+          "status": 200,
+          "duration": 481
+        }
+      ]
+    },
+    "omarchy_after": {
+      "transport": "webrtc",
+      "durationSeconds": 65,
+      "faults": [
+        "500 ms background switch at 5 s",
+        "one synthetic HTTP 503 on first renewal"
+      ],
+      "firstFrameMs": 3915.7,
+      "decodedFrames": 3675,
+      "viewerSocketOpens": 1,
+      "states": [
+        {
+          "ms": 480.19999998807907,
+          "status": "Connecting\u2026",
+          "connected": false,
+          "controlling": false,
+          "connecting": true
+        },
+        {
+          "ms": 4178.399999976158,
+          "status": "Watching",
+          "connected": true,
+          "controlling": false,
+          "connecting": false
+        },
+        {
+          "ms": 5780.599999964237,
+          "status": "Watching",
+          "connected": true,
+          "controlling": false,
+          "connecting": false
+        },
+        {
+          "ms": 65785.39999997616,
+          "status": "Disconnected",
+          "connected": false,
+          "controlling": false,
+          "connecting": false
+        }
+      ],
+      "http": [
+        {
+          "path": "/v1/account/hands/ice",
+          "status": 200,
+          "duration": 289
+        },
+        {
+          "path": "/v1/account/hands/renew",
+          "status": 200,
+          "duration": 565
+        },
+        {
+          "path": "/v1/account/hands/renew",
+          "status": 200,
+          "duration": 559
+        },
+        {
+          "path": "/v1/account/hands/renew",
+          "status": 200,
+          "duration": 485
+        },
+        {
+          "path": "/v1/account/hands/renew",
+          "status": 200,
+          "duration": 455
+        },
+        {
+          "path": "/v1/account/hands/renew",
+          "status": 200,
+          "duration": 452
+        },
+        {
+          "path": "/v1/account/hands/renew",
+          "status": 200,
+          "duration": 470
+        }
+      ]
+    }
+  }
+}

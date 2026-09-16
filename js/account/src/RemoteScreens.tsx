@@ -10,6 +10,13 @@ import "./RemoteScreens.css";
 export function RemoteScreens({ showLabel = false }: { showLabel?: boolean }) {
   const accountId = useAccountSession().account?.id;
   const [open, setOpen] = useState(false);
+  // Warm discovery while the account UI is visible; no viewer/media connection
+  // is opened until a screen is selected. The dialog reuses this account cache.
+  useQuery({
+    queryKey: [...accountQueryKey(accountId), "remote-screens"],
+    queryFn: ({ signal }) => listRemoteHands(signal),
+    enabled: Boolean(accountId), staleTime: 5_000,
+  });
   return <>
     <button type="button" className="remote-screens-open" aria-haspopup="dialog" aria-label="Remote screens" title="Remote screens"
       onClick={() => setOpen(true)}><Monitor size={17} aria-hidden="true" />{showLabel && "Screens"}</button>
@@ -79,7 +86,10 @@ function Screen({ hand, onBack }: { hand: RemoteHand; onBack(): void }) {
     const release = () => { discardInput(); connection.releaseControl(); };
     const pause = () => { discardInput(); connection.suspend(); };
     const resume = () => { if (!document.hidden) connection.resume(); };
-    const visibility = () => { if (document.hidden) pause(); else resume(); };
+    const visibility = () => {
+      if (document.hidden) { discardInput(); connection.suspend(15_000); }
+      else resume();
+    };
     if (document.hidden) pause(); else void connection.connect();
     window.addEventListener("blur", release); window.addEventListener("pagehide", pause); window.addEventListener("pageshow", resume);
     document.addEventListener("visibilitychange", visibility);

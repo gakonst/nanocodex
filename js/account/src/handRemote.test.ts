@@ -510,3 +510,86 @@ test("windowed frames reject an unsolicited seventh image while decoding is bloc
   assert.equal(f.session.state.connecting, false);
   assert.match(f.session.state.status, /Invalid remote signal/);
 });
+
+test("a brief background switch releases control and resumes the existing connection", async t => {
+  const f = fixture(t);
+  await f.session.connect(); f.peers[0]!.open();
+  f.session.takeControl(); f.peers[0]!.reliable.message({ type: "granted", generation: "lease" });
+  f.session.suspend(15_000);
+  assert.equal(f.session.state.controlling, false);
+  assert.equal(f.peers[0]!.reliable.sent.at(-1).type, "release");
+  await f.tick(500); f.session.resume(); await f.tick(15_000);
+  assert.equal(f.session.state.connected, true);
+  assert.equal(f.peers.length, 1);
+  assert.equal(f.sockets.length, 1);
+});
+
+test("long background pauses still detach and resume with a fresh authorized publication", async t => {
+  const f = fixture(t);
+  await f.session.connect(); f.peers[0]!.open();
+  f.session.suspend(15_000); await f.tick(15_000);
+  assert.equal(f.session.state.status, "Paused");
+  assert.equal(f.sockets[0]!.readyState, 3);
+  f.session.resume(); await flush();
+  assert.equal(f.sockets.length, 2);
+  assert.equal(f.catalogReads, 1);
+});
+
+test("temporary WebRTC disconnects recover without replacing the peer or granting input", async t => {
+  const f = fixture(t);
+  await f.session.connect(); f.peers[0]!.open();
+  const peer = f.peers[0]!;
+  peer.connectionState = "disconnected"; peer.onconnectionstatechange!();
+  f.session.takeControl(); assert.equal(peer.reliable.sent.length, 0);
+  await f.tick(2000);
+  peer.connectionState = "connected"; peer.onconnectionstatechange!();
+  await f.tick(2000);
+  assert.equal(f.session.state.connected, true);
+  assert.equal(f.peers.length, 1);
+  assert.equal(f.sockets.length, 1);
+});
+
+test("a sustained WebRTC disconnect still replaces the peer after a bounded grace", async t => {
+  const f = fixture(t);
+  await f.session.connect(); f.peers[0]!.open();
+  f.peers[0]!.connectionState = "disconnected"; f.peers[0]!.onconnectionstatechange!();
+  await f.tick(3000);
+  assert.equal(f.peers[0]!.connectionState, "closed");
+  await f.tick(1000);
+  assert.equal(f.peers.length, 2);
+});
+
+test("a transient renewal failure retries inside the original lease without disconnecting", async t => {
+  const f = fixture(t);
+  await f.session.connect(); f.peers[0]!.open();
+  f.sockets[0]!.message({ type: "ready", connection_id: "viewer" }); await flush();
+  f.setStatus(503); await f.tick(10_000);
+  assert.equal(f.session.state.connected, true);
+  f.setStatus(200); await f.tick(500);
+  assert.equal(f.requests.filter(r => r.path.endsWith("/renew")).length, 2);
+  f.sockets[0]!.message({ type: "renewed" }); await flush();
+  await f.tick(15_000);
+  assert.equal(f.session.state.connected, true);
+  assert.equal(f.sockets.length, 1);
+});
+
+test("renewal retries never extend authorization without a fresh authenticated renewal", async t => {
+  const f = fixture(t);
+  await f.session.connect(); f.peers[0]!.open();
+  f.sockets[0]!.message({ type: "ready", connection_id: "viewer" }); await flush();
+  f.setStatus(503); await f.tick(10_000); await f.tick(500); await f.tick(14_500);
+  assert.equal(f.session.state.connected, false);
+  assert.equal(f.session.state.connecting, false);
+  assert.equal(f.session.state.status, "This remote session is no longer authorized.");
+});
+
+for (const status of [401, 403, 409]) {
+  test(`renewal HTTP ${status} fails immediately instead of retrying a missing or revoked lease`, async t => {
+    const f = fixture(t);
+    await f.session.connect(); f.peers[0]!.open();
+    f.sockets[0]!.message({ type: "ready", connection_id: "viewer" }); await flush();
+    f.setStatus(status); await f.tick(10_000);
+    assert.equal(f.sockets[0]!.readyState, 3);
+    assert.equal(f.session.state.connected, false);
+  });
+}

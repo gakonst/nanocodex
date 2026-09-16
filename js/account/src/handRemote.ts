@@ -14,7 +14,8 @@ export type RemoteInput = {
 const encoder = new TextEncoder();
 class RemoteError extends Error {
   readonly terminal: boolean;
-  constructor(message: string, terminal = false) { super(message); this.terminal = terminal; }
+  readonly status?: number;
+  constructor(message: string, terminal = false, status?: number) { super(message); this.terminal = terminal; this.status = status; }
 }
 async function request(path: string, method = "GET", body?: unknown, signal?: AbortSignal): Promise<any> {
   const response = await fetch("/v1/account/hands" + path, {
@@ -24,7 +25,7 @@ async function request(path: string, method = "GET", body?: unknown, signal?: Ab
   });
   if (!response.ok) {
     const unauthorized = [401, 403].includes(response.status);
-    throw new RemoteError(unauthorized ? "This remote session is no longer authorized." : "This screen is unavailable.", unauthorized);
+    throw new RemoteError(unauthorized ? "This remote session is no longer authorized." : "This screen is unavailable.", unauthorized, response.status);
   }
   return response.json();
 }
@@ -92,6 +93,10 @@ export class RemoteBrowserSession {
   private connectingTimer?: ReturnType<typeof setTimeout>;
   private retryTimer?: ReturnType<typeof setTimeout>;
   private renewTimer?: ReturnType<typeof setInterval>;
+  private renewRetryTimer?: ReturnType<typeof setTimeout>;
+  private disconnectTimer?: ReturnType<typeof setTimeout>;
+  private suspendTimer?: ReturnType<typeof setTimeout>;
+  private renewing = false;
   private controlTimer?: ReturnType<typeof setInterval>;
   private frameTimer?: ReturnType<typeof setTimeout>;
   private frameDeadline?: ReturnType<typeof setTimeout>;
@@ -117,12 +122,23 @@ export class RemoteBrowserSession {
     this.suspended = false; this.retries = 0; this.recoveryDeadline = undefined;
     void this.start(true);
   }
-  suspend(): void {
+  suspend(delay = 0): void {
     if (this.closed || this.suspended) return;
+    // Release input immediately, but keep a short tab/app switch from forcing
+    // another authenticated socket + ICE handshake when the user comes back.
+    if (delay > 0) {
+      this.releaseControl();
+      this.suspendTimer ??= setTimeout(() => this.suspend(), delay);
+      return;
+    }
+    clearTimeout(this.suspendTimer); this.suspendTimer = undefined;
     this.suspended = true; this.detach();
     this.update({ status: "Paused", connected: false, controlling: false, connecting: false });
   }
-  resume(): void { if (this.suspended && !this.closed) this.reconnect(); }
+  resume(): void {
+    clearTimeout(this.suspendTimer); this.suspendTimer = undefined;
+    if (this.suspended && !this.closed) this.reconnect();
+  }
 
   private current(epoch: number): boolean { return epoch === this.epoch && !this.closed && !this.suspended; }
   private async start(refresh: boolean): Promise<void> {
@@ -166,8 +182,16 @@ export class RemoteBrowserSession {
         };
         peer.onconnectionstatechange = () => {
           if (!this.current(epoch)) return;
-          if (["failed", "disconnected", "closed"].includes(connectedPeer.connectionState)) this.fail(new RemoteError("Screen disconnected."));
-          else this.ready();
+          if (connectedPeer.connectionState === "disconnected") {
+            this.releaseControl();
+            this.disconnectTimer ??= setTimeout(() => {
+              if (this.current(epoch) && connectedPeer.connectionState === "disconnected") this.fail(new RemoteError("Screen disconnected."));
+            }, 3000);
+          } else {
+            clearTimeout(this.disconnectTimer); this.disconnectTimer = undefined;
+            if (["failed", "closed"].includes(connectedPeer.connectionState)) this.fail(new RemoteError("Screen disconnected."));
+            else this.ready();
+          }
         };
         peer.ondatachannel = ({ channel }) => { if (this.current(epoch)) this.channel(channel, epoch); else channel.close(); };
       }).catch(error => { if (this.current(epoch)) this.fail(error); });
@@ -203,11 +227,7 @@ export class RemoteBrowserSession {
             if (this.renewTimer || typeof message.connection_id !== "string" || message.connection_id.length > 128) throw new RemoteError("Invalid remote lease.", true);
             const id = message.connection_id;
             this.authorized(epoch);
-            this.renewTimer = setInterval(() => {
-              void request("/renew", "POST", { connection_id: id }, signal).then(() => {
-                if (this.current(epoch) && socket.readyState === WebSocket.OPEN) socket.send('{"type":"ping"}');
-              }).catch(error => { if (this.current(epoch)) this.fail(error); });
-            }, 10_000);
+            this.renewTimer = setInterval(() => { void this.renew(id, epoch, signal); }, 10_000);
             if (frames) {
               this.armFrameDeadline(epoch);
               this.requestFrame(epoch);
@@ -252,7 +272,8 @@ export class RemoteBrowserSession {
   }
 
   takeControl(): void {
-    if (this.state.connected && this.hand.controllable && !this.state.controlling && !this.controlRequested) {
+    if (this.state.connected && this.hand.controllable && !this.state.controlling && !this.controlRequested
+      && (this.hand.transport === "frames-v1" || this.peer?.connectionState === "connected")) {
       this.controlRequested = true; this.acquireControl();
     }
   }
@@ -275,7 +296,9 @@ export class RemoteBrowserSession {
   }
   close(status = "Disconnected"): void {
     if (this.closed) return;
-    this.closed = true; this.detach();
+    this.closed = true;
+    clearTimeout(this.suspendTimer); this.suspendTimer = undefined;
+    this.detach();
     this.update({ status, connected: false, controlling: false, connecting: false });
   }
   private detach(): void {
@@ -293,6 +316,8 @@ export class RemoteBrowserSession {
     clearTimeout(this.watchdog); clearTimeout(this.connectingTimer); clearTimeout(this.retryTimer);
     clearTimeout(this.frameTimer); clearTimeout(this.frameDeadline); this.framePending = 0; this.frameQueued = 0;
     clearInterval(this.renewTimer); clearInterval(this.controlTimer);
+    clearTimeout(this.renewRetryTimer); clearTimeout(this.disconnectTimer);
+    this.renewRetryTimer = this.disconnectTimer = undefined; this.renewing = false;
     this.watchdog = this.connectingTimer = this.retryTimer = this.renewTimer = this.controlTimer = undefined;
     this.frameTimer = this.frameDeadline = undefined;
     if (this.socket) { this.socket.onclose = this.socket.onerror = this.socket.onmessage = null; this.socket.close(); }
@@ -317,6 +342,22 @@ export class RemoteBrowserSession {
       if (performance.now() >= this.recoveryDeadline!) this.update({ status, connecting: false });
       else void this.start(true);
     }, delay);
+  }
+  private async renew(id: string, epoch: number, signal: AbortSignal): Promise<void> {
+    if (!this.current(epoch) || this.renewing) return;
+    clearTimeout(this.renewRetryTimer); this.renewRetryTimer = undefined;
+    this.renewing = true;
+    try {
+      await request("/renew", "POST", { connection_id: id }, signal);
+      if (this.current(epoch) && this.socket?.readyState === WebSocket.OPEN) this.socket.send('{"type":"ping"}');
+    } catch (error) {
+      if (!this.current(epoch)) return;
+      const transient = !(error instanceof RemoteError) || error.status === 408 || error.status === 429 || (error.status ?? 0) >= 500;
+      if (!transient) { this.fail(error); return; }
+      // A failed HTTP request does not invalidate a still-current socket lease.
+      // Retry within the original watchdog; only authenticated renewal extends it.
+      this.renewRetryTimer = setTimeout(() => { void this.renew(id, epoch, signal); }, 500);
+    } finally { if (this.current(epoch)) this.renewing = false; }
   }
   private authorized(epoch: number): void {
     clearTimeout(this.watchdog);
