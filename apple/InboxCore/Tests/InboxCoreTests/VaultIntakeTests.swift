@@ -3,6 +3,18 @@ import XCTest
 @testable import InboxCore
 
 final class VaultIntakeTests: XCTestCase {
+    func testAutomaticBrowserPresentationRequiresCurrentAgentAndUnexpiredRequest() throws {
+        let hint: JSON = .object(["type": .string("browser_vault_takeover"), "status": .string("input_required"),
+            "challenge_id": .string(String(repeating: "a", count: 32)), "agent_id": .string("agent_1"),
+            "origin": .string("https://example.com"), "expires_at": .number(2000)])
+        let intake = try XCTUnwrap(VaultIntake.parse(hint))
+        XCTAssertEqual(intake.expiresAt, 2000)
+        XCTAssertTrue(intake.isCurrentBrowserRequest(agentID: "agent_1", now: Date(timeIntervalSince1970: 1)))
+        XCTAssertFalse(intake.isCurrentBrowserRequest(agentID: "other", now: Date(timeIntervalSince1970: 1)))
+        XCTAssertFalse(intake.isCurrentBrowserRequest(agentID: "agent_1", now: Date(timeIntervalSince1970: 2)))
+        XCTAssertFalse(intake.isCurrentBrowserRequest(agentID: "agent_1", now: Date(timeIntervalSince1970: 3)))
+    }
+
     func testOnlySupportedHintsAndExactHTTPSOriginsAreAccepted() {
         func hint(_ kind: String, _ origin: String = "") -> JSON {
             .object(["type": .string("vault_intake"), "status": .string("input_required"), "kind": .string(kind), "origin": .string(origin)])
@@ -120,6 +132,49 @@ final class VaultIntakeTests: XCTestCase {
         let frame = try await client.browserTakeover(intake: intake, action: ["action": .string("type"), "text": .string("private-text")], configuration: fixture.configuration)
         guard case .active(let data, let width, _) = frame else { return XCTFail("Expected private frame") }
         XCTAssertEqual(width, 800); XCTAssertEqual(data.count, 8)
+    }
+
+    func testTakeoverInputMetadataAndFinishBoundary() throws {
+        let hint: JSON = .object(["type": .string("email"), "multiline": .bool(false)])
+        let region: JSON = .object(["x": .number(0.1), "y": .number(0.2),
+            "width": .number(0.5), "height": .number(0.1), "type": .string("password"), "multiline": .bool(false)])
+        var fields: [String: JSON] = ["status": .string("active"),
+            "image": .string("data:image/png;base64,iVBORw0KGgo="), "width": .number(800), "height": .number(600),
+            "keyboard": hint, "inputs": .array([region])]
+        guard case .activeWithInput(_, let width, _, let keyboard, let inputs) = try BrowserTakeoverFrame.parse(.object(fields)) else {
+            return XCTFail("Expected input metadata")
+        }
+        XCTAssertEqual(width, 800)
+        XCTAssertEqual(keyboard?.type, "email")
+        XCTAssertEqual(inputs.first?.keyboard.type, "password")
+        XCTAssertThrowsError(try BrowserTakeoverFrame.parse(.object(fields), finishing: true))
+        let finished: JSON = .object(["status": .string("finished")])
+        XCTAssertThrowsError(try BrowserTakeoverFrame.parse(finished))
+        guard case .finished = try BrowserTakeoverFrame.parse(finished, finishing: true) else {
+            return XCTFail("Expected confirmed finish")
+        }
+        XCTAssertThrowsError(try BrowserTakeoverFrame.parse(.object(["status": .string("finished"), "extra": .bool(true)]), finishing: true))
+        fields["secret"] = .string("unexpected")
+        XCTAssertThrowsError(try BrowserTakeoverFrame.parse(.object(fields)))
+    }
+
+    func testTakeoverRejectsMalformedMetadata() {
+        let base: [String: JSON] = ["status": .string("active"),
+            "image": .string("data:image/png;base64,iVBORw0KGgo="), "width": .number(800), "height": .number(600)]
+        let invalid: [(String, JSON)] = [
+            ("width", .number(.infinity)), ("height", .number(1.5)), ("width", .string("800")),
+            ("image", .string("data:image/png;base64,aGVsbG8=")),
+            ("keyboard", .null),
+            ("keyboard", .object(["type": .string("unknown"), "multiline": .bool(false)])),
+            ("keyboard", .object(["type": .string("text"), "multiline": .bool(false), "value": .string("private")])),
+            ("inputs", .array(Array(repeating: .null, count: 33))),
+            ("inputs", .array([.object(["x": .number(0.9), "y": .number(0), "width": .number(0.2),
+                "height": .number(0.1), "type": .string("text"), "multiline": .bool(false)])]))
+        ]
+        for (key, value) in invalid {
+            var fields = base; fields[key] = value
+            XCTAssertThrowsError(try BrowserTakeoverFrame.parse(.object(fields)), "Accepted malformed \(key)")
+        }
     }
 
 }

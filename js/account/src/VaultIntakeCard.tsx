@@ -1,10 +1,11 @@
+import { BrowserTakeoverCard } from "./BrowserTakeoverCard";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ToolActivity } from "nanocodex-react/agent";
 import { useAccountSession } from "./AccountSession";
 import { VaultEntryDialog } from "./Vault";
 import { decodeVaultEntries, vaultEntryPath, type VaultEntryMetadata, type VaultEntryKind } from "./vaultEntries";
-import { browserTakeover, type BrowserTakeoverAction, type BrowserTakeoverFrame, decodeVaultIntake, submitBrowserVerification, vaultIntakeReceipt, type VaultIntake } from "./vaultIntake";
+import { decodeVaultIntake, submitBrowserVerification, vaultIntakeReceipt, type VaultIntake } from "./vaultIntake";
 
 export function VaultIntakeCard({ tool, onReceipt }: { tool: ToolActivity; onReceipt(receipt: string): void }) {
   const account = useAccountSession();
@@ -125,38 +126,5 @@ function BrowserVerificationCard({ intake, authenticated, onReceipt }: { intake:
       <button type="submit">Submit code</button>
     </form> : null}
     {status ? <p role="status">{status}</p> : null}
-  </section>;
-}
-
-function BrowserTakeoverCard({ intake, authenticated, onReceipt }: { intake: VaultIntake; authenticated: boolean; onReceipt(receipt: string): void }) {
-  const [frame, setFrame] = useState<BrowserTakeoverFrame>();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const alive = useRef(true), pending = useRef(false);
-  const input = useRef<HTMLInputElement>(null);
-  useEffect(() => { alive.current = true; return () => { alive.current = false; if (input.current) input.current.value = ""; }; }, []);
-  useEffect(() => { const hide = () => { if (document.visibilityState !== "visible") { setFrame(undefined); if (input.current) input.current.value = ""; } }; document.addEventListener("visibilitychange", hide); return () => document.removeEventListener("visibilitychange", hide); }, []);
-  const act = async (action: BrowserTakeoverAction) => {
-    if (pending.current || !authenticated) return;
-    pending.current = true; setBusy(true); setError("");
-    try { const next = await browserTakeover(intake, action); if (!alive.current) return; setFrame(next.status === "finished" || document.visibilityState === "visible" ? next : undefined);
-      if (next.status === "finished") onReceipt(JSON.stringify({ type: "browser_vault_takeover_receipt", status: "finished", challenge_id: intake.challenge_id }));
-    } catch { if (alive.current) { setFrame(undefined); setError("Couldn’t confirm the action. Refresh the view before trying another action."); } }
-    finally { pending.current = false; if (alive.current) setBusy(false); }
-  };
-  return <section className="vault-intake-card" aria-label="Private browser control"><strong>Control browser privately</strong><p>{intake.origin}</p>
-    <p>The screen and your input stay outside this conversation. Finish when you are done.</p>
-    {frame?.status === "finished" ? <p>Browser control finished.</p> : <>
-      <button disabled={busy || !authenticated} onClick={() => void act({action: "observe"})}>Open / refresh private view</button>
-      {frame?.status === "active" ? <>
-        <img src={frame.image} alt="Private browser screen; click to interact" draggable={false} style={{width: "100%", height: "auto", touchAction: "manipulation"}} onClick={event => { const r = event.currentTarget.getBoundingClientRect(); void act({action: "click", x: (event.clientX-r.left)/r.width, y: (event.clientY-r.top)/r.height}); }} />
-        <form onSubmit={event => { event.preventDefault(); if (!input.current?.value || pending.current) return; const text = input.current.value; input.current.value = ""; void act({action: "type", text}); }}>
-          <label>Private text <input ref={input} type="password" maxLength={512} autoComplete="off" spellCheck={false} disabled={busy} /></label><button disabled={busy} type="submit">Type in browser</button>
-        </form>
-        {(["Enter", "Tab", "Backspace", "Escape"] as const).map(key => <button key={key} disabled={busy} onClick={() => void act({action: "key", key})}>{key}</button>)}
-        <button disabled={busy} onClick={() => void act({action: "scroll", delta_y: -500})}>Scroll up</button><button disabled={busy} onClick={() => void act({action: "scroll", delta_y: 500})}>Scroll down</button>
-      </> : null}
-      <button disabled={busy || !authenticated} onClick={() => { if (input.current) input.current.value = ""; void act({action: "finish"}); }}>Finish private control</button>
-    </>}{error ? <p role="alert">{error}</p> : null}
   </section>;
 }

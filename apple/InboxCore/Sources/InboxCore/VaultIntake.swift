@@ -36,6 +36,13 @@ public struct VaultIntake: Codable, Equatable, Sendable {
     public let vaultID: String?
     public let challengeID: String?
     public let agentID: String?
+    public var expiresAt: Double? = nil
+
+    public func isCurrentBrowserRequest(agentID: String, now: Date = Date()) -> Bool {
+        guard operation == "browser_takeover" || operation == "browser_verification",
+              self.agentID == agentID, challengeID != nil, let expiresAt else { return false }
+        return expiresAt > now.timeIntervalSince1970 * 1000
+    }
 
     public static func parse(_ value: JSON, depth: Int = 0) -> VaultIntake? {
         guard depth < 12 else { return nil }
@@ -50,7 +57,7 @@ public struct VaultIntake: Codable, Equatable, Sendable {
             guard let validated = parse(.object(["type": .string("vault_intake"), "status": .string("input_required"),
                 "kind": .string("login"), "origin": .string(origin)])), validated.origin != nil else { return nil }
             return .init(kind: "login", name: "", origin: origin, operation: value["type"].string == "browser_vault_takeover" ? "browser_takeover" : "browser_verification", vaultID: nil,
-                         challengeID: value["challenge_id"].string, agentID: value["agent_id"].string)
+                         challengeID: value["challenge_id"].string, agentID: value["agent_id"].string, expiresAt: expiry)
         }
         if value["type"].string == "vault_intake", value["status"].string == "input_required",
            ["login", "api_key", "card", "address", "phone"].contains(value["kind"].string) {
@@ -141,8 +148,56 @@ extension ManagedClient {
     }
 }
 
+public struct BrowserKeyboardHint: Sendable, Equatable {
+    public let type: String
+    public let multiline: Bool
+}
+public struct BrowserInputRegion: Sendable, Equatable {
+    public let x: Double
+    public let y: Double
+    public let width: Double
+    public let height: Double
+    public let keyboard: BrowserKeyboardHint
+}
 public enum BrowserTakeoverFrame: Sendable {
     case active(image: Data, width: Int, height: Int)
+    case activeWithInput(image: Data, width: Int, height: Int, keyboard: BrowserKeyboardHint?, inputs: [BrowserInputRegion])
+
+    public static func parse(_ response: JSON, finishing: Bool = false) throws -> Self {
+        guard case .object(let fields) = response else { throw APIError.invalidResponse }
+        if finishing, fields.count == 1, response["status"].string == "finished" { return .finished }
+        let prefix = "data:image/png;base64,", encoded = response["image"].string
+        guard case .number(let width) = response["width"], case .number(let height) = response["height"],
+              !finishing, Set(fields.keys).isSubset(of: ["status", "image", "width", "height", "keyboard", "inputs"]),
+              response["status"].string == "active", encoded.hasPrefix(prefix),
+              width.isFinite, height.isFinite, width >= 1, width <= 16384, height >= 1, height <= 16384,
+              width.rounded() == width, height.rounded() == height,
+              let data = Data(base64Encoded: String(encoded.dropFirst(prefix.count))), data.starts(with: [137,80,78,71,13,10,26,10]) else { throw APIError.invalidResponse }
+        func hint(_ value: JSON, region: Bool = false) throws -> BrowserKeyboardHint {
+            guard case .object(let fields) = value,
+                  Set(fields.keys) == Set(region ? ["x", "y", "width", "height", "type", "multiline"] : ["type", "multiline"]),
+                  ["text", "email", "url", "tel", "number", "password"].contains(value["type"].string),
+                  case .bool(let multiline) = value["multiline"] else { throw APIError.invalidResponse }
+            return BrowserKeyboardHint(type: value["type"].string, multiline: multiline)
+        }
+        let keyboard = try fields["keyboard"].map { try hint($0) }
+        var inputs: [BrowserInputRegion] = []
+        if let value = fields["inputs"] {
+            guard case .array(let regions) = value, regions.count <= 32 else { throw APIError.invalidResponse }
+            for region in regions {
+                let keyboard = try hint(region, region: true)
+                guard case .number(let x) = region["x"], case .number(let y) = region["y"],
+                      case .number(let w) = region["width"], case .number(let h) = region["height"],
+                      [x,y,w,h].allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 1 }),
+                      w > 0, h > 0, x + w <= 1.000001, y + h <= 1.000001 else { throw APIError.invalidResponse }
+                inputs.append(.init(x: x, y: y, width: w, height: h, keyboard: keyboard))
+            }
+        }
+        if keyboard != nil || !inputs.isEmpty {
+            return .activeWithInput(image: data, width: Int(width), height: Int(height), keyboard: keyboard, inputs: inputs)
+        }
+        return .active(image: data, width: Int(width), height: Int(height))
+    }
     case finished
 }
 extension ManagedClient {
@@ -150,13 +205,6 @@ extension ManagedClient {
         guard intake.operation == "browser_takeover", let challenge = intake.challengeID, let agent = intake.agentID else { throw APIError.invalidResponse }
         var body = action; body["challenge_id"] = .string(challenge)
         let response = try await vaultIntakeJSON(path: Self.agentPath(agent) + "/browser-vault/takeover", method: "POST", body: .object(body), configuration: configuration, maximumResponseBytes: 16 * 1024 * 1024)
-        guard case .object(let fields) = response else { throw APIError.invalidResponse }
-        if action["action"] == .string("finish"), fields.count == 1, response["status"].string == "finished" { return .finished }
-        let prefix = "data:image/png;base64,", encoded = response["image"].string
-        let width = response["width"].number, height = response["height"].number
-        guard action["action"] != .string("finish"), fields.count == 4, response["status"].string == "active", encoded.hasPrefix(prefix),
-              width >= 1, width <= 16384, height >= 1, height <= 16384, width.rounded() == width, height.rounded() == height,
-              let data = Data(base64Encoded: String(encoded.dropFirst(prefix.count))), data.starts(with: [137,80,78,71,13,10,26,10]) else { throw APIError.invalidResponse }
-        return .active(image: data, width: Int(width), height: Int(height))
+        return try BrowserTakeoverFrame.parse(response, finishing: action["action"] == .string("finish"))
     }
 }

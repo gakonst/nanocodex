@@ -69,16 +69,25 @@ export async function submitBrowserVerification(intake: VaultIntake, code: strin
   return JSON.stringify({ type: "browser_vault_challenge_receipt", status: "submitted", challenge_id: intake.challenge_id });
 }
 
-export type BrowserTakeoverAction = { action: "observe" | "click" | "type" | "key" | "scroll" | "finish"; x?: number; y?: number; text?: string; key?: "Enter" | "Tab" | "Backspace" | "Escape"; delta_y?: number };
-export type BrowserTakeoverFrame = { status: "active"; image: string; width: number; height: number } | { status: "finished" };
-export async function browserTakeover(intake: VaultIntake, action: BrowserTakeoverAction, request: typeof fetch = fetch): Promise<BrowserTakeoverFrame> {
+export type BrowserTakeoverAction = { action: "observe" | "click" | "type" | "key" | "scroll" | "finish" | "touch" | "edit"; x?: number; y?: number; text?: string; key?: "Enter" | "Tab" | "Backspace" | "Escape"; delta_y?: number; phase?: "start" | "move" | "end" | "cancel"; delete_backward?: number; viewport?: { width: number; height: number; mobile: boolean } };
+export type BrowserKeyboard = { type: "text" | "email" | "url" | "tel" | "number" | "password"; multiline: boolean };
+export type BrowserInputRegion = BrowserKeyboard & { x: number; y: number; width: number; height: number };
+export type BrowserTakeoverFrame = { status: "active"; image: string; width: number; height: number; keyboard?: BrowserKeyboard; inputs?: BrowserInputRegion[] } | { status: "finished" };
+export async function browserTakeover(intake: VaultIntake, action: BrowserTakeoverAction, request: typeof fetch = fetch, signal?: AbortSignal): Promise<BrowserTakeoverFrame> {
   if (intake.operation !== "browser_takeover" || !/^[A-Za-z0-9_-]{1,128}$/.test(intake.agent_id ?? "") || !/^[A-Za-z0-9_-]{22,256}$/.test(intake.challenge_id ?? "")) throw new Error("Invalid takeover");
-  const response = await request(`/v1/agents/${intake.agent_id}/browser-vault/takeover`, { method: "POST", credentials: "same-origin", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ challenge_id: intake.challenge_id, ...action }) });
+  const response = await request(`/v1/agents/${intake.agent_id}/browser-vault/takeover`, { method: "POST", credentials: "same-origin", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", headers: { "content-type": "application/json", accept: "application/json" }, signal, body: JSON.stringify({ challenge_id: intake.challenge_id, ...action }) });
   if (!response.ok) { await response.body?.cancel(); throw new Error("Takeover unavailable"); }
   const raw: unknown = await response.json();
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Invalid takeover frame");
   const v = raw as Record<string, unknown>;
   if (action.action === "finish" && v?.status === "finished" && Object.keys(v).length === 1) return { status: "finished" };
-  if (action.action === "finish" || v?.status !== "active" || Object.keys(v).length !== 4 || typeof v.image !== "string" || v.image.length > 16 * 1024 * 1024 || !/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(v.image) || typeof v.width !== "number" || typeof v.height !== "number" || !Number.isInteger(v.width) || !Number.isInteger(v.height) || v.width < 1 || v.height < 1 || v.width > 16384 || v.height > 16384) throw new Error("Invalid takeover frame");
-  return { status: "active", image: v.image, width: v.width, height: v.height };
+  if (action.action === "finish" || v?.status !== "active" || Object.keys(v).some(key => !["status", "image", "width", "height", "keyboard", "inputs"].includes(key)) || typeof v.image !== "string" || v.image.length > 16 * 1024 * 1024 || !/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(v.image) || typeof v.width !== "number" || typeof v.height !== "number" || !Number.isInteger(v.width) || !Number.isInteger(v.height) || v.width < 1 || v.height < 1 || v.width > 16384 || v.height > 16384) throw new Error("Invalid takeover frame");
+  const keyboard = (value: unknown, region = false): boolean => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const r = value as Record<string, unknown>;
+    return Object.keys(r).every(k => ["type", "multiline", ...(region ? ["x", "y", "width", "height"] : [])].includes(k)) && ["text", "email", "url", "tel", "number", "password"].includes(String(r.type)) && typeof r.multiline === "boolean";
+  };
+  if (v.keyboard !== undefined && !keyboard(v.keyboard)) throw new Error("Invalid keyboard hint");
+  if (v.inputs !== undefined && (!Array.isArray(v.inputs) || v.inputs.length > 32 || !v.inputs.every(r => keyboard(r, true) && ["x", "y", "width", "height"].every(k => typeof r[k] === "number" && Number.isFinite(r[k]) && r[k] >= 0 && r[k] <= 1) && r.width > 0 && r.height > 0 && r.x + r.width <= 1.000001 && r.y + r.height <= 1.000001))) throw new Error("Invalid input regions");
+  return { status: "active", image: v.image, width: v.width, height: v.height, ...(v.keyboard === undefined ? {} : { keyboard: v.keyboard as BrowserKeyboard }), ...(v.inputs === undefined ? {} : { inputs: v.inputs as BrowserInputRegion[] }) };
 }

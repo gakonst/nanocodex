@@ -2016,10 +2016,17 @@ private struct VaultIntakeCard: View {
         .frame(maxWidth: .infinity, alignment: .leading).padding(16)
         .background(Ink.surface, in: RoundedRectangle(cornerRadius: 16))
         .accessibilityIdentifier("vault-intake-card")
-        .sheet(isPresented: $showingForm) {
-            if intake.operation == "browser_takeover" {
-                BrowserTakeoverSheet(model: model, intake: intake)
-            } else if intake.operation == "browser_verification" {
+        .task(id: intake.challengeID) {
+            if model.claimBrowserRequestPresentation(intake) {
+                receiptAgentID = model.focused?.id ?? ""
+                showingForm = true
+            }
+        }
+        .fullScreenCover(isPresented: Binding(get: { showingForm && intake.operation == "browser_takeover" }, set: { showingForm = $0 })) {
+            BrowserTakeoverSheet(model: model, intake: intake)
+        }
+        .sheet(isPresented: Binding(get: { showingForm && intake.operation != "browser_takeover" }, set: { showingForm = $0 })) {
+            if intake.operation == "browser_verification" {
                 BrowserVerificationSheet(model: model, intake: intake, agentID: receiptAgentID) { verificationSubmitted = true }
             } else { VaultLoginSheet(model: model, intake: intake, agentID: receiptAgentID) { receipt = $0 } }
         }
@@ -2197,57 +2204,267 @@ private struct BrowserTakeoverSheet: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var account = UUID()
     @State private var screen: UIImage?
-    @State private var text = ""
-    @State private var busy = false
+    @State private var keyboard: BrowserKeyboardHint?
+    @State private var inputs: [BrowserInputRegion] = []
+    @State private var keyboardVisible = false
     @State private var failure: String?
+    @State private var queue: [[String: JSON]] = []
     @State private var submission: Task<Void, Never>?
-    private func act(_ action: [String: JSON]) {
-        guard !busy else { return }; busy = true; failure = nil
+    @State private var observing: Task<Void, Never>?
+    @State private var generation = UUID()
+    @State private var viewport = CGSize(width: 390, height: 700)
+    @State private var finishing = false
+    @State private var touching = false
+
+    private func clear() {
+        generation = UUID(); submission?.cancel(); submission = nil
+        queue.removeAll(); screen = nil; keyboard = nil; inputs = []; keyboardVisible = false
+        finishing = false; touching = false
+    }
+    private func observe() {
+        enqueue(["action": .string("observe"), "viewport": .object([
+            "width": .number(Double(min(1920, max(240, viewport.width)).rounded())),
+            "height": .number(Double(min(1920, max(240, viewport.height)).rounded())), "mobile": .bool(true)])])
+    }
+    private func enqueue(_ action: [String: JSON]) {
+        guard scenePhase == .active, account == model.vaultIntakeAccount, !finishing else { return }
+        guard failure == nil || action["action"] == .string("finish") else { return }
+        if action["action"] == .string("touch") {
+            touching = action["phase"] == .string("start") || action["phase"] == .string("move")
+        }
+        if action["action"] == .string("finish") { finishing = true; keyboardVisible = false }
+        // Only replace adjacent unsent moves. Text, keys and gesture boundaries retain order.
+        if action["phase"] == .string("move"), queue.last?["phase"] == .string("move") {
+            queue[queue.count - 1] = action
+        } else { queue.append(action) }
+        drain()
+    }
+    private func drain() {
+        guard submission == nil, !queue.isEmpty else { return }
+        let action = queue.removeFirst(), token = generation
         submission = Task { @MainActor in
-            defer { busy = false }
             do {
                 let frame = try await model.browserTakeover(intake: intake, action: action, account: account)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, generation == token, scenePhase == .active,
+                      account == model.vaultIntakeAccount else { return }
                 switch frame {
                 case .finished:
+                    guard action["action"] == .string("finish") else { throw APIError.invalidResponse }
                     model.publishBrowserVerificationReceipt(intake: intake, agentID: intake.agentID ?? "", account: account)
-                    screen = nil; text = ""; dismiss()
+                    clear(); dismiss(); return
                 case .active(let data, _, _):
                     guard let image = UIImage(data: data) else { throw APIError.invalidResponse }
-                    screen = scenePhase == .active ? image : nil
+                    screen = image; keyboard = nil; inputs = []
+                case .activeWithInput(let data, _, _, let hint, let regions):
+                    guard let image = UIImage(data: data) else { throw APIError.invalidResponse }
+                    screen = image; keyboard = hint; inputs = regions
+                    if hint != nil { keyboardVisible = true }
                 }
-            } catch { screen = nil; failure = "Couldn’t confirm the action. Refresh the view before trying another action." }
+                submission = nil; drain()
+            } catch {
+                guard generation == token, !Task.isCancelled else { return }
+                clear(); failure = "Couldn’t confirm the action. Refresh before continuing."
+            }
         }
     }
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 12) {
-                    Text(intake.origin ?? "")
-                    Text("The screen and your input stay outside this conversation. Finish when you are done.")
-                    Button("Open / refresh private view") { act(["action": .string("observe")]) }
-                    if let screen {
-                        Image(uiImage: screen).resizable().aspectRatio(contentMode: .fit)
-                            .overlay { GeometryReader { geometry in
-                                Color.clear.contentShape(Rectangle()).gesture(SpatialTapGesture().onEnded { event in
-                                    act(["action": .string("click"), "x": .number(event.location.x / geometry.size.width), "y": .number(event.location.y / geometry.size.height)])
-                                })
-                            } }.privacySensitive()
-                        SecureField("Private text", text: $text).textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
-                        Button("Type in browser") { let value = text; text = ""; act(["action": .string("type"), "text": .string(value)]) }.disabled(text.isEmpty || text.utf8.count > 512)
-                        HStack { ForEach(["Enter", "Tab", "Backspace", "Escape"], id: \.self) { key in Button(key) { act(["action": .string("key"), "key": .string(key)]) } } }
-                        HStack { Button("Scroll up") { act(["action": .string("scroll"), "delta_y": .number(-500)]) }; Button("Scroll down") { act(["action": .string("scroll"), "delta_y": .number(500)]) } }
-                    }
-                    if let failure { Text(failure).foregroundStyle(.red) }
-                    Button("Finish private control") { text = ""; act(["action": .string("finish")]) }
-                }.padding().disabled(busy)
-            }.navigationTitle("Private browser control")
+            VStack(spacing: 0) {
+                GeometryReader { geometry in
+                    PrivateBrowserCanvas(image: screen, keyboard: keyboard, inputs: inputs,
+                        keyboardVisible: keyboardVisible && failure == nil && !finishing && scenePhase == .active,
+                        enabled: screen != nil && failure == nil && !finishing && scenePhase == .active,
+                        send: enqueue, showKeyboard: { hint in keyboard = hint; keyboardVisible = true })
+                        .onAppear { viewport = geometry.size }
+                        .onChange(of: geometry.size) { _, size in viewport = size }
+                }
+                if let failure { Text(failure).font(.footnote).foregroundStyle(.red).padding(8) }
+            }
+            .background(Color.black).privacySensitive()
+            .navigationTitle(intake.origin ?? "Private browser")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { enqueue(["action": .string("finish")]) }
+                        .disabled(finishing || scenePhase != .active)
+                }
+                ToolbarItemGroup(placement: .bottomBar) {
+                    Button { guard submission == nil else { return }; failure = nil; observe() } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }.disabled(submission != nil || finishing || touching)
+                    Spacer()
+                    Button { keyboardVisible.toggle() } label: { Label("Keyboard", systemImage: "keyboard") }
+                        .disabled(screen == nil || failure != nil || finishing)
+                }
+            }
             .overlay { if scenePhase != .active { Color(uiColor: .systemBackground).ignoresSafeArea() } }
         }
-        .interactiveDismissDisabled(busy)
-        .task { account = model.vaultIntakeAccount }
-        .onDisappear { submission?.cancel(); text = ""; screen = nil }
-        .onChange(of: scenePhase) { _, phase in if phase != .active { text = ""; screen = nil } }
-        .onChange(of: model.vaultIntakeAccount) { _, _ in submission?.cancel(); text = ""; screen = nil; dismiss() }
+        .presentationDetents([.large]).presentationDragIndicator(.hidden)
+        .interactiveDismissDisabled()
+        .task {
+            account = model.vaultIntakeAccount; observe()
+            observing = Task { @MainActor in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(1))
+                    guard !Task.isCancelled else { return }
+                    if submission == nil && queue.isEmpty && failure == nil && !finishing && !touching { observe() }
+                }
+            }
+        }
+        .onDisappear { observing?.cancel(); clear() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { clear(); failure = "Private view paused. Refresh to continue." }
+        }
+        .onChange(of: model.vaultIntakeAccount) { _, _ in clear(); dismiss() }
+        .onChange(of: model.connected) { _, connected in if !connected { clear(); dismiss() } }
+    }
+}
+
+private struct PrivateBrowserCanvas: UIViewRepresentable {
+    let image: UIImage?
+    let keyboard: BrowserKeyboardHint?
+    let inputs: [BrowserInputRegion]
+    let keyboardVisible: Bool
+    let enabled: Bool
+    let send: ([String: JSON]) -> Void
+    let showKeyboard: (BrowserKeyboardHint) -> Void
+    func makeUIView(context: Context) -> PrivateBrowserTouchView { PrivateBrowserTouchView() }
+    func updateUIView(_ view: PrivateBrowserTouchView, context: Context) {
+        view.send = send; view.showKeyboard = showKeyboard; view.regions = inputs
+        view.imageView.image = image; view.acceptsInput = enabled; view.setNeedsLayout()
+        view.bridge.send = send
+        view.bridge.configure(type: keyboard?.type ?? "password", multiline: keyboard?.multiline ?? false)
+        if keyboardVisible && enabled {
+            if !view.bridge.isFirstResponder { view.bridge.becomeFirstResponder() }
+        } else { view.bridge.resignFirstResponder() }
+        if !enabled { view.resetTouch() }
+    }
+    static func dismantleUIView(_ view: PrivateBrowserTouchView, coordinator: ()) {
+        view.bridge.resignFirstResponder(); view.bridge.send = { _ in }
+        view.imageView.image = nil; view.resetTouch(); view.send = { _ in }
+    }
+}
+
+@MainActor private final class PrivateBrowserKeyboard: UIView, UIKeyInput {
+    var send: ([String: JSON]) -> Void = { _ in }
+    var multiline = false
+    var hasText: Bool { true }
+    override var canBecomeFirstResponder: Bool { true }
+    var keyboardType: UIKeyboardType = .default
+    var autocorrectionType: UITextAutocorrectionType = .no
+    var autocapitalizationType: UITextAutocapitalizationType = .none
+    var spellCheckingType: UITextSpellCheckingType = .no
+    var smartQuotesType: UITextSmartQuotesType = .no
+    var smartDashesType: UITextSmartDashesType = .no
+    var smartInsertDeleteType: UITextSmartInsertDeleteType = .no
+    var isSecureTextEntry = true
+    var returnKeyType: UIReturnKeyType = .go
+    func configure(type: String, multiline: Bool) {
+        let next: UIKeyboardType = switch type {
+        case "email": .emailAddress
+        case "url": .URL
+        case "tel": .phonePad
+        case "number": .decimalPad
+        default: .default
+        }
+        let secure = type == "password"
+        let changed = keyboardType != next || self.multiline != multiline || isSecureTextEntry != secure
+        isSecureTextEntry = secure
+        keyboardType = next; self.multiline = multiline; returnKeyType = multiline ? .default : .go
+        if changed && isFirstResponder { reloadInputViews() }
+    }
+    func insertText(_ text: String) {
+        if text == "\n" && !multiline { send(["action": .string("key"), "key": .string("Enter")]); return }
+        // Bound each edit by UTF-8 bytes, without keeping a local password buffer.
+        var chunk = ""
+        for scalar in text.unicodeScalars {
+            let value = String(scalar)
+            if chunk.utf8.count + value.utf8.count > 512 {
+                edit(chunk); chunk = ""
+            }
+            chunk += value
+        }
+        if !chunk.isEmpty { edit(chunk) }
+    }
+    private func edit(_ value: String) {
+        send(["action": .string("edit"), "delete_backward": .number(0), "text": .string(value)])
+    }
+    func deleteBackward() { send(["action": .string("edit"), "delete_backward": .number(1), "text": .string("")]) }
+    override var keyCommands: [UIKeyCommand]? {
+        [UIKeyCommand(input: "\t", modifierFlags: [], action: #selector(tab)),
+         UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escape))]
+    }
+    @objc private func tab() { send(["action": .string("key"), "key": .string("Tab")]) }
+    @objc private func escape() { send(["action": .string("key"), "key": .string("Escape")]) }
+}
+
+@MainActor private final class PrivateBrowserTouchView: UIView {
+    let imageView = UIImageView()
+    let bridge = PrivateBrowserKeyboard()
+    var send: ([String: JSON]) -> Void = { _ in }
+    var showKeyboard: (BrowserKeyboardHint) -> Void = { _ in }
+    var regions: [BrowserInputRegion] = []
+    var acceptsInput = false
+    private var tracked: UITouch?
+    private var lastPoint = CGPoint.zero
+    private var startPoint = CGPoint.zero
+    private let trail = CAShapeLayer()
+    private let ripple = CAShapeLayer()
+    private var path = UIBezierPath()
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .black; isMultipleTouchEnabled = false
+        imageView.contentMode = .scaleAspectFit; imageView.isUserInteractionEnabled = false
+        addSubview(imageView); addSubview(bridge)
+        trail.strokeColor = UIColor.systemBlue.withAlphaComponent(0.7).cgColor
+        trail.fillColor = UIColor.clear.cgColor; trail.lineWidth = 3
+        ripple.fillColor = UIColor.systemBlue.withAlphaComponent(0.3).cgColor
+        layer.addSublayer(trail); layer.addSublayer(ripple)
+        accessibilityLabel = "Private browser screen"
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func layoutSubviews() { super.layoutSubviews(); imageView.frame = bounds; bridge.frame = .zero }
+    private var imageRect: CGRect {
+        guard let size = imageView.image?.size, size.width > 0, size.height > 0 else { return .zero }
+        let scale = min(bounds.width / size.width, bounds.height / size.height)
+        let fitted = CGSize(width: size.width * scale, height: size.height * scale)
+        return CGRect(x: (bounds.width - fitted.width) / 2, y: (bounds.height - fitted.height) / 2, width: fitted.width, height: fitted.height)
+    }
+    private func emit(_ phase: String, _ point: CGPoint) {
+        let rect = imageRect
+        guard rect.width > 0, rect.height > 0 else { return }
+        let x = min(1, max(0, (point.x - rect.minX) / rect.width))
+        let y = min(1, max(0, (point.y - rect.minY) / rect.height))
+        send(["action": .string("touch"), "phase": .string(phase), "x": .number(Double(x)), "y": .number(Double(y))])
+        if phase == "end", hypot(point.x - startPoint.x, point.y - startPoint.y) < 12,
+           let region = regions.first(where: { Double(x) >= $0.x && Double(x) <= $0.x + $0.width && Double(y) >= $0.y && Double(y) <= $0.y + $0.height }) {
+            bridge.configure(type: region.keyboard.type, multiline: region.keyboard.multiline); showKeyboard(region.keyboard)
+        }
+    }
+    private func drawTouch(_ point: CGPoint) {
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        if !UIAccessibility.isReduceMotionEnabled { path.addLine(to: point); trail.path = path.cgPath }
+        ripple.path = UIBezierPath(ovalIn: CGRect(x: point.x - 16, y: point.y - 16, width: 32, height: 32)).cgPath
+        CATransaction.commit()
+    }
+    func resetTouch() { tracked = nil; path = UIBezierPath(); trail.path = nil; ripple.path = nil }
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard acceptsInput, tracked == nil, let touch = touches.first else { return }
+        let point = touch.location(in: self)
+        guard imageRect.contains(point) else { return }
+        tracked = touch; startPoint = point; lastPoint = point; path.move(to: point)
+        drawTouch(point); emit("start", point)
+    }
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard acceptsInput, let touch = tracked, touches.contains(touch) else { return }
+        lastPoint = touch.location(in: self); drawTouch(lastPoint); emit("move", lastPoint)
+    }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = tracked, touches.contains(touch) else { return }
+        if acceptsInput { emit("end", touch.location(in: self)) }; resetTouch()
+    }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let touch = tracked, touches.contains(touch) else { return }
+        if acceptsInput { emit("cancel", touch.location(in: self)) }; resetTouch()
     }
 }

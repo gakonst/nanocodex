@@ -715,6 +715,12 @@ final class InboxModel: ObservableObject {
         agentNotifications.update(account: "", threads: [], foreground: false)
         reset()
     }
+    private var presentedBrowserRequests: Set<String> = []
+    func claimBrowserRequestPresentation(_ intake: VaultIntake) -> Bool {
+        guard connected, intake.isCurrentBrowserRequest(agentID: focused?.id ?? ""),
+              let id = intake.challengeID else { return false }
+        return presentedBrowserRequests.insert("\(generation):\(id)").inserted
+    }
     var vaultIntakeAccount: UUID { generation }
     func vaultLoginMetadata(id: String, account: UUID) async throws -> VaultIntakeReceipt {
         guard let client, connected, !isDemo, generation == account else { throw APIError.invalidCredential }
