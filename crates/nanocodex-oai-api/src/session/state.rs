@@ -144,6 +144,7 @@ impl ManagedSessionState {
         if state.context.len() != history_len {
             return Err(ManagedSessionStateError::UnsupportedHistoryItem);
         }
+        state.context.replace_invalid_tool_images();
         state.context.commit_tail();
         state.delta_start = state.context.len();
         Ok(state)

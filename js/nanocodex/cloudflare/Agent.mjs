@@ -1,4 +1,4 @@
-import { responseControlsSocket } from "../runtime/response-controls.mjs";
+import { responseControlsBody, responseControlsSocket } from "../runtime/response-controls.mjs";
 import * as HostAgent from "../host/Agent.mjs";
 import {
   CLOUDFLARE_SESSION_RESERVATION,
@@ -316,6 +316,12 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
   const transport = Transport.hostManaged({
     ...endpoint,
     websocketPreconnect: true,
+    createResponse(url, id, request) {
+      return endpoint.createResponse(url, id, {
+        ...request,
+        body: responseControlsBody(request.body, internalRuntime?.responseControls),
+      });
+    },
     async createWebSocket(url, id, request) {
       try {
         const opened = await endpoint.createWebSocket(url, id, request);

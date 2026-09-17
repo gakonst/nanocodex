@@ -99,7 +99,7 @@ const VAULT_PROVIDER_HOSTS = new Set([
 ]);
 const RELAY_CAPABILITY_PATH = /^\/v1\/[A-Za-z0-9_-]{43,}$/;
 const RELAY_HTTP_ROUTES: Readonly<Record<ModelOperation["id"], string | undefined>> = {
-  responses: undefined,
+  responses: "codex-responses",
   search: "codex-web-search",
   "image-generation": "codex-image-generation",
   "image-edit": "codex-image-edit",
@@ -289,7 +289,7 @@ export class SessionModelEgress extends WorkerEntrypoint<EgressEnv> {
     const owner = request.headers.get(SESSION_MODEL_OWNER_HEADER);
     const subject = request.headers.get(SUBJECT_HEADER);
     if (request.url !== "https://nanocodex.internal/v1/responses"
-      || request.method !== "GET" || !owner || !USER_ID.test(owner)
+      || (request.method !== "GET" && request.method !== "POST") || !owner || !USER_ID.test(owner)
       || !subject || !MANAGED_SESSION_SUBJECT.test(subject)) {
       return Promise.resolve(jsonError(403, "invalid_session_model_authority"));
     }
@@ -312,6 +312,14 @@ type ModelOperation = Readonly<{
 }>;
 
 const OPERATIONS: readonly ModelOperation[] = [
+  {
+    id: "responses",
+    method: "POST",
+    path: "/v1/responses",
+    websocket: false,
+    openai: "https://api.openai.com/v1/responses",
+    chatgpt: "https://chatgpt.com/backend-api/codex/responses",
+  },
   {
     id: "responses",
     method: "GET",
@@ -484,7 +492,8 @@ async function handleEgressWithOwner(
       || !responseHeadersValid || !realtimeHeadersValid) {
       return auditedError(403, "required_header_mismatch", request, url, operation.id, started);
     }
-  } else if (request.headers.get("content-type")?.toLowerCase() !== "application/json") {
+  } else if (request.headers.get("content-type")?.toLowerCase() !== "application/json"
+    || (operation.id === "responses" && request.headers.has("upgrade"))) {
     return auditedError(403, "required_header_mismatch", request, url, operation.id, started);
   }
 
@@ -513,6 +522,12 @@ async function handleEgressWithOwner(
         user_id: userId,
         deployment_sha: env.DEPLOYMENT_SHA,
       });
+    }
+    // Sponsored admission is enforced per response.create frame, including
+    // continuation grants and interrupted-attempt fencing. Until HTTPS has the
+    // same lifecycle, reject before dispatch; a POST must never bypass metering.
+    if (credential.source === "sponsored" && operation.id === "responses" && !operation.websocket) {
+      throw new EgressFailure(409, "sponsored_https_unavailable");
     }
     let sponsoredConnectionId = credential.source === "sponsored" && operation.id === "responses"
       ? await acquireSponsoredConnection(env, userId)
@@ -2373,6 +2388,11 @@ function buildUpstreamRequest(
     headers.set("thread-id", threadId);
     headers.set("user-agent", "codex_cli_rs/0.0.0");
   }
+  if (operation.id === "responses" && !operation.websocket) {
+    headers.delete("openai-beta");
+    headers.set("content-type", "application/json");
+    headers.set("accept", "text/event-stream");
+  }
   headers.set("authorization", `Bearer ${credential.secret}`);
   if (credential.kind === "chatgpt") {
     if (!credential.accountId) throw new EgressFailure(503, "credential_field_unavailable");
@@ -2392,6 +2412,7 @@ function buildUpstreamRequest(
     body,
     cache: "no-store",
     redirect: "manual",
+    signal: original.signal,
   });
 }
 
@@ -2469,6 +2490,7 @@ async function fetchUpstream(
       headers: request.headers,
       body: request.body,
       redirect: "manual",
+      signal: request.signal,
     }));
   }
   const environment = env.ENVIRONMENT?.trim().toLowerCase();

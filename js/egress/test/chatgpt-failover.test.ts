@@ -21,7 +21,7 @@ describe("ChatGPT subscription failover", () => {
     expect(chatGptLimitReset(null)).toBeUndefined();
   });
 
-  it("replays a rejected HTTP request on the next account and stays there", async () => {
+  it.each(["search", "responses"])("replays rejected %s HTTP requests on the next account and stays there", async (operation) => {
     const subject = await setup();
     const accounts: (string | null)[] = [];
     const bodies: string[] = [];
@@ -32,7 +32,7 @@ describe("ChatGPT subscription failover", () => {
       return account === "account-b" ? exhausted() : Response.json({ results: [] });
     });
     for (let index = 0; index < 2; index++) {
-      const response = await handleEgress(searchRequest(subject), directEnv, undefined, upstream as typeof fetch);
+      const response = await handleEgress(searchRequest(subject, operation), directEnv, undefined, upstream as typeof fetch);
       expect(response.status).toBe(200);
       await response.body?.cancel();
     }
@@ -58,7 +58,7 @@ describe("ChatGPT subscription failover", () => {
     expect(accounts).toEqual(["account-a", "account-b"]);
   });
 
-  it("fails closed for an unavailable pin and never switches an exhausted pinned session", async () => {
+  it.each(["search", "responses"])("fails closed for an unavailable pin and never switches an exhausted pinned %s session", async (operation) => {
     const subject = await setup();
     const accounts: (string | null)[] = [];
     const upstream = vi.fn(async (request: Request) => {
@@ -71,13 +71,13 @@ describe("ChatGPT subscription failover", () => {
       ["account-a", 429, "chatgpt_account_exhausted"],
       ["account-a", 429, "chatgpt_account_exhausted"],
     ] as const) {
-      const request = searchRequest(subject);
+      const request = searchRequest(subject, operation);
       request.headers.set("x-nanocodex-chatgpt-account-id", account);
       const response = await handleEgress(request, directEnv, undefined, upstream as typeof fetch);
       expect(response.status).toBe(status);
       expect(await response.json()).toMatchObject({ error });
     }
-    const other = await handleEgress(searchRequest(subject), directEnv, undefined, upstream as typeof fetch);
+    const other = await handleEgress(searchRequest(subject, operation), directEnv, undefined, upstream as typeof fetch);
     expect(other.status).toBe(200);
     await other.body?.cancel();
     expect(accounts).toEqual(["account-a", "account-b"]);
@@ -219,11 +219,11 @@ async function setup(): Promise<string> {
   }
   return subject;
 }
-function searchRequest(subject: string): Request {
-  return new Request("https://nanocodex.internal/v1/search", { method: "POST", headers: {
+function searchRequest(subject: string, operation = "search"): Request {
+  return new Request(`https://nanocodex.internal/v1/${operation}`, { method: "POST", headers: {
     authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL", "content-type": "application/json",
     "x-nanocodex-subject": subject,
-  }, body: JSON.stringify({ query: "test" }) });
+  }, body: JSON.stringify(operation === "responses" ? { stream: true, model: "gpt-test", input: [] } : { query: "test" }) });
 }
 function socketRequest(subject: string): Request {
   return new Request("https://nanocodex.internal/v1/responses", { headers: {

@@ -35,6 +35,18 @@ pub trait HostTransport: Send + Sync + 'static {
         request: HostConnectRequest<'a>,
     ) -> HostFuture<'a, Result<ConnectedHost, HostError>>;
 
+    /// Opens an HTTPS Responses byte stream. Dropping the returned future must
+    /// cancel a pending request; dropping the body must cancel its reader.
+    /// Hosts must reject non-success statuses as `HandshakeRejected`, preserving
+    /// status, response body and Retry-After, and must never buffer successful bodies.
+    fn http<'a>(
+        &'a self,
+        _request: HostConnectRequest<'a>,
+        _body: &'a str,
+    ) -> HostFuture<'a, Result<HostHttpResponse, HostError>> {
+        Box::pin(async { Err(HostError::new("host HTTPS transport is unavailable")) })
+    }
+
     /// Waits without blocking the embedding thread.
     ///
     /// The SDK calls this only for its typed retry backoff.
@@ -361,4 +373,18 @@ impl HostError {
             }
         )
     }
+}
+
+/// A successful HTTPS response with a pull-based, host-owned body.
+pub struct HostHttpResponse {
+    /// Streaming body; its destructor must release the host request.
+    pub body: Box<dyn HostHttpBody>,
+    /// Response headers needed by the Responses state machine.
+    pub metadata: HostConnectionMetadata,
+}
+
+/// Raw response bytes. SSE framing and JSON decoding remain in Rust.
+pub trait HostHttpBody: Send + 'static {
+    /// Pulls one chunk, or `None` at EOF, without buffering the response.
+    fn next(&mut self) -> HostFuture<'_, Result<Option<Vec<u8>>, HostError>>;
 }

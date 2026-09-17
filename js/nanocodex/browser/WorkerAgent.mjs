@@ -1317,7 +1317,8 @@ function serializeConfig(options) {
       ...connection
     } = setup;
     if (hostAuth === true) {
-      if (typeof connection.createWebSocket === "function"
+      if (typeof connection.createResponse === "function"
+        || typeof connection.createWebSocket === "function"
         || typeof connection.WebSocketImpl === "function") {
         throw new TypeError("Worker Agent host-managed transport callbacks must live inside a custom Worker");
       }

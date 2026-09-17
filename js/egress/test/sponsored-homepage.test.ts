@@ -111,6 +111,20 @@ describe("sponsored homepage model access", () => {
     expect(await search.json()).toEqual({ error: "user_credential_unavailable" });
   });
 
+  it("fails closed before sponsored HTTPS dispatch or metering side effects", async () => {
+    const before = await (await modelStatus(EPHEMERAL_SUBJECT)).json();
+    const upstream = vi.fn(async () => new Response("unexpected provider dispatch"));
+    const response = await handleEgress(new Request("https://nanocodex.internal/v1/responses", {
+      method: "POST", headers: { authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL",
+        "content-type": "application/json", "x-nanocodex-subject": EPHEMERAL_SUBJECT },
+      body: JSON.stringify({ stream: true, input: [] }),
+    }), workerEnv, undefined, upstream as typeof fetch);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "sponsored_https_unavailable" });
+    expect(upstream).not.toHaveBeenCalled();
+    expect(await (await modelStatus(EPHEMERAL_SUBJECT)).json()).toEqual(before);
+  });
+
   it("allows three live Responses prompts, skips warmup, and blocks prompt four", async () => {
     const response = await handleEgress(new Request("https://nanocodex.internal/v1/responses", {
       headers: {

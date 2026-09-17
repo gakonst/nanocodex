@@ -6,6 +6,7 @@
 //! orchestration and hosted tools; this module owns only presentation, terminal
 //! interaction, and the caller-local shell convenience.
 
+mod bug;
 mod clipboard;
 mod components;
 mod context;
@@ -444,6 +445,7 @@ struct ConnectionFailure {
 enum ConnectionPurpose {
     Startup,
     Resume(PaneId),
+    Bug(PaneId),
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -1141,6 +1143,36 @@ impl DriverRuntime {
                 result: connect_agent(client, agent_id, settings).await,
             }
         });
+    }
+
+    fn detach_bug_source(&mut self) {
+        self.admissions = JoinSet::new();
+        self.completions = JoinSet::new();
+        self.steers = JoinSet::new();
+        self.cancellations = JoinSet::new();
+        self.settings_updates = JoinSet::new();
+        self.settings_queue.clear();
+        self.pending_settings = None;
+        self.controls.clear();
+        self.admitting.clear();
+        self.cancel_after_admission.clear();
+        self.local_managed_turns.clear();
+        self.unacknowledged_inputs.clear();
+        self.confirmed_requests.clear();
+        self.waiting_steers.clear();
+        self.pending_steer_target = None;
+        self.unconfirmed_steer = None;
+        self.pending_submission = None;
+        self.pending_voice = None;
+        self.recovery = None;
+        self.recovery_events.clear();
+        // Discard any queued recovery result for the old agent as well.
+        self.connection = JoinSet::new();
+        self.session_list_cancellations.clear();
+        self.shell_cancellation.cancel();
+        self.shells = JoinSet::new();
+        self.shell_cancellation = CancellationToken::new();
+        self.active_shells = 0;
     }
 
     fn start_new_session(&mut self, settings: AgentSettings) {
@@ -1964,7 +1996,7 @@ async fn run_inner(
                             continue;
                         }
                     };
-                    if matches!(&result, ConnectionResult::Agent { purpose: ConnectionPurpose::Resume(_), .. })
+                    if matches!(&result, ConnectionResult::Agent { purpose: ConnectionPurpose::Resume(_) | ConnectionPurpose::Bug(_), .. })
                         && runtime.finish_resume(task_id).is_none()
                     {
                         // Abort cannot retract a result already queued by JoinSet.
@@ -2027,6 +2059,9 @@ async fn run_inner(
                             stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
                         }
                         ConnectionResult::Agent { purpose, result: Ok((agent, managed_events, agent_id, workspace, history, warning, settings, created, active_turns)) } => {
+                            if matches!(purpose, ConnectionPurpose::Bug(_)) {
+                                runtime.detach_bug_source();
+                            }
                             runtime.startup_attach = false;
                             runtime.retry_target = None;
                             let requested_startup_settings = if created {
@@ -2110,7 +2145,7 @@ async fn run_inner(
                             runtime.history_records = history_records;
                             let pane = match purpose {
                                 ConnectionPurpose::Startup => PaneId::Main,
-                                ConnectionPurpose::Resume(pane) => pane,
+                                ConnectionPurpose::Resume(pane) | ConnectionPurpose::Bug(pane) => pane,
                             };
                             let update = match purpose {
                                 ConnectionPurpose::Startup if created => {
@@ -2124,7 +2159,7 @@ async fn run_inner(
                                         model: display_settings.model,
                                     })
                                 }
-                                ConnectionPurpose::Startup | ConnectionPurpose::Resume(_) => {
+                                ConnectionPurpose::Startup | ConnectionPurpose::Resume(_) | ConnectionPurpose::Bug(_) => {
                                     let effort = effort_from_thinking(settings.thinking);
                                     let reasoning_mode =
                                         reasoning_mode_from_managed(settings.reasoning_mode);
@@ -2135,7 +2170,7 @@ async fn run_inner(
                                         pane,
                                         draft_reset: match purpose {
                                             ConnectionPurpose::Startup => DraftReset::Preserve,
-                                            ConnectionPurpose::Resume(_) => DraftReset::Clear,
+                                            ConnectionPurpose::Resume(_) | ConnectionPurpose::Bug(_) => DraftReset::Clear,
                                         },
                                         projection: Box::new(projection),
                                         effort,
@@ -2148,6 +2183,12 @@ async fn run_inner(
                                 }
                             };
                             request_render(update, &mut scheduler);
+                            if matches!(purpose, ConnectionPurpose::Bug(_)) {
+                                request_render(app.update(AppEvent::NotifySuccess {
+                                    pane,
+                                    message: format!("Debugging Nanocodex in cloud agent {}", runtime.agent_id),
+                                }), &mut scheduler);
+                            }
                             request_render(
                                 app.update(AppEvent::ManagedActiveTurns {
                                     pane,
@@ -2206,14 +2247,18 @@ async fn run_inner(
                                     pane: PaneId::Main,
                                     error: message.clone(),
                                 }),
+                                ConnectionPurpose::Bug(pane) => app.update(AppEvent::NotifyError { pane, error: message.clone() }),
                                 ConnectionPurpose::Resume(pane) => app.update(AppEvent::SessionLoadFailed {
                                     pane,
                                     error: message.clone(),
                                 }),
                             };
                             request_render(update, &mut scheduler);
-                            if matches!(purpose, ConnectionPurpose::Resume(_)) && !runtime.managed_events_open {
+                            if matches!(purpose, ConnectionPurpose::Resume(_) | ConnectionPurpose::Bug(_)) && !runtime.managed_events_open {
                                 runtime.begin_recovery(&mut app, &mut scheduler, true);
+                            }
+                            if matches!(purpose, ConnectionPurpose::Bug(_)) {
+                                continue;
                             }
                             for (pane, id) in
                                 take_waiting_steer_failures(&mut runtime.waiting_steers)
@@ -3264,6 +3309,44 @@ async fn apply_update(
                         });
                         runtime.pending_resume = Some((resume, pane));
                     }
+                    RootEffect::Bug(description) => {
+                        if runtime.agent_id.is_empty() || runtime.pending_resume.is_some() {
+                            absorb(
+                                app.update(AppEvent::NotifyError {
+                                    pane,
+                                    error: "Wait for the agent connection before starting /bug."
+                                        .to_owned(),
+                                }),
+                                &mut effects,
+                                scheduler,
+                            );
+                            continue;
+                        }
+                        let prompt = bug::debug_prompt(
+                            &runtime.agent_id,
+                            &runtime.observed_cursor,
+                            &description,
+                            &runtime.history_records,
+                            &runtime.live_records,
+                        );
+                        let client = runtime.client.clone();
+                        let settings = runtime.settings;
+                        let task = runtime.connection.spawn(async move {
+                            ConnectionResult::Agent {
+                                purpose: ConnectionPurpose::Bug(pane),
+                                result: bug::launch(client, settings, prompt).await,
+                            }
+                        });
+                        runtime.pending_resume = Some((task, pane));
+                        absorb(
+                            app.update(AppEvent::NotifySuccess {
+                                pane,
+                                message: "Starting a cloud agent to debug Nanocodex…".to_owned(),
+                            }),
+                            &mut effects,
+                            scheduler,
+                        );
+                    }
                     RootEffect::NewSession(model) => {
                         if !runtime.idle() {
                             absorb(
@@ -3651,6 +3734,42 @@ mod tests {
         path::Path,
     };
     use tokio::task::JoinSet;
+
+    #[tokio::test]
+    async fn bug_switch_discards_old_local_work_and_queued_recovery() {
+        let mut runtime = history_runtime(HistoryWindow::default());
+        runtime.pending_submission = Some((
+            PaneId::Main,
+            TurnId::new(7),
+            Submission::text("old input".into()),
+        ));
+        runtime.admitting.insert(TurnId::new(7));
+        runtime.cancel_after_admission.insert(TurnId::new(7));
+        runtime
+            .local_managed_turns
+            .insert(TurnId::new(7), "old-turn".into());
+        runtime.recovery = Some(super::RecoveryPhase::Connecting);
+        runtime
+            .connection
+            .spawn(async { super::ConnectionResult::Disconnected(Ok(())) });
+        runtime.active_shells = 1;
+        let old_shell_cancellation = runtime.shell_cancellation.clone();
+        let source_id = runtime.agent_id.clone();
+
+        runtime.detach_bug_source();
+
+        assert!(runtime.connection.is_empty());
+        assert!(runtime.pending_submission.is_none());
+        assert!(runtime.admitting.is_empty());
+        assert!(runtime.cancel_after_admission.is_empty());
+        assert!(runtime.local_managed_turns.is_empty());
+        assert!(runtime.recovery.is_none());
+        assert!(old_shell_cancellation.is_cancelled());
+        assert!(!runtime.shell_cancellation.is_cancelled());
+        assert_eq!(runtime.active_shells, 0);
+        assert_eq!(runtime.agent_id, source_id);
+        assert!(runtime.cancellations.is_empty());
+    }
 
     #[test]
     fn new_agents_select_astra_without_an_entitlement_probe() {

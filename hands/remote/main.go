@@ -20,7 +20,8 @@ import (
 
 func main() {
 	if os.Getenv(broadcastHelperEnv) == "1" {
-		if runBroadcastEncoder() != nil {
+		if err := runBroadcastEncoder(); err != nil {
+			fmt.Fprintln(os.Stderr, "nanocodex_broadcast_error="+broadcastSafeCategory(err.Error()))
 			os.Exit(1)
 		}
 		return

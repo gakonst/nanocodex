@@ -7,6 +7,7 @@ import WebSocket, { WebSocketServer } from "ws";
 const CHATGPT_HOST = "chatgpt.com";
 const CHATGPT_PATH_PREFIX = "/backend-api/codex/";
 const RELAY_HTTP_PATHS = new Map([
+  ["codex-responses", "/backend-api/codex/responses"],
   ["codex-web-search", "/backend-api/codex/alpha/search"],
   ["codex-image-generation", "/backend-api/codex/images/generations"],
   ["codex-image-edit", "/backend-api/codex/images/edits"],
@@ -84,13 +85,18 @@ export async function startChatGptWorkerEgress(options = {}) {
 
 async function proxyHttpRequest(request, response, fetchImpl, localPrefix, relayPrefix) {
   const upstreamPath = allowedUpstreamPath(request.url, localPrefix, relayPrefix, false);
-  if (!safeLoopbackRequest(request) || upstreamPath === undefined) {
+  if (!safeLoopbackRequest(request) || upstreamPath === undefined
+    || (request.url?.startsWith(`${relayPrefix}/http/codex-responses`)
+      && (request.method !== "POST" || request.url !== `${relayPrefix}/http/codex-responses`))) {
     response.writeHead(404, noStoreHeaders("text/plain; charset=utf-8"));
     response.end("Not found\n");
     return;
   }
   try {
     const method = request.method ?? "GET";
+    const controller = new AbortController();
+    request.once("aborted", () => controller.abort());
+    response.once("close", () => { if (!response.writableFinished) controller.abort(); });
     const upstream = await fetchImpl(`https://${CHATGPT_HOST}${upstreamPath}`, {
       method,
       headers: upstreamHttpHeaders(request),
@@ -99,17 +105,22 @@ async function proxyHttpRequest(request, response, fetchImpl, localPrefix, relay
         : Readable.toWeb(request),
       duplex: "half",
       redirect: "manual",
+      signal: controller.signal,
     });
     const headers = new Headers(upstream.headers);
     headers.delete("content-encoding");
     headers.delete("content-length");
     headers.set("cache-control", "no-store");
     response.writeHead(upstream.status, upstream.statusText, Object.fromEntries(headers));
-    if (upstream.body) Readable.fromWeb(upstream.body).pipe(response);
+    if (upstream.body) Readable.fromWeb(upstream.body).once("error", (error) => response.destroy(error)).pipe(response);
     else response.end();
-  } catch {
-    if (!response.headersSent) response.writeHead(502, noStoreHeaders("text/plain; charset=utf-8"));
-    response.end("ChatGPT development egress failed\n");
+  } catch (error) {
+    if (response.destroyed) return;
+    if (response.headersSent) response.destroy(error);
+    else {
+      response.writeHead(502, noStoreHeaders("text/plain; charset=utf-8"));
+      response.end("ChatGPT development egress failed\n");
+    }
   }
 }
 
@@ -214,6 +225,10 @@ function upstreamHttpHeaders(request) {
     "x-oai-attestation",
     "x-openai-fedramp",
     "x-session-id",
+    "x-client-request-id",
+    "x-codex-turn-state",
+    "x-openai-internal-codex-responses-lite",
+    "x-responsesapi-include-timing-metrics",
   ]) {
     const value = request.headers[name];
     if (typeof value === "string") headers.set(name, value);

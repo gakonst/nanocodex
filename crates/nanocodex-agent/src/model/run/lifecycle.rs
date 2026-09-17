@@ -58,6 +58,18 @@ impl Drop for CompactionLifecycle<'_> {
     }
 }
 
+// Untagged success preserves receipts written before failures were recorded.
+#[derive(Deserialize, Serialize)]
+#[serde(untagged)]
+enum RecordedCompactionOutcome {
+    Success(RecordedCompactionResult),
+    Failure {
+        compaction_error: String,
+        #[serde(default)]
+        requires_session_stop: bool,
+    },
+}
+
 #[derive(Deserialize, Serialize)]
 struct RecordedCompactionResult {
     response_id: String,
@@ -385,7 +397,7 @@ where
             let execution_steps = self.execution_steps.clone();
             let recovered = if let Some(steps) = &execution_steps {
                 match steps
-                    .begin::<_, RecordedCompactionResult>(&step_id, "compaction", &())
+                    .begin::<_, RecordedCompactionOutcome>(&step_id, "compaction", &())
                     .await?
                 {
                     crate::agent::ExecutionStep::Execute => None,
@@ -397,12 +409,36 @@ where
             let recorded_result = if let Some(output) = recovered {
                 output
             } else {
-                let success = self
-                    .client
-                    .execute(request)
-                    .instrument(span.clone())
-                    .await
-                    .map_err(|error| NanocodexError::Response(error.into()))?;
+                let success = match self.client.execute(request).instrument(span.clone()).await {
+                    Ok(success) => success,
+                    Err(error) => {
+                        let error = NanocodexError::Response(error.into());
+                        // Only completed provider failures consume the compaction budget.
+                        // Policy, ownership, and storage failures retain their recovery semantics.
+                        if error.responses_error().is_none() {
+                            return Err(error);
+                        }
+                        let requires_session_stop = error
+                            .responses_error()
+                            .is_some_and(|source| source.is_misalignment_policy_violation());
+                        let compaction_error = error.to_string();
+                        if let Some(steps) = &execution_steps {
+                            steps
+                                .complete(
+                                    &step_id,
+                                    &RecordedCompactionOutcome::Failure {
+                                        compaction_error: compaction_error.clone(),
+                                        requires_session_stop,
+                                    },
+                                )
+                                .await?;
+                        }
+                        return Err(NanocodexError::CompactionFailed {
+                            detail: compaction_error,
+                            requires_session_stop,
+                        });
+                    }
+                };
                 let attempt = success.attempt();
                 let connection_generation = success.connection_generation();
                 let server_reasoning_included = success.server_reasoning_included();
@@ -425,10 +461,23 @@ where
                     time_to_first_output_ns: response.time_to_first_output_ns,
                 };
                 validate_provider_response_id(&output.response_id)?;
+                let output = RecordedCompactionOutcome::Success(output);
                 if let Some(steps) = &execution_steps {
                     steps.complete(&step_id, &output).await?;
                 }
                 output
+            };
+            let recorded_result = match recorded_result {
+                RecordedCompactionOutcome::Success(output) => output,
+                RecordedCompactionOutcome::Failure {
+                    compaction_error,
+                    requires_session_stop,
+                } => {
+                    return Err(NanocodexError::CompactionFailed {
+                        detail: compaction_error,
+                        requires_session_stop,
+                    });
+                }
             };
             let RecordedCompactionResult {
                 response_id,
@@ -471,7 +520,7 @@ where
                 record_usage(&span, usage, model, self.fast_mode);
                 lifecycle.stats.usage.add(usage, model, self.fast_mode);
             }
-            lifecycle.stats.last_response_id = Some(response_id.clone());
+            lifecycle.stats.last_response_id = Some(response_id);
             Ok((item, usage, server_reasoning_included))
         }
         .await;
@@ -479,5 +528,52 @@ where
             lifecycle.fail(&error.to_string())?;
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod compaction_receipt_tests {
+    use super::*;
+
+    #[test]
+    fn failure_receipt_preserves_session_stop_and_defaults_old_receipts() {
+        let old: RecordedCompactionOutcome = serde_json::from_value(serde_json::json!({
+            "compaction_error": "exhausted"
+        }))
+        .unwrap();
+        assert!(matches!(
+            old,
+            RecordedCompactionOutcome::Failure {
+                requires_session_stop: false,
+                ..
+            }
+        ));
+        let receipt = RecordedCompactionOutcome::Failure {
+            compaction_error: "stop this conversation".into(),
+            requires_session_stop: true,
+        };
+        let replay: RecordedCompactionOutcome =
+            serde_json::from_value(serde_json::to_value(receipt).unwrap()).unwrap();
+        assert!(matches!(
+            replay,
+            RecordedCompactionOutcome::Failure {
+                requires_session_stop: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn legacy_success_receipt_keeps_its_wire_shape() {
+        let legacy = serde_json::json!({
+            "response_id": "resp-legacy", "status": "completed",
+            "item": {"type": "compaction", "encrypted_content": "retained"},
+            "usage": null, "attempt": 1, "connection_generation": 0,
+            "server_reasoning_included": false, "duration_ns": 1,
+            "time_to_first_event_ns": 1, "time_to_first_output_ns": null
+        });
+        let output: RecordedCompactionOutcome = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(matches!(output, RecordedCompactionOutcome::Success(_)));
+        assert_eq!(serde_json::to_value(output).unwrap(), legacy);
     }
 }

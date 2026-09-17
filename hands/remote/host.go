@@ -475,7 +475,11 @@ func serveWayland(parent context.Context, config hostConfig) error {
 	defer frameTick.Stop()
 	frameInFlight := false
 	lastAuthorization := time.Now()
-	lastRenewal := time.Now()
+	nextRenewal := time.Now().Add(10 * time.Second)
+	renewalDone := make(chan error, 1)
+	renewalInFlight := false
+	authorizationTimer := time.NewTimer(25 * time.Second)
+	defer authorizationTimer.Stop()
 	connectionID := ""
 	publication := ""
 	for {
@@ -492,6 +496,18 @@ func serveWayland(parent context.Context, config hostConfig) error {
 				return err
 			default:
 				return ctx.Err()
+			}
+		case <-authorizationTimer.C:
+			return errors.New("remote authorization expired")
+		case err := <-renewalDone:
+			renewalInFlight = false
+			if err != nil {
+				if !retryableRenewal(err) {
+					return err
+				}
+				// Retry only this idempotent authorization operation. Failed
+				// attempts never change lastAuthorization or its deadline.
+				nextRenewal = time.Now().Add(time.Second)
 			}
 		case <-capture.done:
 			return errors.New("Wayland capture stopped")
@@ -574,12 +590,17 @@ func serveWayland(parent context.Context, config hostConfig) error {
 			if time.Since(lastAuthorization) > 25*time.Second {
 				return errors.New("remote authorization expired")
 			}
-			if connectionID != "" && time.Since(lastRenewal) >= 10*time.Second {
-				lastRenewal = time.Now()
+			if connectionID != "" && !renewalInFlight && !time.Now().Before(nextRenewal) {
+				renewalInFlight = true
+				nextRenewal = time.Now().Add(10 * time.Second)
 				id := connectionID
+				renewContext, done := context.WithDeadline(ctx, lastAuthorization.Add(25*time.Second))
 				go func() {
-					if err := service.request(ctx, "/renew", map[string]string{"connection_id": id}, nil); err != nil {
-						fail(err)
+					defer done()
+					err := service.request(renewContext, "/renew", map[string]string{"connection_id": id}, nil)
+					select {
+					case renewalDone <- err:
+					case <-ctx.Done():
 					}
 				}()
 			}
@@ -660,6 +681,7 @@ func serveWayland(parent context.Context, config hostConfig) error {
 				}
 				connectionID = message.ConnectionID
 				lastAuthorization = time.Now()
+				authorizationTimer.Reset(25 * time.Second)
 				kind := "vm"
 				if strings.HasPrefix(service.base.Path, "/v1/hand-hosts/") {
 					kind = "desktop"
@@ -670,7 +692,11 @@ func serveWayland(parent context.Context, config hostConfig) error {
 				}
 				send(remoteMessage{Type: "catalog", MachineID: config.MachineID, MachineName: config.Name, Surfaces: []remoteSurface{{ID: "desktop", Name: "Desktop", Kind: kind, Width: config.Width, Height: config.Height, Controllable: true, AgentTools: true, Broadcast: true, Transport: transport}}})
 			case "renewed":
+				if connectionID == "" || time.Since(lastAuthorization) >= 25*time.Second {
+					return errors.New("remote authorization expired")
+				}
 				lastAuthorization = time.Now()
+				authorizationTimer.Reset(25 * time.Second)
 			case "published":
 				publication = message.Generation
 				if config.published != nil {

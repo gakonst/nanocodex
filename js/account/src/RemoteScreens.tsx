@@ -101,7 +101,8 @@ function Screen({ hand, onBack }: { hand: RemoteHand; onBack(): void }) {
     const pause = () => { discardInput(); connection.suspend(); };
     const resume = () => { if (!document.hidden) connection.resume(); };
     const visibility = () => {
-      if (document.hidden) { discardInput(); connection.suspend(15_000); }
+      // A hidden tab can keep viewing/broadcasting; only pagehide suspends it.
+      if (document.hidden) release();
       else resume();
     };
     if (document.hidden) pause(); else void connection.connect();

@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"log"
 	"math"
 	"net/url"
 	"os"
@@ -127,10 +127,11 @@ func runBroadcastEncoder() error {
 	fmt.Fprintf(os.Stdout, "settings=%s\n", metadata)
 	command := exec.CommandContext(ctx, "ffmpeg", broadcastArgs(video, audio, r, destination)...)
 	configureBroadcastEncoder(command)
-	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, io.Discard
+	diagnostic := &broadcastDiagnostic{}
+	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, diagnostic
 	command.WaitDelay = time.Second
 	if command.Run() != nil {
-		return errors.New("broadcast_failed")
+		return errors.New(diagnostic.category())
 	}
 	return nil
 }
@@ -210,8 +211,14 @@ func (b *desktopBroadcast) start(parent context.Context, waymote, destination, p
 			command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 			command.Cancel = func() error { return syscall.Kill(-command.Process.Pid, syscall.SIGTERM) }
 			command.WaitDelay = 2 * time.Second
-			command.Stderr = io.Discard
-			pipe, err := command.StdoutPipe()
+			diagnostic := &broadcastDiagnostic{}
+			command.Stderr = diagnostic
+			// Waymote treats stdin EOF as a closed control connection.
+			control, err := command.StdinPipe()
+			pipe, pipeErr := command.StdoutPipe()
+			if err == nil {
+				err = pipeErr
+			}
 			if err == nil {
 				err = command.Start()
 			}
@@ -283,10 +290,16 @@ func (b *desktopBroadcast) start(parent context.Context, waymote, destination, p
 				_ = pipe.Close()
 			}
 			stop()
+			if control != nil {
+				_ = control.Close()
+			}
 			if ctx.Err() != nil {
 				break
 			}
-			b.update(func(s *broadcastResult) { s.Status = "reconnecting"; s.Error = "connection_failed" })
+			category := diagnostic.category()
+			// Never log exec errors, arguments, or raw subprocess output.
+			log.Printf("Desktop broadcast retry: category=%s retry_in=%s", category, delay)
+			b.update(func(s *broadcastResult) { s.Status = "reconnecting"; s.Error = broadcastWireError(category) })
 			select {
 			case <-ctx.Done():
 			case <-time.After(delay):

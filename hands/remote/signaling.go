@@ -116,6 +116,22 @@ func newRemoteService(origin, credentialPath string) (*remoteService, error) {
 	return &remoteService{base: base, token: token, client: &http.Client{Timeout: 10 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
+
+// Keep transport details (including credential-bearing URLs) out of errors.
+var errRemoteRequestTransport = errors.New("remote service request failed")
+
+type remoteHTTPError struct{ status int }
+
+func (err *remoteHTTPError) Error() string {
+	return fmt.Sprintf("remote service refused request (%d)", err.status)
+}
+
+func retryableRenewal(err error) bool {
+	var status *remoteHTTPError
+	return errors.Is(err, errRemoteRequestTransport) ||
+		(errors.As(err, &status) && (status.status == 408 || status.status == 429 || status.status >= 500 && status.status <= 599))
+}
+
 func (service *remoteService) request(ctx context.Context, suffix string, body any, result any) error {
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -130,14 +146,17 @@ func (service *remoteService) request(ctx context.Context, suffix string, body a
 	request.Header.Set("Content-Type", "application/json")
 	response, err := service.client.Do(request)
 	if err != nil {
-		return errors.New("remote service request failed")
+		return errRemoteRequestTransport
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("remote service refused request (%d)", response.StatusCode)
+		return &remoteHTTPError{status: response.StatusCode}
 	}
 	data, err = io.ReadAll(io.LimitReader(response.Body, 131073))
-	if err != nil || len(data) > 131072 {
+	if err != nil {
+		return errRemoteRequestTransport
+	}
+	if len(data) > 131072 {
 		return errors.New("invalid remote service response")
 	}
 	if result != nil {

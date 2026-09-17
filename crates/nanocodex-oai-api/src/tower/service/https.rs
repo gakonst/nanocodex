@@ -1,8 +1,4 @@
-#[cfg(target_family = "wasm")]
-#[path = "https/host.rs"]
-mod implementation;
-#[cfg(not(target_family = "wasm"))]
-#[path = "https/native.rs"]
+#[path = "https/shared.rs"]
 mod implementation;
 
 pub(super) use implementation::run;

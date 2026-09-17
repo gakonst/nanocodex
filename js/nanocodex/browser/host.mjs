@@ -1,3 +1,4 @@
+import { createResponsesHttp, responsesHttpHeaders } from "../runtime/responses-http.mjs";
 import { createCodeRuntime, toolResult } from "../runtime/code-runtime.mjs";
 import {
   toolRouterBrand,
@@ -45,6 +46,19 @@ export function createBrowserHost(options = {}) {
   if (!options.mpp && !createWebSocket) {
     throw new Error("WebSocket is unavailable in this runtime");
   }
+  const http = createResponsesHttp((endpoint, apiKey, sessionId, metadata, body, signal) => {
+    if (disposal) throw new Error("Nanocodex host is already disposed");
+    if (options.mpp) throw JSON.stringify({ kind: "transport", detail: "MPP HTTPS transport is unavailable", reconnectable: false });
+    if (options.createResponse) {
+      const authorization = options.hostAuth
+        ? { authorization: "host_managed" }
+        : { authorization: "bearer", bearerToken: apiKey };
+      return options.createResponse(endpoint, sessionId, { ...metadata, ...authorization, body, signal });
+    }
+    if (options.hostAuth) throw JSON.stringify({ kind: "transport", detail: "host-managed HTTPS requires createResponse", reconnectable: false });
+    return fetch(endpoint, { method: "POST", headers: responsesHttpHeaders(apiKey, sessionId, metadata),
+      body, signal, redirect: "error" });
+  });
   const connections = new Map();
   const openingAttempts = new Set();
   const connectingConnections = new Set();
@@ -375,6 +389,7 @@ export function createBrowserHost(options = {}) {
 
   function dispose() {
     if (disposal) return disposal;
+    http.dispose();
     disposalError = new Error("Nanocodex host was disposed during WebSocket connection");
     disposal = Promise.resolve().then(async () => {
       const cleanups = [];
@@ -480,6 +495,10 @@ export function createBrowserHost(options = {}) {
       if (references > 0) references -= 1;
       return references === 0 ? dispose() : Promise.resolve();
     },
+    httpOpen: http.httpOpen,
+    httpReady: http.httpReady,
+    httpNext: http.httpNext,
+    httpClose: http.httpClose,
     connect,
     preconnect,
     send,

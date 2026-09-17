@@ -86,3 +86,18 @@ func TestRemoteCredentialIsPrivateAndBounded(t *testing.T) {
 		}
 	}
 }
+
+func TestRenewalRetryClassification(t *testing.T) {
+	for status := 100; status <= 600; status++ {
+		want := status == 408 || status == 429 || status >= 500 && status <= 599
+		if retryableRenewal(fmt.Errorf("wrapped: %w", &remoteHTTPError{status: status})) != want {
+			t.Fatalf("status %d", status)
+		}
+	}
+	if !retryableRenewal(fmt.Errorf("wrapped: %w", errRemoteRequestTransport)) {
+		t.Fatal("transport errors must retry")
+	}
+	if retryableRenewal(errors.New("invalid response")) || retryableRenewal(nil) {
+		t.Fatal("invalid response must not retry")
+	}
+}

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { responseControlsSocket } from "../runtime/response-controls.mjs";
+import { responseControlsBody, responseControlsSocket } from "../runtime/response-controls.mjs";
 import { multiplex } from "../browser/Transport.mjs";
 
 test("schema/cache controls affect provider creates and preserve continuation lineage", () => {
@@ -97,4 +97,26 @@ test("startup developer context preserves cache keys, stable prefix, and continu
   // A full replay has the identical cacheable prefix, including the frozen timestamp.
   controlled.send(JSON.stringify({ ...first, input: [...first.input, { role: "user", content: "next" }] }));
   assert.deepEqual(socket.sent[2].input.slice(0, 2), socket.sent[0].input.slice(0, 2));
+});
+
+
+test("HTTPS and WebSocket requests apply identical response controls", () => {
+  const controls = { promptCacheKey: "owner-team-key", promptCache: "explicit", outputSchema: { type: "object" } };
+  const input = [{ role: "developer", content: [{ type: "input_text", text: "stable" }] },
+    { role: "user", content: [{ type: "input_text", text: "question" }] }];
+  const request = { model: "model", stream: true, input, text: { verbosity: "low" } };
+  let sent;
+  responseControlsSocket({ send(data) { sent = JSON.parse(data); } }, controls)
+    .send(JSON.stringify({ ...request, type: "response.create" }));
+  delete sent.type;
+  const actual = JSON.parse(responseControlsBody(JSON.stringify(request), controls));
+  assert.deepEqual(actual, sent);
+  assert.equal(actual.prompt_cache_key, "owner-team-key");
+  assert.deepEqual(actual.input[0].content[0].prompt_cache_breakpoint, { mode: "explicit" });
+  assert.equal(actual.input[1].content[0].prompt_cache_breakpoint, undefined);
+  assert.equal(actual.text.verbosity, "low");
+  assert.equal(request.input[0].content[0].prompt_cache_breakpoint, undefined);
+  for (const invalid of [{ promptCacheKey: "" }, { promptCache: "other" }, { outputSchema: [] }]) {
+    assert.throws(() => responseControlsBody(JSON.stringify(request), invalid), TypeError);
+  }
 });

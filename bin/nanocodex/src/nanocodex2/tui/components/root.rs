@@ -287,6 +287,7 @@ pub(crate) enum SessionListKind {
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum RootEffect {
+    Bug(String),
     Screen,
     Zoom,
     Voice(crate::voice::Command),
@@ -1772,6 +1773,10 @@ impl RootNode {
         let update = actions.update(ActionsEvent::Terminal(event));
         match update.effects.into_iter().next() {
             Some(ActionsEffect::Dismiss) => self.overlay = None,
+            Some(ActionsEffect::Trigger(Action::Bug)) => {
+                self.overlay = None;
+                return self.apply_settings_command(SettingsCommand::Bug(String::new()));
+            }
             Some(ActionsEffect::Trigger(Action::Screen)) => {
                 self.overlay = None;
                 return self.apply_settings_command(SettingsCommand::Screen);
@@ -2629,6 +2634,10 @@ impl RootNode {
 
     fn apply_settings_command(&mut self, command: SettingsCommand) -> ComponentUpdate<RootEffect> {
         match command {
+            SettingsCommand::Bug(description) => ComponentUpdate {
+                effects: vec![RootEffect::Bug(description)],
+                render: RenderRequest::Immediate,
+            },
             SettingsCommand::Attach => {
                 if !self.action_availability().new_session {
                     self.notification = Some(Notification::plain(
@@ -4621,6 +4630,35 @@ mod live_control_tests {
             terminal_expected: false,
         });
         assert!(!rendered(&mut root).contains("Thinking…"));
+    }
+
+    #[test]
+    fn slash_bug_routes_from_draft_and_actions_even_while_active() {
+        for typed in [false, true] {
+            for activity in 0..3 {
+                for description in ["", "rendering breaks on resize"] {
+                    let command = format!("/bug {description}");
+                    let mut root = root_with_draft(if typed { "" } else { &command });
+                    root.in_flight_turns = usize::from(activity == 1);
+                    root.managed_active_turns = usize::from(activity == 2);
+                    let _ = root.sync_live_controls();
+                    if typed {
+                        for character in command.chars() {
+                            root.update(key(KeyCode::Char(character)));
+                        }
+                    }
+                    let update = root.update(key(KeyCode::Enter));
+                    assert!(matches!(
+                        update.effects.as_slice(),
+                        [RootEffect::Bug(actual)] if actual == description
+                    ));
+                    assert!(root.composer.component().draft().is_empty());
+                    assert!(root.overlay.is_none());
+                    assert_eq!(root.in_flight_turns, usize::from(activity == 1));
+                    assert_eq!(root.managed_active_turns, usize::from(activity == 2));
+                }
+            }
+        }
     }
 
     #[test]

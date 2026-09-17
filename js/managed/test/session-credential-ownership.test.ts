@@ -21,7 +21,7 @@ const active = {
 };
 
 describe("Session-owned credential authority", () => {
-  it("checks local lifecycle authority on every private model connection and keeps other egress untrusted", async () => {
+  it.each(["GET", "POST"])("checks local lifecycle authority on every private %s model request and keeps other egress untrusted", async (method) => {
     const general = { fetch: vi.fn(async () => new Response(null, { status: 204 })) } as unknown as Fetcher;
     const requests: Request[] = [];
     const model = { fetch: vi.fn(async (request: Request) => { requests.push(request); return new Response(null, { status: 204 }); }) } as unknown as Fetcher;
@@ -29,12 +29,12 @@ describe("Session-owned credential authority", () => {
     const owner = vi.fn(() => available ? sessionCredentialOwner(active) : undefined);
     const scoped = scopedManagedModelEgress(general, storageId, active.subject, { binding: model, owner });
     const headers = { "x-nanocodex-subject": storageId, upgrade: "websocket" };
-    await scoped.fetch("https://nanocodex.internal/v1/responses", { headers });
+    await scoped.fetch("https://nanocodex.internal/v1/responses", { method, headers });
     expect(requests[0]?.headers.get("x-nanocodex-session-model-owner")).toBe(ownerId);
     expect(requests[0]?.headers.get("x-nanocodex-subject")).toBe(active.subject);
     expect(general.fetch).not.toHaveBeenCalled();
     available = false;
-    expect(() => scoped.fetch("https://nanocodex.internal/v1/responses", { headers })).toThrow(/ownership is unavailable/);
+    expect(() => scoped.fetch("https://nanocodex.internal/v1/responses", { method, headers })).toThrow(/ownership is unavailable/);
     expect(model.fetch).toHaveBeenCalledTimes(1);
     expect(owner).toHaveBeenCalledTimes(2);
     await scoped.fetch("https://nanocodex.internal/v1/search", { method: "POST", headers });

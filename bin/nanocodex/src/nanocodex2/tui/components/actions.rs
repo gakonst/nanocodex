@@ -20,7 +20,7 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-const ACTIONS: [Action; 13] = [
+const ACTIONS: [Action; 14] = [
     Action::Effort,
     Action::FastMode,
     Action::Theme,
@@ -28,6 +28,7 @@ const ACTIONS: [Action; 13] = [
     Action::ResumeSession,
     Action::Keybindings,
     Action::DebugContext,
+    Action::Bug,
     Action::Reflection,
     Action::Model,
     Action::AgentId,
@@ -52,6 +53,7 @@ pub(super) struct ActionAvailability {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Action {
+    Bug,
     Screen,
     Zoom,
     Voice,
@@ -283,6 +285,7 @@ impl ActionsMenu {
             Action::ReloadConfig => true,
             Action::EditConfig => true,
             Action::DebugContext => true,
+            Action::Bug => true,
         }
     }
 
@@ -314,6 +317,7 @@ impl ActionsMenu {
 impl Action {
     const fn label(self) -> &'static str {
         match self {
+            Self::Bug => "Debug a bug",
             Self::Screen => "Watch Hand screen",
             Self::Zoom => "Zoom focused pane",
             Self::Voice => "Toggle voice",
@@ -337,6 +341,7 @@ impl Action {
 
     const fn alias(self) -> Option<&'static str> {
         match self {
+            Self::Bug => Some("bug"),
             Self::Screen => Some("screen"),
             Self::Zoom => Some("zoom"),
             Self::Voice => Some("voice"),
@@ -487,6 +492,27 @@ mod tests {
             KeyModifiers::NONE,
         ))));
         assert_eq!(update.effects, [ActionsEffect::Trigger(Action::FastMode)]);
+    }
+
+    #[test]
+    fn bug_action_is_discoverable_and_enabled_during_active_work() {
+        let mut menu = ActionsMenu::new(availability(false, false));
+        menu.availability.new_session = false;
+        menu.insert_paste("Debug a bug");
+        assert_eq!(
+            menu.trigger_selected().effects,
+            [ActionsEffect::Trigger(Action::Bug)]
+        );
+
+        let mut menu = ActionsMenu::new(availability(false, false));
+        menu.availability.new_session = false;
+        menu.insert_paste("bug rendering breaks");
+        assert_eq!(
+            menu.trigger_selected().effects,
+            [ActionsEffect::Settings(SettingsCommand::Bug(
+                "rendering breaks".to_owned()
+            ))]
+        );
     }
 
     #[test]

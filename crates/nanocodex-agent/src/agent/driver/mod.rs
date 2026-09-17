@@ -1782,9 +1782,16 @@ fn requires_reopen_after_turn<T>(provider_requires_stop: bool, outcome: &Result<
 }
 
 fn error_requires_stop(error: &NanocodexError) -> bool {
-    error
-        .responses_error()
-        .is_some_and(|source| source.is_misalignment_policy_violation())
+    match error {
+        NanocodexError::CompactionFailed {
+            requires_session_stop,
+            ..
+        } => *requires_session_stop,
+        NanocodexError::Shutdown(source) => error_requires_stop(source),
+        _ => error
+            .responses_error()
+            .is_some_and(|source| source.is_misalignment_policy_violation()),
+    }
 }
 
 async fn accept_turn_steer(

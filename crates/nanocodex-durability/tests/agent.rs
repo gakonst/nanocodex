@@ -4346,3 +4346,162 @@ async fn long_turn_retires_batches_and_recovers_only_current_work() -> Result<()
     }
     Ok(())
 }
+
+#[derive(Clone)]
+struct ExhaustedCompactionService(AutomaticCompactionService, bool);
+
+impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for ExhaustedCompactionService {
+    type Response = nanocodex_oai_api::tower::ResponsesServiceResponse;
+    type Error = ResponseError;
+    type Future = std::future::Ready<std::result::Result<Self::Response, Self::Error>>;
+
+    fn poll_ready(
+        &mut self,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), Self::Error>> {
+        self.0.poll_ready(context)
+    }
+
+    fn call(&mut self, request: nanocodex_oai_api::tower::ResponsesAttempt) -> Self::Future {
+        if matches!(
+            request.kind(),
+            nanocodex_oai_api::tower::ResponsesAttemptKind::Compaction
+        ) {
+            self.0.compactions.fetch_add(1, Ordering::SeqCst);
+            let error = if self.1 {
+                nanocodex_oai_api::transport::ResponsesError::Api {
+                    event: json!({"type": "error", "code": "misalignment_policy_violation", "message": "stop this conversation"}).to_string(),
+                }
+            } else {
+                nanocodex_oai_api::transport::ResponsesError::UnexpectedEnd
+            };
+            return std::future::ready(Err(error.into()));
+        }
+        self.0.call(request)
+    }
+}
+
+async fn assert_exhausted_compaction_cold_reopen(
+    fail_terminal_write: bool,
+    requires_session_stop: bool,
+) -> Result<()> {
+    let store = MemoryStore::new()?;
+    let failing = FailEntryOnce {
+        inner: store.clone(),
+        entry_tag: "\"failed\"",
+        operation_id: "exhausted-compaction",
+        failed: Arc::new(AtomicBool::new(!fail_terminal_write)),
+    };
+    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let compactions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let openai = || {
+        let generations = Arc::clone(&generations);
+        let compactions = Arc::clone(&compactions);
+        OpenAi::builder("test-key")
+            .service(move || {
+                ExhaustedCompactionService(
+                    AutomaticCompactionService {
+                        generations: Arc::clone(&generations),
+                        compactions: Arc::clone(&compactions),
+                    },
+                    requires_session_stop,
+                )
+            })
+            .build()
+    };
+    let workspace = temporary_workspace("exhausted-compaction")?;
+    let state_id = "exhausted-compaction";
+    let state = DurableSession::open(failing, state_id).await?;
+    let (agent, events) = Nanocodex::builder(openai()?)
+        .workspace(&workspace)
+        .durability(state)
+        .await?
+        .build()?;
+    agent
+        .prompt(PromptRequest::new("retain this seed context").request_id("seed"))
+        .await?
+        .result()
+        .await?;
+    let request =
+        || PromptRequest::new("retain this failed prompt").request_id("exhausted-compaction");
+    let error = agent
+        .prompt(request())
+        .await?
+        .result()
+        .await
+        .expect_err("compaction must fail");
+    if fail_terminal_write {
+        assert!(
+            error
+                .to_string()
+                .contains("injected state replacement failure")
+        );
+    } else {
+        assert!(error.to_string().contains("compaction failed"), "{error}");
+    }
+    assert_eq!(compactions.load(Ordering::SeqCst), 1);
+    let _ = agent.shutdown().await;
+    drop((agent, events));
+
+    let reopened = DurableSession::open(store.clone(), state_id).await?;
+    let (resumed, events) = Nanocodex::builder(openai()?)
+        .workspace(&workspace)
+        .durability(reopened)
+        .await?
+        .build()?;
+    let error = match resumed.prompt(request()).await {
+        Ok(turn) => turn
+            .result()
+            .await
+            .expect_err("recovered compaction must fail"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("compaction failed"), "{error}");
+    assert_eq!(
+        compactions.load(Ordering::SeqCst),
+        1,
+        "recovery must replay the completed failure receipt"
+    );
+    assert_eq!(generations.load(Ordering::SeqCst), 1);
+    if requires_session_stop {
+        let later = resumed
+            .prompt("must remain stopped after receipt replay")
+            .await;
+        assert!(matches!(
+            later,
+            Err(NanocodexError::ExecutionPolicyOwnerStopped | NanocodexError::AgentStopped)
+        ));
+    } else {
+        let history = serde_json::to_string(resumed.context().await?.history())?;
+        assert!(history.contains("retain this seed context"));
+        assert!(history.contains("automatic-generation-1"));
+    }
+    resumed.shutdown().await?;
+    drop((resumed, events));
+
+    let final_state = DurableSession::open(store, state_id).await?;
+    let retained = final_state.state().await?;
+    assert!(retained.pending_operations().is_empty());
+    assert!(matches!(
+        retained.operations()["exhausted-compaction"].status,
+        OperationStatus::Failed { .. }
+    ));
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn exhausted_compaction_is_terminal_across_cold_reopen() -> Result<()> {
+    assert_exhausted_compaction_cold_reopen(false, false).await
+}
+
+#[tokio::test]
+async fn exhausted_compaction_receipt_replays_after_terminal_write_failure_and_cold_reopen()
+-> Result<()> {
+    assert_exhausted_compaction_cold_reopen(true, false).await
+}
+
+#[tokio::test]
+async fn compaction_misalignment_receipt_stops_session_after_cold_reopen() -> Result<()> {
+    assert_exhausted_compaction_cold_reopen(true, true).await
+}

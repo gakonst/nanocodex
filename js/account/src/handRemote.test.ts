@@ -280,14 +280,14 @@ test("authorization loss is terminal and a closed viewer never resumes", async t
   await flush(); assert.equal(f.requests.length, 1);
 });
 
-test("a stalled reconnect is aborted in ten seconds and late callbacks cannot clear a later connection", async t => {
+test("a stalled reconnect is aborted in twenty-five seconds and late callbacks cannot clear a later connection", async t => {
   const f = fixture(t);
   await f.session.connect(); f.peers[0]!.open(); f.peers[0]!.fail();
   await f.tick(1000);
   const staleClose = f.sockets[1]!.onclose!;
   const staleTrack = f.peers[1]!.ontrack!;
   const signal = f.requests.at(-1)!.signal!;
-  await f.tick(10_000);
+  await f.tick(25_000);
   assert.equal(signal.aborted, true);
   assert.equal(f.peers[1]!.connectionState, "closed");
   await f.tick(2000); f.peers[2]!.open();
@@ -554,6 +554,38 @@ test("windowed frames reject an unsolicited seventh image while decoding is bloc
   assert.match(f.session.state.status, /Invalid remote signal/);
 });
 
+test("a background viewer retains its connection across a long tab switch while renewing", async t => {
+  const f = fixture(t);
+  await f.session.connect(); f.peers[0]!.open();
+  f.session.takeControl(); f.peers[0]!.reliable.message({ type: "granted", generation: "lease" });
+  f.session.releaseControl();
+  assert.equal(f.session.state.controlling, false);
+  assert.equal(f.peers[0]!.reliable.sent.at(-1).type, "release");
+  for (let i = 0; i < 6; i++) {
+    await f.tick(10_000);
+    f.sockets[0]!.message({ type: "renewed" }); await flush();
+  }
+  f.session.resume(); await flush();
+  assert.equal(f.session.state.connected, true);
+  assert.equal(f.session.state.controlling, false);
+  assert.equal(f.peers.length, 1);
+  assert.equal(f.sockets.length, 1);
+  assert.equal(f.catalogReads, 0);
+});
+
+test("foregrounding an expired background viewer cannot renew its authorization", async t => {
+  const f = fixture(t);
+  await f.session.connect(); f.peers[0]!.open();
+  f.session.releaseControl();
+  await f.tick(25_000);
+  assert.equal(f.session.state.connected, false);
+  assert.equal(f.session.state.status, "This remote session is no longer authorized.");
+  f.session.resume(); await flush();
+  assert.equal(f.session.state.connecting, false);
+  assert.equal(f.sockets.length, 1);
+  assert.equal(f.catalogReads, 0);
+});
+
 test("a brief background switch releases control and resumes the existing connection", async t => {
   const f = fixture(t);
   await f.session.connect(); f.peers[0]!.open();
@@ -730,4 +762,43 @@ test("stream start UI waits for status and disables active, pending and disconne
     assert.equal(canStartBroadcast({ ...base, broadcastStatus, broadcastPending: true }), false);
     assert.equal(canStartBroadcast({ ...base, broadcastStatus, connected: false }), false);
   }
+});
+
+
+test("authenticated renewal bypasses a pending ICE restart without extending a stale session", async t => {
+  const f = fixture(t); await f.session.connect(); f.peers[0]!.open();
+  f.sockets[0]!.message({ type: "ready", connection_id: "viewer" });
+  f.sockets[0]!.message({ type: "signal", signal: { type: "offer", sdp: "initial" } }); await flush();
+  // An earlier renewal was delayed; the next one arrives during ICE refresh.
+  await f.tick(20_000);
+  const ice = deferred<Response>(); f.setIceResponse(() => ice.promise);
+  f.sockets[0]!.message({ type: "signal", signal: { type: "offer", sdp: "restart" } }); await flush();
+  f.sockets[0]!.message({ type: "renewed" }); await flush();
+  await f.tick(5_000);
+  assert.equal(f.session.state.connected, true);
+  assert.equal(f.sockets.length, 1);
+  ice.resolve(Response.json({ iceServers: [] })); await flush();
+  assert.equal(f.sockets[0]!.sent.filter(message => message.type === "signal").length, 2);
+  const staleMessage = f.sockets[0]!.onmessage!;
+  f.session.suspend();
+  staleMessage({ data: JSON.stringify({ type: "renewed" }) });
+  await f.tick(25_000);
+  assert.equal(f.session.state.status, "Paused");
+  assert.equal(f.sockets.length, 1);
+});
+
+
+test("a reconnect that needs twelve seconds retains its peer and completes", async t => {
+  const f = fixture(t);
+  await f.session.connect(); f.peers[0]!.open(); f.peers[0]!.fail();
+  await f.tick(1000);
+  const peer = f.peers[1]!;
+  f.sockets[1]!.message({ type: "ready", connection_id: "replacement" }); await flush();
+  await f.tick(12_000);
+  assert.equal(peer.connectionState, "new");
+  assert.equal(f.session.state.connecting, true);
+  peer.open();
+  assert.equal(f.session.state.connected, true);
+  assert.equal(f.peers.length, 2);
+  assert.equal(f.sockets.length, 2);
 });

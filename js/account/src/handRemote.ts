@@ -163,7 +163,7 @@ export class RemoteBrowserSession {
     const remaining = this.recoveryDeadline === undefined ? Infinity : this.recoveryDeadline - performance.now();
     this.connectingTimer = setTimeout(() => {
       if (this.current(epoch)) this.fail(new RemoteError("Could not establish a screen connection."));
-    }, Math.max(0, Math.min(refresh ? 10_000 : 25_000, remaining)));
+    }, Math.max(0, Math.min(25_000, remaining)));
     try {
       if (refresh) {
         const hands = await listRemoteHands(signal);
@@ -237,9 +237,12 @@ export class RemoteBrowserSession {
         let message: any;
         try {
           if (typeof data !== "string" || encoder.encode(data).length > (frames ? 710_000 : 70_000)) throw new RemoteError("Invalid remote signal.", true);
-          if (++queuedMessages > 128) throw new RemoteError("Too many remote signals.", true);
           message = JSON.parse(data);
           if (!message || typeof message !== "object") throw new RemoteError("Invalid remote signal.", true);
+          // Authorization is independent of asynchronous ICE negotiation or
+          // frame decoding. A received renewal must not expire in that queue.
+          if (message.type === "renewed") { this.authorized(epoch); return; }
+          if (++queuedMessages > 128) throw new RemoteError("Too many remote signals.", true);
           if (frames && message.type === "frame") {
             if (this.frameQueued >= this.framePending) throw new RemoteError("Unexpected remote frame.", true);
             this.frameQueued++;
@@ -260,8 +263,7 @@ export class RemoteBrowserSession {
               this.armFrameDeadline(epoch);
               this.requestFrame(epoch);
             }
-          } else if (message.type === "renewed") this.authorized(epoch);
-          else if (message.type === "broadcast_result") {
+          } else if (message.type === "broadcast_result") {
             if (!this.hand.broadcast || message.request_id !== this.broadcastRequest) return;
             if ((message.audio !== undefined && typeof message.audio !== "boolean") || !["idle", "starting", "live", "reconnecting", "stopping", "failed", "stopped"].includes(message.status)) throw new RemoteError("Invalid broadcast status.", true);
             clearTimeout(this.broadcastDeadline);

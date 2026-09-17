@@ -1,3 +1,4 @@
+import { createResponsesHttp, responsesHttpHeaders } from "../runtime/responses-http.mjs";
 import { Console } from "node:console";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -41,6 +42,12 @@ export function createNodeHost(options = {}) {
   }
   const toolsLifecycle = options.tools?.[toolRuntimeLifecycle];
   toolsLifecycle?.available();
+  const http = createResponsesHttp((endpoint, apiKey, sessionId, metadata, body, signal) => {
+    if (disposal) throw new Error("Nanocodex host is already disposed");
+    if (options.mpp) throw JSON.stringify({ kind: "transport", detail: "MPP HTTPS transport is unavailable", reconnectable: false });
+    return fetch(endpoint, { method: "POST", headers: responsesHttpHeaders(apiKey, sessionId, metadata),
+      body, signal, redirect: "error" });
+  });
   const connections = new Map();
   const code = createCodeRuntime(options.tools, {
     require: createRequire(resolve(options.workspace ?? process.cwd(), ".nanocodex-code-mode.cjs")),
@@ -288,6 +295,7 @@ export function createNodeHost(options = {}) {
 
   function dispose() {
     if (disposal) return disposal;
+    http.dispose();
     disposal = Promise.resolve().then(() => settleCleanup([
       ...[...connections.keys()].map((handle) => () => close(handle)),
       () => code.reset(),
@@ -309,6 +317,10 @@ export function createNodeHost(options = {}) {
       if (references > 0) references -= 1;
       return references === 0 ? dispose() : Promise.resolve();
     },
+    httpOpen: http.httpOpen,
+    httpReady: http.httpReady,
+    httpNext: http.httpNext,
+    httpClose: http.httpClose,
     connect,
     send,
     next,

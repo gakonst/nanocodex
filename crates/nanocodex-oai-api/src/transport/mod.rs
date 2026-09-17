@@ -10,7 +10,6 @@ pub(crate) mod error;
 pub mod host;
 #[cfg(target_family = "wasm")]
 pub(crate) use host::socket;
-#[cfg(not(target_family = "wasm"))]
 pub(crate) mod http;
 pub(crate) mod platform;
 #[cfg(not(target_family = "wasm"))]
@@ -30,7 +29,7 @@ pub use wire::EncodedRequest;
 /// Initial Responses transport policy for a managed session.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ResponsesTransport {
-    /// Prefer a persistent Responses WebSocket. On native targets, the
+    /// Prefer a persistent Responses WebSocket. The
     /// standard stack falls back one-way to HTTPS after exhausting the
     /// WebSocket retry budget.
     #[default]
