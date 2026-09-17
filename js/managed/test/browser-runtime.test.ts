@@ -1,6 +1,7 @@
 import { jsonSchema, tool } from "ai";
 import type { BrowserRuntime } from "agents/browser/ai";
 import { describe, expect, it, vi } from "vitest";
+import { PrivateBrowserCdp } from "../src/browser-vault";
 
 import {
   adaptAiSdkTools,
@@ -324,5 +325,70 @@ describe("AI SDK browser tool adapter", () => {
       scalar: "[redacted cookie material]",
       ordinary: "https://example.com/page",
     });
+  });
+});
+
+
+describe("Vault browser isolation", () => {
+  it("drops unsolicited provider events before they reach SDK logs during credential isolation", async () => {
+    const pair = new WebSocketPair();
+    pair[1].accept();
+    let isolated = false;
+    const binding = new CredentialSafeBrowserBinding({ fetch: async () => new Response(null, { status: 101, webSocket: pair[0] }) }, [], () => isolated);
+    const response = await binding.fetch("https://localhost/v1/devtools/browser/session");
+    const client = response.webSocket!;
+    client.accept();
+    const messages: string[] = [];
+    client.addEventListener("message", event => { messages.push(String(event.data)); });
+    pair[1].send(JSON.stringify({ method: "Page.frameNavigated", params: { url: "https://login.example" } }));
+    await vi.waitFor(() => expect(messages).toHaveLength(1));
+    isolated = true;
+    pair[1].send(JSON.stringify({ method: "Page.frameNavigated", params: { url: "https://login.example/?echo=encoded-secret" } }));
+    client.send(JSON.stringify({ id: 1, method: "Target.getTargets" }));
+    await vi.waitFor(() => expect(messages).toHaveLength(2));
+    expect(messages[1]).toContain("blocked by browser credential policy");
+    expect(JSON.stringify(messages)).not.toContain("encoded-secret");
+    client.close(); pair[1].close();
+  });
+
+  it("blocks ordinary page reads across navigation and rehydration, while allowing bounded status and explicit close", async () => {
+    const stored = new Map<string, unknown>();
+    const context = { callId: "vault", sessionId: "root", parentCallId: "root", model: "test", signal: new AbortController().signal };
+    const ordinary = vi.fn(async () => ({ page: "fixture" }));
+    let formResult: unknown = true;
+    const send = vi.fn(async (method: string) => {
+      if (method === "Target.getTargetInfo") return { targetInfo: { type: "page", url: "https://login.example/next" } };
+      if (method === "Target.attachToTarget") return { sessionId: "attached" };
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "top", loaderId: crypto.randomUUID(), url: "https://login.example/next" } } };
+      if (method === "Page.createIsolatedWorld") return { executionContextId: 7 };
+      return { result: { value: formResult } };
+    });
+    const connect = vi.spyOn(PrivateBrowserCdp, "connect").mockResolvedValue({ send, close() {} } as unknown as PrivateBrowserCdp);
+    const close = vi.fn(async () => {});
+    const resolve = vi.fn(async () => ({ username: "fake-user", password: "fake-password" }));
+    const create = () => createManagedBrowserRuntime({
+      ctx: { storage: { get: async (key: string) => stored.get(key), put: async (key: string, value: unknown) => { stored.set(key, value); }, delete: async (key: string) => stored.delete(key) } } as unknown as DurableObjectState,
+      env: { BROWSER: { fetch: vi.fn() }, LOADER: {} as WorkerLoader }, sessionId: "agent-vault",
+      resolveVaultLogin: resolve, authorizeVaultAccess: () => {},
+      createRuntime: () => ({ connector: { sessionInfo: async () => ({ sessionId: "browser-1" }), closeSession: close },
+        tools: { browser_execute: tool({ inputSchema: jsonSchema({ type: "object" }), execute: ordinary }) }, runtime: {} }) as unknown as BrowserRuntime,
+    });
+    try {
+      let runtime = await create();
+      const call = (name: string, input: unknown) => runtime.tools.find(t => t.name === name)!.handler(input, context);
+      const reference = { vault_id: "a".repeat(22), expected_origin: "https://login.example", target_id: "tab1" };
+      expect(await call("browser_vault_fill", { ...reference, username_selector: "#user", submit: true })).toEqual({ status: "submitted" });
+      expect(JSON.stringify([...stored.values()])).not.toContain("fake-password");
+      await expect(call("browser_execute", { code: "await cdp.send({method:'DOM.getDocument'})" })).rejects.toThrow("isolated");
+      runtime = await create();
+      await expect(call("browser_execute", { code: "await cdp.send({method:'Target.getTargets'})" })).rejects.toThrow("isolated");
+      await expect(call("browser_vault_fill", { ...reference, target_id: "other", password_selector: "#pass", submit: true })).rejects.toThrow("isolated");
+      formResult = [false, true];
+      expect(await call("browser_vault_status", reference)).toEqual({ status: "password_form", password_selector: 'input[type="password"]' });
+      expect(ordinary).not.toHaveBeenCalled();
+      expect(await call("browser_vault_close", {})).toEqual({ status: "closed" });
+      expect(close).toHaveBeenCalledOnce();
+      expect(await call("browser_execute", { code: "1" })).toEqual({ page: "fixture" });
+    } finally { connect.mockRestore(); }
   });
 });

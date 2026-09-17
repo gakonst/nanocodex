@@ -1102,3 +1102,19 @@ test("transcript keeps partial and final assistant text visible with tool activi
     if (renderer) await act(async () => renderer.unmount());
   }
 });
+
+test("client-owned tool forms render nested requests even when tool details are hidden", async () => {
+  const child = { callId: "intake", name: "request_vault_intake", status: "completed", arguments: "", children: [], output: '{"type":"vault_intake"}' };
+  const parent = { ...child, callId: "exec", name: "exec", children: [child] };
+  let renderer;
+  await act(async () => {
+    renderer = TestRenderer.create(React.createElement(TerminalTranscriptSurface, {
+      canLoadOlder: false, composer: null, entries: [{ id: "exec", kind: "tool", tool: parent }],
+      inactiveMessage: "", isLoadingOlder: false, mode: "full", showToolCalls: false, status: "ready", onLoadOlder: async () => false,
+      renderTool: tool => tool.name === "request_vault_intake" ? React.createElement("button", { "data-intake": tool.callId }, "Open secure form") : null,
+    }), { createNodeMock: () => ({ clientHeight: 300, scrollHeight: 600, scrollTop: 0 }) });
+  });
+  assert.equal(renderer.root.findAllByProps({ "data-intake": "intake" }).length, 1);
+  assert.equal(renderer.root.findAllByType("details").length, 0);
+  await act(async () => renderer.unmount());
+});

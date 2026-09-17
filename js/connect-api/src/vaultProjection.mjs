@@ -21,7 +21,8 @@ export function projectVaultEntries(value) {
     };
     switch (common.kind) {
       case "api_key": return common;
-      case "login": return { ...common, username: text(entry.username, 512) };
+      case "login": return { ...common, username: text(entry.username, 512),
+        ...(entry.browser_origin === undefined ? {} : { browser_origin: browserOrigin(entry.browser_origin) }) };
       case "card": return { ...common, last4: last4(entry.last4) };
       case "address": return {
         ...common,
@@ -69,4 +70,11 @@ function last4(value) {
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function browserOrigin(value) {
+  if (typeof value !== "string" || value.length > 2048) throw new TypeError("invalid Vault browser origin");
+  const url = new URL(value);
+  if (url.protocol !== "https:" || url.origin !== value) throw new TypeError("invalid Vault browser origin");
+  return value;
 }

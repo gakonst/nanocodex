@@ -715,6 +715,36 @@ final class InboxModel: ObservableObject {
         agentNotifications.update(account: "", threads: [], foreground: false)
         reset()
     }
+    var vaultIntakeAccount: UUID { generation }
+    func vaultLoginMetadata(id: String, account: UUID) async throws -> VaultIntakeReceipt {
+        guard let client, connected, !isDemo, generation == account else { throw APIError.invalidCredential }
+        let item = try await client.vaultLoginMetadata(id: id)
+        guard generation == account, !Task.isCancelled else { throw APIError.invalidCredential }
+        return item
+    }
+    func authorizeVaultOrigin(id: String, origin: String, name: String, account: UUID) async throws -> VaultIntakeReceipt {
+        guard let client, connected, !isDemo, generation == account else { throw APIError.invalidCredential }
+        let receipt = try await client.authorizeVaultOrigin(id: id, origin: origin, name: name)
+        guard generation == account, connected, !Task.isCancelled else { throw APIError.invalidCredential }
+        return receipt
+    }
+    func saveVaultItem(kind: String, values: [String: String], account: UUID) async throws -> VaultIntakeReceipt {
+        guard let client, connected, !isDemo, generation == account else { throw APIError.invalidCredential }
+        let receipt = try await client.saveVaultItem(kind: kind, values: values)
+        guard generation == account, connected, !Task.isCancelled else { throw APIError.invalidCredential }
+        return receipt
+    }
+    func publishVaultReceipt(_ receipt: VaultIntakeReceipt, intake: VaultIntake, agentID: String, account: UUID) {
+        guard generation == account, connected, !isDemo, cards.contains(where: { $0.id == agentID }) else { return }
+        var value: [String: JSON] = ["type": .string("vault_intake_receipt"), "status": .string("saved"),
+            "id": .string(receipt.id), "kind": .string(receipt.kind), "name": .string(receipt.name),
+            "operation": .string(intake.operation ?? "create")]
+        if let origin = intake.origin { value["browser_origin"] = .string(origin) }
+        let predecessor = pending.last(where: { $0.agentID == agentID })?.id ?? (focused?.id == agentID ? focusedTurn : "")
+        let message = PendingMessage(agentID: agentID, input: JSON.object(value).pretty, predecessor: predecessor)
+        pending.append(message); busy.insert(agentID); persist()
+        Task { await submit(message, epoch: account) }
+    }
     func connectorOverview() async throws -> ConnectorOverview {
         guard let client, connected, !isDemo else { throw APIError.invalidResponse }
         return try await client.connectorOverview()

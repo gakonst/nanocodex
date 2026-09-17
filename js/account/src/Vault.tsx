@@ -1,3 +1,4 @@
+import "./DeviceConnect.css";
 import { useAccountQuery } from "./useAccountQuery";
 import { KeyRound, LockKeyhole, Plus, Trash2, X } from "lucide-react";
 import {
@@ -230,6 +231,7 @@ export function VaultEntryDialog({
   onSave,
   returnFocusRef,
   name = "",
+  origin,
   title,
   description = "Values are encrypted in your vault.",
   error,
@@ -241,6 +243,7 @@ export function VaultEntryDialog({
   onSave(kind: VaultEntryKind, values: Record<string, string>): Promise<void>;
   returnFocusRef: RefObject<HTMLElement | null>;
   name?: string;
+  origin?: string;
   title?: string;
   description?: string;
   error?: string | null;
@@ -290,6 +293,7 @@ export function VaultEntryDialog({
         <form autoComplete="off" onSubmit={submit}>
           <div className="vault-dialog-fields">
             <VaultField autoComplete="off" defaultValue={name} inputRef={firstInputRef} label="Name" maxLength={120} name="name" placeholder={namePlaceholder(kind)} required />
+            {kind === "login" ? <VaultField autoComplete="off" defaultValue={origin} label="Approve website origin (optional)" maxLength={2048} name="browser_origin" placeholder="https://example.com" type="url" /> : null}
             {fieldsForKind(kind)}
           </div>
           <footer>

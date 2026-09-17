@@ -11,6 +11,7 @@ import {
   useAgentController,
   type Agent,
   type AgentControllerEvent,
+  type ToolActivity,
 } from "nanocodex-react/agent";
 import {
   useVoice,
@@ -49,6 +50,7 @@ export function AgentTerminalView({
   onStateChange,
   promptIntent,
   retryAgent,
+  renderTool,
   showToolCalls = true,
   voice = false,
   voiceOptions,
@@ -72,6 +74,7 @@ export function AgentTerminalView({
   onStateChange(state: AgentTerminalState): void;
   promptIntent?: "queue" | "steer";
   retryAgent(): void;
+  renderTool?(tool: ToolActivity, controls: AgentTerminalAccessory): ReactNode;
   showToolCalls?: boolean;
   /** Enables the package-owned microphone control. */
   voice?: boolean;
@@ -242,6 +245,7 @@ export function AgentTerminalView({
       inactiveMessage={unavailableMessage ?? ""}
       isLoadingOlder={controller.isLoadingOlder}
       mode={mode}
+      renderTool={renderTool ? (tool) => renderTool(tool, { agentReady: agentStatus === "ready", submit: submitAccessoryPrompt }) : undefined}
       showToolCalls={showToolCalls}
       status={agentStatus}
       voiceEntries={voiceEntries}

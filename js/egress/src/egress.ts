@@ -11,6 +11,7 @@ import {
   validChatGptCredentialImport,
   validateMaterializedVaultEntry,
   validateVaultEntryPayload,
+  validBrowserOrigin,
 } from "./broker";
 import {
   BROWSER_COOKIE_JAR_ID,
@@ -400,6 +401,29 @@ async function handleEgressWithOwner(
 
   if (url.origin === "https://public-egress.internal" && url.pathname === "/v1/request" && !url.search) {
     return handlePublicEgress(request, env, upstreamFetch);
+  }
+
+  // Service-binding only. The model HTTP gateway never routes this origin.
+  if (url.origin === "https://browser-vault.internal" && url.pathname === "/v1/login" && !url.search) {
+    if (request.method !== "POST") return jsonError(405, "method_not_allowed");
+    const subject = request.headers.get(SUBJECT_HEADER);
+    if (!subject || !SUBJECT.test(subject) || !isJsonContentType(request.headers.get("content-type"))) {
+      return jsonError(403, "vault_browser_denied");
+    }
+    try {
+      const body: unknown = JSON.parse(await readBoundedText(request, 4096));
+      if (!isRecord(body) || Object.keys(body).length !== 2
+        || typeof body.vault_id !== "string" || !VAULT_ENTRY_ID.test(body.vault_id)
+        || !validBrowserOrigin(body.expected_origin)) return jsonError(400, "invalid_request");
+      const owner = await resolveSubject(env, subject);
+      const entry = await resolveVaultEntry(env, owner, body.vault_id);
+      if (entry.kind !== "login" || entry.browser_origin !== body.expected_origin) {
+        return jsonError(403, "vault_browser_origin_not_approved");
+      }
+      return Response.json({ username: entry.username, password: entry.password }, {
+        headers: { "cache-control": "no-store" },
+      });
+    } catch { return jsonError(403, "vault_browser_denied"); }
   }
 
   if (url.protocol === "https:" && url.hostname === "vault-egress.internal" && !url.port
@@ -2058,6 +2082,14 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
   if (vaultOwner) {
     if (request.method !== "GET") return jsonError(405, "method_not_allowed");
     return userBroker(env, vaultOwner).fetch("https://credentials.internal/v1/vault");
+  }
+
+  const vaultOrigin = url.pathname.match(/^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/credentials\/vault\/login\/([A-Za-z0-9_-]{22,64})\/origin$/);
+  if (vaultOrigin) {
+    if (request.method !== "PUT") return jsonError(405, "method_not_allowed");
+    return userBroker(env, vaultOrigin[1]!).fetch(`https://credentials.internal/v1/vault/login/${vaultOrigin[2]}/origin`, {
+      method: "PUT", headers: { "content-type": request.headers.get("content-type") ?? "" }, body: request.body,
+    });
   }
 
   const vaultMatch = url.pathname.match(

@@ -53,6 +53,7 @@ export function TerminalTranscriptSurface({
   isLoadingOlder,
   mode,
   showToolCalls = true,
+  renderTool,
   status,
   voiceEntries = EMPTY_VOICE_ENTRIES,
   welcome,
@@ -66,6 +67,7 @@ export function TerminalTranscriptSurface({
   isLoadingOlder: boolean;
   mode: AgentTerminalMode;
   showToolCalls?: boolean;
+  renderTool?(tool: ToolActivity): ReactNode;
   status: AgentStatus;
   voiceEntries?: readonly VoiceTerminalEntry[];
   welcome?: string;
@@ -201,7 +203,7 @@ export function TerminalTranscriptSurface({
             </Streamdown>
           </article> : null}
           {transcriptEntries.map((entry) => (
-            <TerminalEntryView entry={entry} key={entry.id} showToolCalls={showToolCalls} />
+            <TerminalEntryView entry={entry} key={entry.id} showToolCalls={showToolCalls} renderTool={renderTool} />
           ))}
           {status !== "ready" && inactiveMessage ? (
             <p className="agent-terminal-status" role={status === "error" ? "alert" : "status"}>
@@ -348,9 +350,11 @@ function decodeRealtimeText(text: string): string {
 const TerminalEntryView = memo(function TerminalEntryView({
   entry,
   showToolCalls,
+  renderTool,
 }: {
   entry: TerminalEntry;
   showToolCalls: boolean;
+  renderTool?(tool: ToolActivity): ReactNode;
 }) {
   const voice = isVoiceEntry(entry);
   if (entry.kind === "user") return <pre className="agent-terminal-user" data-source={voice ? "voice" : undefined}>
@@ -381,10 +385,16 @@ const TerminalEntryView = memo(function TerminalEntryView({
   </ol>;
   if (entry.kind === "tool") return <div className="agent-terminal-tool-entry">
     {showToolCalls ? <TerminalToolView tool={entry.tool} /> : null}
+    {renderToolTree(entry.tool, renderTool)}
     <GeneratedOutputView items={generatedToolOutput(entry.tool)} />
   </div>;
   return null;
 });
+
+function renderToolTree(tool: ToolActivity, render: ((tool: ToolActivity) => ReactNode) | undefined): ReactNode {
+  if (!render) return null;
+  return <>{render(tool)}{tool.children.map(child => <div key={child.callId}>{renderToolTree(child, render)}</div>)}</>;
+}
 
 function generatedToolOutput(tool: ToolActivity): GeneratedOutput[] {
   const items: GeneratedOutput[] = [];

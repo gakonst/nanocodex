@@ -11,6 +11,15 @@ const VAULT_ID = "v".repeat(22);
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Computer egress gateway", () => {
+  it("never exposes private browser Vault or origin approval RPCs to model HTTP", async () => {
+    const binding = { fetch: vi.fn() } as unknown as Fetcher;
+    for (const url of ["https://browser-vault.internal/v1/login", "https://broker.internal/users/owner/credentials/vault/login/" + VAULT_ID + "/origin"]) {
+      const response = await testGateway(binding).fetch(url, { method: "POST", body: "{}" });
+      expect(response.status).toBe(403);
+    }
+    expect(binding.fetch).not.toHaveBeenCalled();
+  });
+
   it.each(["PASSWORD", "API_KEY"])("routes only vault references and placeholders through the private binding (%s)", async (key) => {
     const seen: Request[] = [];
     const binding = {

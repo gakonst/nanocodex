@@ -69,3 +69,11 @@ test("API key metadata excludes key material", () => {
   assert.deepEqual(projectVaultEntries([{ id: id("k"), kind: "api_key", name: "Service", created_at: 1, api_key: "secret" }]),
     [{ id: id("k"), kind: "api_key", name: "Service", created_at: 1 }]);
 });
+
+test("Vault projection preserves exact approved browser origins without secrets", () => {
+  const entry = { id: id("e"), kind: "login", name: "Amazon", created_at: 1, username: "person", browser_origin: "https://www.amazon.com" };
+  assert.deepEqual(projectVaultEntries([{ ...entry, password: "never" }]), [entry]);
+  for (const browser_origin of ["http://www.amazon.com", "https://www.amazon.com/path", "https://x:y@www.amazon.com"]) {
+    assert.throws(() => projectVaultEntries([{ ...entry, browser_origin }]));
+  }
+});

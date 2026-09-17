@@ -842,6 +842,19 @@ export async function authenticatePersistentAccount(
   return account?.persistent === true ? principal : undefined;
 }
 
+/** Native Vault forms use an account-owned API key, never a Connect grant. */
+export async function authenticateVaultAccount(
+  request: Request, env: AccountAuthEnv, url = new URL(request.url),
+): Promise<Principal | undefined> {
+  const principal = await authenticate(request, env, url);
+  if (!principal || (principal.kind !== "account_session" && principal.kind !== "api_key")
+    || principal.connectGrant
+    || !principal.capabilities.includes("agents:write")
+    || !principal.capabilities.includes("tools:use")) return undefined;
+  const account = await readAccount(env, principal.userId);
+  return account?.persistent === true ? principal : undefined;
+}
+
 export type PersistentHostedAccount = Readonly<{
   accountAddress: string;
   principal: Principal;

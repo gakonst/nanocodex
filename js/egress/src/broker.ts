@@ -131,7 +131,7 @@ type RootWallet = {
 export type VaultKind = "login" | "api_key" | "card" | "address" | "phone";
 export type VaultEntryPayload =
   | Readonly<{ kind: "api_key"; name: string; api_key: string }>
-  | Readonly<{ kind: "login"; name: string; username: string; password: string }>
+  | Readonly<{ kind: "login"; name: string; username: string; password: string; browser_origin?: string }>
   | Readonly<{
       kind: "card";
       name: string;
@@ -155,7 +155,7 @@ export type VaultEntryPayload =
 export type VaultEntry = VaultEntryPayload & Readonly<{ id: string; createdAt: number }>;
 type VaultEntryMetadata = (
   | Readonly<{ kind: "api_key"; name: string }>
-  | Readonly<{ kind: "login"; name: string; username: string }>
+  | Readonly<{ kind: "login"; name: string; username: string; browser_origin?: string }>
   | Readonly<{ kind: "card"; name: string; last4: string }>
   | Readonly<{
       kind: "address";
@@ -799,6 +799,35 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
           return new Response(null, { status: 204, headers: noStoreHeaders() });
         }
         return jsonError(405, "method_not_allowed");
+      }
+      const originId = url.pathname.match(/^\/v1\/vault\/login\/([A-Za-z0-9_-]{22,64})\/origin$/)?.[1];
+      if (originId) {
+        if (request.method !== "PUT") return jsonError(405, "method_not_allowed");
+        if (!isJsonContentType(request.headers.get("content-type"))) return jsonError(415, "invalid_content_type");
+        const body = await readJson(request, 4096);
+        if (!isRecord(body) || !hasExactKeys(body, ["browser_origin"]) || !validBrowserOrigin(body.browser_origin)) {
+          return jsonError(400, "invalid_browser_origin");
+        }
+        const metadata = this.#credentials.vault?.[originId];
+        if (metadata?.kind !== "login") return jsonError(404, "vault_entry_not_configured");
+        const row = await this.#state.storage.get<StoredRow>(vaultEntryStorageKey(originId));
+        if (!row) return jsonError(404, "vault_entry_not_configured");
+        const opened = await this.#entryVault(originId).open<unknown>(row.envelope);
+        const retained = validateStoredVaultEntry(originId, opened.value);
+        if (!retained || retained.kind !== "login" || !sameVaultEntryMetadata(metadata, vaultEntryMetadata(retained))) {
+          return jsonError(503, "vault_entry_invalid");
+        }
+        const entry = { ...retained, browser_origin: body.browser_origin };
+        const next = { ...this.#credentials, vault: { ...this.#credentials.vault, [originId]: vaultEntryMetadata(entry) } };
+        const [stateEnvelope, entryEnvelope] = await Promise.all([
+          this.#vault.seal(next), this.#entryVault(originId).seal(entry),
+        ]);
+        await this.#state.storage.transaction(async transaction => {
+          await transaction.put(STATE_KEY, { envelope: stateEnvelope } satisfies StoredRow);
+          await transaction.put(vaultEntryStorageKey(originId), { envelope: entryEnvelope } satisfies StoredRow);
+        });
+        this.#credentials = next;
+        return json(publicVaultEntry(entry), 200);
       }
       const vaultMaterialize = url.pathname.match(
         /^\/v1\/vault-entry\/([A-Za-z0-9_-]{22,64})$/,
@@ -2130,7 +2159,7 @@ export function validateVaultEntryPayload(
   kind: VaultKind,
 ): VaultEntryPayload | undefined {
   if (!isRecord(value)) return undefined;
-  const expected = vaultPayloadKeys(kind, Object.prototype.hasOwnProperty.call(value, "address_line_2"));
+  const expected = vaultPayloadKeys(kind, Object.prototype.hasOwnProperty.call(value, "address_line_2"), Object.prototype.hasOwnProperty.call(value, "browser_origin"));
   const keys = Object.keys(value);
   if (keys.length !== expected.length || keys.some((key) => !expected.includes(key))) {
     return undefined;
@@ -2144,7 +2173,9 @@ export function validateVaultEntryPayload(
   if (kind === "login") {
     const username = vaultText(value.username, 512);
     const password = vaultSecret(value.password, 8_192);
-    return username && password ? { kind, name, username, password } : undefined;
+    const origin = value.browser_origin;
+    if (origin !== undefined && !validBrowserOrigin(origin)) return undefined;
+    return username && password ? { kind, name, username, password, ...(typeof origin === "string" ? { browser_origin: origin } : {}) } : undefined;
   }
   if (kind === "card") {
     const cardNumber = vaultCardNumber(value.card_number);
@@ -2192,10 +2223,10 @@ export function validateVaultEntryPayload(
   return phoneNumber ? { kind, name, phone_number: phoneNumber } : undefined;
 }
 
-function vaultPayloadKeys(kind: VaultKind, hasAddressLine2 = false): readonly string[] {
+function vaultPayloadKeys(kind: VaultKind, hasAddressLine2 = false, hasBrowserOrigin = false): readonly string[] {
   switch (kind) {
     case "api_key": return ["name", "api_key"];
-    case "login": return ["name", "username", "password"];
+    case "login": return ["name", "username", "password", ...(hasBrowserOrigin ? ["browser_origin"] : [])];
     case "card": return [
       "name", "card_number", "expiry_month", "expiry_year", "cvv", "billing_zip",
     ];
@@ -2216,6 +2247,7 @@ function validateStoredVaultEntry(id: string, value: unknown): VaultEntry | unde
   const payloadKeys = vaultPayloadKeys(
     kind,
     Object.prototype.hasOwnProperty.call(value, "address_line_2"),
+    Object.prototype.hasOwnProperty.call(value, "browser_origin"),
   );
   const payload = Object.fromEntries(
     payloadKeys.map((key) => [key, value[key]]),
@@ -2257,8 +2289,10 @@ function validateStoredVaultMetadata(
   }
   if (kind === "login") {
     const username = vaultText(value.username, 512);
-    return username && hasExactKeys(value, ["id", "kind", "name", "username", "createdAt"])
-      ? { ...common, kind, name: common.name, username }
+    const origin = value.browser_origin;
+    if (origin !== undefined && !validBrowserOrigin(origin)) return undefined;
+    return username && hasExactKeys(value, ["id", "kind", "name", "username", "createdAt", ...(origin === undefined ? [] : ["browser_origin"])])
+      ? { ...common, kind, name: common.name, username, ...(typeof origin === "string" ? { browser_origin: origin } : {}) }
       : undefined;
   }
   if (kind === "card") {
@@ -2311,7 +2345,7 @@ function vaultEntryMetadata(entry: VaultEntry): VaultEntryMetadata {
   };
   switch (entry.kind) {
     case "api_key": return { ...common, kind: entry.kind };
-    case "login": return { ...common, kind: entry.kind, username: entry.username };
+    case "login": return { ...common, kind: entry.kind, username: entry.username, ...(entry.browser_origin ? { browser_origin: entry.browser_origin } : {}) };
     case "card": return {
       ...common,
       kind: entry.kind,
@@ -2339,7 +2373,7 @@ function sameVaultEntryMetadata(
     || left.createdAt !== right.createdAt) return false;
   switch (left.kind) {
     case "api_key": return true;
-    case "login": return right.kind === left.kind && left.username === right.username;
+    case "login": return right.kind === left.kind && left.username === right.username && left.browser_origin === right.browser_origin;
     case "card": return right.kind === left.kind && left.last4 === right.last4;
     case "address": return right.kind === left.kind
       && left.address_line_1 === right.address_line_1
@@ -2366,6 +2400,7 @@ function publicVaultEntry(entry: VaultEntry | VaultEntryMetadata): Readonly<{
   name: string;
   created_at: number;
   username?: string;
+  browser_origin?: string;
   last4?: string;
   address_line_1?: string;
   address_line_2?: string;
@@ -2386,7 +2421,7 @@ function publicVaultEntry(entry: VaultEntry | VaultEntryMetadata): Readonly<{
   };
   switch (metadata.kind) {
     case "api_key": return common;
-    case "login": return { ...common, username: metadata.username };
+    case "login": return { ...common, username: metadata.username, ...(metadata.browser_origin ? { browser_origin: metadata.browser_origin } : {}) };
     case "card": return { ...common, last4: metadata.last4 };
     case "address": return {
       ...common,
@@ -2640,4 +2675,9 @@ function json(body: unknown, status: number): Response {
 }
 function jsonError(status: number, error: string): Response {
   return json({ error }, status);
+}
+
+export function validBrowserOrigin(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 2048) return false;
+  try { const url = new URL(value); return url.protocol === "https:" && url.origin === value && !url.username && !url.password; } catch { return false; }
 }

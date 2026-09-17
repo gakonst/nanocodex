@@ -27,6 +27,7 @@ export type VaultEntry =
       name: string;
       created_at: number;
       username: string;
+      browser_origin?: string;
     }>
   | Readonly<{
       id: string;
@@ -307,9 +308,11 @@ function vaultEntry(value: unknown): VaultEntry | undefined {
     created_at: value.created_at as number,
   };
   if (value.kind === "login"
-    && exactKeys(value, ["id", "kind", "name", "created_at", "username"])
+    && exactKeys(value, ["id", "kind", "name", "created_at", "username", ...(value.browser_origin === undefined ? [] : ["browser_origin"])])
     && vaultText(value.username, 512)) {
-    return { ...common, kind: "login", username: value.username };
+    if (value.browser_origin !== undefined && !safeBrowserOrigin(value.browser_origin)) return undefined;
+    return { ...common, kind: "login", username: value.username,
+      ...(typeof value.browser_origin === "string" ? { browser_origin: value.browser_origin } : {}) };
   }
   if (value.kind === "card"
     && exactKeys(value, ["id", "kind", "name", "created_at", "last4"])
@@ -361,4 +364,9 @@ function vaultText(value: unknown, maxBytes: number): value is string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function safeBrowserOrigin(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 2048) return false;
+  try { const url = new URL(value); return url.protocol === "https:" && url.origin === value; } catch { return false; }
 }

@@ -36,7 +36,7 @@ afterEach(() => {
 });
 
 describe("API key live authorization", () => {
-  async function fixture() {
+  async function fixture(capabilities = ["agents:read"]) {
     const { env } = portableEnv();
     const token = `ncx_live_${"a".repeat(12)}_${"b".repeat(43)}`;
     const digest = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest(
@@ -45,13 +45,13 @@ describe("API key live authorization", () => {
     const key = {
       id: "a".repeat(12), label: "test", prefix: `ncx_live_${"a".repeat(12)}`,
       createdAt: 1, digest, userId: USER_ID, organizationId: ORGANIZATION_ID,
-      teamId: TEAM_ID, role: "writer", authorizationEpoch: 1, capabilities: ["agents:read"],
+      teamId: TEAM_ID, role: "writer", authorizationEpoch: 1, capabilities,
     };
     let currentKey: unknown = key;
     let currentAccount: unknown = account(USER_ID, true);
     let grant: unknown = {
       organizationId: ORGANIZATION_ID, teamId: TEAM_ID, role: "owner",
-      authorizationEpoch: 1, capabilities: ["agents:read", "agents:write"],
+      authorizationEpoch: 1, capabilities: ["agents:read", "agents:write", "tools:use"],
     };
     let releaseAccount!: () => void;
     const accountGate = new Promise<void>((resolve) => { releaseAccount = resolve; });
@@ -64,6 +64,7 @@ describe("API key live authorization", () => {
     const namespace = (fetch: () => Promise<Response>) => ({ getByName: () => ({ fetch }) }) as unknown as DurableObjectNamespace;
     const testEnv = { ...env, NANOCODEX_API_KEYS: namespace(keyFetch), NANOCODEX_USERS: namespace(userFetch), NANOCODEX_ORGANIZATIONS: namespace(orgFetch) } as unknown as AccountAuthEnv;
     return {
+      env: testEnv, token,
       authenticate: () => authenticate(new Request("https://example.com/v1/agents", { headers: { authorization: `Bearer ${token}` } }), testEnv),
       releaseAccount: () => releaseAccount(), userFetch, orgFetch,
       setKey: (value: unknown) => { currentKey = value; },
@@ -71,6 +72,30 @@ describe("API key live authorization", () => {
       setGrant: (value: unknown) => { grant = value; },
     };
   }
+
+  it("allows native owner keys to save Vault entries and approve origins, denying read-only or ephemeral accounts", async () => {
+    const f = await fixture(["agents:read", "agents:write", "tools:use"]);
+    f.releaseAccount();
+    const binding = { fetch: vi.fn(async () => Response.json({ id: "v".repeat(32), kind: "login", name: "Example", created_at: 1 }, { status: 201 })) } as unknown as Fetcher;
+    const env = { ...f.env, NANOCODEX: binding };
+    const send = (path: string, method: string, body: unknown) => {
+      const url = new URL(path, "https://nanocodex.example");
+      return routeCredentialRequest(new Request(url, { method, headers: {
+        authorization: `Bearer ${f.token}`, "content-type": "application/json",
+      }, body: JSON.stringify(body) }), env, url);
+    };
+    expect((await send("/v1/credentials/vault/login", "POST", { name: "Example", username: "person", password: "fixture-password", browser_origin: "https://example.com" }))?.status).toBe(201);
+    expect((await send(`/v1/credentials/vault/login/${"v".repeat(32)}/origin`, "PUT", { browser_origin: "https://example.com" }))?.status).toBe(201);
+    expect((await send(`/v1/credentials/vault/login/${"v".repeat(32)}/origin`, "PUT", { browser_origin: "https://example.com/path" }))?.status).toBe(400);
+    f.setAccount(account(USER_ID, false));
+    expect((await send("/v1/credentials/vault/login", "POST", { name: "Example", username: "person", password: "fixture-password" }))?.status).toBe(401);
+    expect(binding.fetch).toHaveBeenCalledTimes(2);
+    const readonly = await fixture(); readonly.releaseAccount();
+    const url = new URL("https://nanocodex.example/v1/credentials/vault/login");
+    expect((await routeCredentialRequest(new Request(url, { method: "POST", headers: {
+      authorization: `Bearer ${readonly.token}`, "content-type": "application/json",
+    }, body: JSON.stringify({ name: "Example", username: "person", password: "fixture-password" }) }), { ...readonly.env, NANOCODEX: binding }, url))?.status).toBe(401);
+  });
 
   it("starts membership resolution while the live account check is pending", async () => {
     const f = await fixture();

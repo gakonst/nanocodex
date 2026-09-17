@@ -1578,6 +1578,13 @@ private struct ConversationContentView: View {
                         } else if let output = item.output {
                             ConversationOutputView(output: output)
                         } else if let content = item.content {
+                            ForEach(content.activity.filter { $0.tool?.vaultIntake != nil }) { row in
+                                if let intake = row.tool?.vaultIntake {
+                                    VaultIntakeCard(model: model, intake: intake)
+                                        .id("\(row.id):\(model.vaultIntakeAccount)")
+                                        .padding(.bottom, 12)
+                                }
+                            }
                             ConversationActivityView(item: content, onExpansion: { expanded in
                                 if expanded { rowGeometry.expandedActivity.insert(content.id) }
                                 else {
@@ -1979,5 +1986,153 @@ private struct ToolActivityView: View {
                 }
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct VaultIntakeCard: View {
+    @ObservedObject var model: InboxModel
+    let intake: VaultIntake
+    @State private var showingForm = false
+    @State private var receiptAgentID = ""
+    @State private var receipt: VaultIntakeReceipt?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(receipt == nil ? "Add to Vault securely" : "Saved to Vault", systemImage: "lock.shield")
+                .font(.headline)
+            if let receipt {
+                Text(receipt.name).font(.subheadline)
+            } else {
+                if !intake.name.isEmpty { Text(intake.name).font(.subheadline) }
+                if let origin = intake.origin { Text(origin).font(.caption).textSelection(.enabled) }
+                Text("Your information goes directly to your encrypted Vault. It stays out of chat.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                Button("Open secure form") { receiptAgentID = model.focused?.id ?? ""; showingForm = true }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("vault-intake-open")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading).padding(16)
+        .background(Ink.surface, in: RoundedRectangle(cornerRadius: 16))
+        .accessibilityIdentifier("vault-intake-card")
+        .sheet(isPresented: $showingForm) {
+            VaultLoginSheet(model: model, intake: intake, agentID: receiptAgentID) { receipt = $0 }
+        }
+    }
+}
+
+private struct VaultLoginSheet: View {
+    @ObservedObject var model: InboxModel
+    let intake: VaultIntake
+    let agentID: String
+    let saved: (VaultIntakeReceipt) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var name = ""
+    @State private var values: [String: String] = [:]
+    @State private var account = UUID()
+    @State private var submission: Task<Void, Never>?
+    @State private var saving = false
+    @State private var attempted = false
+    @State private var verified = false
+    private var authorizing: Bool { intake.operation == "authorize_origin" }
+    @State private var failure: String?
+
+    private var fields: [(key: String, label: String, secure: Bool, max: Int)] {
+        switch intake.kind {
+        case "api_key": return [("api_key", "API key", true, 8192)]
+        case "card": return [("card_number", "Card number", true, 32), ("expiry_month", "Expiry month", false, 2), ("expiry_year", "Expiry year", false, 4), ("cvv", "Security code", true, 4), ("billing_zip", "Billing postal code", false, 32)]
+        case "address": return [("address_line_1", "Address", false, 256), ("address_line_2", "Address line 2 (optional)", false, 256), ("city", "City", false, 120), ("state", "State", false, 120), ("zip", "Postal code", false, 32), ("country", "Country", false, 120)]
+        case "phone": return [("phone_number", "Phone number", false, 64)]
+        default: return [("username", "Username", false, 512), ("password", "Password", true, 8192)]
+        }
+    }
+    private var valid: Bool {
+        (authorizing ? verified : !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.utf8.count <= 120
+            && fields.allSatisfy { field in
+                let value = values[field.key] ?? ""
+                return (field.key == "address_line_2" || !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) && value.utf8.count <= field.max
+            })
+    }
+    private func clear() { values.removeAll(); name = "" }
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    if authorizing { Text(name.isEmpty ? "Verifying login…" : name) }
+                    else {
+                    TextField("Name", text: $name).accessibilityIdentifier("vault-intake-name")
+                    ForEach(fields, id: \.key) { field in
+                        let binding = Binding<String>(get: { values[field.key] ?? "" }, set: { values[field.key] = $0 })
+                        Group {
+                            if field.secure { SecureField(field.label, text: binding) }
+                            else { TextField(field.label, text: binding) }
+                        }
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .privacySensitive().accessibilityIdentifier("vault-intake-" + field.key)
+                    }
+                    }
+                } footer: {
+                    Text("Credentials are sent directly to your encrypted Vault, never as a chat message.")
+                }
+                if let origin = intake.origin {
+                    Section("Website access") { Text(origin).font(.subheadline); Text("Saving allows browser login with this item on this exact website.") }
+                }
+                if let failure { Section { Text(failure).foregroundStyle(.red) } }
+                Section {
+                    Button {
+                        saving = true; attempted = true
+                        submission = Task { @MainActor in
+                            defer { clear(); saving = false }
+                            do {
+                                var payload = values.filter { !$0.value.isEmpty }
+                                payload["name"] = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if let origin = intake.origin { payload["browser_origin"] = origin }
+                                let receipt: VaultIntakeReceipt
+                                if authorizing, let id = intake.vaultID, let origin = intake.origin {
+                                    receipt = try await model.authorizeVaultOrigin(id: id, origin: origin, name: name, account: account)
+                                } else {
+                                    receipt = try await model.saveVaultItem(kind: intake.kind, values: payload, account: account)
+                                }
+                                guard !Task.isCancelled, model.vaultIntakeAccount == account else { return }
+                                model.publishVaultReceipt(receipt, intake: intake, agentID: agentID, account: account)
+                                saved(receipt)
+                                dismiss()
+                            } catch {
+                                // No error body, request, or secret is included in UI/logs/transcripts.
+                                failure = "Couldn’t confirm the save. Check your Vault before trying again."
+                            }
+                        }
+                    } label: {
+                        HStack { Text(saving ? "Saving…" : authorizing ? "Allow this website" : "Save to Vault"); if saving { ProgressView() } }
+                    }
+                    .disabled(!valid || saving || attempted)
+                    .accessibilityIdentifier("vault-intake-save")
+                }
+            }
+            .disabled(saving)
+            .navigationTitle("Add to Vault")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { submission?.cancel(); clear(); dismiss() }
+            } }
+            .overlay {
+                if scenePhase != .active { Color(uiColor: .systemBackground).ignoresSafeArea() }
+            }
+        }
+        .interactiveDismissDisabled(saving)
+        .task {
+            account = model.vaultIntakeAccount
+            if authorizing, let id = intake.vaultID {
+                do {
+                    let item = try await model.vaultLoginMetadata(id: id, account: account)
+                    guard !Task.isCancelled else { return }
+                    name = item.name; verified = true
+                } catch { failure = "Couldn’t verify this login. Check your Vault." }
+            } else { name = intake.name }
+        }
+        .onDisappear { submission?.cancel(); clear() }
+        .onChange(of: model.vaultIntakeAccount) { _, _ in submission?.cancel(); clear(); dismiss() }
+        .onChange(of: model.connected) { _, connected in if !connected { submission?.cancel(); clear(); dismiss() } }
     }
 }

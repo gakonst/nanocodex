@@ -23,6 +23,8 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
     public var status: String
     public var input: [ToolField]
     public var output: [ToolField] = []
+    public var vaultIntake: VaultIntake?
+    var vaultIntakeEligible: Bool?
     var terminalCommand: Bool?
     /// Both wire representations can contain distinct generated attachments.
     /// Optional fields keep previously persisted transcripts decodable.
@@ -43,6 +45,7 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
         if family.isEmpty { family = name.hasPrefix("user_") ? "machine_action" : name }
         if family.hasPrefix("mcp__") { family = family.components(separatedBy: "__").dropFirst(2).joined(separator: "_") }
         if family.hasPrefix("functions.") { family = String(family.dropFirst(10)) }
+        vaultIntakeEligible = family == "request_vault_intake"
         terminalCommand = ["exec_command", "write_stdin"].contains(family)
         generatedIncludesText = ["exec", "wait"].contains(family)
         generatedIsInspection = ToolOutputVisibility.isInspection(name: family, arguments: arguments.string.isEmpty ? arguments.pretty : arguments.string)
@@ -85,9 +88,11 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
         status = state == "cancelled" ? "Stopped" : isFailure ? "Failed" : processRunning ? "Running" : "Completed"
         if !metadata["tool_name"].string.isEmpty || !metadata["toolName"].string.isEmpty {
             let presentation = ToolPresentation(name: "", arguments: .null, metadata: metadata)
+            vaultIntakeEligible = presentation.vaultIntakeEligible
             title = presentation.title; generatedIncludesText = presentation.generatedIncludesText
             generatedIsInspection = generatedIsInspection == true || presentation.generatedIsInspection == true
         }
+        vaultIntake = vaultIntakeEligible == true && status == "Completed" ? (VaultIntake.parse(value) ?? VaultIntake.parse(rawResult)) : nil
         var displayedResult = result
         if terminalCommand == true, case .object(var fields) = result {
             // This is only the latest poll's wait, not the command's elapsed time.
@@ -103,6 +108,8 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
 
     mutating func applyCompletion(_ result: Self, metadata: JSON) {
         status = result.status; output = result.output; generatedResults = result.generatedResults
+        vaultIntake = result.vaultIntake
+        vaultIntakeEligible = result.vaultIntakeEligible
         generatedIncludesText = generatedIncludesText == true || result.generatedIncludesText == true
         generatedIsInspection = generatedIsInspection == true || result.generatedIsInspection == true
         if !metadata["tool_name"].string.isEmpty || !metadata["toolName"].string.isEmpty { title = result.title }

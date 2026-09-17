@@ -198,6 +198,14 @@ function statuses() {
 }
 
 describe("managed accountInfo vault projection", () => {
+  it("preserves approved login origins and rejects malformed origin metadata", async () => {
+    for (const browser_origin of ["https://www.amazon.com", "http://www.amazon.com", "https://www.amazon.com/path"]) {
+      const entry = { id: LOGIN_ID, kind: "login", name: "Amazon", created_at: 1, username: "person", browser_origin };
+      const info = await accountInfo({ fetch: async input => Response.json(String(input).endsWith("/connectors") ? { connectors: {} } : { vault: [entry] }) }, "user", { enabled: true });
+      expect(info.vault).toEqual(browser_origin === "https://www.amazon.com" ? [entry] : []);
+    }
+  });
+
   it("projects exact safe metadata for every Vault kind and preserves connector filtering", async () => {
     const fetch = vi.fn(async (input: RequestInfo | URL) => Response.json(
       String(input).endsWith("/connectors") ? {
