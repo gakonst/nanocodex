@@ -224,7 +224,7 @@ test("the account-action browser harness exposes one exact model-visible tool se
   assert.equal(accountConnectionRequest.cache, "no-store");
   assert.deepEqual(
     byName.requestAccountConnection.parameters.properties.connector.enum,
-    ["github", "gmail", "gdrive", "gcalendar", "gtasks", "gdocs", "gsheets", "gslides", "gcontacts", "slack", "x", "spotify", "soundcloud"],
+    ["github", "gmail", "gdrive", "gcalendar", "gtasks", "gdocs", "gsheets", "gslides", "gcontacts", "slack", "x", "spotify", "soundcloud", "link"],
   );
   assert.match(byName.requestAccountConnection.description, /exact authorization_url as a Markdown link/i);
   await assert.rejects(
@@ -639,4 +639,25 @@ test("browser agents request music account connections through the phone", async
     assert.equal(result.expires_in_seconds, undefined, "the app link has no OAuth expiry before consent starts");
   }
   assert(!tool.outputSchema.required.includes("expires_in_seconds"));
+});
+
+test("browser agents accept Link device authorization and reject lookalike origins", async () => {
+  let authorizationUrl = "https://login.link.com/verify?code=test";
+  const requests = [];
+  const runtime = bindBrowser({
+    ...preparedBrowser(),
+    fetch: async (url, init) => {
+      requests.push({ url: String(url), init });
+      return Response.json({ authorization_url: authorizationUrl, attempt: "a".repeat(43) });
+    },
+  }, { accountConnectionRequests: true });
+  const tool = runtime.tools.find(({ name }) => name === "requestAccountConnection");
+  const result = await tool.handler({ connector: "link" }, context);
+  assert.equal(result.authorization_url, authorizationUrl);
+  assert.equal(result.label, "Stripe Link");
+  assert.equal(result.status, "authorization_required");
+  assert.equal(requests[0].url, "https://demo.test/v1/connectors/link");
+  assert.equal(requests[0].init.credentials, "same-origin");
+  authorizationUrl = "https://login.link.com.evil.example/verify?code=test";
+  await assert.rejects(tool.handler({ connector: "link" }, context), /authorization/i);
 });
