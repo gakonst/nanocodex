@@ -38,7 +38,7 @@ pub(crate) struct Review {
 impl Review {
     pub(crate) fn description(&self) -> String {
         format!(
-            "Saved login: {}\nVault ID: {}\n\nApprove website:\n{}\n\nCurrent website: {}\nThis replaces the login’s approved website.\nYour password stays in Vault.\n\nPress a to approve, or Esc to cancel.",
+            "Saved login: {}\nVault ID: {}\n\nApprove website:\n{}\n\nCurrent website: {}\nThis replaces the login’s approved website.\nYour password stays in Vault.\n\nPress Ctrl+Enter to approve, or Esc to cancel.",
             self.login.name,
             self.login.id,
             self.origin,
@@ -95,11 +95,11 @@ pub(crate) fn intake_summary(value: &Value) -> Option<String> {
             let _id = intake.vault_id.filter(|s| valid_id(s))?;
             let origin = intake.origin?;
             Some(format!(
-                "Website approval requested for saved login\n{origin}\nType /vault to review and approve."
+                "Website approval requested for saved login\n{origin}\nReview opens automatically. Use /vault to reopen."
             ))
         }
         "create" if intake.vault_id.is_none() => Some(format!(
-            "Add {} to Vault\nOpen your secure Vault: /vault open\nEnter credential values only in the Vault web form. After saving, return here and tell the agent to refresh Vault metadata.",
+            "Add {} to Vault\nYour secure Vault opens automatically. Reopen with /vault open\nEnter credential values only in the Vault web form. After saving, return here and tell the agent to refresh Vault metadata.",
             intake.name.unwrap_or_else(|| intake.kind.replace('_', " "))
         )),
         _ => None,
@@ -373,4 +373,30 @@ pub(crate) fn scope_matches(
     generation: u64,
 ) -> bool {
     !agent.is_empty() && expected_agent == agent && expected_generation == generation
+}
+
+/// Only completed live tool results can initiate a caller-local Vault flow.
+pub(crate) fn request(record: &super::transcript::TranscriptRecord) -> Option<(String, Command)> {
+    if record.kind() != "tool.result" {
+        return None;
+    }
+    let value: Value = record.decode_payload().ok()?;
+    if value.get("status")?.as_str()? != "completed"
+        || !matches!(
+            value.get("tool")?.as_str()?,
+            "request_vault_intake" | "exec" | "wait"
+        )
+    {
+        return None;
+    }
+    let command = value
+        .get("structured_result")
+        .and_then(intake_command)
+        .or_else(|| value.get("result").and_then(intake_command))?;
+    let turn = record
+        .managed_turn_id()
+        .or_else(|| record.agent_request_id());
+    // The semantic command is shared by the direct result and its exec echo.
+    let key = format!("{turn:?}:{command:?}");
+    Some((key, command))
 }

@@ -3228,26 +3228,27 @@ async fn terminal_vault_approval_cancel_then_explicit_approve_sends_one_safe_rec
         "result": {"type": "vault_intake", "status": "input_required", "operation": "authorize_origin",
             "kind": "login", "vault_id": VAULT_ID, "origin": VAULT_ORIGIN, "name": "UNVERIFIED_TOOL_LABEL"}
     }));
+    fixture.terminal.wait_text("Approve Vault website").await;
     fixture.complete(REMOTE_TURN);
-    fixture
-        .terminal
-        .wait_text("Type /vault to review and approve.")
-        .await;
-    fixture.terminal.wait_text("Enter send").await;
     assert!(fixture.vault_writes.lock().unwrap().is_empty());
 
     for approve in [false, true] {
-        fixture.terminal.prompt("/vault", "\r");
+        if approve {
+            fixture.terminal.prompt("/vault", "\r");
+        }
         fixture.terminal.wait_text("Approve Vault website").await;
         fixture.terminal.wait_text("VERIFIED_SAVED_LOGIN").await;
         fixture.terminal.wait_text(VAULT_ID).await;
         fixture.terminal.wait_text(VAULT_ORIGIN).await;
         fixture.terminal.wait_text("https://previous.example").await;
-        fixture.terminal.wait_text("Press a to approve").await;
+        fixture
+            .terminal
+            .wait_text("Press Ctrl+Enter to approve")
+            .await;
         assert!(fixture.vault_writes.lock().unwrap().is_empty());
         assert!(fixture.submissions.try_recv().is_err());
         if approve {
-            fixture.terminal.input("a");
+            fixture.terminal.input("\x1b[13;5u");
         } else {
             fixture.terminal.input("\x1b");
             fixture.terminal.wait_no_text("Approve Vault website").await;
