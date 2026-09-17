@@ -17,6 +17,47 @@ pub(super) struct WarmupOutcome {
     pub(super) server_reasoning_included: bool,
 }
 
+// Owns the terminal event even when an outer cancellation select drops the future.
+// This cannot publish after the hosting process or isolate has been lost.
+struct CompactionLifecycle<'a> {
+    events: &'a EventSink,
+    stats: &'a mut RunStats,
+    span: tracing::Span,
+    after_model_call_index: u32,
+    started_at: Instant,
+    finished: bool,
+}
+
+impl CompactionLifecycle<'_> {
+    fn fail(&mut self, error: &str) -> Result<()> {
+        self.finished = true;
+        let duration_ns = elapsed_ns(self.started_at);
+        self.span.record("status", "failed");
+        self.span.record("otel.status_code", "ERROR");
+        self.span.record("duration_ns", duration_ns);
+        self.stats.model_duration_ns += duration_ns;
+        self.stats.compaction_duration_ns += duration_ns;
+        self.events.emit(
+            AgentEventKind::ModelCompactionFailed,
+            CompactionFailed {
+                after_model_call_index: self.after_model_call_index,
+                duration_ns,
+                error,
+            },
+        )?;
+        Ok(())
+    }
+}
+
+impl Drop for CompactionLifecycle<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            // Drop cannot return an event publication error to the cancelled caller.
+            let _ = self.fail("compaction cancelled");
+        }
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 struct RecordedCompactionResult {
     response_id: String,
@@ -332,126 +373,111 @@ where
         if let Some(input_content) = &input_content {
             record_span_content(&span, "model.input", input_content);
         }
-        let execution_steps = self.execution_steps.clone();
-        let recovered = if let Some(steps) = &execution_steps {
-            match steps
-                .begin::<_, RecordedCompactionResult>(&step_id, "compaction", &())
-                .await?
-            {
-                crate::agent::ExecutionStep::Execute => None,
-                crate::agent::ExecutionStep::Replay(output) => Some(output),
-            }
-        } else {
-            None
+        let mut lifecycle = CompactionLifecycle {
+            events: &self.events,
+            stats: &mut self.stats,
+            span: span.clone(),
+            after_model_call_index,
+            started_at,
+            finished: false,
         };
-        let recorded_result = if let Some(output) = recovered {
-            output
-        } else {
-            let success = match self.client.execute(request).instrument(span.clone()).await {
-                Ok(success) => success,
-                Err(error) => {
-                    span.record("status", "failed");
-                    span.record("otel.status_code", "ERROR");
-                    span.record("duration_ns", elapsed_ns(started_at));
-                    return self.compaction_failed(
-                        after_model_call_index,
-                        started_at,
-                        NanocodexError::Response(error.into()),
-                    );
+        let result = async {
+            let execution_steps = self.execution_steps.clone();
+            let recovered = if let Some(steps) = &execution_steps {
+                match steps
+                    .begin::<_, RecordedCompactionResult>(&step_id, "compaction", &())
+                    .await?
+                {
+                    crate::agent::ExecutionStep::Execute => None,
+                    crate::agent::ExecutionStep::Replay(output) => Some(output),
                 }
+            } else {
+                None
             };
-            let attempt = success.attempt();
-            let connection_generation = success.connection_generation();
-            let server_reasoning_included = success.server_reasoning_included();
-            let ResponsesOutput::Compaction(response) = success.into_output() else {
-                let error = NanocodexError::InvalidAttemptState {
-                    detail: "compaction returned a non-compaction response",
+            let recorded_result = if let Some(output) = recovered {
+                output
+            } else {
+                let success = self
+                    .client
+                    .execute(request)
+                    .instrument(span.clone())
+                    .await
+                    .map_err(|error| NanocodexError::Response(error.into()))?;
+                let attempt = success.attempt();
+                let connection_generation = success.connection_generation();
+                let server_reasoning_included = success.server_reasoning_included();
+                let ResponsesOutput::Compaction(response) = success.into_output() else {
+                    let error = NanocodexError::InvalidAttemptState {
+                        detail: "compaction returned a non-compaction response",
+                    };
+                    return Err(error);
                 };
-                span.record("status", "failed");
-                span.record("otel.status_code", "ERROR");
-                span.record("duration_ns", elapsed_ns(started_at));
-                return self.compaction_failed(after_model_call_index, started_at, error);
+                let output = RecordedCompactionResult {
+                    response_id: response.id,
+                    status: response.status,
+                    item: response.item,
+                    usage: response.usage,
+                    attempt,
+                    connection_generation,
+                    server_reasoning_included,
+                    duration_ns: elapsed_ns(started_at),
+                    time_to_first_event_ns: response.time_to_first_event_ns,
+                    time_to_first_output_ns: response.time_to_first_output_ns,
+                };
+                validate_provider_response_id(&output.response_id)?;
+                if let Some(steps) = &execution_steps {
+                    steps.complete(&step_id, &output).await?;
+                }
+                output
             };
-            let output = RecordedCompactionResult {
-                response_id: response.id,
-                status: response.status,
-                item: response.item,
-                usage: response.usage,
+            let RecordedCompactionResult {
+                response_id,
+                status,
+                item,
+                usage,
                 attempt,
                 connection_generation,
                 server_reasoning_included,
-                duration_ns: elapsed_ns(started_at),
-                time_to_first_event_ns: response.time_to_first_event_ns,
-                time_to_first_output_ns: response.time_to_first_output_ns,
-            };
-            validate_provider_response_id(&output.response_id)?;
-            if let Some(steps) = &execution_steps {
-                steps.complete(&step_id, &output).await?;
-            }
-            output
-        };
-        let RecordedCompactionResult {
-            response_id,
-            status,
-            item,
-            usage,
-            attempt,
-            connection_generation,
-            server_reasoning_included,
-            duration_ns,
-            time_to_first_event_ns,
-            time_to_first_output_ns,
-        } = recorded_result;
-        validate_provider_response_id(&response_id)?;
-        span.record("model.response.id", response_id.as_str());
-        if let Some(content) = serialize_trace_content(&item) {
-            record_span_content(&span, "model.output_item", &content);
-        }
-        span.record("status", "completed");
-        span.record("otel.status_code", "OK");
-        span.record("duration_ns", duration_ns);
-        self.stats.model_duration_ns += duration_ns;
-        self.stats.compaction_duration_ns += duration_ns;
-        if let Some(usage) = &usage {
-            record_usage(&span, usage, model, self.fast_mode);
-            self.stats.usage.add(usage, model, self.fast_mode);
-        }
-        self.stats.last_response_id = Some(response_id.clone());
-        self.events.emit(
-            AgentEventKind::ModelCompactionCompleted,
-            CompactionCompleted {
-                after_model_call_index,
-                response_id: &response_id,
-                attempt,
-                connection_generation,
-                status: &status,
                 duration_ns,
                 time_to_first_event_ns,
                 time_to_first_output_ns,
-                usage: usage.as_ref(),
-            },
-        )?;
-        Ok((item, usage, server_reasoning_included))
-    }
-
-    pub(super) fn compaction_failed<T>(
-        &mut self,
-        after_model_call_index: u32,
-        started_at: Instant,
-        error: crate::NanocodexError,
-    ) -> Result<T> {
-        let duration_ns = elapsed_ns(started_at);
-        self.stats.model_duration_ns += duration_ns;
-        self.stats.compaction_duration_ns += duration_ns;
-        let message = error.to_string();
-        self.events.emit(
-            AgentEventKind::ModelCompactionFailed,
-            CompactionFailed {
-                after_model_call_index,
-                duration_ns,
-                error: &message,
-            },
-        )?;
-        Err(error)
+            } = recorded_result;
+            validate_provider_response_id(&response_id)?;
+            span.record("model.response.id", response_id.as_str());
+            if let Some(content) = serialize_trace_content(&item) {
+                record_span_content(&span, "model.output_item", &content);
+            }
+            span.record("status", "completed");
+            span.record("otel.status_code", "OK");
+            span.record("duration_ns", duration_ns);
+            self.events.emit(
+                AgentEventKind::ModelCompactionCompleted,
+                CompactionCompleted {
+                    after_model_call_index,
+                    response_id: &response_id,
+                    attempt,
+                    connection_generation,
+                    status: &status,
+                    duration_ns,
+                    time_to_first_event_ns,
+                    time_to_first_output_ns,
+                    usage: usage.as_ref(),
+                },
+            )?;
+            lifecycle.finished = true;
+            lifecycle.stats.model_duration_ns += duration_ns;
+            lifecycle.stats.compaction_duration_ns += duration_ns;
+            if let Some(usage) = &usage {
+                record_usage(&span, usage, model, self.fast_mode);
+                lifecycle.stats.usage.add(usage, model, self.fast_mode);
+            }
+            lifecycle.stats.last_response_id = Some(response_id.clone());
+            Ok((item, usage, server_reasoning_included))
+        }
+        .await;
+        if let Err(error) = &result {
+            lifecycle.fail(&error.to_string())?;
+        }
+        result
     }
 }

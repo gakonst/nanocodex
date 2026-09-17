@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { DurableAgentSession } from "../src/index";
 import { ArchiveMaintenance } from "../src/archive-maintenance";
@@ -247,12 +247,14 @@ describe("managed durable turn admission", () => {
         NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
       }).NANOCODEX_SESSIONS;
       await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
+        let discoveryCalls = 0;
         const discovery = Promise.withResolvers<Response>();
         const entered = Promise.withResolvers<void>();
         const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
         Object.defineProperty(session, "env", { value: {
           ...runtimeEnv,
           NANOCODEX_ACCOUNT_TOOLS: { getByName: () => ({ fetch: () => {
+            discoveryCalls++;
             entered.resolve();
             return discovery.promise;
           } }) },
@@ -310,6 +312,23 @@ describe("managed durable turn admission", () => {
           const alarm = await state.storage.getAlarm();
           expect(alarm).toBeGreaterThanOrEqual(Date.now() + 59_000);
           expect(alarm).toBeLessThanOrEqual(Date.now() + 60_000);
+          // Model three one-minute recovery leases passing while the same
+          // admitted owner is awaiting I/O. A lease is a reconstruction wakeup,
+          // not a timeout authorizing a second live admission.
+          const clock = vi.spyOn(Date, "now");
+          try {
+            for (let lease = 1; lease <= 3; lease++) {
+              clock.mockReturnValue(now + lease * 60_000);
+              await session.alarm();
+              await Promise.resolve();
+              expect(discoveryCalls).toBe(1);
+              expect(state.storage.sql.exec<{ state: string; attempt_count: number; retry_at: number | null }>(
+                "SELECT state, attempt_count, retry_at FROM managed_turns WHERE id = 'stalled'",
+              ).one()).toEqual({ state: "accepted", attempt_count: 0, retry_at: null });
+              expect(await state.storage.getAlarm()).toBe(now + (lease + 1) * 60_000);
+            }
+          } finally { clock.mockRestore(); }
+
         } finally {
           discovery.resolve(Response.json({ tools: [], machines: [] }));
           pair?.[0].close(1000, "test complete");
@@ -428,3 +447,79 @@ describe("managed steer withdrawal admission", () => {
     });
   });
 });
+
+it("keeps a real managed automatic compaction owned across three recovery alarms", async () => {
+  const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
+  await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
+    const entered = Promise.withResolvers<void>();
+    let finish!: () => void;
+    let requests = 0;
+    class ModelSocket extends EventTarget {
+      readyState = 1;
+      accept() {}
+      close() { this.readyState = 3; }
+      emit(value: unknown) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) })); }
+      send(data: string) {
+        const request = JSON.parse(data);
+        requests++;
+        if (requests === 2) {
+          expect(JSON.stringify(request)).toContain("compaction");
+          finish = () => {
+            this.emit({ type: "response.output_item.done", item: { id: "summary", type: "compaction", encrypted_content: "opaque-summary" } });
+            this.emit({ type: "response.completed", response: { id: "compact", status: "completed", output: [], usage: { input_tokens: 100, output_tokens: 1, total_tokens: 101 } } });
+          };
+          entered.resolve();
+          return;
+        }
+        queueMicrotask(() => this.emit({ type: "response.completed", response: {
+          id: `response-${requests}`, status: "completed", end_turn: true,
+          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Hello" }] }],
+          usage: { input_tokens: requests === 1 ? 300_000 : 100, output_tokens: 1, total_tokens: requests === 1 ? 300_001 : 101 },
+        } }));
+      }
+    }
+    const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
+    Object.defineProperty(session, "env", { value: { ...runtimeEnv,
+      NANOCODEX_MEMORY: { getByName: () => ({ fetch: async () => Response.json({}) }) },
+      NANOCODEX: { async fetch(input: RequestInfo | URL, init?: RequestInit) {
+        const request = new Request(input, init);
+        if (new Headers(init?.headers).get("upgrade") === "websocket" || request.headers.get("upgrade") === "websocket")
+          return { status: 101, headers: new Headers(), webSocket: new ModelSocket() };
+        return Response.json({ tools: [], machines: [], connections: [] });
+      } },
+    } });
+    const now = Date.now();
+    state.storage.sql.exec(`INSERT INTO session_state (singleton, session_id, owner_id, organization_id, team_id, authorization_epoch, public_origin, runtime_profile, last_active)
+      VALUES (1, ?, 'fixture-owner', 'fixture-org', 'fixture-team', 1, 'https://nanocodex.example/', 'managed', ?)`, crypto.randomUUID(), now);
+    state.storage.sql.exec("INSERT INTO managed_configuration VALUES (1, ?)", JSON.stringify({ tools: [], environment: { files: [], skills: [], setup_commands: [], network: { access: "disabled" } } }));
+    state.storage.sql.exec("UPDATE managed_agent_settings SET model = 'gpt-5.6-sol', thinking = 'low'");
+    const seed = (id: string) => {
+      state.storage.sql.exec(`INSERT INTO managed_turns (id, request_hash, input_json, authorization_json, state, accepted_cursor, dispatch_input_chunks, may_have_inner_operation, attempt_count, created_at, accepted_at, updated_at)
+        VALUES (?, 'hash', '"fixture"', '{"capabilities":[]}', 'accepted', 0, 1, 0, 0, ?, ?, ?)`, id, now, now, now);
+      state.storage.sql.exec("INSERT INTO managed_turn_dispatch_chunks VALUES (?, 0, '\"fixture\"')", id);
+    };
+    seed("first");
+    await session.alarm();
+    await expect.poll(() => state.storage.sql.exec("SELECT state, error FROM managed_turns WHERE id='first'").one()).toEqual({ state: "completed", error: null });
+    seed("second");
+    await session.alarm();
+    await entered.promise;
+    const clock = vi.spyOn(Date, "now");
+    try {
+      for (let lease = 1; lease <= 3; lease++) {
+        clock.mockReturnValue(now + lease * 60_000);
+        await session.alarm();
+        expect(requests).toBe(2);
+        expect(await state.storage.getAlarm()).toBe(now + (lease + 1) * 60_000);
+        expect(state.storage.sql.exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM managed_events WHERE turn_id = 'second' AND json_extract(message_json, '$.type') = 'turn_retryable'",
+        ).one().count).toBe(0);
+        expect(state.storage.sql.exec<{ state: string; attempt_count: number; retry_at: number | null }>("SELECT state, attempt_count, retry_at FROM managed_turns WHERE id='second'").one())
+          .toEqual({ state: "accepted", attempt_count: 0, retry_at: null });
+      }
+    } finally { clock.mockRestore(); finish(); }
+    await expect.poll(() => state.storage.sql.exec<{ state: string }>("SELECT state FROM managed_turns WHERE id='second'").one().state).toBe("completed");
+    expect(requests).toBe(3);
+    await state.storage.deleteAlarm();
+  });
+}, 30_000);
