@@ -32,7 +32,10 @@ supervisor logs live beside the installed executable as `service.log`.
 The installer bundles FFmpeg for H.264 screen streaming. The stream requests
 60 fps; actual distinct frame rate depends on the Windows display, capture
 source, available CPU, and network. A software-rendered VM does not guarantee
-60 distinct frames per second.
+60 distinct frames per second. Native capture forwards each encoded packet as
+soon as FFmpeg reports its size, avoiding a wait for the next frame delimiter.
+`NANOCODEX_SCREEN_FRAME_BOUNDARIES=annexb` restores the previous delimiter-based
+path for troubleshooting.
 
 The WebRTC connection also carries stereo system-output audio through WASAPI
 loopback when Windows has an active playback device. It never captures the
