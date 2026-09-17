@@ -34,7 +34,8 @@ function validateAction(value: BrowserVaultTakeoverAction) {
 
 /** HUMAN HTTP RESPONSE ONLY. Never register as a model tool or log its input/output.
  * Caller authenticates the human, holds the exclusive bounded takeover lease, blocks
- * all model access, and closes the private browser on any failure. Origin checks
+ * all model access, and closes the private connection after each operation. The
+ * quarantined browser and lease remain for explicit refresh/recovery. Origin checks
  * bracket each input and screenshot; they cannot make browser navigation atomic.
  */
 export async function privateVaultTakeover(

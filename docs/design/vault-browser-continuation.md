@@ -67,3 +67,9 @@ credential it already received. The restricted projection excludes input values,
 scripts, hidden content, subframes and raw attributes; credential variants are
 filtered before text reaches the model. Session cookies and network bodies remain
 unavailable. Do not describe these controls as universal DLP.
+
+Snapshot action refs bind the node, document and surrounding form markup. They do
+not freeze property-only changes to control values or externally associated form
+controls. Consequential actions still require the user's authorization and a fresh
+review; these refs are not a transaction payload approval mechanism. Named submit
+buttons are omitted because native form submission would omit their name/value.
