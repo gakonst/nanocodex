@@ -89,6 +89,8 @@ describe("managed agent event watcher", () => {
       payload: { ...rootDelta.payload, text: "1, 2, 3" },
     };
     subscribed!(message);
+    const accepted = { ...agentEvent("root-session", 6, "input.accepted"), payload: { input: "private submitted text", kind: "steer", item_id: "input-1" } };
+    subscribed!(accepted);
     subscribed!(agentEvent("root-session", 3, "future.transport"));
 
     expect(replayed).toEqual([
@@ -98,6 +100,7 @@ describe("managed agent event watcher", () => {
       { event: nextDelta, agentId: undefined },
       { event: childDelta, agentId: 1 },
       { event: message, agentId: undefined },
+      { event: accepted, agentId: undefined },
     ]);
     expect(observed.map((event) => event.type)).toEqual([
       "model.warmup.started",

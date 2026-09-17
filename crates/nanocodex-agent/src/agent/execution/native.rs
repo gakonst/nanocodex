@@ -89,12 +89,15 @@ impl Execution {
         &self,
         prompt: &nanocodex_oai_api::Prompt,
         effort: nanocodex_oai_api::Thinking,
+        turn_id: Option<&str>,
     ) -> Turn {
-        Turn(
-            self.recorder
-                .as_ref()
-                .map(|_| RolloutTurn::started(prompt, effort)),
-        )
+        Turn(self.recorder.as_ref().map(|_| {
+            let mut turn = RolloutTurn::started(prompt, effort);
+            if let Some(id) = turn_id {
+                turn.set_id(id);
+            }
+            turn
+        }))
     }
 
     pub(super) fn start_compaction(&self, effort: nanocodex_oai_api::Thinking) -> Turn {
@@ -103,6 +106,21 @@ impl Execution {
                 .as_ref()
                 .map(|_| RolloutTurn::compaction_started(effort)),
         )
+    }
+
+    pub(super) async fn accepted_input(
+        &self,
+        input: nanocodex_oai_api::events::AcceptedInput,
+    ) -> Result<()> {
+        if let Some(recorder) = &self.recorder {
+            recorder.accepted_input(input).await.map_err(|source| {
+                NanocodexError::PersistRollout {
+                    path: recorder.info().path().to_path_buf(),
+                    source,
+                }
+            })?;
+        }
+        Ok(())
     }
 
     pub(super) async fn persist(&self, checkpoint: &CommittedSession, turn: Turn) {

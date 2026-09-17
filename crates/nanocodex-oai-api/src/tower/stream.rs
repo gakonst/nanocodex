@@ -244,6 +244,7 @@ where
 {
     let mut done_items = Vec::with_capacity(2);
     let mut assistant_items = HashMap::new();
+    let item_namespace = uuid::Uuid::new_v4();
     let mut timing = StreamTiming::new(started_at);
 
     loop {
@@ -257,10 +258,19 @@ where
         )
         .await?;
         match received.event {
-            ServerEvent::OutputItemAdded { output_index, item } => {
+            ServerEvent::OutputItemAdded {
+                output_index,
+                mut item,
+            } => {
                 let Some(output_index) = output_index else {
                     continue;
                 };
+                normalize_stream_item(
+                    &mut item,
+                    output_index,
+                    &item_namespace,
+                    &mut assistant_items,
+                );
                 let ResponseItem::Message {
                     id,
                     role: MessageRole::Assistant,
@@ -276,15 +286,24 @@ where
                 output_index,
                 delta,
             } => {
-                let item = output_index.and_then(|index| assistant_items.get(&index));
+                let index = output_index.unwrap_or(0);
+                let item = &*assistant_items
+                    .entry(index)
+                    .or_insert_with(|| AssistantStreamItem {
+                        item_id: Some(ResponseItemId::with_suffix(
+                            "msg",
+                            uuid::Uuid::new_v5(&item_namespace, &index.to_be_bytes()),
+                        )),
+                        phase: None,
+                    });
                 emit_display_delta(
                     &observer.events,
                     &mut timing,
                     AgentEventKind::AssistantDelta,
                     AssistantTextDelta {
                         model_call_index: call_index,
-                        item_id: item.and_then(|item| item.item_id.as_deref()),
-                        phase: item.and_then(|item| item.phase),
+                        item_id: item.item_id.as_deref(),
+                        phase: item.phase,
                         text: &delta,
                     },
                     received.received_ns,
@@ -307,16 +326,40 @@ where
                     delta.len(),
                 )?;
             }
-            ServerEvent::OutputItemDone { item } => {
+            ServerEvent::OutputItemDone {
+                output_index,
+                mut item,
+            } => {
+                normalize_stream_item(
+                    &mut item,
+                    output_index.unwrap_or(done_items.len() as u32),
+                    &item_namespace,
+                    &mut assistant_items,
+                );
                 emit_assistant_message(&observer.events, call_index, &item)?;
                 done_items.push(item);
             }
             ServerEvent::Completed { mut response } => {
-                let output_items = if response.output.is_empty() {
+                let emitted_ids = done_items
+                    .iter()
+                    .filter_map(|item| item.id().cloned())
+                    .collect::<std::collections::HashSet<_>>();
+                let mut output_items = if response.output.is_empty() {
                     done_items
                 } else {
                     std::mem::take(&mut response.output)
                 };
+                for (index, item) in output_items.iter_mut().enumerate() {
+                    normalize_stream_item(
+                        item,
+                        index as u32,
+                        &item_namespace,
+                        &mut assistant_items,
+                    );
+                    if item.id().is_some_and(|id| !emitted_ids.contains(id)) {
+                        emit_assistant_message(&observer.events, call_index, item)?;
+                    }
+                }
                 let code_calls = code_calls(&output_items);
                 let final_message = final_message(&output_items);
                 return Ok(GenerationOutput {
@@ -360,6 +403,37 @@ fn emit_display_delta<P: Serialize>(
         "Responses display delta entered the agent event stream"
     );
     Ok(())
+}
+
+fn normalize_stream_item(
+    item: &mut ResponseItem,
+    index: u32,
+    namespace: &uuid::Uuid,
+    known: &mut HashMap<u32, AssistantStreamItem>,
+) {
+    if let ResponseItem::Message {
+        id,
+        role: MessageRole::Assistant,
+        phase,
+        ..
+    } = item
+    {
+        let stream = known.entry(index).or_insert_with(|| AssistantStreamItem {
+            item_id: id.clone().or_else(|| {
+                Some(ResponseItemId::with_suffix(
+                    "msg",
+                    uuid::Uuid::new_v5(namespace, &index.to_be_bytes()),
+                ))
+            }),
+            phase: *phase,
+        });
+        *id = stream.item_id.clone();
+        if phase.is_some() {
+            stream.phase = *phase;
+        } else {
+            *phase = stream.phase;
+        }
+    }
 }
 
 fn emit_assistant_message(
@@ -413,7 +487,7 @@ where
         )
         .await?;
         match received.event {
-            ServerEvent::OutputItemDone { item } => done_items.push(item),
+            ServerEvent::OutputItemDone { item, .. } => done_items.push(item),
             ServerEvent::Completed { mut response } => {
                 let output_items = if response.output.is_empty() {
                     done_items
@@ -635,6 +709,38 @@ mod tests {
         CodeCallKind, ContentItem, MessageRole, ResponseItem, StreamTiming, code_calls,
         final_message,
     };
+
+    #[test]
+    fn missing_provider_ids_are_stable_through_final_history_and_unique_per_attempt() {
+        let namespace = uuid::Uuid::new_v4();
+        let mut known = std::collections::HashMap::new();
+        let mut added = ResponseItem::message(MessageRole::Assistant, []);
+        super::normalize_stream_item(&mut added, 0, &namespace, &mut known);
+        let id = known[&0].item_id.clone();
+        assert!(id.is_some());
+        let mut done =
+            ResponseItem::message(MessageRole::Assistant, [ContentItem::output_text("answer")]);
+        super::normalize_stream_item(&mut done, 0, &namespace, &mut known);
+        assert_eq!(
+            serde_json::to_value(&done).unwrap()["id"],
+            serde_json::to_value(&added).unwrap()["id"]
+        );
+        let mut history =
+            ResponseItem::message(MessageRole::Assistant, [ContentItem::output_text("answer")]);
+        super::normalize_stream_item(&mut history, 0, &namespace, &mut known);
+        assert_eq!(
+            serde_json::to_value(&history).unwrap()["id"],
+            serde_json::to_value(&done).unwrap()["id"]
+        );
+        let mut retry = std::collections::HashMap::new();
+        super::normalize_stream_item(
+            &mut ResponseItem::message(MessageRole::Assistant, []),
+            0,
+            &uuid::Uuid::new_v4(),
+            &mut retry,
+        );
+        assert_ne!(id, retry[&0].item_id);
+    }
 
     #[test]
     fn display_delta_cadence_records_gaps_and_stalls() {

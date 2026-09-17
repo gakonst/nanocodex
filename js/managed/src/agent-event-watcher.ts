@@ -18,6 +18,7 @@ type InternalEventListener = (
 ) => void;
 
 const REPLAY_EVENTS = new Set([
+  "input.accepted",
   // Clients need chunks before assistant.message completes the response.
   "assistant.delta",
   "assistant.message",

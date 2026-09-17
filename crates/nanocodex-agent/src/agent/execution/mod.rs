@@ -567,6 +567,40 @@ struct StandaloneCompactionBase {
 }
 
 impl Execution {
+    pub(crate) async fn accepted_input(
+        &self,
+        events: &nanocodex_oai_api::__private::EventSink,
+        prompt: &nanocodex_oai_api::Prompt,
+        kind: &str,
+        request_id: Option<&str>,
+    ) -> Result<()> {
+        let turn_id = events.turn_id().unwrap_or(events.request_id()).to_owned();
+        let item_id = if kind == "prompt" {
+            format!("{turn_id}:prompt")
+        } else {
+            format!(
+                "{turn_id}:steer:{}",
+                request_id
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| uuid::Uuid::now_v7().to_string())
+            )
+        };
+        let input = nanocodex_oai_api::events::AcceptedInput {
+            session_id: events.request_id().to_owned(),
+            turn_id,
+            item_id,
+            kind: kind.to_owned(),
+            request_id: request_id.map(str::to_owned),
+            input: prompt.instruction.clone(),
+        };
+        self.platform.accepted_input(input.clone()).await?;
+        events.emit(
+            nanocodex_oai_api::events::AgentEventKind::InputAccepted,
+            &input,
+        )?;
+        Ok(())
+    }
+
     pub(crate) async fn recover_failure<T>(
         &self,
         operation_id: Option<&str>,
@@ -642,9 +676,10 @@ impl Execution {
         prompt: &nanocodex_oai_api::Prompt,
         effort: nanocodex_oai_api::Thinking,
         operation_id: Option<String>,
+        turn_id: Option<&str>,
     ) -> ExecutionTurn {
         ExecutionTurn {
-            platform: self.platform.start_turn(prompt, effort),
+            platform: self.platform.start_turn(prompt, effort, turn_id),
             policy: self.policy.clone(),
             operation_id,
             operation_input: Some(ExecutionInput::Prompt(prompt.clone())),

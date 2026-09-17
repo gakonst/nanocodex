@@ -37,10 +37,21 @@ use crate::{
 const COMMAND_CAPACITY: usize = 8;
 
 /// Configuration for writing a thread in Codex's resumable rollout layout.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct RolloutConfig {
     codex_home: PathBuf,
     resume_path: Option<PathBuf>,
+    root_session_id: std::sync::Arc<std::sync::OnceLock<String>>,
+}
+
+impl Clone for RolloutConfig {
+    fn clone(&self) -> Self {
+        Self {
+            codex_home: self.codex_home.clone(),
+            resume_path: self.resume_path.clone(),
+            root_session_id: std::sync::Arc::new((*self.root_session_id).clone()),
+        }
+    }
 }
 
 impl RolloutConfig {
@@ -50,6 +61,7 @@ impl RolloutConfig {
         Self {
             codex_home: codex_home.into(),
             resume_path: None,
+            root_session_id: Default::default(),
         }
     }
 
@@ -88,6 +100,10 @@ impl RolloutConfig {
     }
 
     pub(crate) fn for_new_thread(&self) -> Self {
-        Self::new(self.codex_home.clone())
+        Self {
+            codex_home: self.codex_home.clone(),
+            resume_path: None,
+            root_session_id: self.root_session_id.clone(),
+        }
     }
 }

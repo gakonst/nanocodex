@@ -334,7 +334,11 @@ pub(super) fn handle_idle_command<S>(
     S::Future: AgentSend,
 {
     match command {
-        Command::Fork { checkpoint, result } => {
+        Command::Fork {
+            checkpoint,
+            result,
+            side_conversation,
+        } => {
             let checkpoint = checkpoint.or_else(|| latest.cloned());
             let outcome = checkpoint
                 .ok_or(NanocodexError::ForkBeforeCompletedTurn)
@@ -346,6 +350,7 @@ pub(super) fn handle_idle_command<S>(
                         defaults.thinking,
                         defaults.fast_mode,
                         spawner.host_context.as_ref().map(Arc::clone),
+                        side_conversation,
                     )
                 });
             drop(result.send(outcome));

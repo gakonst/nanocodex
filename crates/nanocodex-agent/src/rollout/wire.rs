@@ -80,6 +80,7 @@ impl UserMessage {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum CodexEvent<'a> {
+    InputAccepted(&'a nanocodex_oai_api::events::AcceptedInput),
     TaskStarted {
         turn_id: &'a str,
         started_at: i64,
@@ -121,6 +122,9 @@ pub(super) struct SessionContextWindow {
 
 #[derive(Serialize)]
 pub(super) struct SessionMeta {
+    pub(super) root_session_id: String,
+    pub(super) conversation_role: &'static str,
+    pub(super) origin_kind: String,
     pub(super) session_id: String,
     pub(super) id: String,
     pub(super) prompt_cache_key: String,

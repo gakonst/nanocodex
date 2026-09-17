@@ -64,16 +64,16 @@ pub mod events {
     #[cfg(feature = "openai")]
     pub use nanocodex_oai_api::events::OpenAiEvent;
     pub use nanocodex_oai_api::events::{
-        AgentEvent, AgentEventKind, AgentEventPublisher, AgentEventTiming, AgentEvents, EventError,
-        TimedAgentEvent, monotonic_now_ns,
+        AcceptedInput, AgentEventData, AssistantDelta, AssistantEvent, AssistantMessage,
+        CompactionCompleted, CompactionFailed, CompactionStarted, ContextEvent, EventUsage,
+        ModelCallCompleted, ModelCallFailed, ModelCallStarted, ModelEvent, ModelWarmupCompleted,
+        ModelWarmupFailed, ModelWarmupStarted, ReasoningEvent, ReasoningSummaryDelta, RunError,
+        RunEvent, RunMetrics, RunStarted, RunStatus, RunSteered, RunTerminal, ToolCall, ToolEvent,
+        ToolResultEvent, ToolStatus, TransportEvent,
     };
     pub use nanocodex_oai_api::events::{
-        AgentEventData, AssistantDelta, AssistantEvent, AssistantMessage, CompactionCompleted,
-        CompactionFailed, CompactionStarted, ContextEvent, EventUsage, ModelCallCompleted,
-        ModelCallFailed, ModelCallStarted, ModelEvent, ModelWarmupCompleted, ModelWarmupFailed,
-        ModelWarmupStarted, ReasoningEvent, ReasoningSummaryDelta, RunError, RunEvent, RunMetrics,
-        RunStarted, RunStatus, RunSteered, RunTerminal, ToolCall, ToolEvent, ToolResultEvent,
-        ToolStatus, TransportEvent,
+        AgentEvent, AgentEventKind, AgentEventPublisher, AgentEventTiming, AgentEvents, EventError,
+        TimedAgentEvent, monotonic_now_ns,
     };
     pub use nanocodex_oai_api::responses::AgentMessageContent;
 }

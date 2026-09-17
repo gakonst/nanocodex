@@ -1,0 +1,18 @@
+[package]
+name = "nanocodex-tui-control"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+clap.workspace = true
+libc = "0.2"
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["net", "io-util", "io-std", "sync", "rt", "time", "macros"] }
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }

@@ -27,6 +27,131 @@ const AGENT: &str = "019fc927-b280-79a7-8445-1b9996ad2fb0";
 const REMOTE_TURN: &str = "019fc927-b281-79a7-8445-1b9996ad2fb0";
 const TIMEOUT: Duration = Duration::from_secs(10);
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_control_discovers_preserves_draft_and_deduplicates_prompt() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let mut fixture = Fixture::start().await;
+    fixture.terminal.input("unfinished local draft");
+    fixture.terminal.wait_text("unfinished local draft").await;
+    let registry = fixture
+        .terminal
+        ._workspace
+        .path()
+        .join(".codex/nanocodex/tui/instances");
+    let path = std::fs::read_dir(registry)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let registration: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let socket = tokio::net::UnixStream::connect(registration["socket_path"].as_str().unwrap())
+        .await
+        .unwrap();
+    let (read, mut write) = socket.into_split();
+    let mut lines = BufReader::new(read).lines();
+    write.write_all(format!("{}\n",json!({"protocol_version":1,"instance_id":registration["instance_id"],"auth_token":registration["auth_token"]})).as_bytes()).await.unwrap();
+    let hello: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    let snapshot = &hello["snapshot"];
+    assert_eq!(
+        snapshot["state"]["composer"]["text"],
+        "unfinished local draft"
+    );
+    let request = json!({"id":"external-prompt","method":"prompt","params":{
+        "expected_instance_id":registration["instance_id"],"expected_session_id":AGENT,
+        "expected_active_generation":snapshot["active_generation"],"input":{"text":"external literal prompt"}}});
+    write
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+    let turn = fixture.submission("external literal prompt").await;
+    let reply: Value = serde_json::from_str(
+        &tokio::time::timeout(TIMEOUT, lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(reply["result"]["status"], "accepted");
+    write
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+    let replay: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    assert_eq!(replay, reply);
+    assert!(fixture.submissions.try_recv().is_err());
+    write
+        .write_all(b"{\"id\":\"state\",\"method\":\"state.get\"}\n")
+        .await
+        .unwrap();
+    let state: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    assert_eq!(
+        state["result"]["state"]["composer"]["text"],
+        "unfinished local draft"
+    );
+    fixture.terminal.wait_text("external literal prompt").await;
+    let mut steer = request.clone();
+    steer["id"] = json!("external-steer");
+    steer["method"] = json!("steer");
+    steer["params"]["expected_turn_id"] = json!(turn);
+    steer["params"]["input"]["text"] = json!("external correction");
+    write
+        .write_all(format!("{steer}\n").as_bytes())
+        .await
+        .unwrap();
+    let (input, ack) = tokio::time::timeout(TIMEOUT, async {
+        tokio::select! {
+            command = fixture.steers.recv() => command.unwrap(),
+            response = lines.next_line() => panic!("steer was resolved before backend admission: {response:?}"),
+        }
+    }).await.unwrap();
+    assert_eq!(input["message_id"], "external-steer");
+    assert_eq!(input["turn_id"], turn);
+    ack.send(true).unwrap();
+    let reply: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    assert_eq!(reply["result"]["status"], "accepted");
+    write
+        .write_all(format!("{steer}\n").as_bytes())
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&lines.next_line().await.unwrap().unwrap()).unwrap(),
+        reply
+    );
+    assert!(fixture.steers.try_recv().is_err());
+    let mut cancel = steer.clone();
+    cancel["id"] = json!("external-cancel");
+    cancel["method"] = json!("cancel");
+    write
+        .write_all(format!("{cancel}\n").as_bytes())
+        .await
+        .unwrap();
+    assert_eq!(
+        tokio::time::timeout(TIMEOUT, async {
+            tokio::select! {
+                command = fixture.cancellations.recv() => command.unwrap(),
+                response = lines.next_line() => panic!("cancel was resolved before backend admission: {response:?}"),
+            }
+        }).await.unwrap(),
+        turn
+    );
+    let reply: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    assert_eq!(reply["result"]["status"], "accepted");
+    write
+        .write_all(format!("{cancel}\n").as_bytes())
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&lines.next_line().await.unwrap().unwrap()).unwrap(),
+        reply
+    );
+    assert!(fixture.cancellations.try_recv().is_err());
+    fixture.complete(&turn);
+    fixture.terminal.wait_text("unfinished local draft").await;
+}
+
 fn prompt_text(input: &Value) -> String {
     match input {
         Value::String(text) => text.clone(),
@@ -64,6 +189,8 @@ impl Terminal {
             command.args(["attach", AGENT]);
         }
         command.cwd(workspace.path());
+        command.env("CODEX_HOME", workspace.path().join(".codex"));
+        command.env("NANOCODEX_DISABLE_HAND", "1");
         // This PTY is not a tmux client, regardless of the developer's shell.
         // Inheriting TMUX used to skip a broken terminal capability probe.
         command.env_remove("TMUX");

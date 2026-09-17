@@ -12,6 +12,7 @@ use nanocodex_oai_api::PromptValidationError;
 /// before dropping it when the work should stop.
 #[must_use = "a turn continues running when dropped; await result(), control it, or explicitly drop it"]
 pub struct Turn {
+    pub(super) turn_id: String,
     pub(super) control: TurnControl,
     pub(super) request_id: Option<String>,
     pub(super) events: AgentEvents,
@@ -32,6 +33,12 @@ pub enum PromptRoute {
 }
 
 impl Turn {
+    /// Canonical turn identity shared by live events and saved native history.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.turn_id
+    }
+
     /// Returns the durable request identity selected during prompt admission.
     ///
     /// A caller-supplied [`PromptRequest::request_id`] is returned unchanged.
@@ -449,6 +456,7 @@ pub(super) enum Command {
         result: oneshot::Sender<Result<()>>,
     },
     Fork {
+        side_conversation: bool,
         checkpoint: Option<Arc<CommittedSession>>,
         result: oneshot::Sender<Result<(Nanocodex, AgentEvents)>>,
     },

@@ -547,6 +547,11 @@ tools. Read their exact contracts and bounds in
 
 ### Bring any terminal or product interface
 
+To attach to a running `nanocodex` or `nanocodex2` TUI, use
+`tui list --json` and `tui connect INSTANCE_UUID --stdio`. The
+[rich terminal protocol](docs/RICH_TERMINAL_INTEGRATION.md) provides authenticated
+local/SSH control, replayable events, draft-preserving commands, and UI state.
+
 `agent.events.watch()` and the intentionally narrow `nanocodex-react` Context
 and hooks expose ordered typed data independently from `Turn.result()`. The SDK
 does not make a DOM transcript or terminal emulator authoritative. UI

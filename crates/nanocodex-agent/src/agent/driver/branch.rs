@@ -47,6 +47,7 @@ where
     S::Error: Into<ResponseError> + AgentSend + 'static,
     S::Future: AgentSend,
 {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn spawn_fork(
         &self,
         checkpoint: &CommittedSession,
@@ -55,6 +56,7 @@ where
         thinking: Thinking,
         fast_mode: bool,
         host_context: Option<Arc<str>>,
+        side_conversation: bool,
     ) -> Result<(Nanocodex, AgentEvents)> {
         let session_id = SessionId::new();
         let workspace = Some(Arc::<str>::from(checkpoint.model().workspace()));
@@ -75,7 +77,11 @@ where
             service,
             Some(InitialResume::Exact(Box::new(checkpoint.model().clone()))),
             AgentOrigin {
-                kind: "fork",
+                kind: if side_conversation {
+                    "side_conversation"
+                } else {
+                    "fork"
+                },
                 depth: self.depth.saturating_add(1),
                 parent_session_id: Some(Arc::from(parent_session_id)),
             },

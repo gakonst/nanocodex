@@ -9,6 +9,7 @@
 mod clipboard;
 mod components;
 mod context;
+mod control;
 mod editor;
 mod format;
 mod history;
@@ -483,6 +484,7 @@ impl SettingsMutation {
 }
 
 struct DriverRuntime {
+    control_bridge: Option<nanocodex_tui_control::Bridge>,
     client: ManagedClient,
     agent: Option<Nanocodex>,
     startup_attach: bool,
@@ -1355,6 +1357,7 @@ async fn run_inner(
     let mut input = EventStream::new();
     let mut scheduler = RenderScheduler::new(STREAM_FRAME_INTERVAL, Instant::now());
     let mut runtime = DriverRuntime {
+        control_bridge: None,
         client: client.clone(),
         agent: None,
         startup_attach: matches!(attach, Some(Some(_))),
@@ -1447,8 +1450,19 @@ async fn run_inner(
         }
     }
     let mut stopping = false;
+    let mut control_server = if nanocodex_tui_control::Server::enabled() {
+        Some(nanocodex_tui_control::Server::start("managed").map_err(terminal_error)?)
+    } else {
+        None
+    };
+    runtime.control_bridge = control_server.as_ref().map(|server| server.bridge.clone());
+    let mut control_tasks = JoinSet::new();
 
     while !stopping {
+        if let Some(server) = &control_server {
+            control::snapshot(&server.bridge, &app, &runtime, false);
+        }
+
         if runtime.recovery == Some(RecoveryPhase::Replaying) && runtime.recovery_events.is_empty()
         {
             runtime.recovery = None;
@@ -1550,6 +1564,23 @@ async fn run_inner(
         let render_deadline = scheduler.deadline();
         let animation_deadline = app.animation_deadline();
         tokio::select! {
+            command = async { match &mut control_server { Some(server) => server.commands.recv().await, None => pending().await } } => {
+                if let Some(command) = command { control::dispatch(command, &control_server.as_ref().unwrap().bridge, &runtime, &mut control_tasks); }
+            }
+            Some(result) = control_tasks.join_next(), if !control_tasks.is_empty() => {
+                if let Ok((command, result, settings, session)) = result {
+                    if session == runtime.agent_id && let Some(settings) = settings {
+                        runtime.settings = settings;
+                        request_render(app.update(AppEvent::SettingsHydrated {pane:PaneId::Main,
+                            effort:effort_from_thinking(settings.thinking),fast_mode:settings.fast_mode,model:settings.model}), &mut scheduler);
+                    }
+                    // Publish readiness and revisions before a client can act on this acknowledgement.
+                    if let Some(server) = &control_server {
+                        control::snapshot(&server.bridge, &app, &runtime, false);
+                    }
+                    command.finish(result);
+                }
+            }
             input_event = input.next() => {
                 let event = input_event
                     .transpose()
@@ -1577,6 +1608,7 @@ async fn run_inner(
             }, if runtime.managed_events_open => {
                 match event {
                     Some(event) => {
+                        if let Some(server) = &control_server { let mut value=serde_json::to_value(&event).unwrap_or_default(); value["session_id"]=serde_json::json!(runtime.agent_id); server.bridge.publish("managed.event",value); }
                         runtime.observed_cursor.clone_from(&event.cursor);
                         if let Some(request_id) = event.data.turn_id() {
                             if runtime.submitted_turns.contains(request_id) {
@@ -3004,6 +3036,9 @@ async fn apply_update(
                             .composer()
                             .draft()
                             .to_owned();
+                        if let Some(bridge) = &runtime.control_bridge {
+                            control::snapshot(bridge, app, runtime, true);
+                        }
                         terminal.suspend().map_err(terminal_error)?;
                         let outcome = editor::edit(&draft, &runtime.workspace).await;
                         terminal.resume().map_err(terminal_error)?;
@@ -3375,6 +3410,7 @@ mod tests {
             ManagedApiKey::parse(format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43)))
                 .unwrap();
         DriverRuntime {
+            control_bridge: None,
             client: ManagedClient::new("http://127.0.0.1:9", api_key).unwrap(),
             agent: None,
             startup_attach: false,

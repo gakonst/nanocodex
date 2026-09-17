@@ -2,16 +2,34 @@ pub(in crate::rollout) mod writer;
 
 use super::wire::*;
 use super::*;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use writer::*;
 
 /// Stable identity and file location of a recorded Nanocodex thread.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct RolloutInfo {
     thread_id: String,
     path: PathBuf,
+    committed_bytes: Arc<AtomicU64>,
 }
 
+impl PartialEq for RolloutInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.thread_id == other.thread_id && self.path == other.path
+    }
+}
+impl Eq for RolloutInfo {}
+
 impl RolloutInfo {
+    /// Exclusive byte boundary of successfully flushed, complete rollout records.
+    #[must_use]
+    pub fn committed_bytes(&self) -> u64 {
+        self.committed_bytes.load(Ordering::Acquire)
+    }
+
     /// UUID accepted by `codex resume` and `codex exec resume`.
     #[must_use]
     pub fn thread_id(&self) -> &str {
@@ -48,6 +66,10 @@ pub(crate) struct RolloutCreate<'a> {
 }
 
 enum RolloutCommand {
+    Input {
+        input: nanocodex_oai_api::events::AcceptedInput,
+        result: oneshot::Sender<io::Result<()>>,
+    },
     Commit {
         commit: Box<RolloutCommit>,
         result: oneshot::Sender<io::Result<()>>,
@@ -128,6 +150,10 @@ enum RolloutTurnStatus {
 }
 
 impl RolloutTurn {
+    pub(crate) fn set_id(&mut self, id: &str) {
+        self.turn_id = id.to_owned();
+    }
+
     pub(crate) fn started(prompt: &Prompt, effort: Thinking) -> Self {
         Self {
             turn_id: uuid::Uuid::now_v7().to_string(),
@@ -204,6 +230,15 @@ impl RolloutRecorder {
             resume_history_len,
         } = request;
         if let Some(path) = &config.resume_path {
+            if let Ok(file) = File::open(path)
+                && let Some(Ok(line)) = BufReader::new(file).lines().next()
+                && let Ok(value) = serde_json::from_str::<serde_json::Value>(&line)
+                && let Some(root) = value["payload"]["root_session_id"].as_str()
+            {
+                let _ = config.root_session_id.set(root.to_owned());
+            }
+            // A legacy recording starts the discovered lineage at its resumed owner.
+            let _ = config.root_session_id.set(thread_id.to_owned());
             let history_len = resume_history_len.ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -226,10 +261,26 @@ impl RolloutRecorder {
         let timestamp = timestamp();
         let parent_thread_id = origin.parent_thread_id.map(ToOwned::to_owned);
         let meta = SessionMeta {
+            root_session_id: config
+                .root_session_id
+                .get_or_init(|| thread_id.to_owned())
+                .clone(),
+            origin_kind: if origin.kind == "side_conversation" {
+                "fork"
+            } else {
+                origin.kind
+            }
+            .to_owned(),
+            conversation_role: match origin.kind {
+                "spawn" => "subagent",
+                "fork" => "branch",
+                "side_conversation" => "side_conversation",
+                _ => "root",
+            },
             session_id: thread_id.to_owned(),
             id: thread_id.to_owned(),
             prompt_cache_key: prompt_cache_key.to_owned(),
-            forked_from_id: (origin.kind == "fork")
+            forked_from_id: (matches!(origin.kind, "fork" | "side_conversation"))
                 .then(|| parent_thread_id.clone())
                 .flatten(),
             parent_thread_id,
@@ -286,6 +337,11 @@ impl RolloutRecorder {
     }
 
     fn spawn(runtime: &Handle, thread_id: &str, path: PathBuf, writer: RolloutWriter) -> Self {
+        let committed_bytes = Arc::clone(&writer.committed_bytes);
+        committed_bytes.store(
+            std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+            Ordering::Release,
+        );
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let writer_path = path.clone();
         drop(runtime.spawn(async move {
@@ -306,6 +362,7 @@ impl RolloutRecorder {
             info: RolloutInfo {
                 thread_id: thread_id.to_owned(),
                 path,
+                committed_bytes,
             },
             commands,
         }
@@ -313,6 +370,20 @@ impl RolloutRecorder {
 
     pub(crate) const fn info(&self) -> &RolloutInfo {
         &self.info
+    }
+
+    pub(crate) async fn accepted_input(
+        &self,
+        input: nanocodex_oai_api::events::AcceptedInput,
+    ) -> io::Result<()> {
+        let (result, receive) = oneshot::channel();
+        self.commands
+            .send(RolloutCommand::Input { input, result })
+            .await
+            .map_err(|_| io::Error::other("rollout writer stopped"))?;
+        receive
+            .await
+            .map_err(|_| io::Error::other("rollout writer stopped"))?
     }
 
     pub(crate) async fn persist(

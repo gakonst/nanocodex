@@ -195,7 +195,7 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
             .websocket_url(endpoint.clone())
             .build()
     };
-    let (agent, events) = Nanocodex::builder(openai()?)
+    let (agent, mut events) = Nanocodex::builder(openai()?)
         .instructions("durable instructions")
         .thinking(Thinking::Low)
         .workspace(&workspace)
@@ -208,7 +208,13 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
         .ok_or_else(|| eyre!("rollout was not configured"))?
         .path()
         .to_path_buf();
-    let first = agent.prompt("first prompt").await?.result().await?;
+    let turn = agent.prompt("first prompt").await?;
+    let canonical_turn_id = turn.id().to_owned();
+    let first = turn.result().await?;
+    let mut live_events = Vec::new();
+    while let Some(event) = events.try_recv_timed() {
+        live_events.push(serde_json::to_value(event.event)?);
+    }
     let encoded = serde_json::to_vec(
         &first
             .snapshot()
@@ -257,6 +263,43 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
     assert_eq!(
         rollout_lines[0]["payload"]["prompt_cache_key"],
         "durable-cache"
+    );
+    assert!(
+        rollout_lines
+            .iter()
+            .any(|line| line["payload"]["turn_id"] == canonical_turn_id)
+    );
+    for category in ["run.started", "run.completed"] {
+        assert!(
+            live_events.iter().any(|event| event["type"] == category
+                && event["payload"]["turn_id"] == canonical_turn_id)
+        );
+    }
+    let input = live_events
+        .iter()
+        .find(|event| event["type"] == "input.accepted")
+        .expect("accepted input is observable");
+    assert_eq!(input["payload"]["input"], "first prompt");
+    assert_eq!(input["payload"]["turn_id"], canonical_turn_id);
+    assert!(
+        rollout_lines
+            .iter()
+            .any(|line| line["payload"]["type"] == "input_accepted"
+                && line["payload"]["item_id"] == input["payload"]["item_id"])
+    );
+    assert_eq!(
+        agent.rollout().unwrap().committed_bytes(),
+        std::fs::metadata(&rollout_path)?.len()
+    );
+    let assistant = live_events
+        .iter()
+        .find(|event| event["type"] == "assistant.message")
+        .expect("completed response emits its final assistant item");
+    assert!(
+        rollout_lines
+            .iter()
+            .any(|line| line["type"] == "response_item"
+                && line["payload"]["id"] == assistant["payload"]["item_id"])
     );
     let persisted_context = rollout_lines
         .iter()

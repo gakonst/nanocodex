@@ -304,6 +304,11 @@ pub(crate) struct ComposerUpdate {
 }
 
 impl Composer {
+    pub(crate) fn control_snapshot(&self) -> serde_json::Value {
+        serde_json::json!({"text":self.draft,"cursor":self.cursor,"input_mode":self.input_mode,
+            "attachments":self.images.iter().enumerate().map(|(id,image)| serde_json::json!({"id":id,"range":{"start":image.range.start,"end":image.range.end}})).collect::<Vec<_>>()})
+    }
+
     pub(crate) fn new(workspace: &Path, thinking: ReasoningEffort) -> Self {
         Self {
             draft: String::new(),

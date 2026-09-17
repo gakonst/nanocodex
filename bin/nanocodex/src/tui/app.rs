@@ -404,6 +404,8 @@ impl Conversation {
 
     fn on_agent_event(&mut self, event: &AgentEvent) -> bool {
         match event.kind {
+            // Submitted-input rows are already owned by the local composer queue.
+            AgentEventKind::InputAccepted => return false,
             AgentEventKind::RunStarted => {
                 if let (Some(prompt), Some(prompt_id)) = (
                     self.queued_prompts.pop_front(),
@@ -1334,6 +1336,34 @@ pub(super) enum EscapeAction {
 }
 
 impl App {
+    pub(super) fn reject_external(&mut self, target: PaneId, id: u64, steer: bool, error: String) {
+        if steer {
+            self.steer_failed(target, id, error);
+        } else if let Some(conversation) = self.conversation_mut(target) {
+            conversation.remove_queued_prompt(id);
+            conversation.push_output(TranscriptItem::Error(error));
+        }
+    }
+
+    pub(super) fn control_snapshot(&self) -> serde_json::Value {
+        let conversation = self.conversation(self.focus);
+        let menu = if self.model_picker.is_some() {
+            Some("model")
+        } else if self.reasoning_picker.is_some() {
+            Some("effort")
+        } else if self.branch_navigator.is_some() {
+            Some("branches")
+        } else {
+            None
+        };
+        serde_json::json!({"connection": if self.pending_branch_switch.is_some() || self.pending_historical_edit.is_some() {"switching"} else {"ready"},
+            "execution": if conversation.is_some_and(|c| c.running || c.pending_turns > 0) {"running"} else {"idle"},
+            "composer":{"text":self.input,"cursor":self.cursor,"attachments":self.local_images.iter().map(|i| serde_json::json!({"path":i.path,"placeholder":i.placeholder})).collect::<Vec<_>>()},
+            "menu":menu,"ui_blocked": self.historical_editor.is_some() || self.cancel_confirmation.is_some(),
+            "questions":{"supported":false},
+            "settings":{"model":self.model.as_str(),"effort":self.thinking.to_string(),"fast_mode":self.fast_mode,"model_mutable":self.focus == PaneId::Main && self.can_change_start_settings(),"mutable":self.focus == PaneId::Main}})
+    }
+
     pub(super) fn new(cwd: PathBuf) -> Self {
         Self {
             cwd,

@@ -3,6 +3,7 @@ use super::*;
 
 pub(in crate::rollout) struct RolloutWriter {
     file: tokio::fs::File,
+    pub(super) committed_bytes: Arc<AtomicU64>,
     pub(in crate::rollout) pending: Option<RolloutCommit>,
     written_revision: Option<u64>,
     written_len: usize,
@@ -23,6 +24,7 @@ impl RolloutWriter {
     ) -> Self {
         Self {
             file,
+            committed_bytes: Arc::new(AtomicU64::new(0)),
             pending: None,
             written_revision: None,
             written_len: 0,
@@ -39,6 +41,7 @@ impl RolloutWriter {
     pub(super) fn resumed(file: tokio::fs::File, state: ResumeWriterState) -> Self {
         Self {
             file,
+            committed_bytes: Arc::new(AtomicU64::new(0)),
             pending: None,
             written_revision: Some(0),
             written_len: state.written_len,
@@ -58,6 +61,32 @@ impl RolloutWriter {
     ) -> (io::Result<()>, Option<oneshot::Sender<io::Result<()>>>) {
         while let Some(command) = commands.recv().await {
             match command {
+                RolloutCommand::Input { input, result } => {
+                    let start = self.file.metadata().await.map(|m| m.len());
+                    let outcome = match start {
+                        Ok(start) => {
+                            let outcome = async {
+                                self.write_event(CodexEvent::InputAccepted(&input)).await?;
+                                self.file.flush().await?;
+                                self.file.sync_data().await?;
+                                self.committed_bytes
+                                    .store(self.file.metadata().await?.len(), Ordering::Release);
+                                Ok(())
+                            }
+                            .await;
+                            if outcome.is_err() {
+                                match self.rollback(start).await {
+                                    Ok(()) => outcome,
+                                    Err(error) => Err(error),
+                                }
+                            } else {
+                                outcome
+                            }
+                        }
+                        Err(error) => Err(error),
+                    };
+                    drop(result.send(outcome));
+                }
                 RolloutCommand::Commit { commit, result } => {
                     self.pending = Some(*commit);
                     drop(result.send(self.persist_pending().await));
@@ -336,7 +365,10 @@ impl RolloutWriter {
             }
         }
         self.file.flush().await?;
-        self.file.sync_data().await
+        self.file.sync_data().await?;
+        self.committed_bytes
+            .store(self.file.metadata().await?.len(), Ordering::Release);
+        Ok(())
     }
 
     async fn write_event(&mut self, event: CodexEvent<'_>) -> io::Result<()> {

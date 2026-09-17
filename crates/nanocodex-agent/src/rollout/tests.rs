@@ -585,6 +585,47 @@ async fn appends_only_the_new_committed_delta() {
 }
 
 #[tokio::test]
+async fn legacy_resume_roots_new_children_at_the_resumed_session() {
+    let home = tempdir().unwrap();
+    let original = recorder(home.path());
+    let path = original.info().path().to_path_buf();
+    let thread = original.info().thread_id().to_owned();
+    original.shutdown().await.unwrap();
+    let mut records = lines(&original);
+    records[0]["payload"]
+        .as_object_mut()
+        .unwrap()
+        .remove("root_session_id");
+    std::fs::write(
+        &path,
+        records
+            .iter()
+            .map(|line| format!("{line}\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    let config = RolloutConfig::new(home.path()).resumed(path);
+    let resumed = RolloutRecorder::create(
+        &Handle::current(),
+        RolloutCreate {
+            config: &config,
+            thread_id: &thread,
+            prompt_cache_key: "cache",
+            cwd: Path::new("/worktree"),
+            instructions: "instructions",
+            origin: RolloutOrigin {
+                kind: "resume",
+                parent_thread_id: None,
+            },
+            resume_history_len: Some(0),
+        },
+    )
+    .unwrap();
+    assert_eq!(config.for_new_thread().root_session_id.get(), Some(&thread));
+    resumed.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn resumed_writer_repairs_a_rollout_behind_the_durable_boundary() {
     let home = tempdir().expect("temporary Codex home");
     let original = recorder(home.path());
@@ -679,6 +720,42 @@ async fn records_compaction_as_a_replacement_history_boundary() {
         compacted["payload"]["replacement_history"][0]["content"][0]["text"],
         "summary"
     );
+}
+
+#[tokio::test]
+async fn lineage_distinguishes_side_conversations_and_preserves_the_root_across_forks() {
+    let home = tempdir().unwrap();
+    let config = RolloutConfig::new(home.path());
+    let independent = config.clone();
+    let root = "019c0d31-c308-7d91-bff4-5dca82d15ac4";
+    let parent = "019c0d31-c308-7d91-bff4-5dca82d15ac5";
+    config.root_session_id.set(root.into()).unwrap();
+    assert!(independent.root_session_id.get().is_none());
+    let child_config = config.for_new_thread();
+    let recorder = RolloutRecorder::create(
+        &Handle::current(),
+        RolloutCreate {
+            config: &child_config,
+            thread_id: "019c0d31-c308-7d91-bff4-5dca82d15ac6",
+            prompt_cache_key: "cache",
+            cwd: Path::new("/worktree"),
+            instructions: "instructions",
+            origin: RolloutOrigin {
+                kind: "side_conversation",
+                parent_thread_id: Some(parent),
+            },
+            resume_history_len: None,
+        },
+    )
+    .unwrap();
+    let records = lines(&recorder);
+    assert_eq!(records[0]["payload"]["root_session_id"], root);
+    assert_eq!(records[0]["payload"]["parent_thread_id"], parent);
+    assert_eq!(
+        records[0]["payload"]["conversation_role"],
+        "side_conversation"
+    );
+    assert_eq!(records[0]["payload"]["origin_kind"], "fork");
 }
 
 #[tokio::test]

@@ -427,6 +427,28 @@ pub(crate) struct RootNode {
 }
 
 impl RootNode {
+    pub(crate) fn control_snapshot(&self) -> serde_json::Value {
+        let menu = self.overlay.as_ref().map(|overlay| match overlay {
+            Overlay::AgentId(_) => "agent_id",
+            Overlay::Actions(_) => "actions",
+            Overlay::ContextDiagnostics(_) => "context",
+            Overlay::Effort(_) => "effort",
+            Overlay::Model(_) => "model",
+            Overlay::Theme(_) => "theme",
+            Overlay::FileFinder(_) => "files",
+            Overlay::Skills(_) => "skills",
+            Overlay::Keybindings(_) => "keybindings",
+            Overlay::RecentPrompts(_) => "recent_prompts",
+            Overlay::Sessions(_) => "sessions",
+            Overlay::ReviewDownload(_) => "review",
+            Overlay::Subagents(_) => "subagents",
+        });
+        serde_json::json!({"composer":self.composer.component().control_snapshot(),"menu":menu,
+            "execution":if self.has_active_turns() {"running"} else {"idle"},
+            "ui_blocked":self.blocking_task.is_some() || self.key_confirmation.is_some() || self.queue_edit.is_some(),
+            "questions":{"supported":false}})
+    }
+
     pub(crate) fn new(workspace: &Path, thinking: ReasoningEffort) -> Self {
         let mut transcript = Transcript::with_effort(thinking);
         transcript.set_workspace(workspace);

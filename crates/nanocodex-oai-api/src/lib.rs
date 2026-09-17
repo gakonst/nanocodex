@@ -162,6 +162,9 @@ pub enum Model {
 }
 
 impl Model {
+    /// Supported model catalog in picker order.
+    pub const ALL: [Self; 4] = [Self::Sol, Self::Terra, Self::Luna, Self::Astra];
+
     /// Default reasoning effort from the pinned Codex model catalog.
     #[must_use]
     pub const fn default_thinking(self) -> Thinking {
@@ -641,6 +644,16 @@ pub enum Thinking {
 }
 
 impl Thinking {
+    /// Supported effort values; filter through Model::supports_thinking.
+    pub const ALL: [Self; 6] = [
+        Self::None,
+        Self::Low,
+        Self::Medium,
+        Self::High,
+        Self::Xhigh,
+        Self::Max,
+    ];
+
     /// Returns the request value used by the Responses API.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

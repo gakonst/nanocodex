@@ -1070,9 +1070,12 @@ where
                     );
                 });
             }
-            let execution_turn =
-                self.execution
-                    .start_turn(&prompt, thinking, execution_operation.clone());
+            let execution_turn = self.execution.start_turn(
+                &prompt,
+                thinking,
+                execution_operation.clone(),
+                events.turn_id(),
+            );
             let retained_steers = match execution_turn.begin().await {
                 Ok(steers) => steers,
                 Err(error) => {
@@ -1131,6 +1134,7 @@ where
                 let _ = cancel.send(());
             }
             let mut cancel_result = None;
+            let input_events = events.clone();
             model.set_events(events);
             let mut execution = Box::pin(
                 model
@@ -1229,6 +1233,8 @@ where
                                     continue;
                                 }
                                 let outcome = accept_turn_steer(
+                                    &self.execution,
+                                    &input_events,
                                     &steers,
                                     &mut accepted_steers,
                                     None,
@@ -1263,7 +1269,7 @@ where
                                     drop(result.send(Err(NanocodexError::InvalidRequest("steer identity was already used in this turn".into()))));
                                     continue;
                                 }
-                                let outcome = accept_turn_steer(&steers, &mut accepted_steers, Some(id), &execution_turn, &model_call_index, prompt).await;
+                                let outcome = accept_turn_steer(&self.execution, &input_events, &steers, &mut accepted_steers, Some(id), &execution_turn, &model_call_index, prompt).await;
                                 let reopen = outcome_requires_reopen(&outcome);
                                 drop(result.send(outcome));
                                 if reopen {
@@ -1301,6 +1307,8 @@ where
                                 ..
                             }) => {
                                 let outcome = accept_turn_steer(
+                                    &self.execution,
+                                    &input_events,
                                     &steers,
                                     &mut accepted_steers,
                                     None,
@@ -1787,7 +1795,10 @@ fn error_requires_stop(error: &NanocodexError) -> bool {
         .is_some_and(|source| source.is_misalignment_policy_violation())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn accept_turn_steer(
+    execution: &Execution,
+    events: &EventSink,
     steers: &SteerSender,
     accepted: &mut Vec<(Option<String>, SteerReceipt)>,
     id: Option<String>,
@@ -1809,7 +1820,12 @@ async fn accept_turn_steer(
     // Holding the boundary lock through persistence makes acceptance linearize
     // before either this model-call drain or the following one.
     let call_index = model_call_index.lock().await;
-    let steer = execution_turn.accept_steer(prompt, *call_index).await?;
+    let steer = execution_turn
+        .accept_steer(prompt.clone(), *call_index)
+        .await?;
+    execution
+        .accepted_input(events, &prompt, "steer", id.as_deref())
+        .await?;
     accepted.push((
         id,
         SteerReceipt {
@@ -1893,6 +1909,24 @@ async fn accept_execution_command(
     command: Command,
     reopen: &mut bool,
 ) -> Option<Command> {
+    if let Command::Prompt {
+        prompt,
+        events,
+        execution_operation: None,
+        ..
+    } = &command
+    {
+        if let Err(error) = execution
+            .accepted_input(events, prompt, "prompt", None)
+            .await
+        {
+            if let Command::Prompt { result, .. } = command {
+                drop(result.send(Err(error)));
+            }
+            return None;
+        }
+        return Some(command);
+    }
     let Command::Prompt {
         key,
         prompt,
@@ -1928,6 +1962,14 @@ async fn accept_execution_command(
     };
     match admission {
         Ok((operation_id, AdmittedExecution::Execute)) => {
+            if let Err(error) = execution
+                .accepted_input(&events, &prompt, "prompt", Some(&operation_id))
+                .await
+            {
+                execution.release_claim(&operation_id).await;
+                drop(accepted.send(Err(error)));
+                return None;
+            }
             if accepted.send(Ok(operation_id.clone())).is_err() {
                 execution.release_claim(&operation_id).await;
                 return None;
@@ -1946,6 +1988,14 @@ async fn accept_execution_command(
             })
         }
         Ok((operation_id, AdmittedExecution::Resume)) => {
+            if let Err(error) = execution
+                .accepted_input(&events, &prompt, "prompt", Some(&operation_id))
+                .await
+            {
+                execution.release_claim(&operation_id).await;
+                drop(accepted.send(Err(error)));
+                return None;
+            }
             if accepted.send(Ok(operation_id.clone())).is_err() {
                 execution.release_claim(&operation_id).await;
                 return None;
@@ -2045,6 +2095,13 @@ async fn accept_idle_route(
         return Some(command);
     };
     if !execution.identifies_prompts() {
+        if let Err(error) = execution
+            .accepted_input(&events, &prompt, "prompt", None)
+            .await
+        {
+            drop(route_result.send(Err(error)));
+            return None;
+        }
         drop(route_result.send(Ok(PromptRouteKind::Started { request_id: None })));
         return Some(Command::Prompt {
             key,
@@ -2065,6 +2122,14 @@ async fn accept_idle_route(
         .await;
     match admission {
         Ok((operation_id, AdmittedExecution::Execute)) => {
+            if let Err(error) = execution
+                .accepted_input(&events, &prompt, "prompt", Some(&operation_id))
+                .await
+            {
+                execution.release_claim(&operation_id).await;
+                drop(route_result.send(Err(error)));
+                return None;
+            }
             if route_result
                 .send(Ok(PromptRouteKind::Started {
                     request_id: Some(operation_id.clone()),
@@ -2088,6 +2153,14 @@ async fn accept_idle_route(
             })
         }
         Ok((operation_id, AdmittedExecution::Resume)) => {
+            if let Err(error) = execution
+                .accepted_input(&events, &prompt, "prompt", Some(&operation_id))
+                .await
+            {
+                execution.release_claim(&operation_id).await;
+                drop(route_result.send(Err(error)));
+                return None;
+            }
             if route_result
                 .send(Ok(PromptRouteKind::Started {
                     request_id: Some(operation_id.clone()),
