@@ -65,6 +65,7 @@ final class InboxModel: ObservableObject {
     @Published var notice: String?
     @Published var musicConnectorToOpen: MusicLoopbackProvider?
     @Published var connected = false
+    @Published private(set) var carPlayConnected = false
     @Published private(set) var restoringAccount = true
     @Published private(set) var restorationError: String?
     @Published private(set) var isDemo = false
@@ -800,6 +801,27 @@ final class InboxModel: ObservableObject {
         else { focusedState?.cancel(); focusedState = nil; focusedHistoryRequest?.cancel(); focusedHistoryRequest = nil; finishPreferencesInBackground(); suspendOverview(); scheduleHandRefresh(); polling?.cancel(); streaming?.cancel(); streaming = nil; observation = UUID(); connection = "Paused" }
         agentNotificationUpdate?.cancel(); agentNotificationUpdate = nil
         updateAgentNotifications()
+    }
+
+    /// CarPlay is an independent foreground scene. A background phone window
+    /// must not tear down its microphone or managed voice session.
+    func setCarPlayConnected(_ connected: Bool) {
+        guard carPlayConnected != connected else { return }
+        carPlayConnected = connected
+        if connected {
+            setActive(true)
+        } else if UIApplication.shared.applicationState != .active {
+            setActive(false)
+        }
+    }
+
+    func handleURL(_ url: URL) {
+        if url.scheme == "nanocodex", url.host == "connect",
+           ["/spotify", "/soundcloud"].contains(url.path), url.query == nil, url.fragment == nil {
+            musicConnectorToOpen = MusicLoopbackProvider(rawValue: String(url.path.dropFirst()))
+        } else {
+            openAgentActivity(url)
+        }
     }
     private func resume(initialListing: [AgentCard]? = nil) {
         guard connected, !isDemo, isActive else { return }

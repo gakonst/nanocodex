@@ -123,6 +123,8 @@ jobs:
               assert not entitlements.get("get-task-allow", False), f"{name}: use an App Store distribution profile"
               assert "ProvisionedDevices" not in profile and not profile.get("ProvisionsAllDevices"), f"{name}: use an App Store profile"
               assert profile["ExpirationDate"] > datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None), f"{name} profile expired"
+              if name == "app":
+                  assert entitlements.get("com.apple.developer.carplay-voice-based-conversation") is True, "app profile is missing the CarPlay voice-based conversational entitlement"
               candidate_team = profile["TeamIdentifier"][0]
               assert team in (None, candidate_team), "profiles use different Apple teams"
               team = candidate_team
