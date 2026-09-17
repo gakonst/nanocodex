@@ -249,8 +249,8 @@ const OTP_SELECTOR = 'input[autocomplete="one-time-code"],input[name="otp"],inpu
  */
 export const BROWSER_VAULT_CONTINUATION_FUNCTION = `function(origin, mode, snapshotId, ref, url, selectors) {
   if (window !== window.top || location.origin !== origin || location.protocol !== 'https:') return null;
-  const visible = el => el instanceof Element && el.isConnected && el.getRootNode() === document
-    && !el.closest('[inert],[hidden],[aria-hidden="true"],script,style,noscript,template,textarea,select')
+  const visible = (el, readingText = false) => el instanceof Element && el.isConnected && el.getRootNode() === document
+    && !el.closest('[inert],[hidden],script,style,noscript,template,textarea,select' + (readingText ? '' : ',[aria-hidden="true"]'))
     && el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && el.getClientRects().length > 0;
   const safeUrl = value => { try { const u = new URL(value, location.href); return u.origin === origin && !u.username && !u.password ? u.href : null; } catch { return null; } };
   const safeForm = form => form instanceof HTMLFormElement && form.method.toLowerCase() === 'post'
@@ -306,7 +306,7 @@ export const BROWSER_VAULT_CONTINUATION_FUNCTION = `function(origin, mode, snaps
     let node, visited = 0, length = 0;
     while ((node = walker.nextNode()) && ++visited <= 10000) {
       const parent = node.parentElement;
-      if (!parent || !visible(parent) || parent.closest('input,option')) continue;
+      if (!parent || !visible(parent, true) || parent.closest('input,option')) continue;
       const value = node.textContent || '';
       if (!value.trim() || value.length > 8192) continue; // Omit whole nodes; never return a truncated secret.
       if (length + value.length > 32768) break;

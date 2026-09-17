@@ -48,6 +48,10 @@ try {
   assert.equal(snapshot.title, '[redacted]');
   assert.ok(snapshot.text.includes('Account'));
   assert.deepEqual(snapshot.elements.map(el => el.text), ['Next','Continue']);
+  await page.locator('body').evaluate(el => el.insertAdjacentHTML('beforeend', '<span aria-hidden="true">$109.95</span><span aria-hidden="true" hidden>HIDDEN-PRICE</span>'));
+  const priceSnapshot = await snapshotBrowserVault(cdp,request,[user,password,code]);
+  assert.ok(priceSnapshot.text.includes('$109.95'));
+  assert.ok(!priceSnapshot.text.includes('HIDDEN-PRICE'));
   const next = await snapshotBrowserVault(cdp,request,[user,password,code]);
   await assert.rejects(actBrowserVault(cdp,request,{action:'click',snapshot_id:snapshot.snapshot_id,ref:'e1'}), /safely/);
   await page.locator('a').first().evaluate(el => el.href = 'https://example.test');
