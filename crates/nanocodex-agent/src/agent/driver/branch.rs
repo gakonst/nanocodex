@@ -47,6 +47,7 @@ where
     S::Error: Into<ResponseError> + AgentSend + 'static,
     S::Future: AgentSend,
 {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn spawn_fork(
         &self,
         checkpoint: &CommittedSession,

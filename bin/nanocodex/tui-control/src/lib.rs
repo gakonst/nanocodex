@@ -330,38 +330,37 @@ impl Bridge {
 
     pub fn publish(&self, kind: &str, data: Value) {
         let mut inner = self.inner.lock().unwrap();
-        if kind == "managed.event" {
-            if let (Some(session), Some(cursor)) =
+        if kind == "managed.event"
+            && let (Some(session), Some(cursor)) =
                 (data["session_id"].as_str(), data["cursor"].as_str())
-            {
-                if inner.managed_cursors.get(session).is_some_and(|last| {
-                    last.len() > cursor.len()
-                        || (last.len() == cursor.len() && last.as_str() >= cursor)
-                }) {
-                    return;
-                }
-                inner
-                    .managed_cursors
-                    .insert(session.to_owned(), cursor.to_owned());
+        {
+            if inner.managed_cursors.get(session).is_some_and(|last| {
+                last.len() > cursor.len() || (last.len() == cursor.len() && last.as_str() >= cursor)
+            }) {
+                return;
             }
+            inner
+                .managed_cursors
+                .insert(session.to_owned(), cursor.to_owned());
         }
-        if kind == "managed.event" && data["agent_id"].is_number() {
-            if let (Some(session), Some(root)) = (
+        if kind == "managed.event"
+            && data["agent_id"].is_number()
+            && let (Some(session), Some(root)) = (
                 data["event"]["request_id"].as_str(),
                 data["session_id"].as_str(),
-            ) {
-                inner
-                    .conversations
-                    .entry(session.to_owned())
-                    .or_insert_with(|| Conversation {
-                        session_id: session.into(),
-                        root_session_id: Some(root.into()),
-                        parent_session_id: None,
-                        origin: "spawn".into(),
-                        role: "subagent".into(),
-                        rollout_path: None,
-                    });
-            }
+            )
+        {
+            inner
+                .conversations
+                .entry(session.to_owned())
+                .or_insert_with(|| Conversation {
+                    session_id: session.into(),
+                    root_session_id: Some(root.into()),
+                    parent_session_id: None,
+                    origin: "spawn".into(),
+                    role: "subagent".into(),
+                    rollout_path: None,
+                });
         }
         Self::project(&mut inner, kind, &data);
         Self::append(&mut inner, kind, data);
@@ -369,61 +368,62 @@ impl Bridge {
     }
 
     fn project(inner: &mut Inner, kind: &str, data: &Value) {
-        if kind == "managed.event" && data["agent_id"].is_null() {
-            if let (Some(session), Some(turn), Some(category)) = (
+        if kind == "managed.event"
+            && data["agent_id"].is_null()
+            && let (Some(session), Some(turn), Some(category)) = (
                 data["session_id"].as_str(),
                 data["id"].as_str(),
                 data["type"].as_str(),
-            ) {
-                let turns = inner.active_turns.entry(session.to_owned()).or_default();
-                match category {
-                    "turn_accepted" => {
-                        if !turns.iter().any(|id| id == turn) {
-                            turns.push(turn.to_owned());
-                        }
+            )
+        {
+            let turns = inner.active_turns.entry(session.to_owned()).or_default();
+            match category {
+                "turn_accepted" => {
+                    if !turns.iter().any(|id| id == turn) {
+                        turns.push(turn.to_owned());
                     }
-                    "turn_completed" | "turn_cancelled" | "turn_failed" => {
-                        turns.retain(|id| id != turn)
-                    }
-                    _ => {}
                 }
-                // Retain outer acceptance (including user input) and terminal results.
-                if matches!(
-                    category,
-                    "turn_accepted" | "turn_completed" | "turn_cancelled" | "turn_failed"
-                ) {
-                    let (event_type, payload) = if category == "turn_accepted" {
-                        (
-                            "input.accepted",
-                            json!({"turn_id":turn,"item_id":format!("{turn}:prompt"),"kind":"prompt","input":data["input"],"request_id":turn}),
-                        )
-                    } else {
-                        let status = match category {
-                            "turn_completed" => "completed",
-                            "turn_cancelled" => "cancelled",
-                            _ => "failed",
-                        };
-                        (
-                            if status == "completed" {
-                                "run.completed"
-                            } else {
-                                "run.failed"
-                            },
-                            json!({"turn_id":turn,"status":status,"result":data}),
-                        )
+                "turn_completed" | "turn_cancelled" | "turn_failed" => {
+                    turns.retain(|id| id != turn)
+                }
+                _ => {}
+            }
+            // Retain outer acceptance (including user input) and terminal results.
+            if matches!(
+                category,
+                "turn_accepted" | "turn_completed" | "turn_cancelled" | "turn_failed"
+            ) {
+                let (event_type, payload) = if category == "turn_accepted" {
+                    (
+                        "input.accepted",
+                        json!({"turn_id":turn,"item_id":format!("{turn}:prompt"),"kind":"prompt","input":data["input"],"request_id":turn}),
+                    )
+                } else {
+                    let status = match category {
+                        "turn_completed" => "completed",
+                        "turn_cancelled" => "cancelled",
+                        _ => "failed",
                     };
+                    (
+                        if status == "completed" {
+                            "run.completed"
+                        } else {
+                            "run.failed"
+                        },
+                        json!({"turn_id":turn,"status":status,"result":data}),
+                    )
+                };
+                Self::project(
+                    inner,
+                    "agent.event",
+                    &json!({"request_id":session,"type":event_type,"payload":payload}),
+                );
+                if category == "turn_accepted" {
                     Self::project(
                         inner,
                         "agent.event",
-                        &json!({"request_id":session,"type":event_type,"payload":payload}),
+                        &json!({"request_id":session,"type":"run.started","payload":{"turn_id":turn,"status":"accepted"}}),
                     );
-                    if category == "turn_accepted" {
-                        Self::project(
-                            inner,
-                            "agent.event",
-                            &json!({"request_id":session,"type":"run.started","payload":{"turn_id":turn,"status":"accepted"}}),
-                        );
-                    }
                 }
             }
         }
@@ -479,10 +479,11 @@ impl Bridge {
             if !turns.iter().any(|id| id == turn) {
                 turns.push(turn.to_owned());
             }
-        } else if matches!(category, "run.completed" | "run.failed") && !managed_root {
-            if let Some(turns) = inner.active_turns.get_mut(session) {
-                turns.retain(|id| id != turn);
-            }
+        } else if matches!(category, "run.completed" | "run.failed")
+            && !managed_root
+            && let Some(turns) = inner.active_turns.get_mut(session)
+        {
+            turns.retain(|id| id != turn);
         }
         let family = if category.starts_with("assistant.") {
             "assistant"

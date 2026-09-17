@@ -75,11 +75,10 @@ pub(super) fn dispatch(
     if !matches!(
         command.request.method.as_str(),
         "history.list" | "command.status"
-    ) {
-        if let Err(code) = bridge.validate(&command.request) {
-            command.reject(code);
-            return;
-        }
+    ) && let Err(code) = bridge.validate(&command.request)
+    {
+        command.reject(code);
+        return;
     }
     let agent_id = command.request.params["expected_session_id"]
         .as_str()
@@ -186,7 +185,7 @@ pub(super) fn dispatch(
             command.request.method.as_str(),
             "history.list" | "command.status"
         ) {
-            result.unwrap_or_else(|e| unknown(e))
+            result.unwrap_or_else(unknown)
         } else {
             outcome(result)
         };

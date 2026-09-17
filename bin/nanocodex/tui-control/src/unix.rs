@@ -223,7 +223,11 @@ async fn serve(socket: UnixStream, bridge: Bridge) -> io::Result<()> {
     let mut incoming = Vec::new();
     let slots = Arc::new(tokio::sync::Semaphore::new(16));
     let mut replies = tokio::task::JoinSet::new();
+    let mut reading = true;
     loop {
+        if !reading && replies.is_empty() {
+            return Ok(());
+        }
         if let Some(after) = cursor {
             match bridge.replay(after) {
                 Ok(events) => {
@@ -245,8 +249,8 @@ async fn serve(socket: UnixStream, bridge: Bridge) -> io::Result<()> {
                 }
             },
             _ = changed.changed(), if cursor.is_some() => {},
-            bytes = read_frame(&mut read, &mut incoming) => {
-                let Some(bytes) = bytes? else { return Ok(()); };
+            bytes = read_frame(&mut read, &mut incoming), if reading => {
+                let Some(bytes) = bytes? else { reading = false; continue; };
                 let request: Request = serde_json::from_slice(&bytes)?;
                 if request.method == "events.subscribe" {
                     let parsed = request.params["after_seq"].as_str().and_then(|s| s.parse::<u64>().ok());
@@ -473,9 +477,9 @@ mod tests {
         // A lost connection must not undo an already dispatched cancellation.
         drop(write);
         drop(read);
-        owner.await.unwrap().unwrap();
         cancel.finish(accepted(json!({"turn_id":"turn"})));
         slow.finish(json!({"records":[]}));
+        let _ = owner.await.unwrap();
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 let value = bridge
@@ -493,6 +497,47 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stdin_half_close_drains_pending_replies() {
+        let (tx, mut commands) = mpsc::channel(32);
+        let bridge = Bridge::new(bridge().registration(), tx).unwrap();
+        let (client, server) = UnixStream::pair().unwrap();
+        let owner = tokio::spawn(serve(server, bridge));
+        let (read, mut write) = client.into_split();
+        let mut read = BufReader::new(read);
+        send(
+            &mut write,
+            &json!({"protocol_version":1,"instance_id":"test","auth_token":"secret"}),
+        )
+        .await
+        .unwrap();
+        line(&mut read).await.unwrap();
+        send(&mut write, &json!({"id":"history","method":"history.list"}))
+            .await
+            .unwrap();
+        write.shutdown().await.unwrap();
+        let command = commands.recv().await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), line(&mut read))
+                .await
+                .is_err(),
+            "half-close must wait for the pending reply"
+        );
+        command.finish(json!({"records":["saved"]}));
+        let response: Value = serde_json::from_slice(
+            &tokio::time::timeout(Duration::from_secs(1), line(&mut read))
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["id"], "history");
+        assert_eq!(response["result"]["records"], json!(["saved"]));
+        assert!(line(&mut read).await.unwrap().is_none());
+        owner.await.unwrap().unwrap();
     }
 
     #[tokio::test]

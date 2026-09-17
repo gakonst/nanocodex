@@ -16,7 +16,9 @@ ssh -T my-host nanocodex tui connect INSTANCE_UUID --stdio
 ```
 
 `connect` authenticates locally, emits the server's hello, and relays JSONL in
-both directions. Keep stdin open while subscribing. It never puts the token on
+both directions. Keep stdin open while subscribing. One-shot clients may close
+stdin after sending requests; pending replies drain before the connection closes.
+It never puts the token on
 the command line. SSH authenticates the remote user; no TCP listener is opened.
 
 Registration files live at

@@ -2521,12 +2521,11 @@ impl AgentWorker {
             };
             if let Some((agent, turns)) = branch
                 && let Some(turn) = turns.iter().find(|turn| turn.id == finished.id)
+                && let Some(rollout) = agent.rollout()
             {
-                if let Some(rollout) = agent.rollout() {
-                    let boundary = rollout.committed_bytes();
-                    bridge.committed(agent.session_id(), boundary);
-                    bridge.publish("history.committed",serde_json::json!({"session_id":agent.session_id(),"turn_id":turn.canonical_id,"boundary":boundary.to_string()}));
-                }
+                let boundary = rollout.committed_bytes();
+                bridge.committed(agent.session_id(), boundary);
+                bridge.publish("history.committed",serde_json::json!({"session_id":agent.session_id(),"turn_id":turn.canonical_id,"boundary":boundary.to_string()}));
             }
         }
         match finished.target {
@@ -2561,6 +2560,7 @@ impl AgentWorker {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_turn(
     agent: &Nanocodex,
     target: TurnTarget<'_>,
