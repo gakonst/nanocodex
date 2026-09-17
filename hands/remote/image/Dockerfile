@@ -22,6 +22,7 @@ WORKDIR /src/remote
 COPY hands/remote/go.mod hands/remote/go.sum ./
 RUN go mod download
 COPY hands/remote/*.go ./
+COPY hands/remote/observation_helper.py ./
 RUN CGO_ENABLED=0 go build -trimpath -o /out/nanocodex-remote .
 
 FROM rust:1.97-slim-trixie AS rust-toolchain

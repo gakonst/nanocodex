@@ -4,6 +4,7 @@ WORKDIR /src/hand
 COPY .generated/hand/go.mod .generated/hand/go.sum ./
 RUN go mod download
 COPY .generated/hand/*.go ./
+COPY .generated/hand/observation_helper.py ./
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -o /out/nanocodex-remote .
 
 # The SDK's Ubuntu 22.04 base has no labwc package. Bundle the VM's Debian

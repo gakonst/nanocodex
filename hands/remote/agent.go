@@ -87,9 +87,10 @@ func (action agentInput) steps(generation string) ([]agentStep, error) {
 			seen[key] = true
 			add(remoteInput{Kind: "key", Key: pointer(key), Down: pointer(true)}, 0)
 		}
-		for _, down := range []bool{true, false} {
-			add(remoteInput{Kind: "key", Key: action.Key, Down: pointer(down)}, 0)
-		}
+		// Applications that poll keyboard state can miss a press and release
+		// delivered in the same host tick. Keep a bounded dwell between them.
+		add(remoteInput{Kind: "key", Key: action.Key, Down: pointer(true)}, 0)
+		add(remoteInput{Kind: "key", Key: action.Key, Down: pointer(false)}, 50*time.Millisecond)
 		for i := len(action.Modifiers) - 1; i >= 0; i-- {
 			add(remoteInput{Kind: "key", Key: pointer(action.Modifiers[i]), Down: pointer(false)}, 0)
 		}

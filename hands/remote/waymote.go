@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -175,14 +176,12 @@ func (capture *waymoteCapture) apply(event remoteInput) error {
 	case "releaseAll":
 		return capture.record(5, 0, 0, 0, 0)
 	case "text":
-		// Compositors with an existing input-method owner may reject Waymote's
-		// IME commits. Opt into the virtual-keyboard path on those hosts.
-		if os.Getenv("NANOCODEX_WAYLAND_TEXT_WTYPE") == "1" {
+		if os.Getenv("NANOCODEX_WAYLAND_TEXT_X11") == "1" || os.Getenv("NANOCODEX_WAYLAND_TEXT_WTYPE") == "1" {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			command := exec.CommandContext(ctx, "wtype", "-")
-			command.Stdin = strings.NewReader(*event.Text)
-			return command.Run()
+			if handled, err := typeWaylandText(ctx, *event.Text); handled || err != nil {
+				return err
+			}
 		}
 		// Waymote limits each UTF-8 composition commit to 4000 bytes.
 		remaining := []byte(*event.Text)
@@ -210,6 +209,75 @@ func (capture *waymoteCapture) apply(event remoteInput) error {
 	default:
 		return errors.New("unsupported input")
 	}
+}
+
+// typeWaylandText selects a backend before sending any text. A failed typing
+// command may have delivered a prefix, so it must never trigger another backend.
+func typeWaylandText(ctx context.Context, text string) (bool, error) {
+	if os.Getenv("NANOCODEX_WAYLAND_TEXT_X11") == "1" && os.Getenv("DISPLAY") != "" {
+		path, err := exec.LookPath("xdotool")
+		if err == nil {
+			focused, err := focusedXApplication(ctx, path)
+			if err != nil {
+				return false, err
+			}
+			if focused {
+				// XTEST follows the live keyboard focus, including changes after the
+				// probe. Do not pin a window with XSendEvent or steal focus.
+				command := exec.CommandContext(ctx, path, "type", "--clearmodifiers", "--delay", "1", "--file", "-")
+				command.Stdin = strings.NewReader(text)
+				command.WaitDelay = 25 * time.Millisecond
+				return true, command.Run()
+			}
+		} else if !errors.Is(err, exec.ErrNotFound) {
+			return false, err
+		}
+	}
+	// Compositors with an existing input-method owner may reject Waymote's
+	// IME commits. Keep the virtual-keyboard fallback independently opt-in.
+	if os.Getenv("NANOCODEX_WAYLAND_TEXT_WTYPE") == "1" {
+		command := exec.CommandContext(ctx, "wtype", "-")
+		command.Stdin = strings.NewReader(text)
+		command.WaitDelay = 25 * time.Millisecond
+		return true, command.Run()
+	}
+	return false, nil
+}
+
+func focusedXApplication(ctx context.Context, executable string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+	// Chaining resolves the PID from the actual keyboard focus, rather than
+	// the window manager's active-window hint. Root/None have no client PID.
+	command := exec.CommandContext(ctx, executable, "getwindowfocus", "getwindowpid")
+	var output, diagnostics bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &diagnostics
+	// A descendant inheriting stdout must not keep the probe blocked.
+	command.WaitDelay = 25 * time.Millisecond
+	err := command.Run()
+	if ctx.Err() != nil {
+		return false, fmt.Errorf("X11 focus probe: %w", ctx.Err())
+	}
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 {
+			message := diagnostics.String()
+			// Exit 1 alone can also mean a broken display connection. Only
+			// recognized absent-focus/PID diagnostics permit another backend.
+			if strings.Contains(message, "has no pid associated with it.") ||
+				strings.Contains(message, "xdo_focus_window reported an error") ||
+				strings.Contains(message, "XGetInputFocus returned the focused window of 1.") {
+				return false, nil
+			}
+		}
+		return false, fmt.Errorf("X11 focus probe: %w", err)
+	}
+	pid, err := strconv.ParseInt(strings.TrimSpace(output.String()), 10, 32)
+	if err != nil {
+		return false, errors.New("X11 focus probe returned an invalid PID")
+	}
+	return pid > 0, nil
 }
 
 func (capture *waymoteCapture) record(kind, state byte, a, b, sequence uint32) error {
