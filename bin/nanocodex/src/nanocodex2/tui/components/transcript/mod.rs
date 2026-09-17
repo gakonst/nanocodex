@@ -244,6 +244,39 @@ pub(super) enum ScrollCommand {
 }
 
 impl Transcript {
+    pub(crate) fn latest_vault_command(&self) -> Option<crate::tui::vault::Command> {
+        let mut receipts = Vec::new();
+        for entry in self.model.entries().iter().rev() {
+            match &entry.kind {
+                EntryKind::User { text } => receipts.push(text),
+                EntryKind::Tool(tool)
+                    if matches!(tool.family(), "request_vault_intake" | "exec" | "wait") =>
+                {
+                    if let Some(command) = tool
+                        .result
+                        .as_ref()
+                        .and_then(crate::tui::vault::intake_command)
+                    {
+                        if let crate::tui::vault::Command::Review { id, origin } = &command {
+                            if receipts.iter().any(|text| {
+                                text.contains(id)
+                                    && text.contains(origin)
+                                    && (text.contains("vault_intake_receipt")
+                                        || text.starts_with("Vault website approval saved.")
+                                        || text.starts_with("Website approved for "))
+                            }) {
+                                continue;
+                            }
+                        }
+                        return Some(command);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self::with_effort(ReasoningEffort::default())
@@ -2002,7 +2035,9 @@ fn layout_without_links(lines: Vec<Line<'static>>) -> markdown::Layout {
 }
 
 fn render_user(text: &str, width: u16, theme: &Theme) -> markdown::Layout {
-    let text = normalize_line_endings(text);
+    let readable = crate::tui::vault::receipt_summary(text);
+    let text = normalize_line_endings(readable.as_deref().unwrap_or(text)).into_owned();
+    let text: std::borrow::Cow<'_, str> = std::borrow::Cow::Owned(text);
     let color = theme.thinking_medium();
     let content_width = width.saturating_sub(2).max(1);
     let mut lines = Vec::new();

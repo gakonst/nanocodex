@@ -16,7 +16,7 @@ use axum::{
         Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use base64::Engine as _;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -25,6 +25,8 @@ use tokio::sync::{mpsc, oneshot};
 
 const AGENT: &str = "019fc927-b280-79a7-8445-1b9996ad2fb0";
 const REMOTE_TURN: &str = "019fc927-b281-79a7-8445-1b9996ad2fb0";
+const VAULT_ID: &str = "abcdefghijklmnopqrstuv";
+const VAULT_ORIGIN: &str = "https://vault-approval.example:8443";
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 fn prompt_text(input: &Value) -> String {
@@ -170,6 +172,7 @@ impl Drop for Terminal {
 
 #[derive(Clone)]
 struct Service {
+    vault_writes: Arc<Mutex<Vec<Value>>>,
     listed_agent: Arc<Mutex<String>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
     active: bool,
@@ -216,6 +219,30 @@ impl Service {
             .map_or("0", |event| event["cursor"].as_str().unwrap())
             .to_owned()
     }
+}
+
+async fn vault_metadata() -> Json<Value> {
+    Json(json!({"vault": [{
+        "id": VAULT_ID, "kind": "login", "name": "VERIFIED_SAVED_LOGIN",
+        "browser_origin": "https://previous.example",
+        "username": "PRIVATE_USERNAME_SENTINEL", "password": "PRIVATE_PASSWORD_SENTINEL"
+    }]}))
+}
+
+async fn approve_vault_origin(
+    State(service): State<Service>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    service
+        .vault_writes
+        .lock()
+        .unwrap()
+        .push(json!({"id": id, "body": body}));
+    Json(json!({
+        "id": id, "kind": "login", "name": "VERIFIED_SAVED_LOGIN",
+        "browser_origin": body["browser_origin"], "password": "PRIVATE_PASSWORD_SENTINEL"
+    }))
 }
 
 async fn list_agents(State(service): State<Service>) -> Json<Value> {
@@ -409,6 +436,7 @@ async fn cancel(
 }
 
 struct Fixture {
+    vault_writes: Arc<Mutex<Vec<Value>>>,
     listed_agent: Arc<Mutex<String>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
     origin: String,
@@ -478,7 +506,10 @@ impl Fixture {
         let session_list_gate = Arc::new(tokio::sync::Semaphore::new(1));
         let listed_agent = Arc::new(Mutex::new(AGENT.to_owned()));
         let resume_gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let vault_writes = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new()
+            .route("/v1/credentials", get(vault_metadata))
+            .route("/v1/credentials/vault/login/{id}/origin", put(approve_vault_origin))
             .route("/v1/account/hands/screens", get(|| async { Json(json!({"surfaces": [{"id":"desktop","machine_id":"screen-test-hand","machine_name":"SCREEN_TEST_HAND","name":"Desktop","generation":"screen-generation","width":32,"height":18,"transport":"frames-v1"}]})) }))
             .route("/v1/account/hands/view", get(test_screen_socket))
             .route("/v1/account/hands/renew", post(|| async { Json(json!({"ok":true})) }))
@@ -499,6 +530,7 @@ impl Fixture {
             .route("/v1/agents/{agent}/turns/{turn}/steer", post(steer))
             .route("/v1/agents/{agent}/turns/{turn}/cancel", post(cancel))
             .with_state(Service {
+                vault_writes: vault_writes.clone(),
                 listed_agent: listed_agent.clone(),
                 resume_gate: resume_gate.clone(),
                 active,
@@ -525,6 +557,7 @@ impl Fixture {
             .unwrap()
             .unwrap();
         Self {
+            vault_writes,
             listed_agent,
             resume_gate,
             origin,
@@ -3181,4 +3214,79 @@ async fn terminal_screen_selection_zoom_and_tabs_preserve_chat_draft() {
     fixture.terminal.input("\r");
     let turn = fixture.submission("DRAFT_WHILE_WATCHING").await;
     fixture.complete(&turn);
+}
+
+#[tokio::test]
+async fn terminal_vault_approval_cancel_then_explicit_approve_sends_one_safe_receipt() {
+    let mut fixture = Fixture::start_with_active(true).await;
+    fixture.nested(REMOTE_TURN, "tool.call", json!({
+        "call_id": "vault-approval", "tool": "request_vault_intake",
+        "arguments": {"operation": "authorize_origin", "kind": "login", "vault_id": VAULT_ID, "origin": VAULT_ORIGIN}
+    }));
+    fixture.nested(REMOTE_TURN, "tool.result", json!({
+        "call_id": "vault-approval", "tool": "request_vault_intake", "status": "completed", "duration_ns": 1,
+        "result": {"type": "vault_intake", "status": "input_required", "operation": "authorize_origin",
+            "kind": "login", "vault_id": VAULT_ID, "origin": VAULT_ORIGIN, "name": "UNVERIFIED_TOOL_LABEL"}
+    }));
+    fixture.complete(REMOTE_TURN);
+    fixture
+        .terminal
+        .wait_text("Type /vault to review and approve.")
+        .await;
+    fixture.terminal.wait_text("Enter send").await;
+    assert!(fixture.vault_writes.lock().unwrap().is_empty());
+
+    for approve in [false, true] {
+        fixture.terminal.prompt("/vault", "\r");
+        fixture.terminal.wait_text("Approve Vault website").await;
+        fixture.terminal.wait_text("VERIFIED_SAVED_LOGIN").await;
+        fixture.terminal.wait_text(VAULT_ID).await;
+        fixture.terminal.wait_text(VAULT_ORIGIN).await;
+        fixture.terminal.wait_text("https://previous.example").await;
+        fixture.terminal.wait_text("Press a to approve").await;
+        assert!(fixture.vault_writes.lock().unwrap().is_empty());
+        assert!(fixture.submissions.try_recv().is_err());
+        if approve {
+            fixture.terminal.input("a");
+        } else {
+            fixture.terminal.input("\x1b");
+            fixture.terminal.wait_no_text("Approve Vault website").await;
+            fixture.terminal.wait_text("Enter send").await;
+            assert!(fixture.vault_writes.lock().unwrap().is_empty());
+            assert!(fixture.submissions.try_recv().is_err());
+        }
+    }
+    let receipt = format!(
+        "Vault website approval saved.\nLogin: VERIFIED_SAVED_LOGIN\nVault ID: {VAULT_ID}\nApproved website: {VAULT_ORIGIN}\nPassword stayed in Vault."
+    );
+    let turn = fixture.submission(&receipt).await;
+    fixture.complete(&turn);
+    fixture
+        .terminal
+        .wait_text("Vault website approval saved.")
+        .await;
+    fixture.terminal.wait_text("Enter send").await;
+    assert_eq!(
+        *fixture.vault_writes.lock().unwrap(),
+        vec![json!({
+            "id": VAULT_ID, "body": {"browser_origin": VAULT_ORIGIN}
+        })]
+    );
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
+    let output = fixture.terminal.output.lock().unwrap();
+    let output = String::from_utf8_lossy(&output);
+    for forbidden in [
+        "PRIVATE_USERNAME_SENTINEL",
+        "PRIVATE_PASSWORD_SENTINEL",
+        "UNVERIFIED_TOOL_LABEL",
+        "\"vault_intake\"",
+        "\"input_required\"",
+        "\"browser_origin\"",
+    ] {
+        assert!(
+            !output.contains(forbidden),
+            "unsafe/raw Vault output: {forbidden}"
+        );
+    }
 }

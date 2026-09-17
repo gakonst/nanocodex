@@ -52,6 +52,7 @@ const DEVELOPMENT_BADGE: &str = " ◉ dev ";
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum ComposerEffect {
     ShowAgentId,
+    Vault(crate::tui::vault::Command),
     Submit(Submission),
     Queue(Submission),
     RunShell(String),
@@ -999,7 +1000,9 @@ impl Composer {
         if !self.images.is_empty() {
             return None;
         }
-        let effect = if self.draft.trim() == "/id" {
+        let effect = if let Some(command) = crate::tui::vault::Command::parse(self.draft.trim()) {
+            ComposerEffect::Vault(command)
+        } else if self.draft.trim() == "/id" {
             ComposerEffect::ShowAgentId
         } else {
             ComposerEffect::Settings(SettingsCommand::parse(self.draft.trim())?)

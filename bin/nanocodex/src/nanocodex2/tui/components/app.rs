@@ -206,6 +206,14 @@ pub(crate) enum AppEvent {
         pane: PaneId,
         projection: Box<RestoredSessionProjection>,
     },
+    VaultReceipt {
+        pane: PaneId,
+        receipt: String,
+    },
+    VaultReview {
+        pane: PaneId,
+        review: crate::tui::vault::Review,
+    },
     ShowAgentId {
         pane: PaneId,
         id: String,
@@ -542,6 +550,12 @@ impl AppNode {
             ),
             AppEvent::HistoryReplayed { pane, projection } => {
                 self.update_root(pane, RootEvent::HistoryReplayed { projection })
+            }
+            AppEvent::VaultReceipt { pane, receipt } => {
+                self.update_root(pane, RootEvent::VaultReceipt(receipt))
+            }
+            AppEvent::VaultReview { pane, review } => {
+                self.update_root(pane, RootEvent::VaultReview(review))
             }
             AppEvent::ShowAgentId { pane, id } => {
                 self.update_root(pane, RootEvent::ShowAgentId(id))

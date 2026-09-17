@@ -12,6 +12,7 @@ mod driver;
 mod error;
 mod sse;
 mod types;
+mod vault;
 #[cfg(feature = "voice")]
 mod voice;
 mod websocket;
@@ -34,6 +35,7 @@ pub use sse::{
     EventCursor, ManagedEventFuture, ManagedEventSource, ManagedEventStream, ManagedEvents,
 };
 pub use types::*;
+pub use vault::VaultLogin;
 
 #[cfg(feature = "tools")]
 #[cfg_attr(docsrs, doc(cfg(feature = "tools")))]

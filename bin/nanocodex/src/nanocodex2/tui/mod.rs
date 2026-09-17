@@ -22,6 +22,7 @@ mod spinner;
 mod terminal;
 mod theme;
 mod transcript;
+mod vault;
 
 use self::{
     components::{
@@ -535,6 +536,8 @@ struct DriverRuntime {
     admissions: JoinSet<Admission>,
     completions: JoinSet<Completion>,
     steers: JoinSet<SteerCompletion>,
+    vault_tasks: JoinSet<vault::Completion>,
+    vault_attempted: HashSet<(String, String)>,
     steer_receipts: HashMap<(PaneId, components::QueueId), (u64, SteerTarget, String)>,
     pending_withdrawals: HashSet<(PaneId, components::QueueId)>,
     withdrawals: JoinSet<WithdrawalCompletion>,
@@ -1504,6 +1507,8 @@ async fn run_inner(
         admissions: JoinSet::new(),
         completions: JoinSet::new(),
         steers: JoinSet::new(),
+        vault_tasks: JoinSet::new(),
+        vault_attempted: HashSet::new(),
         steer_receipts: HashMap::new(),
         pending_withdrawals: HashSet::new(),
         withdrawals: JoinSet::new(),
@@ -1702,6 +1707,20 @@ async fn run_inner(
                 (Some(&mut voice.status), Some(&mut voice.transcripts))
             });
         tokio::select! {
+            Some(completion) = runtime.vault_tasks.join_next(), if !runtime.vault_tasks.is_empty() => {
+                if let Ok((pane, agent_id, generation, result)) = completion {
+                    if !vault::scope_matches(&agent_id, generation, &runtime.agent_id, runtime.connection_generation) {
+                        request_render(app.update(AppEvent::NotifyError { pane: PaneId::Main, error: "Vault request finished after changing conversations. Check your Vault before continuing.".into() }), &mut scheduler);
+                        continue;
+                    }
+                    let update = match result {
+                        Ok(vault::Outcome::Review(review)) => app.update(AppEvent::VaultReview { pane, review }),
+                        Ok(vault::Outcome::Saved(receipt)) => app.update(AppEvent::VaultReceipt { pane, receipt }),
+                        Err(error) => app.update(AppEvent::NotifyError { pane, error }),
+                    };
+                    stopping |= apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
+                }
+            }
             changed = runtime.screen.updates.changed() => {
                 if changed.is_ok() {
                     let snapshot = runtime.screen.updates.borrow_and_update().clone();
@@ -2727,6 +2746,40 @@ async fn apply_update(
                         } else {
                             runtime.pending_submission = Some((pane, id, prompt));
                         }
+                    }
+                    RootEffect::Vault(command) => {
+                        match command {
+                            vault::Command::Open => open_link(&runtime.client.vault_url()),
+                            vault::Command::Latest | vault::Command::Help => absorb(app.update(AppEvent::NotifyError { pane, error: "No pending Vault request is loaded. Use /vault open to manage your Vault. Never enter passwords in chat.".into() }), &mut effects, scheduler),
+                            vault::Command::Review { id, origin } => {
+                                if !runtime.vault_tasks.is_empty() { continue; }
+                                let client = runtime.client.clone();
+                                let agent_id = runtime.agent_id.clone();
+                                let generation = runtime.connection_generation;
+                                runtime.vault_tasks.spawn(async move {
+                                    let result = client.vault_login(&id).await
+                                        .map(|login| vault::Outcome::Review(vault::Review { login, origin, agent_id: agent_id.clone(), generation, visible: false }))
+                                        .map_err(|_| "Couldn’t verify this saved login. Use /vault open to check the item and your account.".to_owned());
+                                    (pane, agent_id, generation, result)
+                                });
+                                absorb(app.update(AppEvent::NotifySuccess { pane, message: "Verifying saved login in your Vault…".into() }), &mut effects, scheduler);
+                            }
+                        }
+                    }
+                    RootEffect::ApproveVault(review) => {
+                        if !vault::scope_matches(&review.agent_id, review.generation, &runtime.agent_id, runtime.connection_generation) || !runtime.vault_tasks.is_empty() { continue; }
+                        if !runtime.vault_attempted.insert((review.login.id.clone(), review.origin.clone())) {
+                            absorb(app.update(AppEvent::NotifyError { pane, error: "This approval was already attempted. Check /vault open before trying again.".into() }), &mut effects, scheduler);
+                            continue;
+                        }
+                        let client = runtime.client.clone();
+                        runtime.vault_tasks.spawn(async move {
+                            let result = client.approve_vault_login_origin(&review.login.id, &review.origin).await
+                                .map(|login| vault::Outcome::Saved(vault::receipt(&login)))
+                                .map_err(|_| "The website approval could not be confirmed. Check /vault open; this request will not be retried automatically.".to_owned());
+                            (pane, review.agent_id, review.generation, result)
+                        });
+                        absorb(app.update(AppEvent::NotifySuccess { pane, message: "Saving website approval to Vault…".into() }), &mut effects, scheduler);
                     }
                     RootEffect::ShowAgentId => {
                         if runtime.agent_id.is_empty() {
@@ -3775,6 +3828,8 @@ mod tests {
             admissions: JoinSet::new(),
             completions: JoinSet::new(),
             steers: JoinSet::new(),
+            vault_tasks: JoinSet::new(),
+            vault_attempted: HashSet::new(),
             steer_receipts: HashMap::new(),
             pending_withdrawals: HashSet::new(),
             withdrawals: JoinSet::new(),

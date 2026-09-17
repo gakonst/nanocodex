@@ -154,6 +154,29 @@ pub(super) fn render_live_summary(
 }
 
 fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Presentation {
+    if matches!(
+        tool.family(),
+        "browser_vault_status" | "browser_vault_fill" | "browser_vault_close"
+    ) {
+        return Presentation::new(
+            "Private Vault browser",
+            crate::tui::vault::browser_summary(
+                tool.family(),
+                tool.result.as_ref(),
+                tool.state == ToolState::Failed,
+            ),
+        );
+    }
+    if tool.family() == "request_vault_intake" {
+        let summary = tool
+            .result
+            .as_ref()
+            .and_then(crate::tui::vault::intake_summary)
+            .unwrap_or_else(|| {
+                "Secure Vault request · use /vault open to check your Vault".to_owned()
+            });
+        return Presentation::new("Secure Vault", summary);
+    }
     if tool.has_mcp_origin() {
         return mcp::present(tool, width, theme, expanded);
     }
@@ -370,6 +393,13 @@ fn summary_lines(
     );
     let mut error_spans = Vec::new();
     if tool.state == ToolState::Failed
+        && !matches!(
+            tool.family(),
+            "request_vault_intake"
+                | "browser_vault_status"
+                | "browser_vault_fill"
+                | "browser_vault_close"
+        )
         && let Some(error) = first_error_line(tool.result.as_ref())
         && !presentation
             .outcome
@@ -614,6 +644,10 @@ pub(super) fn selectable_result(
     width: u16,
     theme: &Theme,
 ) -> (String, Vec<Line<'static>>) {
+    if let Some(summary) = crate::tui::vault::payload_summary(value, 0) {
+        let details = wrap_plain(&summary, width, Style::default().fg(theme.text()));
+        return (summary, details);
+    }
     let value = display_value(value, 0);
     if let Some(text) = value.as_str() {
         let text = bounded_text(text);
@@ -787,6 +821,14 @@ fn bounded_section(mut details: Vec<Line<'static>>) -> Vec<Line<'static>> {
 
 // Preserve text, resource names, and download URLs alongside embedded media.
 fn display_value(value: &Value, depth: usize) -> Value {
+    if value.get("type").and_then(Value::as_str) == Some("vault_intake") {
+        return Value::String(crate::tui::vault::intake_summary(value).unwrap_or_else(|| {
+            "Secure Vault request could not be verified. Use /vault open.".into()
+        }));
+    }
+    if let Some(summary) = crate::tui::vault::receipt_summary(&value.to_string()) {
+        return Value::String(summary);
+    }
     if depth > 10 {
         return Value::String("[more output]".to_owned());
     }
@@ -908,6 +950,56 @@ mod tests {
             child_count: 0,
             code_display_result: None,
         }
+    }
+
+    #[test]
+    fn vault_browser_results_and_errors_never_expand_raw_fields() {
+        for name in [
+            "browser_vault_status",
+            "browser_vault_fill",
+            "browser_vault_close",
+        ] {
+            for failed in [false, true] {
+                let mut request = tool(name, json!({"password_selector":"PRIVATE_SELECTOR"}));
+                request.result = Some(
+                    json!({"status":"submitted", "error":"PRIVATE_ERROR", "password":"PRIVATE_PASSWORD"}),
+                );
+                if failed {
+                    request.state = ToolState::Failed;
+                }
+                let text = render_expanded(&request, 120, &Theme::default())
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(!text.contains("PRIVATE_"));
+                assert!(!text.contains('{'));
+                if !failed {
+                    assert!(text.contains("Sign-in has not been confirmed"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vault_requests_and_code_output_are_readable_without_json() {
+        let value = json!({"type":"vault_intake","status":"input_required","operation":"authorize_origin","vault_id":"abcdefghijklmnopqrstuv","kind":"login","origin":"https://example.com"});
+        let mut request = tool("request_vault_intake", json!({}));
+        request.result = Some(value.clone());
+        for expanded in [false, true] {
+            let text = render_layout(&request, None, 120, &Theme::default(), expanded)
+                .lines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains("/vault"));
+            assert!(!text.contains("input_required"));
+            assert!(!text.contains("vault_intake"));
+        }
+        let (text, _) = super::selectable_result(&json!(value.to_string()), 120, &Theme::default());
+        assert!(text.contains("/vault"));
+        assert!(!text.contains("input_required"));
     }
 
     #[test]
