@@ -155,6 +155,13 @@ pub(crate) enum AppEvent {
         pane: PaneId,
         error: String,
     },
+    SessionSearchResults {
+        pane: PaneId,
+        picker_id: u64,
+        request_id: u64,
+        query: String,
+        result: Result<Vec<nanocodex_managed::SessionSearchHit>, String>,
+    },
     SessionsLoaded {
         pane: PaneId,
         request_id: u64,
@@ -449,6 +456,21 @@ impl AppNode {
             AppEvent::NewSessionFailed { pane, error } => {
                 self.update_root(pane, RootEvent::NewSessionFailed(error))
             }
+            AppEvent::SessionSearchResults {
+                pane,
+                picker_id,
+                request_id,
+                query,
+                result,
+            } => self.update_root(
+                pane,
+                RootEvent::SessionSearchResults {
+                    picker_id,
+                    request_id,
+                    query,
+                    result,
+                },
+            ),
             AppEvent::SessionsLoaded {
                 pane,
                 request_id,

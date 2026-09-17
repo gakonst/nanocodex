@@ -2,16 +2,18 @@
 //! Authorization and raw-input lease ownership belong to the publisher.
 #![allow(unsafe_code)]
 
-use crate::Error;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use crate::{
+    Error,
+    capture::{encode_jpeg, target_dimensions},
+};
 use block2::RcBlock;
-use image::{RgbImage, codecs::jpeg::JpegEncoder};
-use objc2::{AnyThread, rc::autoreleasepool, runtime::AnyClass};
+use image::RgbImage;
+use objc2::{rc::autoreleasepool, runtime::AnyClass, sel};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_core_graphics::*;
-use objc2_foundation::{NSArray, NSError};
+use objc2_foundation::NSError;
 use objc2_screen_capture_kit::{
-    SCContentFilter, SCScreenshotManager, SCShareableContent, SCStreamConfiguration,
+    SCScreenshotConfiguration, SCScreenshotDynamicRange, SCScreenshotManager, SCScreenshotOutput,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -650,82 +652,57 @@ fn capture_available() -> Result<()> {
     if !CGPreflightScreenCaptureAccess() {
         return Err(error(CAPTURE_PERMISSION));
     }
-    if AnyClass::get(c"SCScreenshotManager").is_none() {
-        return Err(error("native screen capture requires macOS 14 or later"));
+    if AnyClass::get(c"SCScreenshotConfiguration").is_none()
+        || !AnyClass::get(c"SCScreenshotManager").is_some_and(|class| {
+            class
+                .class_method(sel!(captureScreenshotWithRect:configuration:completionHandler:))
+                .is_some()
+        })
+    {
+        return Err(error("native screen capture requires macOS 26 or later"));
     }
     Ok(())
 }
 fn capture() -> Result<Value> {
     let began = Instant::now();
     capture_available()?;
+    // Resolve current main-display bounds every time; no window enumeration,
+    // cached pixels, or stale display metadata after hot-plug.
     let bounds = display_bounds()?;
-    let scale = (1280.0 / bounds.size.width.max(bounds.size.height)).min(1.0);
-    let width = (bounds.size.width * scale).round().clamp(1.0, 1280.0) as usize;
-    let height = (bounds.size.height * scale).round().clamp(1.0, 1280.0) as usize;
-    let display_id = CGMainDisplayID();
+    let (width, height) = target_dimensions(bounds.size.width, bounds.size.height)?;
+    capture_rect(bounds, width, height, began)
+}
+/// The availability check in capture() guards all macOS 26-only objects.
+fn capture_rect(bounds: CGRect, width: u32, height: u32, began: Instant) -> Result<Value> {
     let (sender, receiver) = mpsc::sync_channel(1);
-    let completion = RcBlock::new(move |content: *mut SCShareableContent, err: *mut NSError| {
-        let content_ms = began.elapsed().as_secs_f64() * 1000.0;
+    let completion = RcBlock::new(move |output: *mut SCScreenshotOutput, err: *mut NSError| {
         autoreleasepool(|_| {
-            // SAFETY: ScreenCaptureKit owns callback arguments for this invocation.
-            // Retained filter/config and copied completion block survive the async call.
-            unsafe {
-                let Some(content) = content.as_ref().filter(|_| err.is_null()) else {
-                    let _ = sender.send(Err(error(CAPTURE_PERMISSION)));
-                    return;
-                };
-                let displays = content.displays();
-                let Some(display) = (0..displays.count())
-                    .map(|i| displays.objectAtIndex(i))
-                    .find(|d| d.displayID() == display_id)
-                else {
-                    let _ = sender.send(Err(error(
-                        "main display is not available to ScreenCaptureKit",
-                    )));
-                    return;
-                };
-                let filter = SCContentFilter::initWithDisplay_excludingWindows(
-                    SCContentFilter::alloc(),
-                    &display,
-                    &NSArray::new(),
-                );
-                let configuration = SCStreamConfiguration::new();
-                configuration.setWidth(width);
-                configuration.setHeight(height);
-                configuration.setShowsCursor(true);
-                let sender = sender.clone();
-                let image_started = Instant::now();
-                let image_completion = RcBlock::new(
-                    move |image: *mut CGImage, err: *mut NSError| {
-                        let image_ms = image_started.elapsed().as_secs_f64() * 1000.0;
-                        let encode_started = Instant::now();
-                        let result = match image.as_ref().filter(|_| err.is_null()) {
-                            Some(image) => encode_capture(image),
-                            None => Err(error(
-                                "ScreenCaptureKit could not capture the main display; check Screen Recording permission and the active desktop session",
-                            )),
-                        };
-                        tracing::debug!(target: "nanocodex_hand", stage = "screen.macos.capture", content_ms, image_ms,
-                            encode_ms = encode_started.elapsed().as_secs_f64() * 1000.0,
-                            total_ms = began.elapsed().as_secs_f64() * 1000.0, success = result.is_ok());
-                        let _ = sender.send(result);
-                    },
-                );
-                SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(
-                    &filter,
-                    &configuration,
-                    Some(&image_completion),
-                );
-            }
+            let image_ms = began.elapsed().as_secs_f64() * 1000.0;
+            let encode_started = Instant::now();
+            // SAFETY: callback arguments are owned by ScreenCaptureKit for this
+            // invocation; the retained SDR image lives through conversion.
+            let result = unsafe {
+                output.as_ref().filter(|_| err.is_null()).and_then(|output| output.sdrImage())
+            }.ok_or_else(|| error("ScreenCaptureKit could not capture the main display; check Screen Recording permission and the active desktop session"))
+                .and_then(|image| encode_capture(&image));
+            tracing::debug!(target: "nanocodex_hand", stage = "screen.macos.capture", path = "rectangle",
+                content_ms = 0.0, image_ms, encode_ms = encode_started.elapsed().as_secs_f64() * 1000.0,
+                total_ms = began.elapsed().as_secs_f64() * 1000.0, success = result.is_ok());
+            let _ = sender.send(result);
         });
     });
-    // SAFETY: the escaping block is copied by the async API and owns its channel.
+    // SAFETY: capture() verifies API availability. The async API copies the
+    // completion block and retains configuration for the request.
     unsafe {
-        // Only display metadata is used below. Enumerating off-screen and desktop
-        // windows needlessly adds work; the capture filter still includes every
-        // window on the selected display.
-        SCShareableContent::getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler(
-            true, true, &completion,
+        let configuration = SCScreenshotConfiguration::new();
+        configuration.setWidth(width as isize);
+        configuration.setHeight(height as isize);
+        configuration.setShowsCursor(true);
+        configuration.setDynamicRange(SCScreenshotDynamicRange::SDR);
+        SCScreenshotManager::captureScreenshotWithRect_configuration_completionHandler(
+            bounds,
+            &configuration,
+            Some(&completion),
         );
     }
     receiver
@@ -735,7 +712,7 @@ fn capture() -> Result<Value> {
 fn encode_capture(image: &CGImage) -> Result<Value> {
     let width = CGImage::width(Some(image));
     let height = CGImage::height(Some(image));
-    if width == 0 || height == 0 || width > 1280 || height > 1280 {
+    if target_dimensions(width as f64, height as f64)? != (width as u32, height as u32) {
         return Err(error("unexpected screen capture dimensions"));
     }
     let mut rgba = vec![0u8; width * height * 4];
@@ -773,22 +750,6 @@ fn encode_capture(image: &CGImage) -> Result<Value> {
         .ok_or_else(|| error("invalid capture bitmap"))?;
     encode_jpeg(&frame)
 }
-fn encode_jpeg(frame: &RgbImage) -> Result<Value> {
-    // Bound the base64 representation itself, stricter than a 500k JPEG bound.
-    for quality in [65, 50, 35, 20, 10] {
-        let mut bytes = Vec::new();
-        JpegEncoder::new_with_quality(&mut bytes, quality)
-            .encode_image(frame)
-            .map_err(|_| error("could not encode screen JPEG"))?;
-        if bytes.len().div_ceil(3) * 4 <= 500_000 {
-            return Ok(
-                json!({"status":"ok","jpeg":STANDARD.encode(bytes),"width":frame.width(),"height":frame.height()}),
-            );
-        }
-    }
-    Err(error("screen JPEG exceeds the 500000-byte transport limit"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -869,22 +830,5 @@ mod tests {
                 .unwrap()
                 .raw
         );
-    }
-    #[test]
-    fn noisy_frame_fits_base64_budget_and_decodes() {
-        let mut random = 1u32;
-        let frame = RgbImage::from_fn(1280, 720, |_, _| {
-            image::Rgb(std::array::from_fn(|_| {
-                random ^= random << 13;
-                random ^= random >> 17;
-                random ^= random << 5;
-                random as u8
-            }))
-        });
-        let result = encode_jpeg(&frame).unwrap();
-        let jpeg = result["jpeg"].as_str().unwrap();
-        assert!(jpeg.len() <= 500_000);
-        let decoded = image::load_from_memory(&STANDARD.decode(jpeg).unwrap()).unwrap();
-        assert_eq!((decoded.width(), decoded.height()), (1280, 720));
     }
 }

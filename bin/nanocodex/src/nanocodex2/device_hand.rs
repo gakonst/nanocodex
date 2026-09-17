@@ -358,15 +358,27 @@ async fn share(
             let screen_machine = state.machine.clone();
             let screen_directory = directory.to_owned();
             let mut screen = tokio::spawn(async move {
-                if let Ok(screen) = super::screen_native::NativeScreen::start(
-                    &screen_target,
-                    &screen_machine,
-                    &screen_directory,
-                )
-                .await
-                {
-                    screen_cancel.cancelled().await;
-                    let _ = screen.shutdown().await;
+                loop {
+                    let started = tokio::select! {
+                        () = screen_cancel.cancelled() => break,
+                        result = super::screen_native::NativeScreen::start(
+                            &screen_target, &screen_machine, &screen_directory,
+                        ) => result,
+                    };
+                    match started {
+                        Ok(screen) => {
+                            screen_cancel.cancelled().await;
+                            let _ = screen.shutdown().await;
+                            break;
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "native screen startup failed; retrying")
+                        }
+                    }
+                    tokio::select! {
+                        () = screen_cancel.cancelled() => break,
+                        () = tokio::time::sleep(Duration::from_secs(5)) => {},
+                    }
                 }
             });
             let result = super::native_hand::run_observed(

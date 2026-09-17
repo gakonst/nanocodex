@@ -75,33 +75,55 @@ impl Capture {
                 framed.env_remove(key);
             }
         }
-        // The pipe is reserved for frame metadata. FFmpeg errors surface as
-        // capture EOF; never mix diagnostics with trusted packet boundaries.
+        // Native frameworks may write directly to stderr despite -loglevel
+        // quiet (AVFoundation does this). Keep frame metadata on a private Unix socket
+        // on Unix rather than letting diagnostics corrupt packet boundaries.
+        #[cfg(unix)]
+        let directory = tempfile::Builder::new()
+            .prefix("nanocodex-video-")
+            .tempdir()?;
+        #[cfg(unix)]
+        let metadata_path = directory.path().join("frames");
+        #[cfg(unix)]
+        let listener = tokio::net::UnixListener::bind(&metadata_path)?;
+        #[cfg(unix)]
+        let output = format!(
+            "[f=framecrc:flush_packets=1]unix://{}|[f=h264:flush_packets=1]pipe:1",
+            metadata_path.display()
+        );
+        #[cfg(not(unix))]
+        let output = "[f=framecrc:flush_packets=1]pipe:2|[f=h264:flush_packets=1]pipe:1".to_owned();
         framed
             .args(["-probesize", "32", "-analyzeduration", "0"])
             .args(&args[..args.len() - 3])
-            .args([
-                "-loglevel",
-                "quiet",
-                "-map",
-                "0:v:0",
-                "-f",
-                "tee",
-                "[f=framecrc:flush_packets=1]pipe:2|[f=h264:flush_packets=1]pipe:1",
-            ])
+            .args(["-loglevel", "quiet", "-map", "0:v:0", "-f", "tee", &output])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
+        #[cfg(unix)]
+        framed.stderr(std::process::Stdio::null());
         #[cfg(target_os = "windows")]
         framed.creation_flags(0x08000000); // CREATE_NO_WINDOW.
         let mut child = framed.spawn()?;
+        #[cfg(not(unix))]
         let metadata = child.stderr.take().ok_or("encoder metadata unavailable")?;
         let video = child.stdout.take().ok_or("encoder stdout unavailable")?;
         let (writer, reader) = tokio::io::duplex(64 * 1024);
         Ok(Self {
             reader: Box::new(reader),
             owner: Task(tokio::spawn(async move {
+                #[cfg(unix)]
+                let _directory = directory;
+                #[cfg(unix)]
+                let metadata = tokio::select! {
+                    biased;
+                    result = listener.accept() => match result {
+                        Ok((stream, _)) => stream,
+                        Err(error) => { tracing::warn!(%error, "encoder metadata connection failed"); return; }
+                    },
+                    _ = child.wait() => return,
+                };
                 if let Err(error) =
                     super::screen_video_frames::forward_encoded_frames(metadata, video, writer)
                         .await
@@ -626,6 +648,60 @@ pub(crate) use super::screen_ice::ice_servers;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn encoder_diagnostics_cannot_corrupt_frame_boundaries() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let encoder = directory.path().join("encoder");
+        std::fs::write(
+            &encoder,
+            r#"#!/usr/bin/env python3
+import os, socket, sys
+path = sys.argv[-1].split(']unix://', 1)[1].split('|', 1)[0]
+os.write(2, b'objc: diagnostic outside FFmpeg logging\n')
+with socket.socket(socket.AF_UNIX) as stream:
+    stream.connect(path)
+    stream.sendall(b'0, 0, 0, 1, 5, 0x0000\n')
+    os.write(1, bytes([0, 0, 1, 0x65, 42]))
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&encoder, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut command = std::process::Command::new(&encoder);
+        command.args(["-f", "h264", "pipe:1"]);
+        let mut capture = Capture::ffmpeg(command).unwrap();
+        let mut bytes = Vec::new();
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            capture.reader.read_to_end(&mut bytes),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            AccessUnits::default().push(&bytes).unwrap(),
+            vec![vec![0, 0, 1, 0x65, 42]]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn encoder_exit_before_metadata_does_not_leave_reader_waiting() {
+        let mut command = std::process::Command::new("/usr/bin/false");
+        command.args(["-f", "h264", "pipe:1"]);
+        let mut capture = Capture::ffmpeg(command).unwrap();
+        let mut bytes = Vec::new();
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            capture.reader.read_to_end(&mut bytes),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(bytes.is_empty());
+    }
+
     #[test]
     fn annex_b_every_split_and_bounded() {
         let input = [

@@ -452,6 +452,14 @@ enum RecoveryPhase {
     Disconnected,
 }
 
+struct SessionSearchCompletion {
+    pane: PaneId,
+    picker_id: u64,
+    request_id: u64,
+    query: String,
+    result: Result<Vec<nanocodex_managed::SessionSearchHit>, String>,
+}
+
 enum ConnectionResult {
     Recovered(Result<ConnectedAgent, ConnectionFailure>),
     Agent {
@@ -552,6 +560,8 @@ struct DriverRuntime {
     recent_prompts: Vec<RecentPrompt>,
     connection: JoinSet<ConnectionResult>,
     session_list_cancellations: HashMap<(PaneId, u64), CancellationToken>,
+    session_searches: JoinSet<SessionSearchCompletion>,
+    session_search_tasks: HashMap<PaneId, tokio::task::AbortHandle>,
     retry_target: Option<RetryTarget>,
 }
 
@@ -1519,6 +1529,8 @@ async fn run_inner(
         recent_prompts: Vec::new(),
         connection: JoinSet::new(),
         session_list_cancellations: HashMap::new(),
+        session_searches: JoinSet::new(),
+        session_search_tasks: HashMap::new(),
         retry_target: None,
     };
     // Put the complete interface on screen before any managed request starts.
@@ -1855,6 +1867,14 @@ async fn run_inner(
                         }
                     }
                     None => runtime.begin_recovery(&mut app, &mut scheduler, true),
+                }
+            }
+            Some(result) = runtime.session_searches.join_next(), if !runtime.session_searches.is_empty() => {
+                if let Ok(search) = result {
+                    request_render(app.update(AppEvent::SessionSearchResults {
+                        pane: search.pane, picker_id: search.picker_id, request_id: search.request_id,
+                        query: search.query, result: search.result,
+                    }), &mut scheduler);
                 }
             }
             result = runtime.connection.join_next_with_id(), if !runtime.connection.is_empty() => {
@@ -3068,6 +3088,42 @@ async fn apply_update(
                         }
                     }
                     RootEffect::SetTheme(_) => {}
+                    RootEffect::SearchSessions {
+                        picker_id,
+                        request_id,
+                        query,
+                    } => {
+                        if let Some(task) = runtime.session_search_tasks.remove(&pane) {
+                            task.abort();
+                        }
+                        if !query.trim().is_empty() {
+                            let client = runtime.client.clone();
+                            let task = runtime.session_searches.spawn(async move {
+                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                                let result = client
+                                    .find(&nanocodex_managed::FindSessionsRequest {
+                                        query: query.clone(),
+                                        limit: Some(20),
+                                    })
+                                    .await
+                                    .map(|response| response.results)
+                                    .map_err(|error| error.to_string());
+                                SessionSearchCompletion {
+                                    pane,
+                                    picker_id,
+                                    request_id,
+                                    query,
+                                    result,
+                                }
+                            });
+                            runtime.session_search_tasks.insert(pane, task);
+                        }
+                    }
+                    RootEffect::CancelSessionSearch => {
+                        if let Some(task) = runtime.session_search_tasks.remove(&pane) {
+                            task.abort();
+                        }
+                    }
                     RootEffect::LoadSessions { request_id, .. } => {
                         let client = runtime.client.clone();
                         let cancellation = CancellationToken::new();
@@ -3117,6 +3173,9 @@ async fn apply_update(
                         runtime.start_history_prefetch(pane);
                     }
                     RootEffect::ResumeSession(agent_id) => {
+                        if let Some(task) = runtime.session_search_tasks.remove(&pane) {
+                            task.abort();
+                        }
                         if !runtime.idle() {
                             absorb(
                             app.update(AppEvent::SessionLoadFailed {
@@ -3416,14 +3475,15 @@ fn session_summaries(list: &AgentList, workspace: &Path) -> Vec<SessionSummary> 
         .iter()
         .filter_map(|agent_id| {
             let summary = list.summaries.get(agent_id)?;
-            let timestamp = if summary.created_at < 10_000_000_000.0 {
-                summary.created_at * 1_000.0
+            let updated_at = summary.updated_at.max(summary.created_at);
+            let timestamp = if updated_at < 10_000_000_000.0 {
+                updated_at * 1_000.0
             } else {
-                summary.created_at
+                updated_at
             };
             Some(SessionSummary {
                 session_id: agent_id.clone(),
-                started_at_unix_ms: timestamp.max(0.0) as u64,
+                updated_at_unix_ms: timestamp.max(0.0) as u64,
                 model: Model::Sol.to_string(),
                 effort: ReasoningEffort::Medium,
                 reasoning_mode: ReasoningMode::Standard,
@@ -3740,6 +3800,8 @@ mod tests {
             recent_prompts,
             connection: JoinSet::new(),
             session_list_cancellations: HashMap::new(),
+            session_searches: JoinSet::new(),
+            session_search_tasks: HashMap::new(),
             retry_target: None,
         }
     }
@@ -4942,6 +5004,6 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id, "agent-1");
         assert_eq!(sessions[0].preview, "A durable task");
-        assert_eq!(sessions[0].started_at_unix_ms, 1_750_000_000_000);
+        assert_eq!(sessions[0].updated_at_unix_ms, 1_750_000_100_000);
     }
 }

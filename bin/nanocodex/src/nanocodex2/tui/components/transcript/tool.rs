@@ -371,7 +371,10 @@ fn summary_lines(
     let mut error_spans = Vec::new();
     if tool.state == ToolState::Failed
         && let Some(error) = first_error_line(tool.result.as_ref())
-        && presentation.outcome.as_deref() != Some(error.as_str())
+        && !presentation
+            .outcome
+            .as_deref()
+            .is_some_and(|outcome| outcome.starts_with(error.as_str()))
     {
         append_span(
             &mut error_spans,
@@ -380,6 +383,7 @@ fn summary_lines(
         );
     }
     let mut duration_spans = Vec::new();
+    let live_duration_ns = live_duration_ns.filter(|_| tool.state != ToolState::Yielded);
     if let Some(duration) = live_duration_ns.or(tool.duration_ns) {
         append_span(
             &mut duration_spans,
@@ -860,6 +864,7 @@ fn truncate(text: &str, width: u16) -> String {
 fn status_symbol(state: ToolState) -> &'static str {
     match state {
         ToolState::Running => "◌",
+        ToolState::Yielded => "◇",
         ToolState::Succeeded => "✓",
         ToolState::Failed => "×",
     }
@@ -868,6 +873,7 @@ fn status_symbol(state: ToolState) -> &'static str {
 fn status_style(state: ToolState, theme: &Theme) -> Style {
     let color = match state {
         ToolState::Running => theme.accent(),
+        ToolState::Yielded => theme.muted(),
         ToolState::Succeeded => Color::Green,
         ToolState::Failed => theme.thinking_xhigh(),
     };
@@ -1268,7 +1274,30 @@ mod tests {
     }
 
     #[test]
-    fn killed_shell_renders_failure_without_a_checkmark() {
+    fn yielded_shell_has_no_running_indicator_or_live_duration() {
+        let mut shell = tool("exec_command", json!({"cmd": "sleep 1"}));
+        shell.state = ToolState::Yielded;
+        shell.result = Some(json!({"session_id": 7, "output": ""}));
+        let rendered =
+            render_live(&shell, 7_200_000_000_000, 140, &Theme::default(), false)[0].to_string();
+        assert!(rendered.contains("◇ Shell"), "{rendered}");
+        assert!(
+            rendered.contains("session 7 · completion unknown"),
+            "{rendered}"
+        );
+        assert!(rendered.ends_with("1.2s"), "{rendered}");
+        assert!(!rendered.contains("running"));
+
+        shell.state = ToolState::Failed;
+        shell.result = Some(json!({"error": "namespace process route expired"}));
+        let rendered = render(&shell, 160, &Theme::default())[0].to_string();
+        assert!(rendered.contains("completion unknown"));
+        assert!(!rendered.contains("terminated"));
+        assert!(!rendered.contains("exit 0"));
+    }
+
+    #[test]
+    fn unknown_shell_exit_renders_failure_without_a_checkmark() {
         let mut shell = tool("exec_command", json!({"cmd": "sleep 100"}));
         shell.state = ToolState::Failed;
         shell.result = Some(json!({"output": "", "exit_code": null}));
@@ -1276,7 +1305,7 @@ mod tests {
         let rendered = render(&shell, 80, &Theme::default())[0].to_string();
 
         assert!(rendered.contains("× Shell"));
-        assert!(rendered.contains("terminated"));
+        assert!(rendered.contains("completion unknown"));
         assert!(!rendered.contains('✓'));
 
         shell.result = Some(json!({"output": "", "exit_code": null, "error": "cancelled by user"}));

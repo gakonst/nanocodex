@@ -61,6 +61,7 @@ pub(crate) enum ComposerEffect {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SettingsCommand {
+    Attach,
     Screen,
     Zoom,
     Voice(crate::voice::Command),
@@ -76,6 +77,11 @@ impl SettingsCommand {
         let mut parts = input.split_whitespace();
         let command = parts.next()?;
         match command {
+            "/attach" => Some(if parts.next().is_some() {
+                Self::Invalid("Usage: /attach".into())
+            } else {
+                Self::Attach
+            }),
             "/screen" | "/zoom" => Some(if parts.next().is_some() {
                 Self::Invalid(format!("Usage: {command}"))
             } else if command == "/screen" {

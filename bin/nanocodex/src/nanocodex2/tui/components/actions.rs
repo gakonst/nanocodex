@@ -348,7 +348,7 @@ impl Action {
             Self::FastMode => Some("priority"),
             Self::Theme => Some("appearance"),
             Self::NewSession => Some("clear"),
-            Self::ResumeSession => Some("restore"),
+            Self::ResumeSession => Some("attach restore"),
             Self::Fork => Some("btw"),
             Self::ReloadConfig => Some("refresh"),
             Self::Reflection => Some("reflection"),

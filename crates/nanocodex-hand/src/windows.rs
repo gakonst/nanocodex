@@ -1,9 +1,11 @@
 //! Primary-display capture and input for an interactive Windows user session.
 //! The publisher owns authorization and input leases. Session 0 is unsupported.
 #![allow(unsafe_code)]
-use crate::Error;
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use image::{RgbImage, codecs::jpeg::JpegEncoder};
+use crate::{
+    Error,
+    capture::{encode_jpeg, target_dimensions},
+};
+use image::RgbImage;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -750,9 +752,8 @@ impl Drop for Capture {
 fn capture() -> Result<Value> {
     let _dpi = DpiGuard::new()?;
     let (source_width, source_height) = dimensions()?;
-    let scale = (1280.0 / source_width.max(source_height) as f64).min(1.0);
-    let width = (source_width as f64 * scale).round().max(1.0) as i32;
-    let height = (source_height as f64 * scale).round().max(1.0) as i32;
+    let (width, height) = target_dimensions(source_width as f64, source_height as f64)?;
+    let (width, height) = (width as i32, height as i32);
     let mut resources = Capture {
         screen: null_mut(),
         memory: null_mut(),
@@ -825,22 +826,6 @@ fn capture() -> Result<Value> {
         drop(resources);
         encode_jpeg(&frame)
     }
-}
-
-fn encode_jpeg(frame: &RgbImage) -> Result<Value> {
-    // Bound the base64 representation itself, stricter than a 500k JPEG bound.
-    for quality in [65, 50, 35, 20, 10] {
-        let mut bytes = Vec::new();
-        JpegEncoder::new_with_quality(&mut bytes, quality)
-            .encode_image(frame)
-            .map_err(|_| error("could not encode screen JPEG"))?;
-        if bytes.len().div_ceil(3) * 4 <= 500_000 {
-            return Ok(
-                json!({"status":"ok","jpeg":STANDARD.encode(bytes),"width":frame.width(),"height":frame.height()}),
-            );
-        }
-    }
-    Err(error("screen JPEG exceeds the 500000-byte transport limit"))
 }
 
 #[cfg(test)]
@@ -939,22 +924,5 @@ mod tests {
                 .unwrap()
                 .raw
         );
-    }
-    #[test]
-    fn noisy_frame_fits_base64_budget_and_decodes() {
-        let mut random = 1u32;
-        let frame = RgbImage::from_fn(1280, 720, |_, _| {
-            image::Rgb(std::array::from_fn(|_| {
-                random ^= random << 13;
-                random ^= random >> 17;
-                random ^= random << 5;
-                random as u8
-            }))
-        });
-        let result = encode_jpeg(&frame).unwrap();
-        let jpeg = result["jpeg"].as_str().unwrap();
-        assert!(jpeg.len() <= 500_000);
-        let decoded = image::load_from_memory(&STANDARD.decode(jpeg).unwrap()).unwrap();
-        assert_eq!((decoded.width(), decoded.height()), (1280, 720));
     }
 }

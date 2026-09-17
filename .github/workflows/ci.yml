@@ -75,6 +75,8 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Check shared native capture policy and platform adapters
+        run: cargo test --locked -p nanocodex-hand
       - name: Check native identity, IPC leases, reconnect, and factory discovery
         run: cargo test --locked -p nanocodex2-bin --bin nanocodex2 hand -- --test-threads=1
       - run: cargo build --locked -p nanocodex2-bin --bin nanocodex2

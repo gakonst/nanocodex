@@ -2,6 +2,8 @@
 #![deny(unsafe_code)]
 /// Native platform capture or input failure.
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+mod capture;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]

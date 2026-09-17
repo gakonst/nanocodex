@@ -190,6 +190,15 @@ Earlier retry attempts keep their own errors; other turns and child agents keep
 running.
 
 Scrolling back through older history keeps typing and live updates responsive.
+`nanocodex2 attach` and the in-TUI `/attach` command show recent threads first,
+ordered by last activity, with titles above session IDs. Type to fuzzy search
+titles and IDs; space-separated terms can appear in any order. Title matches rank
+by relevance, with recent activity breaking ties. The same query also searches
+retained user and assistant messages after a short typing pause. Content matches
+appear with excerpts, once per attachable thread, below title matches. This uses
+the server's history search (up to 20 hits), while title/ID matching stays local
+and fuzzy. Clearing the query restores recent threads. Use arrows or Ctrl+N/Ctrl+P to
+move, Enter/Tab to select, Ctrl+U to clear, and Esc/Ctrl+C to close.
 If the session picker takes too long to load, Esc or Ctrl+C cancels the lookup
 and restores the draft. A cancelled lookup cannot reopen or replace a newer picker.
 If the current turn finishes during a lookup, ready follow-ups resume when the
