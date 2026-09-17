@@ -34,6 +34,11 @@ The installer bundles FFmpeg for H.264 screen streaming. The stream requests
 source, available CPU, and network. A software-rendered VM does not guarantee
 60 distinct frames per second.
 
+The WebRTC connection also carries stereo system-output audio through WASAPI
+loopback when Windows has an active playback device. It never captures the
+microphone. Use the viewer's sound control to enable playback. VMs need a virtual
+audio output device; a missing or failed audio source leaves video available.
+
 WebRTC needs inbound UDP reachability or a TURN relay. For a VM behind NAT, see
 the [shared video network settings](../../crates/nanocodex-hand/README.md).
 Configure Windows Firewall for the installed `nanocodex2.exe`, the selected UDP
