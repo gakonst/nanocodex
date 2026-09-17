@@ -25,6 +25,7 @@ fn error(message: &str) -> Error {
 struct Held {
     keys: BTreeSet<u16>,
     buttons: BTreeSet<u32>,
+    relative_remainder: (f64, f64),
 }
 static HELD: OnceLock<Mutex<Held>> = OnceLock::new();
 
@@ -134,10 +135,13 @@ struct Raw {
 #[derive(Debug)]
 enum Input {
     Move(f64, f64),
+    RelativeMove(f64, f64),
     Button(f64, f64, u32, bool),
+    PointerButton(u32, bool),
     Key(u16, bool),
     Text(String),
     Scroll(f64, f64, i32, i32),
+    PointerScroll(i32, i32),
     Release,
 }
 struct Step {
@@ -165,11 +169,20 @@ fn point(x: Option<f64>, y: Option<f64>) -> Result<(f64, f64)> {
     ))
 }
 fn delta(value: Option<f64>) -> Result<i32> {
-    let value = value.ok_or_else(|| error("missing scroll delta"))?;
+    Ok(relative_delta(value)?.round() as i32)
+}
+fn relative_delta(value: Option<f64>) -> Result<f64> {
+    let value = value.ok_or_else(|| error("missing input delta"))?;
     if !value.is_finite() || value.abs() > 4096.0 {
-        return Err(error("scroll delta must be finite and at most 4096"));
+        return Err(error("input delta must be finite and at most 4096"));
     }
-    Ok(value.round() as i32)
+    Ok(value)
+}
+fn optional_point(x: Option<f64>, y: Option<f64>) -> Result<Option<(f64, f64)>> {
+    match (x, y) {
+        (None, None) => Ok(None),
+        _ => point(x, y).map(Some),
+    }
 }
 fn valid_text(text: Option<String>) -> Result<String> {
     let text = text.ok_or_else(|| error("missing input text"))?;
@@ -196,6 +209,7 @@ impl Raw {
         // Reject fields belonging to another kind, including otherwise ignored coordinates.
         let fields: &[&str] = match self.kind.as_str() {
             "move" => &["x", "y"],
+            "relativeMove" => &["deltaX", "deltaY"],
             "button" => &["x", "y", "button", "down"],
             "key" => &["key", "down"],
             "text" => &["text"],
@@ -213,7 +227,9 @@ impl Raw {
             ("deltaX", self.delta_x.is_some()),
             ("deltaY", self.delta_y.is_some()),
         ] {
-            if present != fields.contains(&name) {
+            let optional_coordinate =
+                matches!(self.kind.as_str(), "button" | "scroll") && matches!(name, "x" | "y");
+            if present != fields.contains(&name) && !optional_coordinate {
                 return Err(error("invalid fields for raw screen input kind"));
             }
         }
@@ -226,15 +242,24 @@ impl Raw {
                 let (x, y) = point(self.x, self.y)?;
                 Input::Move(x, y)
             }
+            "relativeMove" => {
+                Input::RelativeMove(relative_delta(self.delta_x)?, relative_delta(self.delta_y)?)
+            }
             "button" => {
-                let (x, y) = point(self.x, self.y)?;
-                Input::Button(x, y, valid_button(self.button.unwrap_or(3))?, down()?)
+                let button = valid_button(self.button.unwrap_or(3))?;
+                match optional_point(self.x, self.y)? {
+                    Some((x, y)) => Input::Button(x, y, button, down()?),
+                    None => Input::PointerButton(button, down()?),
+                }
             }
             "key" => Input::Key(valid_key(self.key)?, down()?),
             "text" => Input::Text(valid_text(self.text)?),
             "scroll" => {
-                let (x, y) = point(self.x, self.y)?;
-                Input::Scroll(x, y, delta(self.delta_x)?, delta(self.delta_y)?)
+                let (dx, dy) = (delta(self.delta_x)?, delta(self.delta_y)?);
+                match optional_point(self.x, self.y)? {
+                    Some((x, y)) => Input::Scroll(x, y, dx, dy),
+                    None => Input::PointerScroll(dx, dy),
+                }
             }
             "releaseAll" => Input::Release,
             _ => unreachable!(),
@@ -538,6 +563,7 @@ impl Held {
         Ok(())
     }
     fn release(&mut self) -> Result<()> {
+        self.relative_remainder = (0.0, 0.0);
         let mut failure = None;
         for key in self.keys.clone() {
             if let Err(e) = self.key(key, false) {
@@ -554,10 +580,24 @@ impl Held {
     fn apply(&mut self, input: Input) -> Result<()> {
         match input {
             Input::Move(x, y) => move_pointer(x, y),
+            Input::RelativeMove(dx, dy) => {
+                let (dx, dy) = relative_motion(&mut self.relative_remainder, dx, dy);
+                if dx == 0 && dy == 0 {
+                    return Ok(());
+                }
+                let mut input = mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE, 0);
+                // SAFETY: mouse() initialized this union as MOUSEINPUT.
+                unsafe {
+                    input.Anonymous.mi.dx = dx;
+                    input.Anonymous.mi.dy = dy;
+                }
+                send(input)
+            }
             Input::Button(x, y, button, down) => {
                 move_pointer(x, y)?;
                 self.button(button, down)
             }
+            Input::PointerButton(button, down) => self.button(button, down),
             Input::Key(key, down) => self.key(key, down),
             Input::Release => self.release(),
             Input::Text(text) => {
@@ -572,16 +612,26 @@ impl Held {
             }
             Input::Scroll(x, y, dx, dy) => {
                 move_pointer(x, y)?;
-                if dx != 0 {
-                    send(mouse(MOUSEEVENTF_HWHEEL, dx as u32))?;
-                }
-                if dy != 0 {
-                    send(mouse(MOUSEEVENTF_WHEEL, (-dy) as u32))?;
-                }
-                Ok(())
+                scroll_pointer(dx, dy)
             }
+            Input::PointerScroll(dx, dy) => scroll_pointer(dx, dy),
         }
     }
+}
+fn relative_motion(remainder: &mut (f64, f64), dx: f64, dy: f64) -> (i32, i32) {
+    let (x, y) = (remainder.0 + dx, remainder.1 + dy);
+    let pixels = (x.trunc() as i32, y.trunc() as i32);
+    *remainder = (x - f64::from(pixels.0), y - f64::from(pixels.1));
+    pixels
+}
+fn scroll_pointer(dx: i32, dy: i32) -> Result<()> {
+    if dx != 0 {
+        send(mouse(MOUSEEVENTF_HWHEEL, dx as u32))?;
+    }
+    if dy != 0 {
+        send(mouse(MOUSEEVENTF_WHEEL, (-dy) as u32))?;
+    }
+    Ok(())
 }
 fn move_pointer(x: f64, y: f64) -> Result<()> {
     let (width, height) = dimensions()?;
@@ -805,6 +855,31 @@ mod tests {
         assert_eq!(video_level(2560, 1440, 40000), "5.1");
         assert_eq!(video_level(3840, 2160, 40000), "5.2");
         assert_eq!(video_level(7680, 4320, 100000), "6.1");
+    }
+    #[test]
+    fn relative_input_keeps_fractional_motion_and_rejects_invalid_fields() {
+        let mut remainder = (0.0, 0.0);
+        assert_eq!(relative_motion(&mut remainder, 0.25, -0.5), (0, 0));
+        assert_eq!(relative_motion(&mut remainder, 0.75, -0.5), (1, -1));
+        for input in [
+            json!({"kind":"relativeMove","deltaX":1.5,"deltaY":-2.5}),
+            json!({"kind":"button","button":0,"down":true}),
+            json!({"kind":"scroll","deltaX":0,"deltaY":120}),
+        ] {
+            assert!(plan(json!({"action":"input","input":input})).is_ok());
+        }
+        for input in [
+            json!({"kind":"relativeMove","deltaX":4097,"deltaY":0}),
+            json!({"kind":"relativeMove","deltaX":0}),
+            json!({"kind":"relativeMove","deltaX":0,"deltaY":0,"x":0.5}),
+            json!({"kind":"button","button":0,"down":true,"x":0.5}),
+            json!({"kind":"button","button":0,"down":true,"y":0.5}),
+            json!({"kind":"scroll","deltaX":0,"deltaY":1,"x":0.5}),
+        ] {
+            assert!(plan(json!({"action":"input","input":input})).is_err());
+        }
+        assert!(relative_delta(Some(f64::NAN)).is_err());
+        assert!(relative_delta(Some(f64::INFINITY)).is_err());
     }
     fn plan(value: Value) -> Result<Plan> {
         serde_json::from_value::<Request>(value)
