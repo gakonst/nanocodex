@@ -4,7 +4,6 @@
 //! Terminal lifecycle and synchronized Ratatui frames.
 
 use crossterm::{
-    clipboard::CopyToClipboard,
     cursor::{Hide, Show},
     event::{
         DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
@@ -250,10 +249,6 @@ impl TerminalSession {
         self.terminal.backend_mut().invalidate_cursor_visibility();
     }
 
-    pub(crate) fn copy_to_clipboard(&mut self, text: &str) -> io::Result<()> {
-        copy_to_clipboard(self.terminal.backend_mut(), text)
-    }
-
     pub(crate) fn suspend(&mut self) -> io::Result<()> {
         if !self.active {
             return Ok(());
@@ -285,10 +280,6 @@ impl TerminalSession {
 fn reset_after_resume<B: Backend>(terminal: &mut Terminal<B>) -> Result<(), B::Error> {
     let area = terminal.size()?.into();
     terminal.resize(area)
-}
-
-fn copy_to_clipboard(output: &mut impl Write, text: &str) -> io::Result<()> {
-    execute!(output, CopyToClipboard::to_clipboard_from(text))
 }
 
 impl Drop for TerminalSession {
@@ -373,7 +364,7 @@ fn install_panic_hook() {
 mod tests {
     use super::{
         MeasuredBackend, StableCursorBackend, activate_commands, begin_synchronized_update,
-        copy_to_clipboard, end_synchronized_update, reset_after_resume, restore_commands,
+        end_synchronized_update, reset_after_resume, restore_commands,
     };
     use crate::{
         config::ReasoningEffort,
@@ -419,15 +410,6 @@ mod tests {
             assert!(output.windows(8).any(|window| window == b"\x1b[?2004l"));
             assert!(output.ends_with(b"\x1b[?1049l"));
         }
-    }
-
-    #[test]
-    fn clipboard_copy_uses_osc_52() {
-        let mut output = Vec::new();
-
-        copy_to_clipboard(&mut output, "copy me").unwrap();
-
-        assert_eq!(output, b"\x1b]52;c;Y29weSBtZQ==\x1b\\");
     }
 
     #[test]

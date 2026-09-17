@@ -3083,8 +3083,16 @@ async fn apply_update(
                         }
                     }
                     RootEffect::Copy(text) => {
-                        if terminal.copy_to_clipboard(&text).is_err() {
-                            let _ = clipboard::copy_text(&text);
+                        if let Err(error) = clipboard::copy_text(&text) {
+                            tracing::warn!(%error, "failed to copy the mouse selection");
+                            absorb(
+                                app.update(AppEvent::NotifyError {
+                                    pane,
+                                    error: format!("Clipboard copy failed: {error}"),
+                                }),
+                                &mut effects,
+                                scheduler,
+                            );
                         }
                     }
                     RootEffect::SetTheme(_) => {}
