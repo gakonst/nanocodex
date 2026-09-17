@@ -364,15 +364,11 @@ pub fn video_command() -> Result<std::process::Command> {
     ensure_interactive_session()?;
     let _dpi = DpiGuard::new()?;
     let (width, height) = dimensions()?;
-    let max_dimension = video_setting("NANOCODEX_SCREEN_MAX_DIMENSION", 1280, 1280, 7680)?;
-    let bitrate = video_setting("NANOCODEX_SCREEN_BITRATE_KBPS", 6000, 1000, 100000)?;
-    let scale = (max_dimension as f64 / width.max(height) as f64).min(1.0);
-    let output_width = ((width as f64 * scale) as u32 / 2 * 2).max(2);
-    let output_height = ((height as f64 * scale) as u32 / 2 * 2).max(2);
-    // Bound the VBV buffer to approximately two 60 Hz frames.
-    let buffer = format!("{}k", bitrate / 30);
-    let level = video_level(output_width, output_height, bitrate);
-    let bitrate = format!("{bitrate}k");
+    let settings = crate::VideoSettings::from_environment(width as u32, height as u32, 1280, 6000)?;
+    let (output_width, output_height) = (settings.width, settings.height);
+    let buffer = format!("{}k", settings.bitrate_kbps / 30);
+    let level = settings.level;
+    let bitrate = format!("{}k", settings.bitrate_kbps);
     let bundled = std::env::current_exe()?.with_file_name("ffmpeg.exe");
     let mut command = std::process::Command::new(if bundled.is_file() {
         bundled
@@ -435,32 +431,6 @@ pub fn video_command() -> Result<std::process::Command> {
         "pipe:1",
     ]);
     Ok(command)
-}
-
-fn video_setting(name: &str, default: u32, min: u32, max: u32) -> Result<u32> {
-    let value = match std::env::var(name) {
-        Ok(value) => value.parse::<u32>()?,
-        Err(std::env::VarError::NotPresent) => default,
-        Err(error) => return Err(error.into()),
-    };
-    if !(min..=max).contains(&value) {
-        return Err(error(&format!("{name} must be between {min} and {max}")));
-    }
-    Ok(value)
-}
-
-fn video_level(width: u32, height: u32, bitrate_kbps: u32) -> &'static str {
-    let macroblocks_per_second =
-        u64::from(width.div_ceil(16)) * u64::from(height.div_ceil(16)) * 60;
-    match macroblocks_per_second {
-        0..=216000 if bitrate_kbps <= 20000 => "3.2",
-        0..=522240 if bitrate_kbps <= 50000 => "4.2",
-        0..=983040 => "5.1",
-        0..=2073600 => "5.2",
-        0..=4177920 => "6.0",
-        0..=8355840 => "6.1",
-        _ => "6.2",
-    }
 }
 
 struct DpiGuard(DPI_AWARENESS_CONTEXT);
@@ -833,13 +803,13 @@ mod tests {
     use super::*;
     #[test]
     fn video_level_covers_60hz_resolution_and_bitrate() {
-        assert_eq!(video_level(1280, 720, 6000), "3.2");
-        assert_eq!(video_level(1280, 800, 6000), "4.2");
-        assert_eq!(video_level(1280, 720, 40000), "4.2");
-        assert_eq!(video_level(1920, 1080, 20000), "4.2");
-        assert_eq!(video_level(2560, 1440, 40000), "5.1");
-        assert_eq!(video_level(3840, 2160, 40000), "5.2");
-        assert_eq!(video_level(7680, 4320, 100000), "6.1");
+        assert_eq!(crate::video::video_level(1280, 720, 6000), "3.2");
+        assert_eq!(crate::video::video_level(1280, 800, 6000), "4.2");
+        assert_eq!(crate::video::video_level(1280, 720, 40000), "4.2");
+        assert_eq!(crate::video::video_level(1920, 1080, 20000), "4.2");
+        assert_eq!(crate::video::video_level(2560, 1440, 40000), "5.1");
+        assert_eq!(crate::video::video_level(3840, 2160, 40000), "5.2");
+        assert_eq!(crate::video::video_level(7680, 4320, 100000), "6.1");
     }
     #[test]
     fn relative_input_keeps_fractional_motion_and_rejects_invalid_fields() {

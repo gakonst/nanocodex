@@ -72,6 +72,8 @@ async fn result(State(state): State<Bridge>, Json(metrics): Json<Metrics>) -> St
 #[ignore = "real macOS screen capture; requires Screen Recording permission, FFmpeg, and Chrome"]
 async fn macos_live_webrtc() -> Result<()> {
     let started = Instant::now();
+    let (width, height) = nanocodex_hand::main_display_pixel_dimensions()?;
+    let expected = nanocodex_hand::VideoSettings::from_environment(width, height, 3840, 24000)?;
     let source = super::native_video();
     let mut video = Video::start(&source, None).await?;
     let (outgoing, receiver) = mpsc::channel(128);
@@ -130,6 +132,9 @@ async fn macos_live_webrtc() -> Result<()> {
                         }
                         if metrics.frames_decoded < 60 || metrics.width == 0 || metrics.height == 0 {
                             return Err("Chromium did not decode 60 nonempty frames".into());
+                        }
+                        if (metrics.width, metrics.height) != (expected.width, expected.height) {
+                            return Err("Chromium decoded a different resolution than the configured native stream".into());
                         }
                         if !metrics.codec.eq_ignore_ascii_case("video/H264") {
                             return Err("Chromium did not report H.264 decoding".into());

@@ -47,6 +47,17 @@ pub fn main_display_index() -> Result<usize> {
         .ok_or_else(|| error("main display unavailable"))
 }
 
+/// Physical pixel dimensions of the main display, for native-resolution video.
+pub fn main_display_pixel_dimensions() -> Result<(u32, u32)> {
+    let display = CGMainDisplayID();
+    let width = u32::try_from(CGDisplayPixelsWide(display))?;
+    let height = u32::try_from(CGDisplayPixelsHigh(display))?;
+    if width < 2 || height < 2 {
+        return Err(error("main display unavailable"));
+    }
+    Ok((width, height))
+}
+
 #[derive(Default)]
 struct Held {
     keys: BTreeSet<u16>,

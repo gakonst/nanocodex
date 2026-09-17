@@ -7,7 +7,7 @@ mod capture;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
-pub use macos::{main_display_index, request};
+pub use macos::{main_display_index, main_display_pixel_dimensions, request};
 
 #[cfg(target_os = "windows")]
 mod windows;
@@ -18,3 +18,6 @@ pub use windows::{ensure_interactive_session, request, video_command};
 mod windows_audio;
 #[cfg(target_os = "windows")]
 pub use windows_audio::capture_audio;
+
+mod video;
+pub use video::VideoSettings;

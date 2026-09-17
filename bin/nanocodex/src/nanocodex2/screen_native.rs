@@ -273,6 +273,12 @@ fn native_video() -> super::screen_video::VideoSource {
                 })
                 .ok_or("AVFoundation screen capture unavailable")?;
             let input = format!("{screen}:none");
+            let (width, height) = nanocodex_hand::main_display_pixel_dimensions()?;
+            let settings =
+                nanocodex_hand::VideoSettings::from_environment(width, height, 3840, 24000)?;
+            let scale = format!("scale={}:{}", settings.width, settings.height);
+            let bitrate = format!("{}k", settings.bitrate_kbps);
+            let buffer = format!("{}k", settings.bitrate_kbps / 30);
             let mut command = std::process::Command::new("ffmpeg");
             command.args([
                 "-hide_banner",
@@ -293,9 +299,9 @@ fn native_video() -> super::screen_video::VideoSource {
                 "-r",
                 "60",
                 "-level",
-                "3.2",
+                settings.level,
                 "-vf",
-                "scale=1280:1280:force_original_aspect_ratio=decrease:force_divisible_by=2",
+                &scale,
                 "-c:v",
                 "h264_videotoolbox",
                 "-realtime",
@@ -303,11 +309,11 @@ fn native_video() -> super::screen_video::VideoSource {
                 "-profile:v",
                 "baseline",
                 "-b:v",
-                "6M",
+                &bitrate,
                 "-maxrate",
-                "6M",
+                &bitrate,
                 "-bufsize",
-                "100k",
+                &buffer,
                 "-g",
                 "30",
                 "-bf",
