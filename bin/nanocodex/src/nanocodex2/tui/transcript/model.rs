@@ -1034,7 +1034,7 @@ impl TranscriptModel {
         let resumed_result = resumed_shell.map(|_| result.clone());
         let nested_shell_followup = resumed_shell.is_some();
         let state = tool_result_state(&payload.tool, &payload.status, &result);
-        let entry_state = if resumed_shell.is_some() && state == ToolState::Running {
+        let entry_state = if resumed_shell.is_some() && state == ToolState::Yielded {
             ToolState::Succeeded
         } else {
             state
@@ -1147,11 +1147,11 @@ impl TranscriptModel {
                     tool.result = Some(merge_shell_result(tool.result.take(), resumed_result));
                 }
             });
-            if state != ToolState::Running {
+            if state != ToolState::Yielded {
                 self.shell_sessions.retain(|_, entry| *entry != shell);
-                self.running_tools.remove(&shell);
-                self.tool_owners.remove(&shell);
             }
+            self.running_tools.remove(&shell);
+            self.tool_owners.remove(&shell);
         }
         if payload.tool == "wait"
             && state == ToolState::Failed
@@ -1159,15 +1159,19 @@ impl TranscriptModel {
         {
             self.entries[index].hidden = false;
         }
-        if entry_state == ToolState::Running {
+        // Keep poll correlation independently of the RPC activity/timer.
+        if state == ToolState::Yielded {
             if let Some(session_id) = shell_session {
                 self.shell_sessions.insert(session_id, id);
             }
-            self.running_tools.insert(id);
-            self.tool_owners.insert(id, RunScope::new(record));
         } else {
             self.shell_sessions
                 .retain(|_, shell_entry| *shell_entry != id);
+        }
+        if entry_state == ToolState::Running {
+            self.running_tools.insert(id);
+            self.tool_owners.insert(id, RunScope::new(record));
+        } else {
             self.running_tools.remove(&id);
             self.tool_owners.remove(&id);
         }
@@ -1898,7 +1902,7 @@ fn tool_result_state(tool: &str, status: &str, result: &Value) -> ToolState {
     if tool_session_id(result).is_some()
         && result.get("exit_code").and_then(Value::as_i64).is_none()
     {
-        return ToolState::Running;
+        return ToolState::Yielded;
     }
     ToolState::Failed
 }
@@ -2373,7 +2377,7 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(
                 states,
-                [ToolState::Running, ToolState::Failed],
+                [ToolState::Yielded, ToolState::Failed],
                 "{terminal}"
             );
             model.apply(
@@ -2468,9 +2472,9 @@ mod tests {
             Value::Null,
             Value::Null,
         ));
-        assert_eq!(model.running_tool_ids().count(), 1);
+        assert_eq!(model.running_tool_ids().count(), 0);
         assert!(
-            matches!(&model.entries()[1].kind, EntryKind::Tool(tool) if tool.state == ToolState::Running)
+            matches!(&model.entries()[1].kind, EntryKind::Tool(tool) if tool.state == ToolState::Yielded)
         );
         assert!(
             matches!(&model.entries()[2].kind, EntryKind::Tool(tool) if tool.state == ToolState::Failed)
@@ -3501,6 +3505,43 @@ mod tests {
     }
 
     #[test]
+    fn replayed_shell_session_is_pollable_without_active_rpc() {
+        let records = [
+            call(1, "shell", "exec_command", json!({"cmd": "sleep 1"})),
+            result(
+                2,
+                "shell",
+                "exec_command",
+                Value::Null,
+                json!({"session_id": 7, "output": "started"}),
+                Value::Null,
+            ),
+        ];
+        let mut model = TranscriptModel::default();
+        for record in records {
+            let replay = serde_json::from_str(&serde_json::to_string(&record).unwrap()).unwrap();
+            model.apply(&replay);
+        }
+        assert_eq!(model.running_tool_ids().count(), 0);
+        assert!(
+            matches!(&model.entries()[0].kind, EntryKind::Tool(tool) if tool.state == ToolState::Yielded)
+        );
+        model.apply(&call(3, "poll", "write_stdin", json!({"session_id": 7})));
+        model.apply(&result(
+            4,
+            "poll",
+            "write_stdin",
+            Value::Null,
+            json!({"exit_code": 0, "output": "done"}),
+            Value::Null,
+        ));
+        assert_eq!(model.entries().len(), 1);
+        assert_eq!(model.running_tool_ids().count(), 0);
+        assert!(matches!(&model.entries()[0].kind, EntryKind::Tool(tool)
+            if tool.state == ToolState::Succeeded && tool.result.as_ref().unwrap()["output"] == "starteddone"));
+    }
+
+    #[test]
     fn command_progress_survives_replayed_calls_and_missing_result_fields() {
         let mut model = TranscriptModel::default();
         let start = call(1, "build", "exec_command", json!({"cmd": "cargo test"}));
@@ -3514,6 +3555,10 @@ mod tests {
         );
         model.apply(&start);
         model.apply(&yielded);
+        assert_eq!(model.running_tool_ids().count(), 0);
+        assert!(
+            matches!(&model.entries()[0].kind, EntryKind::Tool(tool) if tool.state == ToolState::Yielded)
+        );
         model.apply(&call(3, "poll", "write_stdin", json!({"session_id": 7})));
         let progress = result(
             4,
@@ -3527,6 +3572,10 @@ mod tests {
         model.apply(&start);
         model.apply(&yielded);
         model.apply(&progress);
+        assert_eq!(model.running_tool_ids().count(), 0);
+        assert!(
+            matches!(&model.entries()[0].kind, EntryKind::Tool(tool) if tool.state == ToolState::Yielded)
+        );
         model.apply(&call(5, "exit", "write_stdin", json!({"session_id": 7})));
         model.apply(&agent_record(
             6,
@@ -3628,6 +3677,58 @@ mod tests {
         };
         assert_eq!(tool.state, ToolState::Succeeded);
         assert_eq!(tool.result, Some(json!("visible output")));
+    }
+
+    #[test]
+    fn nested_nonterminal_polls_leave_owning_shell_settled_and_pollable() {
+        let mut model = TranscriptModel::default();
+        model.apply(&call(
+            1,
+            "shell",
+            "exec_command",
+            json!({"cmd": "interactive"}),
+        ));
+        model.apply(&result(
+            2,
+            "shell",
+            "exec_command",
+            Value::Null,
+            json!({"session_id": 7, "output": "ready"}),
+            Value::Null,
+        ));
+        let shell_id = model.entries()[0].id;
+        model.apply(&call(3, "outer", "exec", json!("poll")));
+        for index in 0..2 {
+            let call_id = format!("outer/code-{index}");
+            model.apply(&call(
+                4 + index * 2,
+                &call_id,
+                "write_stdin",
+                json!({"session_id": 7}),
+            ));
+            model.apply(&result(
+                5 + index * 2,
+                &call_id,
+                "write_stdin",
+                Value::Null,
+                json!({"session_id": 7, "output": "tick"}),
+                Value::Null,
+            ));
+            assert!(!model.running_tool_ids().any(|id| id == shell_id));
+            assert!(matches!(&model.entries()[0].kind, EntryKind::Tool(tool)
+                if tool.state == ToolState::Yielded));
+        }
+        model.apply(&call(8, "done", "write_stdin", json!({"session_id": 7})));
+        model.apply(&result(
+            9,
+            "done",
+            "write_stdin",
+            Value::Null,
+            json!({"exit_code": 0, "output": "done"}),
+            Value::Null,
+        ));
+        assert!(matches!(&model.entries()[0].kind, EntryKind::Tool(tool)
+            if tool.state == ToolState::Succeeded && tool.result.as_ref().unwrap()["output"] == "readyticktickdone"));
     }
 
     #[test]

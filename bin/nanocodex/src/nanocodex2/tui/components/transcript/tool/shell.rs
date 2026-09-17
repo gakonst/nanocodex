@@ -136,10 +136,13 @@ fn shell_outcome(result: Option<&Value>) -> Option<String> {
         return Some(format!("exit {code}"));
     }
     if let Some(error) = result.get("error").and_then(Value::as_str) {
-        return Some(error.lines().next().unwrap_or(error).to_owned());
+        return Some(format!(
+            "{} · completion unknown",
+            error.lines().next().unwrap_or(error)
+        ));
     }
     if let Some(id) = result.get("session_id").and_then(Value::as_i64) {
-        return Some(format!("session {id} running"));
+        return Some(format!("session {id} · completion unknown"));
     }
-    Some("terminated".to_owned())
+    Some("completion unknown".to_owned())
 }

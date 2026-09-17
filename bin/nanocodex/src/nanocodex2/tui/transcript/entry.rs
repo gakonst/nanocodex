@@ -411,6 +411,8 @@ fn find_string<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ToolState {
     Running,
+    // The shell RPC returned a session; current process completion is unknown.
+    Yielded,
     Succeeded,
     Failed,
 }
