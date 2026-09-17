@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { DurableAgentSession } from "../src/index";
 import { ArchiveMaintenance } from "../src/archive-maintenance";
@@ -247,12 +247,14 @@ describe("managed durable turn admission", () => {
         NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
       }).NANOCODEX_SESSIONS;
       await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
+        let discoveryCalls = 0;
         const discovery = Promise.withResolvers<Response>();
         const entered = Promise.withResolvers<void>();
         const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
         Object.defineProperty(session, "env", { value: {
           ...runtimeEnv,
           NANOCODEX_ACCOUNT_TOOLS: { getByName: () => ({ fetch: () => {
+            discoveryCalls++;
             entered.resolve();
             return discovery.promise;
           } }) },
@@ -310,6 +312,23 @@ describe("managed durable turn admission", () => {
           const alarm = await state.storage.getAlarm();
           expect(alarm).toBeGreaterThanOrEqual(Date.now() + 59_000);
           expect(alarm).toBeLessThanOrEqual(Date.now() + 60_000);
+          // Model three one-minute recovery leases passing while the same
+          // admitted owner is awaiting I/O. A lease is a reconstruction wakeup,
+          // not a timeout authorizing a second live admission.
+          const clock = vi.spyOn(Date, "now");
+          try {
+            for (let lease = 1; lease <= 3; lease++) {
+              clock.mockReturnValue(now + lease * 60_000);
+              await session.alarm();
+              await Promise.resolve();
+              expect(discoveryCalls).toBe(1);
+              expect(state.storage.sql.exec<{ state: string; attempt_count: number; retry_at: number | null }>(
+                "SELECT state, attempt_count, retry_at FROM managed_turns WHERE id = 'stalled'",
+              ).one()).toEqual({ state: "accepted", attempt_count: 0, retry_at: null });
+              expect(await state.storage.getAlarm()).toBe(now + (lease + 1) * 60_000);
+            }
+          } finally { clock.mockRestore(); }
+
         } finally {
           discovery.resolve(Response.json({ tools: [], machines: [] }));
           pair?.[0].close(1000, "test complete");
