@@ -162,7 +162,7 @@ export class HandRemoteBroker {
       const value = JSON.parse(message);
       if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
       if (value.type === "agent_result" && state.role === "host") {
-        exact(value, ["type", "request_id", "status", "jpeg", "width", "height"]);
+        exact(value, ["type", "request_id", "status", "jpeg", "width", "height", "observation"]);
         if (typeof value.request_id !== "string" || !["ok", "busy", "invalid", "unavailable", "cancelled"].includes(value.status)) throw new Error();
         if (value.jpeg !== undefined && (value.status !== "ok" || typeof value.jpeg !== "string"
           || value.jpeg.length > 700_000 || !/^\/9j\/[A-Za-z0-9+/]*={0,2}$/.test(value.jpeg)

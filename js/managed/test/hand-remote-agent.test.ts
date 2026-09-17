@@ -1,12 +1,17 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { AccountHostedTools, AccountHostedToolsProvider } from "../src/account-hosted-tools";
-import { screenAction } from "../src/hand-remote-agent";
+import { screenAction, screenResult, screenTool } from "../src/hand-remote-agent";
 import { createNamespaceExecutionRuntime } from "../src/namespace-tools";
 
 const owner = "11111111-1111-4111-8111-111111111193";
 const other = "22222222-2222-4222-8222-222222222293";
 const surface = { id: "desktop", name: "Desktop", kind: "vm", width: 1600, height: 900, controllable: true, agent_tools: true };
+const observation = { schemaVersion: 1 as const, capturedAt: 1000, providers: [
+  { id: "accessibility", status: "ok" as const, capturedAt: 999, ageMs: 1, freshness: "fresh" as const, scope: "requested_context" as const, foreground_verified: false, data: { role: "window", text: "Visible app state" } },
+  { id: "external:0", status: "timeout" as const, capturedAt: 1000, freshness: "unknown" as const, error: "Provider timed out" },
+] };
+const target = { ...surface, machine_id: "test", machine_name: "Test", generation: "generation" };
 const namespace = () => (env as unknown as { NANOCODEX_ACCOUNT_TOOLS: DurableObjectNamespace<AccountHostedTools> }).NANOCODEX_ACCOUNT_TOOLS;
 function next(socket: WebSocket): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -40,12 +45,14 @@ describe("agent screen protocol", () => {
     expect(await runtime.tools.select_computer!.handler({ workdir: "/wayland-computer" }, context))
       .toMatchObject({ tools: ["computer"] });
     const requested = next(connected.socket);
-    const pending = runtime.tools.computer!.handler({ action: "observe" }, context);
+    const selector = { app: "Example", window: "Window" };
+    expect(runtime.tools.computer!.parameters).toHaveProperty("properties.context");
+    const pending = runtime.tools.computer!.handler({ action: "observe", context: selector }, context);
     const request = await requested;
-    expect(request).toMatchObject({ type: "agent_call", surface_id: "desktop", input: { action: "observe" } });
-    connected.socket.send(JSON.stringify({ type: "agent_result", request_id: request.request_id, status: "ok", jpeg: "/9j/2Q==", width: 1, height: 1 }));
+    expect(request).toMatchObject({ type: "agent_call", surface_id: "desktop", input: { action: "observe", context: selector } });
+    connected.socket.send(JSON.stringify({ type: "agent_result", request_id: request.request_id, status: "ok", jpeg: "/9j/2Q==", width: 1, height: 1, observation }));
     expect(await pending).toMatchObject({ success: true,
-      structuredResult: { status: "ok", image_url: "data:image/jpeg;base64,/9j/2Q==", detail: "original" } });
+      structuredResult: { status: "ok", image_url: "data:image/jpeg;base64,/9j/2Q==", detail: "original", observation } });
     allowed = false;
     expect(provider.screenTool(machine.id)).toBeUndefined();
     expect(await runtime.tools.computer!.handler({ action: "click", x: 0.5, y: 0.5 }, context))
@@ -70,6 +77,14 @@ describe("agent screen protocol", () => {
     }
     expect(screenAction({ action: "click", x: 0.2, y: 0.4 })).toEqual({ action: "click", x: 0.2, y: 0.4 });
   });
+  it("accepts bounded observe context selectors without expanding input actions", () => {
+    const context = { app: "Example App", window: "Window" };
+    expect(screenAction({ action: "observe", context })).toEqual({ action: "observe", context });
+    for (const value of [{ action: "click", x: 0, y: 0, context }, { action: "release", context },
+      { action: "observe", context: { app: "App" } }, { action: "observe", context: { ...context, app: "" } },
+      { action: "observe", context: { ...context, window: "a\nb" } }, { action: "observe", context: { ...context, extra: true } },
+      { action: "observe", context: { ...context, app: "🦄".repeat(129) } }]) expect(() => screenAction(value)).toThrow();
+  });
   it("advertises an immutable account tool, returns images, and fences the result to its host", async () => {
     const first = await host("agent-primary"), second = await host("agent-other");
     const invoke = (entry: any, ownerID = owner) => first.stub.fetch("https://account-tools.internal/invoke", {
@@ -91,6 +106,34 @@ describe("agent screen protocol", () => {
     const replacement = await host("agent-primary");
     expect((await invoke(first.tool)).status).toBe(409);
     replacement.socket.close(); second.socket.close();
+  });
+  it("forwards provider context through the host boundary into text and both structured outputs", async () => {
+    const connected = await host("agent-observation");
+    const requested = next(connected.socket);
+    const pending = connected.stub.fetch("https://account-tools.internal/invoke", { method: "POST", body: JSON.stringify({
+      owner_id: owner, name: connected.tool.definition.name, route_token: connected.tool.route_token,
+      session_id: "11111111-1111-4111-8111-111111111199", call_id: "screen-context", input: { action: "observe", context: { app: "Example", window: "Window" } },
+    }) });
+    const request = await requested;
+    expect(request.input.context).toEqual({ app: "Example", window: "Window" });
+    connected.socket.send(JSON.stringify({ type: "agent_result", request_id: request.request_id, status: "ok", jpeg: "/9j/2Q==", width: 1, height: 1, observation }));
+    const result: any = await (await pending).json();
+    expect(result.success).toBe(true);
+    expect(result.value.observation).toEqual(observation);
+    expect(result.structured_result).toEqual(result.value);
+    expect(result.output.filter((item: any) => item.type === "input_image")).toHaveLength(1);
+    expect(result.output.find((item: any) => item.text?.includes("Visible app state"))?.text).toContain("untrusted observed data");
+    connected.socket.close();
+  });
+  it("keeps mobile screenshot-only and failure results compatible", () => {
+    const result = screenResult({ status: "ok", jpeg: "/9j/2Q==", width: 1, height: 1 }, target);
+    expect(result.value).not.toHaveProperty("observation");
+    expect(result.output.map(item => item.type)).toEqual(["input_text", "input_image"]);
+    expect(screenResult({ status: "ok", jpeg: "/9j/2Q==", observation: { ...observation, schemaVersion: 2 } as any }, target).value).not.toHaveProperty("observation");
+    expect(screenResult({ status: "busy", observation }, target).value).not.toHaveProperty("observation");
+    const definition = screenTool(target).definition;
+    if (definition.type !== "function") throw new Error("Expected function tool");
+    expect(definition.output_schema).toHaveProperty("properties.observation");
   });
   it("reports unknown outcomes when the host disconnects without replaying input", async () => {
     const connected = await host("agent-disconnect");
