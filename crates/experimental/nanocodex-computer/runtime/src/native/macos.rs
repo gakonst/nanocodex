@@ -2037,6 +2037,9 @@ impl Desktop for MacDesktop {
     fn screenshot(&mut self, app: &App) -> Result<Image> {
         self.capture_screenshot(app, false)
     }
+    fn desktop_screenshot(&mut self) -> Result<Image> {
+        capture_main_display(self.screenshot_configuration)
+    }
     fn screenshot_for_observation(&mut self, app: &App) -> Result<Image> {
         self.capture_screenshot(app, true)
     }
@@ -2299,6 +2302,117 @@ unsafe extern "C" {
     pub(super) fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
 }
+fn window_capture_match_error(count: usize) -> String {
+    format!(
+        "Expected one capturable window matching the observed application window, found {count}. Open or select an application window and refresh its state; use cua.getScreenshot() to explicitly capture the full main display."
+    )
+}
+
+/// Capture the main display without resolving AX windows, activating applications,
+/// or granting native input coordinates. This is never an app-capture fallback.
+fn capture_main_display(configuration: super::screenshot::Configuration) -> Result<Image> {
+    if !unsafe { CGPreflightScreenCaptureAccess() } {
+        return Err(Error::new(
+            -32003,
+            "Grant Screen Recording permission to this executable or launching terminal",
+        ));
+    }
+    let main_display_id = core_graphics::display::CGDisplay::main().id;
+    let (send, receive) = std::sync::mpsc::channel();
+    let content_callback = RcBlock::new(
+        move |content: *mut SCShareableContent, error: *mut NSError| {
+            let fail = |error| {
+                let _ = send.send(Err(error));
+            };
+            // SAFETY: callback pointers remain valid throughout this invocation;
+            // captureImage retains the filter/configuration for asynchronous capture.
+            unsafe {
+                if let Some(error) = error.as_ref() {
+                    fail(Error::action(error.localizedDescription().to_string()));
+                    return;
+                }
+                let Some(content) = content.as_ref() else {
+                    fail(Error::action("No shareable content"));
+                    return;
+                };
+                let displays = content.displays();
+                let Some(display) = displays.iter().find(|d| d.displayID() == main_display_id)
+                else {
+                    fail(Error::action(
+                        "Main display is unavailable for screenshot capture",
+                    ));
+                    return;
+                };
+                let filter = SCContentFilter::initWithDisplay_excludingWindows(
+                    SCContentFilter::alloc(),
+                    &display,
+                    &NSArray::new(),
+                );
+                let rect = filter.contentRect();
+                let geometry = match super::screenshot::Geometry::new(
+                    [
+                        rect.origin.x,
+                        rect.origin.y,
+                        rect.size.width,
+                        rect.size.height,
+                    ],
+                    f64::from(filter.pointPixelScale()),
+                    configuration,
+                ) {
+                    Ok(geometry) => geometry,
+                    Err(error) => {
+                        fail(error);
+                        return;
+                    }
+                };
+                let config = SCStreamConfiguration::new();
+                config.setWidth(geometry.pixels[0]);
+                config.setHeight(geometry.pixels[1]);
+                config.setShowsCursor(false);
+                let sender = send.clone();
+                let callback = RcBlock::new(
+                    move |image: *mut objc2_core_graphics::CGImage, error: *mut NSError| {
+                        let result = if let Some(error) = error.as_ref() {
+                            Err(Error::action(error.localizedDescription().to_string()))
+                        } else if image.is_null() {
+                            Err(Error::action("No screenshot image"))
+                        } else {
+                            super::screenshot::macos::encode(
+                                image as *mut c_void,
+                                configuration.encoding,
+                                geometry.pixels,
+                            )
+                        };
+                        let _ = sender.send(result);
+                    },
+                );
+                SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(
+                    &filter,
+                    &config,
+                    Some(&callback),
+                );
+            }
+        },
+    );
+    unsafe {
+        SCShareableContent::getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler(false, true, &content_callback)
+    };
+    let start = Instant::now();
+    loop {
+        match receive.try_recv() {
+            Ok(result) => return result,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return Err(Error::action("Screenshot callback disconnected"));
+            }
+            _ => {}
+        }
+        if start.elapsed() > Duration::from_secs(10) {
+            return Err(Error::action("Screenshot timed out"));
+        }
+        pump(Duration::from_millis(10));
+    }
+}
+
 fn capture_window(
     pid: i32,
     ax_frame: [f64; 4],
@@ -2349,10 +2463,7 @@ fn capture_window(
                 // The native AX tree represents one window. Match the known ID,
                 // or require a unique frame match when no native ID is available.
                 if matches.len() != 1 {
-                    fail(format!(
-                        "Expected one visible application window, found {}",
-                        matches.len()
-                    ));
+                    fail(window_capture_match_error(matches.len()));
                     return;
                 }
                 let filter = SCContentFilter::initWithDesktopIndependentWindow(
@@ -2454,6 +2565,18 @@ pub fn permissions(request: bool) -> Result<serde_json::Value> {
 mod screenshot_diagnostic_tests {
     use super::*;
     use crate::native::screenshot::{Displays, Screen};
+
+    #[test]
+    fn ambiguous_or_missing_window_requires_explicit_desktop_capture() {
+        for count in [0, 2, 5] {
+            let message = window_capture_match_error(count);
+            assert!(message.contains(&format!("found {count}")));
+            assert!(message.contains("matching the observed application window"));
+            assert!(message.contains("cua.getScreenshot()"));
+            assert!(message.contains("full main display"));
+            assert!(message.contains("refresh its state"));
+        }
+    }
 
     fn native_value<T>(kind: u32, value: &T) -> CFType {
         let raw = unsafe { AXValueCreate(kind, (value as *const T).cast()) };

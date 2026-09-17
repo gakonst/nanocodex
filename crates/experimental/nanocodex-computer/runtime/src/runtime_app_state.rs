@@ -49,6 +49,7 @@ pub(crate) fn validation_response(message: &'static str) -> String {
 pub(crate) struct Plan<'a> {
     requested: &'a str,
     url: Option<String>,
+    screenshot_error: Option<Value>,
     text: String,
     instructions: Option<String>,
     key: Option<String>,
@@ -87,6 +88,14 @@ impl<'a> Plan<'a> {
             return Err(BAD_INSTRUCTIONS);
         }
 
+        let screenshot_error = match shot.get("screenshotError") {
+            None | Some(Value::Null) => None,
+            Some(error) if error["code"].is_i64() && error["message"].is_string() => {
+                Some(json!({"code":error["code"],"message":error["message"]}))
+            }
+            Some(_) => return Err("computer-use service returned an invalid screenshot error"),
+        };
+
         // Move the owned strings out of the DTO; no cloned tree/guidance DTO is
         // retained alongside the cache. Key selection is after all validation.
         let mut shot = take(&mut value, "skyshot");
@@ -110,6 +119,7 @@ impl<'a> Plan<'a> {
         Ok(Self {
             requested,
             url,
+            screenshot_error,
             text,
             instructions,
             key,
@@ -152,7 +162,12 @@ impl<'a> Plan<'a> {
             .try_reserve_exact(self.requested.len())
             .map_err(|_| Error::action("Cannot allocate app-state app identifier"))?;
         requested.push_str(self.requested);
-        Ok(json!({"app":requested,"screenshot":self.url.map(|url|json!({"url":url})),"text":text}))
+        let mut result =
+            json!({"app":requested,"screenshot":self.url.map(|url|json!({"url":url})),"text":text});
+        if let Some(error) = self.screenshot_error {
+            result["screenshotError"] = error;
+        }
+        Ok(result)
     }
 }
 

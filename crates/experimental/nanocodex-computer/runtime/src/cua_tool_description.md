@@ -11,6 +11,14 @@ await cua.getState();
 ```
 
 
+To see the Mac screen, capture the main display directly. This read-only screenshot includes the desktop and visible windows, works when Finder has no open window, and does not launch or activate an app:
+
+```javascript
+await cua.getScreenshot();
+```
+
+Use `cua.getApp(...)` for a specific app's window. Desktop screenshot pixels are not app-relative coordinates for app actions.
+
 Use the first matching browser control option from the user's request:
 
 For a tab @-mention (`mention=tab-v1`):

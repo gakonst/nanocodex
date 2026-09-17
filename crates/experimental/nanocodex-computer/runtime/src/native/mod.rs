@@ -157,6 +157,11 @@ pub trait Desktop {
     fn screenshot(&mut self, _app: &App) -> Result<Image> {
         Err(Error::unsupported("Screenshot backend unavailable"))
     }
+    /// Explicit read-only capture of the main display. Never binds an app or
+    /// publishes coordinates for native actions; app captures must not fall back here.
+    fn desktop_screenshot(&mut self) -> Result<Image> {
+        Err(Error::unsupported("Desktop screenshot backend unavailable"))
+    }
     /// Only an explicit model observation may publish new screenshot coordinates.
     /// Preview captures and exports use `screenshot` without rebinding that state.
     fn screenshot_for_observation(&mut self, app: &App) -> Result<Image> {
@@ -245,5 +250,37 @@ pub fn permissions(request: bool) -> Result<serde_json::Value> {
         Err(Error::unsupported(
             "This permission flow is specific to macOS",
         ))
+    }
+}
+
+#[cfg(test)]
+mod desktop_screenshot_tests {
+    use super::*;
+
+    struct UnsupportedDesktop;
+    impl Desktop for UnsupportedDesktop {
+        fn apps(&mut self) -> Result<Vec<App>> {
+            panic!("Desktop capture must not enumerate or bind applications")
+        }
+        fn snapshot(&mut self, _app: &App) -> Result<Node> {
+            panic!("Desktop capture must not read AX or publish app coordinates")
+        }
+        fn action(&mut self, _app: &App, _action: Action) -> Result<()> {
+            panic!("Desktop capture must not perform app actions")
+        }
+        fn screenshot(&mut self, _app: &App) -> Result<Image> {
+            panic!("Desktop capture must not fall back to app screenshots")
+        }
+        fn capabilities(&self) -> Vec<&'static str> {
+            vec![]
+        }
+    }
+
+    #[test]
+    fn unsupported_desktop_capture_has_no_app_fallback() {
+        let error = UnsupportedDesktop.desktop_screenshot().unwrap_err();
+        let expected = Error::unsupported("Desktop screenshot backend unavailable");
+        assert_eq!(error.code, expected.code);
+        assert_eq!(error.message, expected.message);
     }
 }

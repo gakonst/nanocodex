@@ -165,6 +165,22 @@ impl Security {
             reviewer,
         })
     }
+    /// Display pixels cannot be scoped to approved apps or browser origins.
+    pub(crate) fn check_desktop_capture(&self) -> Result<()> {
+        if !self.config.allowed_apps.is_empty() || self.browser_restricted() {
+            return Err(Error::new(
+                -32010,
+                "Full-display capture is unavailable under configured app or browser restrictions; use an allowed app or browser observation instead",
+            ));
+        }
+        if !self.native_control_authorized {
+            return Err(Error::new(
+                -32003,
+                "Full-display capture requires trusted host native-control authorization",
+            ));
+        }
+        Ok(())
+    }
     pub fn check_app(&self, identifier: &str) -> Result<()> {
         if self.config.allowed_apps.is_empty()
             || self.config.allowed_apps.iter().any(|a| a == identifier)

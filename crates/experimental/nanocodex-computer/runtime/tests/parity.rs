@@ -11,6 +11,7 @@ mod browser_screencast;
 mod browser_transport;
 mod browser_webmcp;
 mod contracts;
+mod desktop_screenshot;
 mod cua_setup_lifecycle;
 mod cua_setup_module;
 mod download_elicitation;

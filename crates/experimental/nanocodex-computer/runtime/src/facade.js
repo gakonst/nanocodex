@@ -73,7 +73,11 @@
       },
       async getScreenshot(options) {
         const result = await computer.get_app_state({app});
-        if (result.screenshot === null) throw new Error('Screenshot unavailable for ' + app + '.');
+        if (result.screenshot === null) {
+          const error = new Error(result.screenshotError?.message ?? ('Screenshot unavailable for ' + app + '.'));
+          if (result.screenshotError?.code !== undefined) error.code = result.screenshotError.code;
+          throw error;
+        }
         const screenshot = await imageFromUrl(result.screenshot.url);
         await emitImage(screenshot, options);
         return screenshot;
@@ -255,6 +259,13 @@
     }
     if (computer !== undefined) Object.assign(result,{
       computer,
+      ...(computer.target === 'mac' && typeof computer.get_desktop_screenshot === 'function' ? {
+        async getScreenshot(options) {
+          const screenshot = await computer.get_desktop_screenshot();
+          await emitImage(screenshot, options);
+          return screenshot;
+        }
+      } : {}),
       async getApp(identifier) {
         if (computer.target !== 'mac') throw new Error('Native app bindings are unavailable for ' + computer.target + '.');
         const state = await computer.get_app_state({app:identifier,disableDiff:true});

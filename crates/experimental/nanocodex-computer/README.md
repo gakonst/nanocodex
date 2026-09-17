@@ -60,6 +60,10 @@ The native `cua_repl` contract still requires the companion. Screen routes retai
 their publication generation, respect human control, and never replay input on
 reconnect. Reselect after reconnecting a screen.
 
+Native CUA full-display capture requires host authorization for native control
+and is unavailable under configured app or browser-origin restrictions. Use a
+permitted app or browser target in restricted sessions.
+
 macOS uses AppKit, Accessibility and ScreenCaptureKit, with the normal OS grants
 and an unlocked graphical session. Linux uses X11/XTEST; native Hands bind the
 companion to their private Xvfb display and Xauthority. A plain Wayland session
@@ -103,6 +107,9 @@ let app = await cua.getApp("TextEdit");
 // A subsequent call can reuse app.
 await app.getAXState();
 await nodeRepl.emitImage(await app.getScreenshot({ emit: false }));
+
+// macOS: capture the main display without opening or activating an app.
+await cua.getScreenshot();
 ```
 
 On Linux use `cua.computer`, whose returned documentation describes desktop

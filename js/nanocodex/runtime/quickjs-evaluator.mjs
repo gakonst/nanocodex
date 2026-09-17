@@ -169,7 +169,19 @@ const __nanocodex_stringify = (value) => {
 };
 const __nanocodex_decode = (encoded) => {
   const result = JSON.parse(encoded);
-  if (!result.ok) throw new Error(result.error);
+  if (!result.ok) {
+    const failure = result.error;
+    const structured = failure !== null && typeof failure === "object";
+    const error = new Error(structured && typeof failure.message === "string"
+      ? failure.message
+      : __nanocodex_stringify(failure));
+    if (structured) {
+      if (typeof failure.stack === "string") error.stack = failure.stack;
+      if (Object.hasOwn(failure, "code")) error.code = failure.code;
+      if (Object.hasOwn(failure, "details")) error.details = failure.details;
+    }
+    throw error;
+  }
   return result.value;
 };
 const tools = Object.freeze(Object.fromEntries(
@@ -219,8 +231,15 @@ ${source}
 `;
 }
 
-function errorMessage(error) {
-  if (error && (error.stack || error.message)) return error.stack || error.message;
+function serializeToolError(error) {
+  if (error && typeof error === "object") {
+    return {
+      message: typeof error.message === "string" ? error.message : formatQuickJsError(error),
+      ...(typeof error.stack === "string" ? { stack: error.stack } : {}),
+      ...(Object.hasOwn(error, "code") ? { code: error.code } : {}),
+      ...(Object.hasOwn(error, "details") ? { details: error.details } : {}),
+    };
+  }
   return String(error);
 }
 
@@ -231,6 +250,14 @@ async function invokeTool(environment, name, encodedInput) {
     const value = await tool(JSON.parse(encodedInput));
     return JSON.stringify({ ok: true, value });
   } catch (error) {
-    return JSON.stringify({ ok: false, error: errorMessage(error) });
+    const ancestors = [];
+    return JSON.stringify({ ok: false, error: serializeToolError(error) }, function (_key, value) {
+      if (typeof value === "bigint") return String(value);
+      if (value === null || typeof value !== "object") return value;
+      while (ancestors.length && ancestors.at(-1) !== this) ancestors.pop();
+      if (ancestors.includes(value)) return "[Circular]";
+      ancestors.push(value);
+      return value;
+    });
   }
 }

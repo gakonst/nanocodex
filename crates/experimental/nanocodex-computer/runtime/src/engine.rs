@@ -868,8 +868,18 @@ impl Engine {
                     .or_else(|| args.get("disableDiffing"))
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
+                let mut screenshot_error = None;
                 let screenshot = if args["screenshot"].as_bool().unwrap_or(false) {
-                    Some(self.desktop.screenshot_for_observation(&app)?)
+                    match self.desktop.screenshot_for_observation(&app) {
+                        Ok(image) => Some(image),
+                        Err(error) if args["screenshotOptional"].as_bool() == Some(true) => {
+                            self.desktop.invalidate_screenshot(&app);
+                            screenshot_error =
+                                Some(json!({"code":error.code,"message":error.message}));
+                            None
+                        }
+                        Err(error) => return Err(error),
+                    }
                 } else {
                     None
                 };
@@ -877,6 +887,9 @@ impl Engine {
                 let state = crate::ax::format_state(&title, &app.name, &description, &revision);
                 let instructions = self.desktop.app_specific_instructions(&app);
                 let mut result = json!({"app":app.path,"pid":app.pid,"bundleIdentifier":app.id,"name":app.name,"state":state,"tree":revision.root,"focusTree":revision.focus,"focusState":revision.focus_text(),"revision":revision.generation,"screenshot":screenshot,"observationDiagnostics":self.desktop.diagnostics(&app)});
+                if let Some(error) = screenshot_error {
+                    result["screenshotError"] = error;
+                }
                 if let Some(instructions) = instructions {
                     result["appSpecificInstructions"] = json!(instructions);
                 }
@@ -1038,6 +1051,7 @@ impl Engine {
         let mut methods = match target {
             "mac" => vec![
                 "list_apps",
+                "get_desktop_screenshot",
                 "get_app_state",
                 "click",
                 "drag",
@@ -1142,10 +1156,19 @@ impl Engine {
         if method == "list_apps" {
             return self.desktop.sky_apps();
         }
+        if method == "get_desktop_screenshot" {
+            // Explicit display observation is read-only and independent of app
+            // binding/AX observation. It never publishes app coordinates.
+            self.security.check_desktop_capture()?;
+            let image = self.desktop.desktop_screenshot()?;
+            return Ok(serde_json::to_value(image)?);
+        }
         self.approvals.authorize_app(string(&params, "app")?)?;
         if method == "get_app_state" {
             let mut capture = params.clone();
             capture["screenshot"] = json!(self.desktop.capabilities().contains(&"get_screenshot"));
+            // AX state remains useful when this opportunistic image cannot be captured.
+            capture["screenshotOptional"] = json!(true);
             let state = self.execute_inner("get_app_state", &capture)?;
             let screenshot = (|| -> Result<Value> {
                 if state["screenshot"].is_null() {
@@ -1164,6 +1187,9 @@ impl Engine {
             }
             let screenshot = screenshot?;
             let mut result = json!({"app":{"bundleIdentifier":state["bundleIdentifier"]},"skyshot":{"text":state["state"],"screenshot":screenshot}});
+            if let Some(error) = state.get("screenshotError") {
+                result["skyshot"]["screenshotError"] = error.clone();
+            }
             if let Some(instructions) = state.get("appSpecificInstructions") {
                 result["appSpecificInstructions"] = instructions.clone();
             }

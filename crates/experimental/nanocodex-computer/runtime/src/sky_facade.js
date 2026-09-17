@@ -377,6 +377,10 @@ globalThis.__skyreComputerFacade = ({rpc, bytes, getNodeRepl = () => globalThis.
         return typeof suspended === "function" ? suspended(operation) : operation();
       }
       if (computer.target === "mac") {
+        if (method === "get_desktop_screenshot") {
+          responseMeta(null);
+          return bytes(await execute(method,[]));
+        }
         if (method === "list_apps") {responseMeta(null);return mac(method,args);}
         return withAppPolicy(method,args[0],input=>mac(method,[input,...args.slice(1)]));
       }

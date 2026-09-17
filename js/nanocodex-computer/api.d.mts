@@ -83,12 +83,16 @@ export interface Computer {
   readonly target: "linux" | "mac" | "windows";
   drag_handle?(): DragHandle;
   get_screenshot?(): Promise<Screenshot[]>;
+  /** macOS main display; read-only, without app coordinate authority. */
+  get_desktop_screenshot?(): Promise<Uint8Array>;
   move?(point: Point): Promise<void>;
 }
 
 export interface Cua {
   initialize(): Promise<ComputerState>;
   getState(options?: ObservationOptions): Promise<ComputerState>;
+  /** macOS main display; present when supported by the native provider. */
+  getScreenshot?(options?: ObservationOptions): Promise<Uint8Array>;
   readonly browsers: BrowserProvider;
   readonly computer: Computer;
   getApp(app: string): Promise<App>;
