@@ -58,6 +58,8 @@ func serveDesktopSession(parent context.Context, config hostConfig, workspace, d
 			return err
 		}
 	}
+	stopPlayback := startDesktopPlayback(ctx)
+	defer stopPlayback()
 	compositor := exec.CommandContext(ctx, "labwc", "--config-dir", desktopConfig)
 	compositor.Dir = workspace
 	compositor.Stdout, compositor.Stderr = io.Discard, io.Discard

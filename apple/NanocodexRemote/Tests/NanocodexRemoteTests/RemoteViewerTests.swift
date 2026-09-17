@@ -31,6 +31,49 @@ private final class RemoteHTTPFixture: URLProtocol {
 }
 
 final class RemoteViewerTests: XCTestCase {
+    @MainActor func testBroadcastStoppingBlocksMutationsAndPollsUntilStopped() async throws {
+        let service = try service { _ in XCTFail("Frame transport must not fetch ICE") }
+        defer { service.close() }
+        var catalog = surface("broadcast-stopping")
+        catalog["transport"] = "frames-v1"; catalog["broadcast"] = true
+        let hand = try JSONDecoder().decode(RemoteHand.self, from: JSONSerialization.data(withJSONObject: catalog))
+        let socket = ViewerSocket()
+        socket.onConnect = { socket.onMessage(.init(type: "ready")) }
+        let viewer = RemoteViewer(); viewer.makeSignaling = { _ in socket }
+        defer { viewer.close() }
+        await viewer.connect(service: service, hand: hand)
+        let initial = try XCTUnwrap(socket.messages.last { $0.type == "broadcast" })
+        var stopping = RemoteMessage(type: "broadcast_result")
+        stopping.requestID = initial.requestID; stopping.agentStatus = "stopping"
+        socket.onMessage(stopping)
+        XCTAssertEqual(viewer.broadcastStatus, "stopping")
+        XCTAssertFalse(viewer.broadcastWaiting)
+        let count = socket.messages.count
+        viewer.broadcast(action: "start", url: "rtmp://127.0.0.1/live/test")
+        viewer.broadcast(action: "stop")
+        XCTAssertEqual(socket.messages.count, count)
+        let context = try XCTUnwrap(CGContext(data: nil, width: 3, height: 2, bitsPerComponent: 8,
+            bytesPerRow: 12, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        let bytes = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(bytes, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        var frame = RemoteMessage(type: "frame")
+        frame.jpeg = (bytes as Data).base64EncodedString(); frame.width = 3; frame.height = 2
+        // Keep frame transport alive while exercising the real five-second poll.
+        for _ in 0..<6 {
+            socket.onMessage(frame)
+            try await Task.sleep(for: .seconds(1))
+        }
+        let poll = try XCTUnwrap(socket.messages.last { $0.type == "broadcast" })
+        XCTAssertEqual(poll.action, "status"); XCTAssertNotEqual(poll.requestID, initial.requestID)
+        var stopped = RemoteMessage(type: "broadcast_result")
+        stopped.requestID = poll.requestID; stopped.agentStatus = "stopped"
+        socket.onMessage(stopped)
+        XCTAssertEqual(viewer.broadcastStatus, "stopped")
+        XCTAssertFalse(viewer.broadcastWaiting)
+    }
+
     @MainActor func testFrameWindowRefillsAfterDecodeAndStopsOnSuspend() async throws {
         let service = try service { _ in XCTFail("Frame transport must not fetch ICE") }
         defer { service.close() }

@@ -56,6 +56,26 @@ try {
   assert.equal((await fill(null, '#password', false)).result.value, true);
   assert.equal(await page.locator('#password').inputValue(), 'FAKE-password-only');
   assert.equal(received.length, 2);
+  // Controlled login state requires both bubbling events and the submit handler.
+  await page.setContent(`<form method="post"><input id="username"><input id="password" type="password"><button disabled>Log in</button></form><script>
+    window.events = []; window.login = false;
+    for (const input of document.querySelectorAll('input')) for (const type of ['input','change']) input.addEventListener(type, () => { events.push(type); document.querySelector('button').disabled = false; });
+    document.querySelector('form').addEventListener('submit', event => { event.preventDefault(); window.login = document.querySelector('#username').value === 'fake-user@example.test' && document.querySelector('#password').value === 'FAKE-password-only'; });
+  </script>`);
+  assert.equal((await fill('#username', '#password')).result.value, true);
+  assert.deepEqual(await page.evaluate(() => ({events,login})), {events:['input','change','input','change'],login:true});
+  assert.equal(received.length, 2);
+  // A custom control must never fall through to blind native POST.
+  await page.setContent('<form method="post"><input id="password" type="password"><div role="button">Log in</div><input type="submit" disabled></form>');
+  assert.equal((await fill(null, '#password')).result.value, 'unsupported');
+  for (const mutation of ["form.action='https://example.test'", "form.method='get'", "document.querySelector('#password').replaceWith(document.createElement('input'))", "form.target='_blank'"]) {
+    await page.setContent(`<form method="post"><input id="username"><input id="password" type="password"></form><script>var form=document.querySelector('form'); document.querySelector('#username').addEventListener('input',()=>{${mutation}});</script>`);
+    assert.equal((await fill('#username','#password')).result.value, false);
+    assert.equal(await page.locator('input').last().inputValue(), '');
+  }
+  await page.setContent('<form method="post"><input id="password" type="password"></form><div id="captcha">Human challenge</div>');
+  assert.equal((await fill(null,'#password')).result.value,false);
+  assert.equal(await page.locator('#password').inputValue(),'');
   console.log('PASS: Chrome two-step same-origin HTTPS POST, username-only/password-only payloads, fill-only, wrong-origin/GET/hidden/duplicate rejection');
 } finally {
   await browser?.close();

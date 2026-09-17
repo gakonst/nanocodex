@@ -9,7 +9,7 @@ const noStore = { "cache-control": "no-store" };
 export const REMOTE_VM_ASSERTION = "x-nanocodex-remote-vm";
 export type RemoteVMPublisher = { machineId: string; machineName?: string; routeId: string; expiresAt: number; surfaceKind?: "desktop" };
 
-type Surface = { id: string; name: string; kind: "desktop" | "window" | "phone" | "vm"; width: number; height: number; controllable: boolean; agent_tools?: boolean; transport?: "frames-v1"; frame_window?: number };
+type Surface = { id: string; name: string; kind: "desktop" | "window" | "phone" | "vm"; width: number; height: number; controllable: boolean; agent_tools?: boolean; broadcast?: boolean; transport?: "frames-v1"; frame_window?: number };
 type Attachment = {
   kind: typeof TAG; role: "host" | "viewer"; id: string; generation: string; expiresAt: number;
   machineId?: string; machineName?: string; surfaces?: Surface[]; hostId?: string; surfaceId?: string;
@@ -18,6 +18,7 @@ type Attachment = {
   transport?: "frames-v1";
   framePending?: boolean | number;
   frameWindow?: number;
+  broadcastRequest?: string;
 };
 type Context = Pick<DurableObjectState, "acceptWebSocket" | "getWebSockets">;
 
@@ -178,6 +179,9 @@ export class HandRemoteBroker {
       if (Date.now() - state.rateWindow >= 1000) { state.rateWindow = Date.now(); state.rateCount = 0; }
       if (++state.rateCount > 160) throw new Error();
       socket.serializeAttachment(state);
+      if (["broadcast", "broadcast_result"].includes(value.type)) {
+        this.relayBroadcast(socket, state, value); return;
+      }
       if (["frame_request", "frame", "control", "input"].includes(value.type)) {
         this.relayFrameMessage(socket, state, value); return;
       }
@@ -256,6 +260,61 @@ export class HandRemoteBroker {
     try { socket.close(1008, reason); } catch { /* Already closed. */ }
   }
 
+  /** Only the leased viewer's selected publication can receive stream credentials. */
+  private relayBroadcast(socket: WebSocket, state: Attachment, value: Record<string, any>): void {
+    if (state.role === "viewer") {
+      if (value.type !== "broadcast") throw new Error();
+      exact(value, ["type", "request_id", "action", "url", "preset"]);
+      if (typeof value.request_id !== "string" || !ID.test(value.request_id)
+        || !["start", "stop", "status"].includes(value.action)) throw new Error();
+      if (value.action === "start") {
+        if (typeof value.url !== "string" || new TextEncoder().encode(value.url).length > 4096 || /[\s\x00-\x1f\x7f]/.test(value.url)) throw new Error();
+        const endpoint = new URL(value.url);
+        if (!["rtmp:", "rtmps:"].includes(endpoint.protocol) || !endpoint.hostname || endpoint.username || endpoint.password || value.url.includes("#") || /^rtmps?:\/\/[^/?#]*@/i.test(value.url) || !endpoint.pathname.replaceAll("/", "")
+          || (value.preset !== undefined && !["source", "1080p", "720p", "twitch", "x"].includes(value.preset))) throw new Error();
+      } else if (value.url !== undefined || value.preset !== undefined) throw new Error();
+      const host = this.hosts().find(({ state: host }) => host.id === state.hostId && host.generation === state.generation);
+      const surface = host?.state.surfaces?.find(surface => surface.id === state.surfaceId);
+      if (!host || !surface) throw new Error();
+      if (!surface.broadcast) {
+        this.send(socket, { type: "broadcast_result", request_id: value.request_id, status: "failed", error: "unsupported" });
+        return;
+      }
+      // Persist only correlation, never the endpoint or its stream key. Status
+      // recovery uses a fresh request after reconnecting or Worker hibernation.
+      state.broadcastRequest = value.request_id; socket.serializeAttachment(state);
+      this.send(host.socket, { ...value, viewer_id: state.id, surface_id: state.surfaceId });
+      return;
+    }
+    if (value.type !== "broadcast_result") throw new Error();
+    exact(value, ["type", "viewer_id", "request_id", "status", "preset", "width", "height", "fps", "bitrate_kbps", "audio", "error"]);
+    if (typeof value.viewer_id !== "string" || !ID.test(value.viewer_id)
+      || typeof value.request_id !== "string" || !ID.test(value.request_id)
+      || (value.audio !== undefined && typeof value.audio !== "boolean")
+      || !["idle", "starting", "live", "reconnecting", "stopping", "failed", "stopped"].includes(value.status)
+      || (value.preset !== undefined && !["source", "1080p", "720p", "twitch", "x"].includes(value.preset))) throw new Error();
+    for (const [key, max] of [["width", 16384], ["height", 16384], ["fps", 240], ["bitrate_kbps", 1_000_000]] as const) {
+      if (value[key] !== undefined && (typeof value[key] !== "number" || !Number.isInteger(value[key]) || value[key] < 0 || value[key] > max)) throw new Error();
+    }
+    // Native libraries may include the secret URL in their error text. Only
+    // protocol error codes cross back into the browser.
+    const safe = { ...value };
+    delete safe.viewer_id;
+    if (value.error !== undefined) safe.error = ["unsupported", "invalid_request", "unavailable", "busy", "capture_failed", "encoder_failed", "connection_failed", "broadcast_failed"].includes(value.error) ? value.error : "broadcast_failed";
+    const viewer = this.context.getWebSockets(TAG).find(peer => {
+      const candidate = this.attachment(peer);
+      return candidate?.role === "viewer" && candidate.id === value.viewer_id && candidate.hostId === state.id
+        && candidate.generation === state.generation && candidate.expiresAt > Date.now()
+        && candidate.broadcastRequest === value.request_id
+        && state.surfaces?.some(surface => surface.id === candidate.surfaceId && surface.broadcast);
+    });
+    if (viewer) {
+      const attachment = this.attachment(viewer)!;
+      delete attachment.broadcastRequest; viewer.serializeAttachment(attachment);
+      this.send(viewer, safe);
+    }
+  }
+
   /** Pull-based frames use the same account, publication and authorization lease. */
   private relayFrameMessage(socket: WebSocket, state: Attachment, value: Record<string, any>): void {
     if (state.role === "viewer") {
@@ -329,10 +388,11 @@ function normalizeSurfaces(value: unknown): Surface[] {
   const ids = new Set();
   return value.map(surface => {
     if (!surface || typeof surface !== "object") throw new Error();
-    exact(surface, ["id", "name", "kind", "width", "height", "controllable", "agent_tools", "transport", "frame_window"]);
+    exact(surface, ["id", "name", "kind", "width", "height", "controllable", "agent_tools", "broadcast", "transport", "frame_window"]);
     if (typeof surface.id !== "string" || !ID.test(surface.id) || ids.has(surface.id)
       || typeof surface.name !== "string" || !surface.name.trim() || new TextEncoder().encode(surface.name).length > 128
       || !["desktop", "window", "phone", "vm"].includes(surface.kind) || typeof surface.controllable !== "boolean"
+      || (surface.broadcast !== undefined && typeof surface.broadcast !== "boolean")
       || (surface.agent_tools !== undefined && typeof surface.agent_tools !== "boolean")
       || (surface.transport !== undefined && surface.transport !== "frames-v1")
       || (surface.frame_window !== undefined && (surface.transport !== "frames-v1"

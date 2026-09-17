@@ -37,6 +37,7 @@ impl ScreenPublisher {
         machine: &AttachmentMachine,
         backend: ScreenBackend,
         video: Option<VideoSource>,
+        broadcast: Option<super::screen_broadcast::Source>,
         audio: Option<VideoSource>,
         providers: Registry,
     ) -> Result<Self, ManagedError> {
@@ -74,27 +75,50 @@ impl ScreenPublisher {
         let machine = machine.clone();
         let task = tokio::spawn(async move {
             let mut ready = Some(ready);
+            let mut authorized_at = Instant::now();
+            #[cfg(target_os = "macos")]
+            let native_broadcast = broadcast.is_some();
+            let mut broadcast = super::screen_broadcast::Broadcast::new(broadcast, audio.clone())
+                .with_encoded(video.clone());
+            #[cfg(target_os = "macos")]
+            if native_broadcast {
+                broadcast = broadcast.with_raw(super::screen_native::native_broadcast_frames());
+            }
             loop {
+                if authorized_at.elapsed() > Duration::from_secs(25) {
+                    broadcast.stop().await;
+                }
                 let target = targets.borrow_and_update().clone();
                 let result = tokio::select! {
                     _ = &mut stopped => break,
-                    changed = targets.changed() => { if changed.is_err() { break; } continue; },
-                    result = session(&target, &machine, &backend, video.as_ref(), audio.as_ref(), dimensions, &mut ready, &providers) => result,
+                    changed = targets.changed() => {
+                        if changed.is_err() { break; }
+                        if targets.borrow().endpoint() != target.endpoint() { broadcast.stop().await; }
+                        continue;
+                    },
+                    result = session(&target, &machine, &backend, video.as_ref(), audio.as_ref(), dimensions, &mut ready, &providers, &mut broadcast, &mut authorized_at) => result,
                 };
                 let _ = tokio::time::timeout(
                     Duration::from_secs(3),
                     backend(json!({"action":"release"})),
                 )
                 .await;
+                if matches!(result, Err(SessionError::Unauthorized)) {
+                    broadcast.stop().await;
+                }
                 if matches!(result, Err(SessionError::Replaced)) {
                     break;
                 }
                 tokio::select! {
                     _ = &mut stopped => break,
                     _ = tokio::time::sleep(Duration::from_secs(1)) => {},
-                    changed = targets.changed() => if changed.is_err() { break; },
+                    changed = targets.changed() => {
+                        if changed.is_err() { break; }
+                        if targets.borrow().endpoint() != target.endpoint() { broadcast.stop().await; }
+                    },
                 }
             }
+            broadcast.stop().await;
             let _ =
                 tokio::time::timeout(Duration::from_secs(3), backend(json!({"action":"release"})))
                     .await;
@@ -162,6 +186,7 @@ fn endpoint(target: &AttachmentTarget) -> Result<Url, ManagedError> {
 enum SessionError {
     Closed,
     Replaced,
+    Unauthorized,
 }
 type Wire =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -320,6 +345,8 @@ async fn session(
     dimensions: (u64, u64),
     ready: &mut Option<oneshot::Sender<()>>,
     providers: &Registry,
+    broadcast: &mut super::screen_broadcast::Broadcast,
+    last_authorized: &mut Instant,
 ) -> Result<(), SessionError> {
     let started = Instant::now();
     let base = endpoint(target).map_err(|_| SessionError::Closed)?;
@@ -388,7 +415,6 @@ async fn session(
     renew_url.set_path(&format!("{}/renew", base.path()));
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     let mut last_renewal = Instant::now();
-    let mut last_authorized = Instant::now();
     let mut renewal: Option<BoxFuture<'static, bool>> = None;
     let mut connection = String::new();
     let mut generation = String::new();
@@ -410,14 +436,14 @@ async fn session(
                     send(&mut socket,json!({"type":"close_viewer","viewer_id":viewer})).await?;
                 }
                 if lease.expired() { release(&mut lease,backend,&mut socket).await?; }
-                if last_authorized.elapsed()>Duration::from_secs(25) { return Err(SessionError::Closed); }
+                if last_authorized.elapsed()>Duration::from_secs(25) { return Err(SessionError::Unauthorized); }
                 if !connection.is_empty() && last_renewal.elapsed()>=Duration::from_secs(10) && renewal.is_none() {
                     last_renewal=Instant::now(); let http=http.clone(); let url=renew_url.clone(); let token=target.bearer().to_string(); let id=connection.clone();
                     renewal=Some(Box::pin(async move { http.post(url).bearer_auth(token).json(&json!({"connection_id":id})).send().await.is_ok_and(|r|r.status().is_success()) }));
                 }
             },
             ok = async { match &mut renewal { Some(future)=>future.await,None=>std::future::pending().await } } => {
-                renewal=None; if !ok { return Err(SessionError::Closed); } last_authorized=Instant::now();
+                renewal=None; if !ok { return Err(SessionError::Unauthorized); } *last_authorized=Instant::now();
             },
             result = completed(&mut job) => {
                 job=None;
@@ -455,15 +481,21 @@ async fn session(
                 let viewer=value["viewer_id"].as_str().unwrap_or("");
                 match value["type"].as_str().unwrap_or("") {
                     "ready"=>{
+                        *last_authorized = Instant::now();
                         tracing::info!(target: "nanocodex2", stage = "screen.socket.ready", machine_id = machine.id(), elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
                         if !connection.is_empty(){return Err(SessionError::Closed);}
                         connection=value["connection_id"].as_str().filter(|s|!s.is_empty()).ok_or(SessionError::Closed)?.into();
                         let mut surface=json!({"id":"desktop","name":"Desktop","kind":if base.path().starts_with("/v1/vm-host-attachments/"){"vm"}else{"desktop"},"width":dimensions.0,"height":dimensions.1,"controllable":true,"agent_tools":true});
+                        surface["broadcast"]=json!(broadcast.supported());
                         if socket.video.is_none(){surface["transport"]=json!("frames-v1");surface["frame_window"]=json!(6);}
                         send(&mut socket,json!({"type":"catalog","machine_id":machine.id(),"machine_name":machine.name(),"surfaces":[surface]})).await?;
                     },
                     "published"=>{tracing::info!(target: "nanocodex2", stage = "screen.published", machine_id = machine.id(), elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);generation=value["generation"].as_str().ok_or(SessionError::Closed)?.into();if let Some(ready)=ready.take(){let _=ready.send(());}},
-                    "renewed"=>last_authorized=Instant::now(),
+                    "broadcast" if viewers.contains(viewer) && value["surface_id"] == "desktop" => {
+                        let result = broadcast.request(&value).await;
+                        send(&mut socket, result).await?;
+                    },
+                    "renewed"=>*last_authorized=Instant::now(),
                     "pong"=>{},
                     "viewer"=>{
                         if viewer.is_empty() || value["surface_id"]!="desktop" {return Err(SessionError::Closed);}
@@ -804,10 +836,17 @@ mod tests {
             );
             socket.close(None).await.unwrap();
         });
-        let publisher =
-            ScreenPublisher::start(&target, &machine, backend, None, None, Registry::remote())
-                .await
-                .unwrap();
+        let publisher = ScreenPublisher::start(
+            &target,
+            &machine,
+            backend,
+            None,
+            None,
+            None,
+            Registry::remote(),
+        )
+        .await
+        .unwrap();
         peer.await.unwrap();
         publisher.shutdown().await.unwrap();
         assert_eq!(

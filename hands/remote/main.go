@@ -19,6 +19,12 @@ import (
 )
 
 func main() {
+	if os.Getenv(broadcastHelperEnv) == "1" {
+		if runBroadcastEncoder() != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	if os.Getenv(encoderHelperEnv) == "1" {
 		if err := runScreenEncoder(); err != nil {
 			log.Fatal(err)

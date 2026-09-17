@@ -4,7 +4,7 @@ import { accountQueryKey } from "./queryClient";
 import { useEffect, useRef, useState, type PointerEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { Monitor, X } from "lucide-react";
-import { listRemoteHands, RemoteBrowserSession, remoteKeys, type RemoteHand, type RemoteState } from "./handRemote";
+import { canStartBroadcast, listRemoteHands, RemoteBrowserSession, remoteKeys, type RemoteHand, type BroadcastPreset, type RemoteState } from "./handRemote";
 import "./RemoteScreens.css";
 
 export function RemoteScreens({ showLabel = false }: { showLabel?: boolean }) {
@@ -81,6 +81,9 @@ function Screen({ hand, onBack }: { hand: RemoteHand; onBack(): void }) {
   const lastEscape = useRef(0);
   const [state, setState] = useState<RemoteState>({ status: "Connecting…", connected: false, controlling: false, connecting: true });
   const [text, setText] = useState("");
+  const streamEndpoint = useRef<HTMLInputElement>(null);
+  const [streamPreset, setStreamPreset] = useState<BroadcastPreset>("source");
+  const [streamOpen, setStreamOpen] = useState(false);
   const activeHand = session.current?.hand ?? hand;
   useEffect(() => {
     let mounted = true;
@@ -295,9 +298,29 @@ function Screen({ hand, onBack }: { hand: RemoteHand; onBack(): void }) {
       {state.audioAvailable && <button type="button" aria-pressed={Boolean(state.audioEnabled)}
         onClick={() => { void session.current?.setAudioEnabled(!state.audioEnabled); }}>
         {state.audioEnabled ? "Mute sound" : "Enable sound"}</button>}
+      {activeHand.broadcast && <button type="button" aria-expanded={streamOpen} onClick={() => setStreamOpen(!streamOpen)}>Stream RTMP</button>}
       <button type="button" onClick={toggleFullscreen}>{fullscreen || expanded ? "Exit fullscreen" : "Fullscreen"}</button>
       <button type="button" disabled={!state.connected || !activeHand.controllable} onClick={takeControl}>
         {state.controlling ? "Release control" : state.controlPending ? "Cancel control" : "Take control"}</button></div>
+    {streamOpen && activeHand.broadcast && <form className="remote-screen-broadcast" onSubmit={event => {
+      event.preventDefault();
+      const input = streamEndpoint.current;
+      if (input) { const endpoint = input.value; input.value = ""; session.current?.broadcast("start", endpoint, streamPreset); }
+    }}>
+      <label>RTMP(S) endpoint<input ref={streamEndpoint} type="password" required maxLength={4096} autoComplete="off" spellCheck={false} data-1p-ignore
+        placeholder="rtmps://server/app/stream-key" aria-label="RTMP stream endpoint" /></label>
+      <label>Quality<select value={streamPreset} onChange={event => setStreamPreset(event.target.value as BroadcastPreset)}>
+        <option value="twitch">Twitch · up to 1080p60 · 6 Mbps</option><option value="x">X · up to 1080p30 · 9 Mbps</option>
+        <option value="source">Source quality</option><option value="1080p">1080p</option><option value="720p">720p</option>
+      </select></label>
+      <button type="submit" disabled={!canStartBroadcast(state)}>Start stream</button>
+      <button type="button" disabled={!state.connected || state.broadcastPending} onClick={() => session.current?.broadcast("stop")}>Stop stream</button>
+      <button type="button" disabled={!state.connected || state.broadcastPending} onClick={() => session.current?.broadcast("status")}>Check status</button>
+      <span role="status">{state.broadcastPending ? "Updating stream…" : `Stream: ${state.broadcastStatus ?? "checking…"}`}</span>
+      {state.broadcastAudio !== undefined && <span>{state.broadcastAudio ? "Stream audio available" : "Stream audio unavailable"}</span>}
+      {state.broadcastError && <span role="alert">{state.broadcastError}</span>}
+      <small>Closing this preview keeps the stream running. Use Stop stream to end it.</small>
+    </form>}
     {captureNotice && <p className="remote-screen-notice" role="status">{captureNotice}</p>}
     <div ref={picture} className="remote-screen-canvas" tabIndex={0} role="application" aria-label="Remote screen" data-testid="remote-screen"
       onFocus={event => { if (event.target === event.currentTarget && state.controlling) keyboardInput.current?.focus({ preventScroll: true }); }}

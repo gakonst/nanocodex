@@ -123,6 +123,8 @@ func serveWayland(parent context.Context, config hostConfig) error {
 		return err
 	}
 	defer socket.CloseNow()
+	broadcast := newDesktopBroadcast()
+	defer broadcast.stop()
 	output := make(chan remoteMessage, 128)
 	events := make(chan hostEvent, 128)
 	failures := make(chan error, 1)
@@ -666,7 +668,7 @@ func serveWayland(parent context.Context, config hostConfig) error {
 				if config.Frames {
 					transport = "frames-v1"
 				}
-				send(remoteMessage{Type: "catalog", MachineID: config.MachineID, MachineName: config.Name, Surfaces: []remoteSurface{{ID: "desktop", Name: "Desktop", Kind: kind, Width: config.Width, Height: config.Height, Controllable: true, AgentTools: true, Transport: transport}}})
+				send(remoteMessage{Type: "catalog", MachineID: config.MachineID, MachineName: config.Name, Surfaces: []remoteSurface{{ID: "desktop", Name: "Desktop", Kind: kind, Width: config.Width, Height: config.Height, Controllable: true, AgentTools: true, Broadcast: true, Transport: transport}}})
 			case "renewed":
 				lastAuthorization = time.Now()
 			case "published":
@@ -763,6 +765,20 @@ func serveWayland(parent context.Context, config hostConfig) error {
 					ice, err := service.ice(prepareContext)
 					emit(hostEvent{viewer: id, prepared: true, ice: ice, err: err})
 				}()
+			case "broadcast":
+				result := broadcastResult{Status: "failed", Error: "invalid_request"}
+				if message.ViewerID != "" && message.RequestID != "" && message.SurfaceID == "desktop" {
+					switch message.Action {
+					case "start":
+						result = broadcast.start(ctx, config.Waymote, message.URL, message.Preset, config.Width, config.Height)
+					case "stop":
+						broadcast.stop()
+						result = broadcast.status()
+					case "status":
+						result = broadcast.status()
+					}
+				}
+				send(remoteMessage{Type: "broadcast_result", ViewerID: message.ViewerID, RequestID: message.RequestID, BroadcastResult: &result})
 			case "viewer_left":
 				remove(message.ViewerID)
 			case "frame_request":

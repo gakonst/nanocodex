@@ -126,6 +126,40 @@ public final class RemoteViewer: ObservableObject {
     private var frameProbe: RemoteFirstFrameProbe?
     @Published private var diagnosticFirstFrame: [String: Int]?
 
+    @Published public private(set) var broadcastStatus = "idle"
+    @Published public private(set) var broadcastError: String?
+    private var broadcastRequest: String?
+    @Published public private(set) var broadcastWaiting = false
+    private var broadcastTimer: Task<Void, Never>?
+    public func broadcast(action: String, url: String? = nil, preset: String? = nil) {
+        guard hand?.broadcast == true else { broadcastError = "unsupported"; return }
+        guard !broadcastWaiting, ["start", "stop", "status"].contains(action) else { return }
+        guard broadcastStatus != "stopping" || action == "status" else { return }
+        broadcastTimer?.cancel(); broadcastError = nil
+        var message = RemoteMessage(type: "broadcast")
+        let request = UUID().uuidString; message.requestID = request; broadcastRequest = request; broadcastWaiting = true
+        message.action = action; message.url = url; message.preset = preset
+        signaling?.send(message)
+        broadcastTimer = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(12)) } catch { return }
+            guard let self, broadcastRequest == request else { return }
+            broadcastWaiting = false; broadcastError = "request_timeout"
+            scheduleBroadcastPoll()
+        }
+    }
+    private func scheduleBroadcastPoll() {
+        broadcastTimer?.cancel()
+        broadcastTimer = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            guard let self, hand != nil else { return }; broadcast(action: "status")
+        }
+    }
+    private func receiveBroadcast(_ message: RemoteMessage) {
+        guard message.requestID == broadcastRequest else { return }
+        broadcastStatus = message.agentStatus ?? "failed"; broadcastError = message.error
+        broadcastWaiting = false; scheduleBroadcastPoll()
+    }
+
     public init() { recoveryWindow = .seconds(90) }
     init(recoveryWindow: Duration) { self.recoveryWindow = recoveryWindow }
     var diagnosticState: String { peer?.diagnosticState ?? "no peer" }
@@ -251,7 +285,8 @@ public final class RemoteViewer: ObservableObject {
             var queuedSignals = 0
             signaling.onMessage = { [weak self, weak peer] message in
                 guard let self, epoch == attempt else { return }
-                if message.type == "ready" { recordConnectionEvent("signaling ready") }
+                if message.type == "broadcast_result" { receiveBroadcast(message); return }
+                if message.type == "ready" { recordConnectionEvent("signaling ready"); if hand.broadcast == true { broadcast(action: "status") } }
                 guard let signal = message.signal, let peer else { return }
                 if signal.type != .candidate { recordConnectionEvent("receive \(signal.type.rawValue)") }
                 guard queuedSignals < 128 else { fail(RemoteError.invalidMessage); return }
@@ -327,6 +362,8 @@ public final class RemoteViewer: ObservableObject {
     }
 
     private func detach() {
+        broadcastTimer?.cancel(); broadcastTimer = nil; broadcastWaiting = false; broadcastRequest = nil
+        broadcastStatus = "idle"; broadcastError = nil
         epoch = UUID(); retryTask?.cancel(); retryTask = nil
         // Best effort release before closing transport; never replay control or
         // typed input when the next connection is established.
@@ -402,6 +439,8 @@ public final class RemoteViewer: ObservableObject {
                 case "ready":
                     recordConnectionEvent("signaling ready")
                     armFrameDeadline(attempt: attempt); requestFrame(attempt: attempt)
+                    if hand?.broadcast == true { broadcast(action: "status") }
+                case "broadcast_result": receiveBroadcast(message)
                 case "frame":
                     guard framePending > 0 else { throw RemoteError.invalidMessage }
                     frame = try RemoteFrame.decode(message); framePending -= 1
@@ -528,6 +567,75 @@ public final class RemoteMacHost: ObservableObject {
         catch { await screen.stop(); throw error }
     }
     private struct Viewer { let peer: RemotePeer; var renewal: Task<Void, Never>? }
+    private var broadcaster: MacBroadcast?
+    private var broadcastTask: Task<Void, Never>?
+    private var broadcastEpoch = UUID()
+    private var broadcastState = "idle"
+    private var broadcastViewer: String?, broadcastRequest: String?
+    private var broadcastPreset: String?
+    private func sendBroadcastStatus() {
+        guard let viewer = broadcastViewer, let request = broadcastRequest else { return }
+        var message = RemoteMessage(type: "broadcast_result", viewerID: viewer)
+        message.requestID = request; message.agentStatus = broadcastState; message.preset = broadcastPreset
+        if broadcastState == "failed" { message.error = "broadcast_failed" }
+        signaling?.send(message)
+    }
+    private func handleBroadcast(_ message: RemoteMessage) {
+        guard let viewer = message.viewerID, let request = message.requestID,
+              message.surfaceID == surface?.id, viewers[viewer] != nil || preparations.contains(viewer) else { return }
+        broadcastViewer = viewer; broadcastRequest = request
+        if message.action == "status" { sendBroadcastStatus(); return }
+        if message.action == "stop" {
+            broadcastTask?.cancel(); broadcastTask = nil; broadcastEpoch = UUID()
+            let old = broadcaster
+            broadcastState = "stopping"; sendBroadcastStatus()
+            (capture as? PhoneScreen)?.setBroadcastFrameHandler(nil)
+            let attempt = broadcastEpoch
+            Task { [weak self] in
+                await old?.stop()
+                guard let self, broadcastEpoch == attempt else { return }
+                broadcaster = nil; broadcastState = "stopped"; broadcastPreset = nil; sendBroadcastStatus()
+            }; return
+        }
+        guard message.action == "start", let destination = message.url, let surface else { return }
+        guard broadcaster == nil else {
+            var result = RemoteMessage(type: "broadcast_result", viewerID: viewer)
+            result.requestID = request; result.agentStatus = broadcastState; result.preset = broadcastPreset; result.error = "busy"
+            signaling?.send(result); return
+        }
+        do {
+            let configuration = try RemoteBroadcastConfiguration(destination: destination, preset: message.preset)
+            let publisher = MacBroadcast(), attempt = UUID(); broadcastEpoch = attempt
+            broadcaster = publisher; broadcastPreset = configuration.preset; broadcastState = "starting"; sendBroadcastStatus()
+            publisher.onStatus = { [weak self] status in Task { @MainActor in
+                guard let self, self.broadcastEpoch == attempt else { return }
+                self.broadcastState = status
+                if status == "failed" {
+                    let old = self.broadcaster
+                    (self.capture as? PhoneScreen)?.setBroadcastFrameHandler(nil)
+                    await old?.stop()
+                    guard self.broadcastEpoch == attempt else { return }
+                    self.broadcaster = nil
+                }
+                self.sendBroadcastStatus()
+            } }
+            broadcastTask = Task { [weak self] in
+                guard let self else { return }
+                do {
+                    if surface.kind == .phone, let phone = capture as? PhoneScreen {
+                        guard let (width, height) = phone.broadcastSize() else { throw RemoteError.unavailable }
+                        try publisher.startPhone(width: width, height: height, configuration: configuration)
+                        phone.setBroadcastFrameHandler { [weak publisher] in publisher?.appendPhoneFrame($0) }
+                    } else { try await publisher.start(surfaceID: surface.id, configuration: configuration) }
+                    if broadcastEpoch != attempt || Task.isCancelled { await publisher.stop() }
+                } catch {
+                    await publisher.stop()
+                    guard broadcastEpoch == attempt else { return }
+                    broadcaster = nil; broadcastState = "failed"; sendBroadcastStatus()
+                }
+            }
+        } catch { broadcastState = "failed"; sendBroadcastStatus() }
+    }
     private var viewers: [String: Viewer] = [:]
     private var preparations = Set<String>()
     private var signaling: (any RemoteHostSignaling)?
@@ -719,8 +827,11 @@ public final class RemoteMacHost: ObservableObject {
             signaling.onMessage = { [weak self, weak signaling] message in
                 guard let self, epoch == attempt else { return }
                 switch message.type {
-                case "ready": signaling?.send(.init(type: "catalog", machineID: machineID, machineName: name, surfaces: [surface]))
+                case "ready":
+                        let advertised = RemoteSurface(id: surface.id, name: surface.name, kind: surface.kind, width: surface.width, height: surface.height, controllable: surface.controllable, agentTools: surface.agentTools, broadcast: MacBroadcast.executable != nil)
+                        signaling?.send(.init(type: "catalog", machineID: machineID, machineName: name, surfaces: [advertised]))
                 case "published": publication = message.generation; sharing = true; reconnecting = false; recoveryAttempts = 0; status = "Screen available"
+                case "broadcast": handleBroadcast(message)
                 case "agent_call": handleAgent(message, attempt: attempt)
                 case "agent_cancel":
                     if agentRequestID == message.requestID { agentTask?.cancel(); if lease.owner?.hasPrefix("agent:") == true { revokeControl() } }
@@ -997,6 +1108,11 @@ public final class RemoteMacHost: ObservableObject {
     }
 
     private func detach() -> [any RemoteCapture] {
+        broadcastTask?.cancel(); broadcastTask = nil; broadcastEpoch = UUID()
+        let publisher = broadcaster; broadcaster = nil
+        (capture as? PhoneScreen)?.setBroadcastFrameHandler(nil)
+        broadcastState = "stopped"; broadcastPreset = nil; broadcastViewer = nil; broadcastRequest = nil
+        Task { await publisher?.stop() }
         // Clear intent before awaiting capture cleanup, so Stop or an account
         // change cannot be undone by a late authorization or capture completion.
         recoveryTask?.cancel(); recoveryTask = nil; recoveryAttempts = 0

@@ -13,10 +13,11 @@ public struct RemoteHand: Decodable, Identifiable, Sendable {
     public let machineName: String
     public let generation: String
     public let transport: Transport?
+    public private(set) var broadcast: Bool? = nil
     public private(set) var frameWindow: Int? = nil
     public var identity: String { machineID + ":" + id + ":" + generation }
     enum CodingKeys: String, CodingKey {
-        case id, name, kind, width, height, controllable, generation, transport
+        case id, name, kind, width, height, controllable, generation, transport, broadcast
         case machineID = "machine_id", machineName = "machine_name", frameWindow = "frame_window"
     }
 }
@@ -119,6 +120,7 @@ public struct RemoteMessage: Codable, Sendable {
     var requestID: String?, agentID: String?, deadlineAt: Double?, input: RemoteAgentInput?
     var agentStatus: String?, jpeg: String?, width: Int?, height: Int?
     var count: Int?
+    var action: String?, url: String?, preset: String?, error: String?
     var data: RemoteRelayData?
     public init(type: String, viewerID: String? = nil, signal: RemoteSignal? = nil,
                 machineID: String? = nil, machineName: String? = nil, surfaces: [RemoteSurface]? = nil) {
@@ -130,7 +132,7 @@ public struct RemoteMessage: Codable, Sendable {
         case connectionID = "connection_id", viewerID = "viewer_id", surfaceID = "surface_id"
         case machineID = "machine_id", machineName = "machine_name"
         case requestID = "request_id", agentID = "agent_id", deadlineAt = "deadline_at", input
-        case agentStatus = "status", jpeg, width, height, count
+        case agentStatus = "status", jpeg, width, height, count, action, url, preset, error
     }
 }
 

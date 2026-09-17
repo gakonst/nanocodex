@@ -4,7 +4,7 @@ WORKDIR /src/hand
 COPY .generated/hand/go.mod .generated/hand/go.sum ./
 RUN go mod download
 COPY .generated/hand/*.go ./
-COPY .generated/hand/observation_helper.py ./
+COPY .generated/hand/observation_helper.py .generated/hand/capture_policy.json ./
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -o /out/nanocodex-remote .
 
 # The SDK's Ubuntu 22.04 base has no labwc package. Bundle the VM's Debian
@@ -129,7 +129,7 @@ RUN ln -s /usr/bin/fdfind /usr/local/bin/fd \
 # Creative, document, OCR, and scientific tools are available without a download.
 COPY .generated/toolkit/python.txt /opt/hand-toolkit/python.txt
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        blender ffmpeg imagemagick inkscape libreoffice pandoc \
+        blender ffmpeg pulseaudio pulseaudio-utils imagemagick inkscape libreoffice pandoc \
         poppler-utils qpdf ghostscript tesseract-ocr tesseract-ocr-eng graphviz \
         fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/* \

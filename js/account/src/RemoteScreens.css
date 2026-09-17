@@ -31,3 +31,8 @@
 .remote-screen-text input { min-width: 140px; flex: 1; padding: 9px; border: 1px solid #8885; border-radius: 6px; font: inherit; color: inherit; background: transparent; }
 @media (max-width: 600px) { .remote-screens { height: 94dvh; }.remote-screen-toolbar { gap: 8px; padding: 10px; flex-wrap: wrap; }.remote-screen-text small { width: 100%; } }
 .remote-screens-open { display: inline-flex; align-items: center; gap: 6px; border: 0; border-radius: 5px; background: transparent; color: inherit; cursor: pointer; padding: 6px; font: inherit; }
+
+.remote-screen-broadcast { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; padding: 12px; }
+.remote-screen-broadcast label { display: flex; flex-direction: column; gap: 4px; }
+.remote-screen-broadcast input { min-width: 240px; }
+.remote-screen-broadcast small { flex-basis: 100%; }

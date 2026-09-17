@@ -1,4 +1,4 @@
-import { createExecutionContext, env } from "cloudflare:test";
+import { createExecutionContext, env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { AccountHostedTools } from "../src/account-hosted-tools";
 import worker from "../src/index";
@@ -17,7 +17,7 @@ function next(socket: WebSocket): Promise<any> {
     socket.addEventListener("message", receive);
   });
 }
-async function host(machine: string, owner = A, surfaces = [surface]) {
+async function host(machine: string, owner = A, surfaces: (typeof surface & { broadcast?: boolean })[] = [surface]) {
   const stub = namespace().getByName(owner);
   const response = await stub.fetch("https://account-tools.internal/hands/host", { headers: { ...headers(owner), upgrade: "websocket" } });
   expect(response.status).toBe(101);
@@ -520,4 +520,134 @@ describe("bounded frame windows", () => {
       await ping(publisher.socket);
     } finally { publisher.socket.close(); viewer.socket.close(); }
   });
+});
+
+describe("native hand broadcast authorization and secrets", () => {
+  const streaming = { ...surface, broadcast: true };
+  it.each(["source", "1080p", "720p", "twitch", "x"])("relays %s to the selected host and sanitizes results", async preset => {
+    const publisher = await host("stream", crypto.randomUUID(), [streaming]), viewer = await view(publisher);
+    try {
+      const forwarded = next(publisher.socket);
+      viewer.socket.send(JSON.stringify({ type: "broadcast", request_id: "start-1", action: "start", url: "rtmps://host/app/secret", preset }));
+      expect(await forwarded).toEqual({ type: "broadcast", request_id: "start-1", action: "start", url: "rtmps://host/app/secret", preset, viewer_id: viewer.state.connection_id, surface_id: "screen" });
+      const result = next(viewer.socket);
+      publisher.socket.send(JSON.stringify({ type: "broadcast_result", viewer_id: viewer.state.connection_id, request_id: "start-1", status: "failed", error: "rtmps://host/app/secret" }));
+      expect(await result).toEqual({ type: "broadcast_result", request_id: "start-1", status: "failed", error: "broadcast_failed" });
+      const left = next(publisher.socket); viewer.socket.close();
+      expect(await left).toEqual({ type: "viewer_left", viewer_id: viewer.state.connection_id });
+    } finally { viewer.socket.close(); publisher.socket.close(); }
+  });
+  it.each([
+    { url: "rtmp://:@host/key" }, { url: "rtmp://host/key#" }, { url: "rtmp://host/" }, { url: "rtmp://host" }, { url: "rtmp://user:password@host/key" }, { url: "https://host/key" }, { url: "rtmp://host/key#fragment" },
+    { url: "rtmp://host/key\n" }, { url: "rtmp://host/" + "é".repeat(2048) }, { preset: "unknown" }, { viewer_id: "victim" },
+  ])("rejects invalid start %j without forwarding credentials", async invalid => {
+    const publisher = await host("invalid", crypto.randomUUID(), [streaming]), viewer = await view(publisher);
+    try {
+      const ended = closed(viewer.socket), forwarded = next(publisher.socket);
+      viewer.socket.send(JSON.stringify({ type: "broadcast", request_id: "start", action: "start", url: "rtmps://host/key", ...invalid }));
+      expect((await ended).code).toBe(1008);
+      expect(await forwarded).toEqual({ type: "viewer_left", viewer_id: viewer.state.connection_id });
+    } finally { viewer.socket.close(); publisher.socket.close(); }
+  });
+  it("fences stale correlation, other hosts and other viewers", async () => {
+    const owner = crypto.randomUUID(), publisher = await host("broadcast", owner, [streaming]), other = await host("other", owner, [streaming]);
+    const first = await view(publisher), second = await view(publisher), received = messages(first.socket);
+    try {
+      for (const request_id of ["old", "current"]) {
+        const forwarded = next(publisher.socket);
+        first.socket.send(JSON.stringify({ type: "broadcast", request_id, action: "status" })); await forwarded;
+      }
+      const result = { type: "broadcast_result", request_id: "current", viewer_id: first.state.connection_id, status: "live", audio: true };
+      other.socket.send(JSON.stringify(result)); await ping(other.socket);
+      publisher.socket.send(JSON.stringify({ ...result, request_id: "old" }));
+      publisher.socket.send(JSON.stringify({ ...result, viewer_id: second.state.connection_id }));
+      await ping(publisher.socket); await ping(first.socket);
+      expect(received).toEqual([{ type: "pong" }]);
+      const valid = next(first.socket); publisher.socket.send(JSON.stringify(result));
+      expect(await valid).toEqual({ type: "broadcast_result", request_id: "current", status: "live", audio: true });
+    } finally { first.socket.close(); second.socket.close(); publisher.socket.close(); other.socket.close(); }
+  });
+  it("does not forward commands to hosts without broadcast capability", async () => {
+    const publisher = await host("unsupported", crypto.randomUUID()), viewer = await view(publisher);
+    try {
+      const result = next(viewer.socket);
+      viewer.socket.send(JSON.stringify({ type: "broadcast", request_id: "status", action: "status" }));
+      expect(await result).toEqual({ type: "broadcast_result", request_id: "status", status: "failed", error: "unsupported" });
+      await ping(publisher.socket);
+    } finally { viewer.socket.close(); publisher.socket.close(); }
+  });
+});
+
+
+it("never persists broadcast endpoints and rejects commands after the viewer lease expires", async () => {
+  const publisher = await host("lease-stream", crypto.randomUUID(), [{ ...surface, broadcast: true }]), viewer = await view(publisher);
+  try {
+    const forwarded = next(publisher.socket);
+    viewer.socket.send(JSON.stringify({ type: "broadcast", request_id: "start", action: "start", url: "rtmps://host/app/never-persist-this" })); await forwarded;
+    await runInDurableObject(publisher.stub, async (_, context) => {
+      for (const socket of context.getWebSockets("hand-remote")) {
+        const attachment = socket.deserializeAttachment();
+        expect(JSON.stringify(attachment)).not.toContain("never-persist-this");
+        if (attachment.id === viewer.state.connection_id) {
+          attachment.expiresAt = Date.now() - 1; socket.serializeAttachment(attachment);
+        }
+      }
+    });
+    const ended = closed(viewer.socket), left = next(publisher.socket);
+    viewer.socket.send(JSON.stringify({ type: "broadcast", request_id: "stop", action: "stop" }));
+    expect((await ended).code).toBe(1008);
+    expect(await left).toEqual({ type: "viewer_left", viewer_id: viewer.state.connection_id });
+  } finally { viewer.socket.close(); publisher.socket.close(); }
+});
+
+it("does not replay a start or route stale broadcast replies after host replacement", async () => {
+  const owner = crypto.randomUUID(), publisher = await host("replace-stream", owner, [{ ...surface, broadcast: true }]);
+  const viewer = await view(publisher);
+  let replacement: Awaited<ReturnType<typeof host>> | undefined;
+  try {
+    const forwarded = next(publisher.socket);
+    viewer.socket.send(JSON.stringify({ type: "broadcast", action: "start", request_id: "start", url: "rtmps://host/key" })); await forwarded;
+    const ended = closed(viewer.socket);
+    replacement = await host("replace-stream", owner, [{ ...surface, broadcast: true }]);
+    expect((await ended).code).toBe(1008);
+    const observed = messages(replacement.socket);
+    await ping(replacement.socket);
+    expect(observed).toEqual([{ type: "pong" }]);
+    const response = await replacement.stub.fetch(`https://account-tools.internal/hands/view?machine_id=replace-stream&surface_id=screen&generation=${publisher.state.generation}`, {
+      headers: { ...headers(owner), upgrade: "websocket" },
+    });
+    expect(response.status).toBe(409);
+  } finally { viewer.socket.close(); publisher.socket.close(); replacement?.socket.close(); }
+});
+
+
+it("rejects non-boolean broadcast audio availability", async () => {
+  const publisher = await host("bad-audio", crypto.randomUUID(), [{ ...surface, broadcast: true }]), viewer = await view(publisher);
+  try {
+    const ended = closed(publisher.socket);
+    publisher.socket.send(JSON.stringify({ type: "broadcast_result", request_id: "status", viewer_id: viewer.state.connection_id, status: "live", audio: "secret" }));
+    expect((await ended).code).toBe(1008);
+  } finally { viewer.socket.close(); publisher.socket.close(); }
+});
+
+
+it("relays stopping until native shutdown completes without retiring the publisher", async () => {
+  const publisher = await host("stop-progress", crypto.randomUUID(), [{ ...surface, broadcast: true }]);
+  const viewer = await view(publisher);
+  try {
+    const forwarded = next(publisher.socket);
+    viewer.socket.send(JSON.stringify({ type: "broadcast", request_id: "stop", action: "stop" }));
+    await forwarded;
+    for (const status of ["stopping", "stopped"]) {
+      if (status === "stopped") {
+        const poll = next(publisher.socket);
+        viewer.socket.send(JSON.stringify({ type: "broadcast", request_id: "stop", action: "status" }));
+        await poll;
+      }
+      const response = next(viewer.socket);
+      publisher.socket.send(JSON.stringify({ type: "broadcast_result", request_id: "stop", viewer_id: viewer.state.connection_id, status }));
+      expect(await response).toEqual({ type: "broadcast_result", request_id: "stop", status });
+    }
+    await ping(publisher.socket);
+  } finally { viewer.socket.close(); publisher.socket.close(); }
 });

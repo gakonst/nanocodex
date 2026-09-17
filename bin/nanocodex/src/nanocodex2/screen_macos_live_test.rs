@@ -110,6 +110,8 @@ async fn macos_live_webrtc() -> Result<()> {
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-background-networking",
+            // The isolated loopback fixture has no mDNS resolver or TURN server.
+            "--disable-features=WebRtcHideLocalIpsWithMdns",
             "--autoplay-policy=no-user-gesture-required",
         ])
         .arg(format!("--user-data-dir={}", profile.path().display()))

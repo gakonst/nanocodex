@@ -200,3 +200,23 @@ func splitOpusPackets(laces, payload []byte, pending *[]byte) ([][]byte, error) 
 	}
 	return packets, nil
 }
+
+// Headless desktop images need a playback server as well as FFmpeg's Pulse
+// input. PulseAudio creates its auto_null playback sink when hardware is absent.
+// Reuse an existing server; only stop a child that this desktop owns.
+func startDesktopPlayback(ctx context.Context) func() {
+	if _, err := desktopMonitor(ctx); err == nil {
+		return func() {}
+	}
+	audioCtx, cancel := context.WithCancel(ctx)
+	command := exec.CommandContext(audioCtx, "pulseaudio", "--daemonize=no", "--exit-idle-time=-1", "--log-target=stderr")
+	command.Stdout, command.Stderr = io.Discard, io.Discard
+	command.WaitDelay = time.Second
+	if command.Start() != nil {
+		cancel()
+		return func() {}
+	}
+	done := make(chan struct{})
+	go func() { _ = command.Wait(); close(done) }()
+	return func() { cancel(); <-done }
+}

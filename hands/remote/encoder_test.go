@@ -16,6 +16,15 @@ import (
 // The Wayland integration tests execute this test binary as Waymote's encoder,
 // exercising the same subprocess boundary as the production companion.
 func TestMain(m *testing.M) {
+	if os.Getenv("NANOCODEX_TEST_BROADCAST_CAPTURE") == "1" && os.Getenv(broadcastHelperEnv) == "1" {
+		os.Exit(runSyntheticBroadcastCapture())
+	}
+	if os.Getenv(broadcastHelperEnv) == "1" {
+		if runBroadcastEncoder() != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if os.Getenv("NANOCODEX_TEST_ATOMIC_ENCODER") == "1" {
 		_, _ = io.WriteString(os.Stdout, chunkedH264Magic)
 		frame := append([]byte{0, 0, 0, 1, 0x65}, bytes.Repeat([]byte{0x35}, 1024*1024)...)

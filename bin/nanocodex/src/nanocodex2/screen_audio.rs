@@ -1,6 +1,6 @@
 //! Desktop-output PCM only, encoded as 20 ms stereo Opus for the existing peer.
 //! Audio is optional: device/encoder failure never tears down the video stream.
-#[cfg(any(target_os = "linux", target_os = "windows", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos", test))]
 use super::screen_video::Capture;
 use super::screen_video::{Task, VideoSource};
 use opusic_c::{Application, Channels, Encoder, SampleRate};
@@ -88,11 +88,11 @@ impl Audio {
 }
 
 pub(crate) fn native_source() -> Option<VideoSource> {
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
     {
         Some(Arc::new(|| Box::pin(native_capture())))
     }
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         None
     }
@@ -168,7 +168,7 @@ fn monitor_source(data: &[u8], name: &str) -> Result<String> {
         .ok_or_else(|| "desktop playback monitor unavailable".into())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 async fn native_capture() -> Result<Capture> {
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::io::AsyncWriteExt;

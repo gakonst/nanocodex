@@ -110,6 +110,35 @@ export class PrivateBrowserCdp {
   close() { this.#reject(); try { this.socket.close(1000, "Finished"); } catch { /* No provider errors escape. */ } }
 }
 
+/** Shared isolated-world submission policy. Page listeners are expected on an
+ * authorized login origin. Destination guards are best effort: trusted page JS
+ * already receives credentials and can make its own requests or stop propagation. */
+const VAULT_FORM_SUBMISSION = `
+  const safeLoginForm = form => {
+    if (!(form instanceof HTMLFormElement) || !form.isConnected || form.getRootNode() !== document
+      || location.origin !== origin || form.method.toLowerCase() !== 'post' || (form.target && form.target !== '_self')) return false;
+    const action = new URL(form.action, location.href);
+    return action.origin === origin && !action.username && !action.password;
+  };
+  const safeSubmitter = el => (el instanceof HTMLButtonElement || el instanceof HTMLInputElement)
+    && el.type === 'submit' && !el.name && !el.disabled && !el.matches(':disabled') && el.getAttribute('aria-disabled') !== 'true'
+    && !['formaction','formmethod','formtarget','formenctype','formnovalidate'].some(a => el.hasAttribute(a));
+  const submitLoginForm = (form, submitter) => {
+    if (!safeLoginForm(form) || (submitter && (submitter.form !== form || !safeSubmitter(submitter)))) return false;
+    let safe = true;
+    const guard = event => {
+      if (event.target !== form) return;
+      if (!safeLoginForm(form) || (event.submitter && (event.submitter.form !== form || !safeSubmitter(event.submitter)))) {
+        safe = false; event.preventDefault();
+      }
+    };
+    window.addEventListener('submit', guard);
+    try { HTMLFormElement.prototype.requestSubmit.call(form, submitter || undefined); }
+    finally { window.removeEventListener('submit', guard); }
+    return safe && safeLoginForm(form);
+  };
+`;
+
 type PrivateBrowserChannel = Pick<PrivateBrowserCdp, "send"> & Partial<Pick<PrivateBrowserCdp, "attachTarget">>;
 const attachPrivateTarget = (cdp: PrivateBrowserChannel, targetId: string) => cdp.attachTarget
   ? cdp.attachTarget(targetId) : cdp.send("Target.attachToTarget", { targetId, flatten: true });
@@ -153,15 +182,16 @@ export class PrivateBrowserContinuationSession {
 
 /** A fixed function, executed in a fresh isolated world. Selectors are data, never code.
  * Restrict to a visible, same-origin POST login form in the top frame. Atomic checks
- * and native setters prevent page script from swapping the destination between awaits.
+ * and native setters are followed by input/change events and destination rechecks.
  */
 export const BROWSER_VAULT_FILL_FUNCTION = `function(origin, usernameSelector, passwordSelector, username, password, submit) {
   if (window !== window.top || location.origin !== origin || location.protocol !== "https:") return false;
+  ${VAULT_FORM_SUBMISSION}
   const one = selector => { const nodes = document.querySelectorAll(selector); return nodes.length === 1 ? nodes[0] : null; };
   const user = usernameSelector === null ? null : one(usernameSelector);
   const pass = passwordSelector === null ? null : one(passwordSelector);
   const visible = input => {
-    if (!(input instanceof HTMLInputElement) || !input.isConnected || input.disabled || input.readOnly
+    if (!(input instanceof HTMLInputElement) || !input.isConnected || input.disabled || input.matches(':disabled') || input.readOnly
       || input.getRootNode() !== document || input.closest('[inert]')) return false;
     const style = getComputedStyle(input), rect = input.getBoundingClientRect();
     if (style.visibility !== 'visible' || style.display === 'none' || Number(style.opacity) === 0
@@ -178,12 +208,32 @@ export const BROWSER_VAULT_FILL_FUNCTION = `function(origin, usernameSelector, p
   const action = new URL(form.action, location.href);
   if (action.origin !== origin || action.username || action.password || form.method.toLowerCase() !== 'post'
     || (form.target && form.target !== '_self')) return false;
+  const challenge = () => [...document.querySelectorAll('iframe,[id],[class]')].slice(0,5000).some(el =>
+    el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && /captcha|turnstile|challenge-platform/i.test([el.id, typeof el.className === 'string' ? el.className : '', el instanceof HTMLIFrameElement ? el.src : ''].join(' ')));
+  const valid = () => !challenge() && safeLoginForm(form)
+    && (!user || (one(usernameSelector) === user && user.form === form && visible(user) && ['text','email'].includes(user.type)))
+    && (!pass || (one(passwordSelector) === pass && pass.form === form && visible(pass) && pass.type === 'password'));
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-  if (user) setter.call(user, username);
-  if (pass) setter.call(pass, password);
-  // Native submission bypasses page callbacks and submits only to the checked
-  // same-origin POST action. SPA/custom login handlers require human takeover.
-  if (submit) HTMLFormElement.prototype.submit.call(form);
+  for (const [input, value] of [[user, username], [pass, password]]) {
+    if (!input) continue;
+    if (!valid()) return false;
+    setter.call(input, value);
+    input.dispatchEvent(new Event('input', {bubbles:true}));
+    if (!valid()) return false;
+    input.dispatchEvent(new Event('change', {bubbles:true}));
+    if (!valid()) return false;
+  }
+  if (submit) {
+    const controls = [...form.elements].filter(el => (el instanceof HTMLButtonElement || el instanceof HTMLInputElement) && el.type === 'submit');
+    const usable = controls.filter(el => { const rect = el.getBoundingClientRect(); return rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight
+      && el.contains(document.elementFromPoint(rect.left + rect.width/2, rect.top + rect.height/2)) && safeSubmitter(el) && el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})
+      && !el.closest('[inert],[hidden],[aria-hidden="true"]'); });
+    // Never bypass a custom login button by blindly posting its enclosing form.
+    if (controls.length && usable.length !== 1) return 'unsupported';
+    if (!controls.length && form.querySelector('button,[role="button"],input[type="button"],input[type="image"]')) return 'unsupported';
+    if (!valid()) return false;
+    return submitLoginForm(form, usable[0]);
+  }
   return true;
 }`;
 
@@ -194,7 +244,7 @@ export async function fillBrowserVault(options: {
   resolve: () => Promise<BrowserVaultLogin>;
   quarantine: (value: BrowserVaultQuarantine) => Promise<void>;
   signal?: AbortSignal;
-}): Promise<{ status: "submitted" | "filled" }> {
+}): Promise<{ status: "submitted" | "filled"; submission?: "action_required" }> {
   try {
     const { cdp, request } = options;
     const checkAbort = () => { if (options.signal?.aborted) throw new Error(); };
@@ -223,6 +273,7 @@ export async function fillBrowserVault(options: {
       returnByValue: true,
       silent: true,
     }, sid);
+    if (!result?.exceptionDetails && result?.result?.value === "unsupported") return { status: "filled", submission: "action_required" };
     if (result?.exceptionDetails || result?.result?.value !== true) throw new Error();
     return { status: request.submit ? "submitted" : "filled" };
   } catch { throw new Error("Vault login could not be filled safely"); }
@@ -245,16 +296,24 @@ const OTP_SELECTOR = 'input[autocomplete="one-time-code"],input[name="otp"],inpu
 /** Fixed code in an isolated world: no caller JavaScript, DOM values, raw attributes,
  * scripts, subframes or hidden content are returned. Refs bind to node identity and
  * a single snapshot. Actions deliberately support native same-origin links and
- * POST form submission only; arbitrary page handlers are not a safe boundary.
+ * POST form submission and explicit bounded login controls. Other custom controls
+ * require human takeover; authorized page handlers can perform their own requests.
  */
 export const BROWSER_VAULT_CONTINUATION_FUNCTION = `function(origin, mode, snapshotId, ref, url, selectors) {
   if (window !== window.top || location.origin !== origin || location.protocol !== 'https:') return null;
+  ${VAULT_FORM_SUBMISSION}
   const visible = (el, readingText = false) => el instanceof Element && el.isConnected && el.getRootNode() === document
     && !el.closest('[inert],[hidden],script,style,noscript,template,textarea,select' + (readingText ? '' : ',[aria-hidden="true"]'))
     && el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && el.getClientRects().length > 0;
   const safeUrl = value => { try { const u = new URL(value, location.href); return u.origin === origin && !u.username && !u.password ? u.href : null; } catch { return null; } };
   const safeForm = form => form instanceof HTMLFormElement && form.method.toLowerCase() === 'post'
     && (!form.target || form.target === '_self') && safeUrl(form.action);
+  const associatedForm = el => el.form || el.closest('form');
+  const customLogin = el => el instanceof HTMLElement && el.getAttribute('role') === 'button'
+    && !el.matches('a,input,button') && !el.closest('a,button,label,summary') && el.getAttribute('aria-disabled') !== 'true'
+    && /^(log in|login|sign in)$/i.test((el.textContent || '').trim())
+    && safeForm(associatedForm(el)) && [...associatedForm(el).elements].some(input =>
+      input instanceof HTMLInputElement && ['text','email','password'].includes(input.type) && visible(input) && !input.disabled && !input.readOnly);
   const usable = selector => {
     const nodes = document.querySelectorAll(selector);
     return nodes.length === 1 && nodes[0] instanceof HTMLInputElement && visible(nodes[0])
@@ -281,9 +340,9 @@ export const BROWSER_VAULT_CONTINUATION_FUNCTION = `function(origin, mode, snaps
     delete globalThis.__nanocodexVaultSnapshot;
     if (challenge) return 'challenge_detected';
     if (!el) return 'stale_ref';
-    if (!visible(el) || el.disabled) return 'element_not_visible';
+    if (!visible(el) || el.disabled || el.getAttribute('aria-disabled') === 'true') return 'element_not_visible';
     if (el.outerHTML !== entry.html
-      || (entry.form && (el.form !== entry.form || entry.form.outerHTML !== entry.formHtml))) return 'changed_element';
+      || (entry.form && (associatedForm(el) !== entry.form || entry.form.outerHTML !== entry.formHtml))) return 'changed_element';
     el.scrollIntoView({block:"center", inline:"center", behavior:"instant"});
     const rect = el.getBoundingClientRect();
     if (rect.left < 0 || rect.top < 0 || rect.right > innerWidth || rect.bottom > innerHeight) return 'outside_viewport';
@@ -293,10 +352,10 @@ export const BROWSER_VAULT_CONTINUATION_FUNCTION = `function(origin, mode, snaps
       if (!destination) return 'unsafe_destination';
       location.assign(destination); return true;
     }
+    if (customLogin(el)) { HTMLElement.prototype.click.call(el); return true; }
     if ((el instanceof HTMLButtonElement || el instanceof HTMLInputElement) && el.type === 'submit' && !el.name && safeForm(el.form)
-      && !['formaction','formmethod','formtarget','formenctype'].some(a => el.hasAttribute(a))) {
-      // Deliberately bypass page listeners; no arbitrary click event or SPA execution.
-      HTMLFormElement.prototype.submit.call(el.form); return true;
+      && !['formaction','formmethod','formtarget','formenctype','formnovalidate'].some(a => el.hasAttribute(a))) {
+      return submitLoginForm(el.form, el);
     }
     return 'unsupported_element';
   }
@@ -315,14 +374,15 @@ export const BROWSER_VAULT_CONTINUATION_FUNCTION = `function(origin, mode, snaps
     return chunks.join(' ');
   };
   const nodes = new Map(), elements = [];
-  for (const el of [...document.querySelectorAll('a[href],button,input[type="submit"]')].slice(0, 2000)) {
+  for (const el of [...document.querySelectorAll('a[href],button,input[type="submit"],[role="button"]')].slice(0, 2000)) {
     if (elements.length >= 200) break;
-    if (!visible(el) || el.disabled) continue;
+    if (!visible(el) || el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
     const link = el instanceof HTMLAnchorElement;
     if (link ? (!safeUrl(el.href) || (el.target && el.target !== '_self') || el.hasAttribute('download'))
-      : (el.type !== 'submit' || !!el.name || !safeForm(el.form) || ['formaction','formmethod','formtarget','formenctype'].some(a => el.hasAttribute(a)))) continue;
+      : (!customLogin(el) && !safeSubmitter(el))) continue;
+    if (!link && !safeForm(associatedForm(el))) continue;
     const key = 'e' + (elements.length + 1);
-    nodes.set(key, {el, html:el.outerHTML, form:link ? null : el.form, formHtml:link ? null : el.form.outerHTML});
+    nodes.set(key, {el, html:el.outerHTML, form:link ? null : associatedForm(el), formHtml:link ? null : associatedForm(el).outerHTML});
     // Input values, including submit values, are never read.
     elements.push({ref:key, role:link ? 'link' : 'button', text:el instanceof HTMLInputElement ? '' : readable(el)});
   }

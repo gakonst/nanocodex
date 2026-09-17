@@ -4,8 +4,16 @@ export type RemoteHand = Readonly<{
   machine_id: string; machine_name: string; generation: string;
   transport?: "webrtc" | "frames-v1";
   frame_window?: number;
+  broadcast?: boolean;
 }>;
-export type RemoteState = Readonly<{ status: string; connected: boolean; controlling: boolean; connecting: boolean; audioAvailable?: boolean; audioEnabled?: boolean; controlPending?: boolean; relativePointer?: boolean }>;
+export type BroadcastPreset = "source" | "1080p" | "720p" | "twitch" | "x";
+export type BroadcastStatus = "idle" | "starting" | "live" | "reconnecting" | "stopping" | "failed" | "stopped";
+export type RemoteState = Readonly<{ broadcastStatus?: BroadcastStatus; broadcastAudio?: boolean; broadcastPending?: boolean; broadcastError?: string; status: string; connected: boolean; controlling: boolean; connecting: boolean; audioAvailable?: boolean; audioEnabled?: boolean; controlPending?: boolean; relativePointer?: boolean }>;
+/** The start button waits for a known, inactive native stream state. */
+export function canStartBroadcast(state: RemoteState): boolean {
+  return state.connected && !state.broadcastPending && ["idle", "failed", "stopped"].includes(state.broadcastStatus ?? "");
+}
+
 export type RemoteInput = {
   kind: "move" | "relativeMove" | "button" | "scroll" | "key" | "text" | "releaseAll";
   x?: number; y?: number; button?: number; down?: boolean; key?: number; text?: string; deltaX?: number; deltaY?: number;
@@ -35,6 +43,7 @@ export async function listRemoteHands(signal?: AbortSignal): Promise<readonly Re
   if (!value || !Array.isArray(value.surfaces) || value.surfaces.length > 512 || !value.surfaces.every((hand: RemoteHand) => hand
     && [hand.id, hand.name, hand.machine_id, hand.machine_name, hand.generation].every(string)
     && ["desktop", "window", "phone", "vm"].includes(hand.kind) && typeof hand.controllable === "boolean"
+    && (hand.broadcast === undefined || typeof hand.broadcast === "boolean")
     && (hand.transport === undefined || ["webrtc", "frames-v1"].includes(hand.transport))
     && Number.isInteger(hand.width) && hand.width > 0 && Number.isInteger(hand.height) && hand.height > 0)) {
     throw new RemoteError("Invalid screen catalog.", true);
@@ -83,6 +92,9 @@ export class RemoteBrowserSession {
   private reliable?: RTCDataChannel;
   private motion?: RTCDataChannel;
   private sequence = 0;
+  private broadcastRequest?: string;
+  private broadcastTimer?: ReturnType<typeof setInterval>;
+  private broadcastDeadline?: ReturnType<typeof setTimeout>;
   // Serialize acquire/release exchanges: legacy hosts acknowledge release with
   // an unversioned revoked message, which must not cancel a later explicit take.
   private control: "idle" | "acquiring" | "cancelled-acquire" | { kind: "held" | "releasing"; generation: string } = "idle";
@@ -239,12 +251,24 @@ export class RemoteBrowserSession {
             if (this.renewTimer || typeof message.connection_id !== "string" || message.connection_id.length > 128) throw new RemoteError("Invalid remote lease.", true);
             const id = message.connection_id;
             this.authorized(epoch);
+            if (this.hand.broadcast) {
+              this.broadcast("status");
+              this.broadcastTimer = setInterval(() => { if (!this.broadcastRequest) this.broadcast("status"); }, 5000);
+            }
             this.renewTimer = setInterval(() => { void this.renew(id, epoch, signal); }, 10_000);
             if (frames) {
               this.armFrameDeadline(epoch);
               this.requestFrame(epoch);
             }
           } else if (message.type === "renewed") this.authorized(epoch);
+          else if (message.type === "broadcast_result") {
+            if (!this.hand.broadcast || message.request_id !== this.broadcastRequest) return;
+            if ((message.audio !== undefined && typeof message.audio !== "boolean") || !["idle", "starting", "live", "reconnecting", "stopping", "failed", "stopped"].includes(message.status)) throw new RemoteError("Invalid broadcast status.", true);
+            clearTimeout(this.broadcastDeadline);
+            this.broadcastRequest = undefined;
+            this.update({ broadcastStatus: message.status, broadcastAudio: message.audio, broadcastPending: false,
+              broadcastError: message.error === undefined ? undefined : message.error === "busy" ? "A stream is already running on this Hand." : message.error === "unsupported" ? "Streaming is unavailable on this Hand." : "Streaming failed. Check the endpoint and try again." });
+          }
           else if (message.type === "pong") return; // Liveness is not lease authorization.
           else if (frames && message.type === "frame") await this.renderFrame(message, epoch);
           else if (frames && message.type === "control") this.receiveControl(message.data, epoch);
@@ -281,6 +305,41 @@ export class RemoteBrowserSession {
       this.authorized(epoch);
       await peerReady;
     } catch (error) { if (this.current(epoch)) this.fail(error); }
+  }
+
+  /** Credentials live only in the outgoing start message; never replay a start. */
+  broadcast(action: "start" | "stop" | "status", url?: string, preset: BroadcastPreset = "source"): boolean {
+    if (this.closed || this.suspended || !this.hand.broadcast || this.socket?.readyState !== WebSocket.OPEN) return false;
+    if (this.broadcastRequest && (action === "status" || this.state.broadcastPending)) return false;
+    if (action === "start") {
+      if (["starting", "live", "reconnecting", "stopping"].includes(this.state.broadcastStatus ?? "")) {
+        this.update({ broadcastError: "A stream is already running on this Hand." }); return false;
+      }
+      try {
+        if (!url || new TextEncoder().encode(url).length > 4096 || /[\s\x00-\x1f\x7f]/.test(url)) throw new Error();
+        const endpoint = new URL(url);
+        if (!["rtmp:", "rtmps:"].includes(endpoint.protocol) || !endpoint.hostname || endpoint.username || endpoint.password || url.includes("#") || /^rtmps?:\/\/[^/?#]*@/i.test(url) || !endpoint.pathname.replaceAll("/", "")
+          || !["source", "1080p", "720p", "twitch", "x"].includes(preset)) throw new Error();
+      } catch {
+        this.update({ broadcastError: "Enter a complete RTMP or RTMPS endpoint." }); return false;
+      }
+    }
+    const request_id = crypto.randomUUID();
+    this.broadcastRequest = request_id;
+    try {
+      this.socket.send(JSON.stringify({ type: "broadcast", request_id, action, ...(action === "start" ? { url, preset } : {}) }));
+      this.update({ broadcastPending: action !== "status", broadcastError: undefined });
+      clearTimeout(this.broadcastDeadline);
+      this.broadcastDeadline = setTimeout(() => {
+        if (this.broadcastRequest !== request_id) return;
+        this.broadcastRequest = undefined;
+        this.update({ broadcastPending: false, broadcastStatus: undefined, broadcastAudio: undefined, broadcastError: "Stream status unavailable. Checking again…" });
+      }, 10_000);
+      return true;
+    } catch {
+      this.broadcastRequest = undefined;
+      this.update({ broadcastPending: false, broadcastError: "Stream request could not be sent. Reconnect to check its status." }); return false;
+    }
   }
 
   /** Called directly by a user gesture so mobile autoplay can unlock sound. */
@@ -334,6 +393,8 @@ export class RemoteBrowserSession {
   }
   private detach(): void {
     ++this.epoch;
+    clearInterval(this.broadcastTimer); clearTimeout(this.broadcastDeadline);
+    this.broadcastTimer = undefined; this.broadcastDeadline = undefined; this.broadcastRequest = undefined;
     // Teardown is best effort: never let a failed release reenter recovery.
     if (this.generation) {
       const release = { type: "release", generation: this.generation };
@@ -355,7 +416,7 @@ export class RemoteBrowserSession {
     if (this.peer) { this.peer.onconnectionstatechange = this.peer.ontrack = this.peer.onicecandidate = this.peer.ondatachannel = null; this.peer.close(); }
     this.socket = undefined; this.peer = undefined; this.reliable = undefined; this.motion = undefined;
     this.video.srcObject = null;
-    this.update({ audioAvailable: false, controlPending: false, relativePointer: false });
+    this.update({ audioAvailable: false, controlPending: false, relativePointer: false, broadcastStatus: undefined, broadcastAudio: undefined, broadcastPending: false, broadcastError: undefined });
     if (this.canvas) { this.canvas.width = 0; this.canvas.height = 0; }
   }
   private fail(error: unknown): void {

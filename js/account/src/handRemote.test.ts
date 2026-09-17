@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { listRemoteHands, RemoteBrowserSession, type RemoteHand } from "./handRemote.ts";
+import { canStartBroadcast, listRemoteHands, RemoteBrowserSession, type RemoteHand } from "./handRemote.ts";
 
 const screen: RemoteHand = {
   id: "desktop", name: "Desktop", kind: "desktop", width: 1600, height: 900, controllable: true,
@@ -669,4 +669,65 @@ test("blocked sound falls back to muted video without reconnecting", async t => 
   assert.equal(f.session.state.audioEnabled, false);
   assert.equal(f.session.state.connected, true);
   assert.equal(f.sockets.length, 1);
+});
+
+test("broadcast validation keeps endpoint secrets out of state and refuses credentials", async t => {
+  const f = fixture(t, { ...screen, broadcast: true });
+  await f.session.connect(); f.peers[0]!.open();
+  for (const url of ["rtmp://:@host/key", "rtmp://host/key#", "rtmp://host/", "rtmp://host", "https://host/key", "rtmp://user:pass@host/key", "rtmp://host/key#fragment", "rtmp://host/a b", "rtmp://host/" + "é".repeat(2048)]) {
+    assert.equal(f.session.broadcast("start", url), false);
+  }
+  assert.equal(f.sockets[0]!.sent.length, 0);
+  assert.equal(f.session.broadcast("start", "rtmps://host/app/secret", "twitch"), true);
+  assert.equal(JSON.stringify(f.session.state).includes("secret"), false);
+  assert.equal(f.session.broadcast("start", "rtmps://host/app/replacement", "x"), false);
+  assert.equal(f.sockets[0]!.sent.length, 1);
+  const request = f.sockets[0]!.sent[0];
+  f.sockets[0]!.message({ type: "broadcast_result", request_id: "stale", status: "failed" });
+  assert.equal(f.session.state.broadcastPending, true);
+  f.sockets[0]!.message({ type: "broadcast_result", request_id: request.request_id, status: "live", audio: true }); await flush();
+  assert.equal(f.session.state.broadcastPending, false);
+  assert.equal(f.session.state.broadcastStatus, "live");
+  assert.equal(f.session.state.broadcastAudio, true);
+  assert.equal(f.session.broadcast("start", "rtmps://host/app/another"), false);
+  f.session.close();
+  assert.equal(f.sockets[0]!.sent.some(m => m.action === "stop"), false);
+});
+
+test("broadcast polling times out, recovers status and never replays start on reconnect", async t => {
+  const f = fixture(t, { ...screen, broadcast: true });
+  await f.session.connect(); f.peers[0]!.open();
+  f.sockets[0]!.message({ type: "ready", connection_id: "viewer" }); await flush();
+  const initial = f.sockets[0]!.sent.find(m => m.action === "status");
+  assert.ok(initial);
+  await f.tick(5000);
+  assert.equal(f.sockets[0]!.sent.filter(m => m.action === "status").length, 1);
+  f.sockets[0]!.message({ type: "broadcast_result", request_id: initial.request_id, status: "idle" }); await flush();
+  assert.equal(f.session.broadcast("start", "rtmps://host/app/private", "x"), true);
+  await f.tick(10000);
+  assert.equal(f.session.state.broadcastPending, false);
+  await f.tick(5000);
+  const status = f.sockets[0]!.sent.filter(m => m.action === "status").at(-1);
+  f.sockets[0]!.message({ type: "broadcast_result", request_id: status.request_id, status: "reconnecting", audio: false, error: "rtmps://secret" }); await flush();
+  assert.equal(f.session.state.broadcastStatus, "reconnecting");
+  assert.equal(f.session.state.broadcastAudio, false);
+  assert.equal(f.session.state.broadcastError?.includes("secret"), false);
+  f.sockets[0]!.close(); await f.tick(2000);
+  f.sockets.at(-1)!.message({ type: "ready", connection_id: "new-viewer" }); await flush();
+  assert.equal(f.sockets.at(-1)!.sent.some(m => m.action === "start"), false);
+  assert.equal(f.sockets.at(-1)!.sent.some(m => m.action === "status"), true);
+});
+
+
+test("stream start UI waits for status and disables active, pending and disconnected states", () => {
+  const base = { connected: true, controlling: false, connecting: false, status: "Connected" };
+  assert.equal(canStartBroadcast(base), false);
+  for (const broadcastStatus of ["starting", "live", "reconnecting"] as const) {
+    assert.equal(canStartBroadcast({ ...base, broadcastStatus }), false);
+  }
+  for (const broadcastStatus of ["idle", "failed", "stopped"] as const) {
+    assert.equal(canStartBroadcast({ ...base, broadcastStatus }), true);
+    assert.equal(canStartBroadcast({ ...base, broadcastStatus, broadcastPending: true }), false);
+    assert.equal(canStartBroadcast({ ...base, broadcastStatus, connected: false }), false);
+  }
 });

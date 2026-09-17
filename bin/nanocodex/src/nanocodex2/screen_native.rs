@@ -69,6 +69,7 @@ impl NativeScreen {
                 machine,
                 backend,
                 Some(native_video()),
+                Some(native_command()),
                 super::screen_audio::native_source(),
                 super::observation_providers::Registry::local(),
             )
@@ -137,7 +138,8 @@ impl NativeScreen {
                         target,
                         machine,
                         backend,
-                        Some(native_video(video_runtime)),
+                        Some(native_video(video_runtime.clone())),
+                        Some(native_command(video_runtime)),
                         super::screen_audio::native_source(),
                         super::observation_providers::Registry::local(),
                     )
@@ -226,18 +228,18 @@ async fn desktop_request(
 }
 
 #[cfg(target_os = "linux")]
-fn native_video(runtime: PathBuf) -> super::screen_video::VideoSource {
+fn native_command(runtime: PathBuf) -> super::screen_broadcast::Source {
     std::sync::Arc::new(move || {
         let runtime = runtime.clone();
         Box::pin(async move {
             let command = nanocodex_vm::desktop::video_command(&runtime)?;
-            super::screen_video::Capture::ffmpeg(command)
+            Ok(command)
         })
     })
 }
 
 #[cfg(target_os = "macos")]
-fn native_video() -> super::screen_video::VideoSource {
+fn native_command() -> super::screen_broadcast::Source {
     std::sync::Arc::new(|| {
         Box::pin(async {
             use std::process::Stdio;
@@ -326,17 +328,17 @@ fn native_video() -> super::screen_video::VideoSource {
                 "h264",
                 "pipe:1",
             ]);
-            super::screen_video::Capture::ffmpeg(command)
+            Ok(command)
         })
     })
 }
 
 #[cfg(target_os = "windows")]
-fn native_video() -> super::screen_video::VideoSource {
+fn native_command() -> super::screen_broadcast::Source {
     std::sync::Arc::new(|| {
         Box::pin(async {
             let command = nanocodex_hand::video_command()?;
-            super::screen_video::Capture::ffmpeg(command)
+            Ok(command)
         })
     })
 }
@@ -344,3 +346,200 @@ fn native_video() -> super::screen_video::VideoSource {
 #[cfg(all(test, target_os = "macos"))]
 #[path = "screen_macos_live_test.rs"]
 mod screen_macos_live_test;
+
+#[cfg(target_os = "linux")]
+fn native_video(runtime: PathBuf) -> super::screen_video::VideoSource {
+    preview(native_command(runtime))
+}
+#[cfg(target_os = "windows")]
+fn native_video() -> super::screen_video::VideoSource {
+    preview(native_command())
+}
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn preview(source: super::screen_broadcast::Source) -> super::screen_video::VideoSource {
+    std::sync::Arc::new(move || {
+        let source = source.clone();
+        Box::pin(async move { super::screen_video::Capture::ffmpeg(source().await?) })
+    })
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "windows")))]
+mod broadcast_live_tests {
+    #[tokio::test]
+    #[ignore = "requires screen permission and a local RTMP receiver"]
+    async fn local_rtmp_native() {
+        use serde_json::json;
+        use std::time::Duration;
+        let url = std::env::var("NANOCODEX_RTMP_TEST_URL").unwrap();
+        let preset = std::env::var("NANOCODEX_RTMP_TEST_PRESET").unwrap_or("source".into());
+        let mut broadcast = crate::screen_broadcast::Broadcast::new(
+            Some(super::native_command()),
+            crate::screen_audio::native_source(),
+        )
+        .with_raw(super::native_broadcast_frames());
+        assert_eq!(
+            broadcast
+                .request(&json!({"action":"start","url":url,"preset":preset}))
+                .await["status"],
+            "starting"
+        );
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let status = broadcast.request(&json!({"action":"status"})).await;
+                if status["status"] == "live" {
+                    break;
+                }
+                assert_ne!(status["status"], "failed");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let seconds = std::env::var("NANOCODEX_RTMP_TEST_SECONDS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(10);
+        tokio::time::sleep(Duration::from_secs(seconds)).await;
+        assert_eq!(
+            broadcast.request(&json!({"action":"status"})).await["status"],
+            "live"
+        );
+        assert_eq!(
+            broadcast.request(&json!({"action":"stop"})).await["status"],
+            "stopped"
+        );
+    }
+}
+
+/// Broadcast capture uses ScreenCaptureKit; AVFoundation can stall on newer
+/// macOS releases. The native callback retains only the latest complete frame.
+#[cfg(target_os = "macos")]
+pub(crate) fn native_broadcast_frames() -> super::screen_broadcast::RawSource {
+    native_raw_frames(3840, 2160)
+}
+#[cfg(target_os = "macos")]
+fn native_raw_frames(max_width: usize, max_height: usize) -> super::screen_broadcast::RawSource {
+    std::sync::Arc::new(move || {
+        Box::pin(async move {
+            use std::sync::{
+                Arc,
+                atomic::{AtomicBool, Ordering},
+            };
+            use tokio::io::AsyncWriteExt;
+            struct Stop(Arc<AtomicBool>);
+            impl Drop for Stop {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::Release);
+                }
+            }
+            struct Writer {
+                pipe: tokio::io::DuplexStream,
+                runtime: tokio::runtime::Handle,
+            }
+            impl std::io::Write for Writer {
+                fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                    self.runtime.block_on(self.pipe.write(bytes))
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    Ok(())
+                }
+            }
+            let (native_width, native_height) = nanocodex_hand::main_display_dimensions()?;
+            let scale = (max_width as f64 / native_width as f64)
+                .min(max_height as f64 / native_height as f64)
+                .min(1.0);
+            let width = ((native_width as f64 * scale) as usize / 2 * 2).max(2);
+            let height = ((native_height as f64 * scale) as usize / 2 * 2).max(2);
+            let (reader, pipe) = tokio::io::duplex(256 * 1024);
+            let stop = Arc::new(AtomicBool::new(false));
+            let guard = Stop(stop.clone());
+            let runtime = tokio::runtime::Handle::current();
+            let worker = tokio::task::spawn_blocking(move || {
+                nanocodex_hand::capture_video(Writer { pipe, runtime }, stop, width, height)
+            });
+            let owner = super::screen_video::Task(tokio::spawn(async move {
+                let _guard = guard;
+                let _ = worker.await;
+            }));
+            Ok((
+                super::screen_video::Capture {
+                    reader: Box::new(reader),
+                    owner,
+                },
+                width,
+                height,
+            ))
+        })
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn native_video() -> super::screen_video::VideoSource {
+    std::sync::Arc::new(|| {
+        Box::pin(async {
+            use std::process::Stdio;
+            let (mut raw, width, height) = native_raw_frames(1280, 1280)().await?;
+            let mut command = tokio::process::Command::new("ffmpeg");
+            command.args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-f",
+                "rawvideo",
+                "-pixel_format",
+                "bgra",
+                "-video_size",
+                &format!("{width}x{height}"),
+                "-framerate",
+                "60",
+                "-i",
+                "pipe:0",
+                "-an",
+                "-c:v",
+                "h264_videotoolbox",
+                "-realtime",
+                "1",
+                "-profile:v",
+                "baseline",
+                "-b:v",
+                "6M",
+                "-maxrate",
+                "6M",
+                "-bufsize",
+                "100k",
+                "-g",
+                "30",
+                "-bf",
+                "0",
+                "-bsf:v",
+                "h264_metadata=aud=insert",
+                "-flush_packets",
+                "1",
+                "-f",
+                "h264",
+                "pipe:1",
+            ]);
+            let mut child = command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .kill_on_drop(true)
+                .spawn()?;
+            let mut input = child.stdin.take().ok_or("encoder input unavailable")?;
+            let pump = super::screen_video::Task(tokio::spawn(async move {
+                let _owner = raw.owner;
+                let _ = tokio::io::copy(&mut raw.reader, &mut input).await;
+            }));
+            let encoded = super::screen_video::Capture::child(child)?;
+            let owner = super::screen_video::Task(tokio::spawn(async move {
+                let _owners = (encoded.owner, pump);
+                std::future::pending::<()>().await;
+            }));
+            Ok(super::screen_video::Capture {
+                reader: encoded.reader,
+                owner,
+            })
+        })
+    })
+}

@@ -419,6 +419,7 @@ impl VmHand {
             backend,
             video,
             None,
+            None,
             super::observation_providers::Registry::remote(),
         )
         .await?;

@@ -28,23 +28,28 @@ type remoteSignal struct {
 	SDPMLineIndex *uint16 `json:"sdpMLineIndex,omitempty"`
 }
 type remoteMessage struct {
-	Type         string          `json:"type"`
-	ConnectionID string          `json:"connection_id,omitempty"`
-	ViewerID     string          `json:"viewer_id,omitempty"`
-	SurfaceID    string          `json:"surface_id,omitempty"`
-	MachineID    string          `json:"machine_id,omitempty"`
-	MachineName  string          `json:"machine_name,omitempty"`
-	Generation   string          `json:"generation,omitempty"`
-	Surfaces     []remoteSurface `json:"surfaces,omitempty"`
-	Signal       *remoteSignal   `json:"signal,omitempty"`
-	RequestID    string          `json:"request_id,omitempty"`
-	AgentID      string          `json:"agent_id,omitempty"`
-	DeadlineAt   int64           `json:"deadline_at,omitempty"`
-	Input        *agentInput     `json:"input,omitempty"`
-	Data         json.RawMessage `json:"data,omitempty"`
+	Action          string           `json:"action,omitempty"`
+	URL             string           `json:"url,omitempty"`
+	Preset          string           `json:"preset,omitempty"`
+	BroadcastResult *broadcastResult `json:"-"`
+	Type            string           `json:"type"`
+	ConnectionID    string           `json:"connection_id,omitempty"`
+	ViewerID        string           `json:"viewer_id,omitempty"`
+	SurfaceID       string           `json:"surface_id,omitempty"`
+	MachineID       string           `json:"machine_id,omitempty"`
+	MachineName     string           `json:"machine_name,omitempty"`
+	Generation      string           `json:"generation,omitempty"`
+	Surfaces        []remoteSurface  `json:"surfaces,omitempty"`
+	Signal          *remoteSignal    `json:"signal,omitempty"`
+	RequestID       string           `json:"request_id,omitempty"`
+	AgentID         string           `json:"agent_id,omitempty"`
+	DeadlineAt      int64            `json:"deadline_at,omitempty"`
+	Input           *agentInput      `json:"input,omitempty"`
+	Data            json.RawMessage  `json:"data,omitempty"`
 	*agentResult
 }
 type remoteSurface struct {
+	Broadcast    bool   `json:"broadcast,omitempty"`
 	ID           string `json:"id"`
 	Name         string `json:"name"`
 	Kind         string `json:"kind"`
@@ -178,4 +183,30 @@ func (service *remoteService) socket(ctx context.Context) (*websocket.Conn, erro
 	}
 	connection.SetReadLimit(70_000)
 	return connection, nil
+}
+
+// Broadcast and agent results have overlapping names. Merge explicitly so Go's
+// embedded-field ambiguity cannot silently omit status or dimensions.
+func (message remoteMessage) MarshalJSON() ([]byte, error) {
+	type wire remoteMessage
+	data, err := json.Marshal(wire(message))
+	if err != nil || message.BroadcastResult == nil {
+		return data, err
+	}
+	var values map[string]json.RawMessage
+	if err = json.Unmarshal(data, &values); err != nil {
+		return nil, err
+	}
+	result, err := json.Marshal(message.BroadcastResult)
+	if err != nil {
+		return nil, err
+	}
+	var broadcast map[string]json.RawMessage
+	if err = json.Unmarshal(result, &broadcast); err != nil {
+		return nil, err
+	}
+	for key, value := range broadcast {
+		values[key] = value
+	}
+	return json.Marshal(values)
 }

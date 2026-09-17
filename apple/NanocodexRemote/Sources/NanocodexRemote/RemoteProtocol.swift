@@ -138,12 +138,13 @@ public struct RemoteSurface: Codable, Equatable, Identifiable, Sendable {
     public let height: Int
     public let controllable: Bool
     public let agentTools: Bool?
+    public let broadcast: Bool?
 
-    enum CodingKeys: String, CodingKey { case id, name, kind, width, height, controllable; case agentTools = "agent_tools" }
+    enum CodingKeys: String, CodingKey { case id, name, kind, width, height, controllable, broadcast; case agentTools = "agent_tools" }
 
-    public init(id: String, name: String, kind: Kind, width: Int, height: Int, controllable: Bool, agentTools: Bool? = nil) {
+    public init(id: String, name: String, kind: Kind, width: Int, height: Int, controllable: Bool, agentTools: Bool? = nil, broadcast: Bool? = nil) {
         self.id = id; self.name = name; self.kind = kind
         self.width = width; self.height = height; self.controllable = controllable
-        self.agentTools = agentTools
+        self.agentTools = agentTools; self.broadcast = broadcast
     }
 }

@@ -26,6 +26,8 @@ public struct RemoteDashboard: View {
     @State private var text = ""
     @State private var showKeyboard = false
     @State private var screenQuery = ""
+    @State private var broadcastURL = ""
+    @State private var broadcastPreset = "source"
     private var filteredHands: [RemoteHand] {
         hands.filter { screenQuery.isEmpty || ($0.machineName + " " + $0.name).localizedCaseInsensitiveContains(screenQuery) }
     }
@@ -128,6 +130,34 @@ public struct RemoteDashboard: View {
 #endif
     }
 #endif
+    private var broadcastControls: some View {
+        DisclosureGroup("Broadcast · " + viewer.broadcastStatus) {
+            VStack(alignment: .leading, spacing: 8) {
+                SecureField("RTMP(S) destination including stream key", text: $broadcastURL)
+                    .textFieldStyle(.roundedBorder).autocorrectionDisabled()
+#if os(iOS)
+                    .textInputAutocapitalization(.never)
+#endif
+                Picker("Quality", selection: $broadcastPreset) {
+                    Text("Source · up to 4K60").tag("source")
+                    Text("1080p60").tag("1080p")
+                    Text("720p60").tag("720p")
+                    Text("Twitch · 1080p60 · 6 Mbps").tag("twitch")
+                    Text("X · 1080p30 · 9 Mbps").tag("x")
+                }
+                HStack {
+                    Button("Start broadcast") {
+                        viewer.broadcast(action: "start", url: broadcastURL, preset: broadcastPreset)
+                        broadcastURL = ""
+                    }.disabled(!viewer.connected || viewer.broadcastWaiting || broadcastURL.isEmpty ||
+                        ["starting", "live", "reconnecting", "stopping"].contains(viewer.broadcastStatus))
+                    Button("Stop broadcast") { viewer.broadcast(action: "stop") }
+                        .disabled(!viewer.connected || viewer.broadcastWaiting || ["idle", "stopped", "stopping"].contains(viewer.broadcastStatus))
+                }
+                if let error = viewer.broadcastError { Text(error).font(.caption).foregroundStyle(.red) }
+            }.padding(.top, 6)
+        }.onChange(of: viewer.hand?.identity) { _, _ in broadcastURL = "" }
+    }
     public var body: some View {
         VStack(spacing: embedded ? 6 : 12) {
 #if os(macOS)
@@ -184,6 +214,7 @@ public struct RemoteDashboard: View {
 #if os(iOS)
                 .padding(.horizontal)
 #endif
+                if viewer.hand?.broadcast == true { broadcastControls }
                 if viewer.controlling && (!embedded || showKeyboard) {
                     VStack(spacing: 8) {
                         HStack {
