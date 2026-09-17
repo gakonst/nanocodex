@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image/jpeg"
@@ -14,18 +15,19 @@ import (
 )
 
 type agentInput struct {
-	Action     string   `json:"action"`
-	X          *float64 `json:"x,omitempty"`
-	Y          *float64 `json:"y,omitempty"`
-	EndX       *float64 `json:"endX,omitempty"`
-	EndY       *float64 `json:"endY,omitempty"`
-	Button     *int     `json:"button,omitempty"`
-	Text       *string  `json:"text,omitempty"`
-	Key        *uint16  `json:"key,omitempty"`
-	Modifiers  []uint16 `json:"modifiers,omitempty"`
-	DeltaX     *float64 `json:"deltaX,omitempty"`
-	DeltaY     *float64 `json:"deltaY,omitempty"`
-	DurationMS *int     `json:"durationMs,omitempty"`
+	Context    json.RawMessage `json:"context,omitempty"`
+	Action     string          `json:"action"`
+	X          *float64        `json:"x,omitempty"`
+	Y          *float64        `json:"y,omitempty"`
+	EndX       *float64        `json:"endX,omitempty"`
+	EndY       *float64        `json:"endY,omitempty"`
+	Button     *int            `json:"button,omitempty"`
+	Text       *string         `json:"text,omitempty"`
+	Key        *uint16         `json:"key,omitempty"`
+	Modifiers  []uint16        `json:"modifiers,omitempty"`
+	DeltaX     *float64        `json:"deltaX,omitempty"`
+	DeltaY     *float64        `json:"deltaY,omitempty"`
+	DurationMS *int            `json:"durationMs,omitempty"`
 }
 type agentStep struct {
 	delay time.Duration
@@ -37,19 +39,24 @@ type agentJob struct {
 	steps                 []agentStep
 	next                  int
 	snapshotStarted       bool
+	observationContext    *observationContext
 	ctx                   context.Context
 	cancel                context.CancelFunc
 }
 type agentResult struct {
-	Status string `json:"status,omitempty"`
-	JPEG   string `json:"jpeg,omitempty"`
-	Width  int    `json:"width,omitempty"`
-	Height int    `json:"height,omitempty"`
+	Observation map[string]any `json:"observation,omitempty"`
+	Status      string         `json:"status,omitempty"`
+	JPEG        string         `json:"jpeg,omitempty"`
+	Width       int            `json:"width,omitempty"`
+	Height      int            `json:"height,omitempty"`
 }
 
 func pointer[T any](value T) *T { return &value }
 
 func (action agentInput) steps(generation string) ([]agentStep, error) {
+	if _, err := action.validateContext(); err != nil {
+		return nil, err
+	}
 	var steps []agentStep
 	add := func(event remoteInput, delay time.Duration) {
 		event.Generation = generation
@@ -171,4 +178,11 @@ func snapshotDesktop(parent context.Context, width, height int) agentResult {
 		return agentResult{Status: "unavailable"}
 	}
 	return agentResult{Status: "ok", JPEG: base64.StdEncoding.EncodeToString(output.buffer.Bytes()), Width: config.Width, Height: config.Height}
+}
+
+func (action agentInput) validateContext() (*observationContext, error) {
+	if len(action.Context) > 0 && action.Action != "observe" {
+		return nil, errors.New("context requires observe")
+	}
+	return parseObservationContext(action.Context)
 }

@@ -544,7 +544,7 @@ func serveWayland(parent context.Context, config hostConfig) error {
 							return
 						}
 					}
-					result := snapshotDesktop(job.ctx, config.Width, config.Height)
+					result := snapshotAgent(job.ctx, config.Width, config.Height, job.observationContext, localObservationRegistry())
 					emit(hostEvent{agentRequest: job.id, agentResult: &result})
 				}()
 			}
@@ -698,6 +698,10 @@ func serveWayland(parent context.Context, config hostConfig) error {
 					continue
 				}
 				owner := "agent:" + message.AgentID
+				if _, err := message.Input.validateContext(); err != nil {
+					reply("invalid")
+					continue
+				}
 				if message.Input.Action == "release" {
 					if lease.owner == owner {
 						release()
@@ -728,8 +732,9 @@ func serveWayland(parent context.Context, config hostConfig) error {
 						steps[i].input.Generation = generation
 					}
 				}
+				selector, _ := message.Input.validateContext()
 				jobCtx, cancelJob := context.WithDeadline(ctx, time.UnixMilli(message.DeadlineAt))
-				agent = &agentJob{id: message.RequestID, owner: owner, generation: generation, steps: steps,
+				agent = &agentJob{id: message.RequestID, owner: owner, generation: generation, steps: steps, observationContext: selector,
 					deadline: time.UnixMilli(message.DeadlineAt), nextAt: now, ctx: jobCtx, cancel: cancelJob}
 			case "viewer":
 				if !config.quiet {

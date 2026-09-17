@@ -62,3 +62,11 @@ On Omarchy, the Python provider consumed an archived real addon export through t
 Top-level `observation.capturedAt` is the observation-request start anchor. Per-provider `capturedAt` describes that source's acquisition time. Neither field is an atomic screenshot timestamp. Current native VM publishers report provider unavailability rather than reading host context.
 
 The code is developed in an isolated checkout. The existing main checkout has separate uncommitted computer-tool work; the shared screen schema/result functions are its integration point. This change has not been deployed or validated as a merged live computer-tool release.
+
+## Wayland desktop publisher integration
+
+The Go `hands/remote` publisher now uses the same provider contract and embedded Python collector on the agent completion path. Viewer video and frame captures do not collect semantic data. `nanocodex-remote observe-local` exercises that same read-only screenshot/provider path without a broker, using local environment configuration. The helper copies have a parity test.
+
+Live Wayland validation found that AT-SPI `CoordType.SCREEN` may return window-local/logical bounds even on a scaled desktop. Results therefore label these `coordinateSpace: atspi_reported_screen` and `boundsVerified: false`. Consumers must reconcile bounds with compositor metadata or the screenshot before using them for input.
+
+On September 17, the Go publisher was deployed to Omarchy's desktop-user session, and the managed tool transport was deployed from a current-base checkout. The live `computer.observe` response returned both a screenshot and attributed provider outcomes. WoW's login screen correctly returned `matching_window_unavailable`; this is not proof of an in-game addon capture. The publisher is a user service replacing the older publisher through the existing host-replacement protocol; the older system publisher remains idle as a fallback.

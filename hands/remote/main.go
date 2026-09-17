@@ -27,6 +27,12 @@ func main() {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	if len(os.Args) > 1 && (os.Args[1] == "observe-local" || os.Args[1] == "--observe-local") {
+		if err := observeLocal(ctx, os.Args[2:], os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "phone-list" {
 		if err := listPhones(); err != nil {
 			log.Fatal(err)
