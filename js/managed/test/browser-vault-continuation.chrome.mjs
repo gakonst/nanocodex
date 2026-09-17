@@ -82,6 +82,13 @@ try {
     assert.equal(await page.locator('input').first().inputValue(),'');
   }
   assert.equal(sanitizeBrowserVaultText('a @ b a%40b a%2540b',['a@b'],100),'[redacted] [redacted] [redacted]');
+  await page.setContent('<nav>' + Array.from({length:100},(_,i)=>`<a href="/nav${i}" style="display:block;height:30px">Menu ${i}</a>`).join('') + '</nav><main><a href="/invoice">Invoice details</a></main>');
+  const longPage = await snapshotBrowserVault(cdp,request,[]);
+  assert.equal(longPage.elements.length,101);
+  assert.equal(longPage.elements[100].text,'Invoice details');
+  assert.deepEqual(await actBrowserVault(cdp,request,{action:'click',snapshot_id:longPage.snapshot_id,ref:'e101'}),{status:'action_requested'});
+  await page.waitForURL(`${origin}/invoice`);
+  assert.equal(sanitizeBrowserVaultText('  A\n  B  ',[],100),'A B');
   console.log('PASS: Chromium private status, OTP/challenge/unknown distinction, bounded redacted snapshots, hidden/value exclusion, native links, stale/mutated refs, cross-origin actions, document-bound OTP POST and unsafe OTP rejection');
 } finally {
   await browser?.close();

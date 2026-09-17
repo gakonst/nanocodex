@@ -21,7 +21,7 @@ describe("private Vault continuation host boundary", () => {
     const cdp = fixture((params: any) => ({ snapshot_id: params.arguments[2].value, status: "unknown", flags: [false, false, false], title: secret, text: `hello ${encodeURIComponent(secret)} ${encodeURIComponent(encodeURIComponent(secret))}`, elements: [{ ref: "e1", role: "link", text: secret }] }));
     const result = await snapshotBrowserVault(cdp, identity, [secret]);
     expect(result.title).toBe("[redacted]"); expect(result.text).toBe("hello [redacted] [redacted]"); expect(result.elements[0]!.text).toBe("[redacted]");
-    expect(sanitizeBrowserVaultText("abc abc abc".split("").join(" "), ["abc"], 100)).toBe("[redacted]   [redacted]   [redacted]");
+    expect(sanitizeBrowserVaultText("abc abc abc".split("").join(" "), ["abc"], 100)).toBe("[redacted] [redacted] [redacted]");
   });
   it("masks prior numeric OTP echoes after rehydration without exact code and omits URLs", () => {
     const echoes = ['826519', '826 519', '%38%32%36%35%31%39', '%2538%2532%2536%2535%2531%2539', '&#56;&#50;&#54;&#53;&#49;&#57;', '&#x38;&#x32;&#x36;&#x35;&#x31;&#x39;', btoa('826519')];

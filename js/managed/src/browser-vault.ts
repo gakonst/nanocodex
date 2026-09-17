@@ -223,6 +223,7 @@ export const BROWSER_VAULT_CONTINUATION_FUNCTION = `function(origin, mode, snaps
     delete globalThis.__nanocodexVaultSnapshot;
     if (challenge || !el || !visible(el) || el.disabled || el.outerHTML !== entry.html
       || (entry.form && (el.form !== entry.form || entry.form.outerHTML !== entry.formHtml))) return false;
+    el.scrollIntoView({block:"center", inline:"center", behavior:"instant"});
     const rect = el.getBoundingClientRect();
     if (rect.left < 0 || rect.top < 0 || rect.right > innerWidth || rect.bottom > innerHeight
       || !el.contains(document.elementFromPoint(rect.left + rect.width/2, rect.top + rect.height/2))) return false;
@@ -246,7 +247,7 @@ export const BROWSER_VAULT_CONTINUATION_FUNCTION = `function(origin, mode, snaps
       const parent = node.parentElement;
       if (!parent || !visible(parent) || parent.closest('input,option')) continue;
       const value = node.textContent || '';
-      if (value.length > 8192) continue; // Omit whole nodes; never return a truncated secret.
+      if (!value.trim() || value.length > 8192) continue; // Omit whole nodes; never return a truncated secret.
       if (length + value.length > 32768) break;
       chunks.push(value); length += value.length;
     }
@@ -254,7 +255,7 @@ export const BROWSER_VAULT_CONTINUATION_FUNCTION = `function(origin, mode, snaps
   };
   const nodes = new Map(), elements = [];
   for (const el of [...document.querySelectorAll('a[href],button,input[type="submit"]')].slice(0, 2000)) {
-    if (elements.length >= 50) break;
+    if (elements.length >= 200) break;
     if (!visible(el) || el.disabled) continue;
     const link = el instanceof HTMLAnchorElement;
     if (link ? (!safeUrl(el.href) || (el.target && el.target !== '_self') || el.hasAttribute('download'))
@@ -369,7 +370,7 @@ export function sanitizeBrowserVaultText(value: string, secrets: readonly string
   });
   safe = safe.replace(/\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s<>"']+/gi, '[url omitted]')
     .replace(/[0-9](?:[\s-]*[0-9]){3,}/g, '[redacted]');
-  return safe.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').slice(0, limit);
+  return safe.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, limit);
 }
 
 export async function snapshotBrowserVault(cdp: Pick<PrivateBrowserCdp, "send">, request: BrowserVaultIdentity, secrets: readonly string[]): Promise<BrowserVaultSnapshot> {
@@ -380,10 +381,10 @@ export async function snapshotBrowserVault(cdp: Pick<PrivateBrowserCdp, "send">,
     const status = inspection(value);
     if (!value) return { ...status, snapshot_id: "", title: "", text: "", elements: [] };
     if (value.snapshot_id !== id || typeof value.title !== "string" || value.title.length > 8192
-      || typeof value.text !== "string" || value.text.length > 65536 || !Array.isArray(value.elements) || value.elements.length > 50) throw new Error();
+      || typeof value.text !== "string" || value.text.length > 65536 || !Array.isArray(value.elements) || value.elements.length > 200) throw new Error();
     const clean = (text: string, limit: number) => sanitizeBrowserVaultText(text, secrets, limit);
     const elements = value.elements.map((el: any) => {
-      if (!el || !/^e[1-9][0-9]?$/.test(el.ref) || !["link", "button"].includes(el.role) || typeof el.text !== "string" || el.text.length > 65536) throw new Error();
+      if (!el || !/^e(?:[1-9][0-9]?|1[0-9]{2}|200)$/.test(el.ref) || !["link", "button"].includes(el.role) || typeof el.text !== "string" || el.text.length > 65536) throw new Error();
       return { ref: el.ref as string, role: el.role as "link" | "button", text: clean(el.text, 256) };
     });
     return { ...status, snapshot_id: id, title: clean(value.title, 256), text: clean(value.text, 12000), elements };
@@ -399,7 +400,7 @@ export async function actBrowserVault(cdp: Pick<PrivateBrowserCdp, "send">, requ
       if (await continuation(cdp, request, "navigate", "", "", destination.href) !== true) throw new Error();
       return { status: "navigation_requested" };
     }
-    if (action.action !== "click" || !/^[0-9a-f-]{36}$/.test(action.snapshot_id) || !/^e[1-9][0-9]?$/.test(action.ref)) throw new Error();
+    if (action.action !== "click" || !/^[0-9a-f-]{36}$/.test(action.snapshot_id) || !/^e(?:[1-9][0-9]?|1[0-9]{2}|200)$/.test(action.ref)) throw new Error();
     if (await continuation(cdp, request, "click", action.snapshot_id, action.ref) !== true) throw new Error();
     return { status: "action_requested" };
   } catch { throw new Error("Private browser action could not be completed safely"); }
