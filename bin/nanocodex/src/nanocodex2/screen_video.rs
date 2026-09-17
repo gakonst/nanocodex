@@ -147,7 +147,7 @@ impl Video {
                 mime_type: "video/H264".into(),
                 clock_rate: 90_000,
                 sdp_fmtp_line:
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e020".into(),
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e034".into(),
                 ..Default::default()
             },
             "desktop".into(),

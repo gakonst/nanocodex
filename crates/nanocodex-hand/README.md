@@ -19,3 +19,10 @@ NAT layer. `NANOCODEX_VIDEO_INTERFACE` selects the capture host's network interf
 firewalls, forward ports, or provide a TURN relay. Keep firewall allowances scoped
 to the intended viewers, executable, and UDP range. A LAN address only supports
 viewers that can reach that LAN; it does not provide cellular Internet access.
+
+Windows H.264 quality can be configured with `NANOCODEX_SCREEN_MAX_DIMENSION`
+(1280–7680, default 1280) and `NANOCODEX_SCREEN_BITRATE_KBPS` (1000–100000,
+default 6000). The encoder preserves aspect ratio, never upscales, and selects
+an H.264 level covering the output's 60 Hz macroblock rate and bitrate. Higher
+settings need enough capture/encoding CPU and network bandwidth; verify decoded
+frame rate in the actual viewer after changing them.
