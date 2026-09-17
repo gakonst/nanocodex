@@ -29,7 +29,9 @@
     const comma = url.indexOf(",");
     if (comma < 0) return false;
     const header = url.slice(0, comma);
-    const match = /^data:image\/[a-z0-9!#$&^_.+%-]+;base64$/i.exec(header);
+    // Native view_image returns raw bytes with this generic MIME; the model-history
+    // boundary decodes and validates them before emitting an image MIME.
+    const match = /^data:(?:image\/[a-z0-9!#$&^_.+%-]+|application\/octet-stream);base64$/i.exec(header);
     // `$` can match before a trailing line terminator: require the full header.
     if (!match || match[0].length !== header.length) return false;
     const start = comma + 1;

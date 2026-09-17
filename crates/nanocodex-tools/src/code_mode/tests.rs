@@ -762,6 +762,9 @@ async fn image_helper_rejects_malformed_base64_without_emitting_images() -> Resu
 const invalid = [
   "data:", "data:image/png;base64,", "data:text/plain;base64,YQ==",
   "data:image/;base64,YQ==", "data:image/png,YQ==",
+  "data:application/octet-stream;base64,a",
+  "data:application/octet-stream;base64,YQ==\n",
+  "data:application/octet-streamx;base64,YQ==",
   "data:image/png;base64,a", "data:image/png;base64,YQ=",
   "data:image/png;base64,====", "data:image/png;base64,A===",
   "data:image/png;base64,Y=Q=", "data:image/png;base64,YQ==YQ==",
@@ -784,7 +787,7 @@ for (const image_url of invalid) {
 for (const value of [
   { type: "image", data: "a", mimeType: "image/png" },
   { type: "image", data: "YQ==", mimeType: "text/plain" },
-  { type: "image", data: "YQ==" },
+  { type: "image", data: "YQ==", mimeType: "application/json" },
 ]) {
   try { image(value); } catch (error) {
     if (error !== "Tool call failed: invalid image output. Pass a base64 data URI instead") throw error;
@@ -808,6 +811,65 @@ text("all rejected");
             .iter()
             .any(|item| matches!(item, ToolOutputContent::InputImage { .. }))
     );
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn image_helper_forwards_native_view_image_to_model_history_validation() -> Result<()> {
+    let workspace = temporary_workspace("code-mode-view-image-normalization")?;
+    let source = image::DynamicImage::new_rgb8(2, 3);
+    source.save(workspace.join("valid.png"))?;
+    std::fs::write(workspace.join("invalid.png"), b"not an image")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let mut execution = tools
+        .execute_code(
+            r#"
+image(await tools.view_image({ path: "valid.png", detail: "original" }));
+image(await tools.view_image({ path: "invalid.png" }));
+"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    assert!(execution.success, "{}", execution_output(&execution));
+    let ToolOutputBody::Content(content) = &execution.output else {
+        return Err(eyre!("code-mode execution did not emit content"));
+    };
+    let images: Vec<_> = content
+        .iter()
+        .filter_map(|item| match item {
+            ToolOutputContent::InputImage { image_url, detail } => Some((image_url, detail)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(images.len(), 2);
+    assert!(
+        images
+            .iter()
+            .all(|(url, _)| url.starts_with("data:application/octet-stream;base64,"))
+    );
+    assert_eq!(*images[0].1, crate::ImageDetail::Original);
+
+    crate::image::prepare_output_images(&mut execution.output).await;
+    let ToolOutputBody::Content(content) = &execution.output else {
+        return Err(eyre!("normalization did not preserve content"));
+    };
+    let images: Vec<_> = content
+        .iter()
+        .filter_map(|item| match item {
+            ToolOutputContent::InputImage { image_url, detail } => Some((image_url, detail)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(images.len(), 1);
+    assert!(images[0].0.starts_with("data:image/png;base64,"));
+    assert_eq!(*images[0].1, crate::ImageDetail::Original);
+    assert!(content.iter().any(|item| matches!(item,
+        ToolOutputContent::InputText { text }
+        if text == "image content omitted because it could not be processed"
+    )));
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
