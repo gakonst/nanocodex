@@ -378,6 +378,10 @@ describe("Vault browser isolation", () => {
       const call = (name: string, input: unknown) => runtime.tools.find(t => t.name === name)!.handler(input, context);
       const reference = { vault_id: "a".repeat(22), expected_origin: "https://login.example", target_id: "tab1" };
       expect(await call("browser_vault_fill", { ...reference, username_selector: "#user", submit: true })).toEqual({ status: "submitted" });
+      formResult = "unsupported";
+      expect(await call("browser_vault_fill", { ...reference, username_selector: "#user", submit: true }))
+        .toEqual({ status: "filled", submission: "action_required" });
+      formResult = true;
       expect(JSON.stringify([...stored.values()])).not.toContain("fake-password");
       await expect(call("browser_execute", { code: "await cdp.send({method:'DOM.getDocument'})" })).rejects.toThrow("isolated");
       runtime = await create();

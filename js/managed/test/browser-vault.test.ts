@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fillBrowserVault, parseBrowserVaultRequest, PrivateBrowserCdp } from "../src/browser-vault";
 
 const base = { vault_id: "a".repeat(22), expected_origin: "https://login.example", target_id: "tab1", submit: true };
-function fixture() {
+function fixture(value: boolean | string = true) {
   const calls: { method: string; params: any }[] = [];
   const send = vi.fn(async (method: string, params: any) => {
     calls.push({ method, params });
@@ -10,7 +10,7 @@ function fixture() {
     if (method === "Target.attachToTarget") return { sessionId: "attached" };
     if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "top", loaderId: "loader", url: base.expected_origin } } };
     if (method === "Page.createIsolatedWorld") return { executionContextId: 7 };
-    return { result: { value: true } };
+    return { result: { value } };
   });
   return { calls, send };
 }
@@ -30,6 +30,10 @@ describe("private browser Vault boundary", () => {
     expect(quarantine).toHaveBeenCalledWith(expect.objectContaining({ origin: base.expected_origin, vaultId: base.vault_id }));
     const args = cdp.calls.at(-1)!.params.arguments;
     expect(args[selector === "username_selector" ? 4 : 3].value).toBeNull();
+  });
+  it("reports filled with action required for unsupported automatic submission", async () => {
+    const cdp = fixture("unsupported");
+    await expect(fillBrowserVault({cdp,sessionId:"browser",request:parseBrowserVaultRequest({...base,password_selector:"#password"}),resolve:async()=>({username:"fake",password:"fake-password"}),quarantine:async()=>{}})).resolves.toEqual({status:"filled",submission:"action_required"});
   });
   it("never injects after cancellation or quarantine failure and suppresses raw errors", async () => {
     for (const cancelled of [false, true]) {
