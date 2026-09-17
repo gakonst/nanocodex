@@ -80,10 +80,6 @@ pub(super) fn dispatch(
             command.reject(code);
             return;
         }
-        if !tasks.is_empty() {
-            command.reject("command_pending");
-            return;
-        }
     }
     let agent_id = command.request.params["expected_session_id"]
         .as_str()

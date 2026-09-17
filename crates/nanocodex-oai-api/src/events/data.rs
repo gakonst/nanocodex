@@ -27,6 +27,8 @@ pub enum AgentEventData {
     Assistant(AssistantEvent),
     /// Model reasoning that the API made visible.
     Reasoning(ReasoningEvent),
+    /// User input accepted by the agent, before model consumption.
+    InputAccepted(AcceptedInput),
     /// Agent-turn lifecycle state.
     Run(RunEvent),
     /// Tool invocation lifecycle state.
@@ -37,6 +39,23 @@ pub enum AgentEventData {
     Context(ContextEvent),
     /// Lower-level retry or connection diagnostics.
     Transport(TransportEvent),
+}
+
+/// An accepted user instruction, including ordered attachment descriptors.
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+pub struct AcceptedInput {
+    /// Stable session identity.
+    pub session_id: String,
+    /// Canonical owning turn identity.
+    pub turn_id: String,
+    /// Stable identity of this accepted input in events and rollout records.
+    pub item_id: String,
+    /// `prompt` or `steer`.
+    pub kind: String,
+    /// Caller request/steering identity, when supplied.
+    pub request_id: Option<String>,
+    /// Exact ordered text and multimodal input; drafts are never emitted.
+    pub input: crate::PromptInput,
 }
 
 /// One raw `OpenAI` Responses protocol frame with stable routing metadata.

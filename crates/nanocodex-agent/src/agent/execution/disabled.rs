@@ -27,6 +27,12 @@ impl Config {
 pub(super) struct Execution;
 
 impl Execution {
+    pub(super) async fn accepted_input(
+        &self,
+        _input: nanocodex_oai_api::events::AcceptedInput,
+    ) -> Result<()> {
+        Ok(())
+    }
     pub(super) const fn start_turn(
         &self,
         _prompt: &nanocodex_oai_api::Prompt,

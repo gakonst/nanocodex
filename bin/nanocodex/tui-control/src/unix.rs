@@ -98,7 +98,7 @@ impl Server {
         };
         let path = registry.join(format!("{}.json", registration.instance_id));
         let (tx, commands) = mpsc::channel(32);
-        let bridge = Bridge::new(registration.clone(), tx);
+        let bridge = Bridge::new(registration.clone(), tx)?;
         write_registration(&path, &registration)?;
         let (stop, _) = watch::channel(false);
         let mut stopped = stop.subscribe();
@@ -221,6 +221,8 @@ async fn serve(socket: UnixStream, bridge: Bridge) -> io::Result<()> {
     let mut changed = bridge.changed.subscribe();
     let mut cursor = None;
     let mut incoming = Vec::new();
+    let slots = Arc::new(tokio::sync::Semaphore::new(16));
+    let mut replies = tokio::task::JoinSet::new();
     loop {
         if let Some(after) = cursor {
             match bridge.replay(after) {
@@ -237,6 +239,11 @@ async fn serve(socket: UnixStream, bridge: Bridge) -> io::Result<()> {
             }
         }
         tokio::select! {
+            Some(reply) = replies.join_next(), if !replies.is_empty() => {
+                if let Ok((id, value)) = reply {
+                    send(&mut write, &json!({"id":id,"result":value})).await?;
+                }
+            },
             _ = changed.changed(), if cursor.is_some() => {},
             bytes = read_frame(&mut read, &mut incoming) => {
                 let Some(bytes) = bytes? else { return Ok(()); };
@@ -248,15 +255,35 @@ async fn serve(socket: UnixStream, bridge: Bridge) -> io::Result<()> {
                         send(&mut write,&json!({"id":request.id,"result":{"subscribed":true}})).await?;
                     } else { send(&mut write,&json!({"id":request.id,"result":rejected("invalid_cursor")})).await?; }
                 } else {
+                    // Reserve two slots for cancellation even during slow history reads.
+                    if request.method != "cancel" && (slots.available_permits() <= 2 || bridge.inflight.available_permits() <= 2) {
+                        send(&mut write, &json!({"id":request.id,"result":rejected("connection_busy")})).await?;
+                        continue;
+                    }
+                    let Ok(permit) = slots.clone().try_acquire_owned() else {
+                        send(&mut write, &json!({"id":request.id,"result":rejected("connection_busy")})).await?;
+                        continue;
+                    };
+                    let Ok(global_permit) = bridge.inflight.clone().try_acquire_owned() else {
+                        send(&mut write, &json!({"id":request.id,"result":rejected("server_busy")})).await?;
+                        continue;
+                    };
                     let id = request.id.clone();
                     let owner = bridge.clone();
-                    // Cancellation of this client never abandons an admitted command.
-                    let task = tokio::spawn(async move { owner.dispatch(request).await });
-                    let value = match tokio::time::timeout(Duration::from_secs(30),task).await {
-                        Ok(Ok(value)) => value,
-                        _ => json!({"status":"pending"}),
-                    };
-                    send(&mut write,&json!({"id":id,"result":value})).await?;
+                    // Disconnect/timeout drops only the waiter. Admitted work keeps its slot
+                    // until it actually resolves and records its receipt.
+                    let task = tokio::spawn(async move {
+                        let _permit = permit;
+                        let _global_permit = global_permit;
+                        owner.dispatch(request).await
+                    });
+                    replies.spawn(async move {
+                        let value = match tokio::time::timeout(Duration::from_secs(30), task).await {
+                            Ok(Ok(value)) => value,
+                            _ => json!({"status":"pending"}),
+                        };
+                        (id, value)
+                    });
                 }
             }
         }
@@ -345,6 +372,7 @@ mod tests {
             },
             tx,
         )
+        .unwrap()
     }
 
     #[tokio::test]
@@ -400,6 +428,71 @@ mod tests {
             assert_eq!(event["seq"], expected);
         }
         owner.abort();
+    }
+
+    #[tokio::test]
+    async fn pending_history_does_not_block_events_or_cancel_and_disconnect_keeps_receipts() {
+        let (tx, mut commands) = mpsc::channel(32);
+        let bridge = Bridge::new(bridge().registration(), tx).unwrap();
+        bridge.state(Some("session"), json!({"connection":"ready"}));
+        let (client, server) = UnixStream::pair().unwrap();
+        let owner = tokio::spawn(serve(server, bridge.clone()));
+        let (read, mut write) = client.into_split();
+        let mut read = BufReader::new(read);
+        send(
+            &mut write,
+            &json!({"protocol_version":1,"instance_id":"test","auth_token":"secret"}),
+        )
+        .await
+        .unwrap();
+        let hello: Value =
+            serde_json::from_slice(&line(&mut read).await.unwrap().unwrap()).unwrap();
+        send(&mut write, &json!({"id":"sub","method":"events.subscribe","params":{"after_seq":hello["snapshot"]["seq"]}})).await.unwrap();
+        line(&mut read).await.unwrap();
+        send(&mut write, &json!({"id":"slow","method":"history.list"}))
+            .await
+            .unwrap();
+        let slow = commands.recv().await.unwrap();
+        bridge.publish("progress", json!({"text":"still streaming"}));
+        let event: Value = serde_json::from_slice(
+            &tokio::time::timeout(Duration::from_secs(1), line(&mut read))
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(event["type"], "progress");
+        send(&mut write, &json!({"id":"stop","method":"cancel","params":{
+            "expected_instance_id":"test","expected_session_id":"session","expected_active_generation":"1","expected_turn_id":"turn"}})).await.unwrap();
+        let cancel = tokio::time::timeout(Duration::from_secs(1), commands.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cancel.request.method, "cancel");
+        // A lost connection must not undo an already dispatched cancellation.
+        drop(write);
+        drop(read);
+        owner.await.unwrap().unwrap();
+        cancel.finish(accepted(json!({"turn_id":"turn"})));
+        slow.finish(json!({"records":[]}));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let value = bridge
+                    .dispatch(Request {
+                        id: "status".into(),
+                        method: "request.get".into(),
+                        params: json!({"request_id":"stop"}),
+                    })
+                    .await;
+                if value["status"] == "accepted" {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

@@ -1460,7 +1460,7 @@ async fn run_inner(
 
     while !stopping {
         if let Some(server) = &control_server {
-            control::snapshot(&server.bridge, &app, &runtime, !control_tasks.is_empty());
+            control::snapshot(&server.bridge, &app, &runtime, false);
         }
 
         if runtime.recovery == Some(RecoveryPhase::Replaying) && runtime.recovery_events.is_empty()
@@ -1576,7 +1576,7 @@ async fn run_inner(
                     }
                     // Publish readiness and revisions before a client can act on this acknowledgement.
                     if let Some(server) = &control_server {
-                        control::snapshot(&server.bridge, &app, &runtime, !control_tasks.is_empty());
+                        control::snapshot(&server.bridge, &app, &runtime, false);
                     }
                     command.finish(result);
                 }

@@ -8674,6 +8674,11 @@ export class DurableAgentSession extends DurableComputerSession {
       return;
     }
     let turnId = this.#eventTurnId;
+    // Acceptance can precede run.started, including while another turn is active.
+    // Use the admitted operation identity without consuming the execution queue.
+    if (event.type === "input.accepted" && event.payload.kind === "prompt" && typeof event.payload.request_id === "string") {
+      turnId = event.payload.request_id;
+    }
     if (event.type === "run.started") {
       turnId = this.#eventTurnQueue.shift();
       this.#eventTurnId = turnId;

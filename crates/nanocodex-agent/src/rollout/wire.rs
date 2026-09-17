@@ -80,6 +80,7 @@ impl UserMessage {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum CodexEvent<'a> {
+    InputAccepted(&'a nanocodex_oai_api::events::AcceptedInput),
     TaskStarted {
         turn_id: &'a str,
         started_at: i64,

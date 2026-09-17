@@ -275,6 +275,22 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
                 && event["payload"]["turn_id"] == canonical_turn_id)
         );
     }
+    let input = live_events
+        .iter()
+        .find(|event| event["type"] == "input.accepted")
+        .expect("accepted input is observable");
+    assert_eq!(input["payload"]["input"], "first prompt");
+    assert_eq!(input["payload"]["turn_id"], canonical_turn_id);
+    assert!(
+        rollout_lines
+            .iter()
+            .any(|line| line["payload"]["type"] == "input_accepted"
+                && line["payload"]["item_id"] == input["payload"]["item_id"])
+    );
+    assert_eq!(
+        agent.rollout().unwrap().committed_bytes(),
+        std::fs::metadata(&rollout_path)?.len()
+    );
     let assistant = live_events
         .iter()
         .find(|event| event["type"] == "assistant.message")

@@ -1898,6 +1898,17 @@ impl AgentWorker {
     }
 
     async fn prompt(&mut self, target: PaneId, prompt_id: u64, prompt: SubmittedPrompt) -> bool {
+        self.prompt_identified(target, prompt_id, prompt, None)
+            .await
+    }
+
+    async fn prompt_identified(
+        &mut self,
+        target: PaneId,
+        prompt_id: u64,
+        prompt: SubmittedPrompt,
+        request_id: Option<String>,
+    ) -> bool {
         if target == PaneId::Main
             && let Some(voice) = &self.voice
         {
@@ -1914,6 +1925,7 @@ impl AgentWorker {
                     },
                     prompt_id,
                     prompt,
+                    request_id,
                     &mut self.next_turn_id,
                     &self.finished,
                     &self.updates,
@@ -1946,6 +1958,7 @@ impl AgentWorker {
                     },
                     prompt_id,
                     prompt,
+                    request_id,
                     &mut self.next_turn_id,
                     &self.finished,
                     &self.updates,
@@ -2245,6 +2258,7 @@ impl AgentWorker {
                         },
                         prompt_id,
                         prompt,
+                        None,
                         &mut self.next_turn_id,
                         &self.finished,
                         &self.updates,
@@ -2491,7 +2505,9 @@ impl AgentWorker {
     fn finish_turn(&mut self, finished: FinishedTurn) {
         let main_branch_id = finished.main_branch_id;
         let completed_durably = finished.result.is_some() && finished.error.is_none();
-        if completed_durably && let Some(bridge) = &self.control {
+        if finished.persistence_succeeded
+            && let Some(bridge) = &self.control
+        {
             let branch = match finished.target {
                 PaneId::Main => std::iter::once(&self.main)
                     .chain(&self.archived_main)
@@ -2506,7 +2522,11 @@ impl AgentWorker {
             if let Some((agent, turns)) = branch
                 && let Some(turn) = turns.iter().find(|turn| turn.id == finished.id)
             {
-                bridge.publish("history.committed",serde_json::json!({"session_id":agent.session_id(),"turn_id":turn.canonical_id}));
+                if let Some(rollout) = agent.rollout() {
+                    let boundary = rollout.committed_bytes();
+                    bridge.committed(agent.session_id(), boundary);
+                    bridge.publish("history.committed",serde_json::json!({"session_id":agent.session_id(),"turn_id":turn.canonical_id,"boundary":boundary.to_string()}));
+                }
             }
         }
         match finished.target {
@@ -2546,6 +2566,7 @@ async fn start_turn(
     target: TurnTarget<'_>,
     prompt_id: u64,
     prompt: SubmittedPrompt,
+    request_id: Option<String>,
     next_turn_id: &mut u64,
     finished: &mpsc::UnboundedSender<FinishedTurn>,
     updates: &mpsc::UnboundedSender<WorkerEvent>,
@@ -2570,11 +2591,11 @@ async fn start_turn(
         id,
         span: span.clone(),
     }));
-    match agent
-        .prompt(prompt.into_prompt())
-        .instrument(span.clone())
-        .await
-    {
+    let mut request = nanocodex::agent::PromptRequest::new(prompt.into_prompt());
+    if let Some(id) = request_id {
+        request = request.request_id(id);
+    }
+    match agent.prompt(request).instrument(span.clone()).await {
         Ok(turn) => {
             *next_turn_id = next_turn_id.saturating_add(1);
             let canonical_id = turn.id().to_owned();
@@ -2586,6 +2607,7 @@ async fn start_turn(
                 async move {
                     let turn_result = turn.result().await;
                     let rollout_result = agent.flush_rollout().await;
+                    let persistence_succeeded = rollout_result.is_ok();
                     let (result, error, status, otel_status) = match (turn_result, rollout_result) {
                         (Ok(result), Ok(())) => (Some(result), None, "completed", "OK"),
                         (Err(NanocodexError::TurnCancelled), Ok(())) => {
@@ -2603,6 +2625,7 @@ async fn start_turn(
                         telemetry::elapsed_ns(started_at, Instant::now()),
                     );
                     drop(finished.send(FinishedTurn {
+                        persistence_succeeded,
                         id,
                         target: target.pane,
                         main_branch_id: target.main_branch_id,
@@ -2714,6 +2737,7 @@ async fn steer_turn(
             target,
             request.id,
             request.prompt,
+            None,
             next_turn_id,
             finished,
             updates,
@@ -2783,6 +2807,7 @@ fn report_cancel_outcome(
 }
 
 struct FinishedTurn {
+    persistence_succeeded: bool,
     id: u64,
     target: PaneId,
     main_branch_id: Option<u64>,
@@ -4647,6 +4672,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_and_cancelled_turns_publish_committed_history_boundaries() -> eyre::Result<()> {
+        for cancel in [true, false] {
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            let endpoint = format!("ws://{}", listener.local_addr()?);
+            let (seen, receive) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await?;
+                let mut socket = accept_async(stream).await?;
+                next_ws_json(&mut socket).await?;
+                send_ws_json(
+                    &mut socket,
+                    json!({"type":"response.completed","response":{"id":"warmup","usage":null}}),
+                )
+                .await?;
+                next_ws_json(&mut socket).await?;
+                let _ = seen.send(());
+                if cancel {
+                    std::future::pending::<()>().await;
+                } else {
+                    send_ws_json(&mut socket, json!({"type":"error","error":{"code":"invalid_request_error","message":"test failure"}})).await?;
+                }
+                Ok::<(), eyre::Report>(())
+            });
+            let workspace = temporary_workspace("control-persistence")?;
+            let (agent, _events) = Nanocodex::builder(
+                OpenAi::builder("test-key")
+                    .websocket_url(endpoint)
+                    .build()?,
+            )
+            .workspace(&workspace)
+            .rollout(nanocodex::agent::rollout::RolloutConfig::new(&workspace))
+            .build()?;
+            let session = agent.session_id().to_owned();
+            let path = agent.rollout().unwrap().path().to_path_buf();
+            let (control_tx, _control_rx) = mpsc::channel(32);
+            let bridge = nanocodex_tui_control::Bridge::new(
+                nanocodex_tui_control::Registration {
+                    protocol_version: 1,
+                    instance_id: "test".into(),
+                    pid: 1,
+                    started_at_unix_ms: 0,
+                    backend: "native".into(),
+                    socket_path: "/unused".into(),
+                    auth_token: "unused".into(),
+                    active_generation: "0".into(),
+                    active_session_id: None,
+                    conversation: None,
+                },
+                control_tx,
+            )?;
+            let (commands, worker_rx) = mpsc::unbounded_channel();
+            let (updates, mut update_rx) = mpsc::unbounded_channel();
+            let worker = spawn_agent_worker(
+                agent,
+                Arc::from(session.as_str()),
+                None,
+                None,
+                worker_rx,
+                updates,
+            );
+            commands.send(WorkerCommand::AttachControl(bridge.clone()))?;
+            commands.send(WorkerCommand::Prompt {
+                target: PaneId::Main,
+                prompt_id: 1,
+                prompt: "persist this accepted input".into(),
+            })?;
+            timeout(Duration::from_secs(5), receive).await??;
+            if cancel {
+                commands.send(WorkerCommand::Cancel {
+                    target: PaneId::Main,
+                })?;
+            }
+            timeout(Duration::from_secs(5), async {
+                while let Some(event) = update_rx.recv().await {
+                    if matches!(event, WorkerEvent::TurnFinished { .. }) {
+                        break;
+                    }
+                }
+            })
+            .await?;
+            let events = bridge.replay(0).unwrap();
+            let committed = events
+                .iter()
+                .find(|e| e["type"] == "history.committed")
+                .expect("flushed cancelled/failed turn announces history");
+            let boundary = committed["data"]["boundary"]
+                .as_str()
+                .unwrap()
+                .parse::<u64>()?;
+            assert_eq!(boundary, std::fs::metadata(&path)?.len());
+            assert_eq!(
+                bridge.snapshot()["committed_history"][&session],
+                boundary.to_string()
+            );
+            assert!(std::fs::read_to_string(path)?.contains("input_accepted"));
+            drop(commands);
+            worker.await?;
+            server.abort();
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn rejected_turns_do_not_stop_the_tui_worker() -> eyre::Result<()> {
         let openai = OpenAi::builder("test-key")
             .websocket_url("ws://127.0.0.1:1")
@@ -4751,7 +4879,9 @@ mod tests {
             .thinking(Thinking::Low)
             .workspace(&workspace)
             .session_id(session_id)
+            .rollout(nanocodex::agent::rollout::RolloutConfig::new(&workspace))
             .build()?;
+        let rollout_path = agent.rollout().unwrap().path().to_path_buf();
         let (commands, worker_rx) = mpsc::unbounded_channel();
         let (updates, mut update_rx) = mpsc::unbounded_channel();
         spawn_agent_worker(
@@ -4789,6 +4919,27 @@ mod tests {
         })
         .await
         .map_err(|_| eyre::eyre!("TUI worker did not acknowledge the steer"))?;
+        let accepted = timeout(Duration::from_secs(5), async {
+            loop {
+                let event = events.recv().await.expect("input event");
+                if event.kind == nanocodex::agent::events::AgentEventKind::InputAccepted {
+                    let input = serde_json::from_str::<Value>(event.payload.get()).unwrap();
+                    if input["kind"] == "steer" {
+                        break input;
+                    }
+                }
+            }
+        })
+        .await?;
+        assert_eq!(accepted["input"], "steering correction");
+        assert!(!accepted["item_id"].as_str().unwrap().is_empty());
+        let saved = std::fs::read_to_string(&rollout_path)?;
+        assert!(
+            saved
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .any(|record| record["payload"]["item_id"] == accepted["item_id"])
+        );
         release_first
             .send(())
             .map_err(|()| eyre::eyre!("initial request release receiver dropped"))?;

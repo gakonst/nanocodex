@@ -108,6 +108,21 @@ impl Execution {
         )
     }
 
+    pub(super) async fn accepted_input(
+        &self,
+        input: nanocodex_oai_api::events::AcceptedInput,
+    ) -> Result<()> {
+        if let Some(recorder) = &self.recorder {
+            recorder.accepted_input(input).await.map_err(|source| {
+                NanocodexError::PersistRollout {
+                    path: recorder.info().path().to_path_buf(),
+                    source,
+                }
+            })?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn persist(&self, checkpoint: &CommittedSession, turn: Turn) {
         let (Some(recorder), Some(turn)) = (&self.recorder, turn.0) else {
             return;

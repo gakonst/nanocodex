@@ -15,6 +15,8 @@ mod unix;
 #[cfg(unix)]
 pub use unix::{Server, connect, list};
 
+pub mod history;
+
 pub const VERSION: u32 = 1;
 pub const MAX_FRAME: usize = 1024 * 1024;
 const MAX_EVENTS: usize = 4096;
@@ -95,7 +97,9 @@ struct Inner {
     ledger_bytes: usize,
     projection: Vec<Value>,
     projection_bytes: usize,
-    snapshots: VecDeque<(String, Vec<Value>)>,
+    snapshots: VecDeque<(String, Vec<Value>, u64)>,
+    journal: history::Journal,
+    committed: HashMap<String, u64>,
     projection_truncated: bool,
     settings_override: Option<Value>,
     managed_cursors: HashMap<String, String>,
@@ -109,13 +113,15 @@ pub struct Bridge {
     changed: watch::Sender<u64>,
     registration_changed: watch::Sender<Registration>,
     commands: mpsc::Sender<Command>,
+    inflight: Arc<tokio::sync::Semaphore>,
 }
 
 impl Bridge {
-    pub(crate) fn new(registration: Registration, commands: mpsc::Sender<Command>) -> Self {
+    pub fn new(registration: Registration, commands: mpsc::Sender<Command>) -> io::Result<Self> {
+        let journal = history::Journal::new()?;
         let (changed, _) = watch::channel(0);
         let (registration_changed, _) = watch::channel(registration.clone());
-        Self {
+        Ok(Self {
             inner: Arc::new(Mutex::new(Inner {
                 registration,
                 state: json!({"connection":"connecting"}),
@@ -128,6 +134,8 @@ impl Bridge {
                 projection: Vec::new(),
                 projection_bytes: 0,
                 snapshots: VecDeque::new(),
+                journal,
+                committed: HashMap::new(),
                 projection_truncated: false,
                 settings_override: None,
                 managed_cursors: HashMap::new(),
@@ -136,7 +144,8 @@ impl Bridge {
             changed,
             registration_changed,
             commands,
-        }
+            inflight: Arc::new(tokio::sync::Semaphore::new(64)),
+        })
     }
 
     pub fn registration(&self) -> Registration {
@@ -209,6 +218,15 @@ impl Bridge {
             .unwrap_or(0)
             + u64::from(settings_changed);
         value["settings_revision"] = json!(settings_revision.to_string());
+        if let (Some(session), Some(turns)) = (session, value["active_turn_ids"].as_array()) {
+            inner.active_turns.insert(
+                session.to_owned(),
+                turns
+                    .iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect(),
+            );
+        }
         if inner.state != value {
             inner.state = value;
             // Do not retain a user's draft in replay history.
@@ -250,10 +268,10 @@ impl Bridge {
 
     fn snapshot_inner(inner: &mut Inner) -> Value {
         let token = format!("{}:{}", inner.registration.instance_id, inner.seq);
-        if !inner.snapshots.iter().any(|(id, _)| id == &token) {
+        if !inner.snapshots.iter().any(|(id, _, _)| id == &token) {
             inner
                 .snapshots
-                .push_back((token.clone(), inner.projection.clone()));
+                .push_back((token.clone(), inner.projection.clone(), inner.journal.end));
             while inner.snapshots.len() > 4 {
                 inner.snapshots.pop_front();
             }
@@ -262,8 +280,11 @@ impl Bridge {
             "active_generation":inner.registration.active_generation, "seq":inner.seq.to_string(),
             "state":inner.state, "conversations":inner.conversations,"active_turns":inner.active_turns,
             "snapshot_token":token,"live_history_truncated":inner.projection_truncated,
+            "pending_history":{"boundary":inner.journal.end.to_string(),"error":inner.journal.error},
+            "committed_history":inner.committed.iter().map(|(id, n)|(id.clone(),n.to_string())).collect::<HashMap<_,_>>(),
             "capabilities":{"questions_read":false,"replay":"process","request_deduplication":"process",
-                "max_frame_bytes":MAX_FRAME,"max_replay_bytes":MAX_REPLAY_BYTES}})
+                "max_frame_bytes":MAX_FRAME,"max_replay_bytes":MAX_REPLAY_BYTES,
+                "pending_history":"process_disk","history_chunked":true,"concurrent_requests":16}})
     }
 
     /// Validate at dispatch, not when bytes first arrive on the socket.
@@ -297,6 +318,14 @@ impl Bridge {
             return Err("settings_changed");
         }
         Ok(())
+    }
+
+    pub fn committed(&self, session: &str, boundary: u64) {
+        self.inner
+            .lock()
+            .unwrap()
+            .committed
+            .insert(session.to_owned(), boundary);
     }
 
     pub fn publish(&self, kind: &str, data: Value) {
@@ -340,6 +369,64 @@ impl Bridge {
     }
 
     fn project(inner: &mut Inner, kind: &str, data: &Value) {
+        if kind == "managed.event" && data["agent_id"].is_null() {
+            if let (Some(session), Some(turn), Some(category)) = (
+                data["session_id"].as_str(),
+                data["id"].as_str(),
+                data["type"].as_str(),
+            ) {
+                let turns = inner.active_turns.entry(session.to_owned()).or_default();
+                match category {
+                    "turn_accepted" => {
+                        if !turns.iter().any(|id| id == turn) {
+                            turns.push(turn.to_owned());
+                        }
+                    }
+                    "turn_completed" | "turn_cancelled" | "turn_failed" => {
+                        turns.retain(|id| id != turn)
+                    }
+                    _ => {}
+                }
+                // Retain outer acceptance (including user input) and terminal results.
+                if matches!(
+                    category,
+                    "turn_accepted" | "turn_completed" | "turn_cancelled" | "turn_failed"
+                ) {
+                    let (event_type, payload) = if category == "turn_accepted" {
+                        (
+                            "input.accepted",
+                            json!({"turn_id":turn,"item_id":format!("{turn}:prompt"),"kind":"prompt","input":data["input"],"request_id":turn}),
+                        )
+                    } else {
+                        let status = match category {
+                            "turn_completed" => "completed",
+                            "turn_cancelled" => "cancelled",
+                            _ => "failed",
+                        };
+                        (
+                            if status == "completed" {
+                                "run.completed"
+                            } else {
+                                "run.failed"
+                            },
+                            json!({"turn_id":turn,"status":status,"result":data}),
+                        )
+                    };
+                    Self::project(
+                        inner,
+                        "agent.event",
+                        &json!({"request_id":session,"type":event_type,"payload":payload}),
+                    );
+                    if category == "turn_accepted" {
+                        Self::project(
+                            inner,
+                            "agent.event",
+                            &json!({"request_id":session,"type":"run.started","payload":{"turn_id":turn,"status":"accepted"}}),
+                        );
+                    }
+                }
+            }
+        }
         let event = if kind == "agent.event" {
             data
         } else if kind == "managed.event" {
@@ -347,12 +434,23 @@ impl Bridge {
         } else {
             return;
         };
-        let session = event["request_id"].as_str().unwrap_or("");
+        let session = if kind == "managed.event" && data["agent_id"].is_null() {
+            data["session_id"].as_str().unwrap_or("")
+        } else {
+            event["request_id"].as_str().unwrap_or("")
+        };
         let payload = &event["payload"];
         let turn = data["turn_id"]
             .as_str()
             .or_else(|| payload["turn_id"].as_str())
             .unwrap_or("");
+        if kind == "managed.event"
+            && data["agent_id"].is_null()
+            && event["type"] == "input.accepted"
+            && payload["kind"] == "prompt"
+        {
+            return;
+        }
         let item = payload["item_id"]
             .as_str()
             .or_else(|| payload["call_id"].as_str())
@@ -360,7 +458,8 @@ impl Bridge {
         let category = event["type"].as_str().unwrap_or("");
         if !matches!(
             category,
-            "assistant.delta"
+            "input.accepted"
+                | "assistant.delta"
                 | "assistant.message"
                 | "tool.call"
                 | "tool.result"
@@ -370,12 +469,17 @@ impl Bridge {
         ) {
             return;
         }
-        if category == "run.started" {
+        let managed_root = kind == "managed.event" && data["agent_id"].is_null();
+        // Runtime retries and late nested terminals cannot replace durable lifecycle state.
+        if managed_root && category.starts_with("run.") {
+            return;
+        }
+        if category == "run.started" && !managed_root {
             let turns = inner.active_turns.entry(session.to_owned()).or_default();
             if !turns.iter().any(|id| id == turn) {
                 turns.push(turn.to_owned());
             }
-        } else if matches!(category, "run.completed" | "run.failed") {
+        } else if matches!(category, "run.completed" | "run.failed") && !managed_root {
             if let Some(turns) = inner.active_turns.get_mut(session) {
                 turns.retain(|id| id != turn);
             }
@@ -427,6 +531,16 @@ impl Bridge {
         let event = json!({"type":kind,"instance_id":inner.registration.instance_id,
             "seq":inner.seq.to_string(),"active_generation":inner.registration.active_generation,"data":data});
         let bytes = event.to_string().len();
+        let provider_frame = (kind == "agent.event" && event["data"]["type"] == "api.event")
+            || (kind == "managed.event" && event["data"]["event"]["type"] == "api.event");
+        if !provider_frame
+            && matches!(
+                kind,
+                "agent.event" | "managed.event" | "history.committed" | "input.accepted"
+            )
+        {
+            inner.journal.append(&event);
+        }
         // Oversized events are explicit gaps, never a silently truncated payload.
         if bytes >= MAX_FRAME {
             inner.events.clear();
@@ -467,10 +581,37 @@ impl Bridge {
         }
         match request.method.as_str() {
             "state.get" => return self.snapshot(),
+            "history.pending" | "history.pending.read" => {
+                let source = {
+                    let inner = self.inner.lock().unwrap();
+                    let token = request.params["snapshot_token"].as_str().unwrap_or("");
+                    let boundary = if token.is_empty() {
+                        inner.journal.end
+                    } else {
+                        let Some((_, _, boundary)) =
+                            inner.snapshots.iter().find(|(id, _, _)| id == token)
+                        else {
+                            return rejected("snapshot_expired");
+                        };
+                        *boundary
+                    };
+                    inner.journal.reader().map(|file| (file, boundary))
+                };
+                let Ok((file, boundary)) = source else {
+                    return rejected("history_unavailable");
+                };
+                return tokio::task::spawn_blocking(move || {
+                    let result = if request.method == "history.pending.read" {
+                        history::chunk(file, boundary, &request.params)
+                    } else { history::page(file, boundary, &request.params) };
+                    result.unwrap_or_else(|error| json!({"status":"rejected","code":"invalid_history_cursor","message":error.to_string()}))
+                }).await.unwrap_or_else(|_| rejected("history_unavailable"));
+            }
             "history.live" => {
                 let inner = self.inner.lock().unwrap();
                 let token = request.params["snapshot_token"].as_str().unwrap_or("");
-                let Some((_, records)) = inner.snapshots.iter().find(|(id, _)| id == token) else {
+                let Some((_, records, _)) = inner.snapshots.iter().find(|(id, _, _)| id == token)
+                else {
                     return rejected("snapshot_expired");
                 };
                 let offset = request.params["offset"].as_u64().unwrap_or(0) as usize;
@@ -495,7 +636,7 @@ impl Bridge {
                     .unwrap_or_else(|| unknown("request not retained by this instance"));
             }
             "prompt" | "steer" | "cancel" | "settings.set" => {}
-            "models.list" | "history.list" | "command.status" => {
+            "models.list" | "history.list" | "history.read" | "command.status" => {
                 return self.forward(request).await;
             }
             _ => return rejected("unsupported_method"),
@@ -513,6 +654,14 @@ impl Bridge {
             }
             if let Err(code) = Self::validate_inner(&inner, &request) {
                 return rejected(code);
+            }
+            if request.method != "cancel"
+                && inner
+                    .ledger
+                    .values()
+                    .any(|e| e.result["status"] == "pending")
+            {
+                return rejected("command_pending");
             }
             let request_bytes = serde_json::to_vec(&request).unwrap().len();
             if inner.ledger.len() >= MAX_REQUESTS
@@ -616,7 +765,8 @@ mod tests {
                     conversation: None,
                 },
                 tx,
-            ),
+            )
+            .unwrap(),
             rx,
         )
     }
@@ -742,6 +892,104 @@ mod tests {
         assert_eq!(page["records"][0]["payload"]["text"], "once");
         assert_eq!(page["has_more"], false);
         assert_eq!(snapshot["live_history_truncated"], true);
+    }
+
+    #[tokio::test]
+    async fn replay_gap_recovers_unfinished_large_records_and_managed_terminal_state() {
+        let (bridge, _) = bridge();
+        bridge.publish("managed.event", json!({"session_id":"session","cursor":"1","id":"turn","type":"turn_accepted","input":"typed in terminal"}));
+        assert_eq!(
+            bridge.snapshot()["active_turns"]["session"],
+            json!(["turn"])
+        );
+        let large = "λ".repeat(MAX_FRAME);
+        bridge.publish("managed.event", json!({"session_id":"session","turn_id":"turn","cursor":"2","event":{
+            "request_id":"local","type":"assistant.delta","payload":{"item_id":"message","text":large}}}));
+        for i in 0..520 {
+            bridge.publish("agent.event", json!({"request_id":"other","type":"tool.result","payload":{"call_id":i.to_string(),"result":"done"}}));
+        }
+        let gap = bridge.replay(0).unwrap_err();
+        let snapshot = &gap["snapshot"];
+        assert_eq!(snapshot["live_history_truncated"], true);
+        let params =
+            json!({"snapshot_token":snapshot["snapshot_token"],"order":"oldest","limit":2});
+        let page = bridge
+            .dispatch(Request {
+                id: "read".into(),
+                method: "history.pending".into(),
+                params: params.clone(),
+            })
+            .await;
+        assert_eq!(
+            page["records"][0]["value"]["data"]["input"],
+            "typed in terminal"
+        );
+        assert_eq!(page["records"][1]["chunked"], true);
+        let mut params = json!({"snapshot_token":snapshot["snapshot_token"],"record_id":page["records"][1]["record_id"]});
+        let mut bytes = Vec::new();
+        loop {
+            let chunk = bridge
+                .dispatch(Request {
+                    id: "chunk".into(),
+                    method: "history.pending.read".into(),
+                    params: params.clone(),
+                })
+                .await;
+            bytes.extend(
+                chunk["bytes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_u64().unwrap() as u8),
+            );
+            if chunk["has_more"] == false {
+                break;
+            }
+            params["offset"] = chunk["next_offset"].clone();
+        }
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes).unwrap()["data"]["event"]["payload"]["text"],
+            large
+        );
+        bridge.publish(
+            "managed.event",
+            json!({"session_id":"session","cursor":"3","id":"turn","type":"turn_cancelled"}),
+        );
+        assert_eq!(bridge.snapshot()["active_turns"]["session"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn managed_outer_lifecycle_overrides_runtime_retries_and_late_events() {
+        let (bridge, _) = bridge();
+        bridge.publish("managed.event", json!({"session_id":"session","cursor":"1","id":"turn","type":"turn_accepted","input":"hello"}));
+        bridge.publish("managed.event", json!({"session_id":"session","cursor":"2","turn_id":"turn","event":{"request_id":"runtime","type":"run.failed","payload":{}}}));
+        assert_eq!(
+            bridge.snapshot()["active_turns"]["session"],
+            json!(["turn"])
+        );
+        bridge.publish(
+            "managed.event",
+            json!({"session_id":"session","cursor":"3","id":"turn","type":"turn_cancelled"}),
+        );
+        bridge.publish("managed.event", json!({"session_id":"session","cursor":"4","turn_id":"turn","event":{"request_id":"runtime","type":"run.started","payload":{}}}));
+        let snapshot = bridge.snapshot();
+        assert_eq!(snapshot["active_turns"]["session"], json!([]));
+        let page = bridge
+            .dispatch(Request {
+                id: "read".into(),
+                method: "history.live".into(),
+                params: json!({"snapshot_token":snapshot["snapshot_token"]}),
+            })
+            .await;
+        let runs = page["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["type"].as_str().unwrap().starts_with("run."))
+            .collect::<Vec<_>>();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0]["type"], "run.failed");
+        assert_eq!(runs[0]["payload"]["status"], "cancelled");
     }
 
     #[tokio::test]

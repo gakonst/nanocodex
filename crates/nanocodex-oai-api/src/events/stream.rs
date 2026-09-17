@@ -119,6 +119,9 @@ pub struct TimedAgentEvent {
 /// Stable event categories emitted by the agent runtime.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum AgentEventKind {
+    /// A prompt or steer was accepted, with its complete input.
+    #[serde(rename = "input.accepted")]
+    InputAccepted,
     /// Complete provider event in original order.
     #[serde(rename = "api.event")]
     ApiEvent,
@@ -301,6 +304,7 @@ impl AgentEvent {
         };
 
         Ok(match self.kind {
+            AgentEventKind::InputAccepted => AgentEventData::InputAccepted(self.decode_payload()?),
             AgentEventKind::ApiEvent => {
                 #[cfg(feature = "client")]
                 {
@@ -830,7 +834,12 @@ impl EventSink {
             return Ok(seq);
         }
 
-        let payload = if let Some(turn_id) = self.publisher.turn_id.as_deref() {
+        let payload = if let Some(turn_id) = self
+            .publisher
+            .turn_id
+            .as_deref()
+            .filter(|_| kind != AgentEventKind::InputAccepted)
+        {
             // Flatten typed semantic payloads without parsing retained provider JSON.
             #[derive(Serialize)]
             struct TurnPayload<'a, P> {

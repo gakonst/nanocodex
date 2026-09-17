@@ -2,16 +2,34 @@ pub(in crate::rollout) mod writer;
 
 use super::wire::*;
 use super::*;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use writer::*;
 
 /// Stable identity and file location of a recorded Nanocodex thread.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct RolloutInfo {
     thread_id: String,
     path: PathBuf,
+    committed_bytes: Arc<AtomicU64>,
 }
 
+impl PartialEq for RolloutInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.thread_id == other.thread_id && self.path == other.path
+    }
+}
+impl Eq for RolloutInfo {}
+
 impl RolloutInfo {
+    /// Exclusive byte boundary of successfully flushed, complete rollout records.
+    #[must_use]
+    pub fn committed_bytes(&self) -> u64 {
+        self.committed_bytes.load(Ordering::Acquire)
+    }
+
     /// UUID accepted by `codex resume` and `codex exec resume`.
     #[must_use]
     pub fn thread_id(&self) -> &str {
@@ -48,6 +66,10 @@ pub(crate) struct RolloutCreate<'a> {
 }
 
 enum RolloutCommand {
+    Input {
+        input: nanocodex_oai_api::events::AcceptedInput,
+        result: oneshot::Sender<io::Result<()>>,
+    },
     Commit {
         commit: Box<RolloutCommit>,
         result: oneshot::Sender<io::Result<()>>,
@@ -315,6 +337,11 @@ impl RolloutRecorder {
     }
 
     fn spawn(runtime: &Handle, thread_id: &str, path: PathBuf, writer: RolloutWriter) -> Self {
+        let committed_bytes = Arc::clone(&writer.committed_bytes);
+        committed_bytes.store(
+            std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
+            Ordering::Release,
+        );
         let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
         let writer_path = path.clone();
         drop(runtime.spawn(async move {
@@ -335,6 +362,7 @@ impl RolloutRecorder {
             info: RolloutInfo {
                 thread_id: thread_id.to_owned(),
                 path,
+                committed_bytes,
             },
             commands,
         }
@@ -342,6 +370,20 @@ impl RolloutRecorder {
 
     pub(crate) const fn info(&self) -> &RolloutInfo {
         &self.info
+    }
+
+    pub(crate) async fn accepted_input(
+        &self,
+        input: nanocodex_oai_api::events::AcceptedInput,
+    ) -> io::Result<()> {
+        let (result, receive) = oneshot::channel();
+        self.commands
+            .send(RolloutCommand::Input { input, result })
+            .await
+            .map_err(|_| io::Error::other("rollout writer stopped"))?;
+        receive
+            .await
+            .map_err(|_| io::Error::other("rollout writer stopped"))?
     }
 
     pub(crate) async fn persist(

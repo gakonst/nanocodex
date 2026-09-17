@@ -86,7 +86,10 @@ clients must not interpret this as an empty, supported queue.
 | `command.status` | Managed only: `expected_session_id`, `expected_turn_id`, `request_id`, for durable steer/cancel receipts. |
 | `events.subscribe` | Decimal-string `after_seq`, exclusive. Streams replay then live notifications. |
 | `history.live` | `snapshot_token`, optional `offset` (default 0) and `limit` (default 32, max 128). Returns `records`, `next_offset`, `has_more`. |
-| `history.list` | `expected_session_id`, optional `limit` (max 256). Native: `after_line` (default 0), returning rollout records and `next_line`. Managed: optional `before` durable cursor, returning the managed history page. |
+| `history.pending` | Page the private event journal at `boundary` from `snapshot.pending_history`, with optional `cursor`, `order` (`newest` default or `oldest`), and `limit` (max 16). An optional live `snapshot_token` also pins the boundary. |
+| `history.pending.read` | Read a chunked journal record using `boundary`, `record_id`, and optional byte `offset`. |
+| `history.list` | `expected_session_id`, optional `limit`. Native: newest-first byte `cursor`, optional fixed `boundary`, `order` (`newest` or `oldest`), max 16 records. Reads known main/archived/side conversations without changing focus. Managed: existing `before` durable cursor, max 256 records. |
+| `history.read` | Native: `expected_session_id`, `boundary`, `record_id`, and optional byte `offset` to retrieve an oversized rollout record. |
 
 Native model selection follows the existing backend restriction: before the
 first accepted turn. Effort changes use the existing backend setter. Native
@@ -152,28 +155,70 @@ response items. A provider that omits IDs receives one stable synthetic ID per
 output index and model attempt. Retries receive separate identities. Managed
 clients use the outer durable turn ID/cursor and nested canonical event. The
 outer socket sequence is independent of both native event sequences and managed
-cursors. Native `history.committed` follows successful rollout flushing.
+cursors. Native `input.accepted` events contain `session_id`, `turn_id`, `item_id`,
+`kind` (`prompt` or `steer`), optional caller `request_id`, and the complete ordered
+`input` (text or multimodal attachment descriptors). They describe admitted input,
+not drafts or confirmation that a steer has already been consumed by the model.
+The same fields are persisted as `event_msg` / `input_accepted` rollout records,
+including inputs accepted before a cancellation or failure. Use these as semantic
+user transcript rows when present; legacy `user_message` and model-context user
+items remain for compatibility and should not be rendered as additional inputs.
+External prompt and
+steer request IDs are correlated with those records. Managed acceptance already
+contains prompt input; nested `input.accepted` steering events are also durable.
+
+Native `history.committed` follows successful rollout flushing independently of
+whether the turn completed, failed, or was cancelled. It includes a decimal-string
+`boundary`: the exclusive byte offset of committed records. Snapshots retain
+these watermarks in `committed_history`, keyed by session. Read pages at that
+boundary to reconcile exactly the saved prefix; a partial or failed write never
+advances the writer's committed boundary.
 
 1. Authenticate and save the hello snapshot's `seq` and `snapshot_token`.
-2. Page `history.live` with that token to recover retained partial assistant text
-   and semantic run/tool state. It is immutable at the snapshot boundary.
+2. Page `history.live` with that token for a compact semantic view. For complete
+   recovery, page `history.pending` with `boundary` from `pending_history` and
+   `order: "oldest"`. It contains the complete semantic event journal through that
+   snapshot, including unfinished turns and inputs omitted from the compact view.
+   Byte boundaries remain readable for the process lifetime even after compact
+   snapshot tokens expire.
 3. Subscribe after the saved `seq`; events produced while reading pages are
    replayed before live delivery. Persist the last fully applied sequence.
-4. On reconnect to the same instance, subscribe after that sequence.
+4. On reconnect to the same instance, subscribe after that sequence. Retain the
+   journal byte boundary too: it can become the next forward page cursor to
+   recover only the missing suffix if in-memory replay has expired.
 5. On `replay_gap`, streaming pauses and the notification includes a fresh
-   snapshot/token. Rebuild from that snapshot, fetch committed history as needed,
-   then explicitly subscribe after its `seq`. A new instance requires a fresh
-   attach and committed-history reconciliation.
+   snapshot/token. Rebuild from its journal boundary, fetch committed history as
+   needed, then explicitly subscribe after its `seq`. Managed outer acceptance,
+   completion, failure, and cancellation determine root active-turn state; nested
+   runtime terminals cannot override that authoritative state. A new instance
+   requires a fresh attach and committed-history reconciliation.
 
 Replay is bounded to 4,096 frames or 16 MiB. Semantic live history retains up to
 512 records or 16 MiB, with four immutable snapshots; old tokens return
 `snapshot_expired`. `live_history_truncated` explicitly reports dropped live
-history. Saved history remains authoritative for completed work. Oversized
-native history records return `history_record_too_large` rather than a page that
-cannot advance; the local rollout path is available for direct file reading.
+history. This flag concerns only the compact view: the private disk-backed
+journal retains full semantic events for this process, including oversized
+records, and is removed when its owner closes. Raw provider `api.event` frames
+are excluded because semantic events already carry the transcript. Disk I/O
+failures appear in `pending_history.error`; clients must not claim complete
+recovery in that case. Disk usage grows with this process's event history.
+
+Both journal and native rollout pages return `boundary`, `next_cursor`,
+`has_more`, and records with byte-range `record_id`, `start`, `end`, and `bytes`.
+Small records include `value`; large records include `chunked: true`. Fetch large
+records with the corresponding `.read` method, preserving the same boundary.
+Chunks return `encoding: "utf8-bytes"`, an array of bytes, `next_offset`,
+`total_bytes`, and `has_more`. Concatenate the bytes before UTF-8/JSON decoding.
+This works entirely over the authenticated socket or SSH relay. Reverse paging
+seeks from the supplied cursor rather than rescanning preceding history.
 
 Frames are bounded to 1 MiB. There are at most 32 socket clients and 32 queued
-owner commands. Writers have a 10-second timeout. Mutation receipts have a
+owner commands. Each connection permits 16 in-flight requests (64 across the
+server); two slots at each level are reserved for cancellation. Replies may
+arrive out of order and are correlated by request ID. Event delivery and request
+reading continue while operations are pending, with one serialized writer.
+Concurrent non-cancel mutations are rejected as `command_pending`; history reads
+do not block cancellation. Writers have a 10-second timeout. Mutation receipts have a
 65,536-entry limit and a 16 MiB admission budget. Slow consumers cannot block the
 agent; reconnects outside retention receive a gap, never silently incomplete
 replay. Managed reconnects deduplicate source cursors before accumulating deltas.

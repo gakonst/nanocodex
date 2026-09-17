@@ -9,7 +9,7 @@ pub(super) fn dispatch(
 ) -> Result<()> {
     let bridge = ui.control.as_ref().unwrap();
     let method = command.request.method.as_str();
-    if matches!(method, "models.list" | "history.list") {
+    if matches!(method, "models.list" | "history.list" | "history.read") {
         tx.send(WorkerCommand::Control {
             command,
             target: ui.app.focus,
@@ -101,6 +101,9 @@ impl AgentWorker {
             .agent
             .session_id();
         for branch in std::iter::once(&self.main).chain(&self.archived_main) {
+            if let Some(rollout) = branch.agent.rollout() {
+                bridge.committed(branch.agent.session_id(), rollout.committed_bytes());
+            }
             bridge.conversation(descriptor(
                 &branch.agent,
                 root,
@@ -109,6 +112,9 @@ impl AgentWorker {
             ));
         }
         if let Some(btw) = &self.btw {
+            if let Some(rollout) = btw.agent.rollout() {
+                bridge.committed(btw.agent.session_id(), rollout.committed_bytes());
+            }
             bridge.conversation(descriptor(
                 &btw.agent,
                 root,
@@ -136,6 +142,36 @@ impl AgentWorker {
             .as_str()
             .unwrap_or("")
             .to_owned();
+        if matches!(
+            command.request.method.as_str(),
+            "history.list" | "history.read"
+        ) {
+            // Reads target known conversations independently of the composer's focus.
+            let agent = std::iter::once(&self.main.agent)
+                .chain(self.archived_main.iter().map(|b| &b.agent))
+                .chain(self.btw.iter().map(|b| &b.agent))
+                .find(|a| a.session_id() == expected);
+            let Some(rollout) = agent.and_then(|a| a.rollout()) else {
+                command.reject("history_unavailable");
+                return;
+            };
+            let path = rollout.path().to_path_buf();
+            let boundary = rollout.committed_bytes();
+            tokio::spawn(async move {
+                let result = tokio::task::spawn_blocking(move || {
+                    let read = || -> std::io::Result<Value> {
+                        let file = std::fs::File::open(path)?;
+                        if command.request.method == "history.read" {
+                            nanocodex_tui_control::history::chunk(file, boundary, &command.request.params)
+                        } else { nanocodex_tui_control::history::page(file, boundary, &command.request.params) }
+                    };
+                    let value = read().unwrap_or_else(|error| json!({"status":"rejected","code":"history_unavailable","message":error.to_string()}));
+                    command.finish(value);
+                }).await;
+                let _ = result;
+            });
+            return;
+        }
         let owner = match target {
             PaneId::Main => Some((&self.main.agent, &self.main.turns)),
             PaneId::Btw(id) => self
@@ -153,45 +189,6 @@ impl AgentWorker {
             return;
         }
         let agent = agent.clone();
-        if command.request.method == "history.list" {
-            let path = agent.rollout().map(|r| r.path().to_path_buf());
-            let offset = command.request.params["after_line"].as_u64().unwrap_or(0) as usize;
-            let limit = command.request.params["limit"]
-                .as_u64()
-                .unwrap_or(100)
-                .clamp(1, 256) as usize;
-            tokio::spawn(async move {
-                let result = tokio::task::spawn_blocking(move || -> std::io::Result<Value> {
-                    use std::io::BufRead;
-                    let path = path.ok_or_else(|| std::io::Error::other("rollout disabled"))?;
-                    let file = std::io::BufReader::new(std::fs::File::open(path)?);
-                    let mut records = Vec::new();
-                    let mut bytes = 0;
-                    for line in file.lines().skip(offset).take(limit) {
-                        let line = line?;
-                        bytes += line.len();
-                        if bytes > nanocodex_tui_control::MAX_FRAME / 2 {
-                            if records.is_empty() {
-                                return Ok(rejected("history_record_too_large"));
-                            }
-                            break;
-                        }
-                        if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                            records.push(value);
-                        } else {
-                            break;
-                        }
-                    }
-                    Ok(json!({"next_line":offset + records.len(),"records":records}))
-                })
-                .await;
-                command.finish(match result {
-                    Ok(Ok(v)) => v,
-                    _ => rejected("history_unavailable"),
-                });
-            });
-            return;
-        }
         if let Err(code) = bridge.validate(&command.request) {
             command.reject(code);
             return;
@@ -214,7 +211,12 @@ impl AgentWorker {
                         .unwrap_or("")
                         .to_owned();
                     if self
-                        .prompt(target, input_id.unwrap(), SubmittedPrompt::text(text))
+                        .prompt_identified(
+                            target,
+                            input_id.unwrap(),
+                            SubmittedPrompt::text(text),
+                            Some(command.request.id.clone()),
+                        )
                         .await
                     {
                         let turns = match target {

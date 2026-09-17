@@ -404,6 +404,8 @@ impl Conversation {
 
     fn on_agent_event(&mut self, event: &AgentEvent) -> bool {
         match event.kind {
+            // Submitted-input rows are already owned by the local composer queue.
+            AgentEventKind::InputAccepted => return false,
             AgentEventKind::RunStarted => {
                 if let (Some(prompt), Some(prompt_id)) = (
                     self.queued_prompts.pop_front(),

@@ -448,6 +448,7 @@ struct WorkerStopped {
 
 const fn agent_kind(kind: AgentEventKind) -> &'static str {
     match kind {
+        AgentEventKind::InputAccepted => "input.accepted",
         AgentEventKind::ApiEvent => "api.event",
         AgentEventKind::AssistantDelta => "assistant.delta",
         AgentEventKind::AssistantMessage => "assistant.message",

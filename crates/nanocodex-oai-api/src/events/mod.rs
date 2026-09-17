@@ -8,12 +8,12 @@ pub(crate) mod stream;
 pub use data::OpenAiEvent;
 #[doc(inline)]
 pub use data::{
-    AgentEventData, AssistantDelta, AssistantEvent, AssistantMessage, CompactionCompleted,
-    CompactionFailed, CompactionStarted, ContextEvent, EventUsage, ModelCallCompleted,
-    ModelCallFailed, ModelCallStarted, ModelEvent, ModelWarmupCompleted, ModelWarmupFailed,
-    ModelWarmupStarted, ReasoningEvent, ReasoningSummaryDelta, RunError, RunEvent, RunMetrics,
-    RunStarted, RunStatus, RunSteered, RunTerminal, ToolCall, ToolEvent, ToolResultEvent,
-    ToolStatus, TransportEvent,
+    AcceptedInput, AgentEventData, AssistantDelta, AssistantEvent, AssistantMessage,
+    CompactionCompleted, CompactionFailed, CompactionStarted, ContextEvent, EventUsage,
+    ModelCallCompleted, ModelCallFailed, ModelCallStarted, ModelEvent, ModelWarmupCompleted,
+    ModelWarmupFailed, ModelWarmupStarted, ReasoningEvent, ReasoningSummaryDelta, RunError,
+    RunEvent, RunMetrics, RunStarted, RunStatus, RunSteered, RunTerminal, ToolCall, ToolEvent,
+    ToolResultEvent, ToolStatus, TransportEvent,
 };
 #[doc(inline)]
 pub use stream::{
