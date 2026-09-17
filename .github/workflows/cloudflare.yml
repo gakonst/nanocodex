@@ -57,7 +57,7 @@ jobs:
       - name: Verify image output validation
         run: node --test js/nanocodex/test/code-runtime.test.mjs js/nanocodex/test/worker-evaluator.test.mjs
       - name: Build managed agent and WASM dependencies
-        run: pnpm exec turbo run build --filter=nanocodex-managed-service
+        run: pnpm exec turbo run build --filter=nanocodex
       - name: Deploy managed agent service
         working-directory: js/managed
         run: npx wrangler deploy --config wrangler.jsonc --containers-rollout none --message "$DEPLOY_MESSAGE"
