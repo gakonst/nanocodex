@@ -31,8 +31,8 @@ test("real module evaluator preserves Code Mode globals and terminal store commi
     const answer = await tools.double({ value: 21 });
     store("answer", answer);
     console.log("answer", answer);
-    image("data:image/png;base64,a", "high");
-    generatedImage({ image_url: "data:image/png;base64,b", output_hint: "generated" });
+    image("data:image/png;base64,AAAA", "high");
+    generatedImage({ image_url: "data:image/png;base64,BBBB", output_hint: "generated" });
     text(load("answer"));
     exit();
     text("unreachable");
@@ -41,9 +41,9 @@ test("real module evaluator preserves Code Mode globals and terminal store commi
   assert.deepEqual(completed.nested_calls[0].structured_result, 42);
   assert.deepEqual(logs, [["answer", "42"]]);
   assert.equal(completed.output.some((item) =>
-    item.type === "input_image" && item.image_url === "data:image/png;base64,a"), true);
+    item.type === "input_image" && item.image_url === "data:image/png;base64,AAAA"), true);
   assert.equal(completed.output.some((item) =>
-    item.type === "input_image" && item.image_url === "data:image/png;base64,b"), true);
+    item.type === "input_image" && item.image_url === "data:image/png;base64,BBBB"), true);
   assert.equal(JSON.stringify(completed.output).includes("unreachable"), false);
 
   const failed = JSON.parse(await runtime.executeCode(

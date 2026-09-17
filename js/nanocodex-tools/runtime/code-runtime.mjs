@@ -239,8 +239,8 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
       const url = typeof value === "string" ? value
         : value?.type === "image" ? `data:${value.mimeType};base64,${value.data}`
         : value?.image_url;
-      if (typeof url !== "string" || !url.startsWith("data:image/")) {
-        throw new TypeError("image() requires a base64 data URL or MCP image block");
+      if (typeof url !== "string" || !validImageDataUrl(url)) {
+        throw new TypeError("image() requires a nonempty base64 data URL with an image MIME type or MCP image block");
       }
       const selected = detail ?? value?._meta?.["codex/imageDetail"] ?? value?.detail ?? "auto";
       if (!["auto", "low", "high", "original"].includes(selected)) throw new TypeError("invalid image detail");
@@ -829,4 +829,18 @@ function limitCodeOutput(output, budget) {
   }
   return output.map((item, index) =>
     item.type === "input_text" ? { ...item, text: index === 0 ? item.text : limit(item.text) } : item);
+}
+
+// Validate the encoded envelope before it becomes durable model history. Avoid
+// decoding or a repeated-group regex: screenshots can contain megabytes of data.
+function validImageDataUrl(url) {
+  const comma = url.indexOf(",");
+  if (comma < 0) return false;
+  const header = url.slice(0, comma);
+  const match = /^data:image\/[a-z0-9!#$&^_.+%-]+;base64$/i.exec(header);
+  if (!match || match[0].length !== header.length) return false;
+  const encoded = url.slice(comma + 1);
+  if (!encoded.length || encoded.length % 4 !== 0) return false;
+  const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+  return !/[^A-Za-z0-9+/]/.test(encoded.slice(0, encoded.length - padding));
 }

@@ -34,6 +34,40 @@ struct CallIds {
     non_server_tool_search_outputs: HashSet<Box<str>>,
 }
 
+fn valid_tool_image_data_url(url: &str) -> bool {
+    let Some((header, encoded)) = url.split_once(',') else {
+        return false;
+    };
+    let header = header.to_ascii_lowercase();
+    let Some(subtype) = header
+        .strip_prefix("data:image/")
+        .and_then(|v| v.strip_suffix(";base64"))
+    else {
+        return false;
+    };
+    if subtype.is_empty()
+        || !subtype
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"!#$&^_.+%-".contains(&c))
+    {
+        return false;
+    }
+    let bytes = encoded.as_bytes();
+    if bytes.is_empty() || bytes.len() % 4 != 0 {
+        return false;
+    }
+    let padding = if encoded.ends_with("==") {
+        2
+    } else if encoded.ends_with('=') {
+        1
+    } else {
+        0
+    };
+    bytes[..bytes.len() - padding]
+        .iter()
+        .all(|c| c.is_ascii_alphanumeric() || *c == b'+' || *c == b'/')
+}
+
 impl ContextManager {
     #[must_use]
     pub fn new(items: Vec<ResponseItem>) -> Self {
@@ -105,6 +139,38 @@ impl ContextManager {
         if self.calls.is_balanced() {
             self.calls.clear();
         }
+    }
+
+    /// Repairs malformed legacy tool images before restored history is replayed.
+    pub(super) fn replace_invalid_tool_images(&mut self) -> usize {
+        let mut replaced = 0;
+        let mut items = self.flattened_items();
+        for item in &mut items {
+            let (ResponseItem::FunctionCallOutput { output, .. }
+            | ResponseItem::CustomToolCallOutput { output, .. }) = item
+            else {
+                continue;
+            };
+            let FunctionOutputBody::Content(content) = output else {
+                continue;
+            };
+            for part in content {
+                if let FunctionOutputContent::InputImage { image_url, .. } = part
+                    && !valid_tool_image_data_url(image_url)
+                {
+                    *part = FunctionOutputContent::InputText {
+                        text:
+                            "[image omitted: malformed base64 image data in restored tool output]"
+                                .into(),
+                    };
+                    replaced += 1;
+                }
+            }
+        }
+        if replaced > 0 {
+            self.replace_and_recompute(items, &[]);
+        }
+        replaced
     }
 
     pub fn replace_rejected_images(&mut self) -> usize {
@@ -953,6 +1019,56 @@ mod tests {
         assert!(
             matches!(&output[2], FunctionOutputContent::InputText { text } if text.as_ref() == "[omitted 1 text items ...]")
         );
+    }
+
+    #[test]
+    fn malformed_restored_tool_images_are_replaced_without_removing_valid_images() {
+        let mut context = ContextManager::new(vec![ResponseItem::custom_tool_output(
+            "call".to_owned(),
+            None,
+            FunctionOutputBody::Content(vec![
+                FunctionOutputContent::InputText {
+                    text: "retained text".into(),
+                },
+                FunctionOutputContent::InputImage {
+                    image_url: "data:image/png;base64,AAAA\n[output truncated]".into(),
+                    detail: None,
+                },
+                FunctionOutputContent::InputImage {
+                    image_url: "data:image/png;base64,YQ==".into(),
+                    detail: None,
+                },
+            ]),
+        )]);
+        assert_eq!(context.replace_invalid_tool_images(), 1);
+        let encoded = serde_json::to_string(&context.flattened_items()).unwrap();
+        assert!(encoded.contains("retained text"));
+        assert!(encoded.contains("base64,YQ=="));
+        assert!(encoded.contains("malformed base64 image data"));
+        assert!(!encoded.contains("output truncated"));
+        assert_eq!(context.replace_invalid_tool_images(), 0);
+    }
+
+    #[test]
+    fn restored_tool_image_envelopes_require_image_mime_and_valid_base64() {
+        for valid in [
+            "data:image/png;base64,YQ==",
+            "DATA:IMAGE/PNG;BASE64,YWI=",
+            "data:image/svg+xml;base64,YWJj",
+        ] {
+            assert!(super::valid_tool_image_data_url(valid), "{valid}");
+        }
+        for invalid in [
+            "data:image/png;base64,",
+            "data:image/png;base64,a",
+            "data:image/png;base64,AA=A",
+            "data:image/png;base64,!!!!",
+            "data:image/png;base64\n,AAAA",
+            "data:application/octet-stream;base64,AAAA",
+            "https://example.test/image.png",
+        ] {
+            assert!(!super::valid_tool_image_data_url(invalid), "{invalid}");
+        }
     }
 
     #[test]

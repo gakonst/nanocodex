@@ -752,6 +752,169 @@ async fn image_helper_requires_data_urls() -> Result<()> {
 }
 
 #[tokio::test]
+async fn image_helper_rejects_malformed_base64_without_emitting_images() -> Result<()> {
+    let workspace = temporary_workspace("code-mode-invalid-base64")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let execution = tools
+        .execute_code(
+            r#"
+const invalid = [
+  "data:", "data:image/png;base64,", "data:text/plain;base64,YQ==",
+  "data:image/;base64,YQ==", "data:image/png,YQ==",
+  "data:application/octet-stream;base64,a",
+  "data:application/octet-stream;base64,YQ==\n",
+  "data:application/octet-streamx;base64,YQ==",
+  "data:image/png;base64,a", "data:image/png;base64,YQ=",
+  "data:image/png;base64,====", "data:image/png;base64,A===",
+  "data:image/png;base64,Y=Q=", "data:image/png;base64,YQ==YQ==",
+  "data:image/png;base64,YQ==\n", "data:image/png;base64,Y Q=",
+  "data:image/png;base64,YQ-_", "data:image/png;base64,YQé=",
+  "data:image/png;base64,YQ%3D%3D",
+  "data:image/png;base64\n,AAAA", "data:image/png;base64\r,AAAA",
+  "data:image/png;base64\r\n,AAAA", "data:image/png;base64\u2028,AAAA",
+  "data:image/png;base64\u2029,AAAA",
+];
+let rejected = 0;
+for (const image_url of invalid) {
+  for (const value of [image_url, { image_url }, { type: "image", data: image_url }]) {
+    try { image(value); } catch (error) {
+      if (error !== "Tool call failed: invalid image output. Pass a base64 data URI instead") throw error;
+      rejected++;
+    }
+  }
+}
+for (const value of [
+  { type: "image", data: "a", mimeType: "image/png" },
+  { type: "image", data: "YQ==", mimeType: "text/plain" },
+  { type: "image", data: "YQ==", mimeType: "application/json" },
+]) {
+  try { image(value); } catch (error) {
+    if (error !== "Tool call failed: invalid image output. Pass a base64 data URI instead") throw error;
+    rejected++;
+  }
+}
+if (rejected !== invalid.length * 3 + 3) throw new Error("accepted malformed image");
+text("all rejected");
+"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    assert!(execution.success, "{}", execution_output(&execution));
+    assert_eq!(emitted_text(&execution)?, "all rejected");
+    let ToolOutputBody::Content(content) = &execution.output else {
+        return Err(eyre!("code-mode execution did not emit content"));
+    };
+    assert!(
+        !content
+            .iter()
+            .any(|item| matches!(item, ToolOutputContent::InputImage { .. }))
+    );
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn image_helper_forwards_native_view_image_to_model_history_validation() -> Result<()> {
+    let workspace = temporary_workspace("code-mode-view-image-normalization")?;
+    let source = image::DynamicImage::new_rgb8(2, 3);
+    source.save(workspace.join("valid.png"))?;
+    std::fs::write(workspace.join("invalid.png"), b"not an image")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let mut execution = tools
+        .execute_code(
+            r#"
+image(await tools.view_image({ path: "valid.png", detail: "original" }));
+image(await tools.view_image({ path: "invalid.png" }));
+"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    assert!(execution.success, "{}", execution_output(&execution));
+    let ToolOutputBody::Content(content) = &execution.output else {
+        return Err(eyre!("code-mode execution did not emit content"));
+    };
+    let images: Vec<_> = content
+        .iter()
+        .filter_map(|item| match item {
+            ToolOutputContent::InputImage { image_url, detail } => Some((image_url, detail)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(images.len(), 2);
+    assert!(
+        images
+            .iter()
+            .all(|(url, _)| url.starts_with("data:application/octet-stream;base64,"))
+    );
+    assert_eq!(*images[0].1, crate::ImageDetail::Original);
+
+    crate::image::prepare_output_images(&mut execution.output).await;
+    let ToolOutputBody::Content(content) = &execution.output else {
+        return Err(eyre!("normalization did not preserve content"));
+    };
+    let images: Vec<_> = content
+        .iter()
+        .filter_map(|item| match item {
+            ToolOutputContent::InputImage { image_url, detail } => Some((image_url, detail)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(images.len(), 1);
+    assert!(images[0].0.starts_with("data:image/png;base64,"));
+    assert_eq!(*images[0].1, crate::ImageDetail::Original);
+    assert!(content.iter().any(|item| matches!(item,
+        ToolOutputContent::InputText { text }
+        if text == "image content omitted because it could not be processed"
+    )));
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn image_helper_accepts_base64_variants_and_large_payloads() -> Result<()> {
+    let workspace = temporary_workspace("code-mode-valid-base64")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let execution = tools
+        .execute_code(
+            r#"
+image("data:image/png;base64,YQ==");
+image("DATA:IMAGE/JPEG;BASE64,YWI=");
+image({ type: "image", data: "YWJj", mime_type: "image/webp" });
+image({ type: "image", data: "data:image/svg+xml;base64,ab+/", mimeType: "unused" });
+image("data:image/png;base64," + "YWJj".repeat(1024 * 1024));
+"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    assert!(execution.success, "{}", execution_output(&execution));
+    let ToolOutputBody::Content(content) = &execution.output else {
+        return Err(eyre!("code-mode execution did not emit content"));
+    };
+    let images: Vec<_> = content
+        .iter()
+        .filter_map(|item| match item {
+            ToolOutputContent::InputImage { image_url, .. } => Some(image_url),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(images.len(), 5);
+    assert_eq!(images[1], "DATA:IMAGE/JPEG;BASE64,YWI=");
+    assert_eq!(images[2], "data:image/webp;base64,YWJj");
+    assert_eq!(
+        images[4].len(),
+        "data:image/png;base64,".len() + 4 * 1024 * 1024
+    );
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn failed_cell_preserves_accumulated_output() -> Result<()> {
     let workspace = temporary_workspace("failed-cell-output")?;
     let tools = test_tools(&workspace);
@@ -760,7 +923,7 @@ async fn failed_cell_preserves_accumulated_output() -> Result<()> {
         .execute_code(
             r#"
 text("before crash");
-image("data:image/png;base64,a", "original");
+image("data:image/png;base64,YQ==", "original");
 throw new Error("boom");
 "#,
             test_context(&history),
@@ -781,7 +944,7 @@ throw new Error("boom");
         Some(ToolOutputContent::InputImage {
             image_url,
             detail: crate::ImageDetail::Original,
-        }) if image_url == "data:image/png;base64,a"
+        }) if image_url == "data:image/png;base64,YQ=="
     ));
     assert!(matches!(
         content.get(3),
@@ -800,7 +963,7 @@ async fn image_helper_normalizes_detail_and_honors_override() -> Result<()> {
     let history = Vec::new();
     let execution = tools
         .execute_code(
-            r#"image({ image_url: "data:image/png;base64,a", detail: "low" }, "ORIGINAL");"#,
+            r#"image({ image_url: "data:image/png;base64,YQ==", detail: "low" }, "ORIGINAL");"#,
             test_context(&history),
         )
         .await
@@ -815,7 +978,7 @@ async fn image_helper_normalizes_detail_and_honors_override() -> Result<()> {
         Some(ToolOutputContent::InputImage {
             image_url,
             detail: crate::ImageDetail::Original,
-        }) if image_url == "data:image/png;base64,a"
+        }) if image_url == "data:image/png;base64,YQ=="
     ));
 
     std::fs::remove_dir_all(workspace)?;
@@ -861,7 +1024,7 @@ async fn output_helpers_accept_raw_mcp_image_and_audio_blocks() -> Result<()> {
 const returnsUndefined = [
   image({
     type: "image",
-    data: "a",
+    data: "YQ==",
     mimeType: "image/png",
     _meta: { "codex/imageDetail": "original" },
   }),
@@ -887,7 +1050,7 @@ text(returnsUndefined);
         Some(ToolOutputContent::InputImage {
             image_url,
             detail: crate::ImageDetail::Original,
-        }) if image_url == "data:image/png;base64,a"
+        }) if image_url == "data:image/png;base64,YQ=="
     ));
     assert_eq!(emitted_text(&execution)?, "[true,true]");
     std::fs::remove_dir_all(workspace)?;
@@ -903,7 +1066,7 @@ async fn generated_image_helper_appends_high_detail_image_and_hint() -> Result<(
         .execute_code(
             r#"
 generatedImage({
-  image_url: "data:image/png;base64,a",
+  image_url: "data:image/png;base64,YQ==",
   output_hint: "generated image save hint",
 });
 "#,
@@ -921,7 +1084,7 @@ generatedImage({
         Some(ToolOutputContent::InputImage {
             image_url,
             detail: crate::ImageDetail::High,
-        }) if image_url == "data:image/png;base64,a"
+        }) if image_url == "data:image/png;base64,YQ=="
     ));
     assert!(matches!(
         content.get(2),
@@ -930,7 +1093,7 @@ generatedImage({
 
     let invalid = tools
         .execute_code(
-            r#"generatedImage({ image_url: "data:image/png;base64,a", output_hint: 1 });"#,
+            r#"generatedImage({ image_url: "data:image/png;base64,YQ==", output_hint: 1 });"#,
             test_context(&history),
         )
         .await

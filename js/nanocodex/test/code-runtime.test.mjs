@@ -375,3 +375,58 @@ for (const pragma of ['{"yield_time_ms":-1}', '{"max_output_tokens":1.5}', '{"un
     runtime.reset();
   });
 }
+
+for (const value of [
+  "data:image/png;base64,",
+  "data:image/png;base64,undefined",
+  "data:image/png;base64,a",
+  "data:image/png;base64,AA=A",
+  "data:image/png;base64\n,AAAA",
+  "data:image/png;base64\u2028,AAAA",
+  "data:image/png;base64,!!!!",
+  "data:image/png,AAAA",
+  "data:application/octet-stream;base64,AAAA",
+  { type: "image", mimeType: "image/png" },
+  { image_url: "data:image/png;base64,[object Object]" },
+]) test(`Code Mode rejects malformed image data before recording it: ${JSON.stringify(value)}`, async () => {
+  const runtime = createCodeRuntime({});
+  const result = JSON.parse(await runtime.executeCode(
+    `image(${JSON.stringify(value)});`, "invalid-image", "exec-invalid-image",
+  ));
+  assert.equal(result.success, false);
+  assert.match(JSON.stringify(result.output), /nonempty base64 data URL/);
+  assert.equal(Array.isArray(result.output) && result.output.some((item) => item.type === "input_image"), false);
+  runtime.reset();
+});
+
+for (const data of ["AAAA", "AA==", "AAA="]) test(`Code Mode accepts base64 image padding: ${data}`, async () => {
+  const runtime = createCodeRuntime({});
+  const result = JSON.parse(await runtime.executeCode(
+    `image("data:image/png;base64,${data}");`, "valid-image", "exec-valid-image",
+  ));
+  assert.equal(result.success, true);
+  assert.equal(result.output.find((item) => item.type === "input_image").image_url, `data:image/png;base64,${data}`);
+  runtime.reset();
+});
+
+for (const evaluator of ["quickjs", "worker"]) test(`${evaluator} rejects malformed image data at the host boundary`, async () => {
+  let evaluate;
+  if (evaluator === "quickjs") {
+    const { default: variant } = await import("@jitl/quickjs-wasmfile-release-asyncify");
+    const { newQuickJSAsyncWASMModuleFromVariant } = await import("quickjs-emscripten-core");
+    const { createQuickJsEvaluator } = await import("../runtime/quickjs-evaluator.mjs");
+    evaluate = createQuickJsEvaluator(await newQuickJSAsyncWASMModuleFromVariant(variant));
+  } else {
+    const { NodeWebWorker } = await import("./support/node-web-worker.mjs");
+    const { createWorkerEvaluator } = await import("../runtime/worker-evaluator.mjs");
+    evaluate = createWorkerEvaluator({ createWorker: () => new NodeWebWorker(new URL("../runtime/code-evaluator.worker.mjs", import.meta.url)) });
+  }
+  const runtime = createCodeRuntime({}, { evaluate });
+  const result = JSON.parse(await runtime.executeCode(
+    'image("data:image/png;base64,not base64");', "bad-image", "exec-bad-image",
+  ));
+  assert.equal(result.success, false);
+  assert.match(JSON.stringify(result.output), /nonempty base64 data URL/);
+  assert.equal(Array.isArray(result.output) && result.output.some((item) => item.type === "input_image"), false);
+  runtime.reset();
+});

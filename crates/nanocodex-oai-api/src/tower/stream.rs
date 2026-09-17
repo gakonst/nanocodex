@@ -16,8 +16,6 @@ use crate::{
     telemetry::{ApiEvent, elapsed_ns},
 };
 
-const INVALID_IMAGE_ERROR: &str = "The image data you provided does not represent a valid image";
-
 /// Complete provider output from one `response.create` operation.
 #[derive(Deserialize, Serialize)]
 pub struct GenerationOutput {
@@ -531,12 +529,6 @@ where
         event,
         ServerEvent::Error | ServerEvent::Failed | ServerEvent::Incomplete
     ) {
-        if raw_event.get().contains(INVALID_IMAGE_ERROR) {
-            return Err(ResponsesError::InvalidImageRequest {
-                event: raw_event.get().to_owned(),
-            }
-            .into());
-        }
         return Err(ResponsesError::api_event(raw_event.get().to_owned()).into());
     }
     Ok(ReceivedServerEvent {
