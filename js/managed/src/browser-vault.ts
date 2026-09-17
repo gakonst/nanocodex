@@ -45,7 +45,9 @@ export class PrivateBrowserCdp {
   #id = 0;
   #closed = false;
   #pending = new Map<number, { resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
+  #attachment: { targetId: string; sessionId: string } | undefined;
   readonly socket: WebSocket;
+  get closed() { return this.#closed; }
   constructor(socket: WebSocket) {
     this.socket = socket;
     socket.accept();
@@ -53,6 +55,7 @@ export class PrivateBrowserCdp {
       try {
         if (typeof event.data !== "string") return;
         const message = JSON.parse(event.data);
+        if (message.method === "Target.detachedFromTarget" && message.params?.sessionId === this.#attachment?.sessionId) this.#attachment = undefined;
         const pending = this.#pending.get(message.id);
         if (!pending) return;
         this.#pending.delete(message.id);
@@ -87,8 +90,20 @@ export class PrivateBrowserCdp {
       catch { clearTimeout(timer); this.#pending.delete(id); reject(new Error("Private browser operation failed")); }
     });
   }
+  async attachTarget(targetId: string): Promise<{ sessionId: string }> {
+    if (this.#closed) throw new Error("Private browser disconnected");
+    if (this.#attachment?.targetId === targetId) return { sessionId: this.#attachment.sessionId };
+    const previous = this.#attachment;
+    this.#attachment = undefined;
+    if (previous) await this.send("Target.detachFromTarget", { sessionId: previous.sessionId });
+    const attached = await this.send("Target.attachToTarget", { targetId, flatten: true });
+    if (typeof attached?.sessionId !== "string") throw new Error("Private browser attachment failed");
+    this.#attachment = { targetId, sessionId: attached.sessionId };
+    return { sessionId: attached.sessionId };
+  }
   #reject() {
     this.#closed = true;
+    this.#attachment = undefined;
     for (const entry of this.#pending.values()) { clearTimeout(entry.timer); entry.reject(new Error("Private browser disconnected")); }
     this.#pending.clear();
   }
@@ -123,6 +138,47 @@ const VAULT_FORM_SUBMISSION = `
     return safe && safeLoginForm(form);
   };
 `;
+
+type PrivateBrowserChannel = Pick<PrivateBrowserCdp, "send"> & Partial<Pick<PrivateBrowserCdp, "attachTarget">>;
+const attachPrivateTarget = (cdp: PrivateBrowserChannel, targetId: string) => cdp.attachTarget
+  ? cdp.attachTarget(targetId) : cdp.send("Target.attachToTarget", { targetId, flatten: true });
+
+/** Host-only, bounded continuation transport. The runtime's exclusive gate serializes
+ * uses. Recreation/expiry discards transport, never the browser quarantine. */
+export class PrivateBrowserContinuationSession {
+  #current: { sessionId: string; identity: string; cdp: PrivateBrowserCdp } | undefined;
+  #idle: ReturnType<typeof setTimeout> | undefined;
+  readonly browser: BrowserBinding;
+  readonly idleMs: number;
+  constructor(browser: BrowserBinding, idleMs = 5 * 60_000) { this.browser = browser; this.idleMs = idleMs; }
+  close() {
+    clearTimeout(this.#idle);
+    this.#idle = undefined;
+    this.#current?.cdp.close();
+    this.#current = undefined;
+  }
+  async run<T>(sessionId: string, identity: BrowserVaultIdentity, signal: AbortSignal,
+    operation: (cdp: PrivateBrowserCdp) => Promise<T>): Promise<T> {
+    signal.throwIfAborted();
+    const key = JSON.stringify([identity.vault_id, identity.target_id, identity.expected_origin]);
+    clearTimeout(this.#idle);
+    if (this.#current && (this.#current.sessionId !== sessionId || this.#current.identity !== key || this.#current.cdp.closed)) this.close();
+    if (!this.#current) {
+      const cdp = await PrivateBrowserCdp.connect(this.browser, sessionId, signal);
+      if (signal.aborted) { cdp.close(); signal.throwIfAborted(); }
+      this.#current = { sessionId, identity: key, cdp };
+    }
+    const current = this.#current;
+    const abort = () => this.close();
+    signal.addEventListener("abort", abort, { once: true });
+    try { signal.throwIfAborted(); return await operation(current.cdp); }
+    catch (error) { this.close(); throw error; }
+    finally {
+      signal.removeEventListener("abort", abort);
+      if (this.#current === current) this.#idle = setTimeout(() => this.close(), this.idleMs);
+    }
+  }
+}
 
 /** A fixed function, executed in a fresh isolated world. Selectors are data, never code.
  * Restrict to a visible, same-origin POST login form in the top frame. Atomic checks
@@ -182,7 +238,7 @@ export const BROWSER_VAULT_FILL_FUNCTION = `function(origin, usernameSelector, p
 }`;
 
 export async function fillBrowserVault(options: {
-  cdp: Pick<PrivateBrowserCdp, "send">;
+  cdp: PrivateBrowserChannel;
   sessionId: string;
   request: BrowserVaultRequest;
   resolve: () => Promise<BrowserVaultLogin>;
@@ -195,7 +251,7 @@ export async function fillBrowserVault(options: {
     checkAbort();
     const target = await cdp.send("Target.getTargetInfo", { targetId: request.target_id });
     if (target?.targetInfo?.type !== "page" || new URL(target.targetInfo.url).origin !== request.expected_origin) throw new Error();
-    const attached = await cdp.send("Target.attachToTarget", { targetId: request.target_id, flatten: true });
+    const attached = await attachPrivateTarget(cdp, request.target_id);
     const sid = attached?.sessionId;
     if (typeof sid !== "string") throw new Error();
     const tree = await cdp.send("Page.getFrameTree", {}, sid);
@@ -246,8 +302,8 @@ const OTP_SELECTOR = 'input[autocomplete="one-time-code"],input[name="otp"],inpu
 export const BROWSER_VAULT_CONTINUATION_FUNCTION = `function(origin, mode, snapshotId, ref, url, selectors) {
   if (window !== window.top || location.origin !== origin || location.protocol !== 'https:') return null;
   ${VAULT_FORM_SUBMISSION}
-  const visible = el => el instanceof Element && el.isConnected && el.getRootNode() === document
-    && !el.closest('[inert],[hidden],[aria-hidden="true"],script,style,noscript,template,textarea,select')
+  const visible = (el, readingText = false) => el instanceof Element && el.isConnected && el.getRootNode() === document
+    && !el.closest('[inert],[hidden],script,style,noscript,template,textarea,select' + (readingText ? '' : ',[aria-hidden="true"]'))
     && el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && el.getClientRects().length > 0;
   const safeUrl = value => { try { const u = new URL(value, location.href); return u.origin === origin && !u.username && !u.password ? u.href : null; } catch { return null; } };
   const safeForm = form => form instanceof HTMLFormElement && form.method.toLowerCase() === 'post'
@@ -277,17 +333,23 @@ export const BROWSER_VAULT_CONTINUATION_FUNCTION = `function(origin, mode, snaps
   }
   if (mode === 'click') {
     const snapshot = globalThis.__nanocodexVaultSnapshot;
-    if (!snapshot || snapshot.id !== snapshotId || snapshot.href !== location.href) return false;
+    if (!snapshot) return 'snapshot_missing';
+    if (snapshot.id !== snapshotId) return 'stale_ref';
+    if (snapshot.href !== location.href) return 'document_changed';
     const entry = snapshot.nodes.get(ref), el = entry && entry.el;
     delete globalThis.__nanocodexVaultSnapshot;
-    if (challenge || !el || !visible(el) || el.disabled || el.getAttribute('aria-disabled') === 'true' || el.outerHTML !== entry.html
-      || (entry.form && (associatedForm(el) !== entry.form || entry.form.outerHTML !== entry.formHtml))) return false;
+    if (challenge) return 'challenge_detected';
+    if (!el) return 'stale_ref';
+    if (!visible(el) || el.disabled || el.getAttribute('aria-disabled') === 'true') return 'element_not_visible';
+    if (el.outerHTML !== entry.html
+      || (entry.form && (associatedForm(el) !== entry.form || entry.form.outerHTML !== entry.formHtml))) return 'changed_element';
+    el.scrollIntoView({block:"center", inline:"center", behavior:"instant"});
     const rect = el.getBoundingClientRect();
-    if (rect.left < 0 || rect.top < 0 || rect.right > innerWidth || rect.bottom > innerHeight
-      || !el.contains(document.elementFromPoint(rect.left + rect.width/2, rect.top + rect.height/2))) return false;
+    if (rect.left < 0 || rect.top < 0 || rect.right > innerWidth || rect.bottom > innerHeight) return 'outside_viewport';
+    if (!el.contains(document.elementFromPoint(rect.left + rect.width/2, rect.top + rect.height/2))) return 'occluded';
     if (el instanceof HTMLAnchorElement && (!el.target || el.target === '_self') && !el.hasAttribute('download')) {
       const destination = safeUrl(el.href);
-      if (!destination) return false;
+      if (!destination) return 'unsafe_destination';
       location.assign(destination); return true;
     }
     if (customLogin(el)) { HTMLElement.prototype.click.call(el); return true; }
@@ -295,7 +357,7 @@ export const BROWSER_VAULT_CONTINUATION_FUNCTION = `function(origin, mode, snaps
       && !['formaction','formmethod','formtarget','formenctype','formnovalidate'].some(a => el.hasAttribute(a))) {
       return submitLoginForm(el.form, el);
     }
-    return false;
+    return 'unsupported_element';
   }
   if (mode !== 'snapshot') return null;
   const readable = root => {
@@ -303,9 +365,9 @@ export const BROWSER_VAULT_CONTINUATION_FUNCTION = `function(origin, mode, snaps
     let node, visited = 0, length = 0;
     while ((node = walker.nextNode()) && ++visited <= 10000) {
       const parent = node.parentElement;
-      if (!parent || !visible(parent) || parent.closest('input,option')) continue;
+      if (!parent || !visible(parent, true) || parent.closest('input,option')) continue;
       const value = node.textContent || '';
-      if (value.length > 8192) continue; // Omit whole nodes; never return a truncated secret.
+      if (!value.trim() || value.length > 8192) continue; // Omit whole nodes; never return a truncated secret.
       if (length + value.length > 32768) break;
       chunks.push(value); length += value.length;
     }
@@ -313,7 +375,7 @@ export const BROWSER_VAULT_CONTINUATION_FUNCTION = `function(origin, mode, snaps
   };
   const nodes = new Map(), elements = [];
   for (const el of [...document.querySelectorAll('a[href],button,input[type="submit"],[role="button"]')].slice(0, 2000)) {
-    if (elements.length >= 50) break;
+    if (elements.length >= 200) break;
     if (!visible(el) || el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
     const link = el instanceof HTMLAnchorElement;
     if (link ? (!safeUrl(el.href) || (el.target && el.target !== '_self') || el.hasAttribute('download'))
@@ -333,12 +395,12 @@ function validateIdentity(request: BrowserVaultIdentity) {
     || !/^[A-Za-z0-9_-]{22,64}$/.test(request.vault_id)
     || !/^[A-Za-z0-9_-]{1,128}$/.test(request.target_id)) throw new Error();
 }
-async function privateWorld(cdp: Pick<PrivateBrowserCdp, "send">, request: BrowserVaultIdentity) {
+async function privateWorld(cdp: PrivateBrowserChannel, request: BrowserVaultIdentity) {
   validateIdentity(request);
   const target = await cdp.send("Target.getTargetInfo", { targetId: request.target_id });
   if (target?.targetInfo?.type !== "page") throw new Error();
   if (new URL(target.targetInfo.url).origin !== request.expected_origin) return null;
-  const attached = await cdp.send("Target.attachToTarget", { targetId: request.target_id, flatten: true });
+  const attached = await attachPrivateTarget(cdp, request.target_id);
   if (typeof attached?.sessionId !== "string") throw new Error();
   const tree = await cdp.send("Page.getFrameTree", {}, attached.sessionId);
   const frame = tree?.frameTree?.frame;
@@ -353,7 +415,7 @@ async function privateWorld(cdp: Pick<PrivateBrowserCdp, "send">, request: Brows
     || verifiedFrame.loaderId !== frame.loaderId || new URL(verifiedFrame.url).origin !== request.expected_origin) throw new Error();
   return { sessionId: attached.sessionId as string, executionContextId: world.executionContextId as number, loaderId: frame.loaderId as string };
 }
-async function continuation(cdp: Pick<PrivateBrowserCdp, "send">, request: BrowserVaultIdentity, mode: string, snapshotId = "", ref = "", url = "") {
+async function continuation(cdp: PrivateBrowserChannel, request: BrowserVaultIdentity, mode: string, snapshotId = "", ref = "", url = "") {
   const world = await privateWorld(cdp, request);
   if (!world) return null;
   const result = await cdp.send("Runtime.callFunctionOn", {
@@ -376,7 +438,7 @@ function inspection(value: any): BrowserVaultInspection {
 }
 
 /** Absence of supported inputs is unknown, never evidence of authentication. */
-export async function inspectBrowserVault(cdp: Pick<PrivateBrowserCdp, "send">, request: BrowserVaultIdentity): Promise<BrowserVaultInspection> {
+export async function inspectBrowserVault(cdp: PrivateBrowserChannel, request: BrowserVaultIdentity): Promise<BrowserVaultInspection> {
   try { return inspection(await continuation(cdp, request, "status")); }
   catch { throw new Error("Private login status is unavailable"); }
 }
@@ -429,10 +491,10 @@ export function sanitizeBrowserVaultText(value: string, secrets: readonly string
   });
   safe = safe.replace(/\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s<>"']+/gi, '[url omitted]')
     .replace(/[0-9](?:[\s-]*[0-9]){3,}/g, '[redacted]');
-  return safe.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').slice(0, limit);
+  return safe.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, limit);
 }
 
-export async function snapshotBrowserVault(cdp: Pick<PrivateBrowserCdp, "send">, request: BrowserVaultIdentity, secrets: readonly string[]): Promise<BrowserVaultSnapshot> {
+export async function snapshotBrowserVault(cdp: PrivateBrowserChannel, request: BrowserVaultIdentity, secrets: readonly string[]): Promise<BrowserVaultSnapshot> {
   try {
     if (!Array.isArray(secrets) || secrets.some(s => typeof s !== "string")) throw new Error();
     const id = crypto.randomUUID();
@@ -440,18 +502,29 @@ export async function snapshotBrowserVault(cdp: Pick<PrivateBrowserCdp, "send">,
     const status = inspection(value);
     if (!value) return { ...status, snapshot_id: "", title: "", text: "", elements: [] };
     if (value.snapshot_id !== id || typeof value.title !== "string" || value.title.length > 8192
-      || typeof value.text !== "string" || value.text.length > 65536 || !Array.isArray(value.elements) || value.elements.length > 50) throw new Error();
+      || typeof value.text !== "string" || value.text.length > 65536 || !Array.isArray(value.elements) || value.elements.length > 200) throw new Error();
     const clean = (text: string, limit: number) => sanitizeBrowserVaultText(text, secrets, limit);
     const elements = value.elements.map((el: any) => {
-      if (!el || !/^e[1-9][0-9]?$/.test(el.ref) || !["link", "button"].includes(el.role) || typeof el.text !== "string" || el.text.length > 65536) throw new Error();
+      if (!el || !/^e(?:[1-9][0-9]?|1[0-9]{2}|200)$/.test(el.ref) || !["link", "button"].includes(el.role) || typeof el.text !== "string" || el.text.length > 65536) throw new Error();
       return { ref: el.ref as string, role: el.role as "link" | "button", text: clean(el.text, 256) };
     });
     return { ...status, snapshot_id: id, title: clean(value.title, 256), text: clean(value.text, 12000), elements };
   } catch { throw new Error("Private page snapshot is unavailable"); }
 }
 
+// Only these fixed host-owned categories may cross the private diagnostic boundary.
+const CLICK_FAILURES = ["snapshot_missing", "stale_ref", "document_changed", "challenge_detected",
+  "element_not_visible", "changed_element", "outside_viewport", "occluded", "unsafe_destination", "unsupported_element"] as const;
+type BrowserVaultClickFailure = typeof CLICK_FAILURES[number];
+export class BrowserVaultActionRejected extends Error {
+  constructor(reason: BrowserVaultClickFailure) {
+    super(`Private browser action could not be completed safely (${reason})`);
+    this.name = "BrowserVaultActionRejected";
+  }
+}
+
 export type BrowserVaultAction = { action: "click"; snapshot_id: string; ref: string } | { action: "navigate"; url: string };
-export async function actBrowserVault(cdp: Pick<PrivateBrowserCdp, "send">, request: BrowserVaultIdentity, action: BrowserVaultAction): Promise<{ status: "navigation_requested" | "action_requested" }> {
+export async function actBrowserVault(cdp: PrivateBrowserChannel, request: BrowserVaultIdentity, action: BrowserVaultAction): Promise<{ status: "navigation_requested" | "action_requested" }> {
   try {
     if (action.action === "navigate") {
       const destination = new URL(action.url);
@@ -459,10 +532,15 @@ export async function actBrowserVault(cdp: Pick<PrivateBrowserCdp, "send">, requ
       if (await continuation(cdp, request, "navigate", "", "", destination.href) !== true) throw new Error();
       return { status: "navigation_requested" };
     }
-    if (action.action !== "click" || !/^[0-9a-f-]{36}$/.test(action.snapshot_id) || !/^e[1-9][0-9]?$/.test(action.ref)) throw new Error();
-    if (await continuation(cdp, request, "click", action.snapshot_id, action.ref) !== true) throw new Error();
+    if (action.action !== "click" || !/^[0-9a-f-]{36}$/.test(action.snapshot_id) || !/^e(?:[1-9][0-9]?|1[0-9]{2}|200)$/.test(action.ref)) throw new Error();
+    const result = await continuation(cdp, request, "click", action.snapshot_id, action.ref);
+    if (typeof result === "string" && CLICK_FAILURES.includes(result as BrowserVaultClickFailure)) throw new BrowserVaultActionRejected(result as BrowserVaultClickFailure);
+    if (result !== true) throw new Error();
     return { status: "action_requested" };
-  } catch { throw new Error("Private browser action could not be completed safely"); }
+  } catch (error) {
+    if (error instanceof BrowserVaultActionRejected) throw error;
+    throw new Error("Private browser action could not be completed safely");
+  }
 }
 
 export const BROWSER_VAULT_OTP_FUNCTION = `function(origin, selector, code, submit) {
@@ -489,7 +567,7 @@ export const BROWSER_VAULT_OTP_FUNCTION = `function(origin, selector, code, subm
  * user-authorized Vault item/target/origin before calling; no code enters output.
  */
 export async function fillBrowserVaultOtp(options: {
-  cdp: Pick<PrivateBrowserCdp, "send">;
+  cdp: PrivateBrowserChannel;
   request: BrowserVaultIdentity & { otp_selector: string; expected_loader_id?: string };
   resolve: () => Promise<string>;
   submit: boolean;
@@ -512,7 +590,7 @@ export async function fillBrowserVaultOtp(options: {
 }
 
 /** Host-only binding for one-use verification challenges; never expose loader IDs. */
-export async function captureBrowserVaultBinding(cdp: Pick<PrivateBrowserCdp, "send">, request: BrowserVaultIdentity): Promise<{ loaderId: string; otp_selector: string }> {
+export async function captureBrowserVaultBinding(cdp: PrivateBrowserChannel, request: BrowserVaultIdentity): Promise<{ loaderId: string; otp_selector: string }> {
   try {
     const world = await privateWorld(cdp, request);
     if (!world) throw new Error();
@@ -530,7 +608,7 @@ export async function captureBrowserVaultBinding(cdp: Pick<PrivateBrowserCdp, "s
 
 /** Host-only general document binding for human takeover, including CAPTCHA and
  * custom forms. Does not claim authentication or expose any page data. */
-export async function captureBrowserVaultDocumentBinding(cdp: Pick<PrivateBrowserCdp, "send">, request: BrowserVaultIdentity): Promise<{ loaderId: string }> {
+export async function captureBrowserVaultDocumentBinding(cdp: PrivateBrowserChannel, request: BrowserVaultIdentity): Promise<{ loaderId: string }> {
   try {
     const world = await privateWorld(cdp, request);
     if (!world) throw new Error();

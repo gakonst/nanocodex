@@ -14,8 +14,8 @@ import type { NamedTool, ToolContext } from "nanocodex";
 import { privateVaultTakeover, type BrowserVaultTakeoverAction } from "./browser-vault-takeover";
 
 import {
-  fillBrowserVault, inspectBrowserVault, parseBrowserVaultRequest, PrivateBrowserCdp,
-  snapshotBrowserVault, actBrowserVault, captureBrowserVaultBinding, captureBrowserVaultDocumentBinding, fillBrowserVaultOtp,
+  fillBrowserVault, inspectBrowserVault, parseBrowserVaultRequest, PrivateBrowserCdp, PrivateBrowserContinuationSession,
+  snapshotBrowserVault, actBrowserVault, BrowserVaultActionRejected, captureBrowserVaultBinding, captureBrowserVaultDocumentBinding, fillBrowserVaultOtp,
   type BrowserVaultIdentity, type BrowserVaultAction,
   type BrowserVaultResolver, type BrowserVaultQuarantine,
 } from "./browser-vault";
@@ -409,6 +409,7 @@ export async function createManagedBrowserRuntime(
     }), keepAliveMs);
   }
   const privateBrowser = browser;
+  const privateContinuation = new PrivateBrowserContinuationSession(privateBrowser);
   const secrets = secret ? [secret] : [];
   const quarantineKey = `browser-vault-quarantine:${provider}:${options.sessionId}`;
   const takeoverKey = `browser-vault-takeover:${provider}:${options.sessionId}`;
@@ -445,6 +446,7 @@ export async function createManagedBrowserRuntime(
     // back/forward cache can restore the filled page. Keep the whole session gated.
     const info = await runtime.connector.sessionInfo();
     if (info && info.sessionId !== quarantine.sessionId) {
+      privateContinuation.close();
       await options.ctx.storage.delete(quarantineKey);
       isolated = false;
       return;
@@ -545,11 +547,8 @@ export async function createManagedBrowserRuntime(
         loaderId: "", origin: identity.expected_origin, vaultId: identity.vault_id });
       isolated = true;
     }
-    const cdp = await PrivateBrowserCdp.connect(privateBrowser, info.sessionId, context.signal);
-    const abort = () => cdp.close();
-    context.signal.addEventListener("abort", abort, { once: true });
-    try { context.signal.throwIfAborted(); return await operation(cdp, info.sessionId, login); }
-    finally { context.signal.removeEventListener("abort", abort); cdp.close(); }
+    return privateContinuation.run(info.sessionId, identity, context.signal,
+      cdp => operation(cdp, info.sessionId, login));
   };
   type PendingChallenge = { id: string; expiresAt: number; sessionId: string; identity: BrowserVaultIdentity;
     loaderId: string; selector: string };
@@ -576,7 +575,10 @@ export async function createManagedBrowserRuntime(
           || !["navigate", "click"].includes(String(value.action))) throw new Error("Invalid private browser action");
         const action = value.action === "navigate" ? { action: "navigate", url: value.url } : { action: "click", snapshot_id: value.snapshot_id, ref: value.ref };
         try { return await withPrivate(identity, context, (cdp) => actBrowserVault(cdp, identity, action as BrowserVaultAction)); }
-        catch { throw new Error("Private browser action is unavailable"); }
+        catch (error) {
+          if (error instanceof BrowserVaultActionRejected) throw error;
+          throw new Error("Private browser action is unavailable");
+        }
       }),
     });
     tools.push({ name: "browser_vault_request_challenge",
@@ -610,6 +612,7 @@ export async function createManagedBrowserRuntime(
         const lease: HumanLease = { id: crypto.randomUUID(), expiresAt: Date.now() + 10 * 60_000, sessionId, identity };
         await options.ctx.storage.delete(challengeKey);
         await options.ctx.storage.put(takeoverKey, lease);
+        privateContinuation.close();
         return { type: "browser_vault_takeover", status: "input_required", challenge_id: lease.id,
           agent_id: options.sessionId, origin: identity.expected_origin, expires_at: lease.expiresAt };
       }); } catch { throw new Error("Private user control is unavailable"); }
@@ -684,6 +687,7 @@ export async function createManagedBrowserRuntime(
       options.authorizeVaultAccess!(context);
       if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length) throw new Error("Invalid close request");
       try {
+        privateContinuation.close();
         await runtime.connector.closeSession();
         await options.ctx.storage.delete(quarantineKey);
         await options.ctx.storage.delete(challengeKey);
@@ -704,6 +708,7 @@ export async function createManagedBrowserRuntime(
       await runtime.connector.sweep({ maxIdleMs: keepAliveMs });
     },
     async close() {
+      privateContinuation.close();
       await runtime.connector.closeSession();
     },
   });

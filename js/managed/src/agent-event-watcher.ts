@@ -52,13 +52,14 @@ export function watchManagedAgentFamilyEvents(
     listener: InternalEventListener,
   ) => () => void;
   onEvent((event, _encodedLength, _encodedEvent, agentId) => {
-    // Provider frames and physical transport lifecycle are telemetry, not
-    // replay state. In particular api.event repeats full requests and
-    // cumulative response bodies already represented by normalized events.
+    // Full provider frames remain telemetry. In particular api.event repeats
+    // requests and cumulative bodies already represented by normalized events.
     if (REPLAY_EVENTS.has(event.type)) {
       listeners.replay(event, agentId);
       return;
     }
+    const progress = transportProgress(event);
+    if (progress) listeners.replay(progress, agentId);
     // Raw frames can contain prompts, tool schemas, and cumulative response
     // bodies. Cloudflare traces retain the request path; never copy payloads
     // into either replay storage or application logs.
@@ -67,4 +68,28 @@ export function watchManagedAgentFamilyEvents(
     }
   });
   return events;
+}
+
+/** Client status uses a bounded projection, never raw provider errors or URLs. */
+function transportProgress(event: AgentEvent): AgentEvent | undefined {
+  const p = event.payload;
+  const payload: Record<string, unknown> = {};
+  if (event.type === "model.attempt.retrying") {
+    if (!Number.isSafeInteger(p.delay_ns) || Number(p.delay_ns) < 0) return;
+    payload.delay_ns = p.delay_ns;
+    payload.error = "The model request is being retried.";
+  } else if (event.type === "model.connection.started") {
+    if (typeof p.purpose !== "string" || !["initial", "warmup_fallback", "reconnect"].includes(p.purpose)) return;
+    payload.purpose = p.purpose;
+  } else if (event.type === "model.connection.completed") {
+    if (!Number.isSafeInteger(p.connection_generation) || Number(p.connection_generation) < 0) return;
+  } else {
+    return;
+  }
+  if (typeof p.phase === "string" && ["generation", "compaction", "warmup"].includes(p.phase)) payload.phase = p.phase;
+  for (const key of ["attempt", "next_attempt", "max_attempts", "connection_generation", "model_call_index"]) {
+    if (Number.isSafeInteger(p[key]) && Number(p[key]) >= 0) payload[key] = p[key];
+  }
+  return { protocol_version: event.protocol_version, request_id: event.request_id,
+    seq: event.seq, type: event.type, payload };
 }

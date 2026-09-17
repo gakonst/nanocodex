@@ -48,6 +48,10 @@ try {
   assert.equal(snapshot.title, '[redacted]');
   assert.ok(snapshot.text.includes('Account'));
   assert.deepEqual(snapshot.elements.map(el => el.text), ['Next','Continue']);
+  await page.locator('body').evaluate(el => el.insertAdjacentHTML('beforeend', '<span aria-hidden="true">$109.95</span><span aria-hidden="true" hidden>HIDDEN-PRICE</span>'));
+  const priceSnapshot = await snapshotBrowserVault(cdp,request,[user,password,code]);
+  assert.ok(priceSnapshot.text.includes('$109.95'));
+  assert.ok(!priceSnapshot.text.includes('HIDDEN-PRICE'));
   const next = await snapshotBrowserVault(cdp,request,[user,password,code]);
   await assert.rejects(actBrowserVault(cdp,request,{action:'click',snapshot_id:snapshot.snapshot_id,ref:'e1'}), /safely/);
   await page.locator('a').first().evaluate(el => el.href = 'https://example.test');
@@ -96,6 +100,13 @@ try {
   await actBrowserVault(cdp,request,{action:'click',snapshot_id:normal.snapshot_id,ref:'e1'});
   assert.equal(await page.evaluate(()=>window.submitted),true);
   assert.equal(sanitizeBrowserVaultText('a @ b a%40b a%2540b',['a@b'],100),'[redacted] [redacted] [redacted]');
+  await page.setContent('<nav>' + Array.from({length:100},(_,i)=>`<a href="/nav${i}" style="display:block;height:30px">Menu ${i}</a>`).join('') + '</nav><main><a href="/invoice">Invoice details</a></main>');
+  const longPage = await snapshotBrowserVault(cdp,request,[]);
+  assert.equal(longPage.elements.length,101);
+  assert.equal(longPage.elements[100].text,'Invoice details');
+  assert.deepEqual(await actBrowserVault(cdp,request,{action:'click',snapshot_id:longPage.snapshot_id,ref:'e101'}),{status:'action_requested'});
+  await page.waitForURL(`${origin}/invoice`);
+  assert.equal(sanitizeBrowserVaultText('  A\n  B  ',[],100),'A B');
   console.log('PASS: Chromium private status, OTP/challenge/unknown distinction, bounded redacted snapshots, hidden/value exclusion, native links, stale/mutated refs, cross-origin actions, document-bound OTP POST and unsafe OTP rejection');
 } finally {
   await browser?.close();
