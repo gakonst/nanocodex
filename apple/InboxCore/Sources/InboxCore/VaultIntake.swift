@@ -7,7 +7,7 @@ extension ManagedClient {
     /// Vault forms bypass transcript transport and all persistent HTTP caches.
     /// Never follow redirects or automatically replay credential submissions.
     func vaultIntakeJSON(path: String, method: String = "GET", body: JSON? = nil,
-                         configuration: URLSessionConfiguration = .ephemeral) async throws -> JSON {
+                         configuration: URLSessionConfiguration = .ephemeral, maximumResponseBytes: Int = 64 * 1024) async throws -> JSON {
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpCookieStorage = nil
@@ -22,7 +22,7 @@ extension ManagedClient {
         guard let response = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         // Server error bodies can contain arbitrary text. Never display or retain them.
         guard (200..<300).contains(response.statusCode) else { throw APIError.http(response.statusCode) }
-        guard data.count <= 64 * 1024 else { throw APIError.invalidResponse }
+        guard data.count <= maximumResponseBytes else { throw APIError.invalidResponse }
         return try JSONDecoder().decode(JSON.self, from: data)
     }
 }
@@ -34,14 +34,28 @@ public struct VaultIntake: Codable, Equatable, Sendable {
     public let origin: String?
     public let operation: String?
     public let vaultID: String?
+    public let challengeID: String?
+    public let agentID: String?
 
     public static func parse(_ value: JSON, depth: Int = 0) -> VaultIntake? {
         guard depth < 12 else { return nil }
         let value = ToolPresentation.decoded(value)
+        if ["browser_vault_challenge", "browser_vault_takeover"].contains(value["type"].string), value["status"].string == "input_required" {
+            guard case .object(let fields) = value,
+                  Set(fields.keys) == Set(["type", "status", "challenge_id", "agent_id", "origin", "expires_at"]),
+                  case .number(let expiry) = value["expires_at"], expiry.isFinite, expiry > 0,
+                  value["challenge_id"].string.range(of: #"^[A-Za-z0-9_-]{22,256}$"#, options: .regularExpression) != nil,
+                  (try? ManagedClient.agentPath(value["agent_id"].string)) != nil else { return nil }
+            let origin = value["origin"].string
+            guard let validated = parse(.object(["type": .string("vault_intake"), "status": .string("input_required"),
+                "kind": .string("login"), "origin": .string(origin)])), validated.origin != nil else { return nil }
+            return .init(kind: "login", name: "", origin: origin, operation: value["type"].string == "browser_vault_takeover" ? "browser_takeover" : "browser_verification", vaultID: nil,
+                         challengeID: value["challenge_id"].string, agentID: value["agent_id"].string)
+        }
         if value["type"].string == "vault_intake", value["status"].string == "input_required",
            ["login", "api_key", "card", "address", "phone"].contains(value["kind"].string) {
             guard case .object(let fields) = value,
-                  Set(fields.keys).isSubset(of: ["type", "status", "kind", "name", "origin", "operation", "vault_id"]) else { return nil }
+                  Set(fields.keys).isSubset(of: ["type", "status", "kind", "name", "origin", "operation", "vault_id", "challenge_id", "agent_id"]) else { return nil }
             let name = value["name"].string
             let origin = value["origin"].string
             guard name.utf8.count <= 120, origin.utf8.count <= 2048, !name.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else { return nil }
@@ -53,15 +67,21 @@ public struct VaultIntake: Codable, Equatable, Sendable {
                       origin == "https://" + host + (url.port.map { ":" + String($0) } ?? "") else { return nil }
             }
             let operation = value["operation"].string
-            guard operation.isEmpty || operation == "create" || operation == "authorize_origin" else { return nil }
+            guard operation.isEmpty || operation == "create" || operation == "authorize_origin" || operation == "browser_verification" else { return nil }
             let vaultID = value["vault_id"].string
-            if operation == "authorize_origin" {
+            if operation == "authorize_origin" || operation == "browser_verification" {
                 guard value["kind"].string == "login", !origin.isEmpty,
                       vaultID.range(of: #"^[A-Za-z0-9_-]{22,64}$"#, options: .regularExpression) != nil else { return nil }
             }
-            guard (operation == "authorize_origin" || vaultID.isEmpty), origin.isEmpty || value["kind"].string == "login" else { return nil }
+            guard (operation == "authorize_origin" || operation == "browser_verification" || vaultID.isEmpty), origin.isEmpty || value["kind"].string == "login" else { return nil }
+            let challengeID = value["challenge_id"].string
+            let agentID = value["agent_id"].string
+            if operation == "browser_verification" {
+                guard challengeID.range(of: #"^[A-Za-z0-9_-]{22,256}$"#, options: .regularExpression) != nil,
+                      (try? ManagedClient.agentPath(agentID)) != nil else { return nil }
+            } else if fields["challenge_id"] != nil || fields["agent_id"] != nil { return nil }
             return .init(kind: value["kind"].string, name: name, origin: origin.isEmpty ? nil : origin,
-                         operation: operation.isEmpty ? nil : operation, vaultID: vaultID.isEmpty ? nil : vaultID)
+                         operation: operation.isEmpty ? nil : operation, vaultID: vaultID.isEmpty ? nil : vaultID, challengeID: challengeID.isEmpty ? nil : challengeID, agentID: agentID.isEmpty ? nil : agentID)
         }
         switch value {
         case .array(let values):
@@ -108,5 +128,35 @@ extension ManagedClient {
         guard id.range(of: #"^[A-Za-z0-9_-]{22,64}$"#, options: .regularExpression) != nil,
               response["kind"].string == kind else { throw APIError.invalidResponse }
         return .init(id: id, kind: kind, name: values["name"] ?? "")
+    }
+}
+
+extension ManagedClient {
+    public func submitBrowserVerification(intake: VaultIntake, code: String, configuration: URLSessionConfiguration = .ephemeral) async throws {
+        guard intake.operation == "browser_verification", let challenge = intake.challengeID, let agent = intake.agentID,
+              code.range(of: #"^[0-9]{4,10}$"#, options: .regularExpression) != nil else { throw APIError.invalidResponse }
+        let response = try await vaultIntakeJSON(path: Self.agentPath(agent) + "/browser-vault/challenge", method: "POST",
+            body: .object(["challenge_id": .string(challenge), "code": .string(code)]), configuration: configuration)
+        guard case .object(let fields) = response, fields.count == 3, response["type"].string == "browser_vault_challenge_receipt", response["challenge_id"].string == challenge, response["status"].string == "submitted" else { throw APIError.invalidResponse }
+    }
+}
+
+public enum BrowserTakeoverFrame: Sendable {
+    case active(image: Data, width: Int, height: Int)
+    case finished
+}
+extension ManagedClient {
+    public func browserTakeover(intake: VaultIntake, action: [String: JSON], configuration: URLSessionConfiguration = .ephemeral) async throws -> BrowserTakeoverFrame {
+        guard intake.operation == "browser_takeover", let challenge = intake.challengeID, let agent = intake.agentID else { throw APIError.invalidResponse }
+        var body = action; body["challenge_id"] = .string(challenge)
+        let response = try await vaultIntakeJSON(path: Self.agentPath(agent) + "/browser-vault/takeover", method: "POST", body: .object(body), configuration: configuration, maximumResponseBytes: 16 * 1024 * 1024)
+        guard case .object(let fields) = response else { throw APIError.invalidResponse }
+        if action["action"] == .string("finish"), fields.count == 1, response["status"].string == "finished" { return .finished }
+        let prefix = "data:image/png;base64,", encoded = response["image"].string
+        let width = response["width"].number, height = response["height"].number
+        guard action["action"] != .string("finish"), fields.count == 4, response["status"].string == "active", encoded.hasPrefix(prefix),
+              width >= 1, width <= 16384, height >= 1, height <= 16384, width.rounded() == width, height.rounded() == height,
+              let data = Data(base64Encoded: String(encoded.dropFirst(prefix.count))), data.starts(with: [137,80,78,71,13,10,26,10]) else { throw APIError.invalidResponse }
+        return .active(image: data, width: Int(width), height: Int(height))
     }
 }

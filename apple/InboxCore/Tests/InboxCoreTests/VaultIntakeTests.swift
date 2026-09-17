@@ -68,4 +68,58 @@ final class VaultIntakeTests: XCTestCase {
             XCTAssertFalse(String(describing: error).contains("private-server-error"))
         }
     }
+    func testBrowserVerificationHintAndDirectSubmission() async throws {
+        var value: [String: JSON] = ["type": .string("vault_intake"), "status": .string("input_required"),
+            "operation": .string("browser_verification"), "kind": .string("login"),
+            "vault_id": .string(String(repeating: "a", count: 22)), "origin": .string("https://example.com"),
+            "challenge_id": .string(String(repeating: "b", count: 22)), "agent_id": .string("agent_1")]
+        let intake = try XCTUnwrap(VaultIntake.parse(.object(value)))
+        value["code"] = .string("123456")
+        XCTAssertNil(VaultIntake.parse(.object(value)))
+        let fixture = try HTTPFixture { request in
+            XCTAssertEqual(request.method, "POST")
+            XCTAssertEqual(request.path, "/v1/agents/agent_1/browser-vault/challenge")
+            XCTAssertEqual(request.headers["cache-control"], "no-store")
+            XCTAssertEqual(request.json["code"] as? String, "123456")
+            XCTAssertEqual(request.json.count, 2)
+            return FixtureReply(body: #"{"type":"browser_vault_challenge_receipt","status":"submitted","challenge_id":"bbbbbbbbbbbbbbbbbbbbbb"}"#)
+        }
+        defer { fixture.close() }
+        let client = ManagedClient(credential: try AccountCredential(origin: fixture.origin, apiKey: fixtureKey))
+        defer { client.close() }
+        try await client.submitBrowserVerification(intake: intake, code: "123456", configuration: fixture.configuration)
+    }
+
+    func testDedicatedChallengeToolPresentation() throws {
+        let hint: JSON = .object(["type": .string("browser_vault_challenge"), "status": .string("input_required"),
+            "challenge_id": .string(String(repeating: "b", count: 22)), "agent_id": .string("agent_1"),
+            "origin": .string("https://example.com"), "expires_at": .number(9999999999999)])
+        var tool = ToolPresentation(name: "browser_vault_request_challenge", arguments: .null)
+        tool.finish(hint)
+        XCTAssertEqual(tool.vaultIntake?.operation, "browser_verification")
+        var other = ToolPresentation(name: "browser_execute", arguments: .null)
+        other.finish(hint)
+        XCTAssertNil(other.vaultIntake)
+    }
+
+    func testTakeoverUsesPrivateDirectResponse() async throws {
+        let hint: JSON = .object(["type": .string("browser_vault_takeover"), "status": .string("input_required"),
+            "challenge_id": .string(String(repeating: "b", count: 22)), "agent_id": .string("agent_1"),
+            "origin": .string("https://example.com"), "expires_at": .number(9999999999999)])
+        var tool = ToolPresentation(name: "browser_vault_request_takeover", arguments: .null); tool.finish(hint)
+        let intake = try XCTUnwrap(tool.vaultIntake)
+        XCTAssertEqual(intake.operation, "browser_takeover")
+        let fixture = try HTTPFixture { request in
+            XCTAssertEqual(request.path, "/v1/agents/agent_1/browser-vault/takeover")
+            XCTAssertEqual(request.headers["cache-control"], "no-store")
+            XCTAssertEqual(request.json["text"] as? String, "private-text")
+            return FixtureReply(body: #"{"status":"active","image":"data:image/png;base64,iVBORw0KGgo=","width":800,"height":600}"#)
+        }
+        defer { fixture.close() }
+        let client = ManagedClient(credential: try AccountCredential(origin: fixture.origin, apiKey: fixtureKey)); defer { client.close() }
+        let frame = try await client.browserTakeover(intake: intake, action: ["action": .string("type"), "text": .string("private-text")], configuration: fixture.configuration)
+        guard case .active(let data, let width, _) = frame else { return XCTFail("Expected private frame") }
+        XCTAssertEqual(width, 800); XCTAssertEqual(data.count, 8)
+    }
+
 }

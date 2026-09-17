@@ -1995,17 +1995,18 @@ private struct VaultIntakeCard: View {
     @State private var showingForm = false
     @State private var receiptAgentID = ""
     @State private var receipt: VaultIntakeReceipt?
+    @State private var verificationSubmitted = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(receipt == nil ? "Add to Vault securely" : "Saved to Vault", systemImage: "lock.shield")
+            Label(intake.operation == "browser_takeover" ? "Control browser privately" : intake.operation == "browser_verification" ? (verificationSubmitted ? "Code submitted" : "Verify browser login") : (receipt == nil ? "Add to Vault securely" : "Saved to Vault"), systemImage: "lock.shield")
                 .font(.headline)
-            if let receipt {
+            if verificationSubmitted { Text("Browser verification is pending.") } else if let receipt {
                 Text(receipt.name).font(.subheadline)
             } else {
                 if !intake.name.isEmpty { Text(intake.name).font(.subheadline) }
                 if let origin = intake.origin { Text(origin).font(.caption).textSelection(.enabled) }
-                Text("Your information goes directly to your encrypted Vault. It stays out of chat.")
+                Text(intake.operation == "browser_takeover" ? "Control the browser privately. The screen and input stay out of chat." : intake.operation == "browser_verification" ? "The code goes directly to this browser session. It stays out of chat and is not saved to Vault." : "Your information goes directly to your encrypted Vault. It stays out of chat.")
                     .font(.subheadline).foregroundStyle(.secondary)
                 Button("Open secure form") { receiptAgentID = model.focused?.id ?? ""; showingForm = true }
                     .buttonStyle(.borderedProminent)
@@ -2016,7 +2017,11 @@ private struct VaultIntakeCard: View {
         .background(Ink.surface, in: RoundedRectangle(cornerRadius: 16))
         .accessibilityIdentifier("vault-intake-card")
         .sheet(isPresented: $showingForm) {
-            VaultLoginSheet(model: model, intake: intake, agentID: receiptAgentID) { receipt = $0 }
+            if intake.operation == "browser_takeover" {
+                BrowserTakeoverSheet(model: model, intake: intake)
+            } else if intake.operation == "browser_verification" {
+                BrowserVerificationSheet(model: model, intake: intake, agentID: receiptAgentID) { verificationSubmitted = true }
+            } else { VaultLoginSheet(model: model, intake: intake, agentID: receiptAgentID) { receipt = $0 } }
         }
     }
 }
@@ -2134,5 +2139,115 @@ private struct VaultLoginSheet: View {
         .onDisappear { submission?.cancel(); clear() }
         .onChange(of: model.vaultIntakeAccount) { _, _ in submission?.cancel(); clear(); dismiss() }
         .onChange(of: model.connected) { _, connected in if !connected { submission?.cancel(); clear(); dismiss() } }
+    }
+}
+
+private struct BrowserVerificationSheet: View {
+    @ObservedObject var model: InboxModel
+    let intake: VaultIntake
+    let agentID: String
+    let submitted: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var code = ""
+    @State private var account = UUID()
+    @State private var attempted = false
+    @State private var busy = false
+    @State private var failure: String?
+    @State private var submission: Task<Void, Never>?
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text(intake.origin ?? "")
+                    SecureField("Verification code", text: $code).textContentType(.oneTimeCode).keyboardType(.numberPad)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+                } footer: { Text("The code goes directly to this browser session, outside chat. It is not saved to Vault.") }
+                if let failure { Text(failure) }
+                Button(busy ? "Submitting…" : "Submit code") {
+                    attempted = true; busy = true
+                    let value = code; code = ""
+                    submission = Task { @MainActor in
+                        defer { busy = false }
+                        do {
+                            try await model.submitBrowserVerification(intake: intake, code: value, account: account)
+                            guard !Task.isCancelled, model.vaultIntakeAccount == account else { return }
+                            model.publishBrowserVerificationReceipt(intake: intake, agentID: agentID, account: account)
+                            submitted(); dismiss()
+                        } catch { failure = "Couldn’t confirm submission. Request a new secure form before trying again." }
+                    }
+                }.disabled(attempted || code.range(of: #"^[0-9]{4,10}$"#, options: .regularExpression) == nil)
+            }
+            .navigationTitle("Verify browser login")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { submission?.cancel(); code = ""; dismiss() } } }
+            .overlay { if scenePhase != .active { Color(uiColor: .systemBackground).ignoresSafeArea() } }
+        }
+        .interactiveDismissDisabled(busy)
+        .task { account = model.vaultIntakeAccount }
+        .onDisappear { submission?.cancel(); code = "" }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { code = "" } }
+        .onChange(of: model.vaultIntakeAccount) { _, _ in submission?.cancel(); code = ""; dismiss() }
+    }
+}
+
+private struct BrowserTakeoverSheet: View {
+    @ObservedObject var model: InboxModel
+    let intake: VaultIntake
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var account = UUID()
+    @State private var screen: UIImage?
+    @State private var text = ""
+    @State private var busy = false
+    @State private var failure: String?
+    @State private var submission: Task<Void, Never>?
+    private func act(_ action: [String: JSON]) {
+        guard !busy else { return }; busy = true; failure = nil
+        submission = Task { @MainActor in
+            defer { busy = false }
+            do {
+                let frame = try await model.browserTakeover(intake: intake, action: action, account: account)
+                guard !Task.isCancelled else { return }
+                switch frame {
+                case .finished:
+                    model.publishBrowserVerificationReceipt(intake: intake, agentID: intake.agentID ?? "", account: account)
+                    screen = nil; text = ""; dismiss()
+                case .active(let data, _, _):
+                    guard let image = UIImage(data: data) else { throw APIError.invalidResponse }
+                    screen = scenePhase == .active ? image : nil
+                }
+            } catch { screen = nil; failure = "Couldn’t confirm the action. Refresh the view before trying another action." }
+        }
+    }
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 12) {
+                    Text(intake.origin ?? "")
+                    Text("The screen and your input stay outside this conversation. Finish when you are done.")
+                    Button("Open / refresh private view") { act(["action": .string("observe")]) }
+                    if let screen {
+                        Image(uiImage: screen).resizable().aspectRatio(contentMode: .fit)
+                            .overlay { GeometryReader { geometry in
+                                Color.clear.contentShape(Rectangle()).gesture(SpatialTapGesture().onEnded { event in
+                                    act(["action": .string("click"), "x": .number(event.location.x / geometry.size.width), "y": .number(event.location.y / geometry.size.height)])
+                                })
+                            } }.privacySensitive()
+                        SecureField("Private text", text: $text).textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+                        Button("Type in browser") { let value = text; text = ""; act(["action": .string("type"), "text": .string(value)]) }.disabled(text.isEmpty || text.utf8.count > 512)
+                        HStack { ForEach(["Enter", "Tab", "Backspace", "Escape"], id: \.self) { key in Button(key) { act(["action": .string("key"), "key": .string(key)]) } } }
+                        HStack { Button("Scroll up") { act(["action": .string("scroll"), "delta_y": .number(-500)]) }; Button("Scroll down") { act(["action": .string("scroll"), "delta_y": .number(500)]) } }
+                    }
+                    if let failure { Text(failure).foregroundStyle(.red) }
+                    Button("Finish private control") { text = ""; act(["action": .string("finish")]) }
+                }.padding().disabled(busy)
+            }.navigationTitle("Private browser control")
+            .overlay { if scenePhase != .active { Color(uiColor: .systemBackground).ignoresSafeArea() } }
+        }
+        .interactiveDismissDisabled(busy)
+        .task { account = model.vaultIntakeAccount }
+        .onDisappear { submission?.cancel(); text = ""; screen = nil }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { text = ""; screen = nil } }
+        .onChange(of: model.vaultIntakeAccount) { _, _ in submission?.cancel(); text = ""; screen = nil; dismiss() }
     }
 }

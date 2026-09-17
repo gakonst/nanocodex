@@ -30,8 +30,18 @@ RPC is reachable through the managed service binding, never model HTTP egress.
    `submit: true` performs a native same-origin POST; `false` fills without submitting.
 4. Repeat the private status/fill calls for a two-step login. A submitted form or
    absence of supported fields is **not** proof of successful authentication.
-5. `browser_vault_close` discards the retained browser session and allows ordinary
-   browsing to start fresh.
+5. For `otp_form`, call `browser_vault_request_challenge`. Its secure web/iOS form
+   submits a 4–10 digit code directly to the owner-authenticated endpoint. Wait for
+   the submitted receipt. Codes are not saved in Vault or conversation history.
+6. Use `browser_vault_snapshot` for a bounded, redacted view and opaque link/button
+   refs. `browser_vault_action` follows those refs or navigates within the approved
+   origin while preserving the login. `unknown` does not mean authenticated:
+   confirm actual account/order content before saying login succeeded.
+7. For CAPTCHA or unsupported controls, `browser_vault_request_takeover` opens a
+   human-only viewport/input panel for this same browser. Model reads/actions pause
+   until the user finishes. Images and typed input never enter the model transcript.
+8. `browser_vault_close` explicitly discards the retained browser session. Do not
+   use it to finish authentication or regain page access.
 
 The host obtains credentials privately, opens its own provider CDP connection, and
 runs a fixed function in an isolated top-frame world. Selectors are data. The
@@ -44,11 +54,21 @@ execution log.
 Before injection, a durable session quarantine is written. Normal browser tools
 remain blocked for that credential session, even after navigation or Worker
 restart: a new page can echo credentials and history can restore a filled page.
-Only private status/continuation for the same item, target and origin is allowed.
-This intentionally does not enable general autonomous browsing in a signed-in
-session. MFA, CAPTCHA, JavaScript-only/SPA forms, cross-origin login transitions,
-and forms requiring submit-button callbacks need direct user interaction. No
-live account password is required for testing.
+Only the private facade for the same item, target and origin is allowed. It returns
+visible text and safe refs, excluding input values, hidden content, scripts,
+subframes, raw attributes, cookies, network traffic and arbitrary JavaScript.
+Known credential variants, URLs and verification-code-like text are redacted.
+Redaction is defense in depth; it is not a secrecy guarantee against a website
+that deliberately transforms credentials it has already received.
+
+Verification challenges expire after five minutes and are consumed before the
+submission attempt, including ambiguous failures. They bind to the current browser
+session and document. Human control lasts ten minutes and remains a model-access
+fence until explicit handback (an expired panel may finish or be renewed). Both
+HTTP routes require full owner authority, tools:use and agents:write, reject Connect
+grants, enforce web CSRF, and bound input without logging bodies. Cross-origin
+identity providers remain unsupported. No live account password is required for
+testing. See [design and agent-browser comparison](design/vault-browser-continuation.md).
 
 ## Validation and rollout
 
@@ -61,4 +81,4 @@ Swift tests cover secure form contracts and metadata-only receipts.
 Deploy egress first, managed second, and account last. Ship the Apple app update
 for native cards. Older clients do not gain the form from a Worker-only rollout.
 The tools are unavailable in an already-running conversation until its tool catalog
-is refreshed. Production login has not been exercised by the fixture tests.
+is refreshed. Fixture tests use fake credentials; production account authentication must still be verified from live account-page evidence.

@@ -1,7 +1,7 @@
 import { jsonSchema, tool } from "ai";
 import type { BrowserRuntime } from "agents/browser/ai";
 import { describe, expect, it, vi } from "vitest";
-import { PrivateBrowserCdp } from "../src/browser-vault";
+import { BROWSER_VAULT_OTP_FUNCTION, PrivateBrowserCdp } from "../src/browser-vault";
 
 import {
   adaptAiSdkTools,
@@ -359,7 +359,7 @@ describe("Vault browser isolation", () => {
     const send = vi.fn(async (method: string) => {
       if (method === "Target.getTargetInfo") return { targetInfo: { type: "page", url: "https://login.example/next" } };
       if (method === "Target.attachToTarget") return { sessionId: "attached" };
-      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "top", loaderId: crypto.randomUUID(), url: "https://login.example/next" } } };
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "top", loaderId: "next-document", url: "https://login.example/next" } } };
       if (method === "Page.createIsolatedWorld") return { executionContextId: 7 };
       return { result: { value: formResult } };
     });
@@ -383,12 +383,176 @@ describe("Vault browser isolation", () => {
       runtime = await create();
       await expect(call("browser_execute", { code: "await cdp.send({method:'Target.getTargets'})" })).rejects.toThrow("isolated");
       await expect(call("browser_vault_fill", { ...reference, target_id: "other", password_selector: "#pass", submit: true })).rejects.toThrow("isolated");
-      formResult = [false, true];
+      formResult = { status: "password_form", flags: [false, true, false] };
       expect(await call("browser_vault_status", reference)).toEqual({ status: "password_form", password_selector: 'input[type="password"]' });
       expect(ordinary).not.toHaveBeenCalled();
       expect(await call("browser_vault_close", {})).toEqual({ status: "closed" });
       expect(close).toHaveBeenCalledOnce();
       expect(await call("browser_execute", { code: "1" })).toEqual({ page: "fixture" });
     } finally { connect.mockRestore(); }
+  });
+});
+
+describe("private browser verification lifecycle", () => {
+  const identity = { vault_id: "a".repeat(22), expected_origin: "https://login.example", target_id: "tab1" };
+  const context = { callId: "vault", sessionId: "root", parentCallId: "root", model: "test", signal: new AbortController().signal };
+  const challengeKey = "browser-vault-challenge:cloudflare:agent-vault";
+  const quarantineKey = "browser-vault-quarantine:cloudflare:agent-vault";
+  async function fixture() {
+    const stored = new Map<string, unknown>();
+    const state = { session: "browser-1", loader: "loader-1", origin: identity.expected_origin, ambiguous: false, otp: true };
+    const resolve = vi.fn(async () => ({ username: "fresh-account-user", password: "fresh-account-password" }));
+    const injection = vi.fn(async () => {
+      expect(stored.has(challengeKey)).toBe(false);
+      if (state.ambiguous) throw new Error("socket closed after submission");
+      return { result: { value: true } };
+    });
+    const send = vi.fn(async (method: string, params: Record<string, any> = {}) => {
+      if (method === "Target.getTargetInfo") {
+        expect(params.targetId).toBe(identity.target_id);
+        return { targetInfo: { type: "page", url: state.origin + "/verify" } };
+      }
+      if (method === "Target.attachToTarget") return { sessionId: "attached" };
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "top", loaderId: state.loader, url: state.origin + "/verify" } } };
+      if (method === "Page.createIsolatedWorld") return { executionContextId: 7 };
+      if (params.functionDeclaration === BROWSER_VAULT_OTP_FUNCTION) return injection();
+      const status = { status: state.otp ? "otp_form" : "unknown", flags: [false, false, state.otp] };
+      if (params.arguments?.[1]?.value === "snapshot") return { result: { value: { ...status,
+        snapshot_id: params.arguments[2].value, title: "Account", text: "fresh-account-user fresh-account-password", elements: [] } } };
+      return { result: { value: status } };
+    });
+    const connect = vi.spyOn(PrivateBrowserCdp, "connect").mockResolvedValue({ send, close() {} } as unknown as PrivateBrowserCdp);
+    const create = () => createManagedBrowserRuntime({
+      ctx: { storage: { get: async (key: string) => stored.get(key), put: async (key: string, value: unknown) => { stored.set(key, structuredClone(value)); }, delete: async (key: string) => stored.delete(key) } } as unknown as DurableObjectState,
+      env: { BROWSER: { fetch: vi.fn() }, LOADER: {} as WorkerLoader }, sessionId: "agent-vault",
+      resolveVaultLogin: resolve, authorizeVaultAccess: () => {},
+      createRuntime: () => ({ connector: { sessionInfo: async () => ({ sessionId: state.session }), closeSession: async () => {} },
+        tools: { browser_execute: tool({ inputSchema: jsonSchema({ type: "object" }), execute: async () => ({ page: "ordinary" }) }) }, runtime: {} }) as unknown as BrowserRuntime,
+    });
+    const runtime = await create();
+    const call = (name: string, input: unknown = identity, current = runtime) => current.tools.find(t => t.name === name)!.handler(input, context);
+    const request = async () => await call("browser_vault_request_challenge") as { challenge_id: string; expires_at: number };
+    return { runtime, create, call, request, connect, stored, state, resolve, injection, send };
+  }
+  it.each(["1234", "1234567890"])("accepts %s through direct intake and keeps quarantine", async code => {
+    const f = await fixture();
+    try {
+      const challenge = await f.request();
+      expect(challenge).toMatchObject({ type: "browser_vault_challenge", status: "input_required", agent_id: "agent-vault", origin: identity.expected_origin });
+      expect(challenge.expires_at - Date.now()).toBeGreaterThan(290_000);
+      expect(f.runtime.tools.some(t => t.name.includes("submit"))).toBe(false);
+      await expect(f.runtime.submitVaultChallenge({ challenge_id: challenge.challenge_id, code }, context.signal)).resolves.toEqual({ type: "browser_vault_challenge_receipt", status: "submitted", challenge_id: challenge.challenge_id });
+      expect(f.injection).toHaveBeenCalledOnce();
+      const injected = f.send.mock.calls.find(([, params]) => params?.functionDeclaration === BROWSER_VAULT_OTP_FUNCTION);
+      expect(injected?.[1]?.arguments.map((arg: { value: unknown }) => arg.value)).toEqual([identity.expected_origin, expect.any(String), code, true]);
+      expect(f.stored.has(quarantineKey)).toBe(true);
+      await expect(f.call("browser_execute", { code: "1" })).rejects.toThrow("isolated");
+      await expect(f.runtime.submitVaultChallenge({ challenge_id: challenge.challenge_id, code }, context.signal)).rejects.toThrow("unavailable");
+      expect(JSON.stringify([...f.stored.values()])).not.toContain(code);
+    } finally { f.connect.mockRestore(); }
+  });
+  it.each(["123", "12345678901", "123a", " 1234", "１２３４", 1234])("rejects invalid code %s without consuming the challenge", async code => {
+    const f = await fixture();
+    try {
+      const challenge = await f.request();
+      await expect(f.runtime.submitVaultChallenge({ challenge_id: challenge.challenge_id, code }, context.signal)).rejects.toThrow("Invalid");
+      expect(f.stored.has(challengeKey)).toBe(true);
+      expect(f.injection).not.toHaveBeenCalled();
+    } finally { f.connect.mockRestore(); }
+  });
+  it.each(["session", "loader", "origin", "target"])("rejects changed %s binding before injection", async binding => {
+    const f = await fixture();
+    try {
+      const challenge = await f.request();
+      if (binding === "session") f.state.session = "browser-2";
+      if (binding === "loader") f.state.loader = "loader-2";
+      if (binding === "origin") f.state.origin = "https://other.example";
+      if (binding === "target") f.stored.set(quarantineKey, { ...f.stored.get(quarantineKey) as object, targetId: "other-tab" });
+      await expect(f.runtime.submitVaultChallenge({ challenge_id: challenge.challenge_id, code: "123456" }, context.signal)).rejects.toThrow();
+      expect(f.injection).not.toHaveBeenCalled();
+      if (binding !== "session") expect(f.stored.has(quarantineKey)).toBe(true);
+    } finally { f.connect.mockRestore(); }
+  });
+  it("expires challenges and consumes an ambiguous submission before replay", async () => {
+    const f = await fixture();
+    try {
+      const expired = await f.request();
+      f.stored.set(challengeKey, { ...f.stored.get(challengeKey) as object, expiresAt: Date.now() - 1 });
+      await expect(f.runtime.submitVaultChallenge({ challenge_id: expired.challenge_id, code: "123456" }, context.signal)).rejects.toThrow("expired");
+      expect(f.injection).not.toHaveBeenCalled();
+      const challenge = await f.request();
+      f.state.ambiguous = true;
+      await expect(f.runtime.submitVaultChallenge({ challenge_id: challenge.challenge_id, code: "123456" }, context.signal)).rejects.toThrow("could not be confirmed");
+      expect(f.stored.has(challengeKey)).toBe(false);
+      await expect(f.runtime.submitVaultChallenge({ challenge_id: challenge.challenge_id, code: "123456" }, context.signal)).rejects.toThrow("unavailable");
+      expect(f.injection).toHaveBeenCalledOnce();
+      expect(f.stored.has(quarantineKey)).toBe(true);
+      await expect(f.call("browser_execute", { code: "1" })).rejects.toThrow("isolated");
+    } finally { f.connect.mockRestore(); }
+  });
+  it("rehydrates metadata without secrets and resolves fresh snapshot redaction credentials", async () => {
+    const f = await fixture();
+    try {
+      const challenge = await f.request();
+      const serialized = JSON.stringify([...f.stored.values()]);
+      expect(serialized).not.toContain("fresh-account");
+      expect(serialized).not.toContain('"code"');
+      const recreated = await f.create();
+      await expect(recreated.submitVaultChallenge({ challenge_id: challenge.challenge_id, code: "123456" }, context.signal)).resolves.toMatchObject({ status: "submitted" });
+      f.resolve.mockClear();
+      const snapshot = await f.call("browser_vault_snapshot", identity, recreated);
+      expect(f.resolve).toHaveBeenCalledOnce();
+      expect(JSON.stringify(snapshot)).not.toContain("fresh-account");
+      expect(JSON.stringify(snapshot)).toContain("[redacted]");
+      await expect(f.call("browser_execute", { code: "1" }, recreated)).rejects.toThrow("isolated");
+    } finally { f.connect.mockRestore(); }
+  });
+  it.each(["browser_vault_request_challenge", "browser_vault_snapshot", "browser_vault_action"])("rejects unauthorized resolver access for %s", async name => {
+    const f = await fixture();
+    try {
+      f.resolve.mockRejectedValue(new Error("not authorized"));
+      await expect(f.call(name, name === "browser_vault_action" ? { ...identity, action: "navigate", url: identity.expected_origin + "/account" } : identity)).rejects.toThrow();
+      expect(f.resolve).toHaveBeenCalledOnce();
+      expect(f.connect).not.toHaveBeenCalled();
+      expect(f.stored.size).toBe(0);
+    } finally { f.connect.mockRestore(); }
+  });
+  it("persists exclusive human control across recreation and resumes only private reads on finish", async () => {
+    const f = await fixture();
+    const takeoverKey = "browser-vault-takeover:cloudflare:agent-vault";
+    try {
+      await f.request();
+      const lease = await f.call("browser_vault_request_takeover") as { challenge_id: string };
+      expect(lease).toMatchObject({ type: "browser_vault_takeover", status: "input_required" });
+      expect(f.stored.has(takeoverKey)).toBe(true);
+      expect(f.stored.has(challengeKey)).toBe(false);
+      const blocked = [
+        ["browser_execute", { code: "1" }],
+        ["browser_vault_snapshot", identity],
+        ["browser_vault_action", { ...identity, action: "navigate", url: identity.expected_origin + "/account" }],
+        ["browser_vault_status", identity],
+      ] as const;
+      for (const runtime of [f.runtime, await f.create()]) {
+        f.send.mockClear();
+        f.resolve.mockClear();
+        for (const [name, input] of blocked) await expect(f.call(name, input, runtime)).rejects.toThrow();
+        expect(f.send).not.toHaveBeenCalled();
+        expect(f.resolve).not.toHaveBeenCalled();
+      }
+      const recreated = await f.create();
+      await expect(recreated.submitVaultTakeover({ challenge_id: lease.challenge_id, action: "finish" }, context.signal)).resolves.toEqual({ status: "finished" });
+      expect(f.stored.has(takeoverKey)).toBe(false);
+      expect(f.stored.has(quarantineKey)).toBe(true);
+      await expect(f.call("browser_vault_snapshot", identity, recreated)).resolves.toMatchObject({ title: "Account" });
+      await expect(f.call("browser_execute", { code: "1" }, recreated)).rejects.toThrow("isolated");
+    } finally { f.connect.mockRestore(); }
+  });
+  it("does not offer intake without a supported OTP form", async () => {
+    const f = await fixture();
+    try {
+      f.state.otp = false;
+      await expect(f.request()).rejects.toThrow("No supported");
+      expect(f.stored.has(challengeKey)).toBe(false);
+    } finally { f.connect.mockRestore(); }
   });
 });

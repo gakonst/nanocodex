@@ -734,6 +734,27 @@ final class InboxModel: ObservableObject {
         guard generation == account, connected, !Task.isCancelled else { throw APIError.invalidCredential }
         return receipt
     }
+    func browserTakeover(intake: VaultIntake, action: [String: JSON], account: UUID) async throws -> BrowserTakeoverFrame {
+        guard let client, connected, !isDemo, generation == account else { throw APIError.invalidCredential }
+        let frame = try await client.browserTakeover(intake: intake, action: action)
+        guard generation == account, connected, !Task.isCancelled else { throw APIError.invalidCredential }
+        return frame
+    }
+    func submitBrowserVerification(intake: VaultIntake, code: String, account: UUID) async throws {
+        guard let client, connected, !isDemo, generation == account else { throw APIError.invalidCredential }
+        try await client.submitBrowserVerification(intake: intake, code: code)
+        guard generation == account, connected, !Task.isCancelled else { throw APIError.invalidCredential }
+    }
+    func publishBrowserVerificationReceipt(intake: VaultIntake, agentID: String, account: UUID) {
+        guard generation == account, connected, !isDemo, intake.agentID == agentID,
+              let challenge = intake.challengeID, cards.contains(where: { $0.id == agentID }) else { return }
+        let value: JSON = .object(["type": .string(intake.operation == "browser_takeover" ? "browser_vault_takeover_receipt" : "browser_vault_challenge_receipt"),
+            "status": .string(intake.operation == "browser_takeover" ? "finished" : "submitted"), "challenge_id": .string(challenge)])
+        let predecessor = pending.last(where: { $0.agentID == agentID })?.id ?? (focused?.id == agentID ? focusedTurn : "")
+        let message = PendingMessage(agentID: agentID, input: value.pretty, predecessor: predecessor)
+        pending.append(message); busy.insert(agentID); persist()
+        Task { await submit(message, epoch: account) }
+    }
     func publishVaultReceipt(_ receipt: VaultIntakeReceipt, intake: VaultIntake, agentID: String, account: UUID) {
         guard generation == account, connected, !isDemo, cards.contains(where: { $0.id == agentID }) else { return }
         var value: [String: JSON] = ["type": .string("vault_intake_receipt"), "status": .string("saved"),

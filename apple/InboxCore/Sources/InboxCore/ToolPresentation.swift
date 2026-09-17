@@ -45,7 +45,7 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
         if family.isEmpty { family = name.hasPrefix("user_") ? "machine_action" : name }
         if family.hasPrefix("mcp__") { family = family.components(separatedBy: "__").dropFirst(2).joined(separator: "_") }
         if family.hasPrefix("functions.") { family = String(family.dropFirst(10)) }
-        vaultIntakeEligible = family == "request_vault_intake"
+        vaultIntakeEligible = family == "request_vault_intake" || family == "browser_vault_request_challenge" || family == "browser_vault_request_takeover"
         terminalCommand = ["exec_command", "write_stdin"].contains(family)
         generatedIncludesText = ["exec", "wait"].contains(family)
         generatedIsInspection = ToolOutputVisibility.isInspection(name: family, arguments: arguments.string.isEmpty ? arguments.pretty : arguments.string)

@@ -861,6 +861,61 @@ const json = (body: unknown, init: ResponseInit = {}) => Response.json(body, {
   headers: { "cache-control": "no-store", ...init.headers },
 });
 
+// Direct-client secret input: bounded in bytes before parsing; never enter events or logs.
+async function readPrivateBrowserChallenge(request: Request, takeover = false): Promise<Record<string, unknown> | Response> {
+  if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+    return json({ error: "invalid_request" }, { status: 400 });
+  }
+  const reader = request.body?.getReader();
+  if (!reader) return json({ error: "invalid_request" }, { status: 400 });
+  try {
+    const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
+    let size = 0;
+    let text = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 2048) {
+        void reader.cancel().catch(() => {});
+        return json({ error: "request_too_large" }, { status: 413 });
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    const value: unknown = JSON.parse(text);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
+    const fields = value as Record<string, unknown>;
+    if (takeover) {
+      if (typeof fields.challenge_id !== "string" || !/^[A-Za-z0-9_-]{1,256}$/.test(fields.challenge_id)
+        || typeof fields.action !== "string") throw new Error();
+      const keys: Record<string, readonly string[]> = {
+        observe: [], click: ["x", "y"], type: ["text"], key: ["key"], scroll: ["delta_y"], finish: [],
+      };
+      const extra = Object.hasOwn(keys, fields.action) ? keys[fields.action] : undefined;
+      if (!extra || Object.keys(fields).length !== extra.length + 2
+        || extra.some(key => !Object.hasOwn(fields, key))
+        || Object.keys(fields).some(key => !["challenge_id", "action", ...extra].includes(key))) throw new Error();
+      if (fields.action === "click" && (![fields.x, fields.y].every(value => typeof value === "number"
+        && Number.isFinite(value) && value >= 0 && value <= 1))) throw new Error();
+      if (fields.action === "type" && (typeof fields.text !== "string" || fields.text.length < 1 || fields.text.length > 512)) throw new Error();
+      if (fields.action === "key" && !["Enter", "Tab", "Backspace", "Escape"].includes(String(fields.key))) throw new Error();
+      if (fields.action === "scroll" && (typeof fields.delta_y !== "number" || !Number.isFinite(fields.delta_y)
+        || Math.abs(fields.delta_y) > 2000)) throw new Error();
+      return fields;
+    }
+    if (Object.keys(fields).length !== 2
+      || typeof fields.challenge_id !== "string" || !/^[A-Za-z0-9_-]{1,256}$/.test(fields.challenge_id)
+      || typeof fields.code !== "string" || fields.code.length < 1 || fields.code.length > 128
+      || /[\u0000-\u001f\u007f]/.test(fields.code)) throw new Error();
+    return { challenge_id: fields.challenge_id, code: fields.code };
+  } catch {
+    return json({ error: "invalid_request" }, { status: 400 });
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 function forwardedPrincipal(headers: Headers): Readonly<{
   ownerId: string;
   organizationId: string;
@@ -2179,6 +2234,21 @@ async function managedFetchRoute(
         signal: request.signal,
       });
     }
+    if (resource === "browser-vault/challenge" || resource === "browser-vault/takeover") {
+      if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405 });
+      if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
+      if (principal.kind === "connect_grant" || principal.connectGrant
+        || !principal.capabilities.includes("agents:write")
+        || !principal.capabilities.includes("tools:use")) return json({ error: "forbidden" }, { status: 403 });
+      const originFailure = requireSameOriginMutation(request, url, principal);
+      if (originFailure) return originFailure;
+      const payload = await readPrivateBrowserChallenge(request, resource === "browser-vault/takeover");
+      if (payload instanceof Response) return payload;
+      return stub.fetch(`https://session.internal/${resource}`, {
+        method: "POST", headers: sessionHeaders,
+        body: JSON.stringify(payload), signal: request.signal,
+      });
+    }
     if (resource === "durability") {
       if (request.method !== "POST") {
         return json({ error: "method_not_allowed" }, { status: 405 });
@@ -3478,6 +3548,30 @@ export class DurableAgentSession extends DurableComputerSession {
         status: 409,
         headers: { "cache-control": "no-store", "retry-after": "1" },
       });
+    }
+    if (url.pathname === "/browser-vault/challenge" || url.pathname === "/browser-vault/takeover") {
+      if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405 });
+      if (!ownerAssertion || !this.#hasFullAccountAuthority(turnAuthorization)
+        || !turnAuthorization.capabilities.includes("agents:write")
+        || !turnAuthorization.capabilities.includes("tools:use")) return json({ error: "forbidden" }, { status: 403 });
+      if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
+      const session = this.#session();
+      if (this.#deleting || this.#deleted || this.#durabilityExported
+        || session?.runtime_profile !== "managed") return json({ error: "agent_unavailable" }, { status: 409 });
+      const takeover = url.pathname === "/browser-vault/takeover";
+      const payload = await readPrivateBrowserChallenge(request, takeover);
+      if (payload instanceof Response) return payload;
+      // Restore the runtime for a durable, bound challenge after eviction.
+      // This authority is the authenticated direct request, never a forged model turn.
+      try {
+        const runtime = await this.#managedBrowserRuntime(session);
+        return json(takeover
+          ? await runtime.submitVaultTakeover(payload, request.signal)
+          : await runtime.submitVaultChallenge(payload, request.signal));
+      } catch {
+        // Provider/parser failures may contain the private input; never reflect them.
+        return json({ error: "challenge_unavailable" }, { status: 409 });
+      }
     }
     if (url.pathname.startsWith("/attachments/")) {
       const session = this.#session();
@@ -7557,7 +7651,7 @@ export class DurableAgentSession extends DurableComputerSession {
             "Hands appear as logical top-level paths returned by mount or listed in environment().hands. exec_command defaults to /brain; omit workdir or use /brain for Just Bash. For native execution, select the hand whose name and advertised capabilities match the user's project, and set workdir to its exact path or a path beneath it. The mount already maps to that workspace: if /laptop maps to /Users/me/repo, use /laptop for the project root or /laptop/src for its src directory; do not append the host's absolute workspace path. The root of that cwd selects where the process runs. write_stdin remains pinned to the hand that created its session. There is no host argument.",
             "A Code Mode cell captures its mount mapping. Commands in Promise.all may run concurrently on different cwd roots, and subagents use the same cwd rule independently. A disconnect or reconnect never retargets an admitted command or session.",
             "Cloudflare sandbox hands are separate retained workspaces mounted into each other's native filesystem namespaces. A process may write its executing hand through /workspace or that hand's logical mount path, read peer hand paths without mutating them, and read or write /brain using ordinary filesystem syscalls. The trees are mounted, never copied or synchronized. Connected user hands and future providers remain placement-only until their provider advertises a conforming native namespace adapter, so native_cross_mounts remains false globally while runtimeInfo.cloudflare_native_cross_mounts is true.",
-            "The browser_execute tool is the managed remote browser. Reuse its retained session when continuity matters. Never inspect, return, or persist cookies, authorization material, CDP connection URLs, provider URLs, or Live View URLs. For an explicitly requested Vault login, use browser_vault_status to discover supported fields and browser_vault_fill with the named item and its exact approved HTTPS origin. Submission is not proof of successful sign-in. Credential sessions block ordinary browser inspection; use private status/continuation or browser_vault_close to discard the session. If the existing item needs website approval, request_vault_intake with operation authorize_origin lets the user approve it without reentering the password. Never pass passwords into browser_execute. If MFA, CAPTCHA, or another human-only gate appears, stop and ask the user to complete it directly; do not bypass the gate.",
+            "The browser_execute tool is the managed remote browser. Reuse its retained session when continuity matters. Never inspect, return, or persist cookies, authorization material, CDP connection URLs, provider URLs, or Live View URLs. For an explicitly requested Vault login, use browser_vault_status to discover supported fields and browser_vault_fill with the named item and its exact approved HTTPS origin. Submission is not proof of successful sign-in. Credential sessions block all arbitrary CDP and ordinary browser inspection after secrets enter the session. Use browser_vault_snapshot for redacted private snapshots and browser_vault_action for constrained private actions, or browser_vault_close to discard the session. Use browser_vault_request_challenge to show the authenticated private code form; codes go directly from that form to the bound challenge and must never enter chat, tool arguments, logs, or files. If the existing item needs website approval, request_vault_intake with operation authorize_origin lets the user approve it without reentering the password. Never pass passwords into browser_execute. For an OTP challenge, use the private challenge form. If CAPTCHA or another unsupported human-only gate appears, use browser_vault_request_takeover for the user to operate the private browser directly. Takeover images and typed input stay in the authenticated client and must never enter chat, tool results, or logs. Wait for the user to finish before resuming private snapshots; do not bypass the gate.",
             "Connected services expose first-party deferred tools alongside MCPs in tool_search. Search by service and operation (for example Spotify playlists); environment().accounts lists the tool names for connected services. Use the discovered service_request tool for authenticated JSON reads and writes, selecting the exact accounts[service].connections id when multiple accounts exist. Provider scopes and live grants still apply. Never automatically retry a write after an ambiguous failure.",
             "For ordinary account operations, environment is not a prerequisite to an explicit gh, git, curl, or other shell command. Those commands use transparent authenticated egress when the current grant permits it. environment is a tool, not a shell command.",
             "For a Nanocodex iPhone self-update requested from the phone, prefer the repository's apple/scripts/request-self-update.sh helper from a Cloudflare sandbox Hand. It dispatches the supported signed macOS Xcode delivery workflow, waits for the exact run, and writes its provider receipt to durable /brain/ios-deployments. Do not attempt to install Xcode in Linux or request Apple signing credentials; signing stays in GitHub Actions and Apple TestFlight performs supported distribution.",
