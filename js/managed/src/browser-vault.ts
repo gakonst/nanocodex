@@ -218,18 +218,23 @@ export const BROWSER_VAULT_CONTINUATION_FUNCTION = `function(origin, mode, snaps
   }
   if (mode === 'click') {
     const snapshot = globalThis.__nanocodexVaultSnapshot;
-    if (!snapshot || snapshot.id !== snapshotId || snapshot.href !== location.href) return false;
+    if (!snapshot) return 'snapshot_missing';
+    if (snapshot.id !== snapshotId) return 'stale_ref';
+    if (snapshot.href !== location.href) return 'document_changed';
     const entry = snapshot.nodes.get(ref), el = entry && entry.el;
     delete globalThis.__nanocodexVaultSnapshot;
-    if (challenge || !el || !visible(el) || el.disabled || el.outerHTML !== entry.html
-      || (entry.form && (el.form !== entry.form || entry.form.outerHTML !== entry.formHtml))) return false;
+    if (challenge) return 'challenge_detected';
+    if (!el) return 'stale_ref';
+    if (!visible(el) || el.disabled) return 'element_not_visible';
+    if (el.outerHTML !== entry.html
+      || (entry.form && (el.form !== entry.form || entry.form.outerHTML !== entry.formHtml))) return 'changed_element';
     el.scrollIntoView({block:"center", inline:"center", behavior:"instant"});
     const rect = el.getBoundingClientRect();
-    if (rect.left < 0 || rect.top < 0 || rect.right > innerWidth || rect.bottom > innerHeight
-      || !el.contains(document.elementFromPoint(rect.left + rect.width/2, rect.top + rect.height/2))) return false;
+    if (rect.left < 0 || rect.top < 0 || rect.right > innerWidth || rect.bottom > innerHeight) return 'outside_viewport';
+    if (!el.contains(document.elementFromPoint(rect.left + rect.width/2, rect.top + rect.height/2))) return 'occluded';
     if (el instanceof HTMLAnchorElement && (!el.target || el.target === '_self') && !el.hasAttribute('download')) {
       const destination = safeUrl(el.href);
-      if (!destination) return false;
+      if (!destination) return 'unsafe_destination';
       location.assign(destination); return true;
     }
     if ((el instanceof HTMLButtonElement || el instanceof HTMLInputElement) && el.type === 'submit' && !el.name && safeForm(el.form)
@@ -237,7 +242,7 @@ export const BROWSER_VAULT_CONTINUATION_FUNCTION = `function(origin, mode, snaps
       // Deliberately bypass page listeners; no arbitrary click event or SPA execution.
       HTMLFormElement.prototype.submit.call(el.form); return true;
     }
-    return false;
+    return 'unsupported_element';
   }
   if (mode !== 'snapshot') return null;
   const readable = root => {
@@ -391,6 +396,17 @@ export async function snapshotBrowserVault(cdp: Pick<PrivateBrowserCdp, "send">,
   } catch { throw new Error("Private page snapshot is unavailable"); }
 }
 
+// Only these fixed host-owned categories may cross the private diagnostic boundary.
+const CLICK_FAILURES = ["snapshot_missing", "stale_ref", "document_changed", "challenge_detected",
+  "element_not_visible", "changed_element", "outside_viewport", "occluded", "unsafe_destination", "unsupported_element"] as const;
+type BrowserVaultClickFailure = typeof CLICK_FAILURES[number];
+export class BrowserVaultActionRejected extends Error {
+  constructor(reason: BrowserVaultClickFailure) {
+    super(`Private browser action could not be completed safely (${reason})`);
+    this.name = "BrowserVaultActionRejected";
+  }
+}
+
 export type BrowserVaultAction = { action: "click"; snapshot_id: string; ref: string } | { action: "navigate"; url: string };
 export async function actBrowserVault(cdp: Pick<PrivateBrowserCdp, "send">, request: BrowserVaultIdentity, action: BrowserVaultAction): Promise<{ status: "navigation_requested" | "action_requested" }> {
   try {
@@ -401,9 +417,14 @@ export async function actBrowserVault(cdp: Pick<PrivateBrowserCdp, "send">, requ
       return { status: "navigation_requested" };
     }
     if (action.action !== "click" || !/^[0-9a-f-]{36}$/.test(action.snapshot_id) || !/^e(?:[1-9][0-9]?|1[0-9]{2}|200)$/.test(action.ref)) throw new Error();
-    if (await continuation(cdp, request, "click", action.snapshot_id, action.ref) !== true) throw new Error();
+    const result = await continuation(cdp, request, "click", action.snapshot_id, action.ref);
+    if (typeof result === "string" && CLICK_FAILURES.includes(result as BrowserVaultClickFailure)) throw new BrowserVaultActionRejected(result as BrowserVaultClickFailure);
+    if (result !== true) throw new Error();
     return { status: "action_requested" };
-  } catch { throw new Error("Private browser action could not be completed safely"); }
+  } catch (error) {
+    if (error instanceof BrowserVaultActionRejected) throw error;
+    throw new Error("Private browser action could not be completed safely");
+  }
 }
 
 export const BROWSER_VAULT_OTP_FUNCTION = `function(origin, selector, code, submit) {

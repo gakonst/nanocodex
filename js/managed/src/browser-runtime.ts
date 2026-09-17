@@ -15,7 +15,7 @@ import { privateVaultTakeover, type BrowserVaultTakeoverAction } from "./browser
 
 import {
   fillBrowserVault, inspectBrowserVault, parseBrowserVaultRequest, PrivateBrowserCdp,
-  snapshotBrowserVault, actBrowserVault, captureBrowserVaultBinding, captureBrowserVaultDocumentBinding, fillBrowserVaultOtp,
+  snapshotBrowserVault, actBrowserVault, BrowserVaultActionRejected, captureBrowserVaultBinding, captureBrowserVaultDocumentBinding, fillBrowserVaultOtp,
   type BrowserVaultIdentity, type BrowserVaultAction,
   type BrowserVaultResolver, type BrowserVaultQuarantine,
 } from "./browser-vault";
@@ -576,7 +576,10 @@ export async function createManagedBrowserRuntime(
           || !["navigate", "click"].includes(String(value.action))) throw new Error("Invalid private browser action");
         const action = value.action === "navigate" ? { action: "navigate", url: value.url } : { action: "click", snapshot_id: value.snapshot_id, ref: value.ref };
         try { return await withPrivate(identity, context, (cdp) => actBrowserVault(cdp, identity, action as BrowserVaultAction)); }
-        catch { throw new Error("Private browser action is unavailable"); }
+        catch (error) {
+          if (error instanceof BrowserVaultActionRejected) throw error;
+          throw new Error("Private browser action is unavailable");
+        }
       }),
     });
     tools.push({ name: "browser_vault_request_challenge",
