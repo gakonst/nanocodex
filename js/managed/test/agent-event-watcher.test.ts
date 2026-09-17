@@ -123,6 +123,43 @@ describe("managed agent event watcher", () => {
   });
 });
 
+it("keeps compaction retries visible to hosted clients without retaining provider errors", () => {
+  let deliver!: (event: AgentEvent, bytes?: number, encoded?: string, agentId?: number) => void;
+  const replayed: Array<{ event: AgentEvent; agentId: number | undefined }> = [];
+  const observed: AgentEvent[] = [];
+  watchManagedAgentFamilyEvents({ events: { watch: () => ({
+    onEvent(listener: (event: AgentEvent) => void) { deliver = listener; return () => {}; },
+    off() {}, async *[Symbol.asyncIterator]() {},
+  }) } }, {
+    replay: (event, agentId) => replayed.push({ event, agentId }),
+    observe: event => observed.push(event),
+  });
+  const started = agentEvent("root", 1, "model.compaction.started");
+  const retry = { ...agentEvent("root", 2, "model.attempt.retrying"), payload: {
+    phase: "compaction", attempt: 1, next_attempt: 2, max_attempts: 5,
+    delay_ns: 200000000, opens_new_socket: true,
+    error: "provider-private-detail", unknown: "provider-private-detail",
+  } };
+  const reconnect = { ...agentEvent("root", 3, "model.connection.started"), payload: {
+    purpose: "reconnect", connection_generation: 2, websocket_url: "provider-private-detail",
+  } };
+  const connected = { ...agentEvent("root", 4, "model.connection.completed"), payload: {
+    connection_generation: 2, request_id: "provider-private-detail",
+  } };
+  deliver(started, undefined, undefined, 7);
+  deliver(retry, undefined, undefined, 7);
+  deliver(reconnect, undefined, undefined, 7);
+  deliver(connected, undefined, undefined, 7);
+  expect(replayed.map(({ event }) => event.type)).toEqual([
+    "model.compaction.started", "model.attempt.retrying", "model.connection.started", "model.connection.completed",
+  ]);
+  expect(replayed.every(({ agentId }) => agentId === 7)).toBe(true);
+  expect(replayed[1].event.payload).toMatchObject({ delay_ns: 200000000, error: expect.any(String) });
+  expect(replayed[2].event.payload).toMatchObject({ purpose: "reconnect" });
+  expect(JSON.stringify(replayed)).not.toContain("provider-private-detail");
+  expect(observed).toEqual([retry, reconnect, connected]);
+});
+
 function agentEvent(requestId: string, seq: number, type: string): AgentEvent {
   return {
     protocol_version: 1,
