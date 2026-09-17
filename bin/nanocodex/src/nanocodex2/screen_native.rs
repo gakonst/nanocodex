@@ -70,6 +70,7 @@ impl NativeScreen {
                 backend,
                 Some(native_video()),
                 super::screen_audio::native_source(),
+                super::observation_providers::Registry::local(),
             )
             .await?;
             Ok(Self {
@@ -138,6 +139,7 @@ impl NativeScreen {
                         backend,
                         Some(native_video(video_runtime)),
                         super::screen_audio::native_source(),
+                        super::observation_providers::Registry::local(),
                     )
                     .await?,
                 );

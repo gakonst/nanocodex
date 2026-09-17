@@ -413,7 +413,15 @@ impl VmHand {
             .await
             .ok()
             .map(|_| video);
-        let publisher = ScreenPublisher::start(target, &self.machine, backend, video, None).await?;
+        let publisher = ScreenPublisher::start(
+            target,
+            &self.machine,
+            backend,
+            video,
+            None,
+            super::observation_providers::Registry::remote(),
+        )
+        .await?;
         self.desktop.as_mut().expect("desktop started").publisher = Some(publisher);
         tracing::info!(target: "nanocodex2", stage = "vm.screen.ready", "Rust VM screen is published");
         Ok(())

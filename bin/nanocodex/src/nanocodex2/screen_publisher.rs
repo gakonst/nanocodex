@@ -1,4 +1,5 @@
 //! Rust Hand screen publication. Credentials and signaling remain on the host.
+use super::observation_providers::{Context, Registry};
 use super::screen_video::{Video, VideoSource, ice_servers};
 use futures_util::{SinkExt, StreamExt, future::BoxFuture};
 use nanocodex_managed::ManagedError;
@@ -37,6 +38,7 @@ impl ScreenPublisher {
         backend: ScreenBackend,
         video: Option<VideoSource>,
         audio: Option<VideoSource>,
+        providers: Registry,
     ) -> Result<Self, ManagedError> {
         // Explicit deployment fallback for networks where ICE cannot connect
         // (for example, nested NAT without an authenticated TURN relay).
@@ -72,7 +74,7 @@ impl ScreenPublisher {
                 let result = tokio::select! {
                     _ = &mut stopped => break,
                     changed = targets.changed() => { if changed.is_err() { break; } continue; },
-                    result = session(&target, &machine, &backend, video.as_ref(), audio.as_ref(), dimensions, &mut ready) => result,
+                    result = session(&target, &machine, &backend, video.as_ref(), audio.as_ref(), dimensions, &mut ready, &providers) => result,
                 };
                 let _ = tokio::time::timeout(
                     Duration::from_secs(3),
@@ -312,6 +314,7 @@ async fn session(
     audio: Option<&VideoSource>,
     dimensions: (u64, u64),
     ready: &mut Option<oneshot::Sender<()>>,
+    providers: &Registry,
 ) -> Result<(), SessionError> {
     let started = Instant::now();
     let base = endpoint(target).map_err(|_| SessionError::Closed)?;
@@ -526,14 +529,20 @@ async fn session(
                         if let Some(status)=status{send(&mut socket,json!({"type":"agent_result","request_id":id,"status":status})).await?;continue;}
                         if action["action"]=="release" {if lease.owner==owner{release(&mut lease,backend,&mut socket).await?;}send(&mut socket,json!({"type":"agent_result","request_id":id,"status":"ok"})).await?;continue;}
                         let steps=match steps(action){Ok(steps)=>steps,Err(())=>{send(&mut socket,json!({"type":"agent_result","request_id":id,"status":"invalid"})).await?;continue;}};
+                        if action.get("context").is_some() && action["action"] != "observe" {send(&mut socket,json!({"type":"agent_result","request_id":id,"status":"invalid"})).await?;continue;}
+                        let context = match Context::parse(action.get("context")) {
+                            Ok(context) => context,
+                            Err(()) => {send(&mut socket,json!({"type":"agent_result","request_id":id,"status":"invalid"})).await?;continue;}
+                        };
                         if !steps.is_empty(){release(&mut lease,backend,&mut socket).await?;lease.acquire(&owner);}
+                        let providers = providers.clone();
                         let settle = !steps.is_empty();
                         let backend=backend.clone();request_id=id.into();
                         job=Some(OwnedJob(tokio::spawn(async move{
                             tokio::time::timeout(Duration::from_millis(deadline.saturating_sub(now_ms())),async{
                                 for (delay,input) in steps {if !delay.is_zero(){tokio::time::sleep(delay).await;}let result=call(&backend,json!({"action":"input","input":input}),Duration::from_secs(2)).await;if result["status"]!="ok"{return result;}}
                                 if settle { tokio::time::sleep(Duration::from_millis(80)).await; }
-                                call(&backend,json!({"action":"observe"}),Duration::from_secs(4)).await
+                                observe_agent(&backend, &providers, context, deadline).await
                             }).await.unwrap_or_else(|_|json!({"status":"cancelled"}))
                         })));
                     },
@@ -543,6 +552,26 @@ async fn session(
             },
         }
     }
+}
+// Provider deadlines are independent of image capture and finish before the
+// agent envelope expires, preserving a successful screenshot when a provider stalls.
+async fn observe_agent(
+    backend: &ScreenBackend,
+    providers: &Registry,
+    context: Option<Context>,
+    deadline: u64,
+) -> Value {
+    // Anchor the collection request; capture and providers complete independently.
+    let captured_at = now_ms();
+    let budget = Duration::from_millis(deadline.saturating_sub(captured_at).saturating_sub(50));
+    let (mut capture, observation) = tokio::join!(
+        call(backend, json!({"action":"observe"}), Duration::from_secs(4)),
+        providers.collect(context, captured_at, budget)
+    );
+    if capture["status"] == "ok" {
+        capture["observation"] = observation;
+    }
+    capture
 }
 async fn call(backend: &ScreenBackend, input: Value, timeout: Duration) -> Value {
     let started = Instant::now();
@@ -573,7 +602,11 @@ fn valid_frame(value: &Value) -> bool {
 fn checked_result(value: Value) -> Value {
     let status = value["status"].as_str().unwrap_or("unavailable");
     if status == "ok" && valid_frame(&value) {
-        json!({"status":"ok","jpeg":value["jpeg"],"width":value["width"],"height":value["height"]})
+        let mut result = json!({"status":"ok","jpeg":value["jpeg"],"width":value["width"],"height":value["height"]});
+        if let Some(observation) = value.get("observation") {
+            result["observation"] = observation.clone();
+        }
+        result
     } else {
         json!({"status":if ["busy","invalid","unavailable","cancelled"].contains(&status){status}else{"unavailable"}})
     }
@@ -664,6 +697,21 @@ fn steps(action: &Value) -> Result<Vec<(Duration, Value)>, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn stalled_provider_does_not_discard_successful_screenshot() {
+        let backend: ScreenBackend = Arc::new(|_| {
+            Box::pin(async { Ok(json!({"status":"ok","jpeg":"/9j/a","width":1,"height":1})) })
+        });
+        let result = tokio::time::timeout(
+            Duration::from_millis(300),
+            observe_agent(&backend, &Registry::stalled(), None, now_ms() + 100),
+        )
+        .await
+        .unwrap();
+        let result = checked_result(result);
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["observation"]["providers"][0]["status"], "timeout");
+    }
     #[test]
     fn relative_pointer_is_advertised_only_by_supported_native_hosts() {
         let grant = control_grant("lease-generation");
@@ -747,9 +795,10 @@ mod tests {
             );
             socket.close(None).await.unwrap();
         });
-        let publisher = ScreenPublisher::start(&target, &machine, backend, None, None)
-            .await
-            .unwrap();
+        let publisher =
+            ScreenPublisher::start(&target, &machine, backend, None, None, Registry::remote())
+                .await
+                .unwrap();
         peer.await.unwrap();
         publisher.shutdown().await.unwrap();
         assert_eq!(
