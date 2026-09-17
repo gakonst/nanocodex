@@ -15,7 +15,11 @@ use super::context::is_contextual_user_message;
 #[cfg(not(target_family = "wasm"))]
 use crate::session::image_dimensions::dimensions_from_base64;
 
+#[path = "compaction_images.rs"]
+mod images;
+
 const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 64_000;
+const MAX_RETAINED_AGENT_MESSAGE_TOKENS: u64 = 10_000;
 const APPROX_BYTES_PER_TOKEN: usize = 4;
 const RESIZED_IMAGE_BYTES_ESTIMATE: usize = 7_373;
 #[cfg(not(target_family = "wasm"))]
@@ -85,28 +89,50 @@ pub fn trim_tool_outputs_to_fit_context_window(
     let mut estimated_tokens = request_prefix
         .iter()
         .chain(history.iter())
-        .map(estimate_item_tokens)
-        .fold(0_u64, u64::saturating_add);
+        .map(|item| u128::from(estimate_item_tokens(item)))
+        .sum::<u128>();
     let mut rewritten_outputs = Vec::new();
-    for item in history.iter_rev() {
-        if estimated_tokens <= context_window_tokens {
+    let mut consumed = 0;
+    for (item, notice) in history_item_groups(history.iter()).rev() {
+        if estimated_tokens <= u128::from(context_window_tokens) {
             break;
         }
-        let tokens_before = estimate_item_tokens(item);
         let Some(rewritten) = rewritten_tool_output(item) else {
             break;
         };
-        let tokens_after = estimate_item_tokens(&rewritten);
-        estimated_tokens =
-            estimated_tokens.saturating_sub(tokens_before.saturating_sub(tokens_after));
+        let tokens_before = u128::from(estimate_item_tokens(item))
+            + notice.map_or(0, |notice| u128::from(estimate_item_tokens(notice)));
+        estimated_tokens = estimated_tokens
+            .saturating_sub(tokens_before)
+            .saturating_add(u128::from(estimate_item_tokens(&rewritten)));
+        consumed += 1 + usize::from(notice.is_some());
         rewritten_outputs.push(rewritten);
     }
     let rewritten_count = rewritten_outputs.len();
     if rewritten_count > 0 {
         rewritten_outputs.reverse();
-        history.replace_suffix(history.len() - rewritten_count, rewritten_outputs);
+        history.replace_suffix(history.len() - consumed, rewritten_outputs);
     }
     rewritten_count
+}
+
+fn history_item_groups<T: std::borrow::Borrow<ResponseItem>>(
+    items: impl IntoIterator<Item = T>,
+) -> impl DoubleEndedIterator<Item = (T, Option<T>)> {
+    let mut items = items.into_iter().peekable();
+    let mut groups = Vec::new();
+    while let Some(source) = items.next() {
+        let notice = items.next_if(|item| is_image_resize_notice(item.borrow()));
+        groups.push((source, notice));
+    }
+    groups.into_iter()
+}
+
+fn is_image_resize_notice(item: &ResponseItem) -> bool {
+    matches!(item, ResponseItem::Message { role: crate::MessageRole::Developer, content, .. }
+        if matches!(content.as_slice(), [ContentItem::InputText { text }]
+            if text.trim().starts_with("<image_resize_notice>")
+                && text.trim().ends_with("</image_resize_notice>")))
 }
 
 fn rewritten_tool_output(item: &ResponseItem) -> Option<ResponseItem> {
@@ -176,22 +202,51 @@ pub fn install_history(
     initial_context: &[ResponseItem],
     compaction: ResponseItem,
 ) -> Vec<ResponseItem> {
-    let retained = history
-        .iter()
-        .filter(|item| {
+    let retained = history_item_groups(history.iter())
+        .filter(|(item, _)| {
             (item.is_user_message() && !is_contextual_user_message(item))
                 || is_client_developer_message(item)
+                || is_retained_agent_message(item)
         })
+        .flat_map(|(source, notice)| std::iter::once(source).chain(notice))
         .cloned()
         .collect();
     let mut installed = truncate_retained_messages(retained, RETAINED_MESSAGE_TOKEN_BUDGET);
-    let insertion_index = installed.len().saturating_sub(1);
+    // A retained developer message can follow the last user input. Context belongs
+    // before the latest real input, or immediately before the summary if none remains.
+    let insertion_index = installed
+        .iter()
+        .rposition(|item| item.is_user_message() || is_retained_agent_message(item))
+        .unwrap_or(installed.len());
     installed.splice(
         insertion_index..insertion_index,
         initial_context.iter().cloned(),
     );
     installed.push(compaction);
     installed
+}
+
+fn is_retained_agent_message(item: &ResponseItem) -> bool {
+    let ResponseItem::AgentMessage {
+        author,
+        recipient,
+        content,
+        ..
+    } = item
+    else {
+        return false;
+    };
+    let first_text = match content.first() {
+        Some(crate::responses::AgentMessageContent::InputText { text }) => text.as_ref(),
+        _ => "",
+    };
+    let descendant_progress = author
+        .strip_prefix(recipient.as_ref())
+        .is_some_and(|suffix| suffix.starts_with('/'))
+        && first_text.starts_with("Message Type: MESSAGE\n");
+    !descendant_progress
+        && !first_text.starts_with("Message Type: FINAL_ANSWER\n")
+        && estimate_item_tokens(item) <= MAX_RETAINED_AGENT_MESSAGE_TOKENS
 }
 
 fn is_client_developer_message(item: &ResponseItem) -> bool {
@@ -203,31 +258,94 @@ fn is_client_developer_message(item: &ResponseItem) -> bool {
     else {
         return false;
     };
-    !content.iter().any(|content| {
-        let ContentItem::InputText { text } = content else {
-            return false;
-        };
-        let text = text.trim();
-        text.starts_with("<permissions instructions>")
-            && text.ends_with("</permissions instructions>")
-    })
+    !is_image_resize_notice(item)
+        && !content.iter().any(|content| {
+            let ContentItem::InputText { text } = content else {
+                return false;
+            };
+            let text = text.trim();
+            text.starts_with("<permissions instructions>")
+                && text.ends_with("</permissions instructions>")
+        })
 }
 
 fn truncate_retained_messages(items: Vec<ResponseItem>, max_tokens: usize) -> Vec<ResponseItem> {
     let mut remaining = max_tokens;
     let mut retained = Vec::with_capacity(items.len());
-    for item in items.into_iter().rev() {
+    for (item, notice) in history_item_groups(items).rev() {
         if remaining == 0 {
             continue;
         }
-        let tokens = message_text_token_count(&item).max(1);
-        if tokens <= remaining {
+        let notice_tokens = notice
+            .as_ref()
+            .map_or(0, |item| message_text_token_count(item).max(1));
+        let available = remaining.saturating_sub(notice_tokens);
+        let developer = is_client_developer_message(&item);
+        let content_tokens = if developer {
+            message_text_token_count(&item)
+        } else {
+            images::message_content_token_count(&item)
+        };
+        let tokens = if developer {
+            usize::try_from(estimate_item_tokens(&item)).unwrap_or(usize::MAX)
+        } else {
+            content_tokens.max(1)
+        };
+        if tokens.saturating_add(notice_tokens) <= remaining {
+            if let Some(notice) = notice {
+                retained.push(notice);
+            }
             retained.push(item);
-            remaining = remaining.saturating_sub(tokens);
-        } else if let Some(item) = truncate_message_text(item, remaining) {
-            retained.push(item);
+            remaining = remaining
+                .saturating_sub(tokens)
+                .saturating_sub(notice_tokens);
+            continue;
+        }
+        let content_budget = if developer {
+            available.saturating_sub(tokens.saturating_sub(content_tokens))
+        } else {
+            available
+        };
+        let has_images = !developer
+            && matches!(&item, ResponseItem::Message { content, .. }
+            if content.iter().any(|part| matches!(part, ContentItem::InputImage { .. })));
+        // Do not backfill with older history when an oversized image consumes the boundary.
+        if has_images {
             remaining = 0;
         }
+        if available == 0 {
+            continue;
+        }
+        let truncated = if has_images {
+            images::truncate_message(item, content_budget)
+        } else {
+            truncate_message_text(item, content_budget)
+        };
+        let Some(mut item) = truncated else {
+            continue;
+        };
+        if developer {
+            let item_tokens = usize::try_from(estimate_item_tokens(&item)).unwrap_or(usize::MAX);
+            if item_tokens > available {
+                let adjusted = content_budget
+                    .saturating_sub(item_tokens - available)
+                    .saturating_sub(1);
+                let Some(corrected) = truncate_message_text(item, adjusted) else {
+                    continue;
+                };
+                if usize::try_from(estimate_item_tokens(&corrected)).unwrap_or(usize::MAX)
+                    > available
+                {
+                    continue;
+                }
+                item = corrected;
+            }
+        }
+        if let Some(notice) = notice {
+            retained.push(notice);
+        }
+        retained.push(item);
+        remaining = 0;
     }
     retained.reverse();
     retained
@@ -235,7 +353,7 @@ fn truncate_retained_messages(items: Vec<ResponseItem>, max_tokens: usize) -> Ve
 
 fn message_text_token_count(item: &ResponseItem) -> usize {
     let ResponseItem::Message { content, .. } = item else {
-        return 0;
+        return usize::try_from(estimate_item_tokens(item)).unwrap_or(usize::MAX);
     };
     content
         .iter()
@@ -678,3 +796,7 @@ mod tests {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "compaction_parity_tests.rs"]
+mod parity_tests;

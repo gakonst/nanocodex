@@ -80,11 +80,11 @@ impl ResponsesHttp {
         if !status.is_success() {
             let retry_after = retry_after(response.headers());
             let body = response.text().await.unwrap_or_default();
-            return Err(ResponsesError::HttpRejected {
-                status: status.as_u16(),
+            return Err(ResponsesError::http_rejected(
+                status.as_u16(),
                 body,
                 retry_after,
-            });
+            ));
         }
         let metadata = HttpMetadata {
             reasoning_included: response.headers().contains_key("x-reasoning-included"),
@@ -365,11 +365,7 @@ fn map_host_error(error: crate::transport::host::HostError) -> ResponsesError {
             status,
             body,
             retry_after,
-        } => ResponsesError::HttpRejected {
-            status,
-            body,
-            retry_after,
-        },
+        } => ResponsesError::http_rejected(status, body, retry_after),
         HostError::Transport {
             detail,
             reconnectable,

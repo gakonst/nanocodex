@@ -144,7 +144,9 @@ impl ManagedSessionState {
         if state.context.len() != history_len {
             return Err(ManagedSessionStateError::UnsupportedHistoryItem);
         }
-        state.context.replace_invalid_tool_images();
+        if state.context.replace_invalid_tool_images() > 0 {
+            state.history_revision = state.history_revision.saturating_add(1);
+        }
         state.context.commit_tail();
         state.delta_start = state.context.len();
         Ok(state)
@@ -307,7 +309,12 @@ impl ManagedSessionState {
     /// text diagnostic so a later full replay cannot resend poisoned bytes.
     #[doc(hidden)]
     pub fn replace_rejected_images(&mut self) -> usize {
-        self.context.replace_rejected_images()
+        let replaced = self.context.replace_rejected_images();
+        if replaced > 0 {
+            self.reset_for_full_request();
+            self.history_revision = self.history_revision.saturating_add(1);
+        }
+        replaced
     }
 
     /// Removes exact matches from discovery metadata while retaining transcript items.

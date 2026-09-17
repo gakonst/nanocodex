@@ -41,9 +41,72 @@ pub async fn prepare_user_input(input: &PromptInput) -> Vec<ContentItem> {
         .collect()
 }
 
-/// Leaves embedding-prepared tool images unchanged.
+/// Validates every embedded tool image envelope, including raw host tool outputs.
+/// Pixel decoding and normalization remain the embedding producer's responsibility.
 #[allow(
     clippy::unused_async,
     reason = "matches the native output-preparation contract"
 )]
-pub async fn prepare_output_images(_output: &mut ToolOutputBody) {}
+pub async fn prepare_output_images(output: &mut ToolOutputBody) {
+    output.replace_invalid_image_envelopes();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contract::ToolOutputContent;
+
+    #[tokio::test]
+    async fn embedded_preparation_repairs_raw_host_images() {
+        let mut output = ToolOutputBody::Content(vec![
+            ToolOutputContent::InputText { text: "retained".into() },
+            ToolOutputContent::InputImage {
+                image_url: "data:image/png;base64,AAAA\n[output truncated]".into(),
+                detail: nanocodex_oai_api::ImageDetail::Auto,
+            },
+            ToolOutputContent::InputImage {
+                image_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC".into(),
+                detail: nanocodex_oai_api::ImageDetail::Original,
+            },
+        ]);
+        #[cfg(not(target_family = "wasm"))]
+        {
+            use base64::Engine;
+            let ToolOutputBody::Content(items) = &output else {
+                unreachable!()
+            };
+            let ToolOutputContent::InputImage { image_url, .. } = &items[2] else {
+                unreachable!()
+            };
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(image_url.split_once(',').unwrap().1)
+                .unwrap();
+            let decoded = image::load_from_memory(&bytes).expect("valid PNG fixture");
+            assert_eq!((decoded.width(), decoded.height()), (1, 1));
+        }
+        let expected = output.clone();
+        prepare_output_images(&mut output).await;
+        let ToolOutputBody::Content(items) = output else {
+            panic!("expected content")
+        };
+        assert!(matches!(&items[0], ToolOutputContent::InputText { text } if text == "retained"));
+        assert!(
+            matches!(&items[1], ToolOutputContent::InputText { text } if text.contains("malformed"))
+        );
+        let ToolOutputBody::Content(original) = expected else {
+            unreachable!()
+        };
+        assert_eq!(
+            serde_json::to_value(&items[2]).unwrap(),
+            serde_json::to_value(&original[2]).unwrap()
+        );
+        // The real PNG fixture and requested detail survive unchanged.
+        assert!(matches!(
+            &items[2],
+            ToolOutputContent::InputImage {
+                detail: nanocodex_oai_api::ImageDetail::Original,
+                ..
+            }
+        ));
+    }
+}

@@ -1,5 +1,8 @@
 //! Dependency-light contract for caller-defined and runtime-provided tools.
 
+mod image_validation;
+pub use image_validation::valid_tool_image_data_url;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{
@@ -25,6 +28,23 @@ pub enum ToolOutputBody {
 }
 
 impl ToolOutputBody {
+    /// Replaces malformed image envelopes before embedded outputs enter model history.
+    /// This validates MIME and base64 syntax, not image decoding or dimensions.
+    pub fn replace_invalid_image_envelopes(&mut self) {
+        let Self::Content(content) = self else {
+            return;
+        };
+        for item in content {
+            if let ToolOutputContent::InputImage { image_url, .. } = item
+                && !valid_tool_image_data_url(image_url)
+            {
+                *item = ToolOutputContent::InputText {
+                    text: "image content omitted because its data URL was malformed".to_owned(),
+                };
+            }
+        }
+    }
+
     /// Returns the machine-readable value represented by this output.
     #[must_use]
     pub fn structured_result(&self) -> Value {

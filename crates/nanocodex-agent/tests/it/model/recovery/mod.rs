@@ -1,6 +1,7 @@
 use super::*;
 
 mod compaction;
+mod compaction_images;
 mod durable_provider;
 mod failures;
 mod images;

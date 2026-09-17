@@ -101,6 +101,7 @@ impl RunScope {
 struct RunActivity {
     scope: RunScope,
     status: TransientStatus,
+    compacting: bool,
     retry_origin: Option<(u64, u64)>,
 }
 
@@ -247,15 +248,27 @@ impl TranscriptModel {
 
     fn set_run_status(&mut self, record: &TranscriptRecord, status: Option<TransientStatus>) {
         let scope = RunScope::new(record);
+        // Compaction owns its phase until its own terminal, independently of
+        // connection, retry, and generic thinking updates within the same run.
+        // Keeping the phase on RunActivity also gives it the run's cleanup rules.
+        let compacting = match record.kind() {
+            "model.compaction.started" => true,
+            "model.compaction.completed" | "model.compaction.failed" | "run.started" => false,
+            _ => self
+                .run_activity
+                .iter()
+                .any(|activity| activity.scope == scope && activity.compacting),
+        };
         self.run_activity.retain(|activity| activity.scope != scope);
         if !self.is_finished_managed_run(&scope)
-            && let Some(status) = status
+            && let Some(status) = status.or_else(|| compacting.then_some(TransientStatus::Thinking))
         {
             let retry_origin = matches!(status, TransientStatus::Retrying(_))
                 .then(|| (record.sequence(), record.recorded_at_unix_ms()));
             self.run_activity.push_back(RunActivity {
                 scope,
                 status,
+                compacting,
                 retry_origin,
             });
         }
@@ -268,12 +281,20 @@ impl TranscriptModel {
             .run_activity
             .iter()
             .rev()
-            .find(|activity| activity.status != TransientStatus::Thinking)
+            .find(|activity| activity.compacting || activity.status != TransientStatus::Thinking)
             .or_else(|| self.run_activity.back());
         self.transient = activity
-            .map(|activity| activity.status.clone())
+            .map(|activity| {
+                if activity.compacting {
+                    TransientStatus::Compacting
+                } else {
+                    activity.status.clone()
+                }
+            })
             .or_else(|| self.is_active().then_some(TransientStatus::Thinking));
-        self.transient_retry_origin = activity.and_then(|activity| activity.retry_origin);
+        self.transient_retry_origin = activity
+            .filter(|activity| !activity.compacting)
+            .and_then(|activity| activity.retry_origin);
     }
 
     pub(crate) fn is_active(&self) -> bool {
@@ -2497,6 +2518,197 @@ mod tests {
             "started\nfinished\n"
         );
         assert!(!model.has_running_tools());
+    }
+
+    #[test]
+    fn thread_repro_compaction_phase_survives_connection_completion() {
+        use super::TransientStatus;
+        let mut model = TranscriptModel::default();
+        for (seq, kind, payload) in [
+            (1, AgentEventKind::RunStarted, json!({})),
+            (2, AgentEventKind::ModelCompactionStarted, json!({})),
+        ] {
+            model.apply(&agent_record(seq, kind, payload).with_managed_turn_id(Some("repro")));
+        }
+        assert_eq!(model.transient(), Some(&TransientStatus::Compacting));
+        model.apply(
+            &agent_record(
+                3,
+                AgentEventKind::ModelConnectionStarted,
+                json!({"purpose": "initial", "attempt": 1, "connection_generation": 1}),
+            )
+            .with_managed_turn_id(Some("repro")),
+        );
+        model.apply(
+            &agent_record(
+                4,
+                AgentEventKind::ModelConnectionCompleted,
+                json!({"attempt": 1, "connection_generation": 1}),
+            )
+            .with_managed_turn_id(Some("repro")),
+        );
+        assert_eq!(
+            model.transient(),
+            Some(&TransientStatus::Compacting),
+            "connecting must not erase the still-running compaction phase"
+        );
+    }
+
+    #[test]
+    fn compaction_phase_survives_transport_and_clears_on_its_terminal() {
+        use super::TransientStatus;
+        for failed in [false, true] {
+            let mut model = TranscriptModel::default();
+            for (seq, kind, payload) in [
+                (1, AgentEventKind::RunStarted, json!({})),
+                (2, AgentEventKind::ModelCompactionStarted, json!({})),
+                (
+                    3,
+                    AgentEventKind::ModelConnectionStarted,
+                    json!({"purpose": "reconnect"}),
+                ),
+                (
+                    4,
+                    AgentEventKind::ModelConnectionFailed,
+                    json!({"error": "disconnected"}),
+                ),
+                (
+                    5,
+                    AgentEventKind::ModelAttemptRetrying,
+                    json!({"error": "retry", "delay_ns": 10}),
+                ),
+                (
+                    6,
+                    AgentEventKind::ModelConnectionStarted,
+                    json!({"purpose": "reconnect"}),
+                ),
+                (7, AgentEventKind::ModelConnectionCompleted, json!({})),
+            ] {
+                model.apply(&agent_record(seq, kind, payload).with_managed_turn_id(Some("turn")));
+                if seq >= 2 {
+                    assert_eq!(
+                        model.transient(),
+                        Some(&TransientStatus::Compacting),
+                        "seq={seq}"
+                    );
+                    assert_eq!(model.transient_retry_origin(), None);
+                }
+            }
+            model.apply(&agent_record(8,
+                if failed { AgentEventKind::ModelCompactionFailed } else { AgentEventKind::ModelCompactionCompleted },
+                json!({"after_model_call_index": 1, "attempt": 1, "connection_generation": 1, "status": "completed", "duration_ns": 1, "time_to_first_event_ns": 1, "error": "compaction failed"}))
+                .with_managed_turn_id(Some("turn")));
+            assert_eq!(model.transient(), Some(&TransientStatus::Thinking));
+            model.apply(
+                &agent_record(
+                    9,
+                    AgentEventKind::ModelConnectionStarted,
+                    json!({"purpose": "reconnect"}),
+                )
+                .with_managed_turn_id(Some("turn")),
+            );
+            assert_eq!(model.transient(), Some(&TransientStatus::Reconnecting));
+        }
+    }
+
+    #[test]
+    fn compaction_phase_is_cleared_by_run_and_stream_terminals() {
+        use super::TransientStatus;
+        use crate::tui::transcript::LocalEvent;
+        for terminal in ["completed", "failed", "answer", "stopped", "stream"] {
+            let mut model = TranscriptModel::default();
+            for (seq, kind) in [
+                (1, AgentEventKind::RunStarted),
+                (2, AgentEventKind::ModelCompactionStarted),
+            ] {
+                model.apply(&agent_record(seq, kind, json!({})).with_managed_turn_id(Some("turn")));
+            }
+            assert_eq!(model.transient(), Some(&TransientStatus::Compacting));
+            match terminal {
+                "stream" => {
+                    model.agent_stream_closed();
+                }
+                "answer" => {
+                    model.apply(&durable_answer(3, "turn", "done"));
+                }
+                "stopped" => {
+                    model.apply(
+                        &TranscriptRecord::from_local(
+                            3,
+                            30,
+                            LocalEvent::ManagedTurnStopped {
+                                turn_id: "turn".to_owned(),
+                                error: None,
+                            },
+                        )
+                        .unwrap(),
+                    );
+                }
+                _ => {
+                    model.apply(
+                        &agent_record(
+                            3,
+                            if terminal == "completed" {
+                                AgentEventKind::RunCompleted
+                            } else {
+                                AgentEventKind::RunFailed
+                            },
+                            json!({}),
+                        )
+                        .with_managed_turn_id(Some("turn")),
+                    );
+                }
+            }
+            assert_ne!(
+                model.transient(),
+                Some(&TransientStatus::Compacting),
+                "{terminal}"
+            );
+            assert!(!model.is_active(), "{terminal}");
+        }
+    }
+
+    #[test]
+    fn child_compaction_terminal_preserves_root_compaction() {
+        use super::TransientStatus;
+        let mut model = TranscriptModel::default();
+        for child in [None, Some(7)] {
+            for (seq, kind) in [
+                (1, AgentEventKind::RunStarted),
+                (2, AgentEventKind::ModelCompactionStarted),
+            ] {
+                model.apply(
+                    &agent_record(seq, kind, json!({}))
+                        .with_managed_turn_id(Some("turn"))
+                        .with_managed_agent_id(child),
+                );
+            }
+        }
+        model.apply(
+            &agent_record(
+                3,
+                AgentEventKind::ModelCompactionCompleted,
+                json!({"after_model_call_index": 1, "attempt": 1, "connection_generation": 1, "status": "completed", "duration_ns": 1, "time_to_first_event_ns": 1}),
+            )
+            .with_managed_turn_id(Some("turn"))
+            .with_managed_agent_id(Some(7)),
+        );
+        assert_eq!(model.transient(), Some(&TransientStatus::Compacting));
+        model.apply(
+            &agent_record(4, AgentEventKind::RunCompleted, json!({}))
+                .with_managed_turn_id(Some("turn"))
+                .with_managed_agent_id(Some(7)),
+        );
+        assert_eq!(model.transient(), Some(&TransientStatus::Compacting));
+        model.apply(
+            &agent_record(
+                5,
+                AgentEventKind::ModelCompactionCompleted,
+                json!({"after_model_call_index": 1, "attempt": 1, "connection_generation": 1, "status": "completed", "duration_ns": 1, "time_to_first_event_ns": 1}),
+            )
+            .with_managed_turn_id(Some("turn")),
+        );
+        assert_eq!(model.transient(), Some(&TransientStatus::Thinking));
     }
 
     #[test]

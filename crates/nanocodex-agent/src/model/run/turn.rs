@@ -113,6 +113,9 @@ where
         let (item, _usage, server_reasoning_included) = match compacted {
             Ok(compacted) => compacted,
             Err(error) => {
+                if error.requires_image_repair() {
+                    session.conversation.replace_rejected_images();
+                }
                 session.conversation.reset_for_full_request();
                 let checkpoint = Self::checkpoint_from_session(
                     &session,
@@ -330,9 +333,7 @@ where
                     // observed the failed request without returning a usable
                     // continuation.
                     if let Some(session) = &mut self.session {
-                        if error.responses_error().is_some_and(|source| {
-                            matches!(source, ResponsesError::InvalidImageRequest { .. })
-                        }) {
+                        if error.requires_image_repair() {
                             session.conversation.replace_rejected_images();
                         }
                         if let Some(definition) = error

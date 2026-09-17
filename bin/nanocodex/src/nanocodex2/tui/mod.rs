@@ -2805,7 +2805,14 @@ async fn apply_update(
                     }
                     RootEffect::Vault(command) => {
                         match command {
-                            vault::Command::Open => open_link(&runtime.client.vault_url()),
+                            vault::Command::Open => {
+                                let client = runtime.client.clone();
+                                let agent_id = runtime.agent_id.clone();
+                                let destination = client.vault_url();
+                                runtime.links.spawn(async move {
+                                    (pane, links::open(&client, &agent_id, &destination).await)
+                                });
+                            }
                             vault::Command::Latest | vault::Command::Help => absorb(app.update(AppEvent::NotifyError { pane, error: "No pending Vault request is loaded. Use /vault open to manage your Vault. Never enter passwords in chat.".into() }), &mut effects, scheduler),
                             vault::Command::Review { id, origin } => {
                                 if !runtime.vault_tasks.is_empty() { continue; }

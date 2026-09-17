@@ -18,6 +18,17 @@ pub enum ExecutionPolicyDisposition {
     Fatal,
 }
 
+/// Repair required after a completed compaction provider failure.
+#[cfg(feature = "openai")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub enum CompactionRecovery {
+    /// No history repair is required.
+    #[default]
+    None,
+    /// Replace image payloads rejected by the provider with explanatory text.
+    ReplaceRejectedImages,
+}
+
 /// Error returned by the Nanocodex library boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum NanocodexError {
@@ -86,6 +97,8 @@ pub enum NanocodexError {
         detail: String,
         /// Whether the provider requires this session to stop accepting work.
         requires_session_stop: bool,
+        /// Typed history repair preserved when a durable failure is replayed.
+        recovery: CompactionRecovery,
     },
 
     /// The immutable request prefix could not be serialized for fingerprinting.
@@ -319,6 +332,24 @@ impl NanocodexError {
             Self::ExecutionPolicyOwnerStopped => Some(ExecutionPolicyDisposition::Reopen),
             Self::Shutdown(source) => source.execution_policy_disposition(),
             _ => None,
+        }
+    }
+
+    /// Whether failed-request image payloads must be replaced in retained history.
+    #[cfg(feature = "openai")]
+    #[must_use]
+    pub fn requires_image_repair(&self) -> bool {
+        match self {
+            Self::CompactionFailed {
+                recovery,
+                requires_session_stop,
+                ..
+            } => !requires_session_stop && *recovery == CompactionRecovery::ReplaceRejectedImages,
+            Self::Shutdown(source) => source.requires_image_repair(),
+            _ => matches!(
+                self.responses_error(),
+                Some(ResponsesError::InvalidImageRequest { .. })
+            ),
         }
     }
 

@@ -67,6 +67,8 @@ enum RecordedCompactionOutcome {
         compaction_error: String,
         #[serde(default)]
         requires_session_stop: bool,
+        #[serde(default)]
+        recovery: crate::error::CompactionRecovery,
     },
 }
 
@@ -421,6 +423,11 @@ where
                         let requires_session_stop = error
                             .responses_error()
                             .is_some_and(|source| source.is_misalignment_policy_violation());
+                        let recovery = if error.requires_image_repair() {
+                            crate::error::CompactionRecovery::ReplaceRejectedImages
+                        } else {
+                            crate::error::CompactionRecovery::None
+                        };
                         let compaction_error = error.to_string();
                         if let Some(steps) = &execution_steps {
                             steps
@@ -429,6 +436,7 @@ where
                                     &RecordedCompactionOutcome::Failure {
                                         compaction_error: compaction_error.clone(),
                                         requires_session_stop,
+                                        recovery,
                                     },
                                 )
                                 .await?;
@@ -436,6 +444,7 @@ where
                         return Err(NanocodexError::CompactionFailed {
                             detail: compaction_error,
                             requires_session_stop,
+                            recovery,
                         });
                     }
                 };
@@ -472,10 +481,12 @@ where
                 RecordedCompactionOutcome::Failure {
                     compaction_error,
                     requires_session_stop,
+                    recovery,
                 } => {
                     return Err(NanocodexError::CompactionFailed {
                         detail: compaction_error,
                         requires_session_stop,
+                        recovery,
                     });
                 }
             };
@@ -551,6 +562,7 @@ mod compaction_receipt_tests {
         let receipt = RecordedCompactionOutcome::Failure {
             compaction_error: "stop this conversation".into(),
             requires_session_stop: true,
+            recovery: crate::error::CompactionRecovery::None,
         };
         let replay: RecordedCompactionOutcome =
             serde_json::from_value(serde_json::to_value(receipt).unwrap()).unwrap();
@@ -561,6 +573,34 @@ mod compaction_receipt_tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn image_failure_receipt_preserves_repair_and_policy_stop_wins() {
+        for stop in [false, true] {
+            let receipt = RecordedCompactionOutcome::Failure {
+                compaction_error: "rejected image".into(),
+                requires_session_stop: stop,
+                recovery: crate::error::CompactionRecovery::ReplaceRejectedImages,
+            };
+            let replay: RecordedCompactionOutcome =
+                serde_json::from_value(serde_json::to_value(receipt).unwrap()).unwrap();
+            let RecordedCompactionOutcome::Failure {
+                compaction_error,
+                requires_session_stop,
+                recovery,
+            } = replay
+            else {
+                panic!("expected failure receipt");
+            };
+            let error = NanocodexError::CompactionFailed {
+                detail: compaction_error,
+                requires_session_stop,
+                recovery,
+            };
+            assert_eq!(error.requires_image_repair(), !stop);
+            assert!(error.responses_error().is_none());
+        }
     }
 
     #[test]

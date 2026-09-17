@@ -258,6 +258,18 @@ async fn malformed_stored_image_is_removed_before_provider_replay() -> Result<()
     );
     agent.shutdown().await?;
     drop(agent);
+    // Repair must replace the committed rollout, not merely the in-memory request.
+    let repaired = RolloutConfig::new(rollout_home.path()).load_session(TEST_SESSION_ID)?;
+    let persisted = serde_json::to_value(repaired.snapshot())?;
+    let output = persisted["history"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "custom_tool_call_output" && item["call_id"] == "call-image")
+        .expect("repaired tool output must survive another reload");
+    let encoded_output = output.to_string();
+    assert!(!encoded_output.contains("input_image"));
+    assert!(encoded_output.contains("malformed base64 image data"));
     timeout(std::time::Duration::from_secs(5), server)
         .await
         .map_err(|_| eyre!("mock Responses server did not finish"))???;

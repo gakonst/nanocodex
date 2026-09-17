@@ -229,11 +229,34 @@ describe("account Hosted Tools provider", () => {
       } else if (mode === "transport") {
         await expect(failure).rejects.toMatchObject({ cause: transportError });
       }
+      expect(calls).toHaveLength(1);
       await expect(tool.handler({ cmd: "touch receipt" }, context)).resolves.toMatchObject({ output: "retained receipt" });
       expect(calls).toHaveLength(2);
       expect(calls[1]).toEqual(calls[0]);
     },
   );
+
+  it("bounds stale-route recovery even when the replacement route is rejected", async () => {
+    const calls: Record<string, unknown>[] = [];
+    let discoveries = 0;
+    const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([[ACCOUNT_A, async request => {
+      if (new URL(request.url).pathname === "/snapshot") {
+        discoveries++;
+        return Response.json({ ...snapshot, machines: [{ ...snapshot.machines[0], tools: [{
+          ...snapshot.machines[0]!.tools[0], route_token: `route-${discoveries}`,
+        }] }] });
+      }
+      calls.push(await request.json<Record<string, unknown>>());
+      return new Response(null, { status: 409 });
+    }]])), ACCOUNT_A, () => true);
+    await provider.refresh();
+    await expect(provider.machineTool("laptop", "exec_command")!.handler(
+      { cmd: "fixture-effect" }, { sessionId: "agent", callId: "stable-effect" },
+    )).rejects.toMatchObject({ code: "host_interrupted" });
+    expect(discoveries).toBe(2);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toEqual({ ...calls[0], route_token: "route-2" });
+  });
 
   it("releases stalled discovery and fences its late response from the next refresh", async () => {
     vi.useFakeTimers();

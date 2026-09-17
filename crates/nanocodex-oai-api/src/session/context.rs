@@ -34,39 +34,7 @@ struct CallIds {
     non_server_tool_search_outputs: HashSet<Box<str>>,
 }
 
-fn valid_tool_image_data_url(url: &str) -> bool {
-    let Some((header, encoded)) = url.split_once(',') else {
-        return false;
-    };
-    let header = header.to_ascii_lowercase();
-    let Some(subtype) = header
-        .strip_prefix("data:image/")
-        .and_then(|v| v.strip_suffix(";base64"))
-    else {
-        return false;
-    };
-    if subtype.is_empty()
-        || !subtype
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || b"!#$&^_.+%-".contains(&c))
-    {
-        return false;
-    }
-    let bytes = encoded.as_bytes();
-    if bytes.is_empty() || bytes.len() % 4 != 0 {
-        return false;
-    }
-    let padding = if encoded.ends_with("==") {
-        2
-    } else if encoded.ends_with('=') {
-        1
-    } else {
-        0
-    };
-    bytes[..bytes.len() - padding]
-        .iter()
-        .all(|c| c.is_ascii_alphanumeric() || *c == b'+' || *c == b'/')
-}
+use crate::tools::valid_tool_image_data_url;
 
 impl ContextManager {
     #[must_use]
@@ -985,6 +953,8 @@ mod tests {
 
     #[test]
     fn history_truncates_tool_text_but_preserves_images() {
+        // Image payloads can exceed the entire text budget and must remain intact.
+        let image_url = format!("data:image/png;base64,{}", "YWJj".repeat(24_000));
         let context = ContextManager::new(vec![ResponseItem::custom_tool_output(
             "call".to_owned(),
             None,
@@ -993,7 +963,7 @@ mod tests {
                     text: "x".repeat(48_004).into_boxed_str(),
                 },
                 FunctionOutputContent::InputImage {
-                    image_url: "data:image/png;base64,a".into(),
+                    image_url: image_url.clone().into_boxed_str(),
                     detail: None,
                 },
                 FunctionOutputContent::InputText {
@@ -1014,7 +984,8 @@ mod tests {
         );
         assert!(matches!(
             &output[1],
-            FunctionOutputContent::InputImage { .. }
+            FunctionOutputContent::InputImage { image_url: retained, .. }
+                if retained.as_ref() == image_url
         ));
         assert!(
             matches!(&output[2], FunctionOutputContent::InputText { text } if text.as_ref() == "[omitted 1 text items ...]")

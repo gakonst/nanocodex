@@ -842,5 +842,8 @@ function validImageDataUrl(url) {
   const encoded = url.slice(comma + 1);
   if (!encoded.length || encoded.length % 4 !== 0) return false;
   const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
-  return !/[^A-Za-z0-9+/]/.test(encoded.slice(0, encoded.length - padding));
+  const payload = encoded.slice(0, encoded.length - padding);
+  if (/[^A-Za-z0-9+/]/.test(payload)) return false;
+  const last = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".indexOf(payload.at(-1));
+  return padding === 2 ? (last & 15) === 0 : padding === 1 ? (last & 3) === 0 : true;
 }

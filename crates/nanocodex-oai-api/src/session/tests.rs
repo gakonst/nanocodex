@@ -835,3 +835,56 @@ fn session_ids_are_serializable_uuid_v7_values() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn compaction_replays_bounded_images_and_retained_agent_instructions() {
+    let (mut session, observations) = compacting_session(false);
+    let images = crate::ResponseItem::message(
+        MessageRole::User,
+        (0..50).map(|_| ContentItem::InputImage {
+            image_url: "data:image/png;base64,YQ==".into(),
+            detail: None,
+        }),
+    );
+    let agent: crate::ResponseItem = serde_json::from_value(serde_json::json!({
+        "type": "agent_message", "author": "parent", "recipient": "child",
+        "content": [{"type": "input_text", "text": "retain delegated instructions"}]
+    }))
+    .unwrap();
+    {
+        let mut turn = session.turn();
+        turn.create(super::ResponseInput::items([images, agent]))
+            .await
+            .unwrap();
+        turn.compact().await.unwrap();
+    }
+    session.turn().create("continue").await.unwrap();
+    let observations = observations.lock().unwrap();
+    let replay = &observations[2];
+    assert!(replay.full_replay);
+    assert!(replay.previous_response_id.is_none());
+    assert_eq!(
+        replay
+            .input
+            .iter()
+            .filter(|item| item["type"] == "agent_message")
+            .count(),
+        1,
+    );
+    let image_count = replay
+        .input
+        .iter()
+        .filter_map(|item| item["content"].as_array())
+        .flatten()
+        .filter(|part| part["type"] == "input_image")
+        .count();
+    assert_eq!(image_count, 34);
+    assert_eq!(
+        replay
+            .input
+            .iter()
+            .filter(|item| item["type"] == "compaction")
+            .count(),
+        1,
+    );
+}

@@ -345,7 +345,39 @@ impl ResponsesError {
         }
     }
 
+    pub(crate) fn http_rejected(
+        status: u16,
+        body: String,
+        retry_after: Option<std::time::Duration>,
+    ) -> Self {
+        if status == 400 {
+            let classified = Self::api_event(body.clone());
+            if matches!(
+                classified,
+                Self::InvalidImageRequest { .. } | Self::ContextWindowExceeded { .. }
+            ) {
+                return classified;
+            }
+        }
+        Self::HttpRejected {
+            status,
+            body,
+            retry_after,
+        }
+    }
+
     pub(crate) fn api_event(event: String) -> Self {
+        // Provider policy stops take precedence over incidental image diagnostics.
+        if [
+            "misalignment_policy_violation",
+            "cyber_policy",
+            "bio_policy",
+        ]
+        .iter()
+        .any(|code| api_error_has_code(&event, code))
+        {
+            return Self::Api { event };
+        }
         // Validation failures identify the rejected input field, whereas older image
         // decoding failures only carry the provider's diagnostic message.
         let invalid_image_url = serde_json::from_str::<serde_json::Value>(&event)
@@ -367,7 +399,10 @@ impl ResponsesError {
                             })
                 })
             });
-        if invalid_image_url || event.contains(INVALID_IMAGE_ERROR) {
+        if invalid_image_url
+            || api_error_has_code(&event, "invalid_image")
+            || event.contains(INVALID_IMAGE_ERROR)
+        {
             Self::InvalidImageRequest { event }
         } else if api_error_has_code(&event, "context_length_exceeded") {
             Self::ContextWindowExceeded { event }
@@ -394,6 +429,32 @@ mod tests {
 
     use super::ResponsesError;
     use crate::transport::api_error::retryable_api_error;
+
+    #[test]
+    fn policy_stops_are_not_reclassified_by_image_diagnostics() {
+        for code in [
+            "misalignment_policy_violation",
+            "cyber_policy",
+            "bio_policy",
+        ] {
+            let body = json!({"error": {"code": code,
+                "message": "The image data you provided does not represent a valid image"}})
+            .to_string();
+            let event = ResponsesError::api_event(body.clone());
+            assert!(matches!(event, ResponsesError::Api { .. }));
+            assert!(event.retry_advice().is_none());
+            let http = ResponsesError::http_rejected(400, body, None);
+            assert!(matches!(
+                http,
+                ResponsesError::HttpRejected { status: 400, .. }
+            ));
+            assert!(http.retry_advice().is_none());
+            if code == "misalignment_policy_violation" {
+                assert!(event.is_misalignment_policy_violation());
+                assert!(http.is_misalignment_policy_violation());
+            }
+        }
+    }
 
     #[test]
     fn invalid_image_url_validation_selects_image_recovery() {
@@ -427,6 +488,75 @@ mod tests {
                 crate::ResponsesError::InvalidImageRequest { .. }
             ));
         }
+    }
+
+    #[test]
+    fn sanitized_invalid_image_code_selects_recovery() {
+        let body =
+            json!({"error": {"code": "invalid_image", "message": "Provider request rejected"}})
+                .to_string();
+        assert!(matches!(
+            ResponsesError::http_rejected(400, body.clone(), None),
+            ResponsesError::InvalidImageRequest { .. }
+        ));
+        assert!(matches!(
+            ResponsesError::api_event(body),
+            ResponsesError::InvalidImageRequest { .. }
+        ));
+    }
+
+    #[test]
+    fn sanitized_http_context_limit_selects_compaction_only_for_bad_requests() {
+        let body = json!({"error": {
+            "code": "context_length_exceeded", "message": "Provider request rejected"
+        }})
+        .to_string();
+        let error = ResponsesError::http_rejected(400, body.clone(), None);
+        assert!(error.is_context_window_exceeded());
+        assert!(matches!(error, ResponsesError::ContextWindowExceeded { event } if event == body));
+        assert!(matches!(
+            ResponsesError::http_rejected(500, body, Some(Duration::from_secs(2))),
+            ResponsesError::HttpRejected {
+                status: 500,
+                retry_after: Some(_),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn sanitized_http_image_rejections_select_recovery_only_for_bad_requests() {
+        for param in [
+            "input[188].output[2].image_url",
+            "input[4].content[0].image_url",
+        ] {
+            let body = json!({"error": {
+                "type": "invalid_request_error", "code": "invalid_value",
+                "param": param, "message": "Provider request rejected"
+            }})
+            .to_string();
+            assert!(matches!(
+                ResponsesError::http_rejected(400, body.clone(), None),
+                ResponsesError::InvalidImageRequest { event } if event == body
+            ));
+            assert!(matches!(
+                ResponsesError::http_rejected(500, body, Some(Duration::from_secs(2))),
+                ResponsesError::HttpRejected {
+                    status: 500,
+                    retry_after: Some(_),
+                    ..
+                }
+            ));
+        }
+        let body = json!({"error": {
+            "type": "invalid_request_error", "code": "invalid_value",
+            "param": "input[188].output[2].text"
+        }})
+        .to_string();
+        assert!(
+            matches!(ResponsesError::http_rejected(400, body.clone(), None),
+            ResponsesError::HttpRejected { status: 400, body: retained, .. } if retained == body)
+        );
     }
 
     #[test]

@@ -572,6 +572,7 @@ async function handleEgressWithOwner(
         );
         recovered = true;
       }
+      let rejectionBody: unknown;
       const attemptedAccounts = new Set<string>();
       while (upstream.status === 429 && credential.kind === "chatgpt"
         && credential.source === "user" && credential.accountId
@@ -579,8 +580,8 @@ async function handleEgressWithOwner(
         attemptedAccounts.add(credential.accountId);
         let resetAt: number | undefined;
         try {
-          resetAt = chatGptLimitReset(JSON.parse(await readBoundedText(upstream, 64 * 1024)),
-            upstream.headers.get("retry-after"));
+          rejectionBody = JSON.parse(await readBoundedText(upstream, 64 * 1024));
+          resetAt = chatGptLimitReset(rejectionBody, upstream.headers.get("retry-after"));
         } catch { /* An unrecognized rejection must not switch accounts. */ }
         if (!resetAt) break;
         if (!await reportChatGptLimit(env, userId, credential, resetAt, !accountId)) {
@@ -591,6 +592,7 @@ async function handleEgressWithOwner(
         credential = await resolveCredential(env, userId, false);
         if (credential.kind !== "chatgpt" || !credential.accountId
           || attemptedAccounts.has(credential.accountId)) break;
+        rejectionBody = undefined;
         upstream = await fetchUpstream(env, userId, credential, operation,
           buildUpstreamRequest(request, env, operation, credential, body), upstreamFetch,
           request.headers.get("x-nanocodex-voice-region"));
@@ -605,6 +607,28 @@ async function handleEgressWithOwner(
       }
       if (upstream.status >= 400) {
         const upstreamStatus = upstream.status;
+        if (operation.id === "responses") {
+          // Keep model HTTP/handshake failures distinguishable and correctly retryable.
+          // Provider messages may echo input or credentials; project known codes only.
+          if (!upstream.bodyUsed) {
+            try { rejectionBody = JSON.parse(await readBoundedText(upstream, 64 * 1024)); }
+            catch { /* Malformed, oversized, or failed bodies retain their HTTP status. */ }
+          }
+          const diagnostic = modelRejectionDiagnostic(rejectionBody);
+          const { code } = diagnostic;
+          audit(upstreamStatus >= 500 ? "error" : "deny", request, url, operation.id, started, {
+            code, status: upstreamStatus, upstream_status: upstreamStatus,
+            deployment_sha: env.DEPLOYMENT_SHA,
+          });
+          const response = json({
+            error: { ...diagnostic, message: diagnostic.message ?? `Upstream model request rejected (HTTP ${upstreamStatus}; ${code}).` },
+            upstream_status: upstreamStatus,
+          }, upstreamStatus);
+          const retryAfter = upstream.headers.get("retry-after");
+          if (retryAfter && /^\d{1,8}$/.test(retryAfter)) response.headers.set("retry-after", retryAfter);
+          await cancelResponseBody(upstream);
+          return response;
+        }
         await cancelResponseBody(upstream);
         return auditedError(
           upstreamStatus === 429 ? 503 : 502,
@@ -2829,6 +2853,50 @@ function isJsonContentType(value: string | null): boolean {
 function json(body: unknown, status: number): Response {
   return Response.json(body, { status, headers: { "cache-control": "no-store", pragma: "no-cache" } });
 }
+// A closed vocabulary prevents arbitrary provider response content crossing egress.
+const MODEL_REJECTION_CODES = new Set([
+  "context_length_exceeded", "invalid_request_error", "invalid_value", "invalid_image",
+  "invalid_encrypted_content", "invalid_api_key", "authentication_error",
+  "permission_denied", "model_not_found", "rate_limit_exceeded",
+  "usage_limit_reached", "usage_limit_exceeded", "insufficient_quota",
+  "server_error", "internal_server_error", "overloaded_error",
+  "server_is_overloaded", "slow_down", "websocket_connection_limit_reached",
+  "invalid_function_parameters", "previous_response_not_found",
+  "usage_not_included", "cyber_policy", "misalignment_policy_violation",
+  "invalid_prompt", "bio_policy",
+]);
+function modelRejectionDiagnostic(body: unknown): { code: string; type?: string; param?: string; message?: string } {
+  const diagnostic: { code: string; type?: string; param?: string; message?: string } = { code: "upstream_rejected" };
+  if (!isRecord(body)) return diagnostic;
+  const error = isRecord(body.error) ? body.error
+    : isRecord(body.response) && isRecord(body.response.error) ? body.response.error : body;
+  for (const code of [error.code, error.type]) {
+    if (typeof code === "string" && MODEL_REJECTION_CODES.has(code)) {
+      diagnostic.code = code;
+      break;
+    }
+  }
+  if (typeof error.type === "string" && MODEL_REJECTION_CODES.has(error.type)) diagnostic.type = error.type;
+  // Codex recognizes this older image-decoding failure by a fixed diagnostic.
+  // Emit only that constant, never the provider's suffix or reflected input.
+  const invalidImage = "The image data you provided does not represent a valid image";
+  if (!["misalignment_policy_violation", "cyber_policy", "bio_policy", "context_length_exceeded"].includes(diagnostic.code)
+    && typeof error.message === "string" && error.message.includes(invalidImage)) {
+    diagnostic.code = "invalid_image";
+    diagnostic.message = invalidImage;
+  }
+  // Preserve recovery selectors, never arbitrary field names or provider messages.
+  if (typeof error.param === "string" && error.param.length <= 256) {
+    if (/^input\[\d{1,9}\]\.(?:(?:output|content)\[\d{1,9}\]\.)?image_url$/.test(error.param)) {
+      diagnostic.param = error.param;
+    } else {
+      const schema = error.param.match(/^input\[\d{1,9}\](?:\.tools\[\d{1,9}\])+\.parameters(?:$|[.\[])/);
+      if (schema) diagnostic.param = schema[0].replace(/[.\[]$/, "");
+    }
+  }
+  return diagnostic;
+}
+
 function jsonError(status: number, error: string): Response { return json({ error }, status); }
 
 class EgressFailure extends Error {

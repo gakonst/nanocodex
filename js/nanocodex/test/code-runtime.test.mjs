@@ -381,6 +381,8 @@ for (const value of [
   "data:image/png;base64,undefined",
   "data:image/png;base64,a",
   "data:image/png;base64,AA=A",
+  "data:image/png;base64,AB==",
+  "data:image/png;base64,AAB=",
   "data:image/png;base64\n,AAAA",
   "data:image/png;base64\u2028,AAAA",
   "data:image/png;base64,!!!!",
@@ -428,5 +430,14 @@ for (const evaluator of ["quickjs", "worker"]) test(`${evaluator} rejects malfor
   assert.equal(result.success, false);
   assert.match(JSON.stringify(result.output), /nonempty base64 data URL/);
   assert.equal(Array.isArray(result.output) && result.output.some((item) => item.type === "input_image"), false);
+  runtime.reset();
+});
+
+test("Code Mode preserves a real PNG fixture", async () => {
+  const url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+  const runtime = createCodeRuntime({});
+  const result = JSON.parse(await runtime.executeCode(`image(${JSON.stringify(url)});`, "png", "exec-png"));
+  assert.equal(result.success, true);
+  assert.equal(result.output.find((item) => item.type === "input_image").image_url, url);
   runtime.reset();
 });
