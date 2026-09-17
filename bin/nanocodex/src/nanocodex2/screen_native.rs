@@ -375,8 +375,9 @@ mod broadcast_live_tests {
         let mut broadcast = crate::screen_broadcast::Broadcast::new(
             Some(super::native_command()),
             crate::screen_audio::native_source(),
-        )
-        .with_raw(super::native_broadcast_frames());
+        );
+        #[cfg(target_os = "macos")]
+        let mut broadcast = broadcast.with_raw(super::native_broadcast_frames());
         assert_eq!(
             broadcast
                 .request(&json!({"action":"start","url":url,"preset":preset}))
