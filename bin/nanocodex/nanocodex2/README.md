@@ -189,6 +189,15 @@ Durable failure reasons replace provisional errors from the same run in place.
 Earlier retry attempts keep their own errors; other turns and child agents keep
 running.
 
+Use `/bug [description]` to investigate a Nanocodex framework problem. It starts
+an independent durable cloud agent with the source session ID, event cursor, and
+a bounded snapshot of recent transcript records, then switches the TUI to that
+agent's thread so you can watch the investigation and fix. The description is
+optional, and the command works while the source agent is busy. Accepted source
+turns continue in the cloud; local shell work is stopped when switching. If
+launching or attaching fails, the source thread stays open and the error includes
+the new agent ID when available. Use `/attach` to return to the source thread.
+
 Scrolling back through older history keeps typing and live updates responsive.
 `nanocodex2 attach` and the in-TUI `/attach` command show recent threads first,
 ordered by last activity, with titles above session IDs. Type to fuzzy search
