@@ -3,6 +3,14 @@ import type { ConnectorCapabilityId } from "./connector-status";
 
 /** Discovery metadata only; live grants and credentials are enforced by managed egress. */
 export const CONNECTOR_TOOL_CATALOG = {
+  link: {
+    methods: ["GET", "POST"],
+    docs: "https://github.com/stripe/link-cli#spend-request-lifecycle",
+    operations: "POST /spend_requests with {merchant_name,merchant_url,context,amount,currency} creates a request; amount is in minor currency units and context must explain the purchase (at least 100 characters). POST /spend_requests/ID/request_approval sends the user a Link approval notification and returns approval_link; show it to the user. GET /spend_requests/ID checks status; POST /spend_requests/ID/cancel cancels. GET /userinfo reads wallet limits. Use test:true for test requests. Never retry a write after an ambiguous failure; list GET /spend_requests to reconcile. Approval happens in Link; this connector cannot approve spends or retrieve payment credentials.",
+    origin: "https://api.link.com",
+    summary: "Stripe Link wallet: create spend requests, request user approval for purchases, check approval status and cancel requests.",
+    example: "/spend_requests",
+  },
   github: {
     methods: ["DELETE", "GET", "PATCH", "POST", "PUT"],
     docs: "https://docs.github.com/en/rest",

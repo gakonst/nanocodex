@@ -634,7 +634,7 @@ export default {
       }
 
       const connectorCallback = url.pathname.match(
-        /^\/v1\/connectors\/(github|google|gmail|gdrive|gcalendar|gtasks|gdocs|gsheets|gslides|gcontacts|slack|x|spotify|soundcloud)\/callback$/,
+        /^\/v1\/connectors\/(github|google|gmail|gdrive|gcalendar|gtasks|gdocs|gsheets|gslides|gcontacts|slack|x|spotify|soundcloud|link)\/callback$/,
       );
       if (connectorCallback) {
         if (request.method !== "GET") {
@@ -791,7 +791,7 @@ export default {
       }
 
       const connectorRoute = url.pathname.match(
-        /^\/v1\/connectors\/(github|google|gmail|gdrive|gcalendar|gtasks|gdocs|gsheets|gslides|gcontacts|slack|x|spotify|soundcloud|chatgpt)(?:\/connections\/([A-Za-z0-9_-]{43})|\/([A-Za-z0-9_-]{43}))?$/,
+        /^\/v1\/connectors\/(github|google|gmail|gdrive|gcalendar|gtasks|gdocs|gsheets|gslides|gcontacts|slack|x|spotify|soundcloud|link|chatgpt)(?:\/connections\/([A-Za-z0-9_-]{43})|\/([A-Za-z0-9_-]{43}))?$/,
       );
       if (connectorRoute) {
         const connector = connectorRoute[1]!;
@@ -848,6 +848,11 @@ export default {
             status: "disconnected",
           });
           return cors(new Response(null, { status: 204 }), request);
+        }
+        if (request.method === "GET" && connector === "link" && !connectionId) {
+          const attempt = url.searchParams.get("attempt");
+          if (!attempt || !/^[A-Za-z0-9_-]{43}$/.test(attempt)) return error(request, 400, "invalid_request", "A Link connection attempt is required.");
+          return cors(Response.json(await brokerJson(env, `/users/${encodeURIComponent(identity.userId)}/connectors/link?attempt=${attempt}`)), request);
         }
         if (request.method === "GET" && connector === "chatgpt" && !connectionId) {
           return cors(await pollChatGpt(env, identity.userId), request);
@@ -4488,6 +4493,14 @@ async function startConnector(
   brokerUserId: string,
   provider: OAuthConnectorProvider,
 ): Promise<Response> {
+  if (provider === "link") {
+    const started = await brokerJson(env, `/users/${encodeURIComponent(brokerUserId)}/connectors/link`, { method: "POST" });
+    const url = remoteMcpAuthorizationUrl(started.authorization_url);
+    if (!["https://link.com", "https://app.link.com", "https://login.link.com"].includes(url.origin)) {
+      throw new ApiFailure(502, "connector_broker_invalid", "The Link broker returned an invalid authorization URL.");
+    }
+    return Response.json({ authorization_url: url.href, expires_at: started.expires_at, user_code: started.user_code, attempt: started.attempt });
+  }
   const requestOrigin = connectApiRequestOrigin(request);
   const dialogOrigin = requiredDialogOrigin(request);
   const local = localConnectorAuthorization(requestOrigin, provider, "connect");

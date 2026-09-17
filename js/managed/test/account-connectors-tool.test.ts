@@ -97,6 +97,7 @@ describe("managed account connector tool", () => {
         { id: "x", name: "X", capabilities: ["x"] },
         { id: "spotify", name: "Spotify", capabilities: ["spotify"] },
         { id: "soundcloud", name: "SoundCloud", capabilities: ["soundcloud"] },
+        { id: "link", name: "Stripe Link", capabilities: ["link"] },
       ],
     });
     expect(JSON.stringify(result)).not.toMatch(/access_token|secret/);

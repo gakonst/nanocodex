@@ -26,6 +26,7 @@ test("cloud grants preserve exact service capability connection selections", () 
       "slack",
       "spotify",
       "soundcloud",
+      "link",
     ],
     connectorConnections: {
       gmail: [A, B],
@@ -39,6 +40,7 @@ test("cloud grants preserve exact service capability connection selections", () 
       slack: [B],
       spotify: [A],
       soundcloud: [B],
+      link: [A],
     },
   }));
 
@@ -54,6 +56,7 @@ test("cloud grants preserve exact service capability connection selections", () 
     "slack",
     "spotify",
     "soundcloud",
+    "link",
   ]);
   assert.deepEqual(connection.grant.connectorConnections, {
     gmail: [A, B],
@@ -67,6 +70,7 @@ test("cloud grants preserve exact service capability connection selections", () 
     slack: [B],
     spotify: [A],
     soundcloud: [B],
+    link: [A],
   });
   assert.equal(Object.isFrozen(connection.grant.connectorConnections), true);
   assert.equal(Object.isFrozen(connection.grant.connectorConnections.gmail), true);
@@ -173,7 +177,7 @@ test("plural and provider-scoped connector APIs keep the current grant and exact
     } }),
   });
   const services = ["github", "gmail", "gdrive", "gcalendar", "gtasks", "gdocs", "gsheets",
-    "gslides", "gcontacts", "slack", "x", "spotify", "soundcloud"];
+    "gslides", "gcontacts", "slack", "x", "spotify", "soundcloud", "link"];
   assert.deepEqual(Object.keys(client.connectors).filter(key => key !== "request"), services);
   for (const service of services) {
     client._setSessionToken(`grant-${service}`);

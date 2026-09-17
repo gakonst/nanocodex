@@ -14,6 +14,7 @@ const CLOUD_ACCOUNT_PROVIDERS = Object.freeze([
   "x",
   "spotify",
   "soundcloud",
+  "link",
   "chatgpt",
 ]);
 export const API_CONNECTORS = Object.freeze(CLOUD_ACCOUNT_PROVIDERS.filter(provider => provider !== "chatgpt"));

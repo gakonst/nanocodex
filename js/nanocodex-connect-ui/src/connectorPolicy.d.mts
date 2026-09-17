@@ -11,10 +11,10 @@ export type ConnectorCapability =
   | "slack"
   | "x"
   | "spotify"
-  | "soundcloud"
+  | "soundcloud" | "link"
   | "chatgpt";
 
-export type ConnectorProvider = "github" | "google" | "slack" | "x" | "spotify" | "soundcloud" | "chatgpt";
+export type ConnectorProvider = "github" | "google" | "slack" | "x" | "spotify" | "soundcloud" | "link" | "chatgpt";
 
 export type ConnectorConnection = Readonly<{
   id: string;

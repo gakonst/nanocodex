@@ -117,7 +117,7 @@ const agentConversationId = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f
 const chatGptCredentialImportResource = /^urn:nanocodex:credential-import:chatgpt:codex-auth-v1:sha256:[A-Za-z0-9_-]{43}$/;
 const connectorIds = new Set<ConnectorCapability>([
   "chatgpt", "github", "gmail", "gdrive", "gcalendar", "gtasks", "gdocs", "gsheets",
-  "gslides", "gcontacts", "slack", "x", "spotify", "soundcloud",
+  "gslides", "gcontacts", "slack", "x", "spotify", "soundcloud", "link",
 ]);
 const mcpConnectionId = /^[A-Za-z0-9_-]{43}$/;
 const mcpConnectionStatuses = new Set<McpConnectionStatus>([

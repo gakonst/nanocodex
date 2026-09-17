@@ -16,6 +16,7 @@ const CONNECTOR_IDS = [
   "x",
   "spotify",
   "soundcloud",
+  "link",
   "chatgpt",
 ];
 const ACCOUNT_CONNECTION_IDS = Object.freeze(CONNECTOR_IDS.filter((id) => id !== "chatgpt"));
@@ -33,6 +34,7 @@ const ACCOUNT_CONNECTION_LABELS = Object.freeze({
   x: "X",
   spotify: "Spotify",
   soundcloud: "SoundCloud",
+  link: "Stripe Link",
 });
 const GOOGLE_CONNECTION_IDS = new Set([
   "gmail",
@@ -362,7 +364,7 @@ export function browserEnvironmentTool(options, descriptor) {
 
 export function browserAccountConnectionTool(options) {
   return namedTool("requestAccountConnection", {
-    description: "Request an account authorization link for GitHub, Gmail or another Google Workspace app, Slack, X, Spotify, or SoundCloud. Spotify and SoundCloud open the native Nanocodex app to complete OAuth on the phone. Call this when the user asks to connect or authenticate one of these services. Return the exact authorization_url as a Markdown link in your response; do not claim the account is connected until environment confirms it.",
+    description: "Request an account authorization link for GitHub, Gmail or another Google Workspace app, Slack, X, Spotify, SoundCloud, or Stripe Link. Spotify and SoundCloud open the native Nanocodex app to complete OAuth on the phone. Stripe Link asks the user to approve the connection in Link. Call this when the user asks to connect or authenticate one of these services. Return the exact authorization_url as a Markdown link in your response; do not claim the account is connected until environment confirms it.",
     parameters: {
       type: "object",
       properties: {
@@ -434,6 +436,8 @@ function accountConnectionProvider(connector) {
 function safeAccountAuthorizationUrl(value, provider, publicOrigin) {
   let authorization;
   try { authorization = new URL(value); } catch { return undefined; }
+  if (provider === "link") return ["https://link.com", "https://app.link.com", "https://login.link.com"].includes(authorization.origin)
+    && !authorization.username && !authorization.password && !authorization.hash ? authorization.href : undefined;
   const expected = ACCOUNT_AUTHORIZATION_ENDPOINTS[provider];
   if (!expected
     || authorization.origin !== expected.origin

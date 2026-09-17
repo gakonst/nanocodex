@@ -12,10 +12,11 @@ export const connectorCapabilities = Object.freeze([
   "x",
   "spotify",
   "soundcloud",
+  "link",
   "chatgpt",
 ] as const);
 
-export const oauthConnectorProviders = Object.freeze(["github", "google", "slack", "x", "spotify", "soundcloud"] as const);
+export const oauthConnectorProviders = Object.freeze(["github", "google", "slack", "x", "spotify", "soundcloud", "link"] as const);
 
 export type ConnectorCapability = typeof connectorCapabilities[number];
 export type OAuthConnectorProvider = typeof oauthConnectorProviders[number];
@@ -66,7 +67,7 @@ export function isConnectorConnectionId(value: unknown): value is string {
 }
 
 export function connectorProvider(value: unknown): OAuthConnectorProvider | undefined {
-  if (value === "github" || value === "slack" || value === "x" || value === "spotify" || value === "soundcloud") return value;
+  if (value === "github" || value === "slack" || value === "x" || value === "spotify" || value === "soundcloud" || value === "link") return value;
   if (typeof value === "string" && [
     "gmail",
     "gdrive",
@@ -95,6 +96,7 @@ export function connectorCapabilityForUrl(url: URL): RoutableConnectorCapability
   if (url.origin === "https://people.googleapis.com") return "gcontacts";
   if (url.origin === "https://slack.com") return "slack";
   if (url.origin === "https://api.spotify.com") return "spotify";
+  if (url.origin === "https://api.link.com") return "link";
   if (url.origin === "https://api.soundcloud.com") return "soundcloud";
   if (url.origin === "https://api.x.com") return "x";
   return undefined;
@@ -119,7 +121,8 @@ export function connectorRequestTarget(
                   : capability === "slack" ? "https://slack.com"
                     : capability === "x" ? "https://api.x.com"
                       : capability === "spotify" ? "https://api.spotify.com"
-                        : capability === "soundcloud" ? "https://api.soundcloud.com" : undefined;
+                        : capability === "soundcloud" ? "https://api.soundcloud.com"
+                          : capability === "link" ? "https://api.link.com" : undefined;
   if (!origin) {
     throw new ConnectorPolicyFailure(403, "connector_destination_denied", "The connector destination is not allowed.");
   }
@@ -137,6 +140,7 @@ export function connectorRequestTarget(
     || (capability === "gcontacts" && /^\/v1\/(?:people|contactGroups|otherContacts)(?:\/|:|$)/.test(target.pathname))
     || (capability === "slack" && /^\/api\/[A-Za-z0-9._-]+$/.test(target.pathname))
     || (capability === "spotify" && /^\/v1(?:\/|$)/.test(target.pathname))
+    || (capability === "link" && /^\/(?:userinfo|spend_requests(?:\/lsrq_[A-Za-z0-9]+(?:\/(?:request_approval|cancel))?)?)$/.test(target.pathname))
     || (capability === "soundcloud" && /^\/(?:me|tracks|playlists|users|resolve|likes|reposts)(?:\/|$)/.test(target.pathname))
     || (capability === "x" && /^\/2\/(?:tweets|users|lists|dm_(?:conversations|events)|media)(?:\/|$)/.test(target.pathname));
   if (target.origin !== origin || target.username || target.password || target.hash

@@ -378,6 +378,7 @@ function requestedConnectors(value) {
     "x",
     "spotify",
     "soundcloud",
+  "link",
     "chatgpt",
   ];
   if (value.some((provider) => !supported.includes(provider))) {
@@ -417,6 +418,7 @@ function connectorName(provider) {
     x: "X",
     spotify: "Spotify",
     soundcloud: "SoundCloud",
+  link: "Stripe Link",
     chatgpt: "ChatGPT",
   })[provider];
 }

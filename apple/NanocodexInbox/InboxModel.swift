@@ -723,6 +723,10 @@ final class InboxModel: ObservableObject {
         guard let client, connected, !isDemo else { throw APIError.invalidResponse }
         return try await client.beginConnectorAuthorization(provider: provider)
     }
+    func pollLinkAuthorization(attemptID: String) async throws -> String {
+        guard let client, connected, !isDemo else { throw APIError.invalidResponse }
+        return try await client.pollLinkAuthorization(attemptID: attemptID)
+    }
     func disconnectConnector(_ provider: String, connectionID: String) async throws {
         guard let client, connected, !isDemo else { throw APIError.invalidResponse }
         try await client.disconnectConnector(provider: provider, connectionID: connectionID)

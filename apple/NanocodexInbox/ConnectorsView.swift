@@ -430,6 +430,7 @@ private struct ConnectorLogo: View {
         case "x": "xmark"
         case "spotify": "music.note"
         case "soundcloud": "cloud.fill"
+        case "link": "creditcard"
         case "mcp": "network"
         default: "link"
         }
@@ -489,6 +490,21 @@ private final class ConnectorCenter: NSObject, ObservableObject, ASWebAuthentica
         defer { operation = nil }
         do {
             let authorization = try await model.beginConnectorAuthorization(provider.id)
+            if provider.id == "link" {
+                await UIApplication.shared.open(authorization.authorizationURL)
+                let deadline = Date().addingTimeInterval(600)
+                while Date() < deadline {
+                    try await Task.sleep(for: .seconds(5))
+                    let state = try await model.pollLinkAuthorization(attemptID: authorization.attemptID)
+                    if state == "connected" { overview = try await model.connectorOverview(); return }
+                    if state == "denied" || state == "expired" {
+                        error = "The Link connection was declined or expired. Try connecting again."
+                        return
+                    }
+                }
+                error = "The Link connection expired. Try connecting again."
+                return
+            }
             let addingAnother = !(overview?.connections(for: provider).isEmpty ?? true)
             let callbackURL = try await authenticate(authorization, prefersEphemeral: addingAnother)
             switch try authorization.result(from: callbackURL) {

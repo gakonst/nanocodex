@@ -16,7 +16,7 @@ export type ConnectionLogoId =
   | "tempo"
   | "x"
   | "spotify"
-  | "soundcloud";
+  | "soundcloud" | "link";
 
 export function ConnectionLogo({ id }: Readonly<{ id: ConnectionLogoId }>) {
   if (id === "chatgpt" || id === "openai") {
@@ -28,6 +28,7 @@ export function ConnectionLogo({ id }: Readonly<{ id: ConnectionLogoId }>) {
       </span>
     );
   }
+  if (id === "link") return <span className="connector-logo" aria-hidden="true">↗</span>;
   if (id === "github") {
     return (
       <span className="connector-logo connector-logo-github" aria-hidden="true">

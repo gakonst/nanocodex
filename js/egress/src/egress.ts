@@ -1,3 +1,4 @@
+import { LINK_PATH } from "./connectors/link";
 import { chatGptFailoverSocket, chatGptLimitReset } from "./chatgpt-failover";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import {
@@ -90,7 +91,7 @@ const PRIVATE_HOST_SUFFIXES = [
   ".internal", ".invalid", ".local", ".localhost", ".test", ".home.arpa",
 ];
 const VAULT_PROVIDER_HOSTS = new Set([
-  "api.github.com", "api.openai.com", "api.x.com", "api.spotify.com", "api.soundcloud.com", "chatgpt.com",
+  "api.github.com", "api.openai.com", "api.x.com", "api.spotify.com", "api.soundcloud.com", "api.link.com", "chatgpt.com",
   "calendar.googleapis.com", "docs.googleapis.com", "gmail.googleapis.com",
   "people.googleapis.com", "sheets.googleapis.com", "slack.com",
   "slides.googleapis.com", "tasks.googleapis.com", "www.googleapis.com",
@@ -107,7 +108,7 @@ const RELAY_HTTP_ROUTES: Readonly<Record<ModelOperation["id"], string | undefine
 
 type ConnectorOperation = Readonly<{
   id: "github" | "gmail" | "gdrive" | "gcalendar" | "gtasks" | "gdocs"
-    | "gsheets" | "gslides" | "gcontacts" | "slack" | "x" | "spotify" | "soundcloud";
+    | "gsheets" | "gslides" | "gcontacts" | "slack" | "x" | "spotify" | "soundcloud" | "link";
   origin: `https://${string}`;
   paths: readonly RegExp[];
 }>;
@@ -125,6 +126,7 @@ type VaultEgressEnvelope = Readonly<{
 }>;
 
 const CONNECTOR_OPERATIONS: readonly ConnectorOperation[] = [
+  { id: "link", origin: "https://api.link.com", paths: [LINK_PATH] },
   {
     id: "github",
     origin: "https://github.com",
@@ -416,7 +418,10 @@ async function handleEgressWithOwner(
   }
   const connector = connectorOperation(url);
   if (connector) return handleConnectorEgress(request, url, connector, env, started);
-  if (url.search) return jsonError(403, "destination_denied");
+  const linkPoll = request.method === "GET"
+    && /^\/users\/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\/connectors\/link$/.test(url.pathname)
+    && /^\?attempt=[A-Za-z0-9_-]{43}$/.test(url.search);
+  if (url.search && !linkPoll) return jsonError(403, "destination_denied");
 
   if (url.pathname.startsWith("/subjects/") || url.pathname.startsWith("/users/")) {
     const response = await handleControl(request, url, env);
@@ -2019,23 +2024,25 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
   }
 
   const connectorMatch = url.pathname.match(
-    /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/connectors(?:\/(github|google|gmail|gdrive|slack|x|spotify|soundcloud)(?:\/(callback)|\/connections\/([A-Za-z0-9_-]{43}))?)?$/,
+    /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/connectors(?:\/(github|google|gmail|gdrive|slack|x|spotify|soundcloud|link)(?:\/(callback)|\/connections\/([A-Za-z0-9_-]{43}))?)?$/,
   );
   if (connectorMatch) {
     const userId = connectorMatch[1]!;
     const connector = connectorMatch[2];
     const callback = connectorMatch[3] === "callback";
     const connectionId = connectorMatch[4];
+    const linkPoll = connector === "link" && request.method === "GET" && !callback && !connectionId;
+    if (linkPoll && (!/^[A-Za-z0-9_-]{43}$/.test(url.searchParams.get("attempt") ?? "") || [...url.searchParams.keys()].some(key => key !== "attempt"))) return jsonError(400, "invalid_request");
     const target = connector
       ? `https://connectors.internal/v1/${connector}${callback
         ? "/callback"
-        : connectionId ? `/connections/${connectionId}` : request.method === "POST" ? "/start" : ""}`
+        : connectionId ? `/connections/${connectionId}` : request.method === "POST" ? "/start" : linkPoll ? url.search : ""}`
       : "https://connectors.internal/v1/status";
     if ((!connector && request.method !== "GET")
       || (connector && callback && request.method !== "POST")
       || (connectionId && request.method !== "DELETE")
       || (connector && !callback && !connectionId
-        && request.method !== "POST" && request.method !== "DELETE")) {
+        && request.method !== "POST" && request.method !== "DELETE" && !linkPoll)) {
       return jsonError(405, "method_not_allowed");
     }
     return connectorBroker(env, userId).fetch(target, {
@@ -2806,7 +2813,7 @@ function auditControl(
   const subject = url.pathname.startsWith("/subjects/");
   const tail = user?.[3];
   const connector = user?.[2] === "connectors"
-    ? tail?.match(/^(github|google|gmail|gdrive|slack|x|spotify|soundcloud)/)?.[1]
+    ? tail?.match(/^(github|google|gmail|gdrive|slack|x|spotify|soundcloud|link)/)?.[1]
     : undefined;
   const log = status >= 500 ? console.error : status >= 400 ? console.warn : console.info;
   log({
@@ -2832,7 +2839,7 @@ function audit(
   const connector = rule === "github" || rule === "gmail" || rule === "gdrive"
     || rule === "gcalendar" || rule === "gtasks" || rule === "gdocs"
     || rule === "gsheets" || rule === "gslides" || rule === "gcontacts"
-    || rule === "slack" || rule === "x" || rule === "spotify" || rule === "soundcloud" || rule === "mcp";
+    || rule === "slack" || rule === "x" || rule === "spotify" || rule === "soundcloud" || rule === "link" || rule === "mcp";
   const log = action === "error" ? console.error : action === "deny" ? console.warn : console.info;
   const safeDetail = {
     ...(typeof detail.voice_session_id === "string" && /^[0-9a-f-]{36}$/.test(detail.voice_session_id)

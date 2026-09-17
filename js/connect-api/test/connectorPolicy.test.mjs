@@ -23,7 +23,7 @@ const charlie = "c".repeat(43);
 test("capabilities stay provider-neutral while Google shares one OAuth control provider", () => {
   assert.deepEqual(connectorCapabilities, [
     "github", "gmail", "gdrive", "gcalendar", "gtasks", "gdocs",
-    "gsheets", "gslides", "gcontacts", "slack", "x", "spotify", "soundcloud", "chatgpt",
+    "gsheets", "gslides", "gcontacts", "slack", "x", "spotify", "soundcloud", "link", "chatgpt",
   ]);
   for (const capability of [
     "gmail", "gdrive", "gcalendar", "gtasks", "gdocs", "gsheets", "gslides", "gcontacts",

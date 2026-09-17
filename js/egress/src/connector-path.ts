@@ -1,5 +1,5 @@
 export type ConnectorPathId = "github" | "gmail" | "gdrive" | "gcalendar" | "gtasks"
-  | "gdocs" | "gsheets" | "gslides" | "gcontacts" | "slack" | "x" | "spotify" | "soundcloud";
+  | "gdocs" | "gsheets" | "gslides" | "gcontacts" | "slack" | "x" | "spotify" | "soundcloud" | "link";
 
 const ENCODED_GOOGLE_PATH_SEPARATOR = /%(?:2e|2f|5c|25)/i;
 
