@@ -12,6 +12,7 @@ const activeAgentSessions = new Map();
 const pendingCloudflareAgentSessions = new Map();
 const cloudflareAgentSessions = new WeakSet();
 const hostConnections = new Map();
+const hostHttpRequests = new Map();
 const definitionHosts = new Map();
 let nextHostConnection = 1;
 let nextDefinitionHost = 1;
@@ -445,6 +446,32 @@ export function releaseDefinitionHost(id) {
 }
 
 const hostBridge = Object.freeze({
+  httpOpen(endpoint, apiKey, accountId, fedramp, sessionId, threadId, turnState, body) {
+    const host = requiredSessionHost(threadId);
+    if (typeof host.httpOpen !== "function") {
+      throw JSON.stringify({ kind: "transport", detail: "host HTTPS transport is unavailable", reconnectable: false });
+    }
+    const local = host.httpOpen(endpoint, apiKey, sessionId, { accountId, fedramp, threadId, turnState }, body);
+    const handle = nextHostConnection++;
+    hostHttpRequests.set(handle, { host, handle: local });
+    return handle;
+  },
+  async httpReady(handle) {
+    const request = hostHttpRequests.get(handle);
+    try { return await request.host.httpReady(request.handle); }
+    catch (error) { throw JSON.stringify(connectFailure(error)); }
+  },
+  async httpNext(handle) {
+    const request = hostHttpRequests.get(handle);
+    try { return await request.host.httpNext(request.handle); }
+    catch (error) { throw JSON.stringify(connectFailure(error)); }
+  },
+  httpClose(handle) {
+    const request = hostHttpRequests.get(handle);
+    if (!request) return;
+    hostHttpRequests.delete(handle);
+    request.host.httpClose(request.handle);
+  },
   async connect(endpoint, apiKey, accountId, fedramp, sessionId, threadId, turnState) {
     const host = requiredSessionHost(threadId);
     let result;

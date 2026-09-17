@@ -35,6 +35,7 @@ const DEFAULT_UPSTREAM_ORIGIN = "https://chatgpt.com";
 const MAX_UPSTREAM_HEADER_BYTES = 64 * 1024;
 const UPSTREAM_HANDSHAKE_TIMEOUT_MS = 15_000;
 const ALLOWED_HTTP_PATHS = new Set([
+  "/backend-api/codex/responses",
   "/backend-api/codex/alpha/search",
   "/backend-api/codex/images/edits",
   "/backend-api/codex/images/generations",
@@ -42,6 +43,7 @@ const ALLOWED_HTTP_PATHS = new Set([
 ]);
 const RESPONSES_PATH = "/backend-api/codex/responses";
 const FORWARDED_HEADERS = [
+  "accept",
   "authorization",
   "chatgpt-account-id",
   "content-type",
@@ -103,7 +105,8 @@ async function proxyHttp(request, response, upstreamOrigin) {
     response.end();
     return;
   }
-  if (request.method !== "POST" || !ALLOWED_HTTP_PATHS.has(incoming.pathname)) {
+  if (request.method !== "POST" || !ALLOWED_HTTP_PATHS.has(incoming.pathname)
+    || (incoming.pathname === RESPONSES_PATH && incoming.search)) {
     response.writeHead(404, { "cache-control": "no-store", "content-type": "text/plain" });
     response.end("not found\n");
     return;

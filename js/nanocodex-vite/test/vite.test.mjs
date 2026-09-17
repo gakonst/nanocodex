@@ -287,6 +287,21 @@ test("worker egress is loopback-only, fixed to ChatGPT, and forwards bounded HTT
     assert.equal(upstreamHttp[1].url, "https://chatgpt.com/backend-api/codex/alpha/search");
     assert.equal(upstreamHttp[1].headers.get("authorization"), "Bearer relay-access");
 
+    const relayedResponses = await fetch(`${egress.relayUrl}/http/codex-responses`, {
+      method: "POST", headers: { authorization: "Bearer relay-access", "content-type": "application/json",
+        accept: "text/event-stream", "x-codex-turn-state": "turn" }, body: '{"stream":true,"input":[]}',
+    });
+    assert.equal(await relayedResponses.text(), "ok");
+    assert.equal(upstreamHttp[2].url, "https://chatgpt.com/backend-api/codex/responses");
+    assert.equal(upstreamHttp[2].headers.get("accept"), "text/event-stream");
+    assert.equal(upstreamHttp[2].headers.get("x-codex-turn-state"), "turn");
+    for (const [suffix, method] of [["", "GET"], ["?x=1", "POST"], ["/compact", "POST"]]) {
+      const denied = await fetch(`${egress.relayUrl}/http/codex-responses${suffix}`, { method });
+      assert.equal(denied.status, 404);
+      await denied.text();
+    }
+    assert.equal(upstreamHttp.length, 3);
+
     const websocketUrl = new URL("backend-api/codex/responses", egress.url);
     websocketUrl.protocol = "ws:";
     const downstream = new WebSocket(websocketUrl, {

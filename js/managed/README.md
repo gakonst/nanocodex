@@ -92,11 +92,24 @@ would break already-created sessions.
 
 In production, the private `NANOCODEX_SESSION_MODEL_EGRESS` binding targets
 egress's `SessionModelEgress` entrypoint. New-strategy Sessions validate retained
-ownership locally for each model WebSocket connection and reconnect, avoiding
+ownership locally for each model WebSocket connection, reconnect, and HTTPS request, avoiding
 a broker callback into the originating Session. This binding is not exposed to
 tools. Credential selection remains live in the broker. Without the optional
 binding, the transport retains the usual broker ownership lookup; legacy
 directory subjects retain their existing authority.
+
+Hosted Responses requests can fall back from WebSockets to streaming HTTPS through
+that same private binding. Compaction permits the initial request plus two retries
+per transport, matching codex-rs; after WebSocket exhaustion it switches to HTTPS
+and replays the full retained history. The selected transport remains sticky for
+the live model session. If compaction still fails, its failure receipt is retained
+before the turn fails, so durable recovery replays the failure instead of starting
+another provider retry cycle. In-flight interruption and storage failures remain
+recoverable, and failed compaction preserves the conversation history.
+
+Deploy egress and the ChatGPT HTTP relay support before the managed runtime.
+Sponsored trial credentials currently reject HTTPS Responses before dispatch;
+the WebSocket admission and metering policy cannot be bypassed by fallback.
 
 Active clients call `POST /v1/agents/:id/prepare` (no body), or the managed SDK's
 `agent.prepare()`, when opening a conversation. The authenticated mutation

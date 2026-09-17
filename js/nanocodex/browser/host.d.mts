@@ -41,6 +41,12 @@ export type BrowserWebSocketRequest = BrowserWebSocketMetadata & (
     }
 );
 
+/** One streaming HTTPS Responses request. The host must preserve cancellation. */
+export type BrowserHttpRequest = Exclude<BrowserWebSocketRequest, { authorization: "preconnect" }> & {
+  body: string;
+  signal: AbortSignal;
+};
+
 export type BrowserWebSocketConnection = {
   socket: WebSocket;
   status?: number | undefined;
@@ -59,6 +65,7 @@ export function createBrowserHost(options?: {
     sessionId: string,
     request: BrowserWebSocketRequest,
   ) => WebSocket | BrowserWebSocketConnection | Promise<WebSocket | BrowserWebSocketConnection>;
+  createResponse?: (endpoint: string, sessionId: string, request: BrowserHttpRequest) => Promise<Response>;
   filesystem?: Workspace;
   filesystemTools?: boolean;
   onEvent?: (eventJson: string) => void;

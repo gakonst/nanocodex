@@ -90,7 +90,9 @@ pub(crate) use transport::{ResponsesError, ResponsesHistory, ResponsesTransport,
 #[cfg(feature = "client")]
 pub(crate) use tower::{attempt, middleware, service, service_error, stream};
 #[cfg(all(feature = "client", not(target_family = "wasm")))]
-pub(crate) use transport::{connector, http};
+pub(crate) use transport::connector;
+#[cfg(feature = "client")]
+pub(crate) use transport::http;
 #[cfg(feature = "client")]
 pub(crate) use transport::{socket, telemetry};
 

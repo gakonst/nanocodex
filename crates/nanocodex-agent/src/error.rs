@@ -78,6 +78,16 @@ pub enum NanocodexError {
         detail: &'static str,
     },
 
+    /// Compaction exhausted its provider attempts; history remains intact.
+    #[cfg(feature = "openai")]
+    #[error("compaction failed: {detail}")]
+    CompactionFailed {
+        /// Recorded provider failure, replayed without another provider request.
+        detail: String,
+        /// Whether the provider requires this session to stop accepting work.
+        requires_session_stop: bool,
+    },
+
     /// The immutable request prefix could not be serialized for fingerprinting.
     #[cfg(feature = "openai")]
     #[error("failed to fingerprint the immutable prompt prefix: {0}")]

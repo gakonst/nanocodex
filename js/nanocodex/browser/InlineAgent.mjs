@@ -77,6 +77,7 @@ export async function create(options = {}) {
     websocketWarmup,
     WebSocketImpl,
     createWebSocket,
+    createResponse,
   } = resolveResponsesTransport(transport ?? defaultHostManagedTransport());
   const subagentsEnabled = internalRuntime?.subagentsEnabled;
   if (subagentsEnabled !== undefined && typeof subagentsEnabled !== "boolean") {
@@ -109,6 +110,7 @@ export async function create(options = {}) {
   const host = createBrowserHost({
     WebSocketImpl,
     createWebSocket,
+    createResponse,
     hostAuth: hostAuth === true
       || (apiKey === undefined && mpp === undefined && subscription === undefined),
     hostManagedProtocol,

@@ -92,7 +92,7 @@ export function scopedManagedModelEgress(
       // The retained session configuration owns selection, never a runtime header.
       request.headers.delete("x-nanocodex-chatgpt-account-id");
       if (chatGptAccountId !== undefined) request.headers.set("x-nanocodex-chatgpt-account-id", chatGptAccountId);
-      if (sessionModel && request.url === "https://nanocodex.internal/v1/responses" && request.method === "GET") {
+      if (sessionModel && request.url === "https://nanocodex.internal/v1/responses" && (request.method === "GET" || request.method === "POST")) {
         // Check authoritative local state at connection time, including every
         // reconnect. Do not retain an owner across deletion or durability export.
         const owner = sessionModel.owner();

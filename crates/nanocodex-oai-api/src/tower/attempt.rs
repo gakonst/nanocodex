@@ -18,6 +18,9 @@ use tokio::sync::mpsc;
 use crate::stream::{CompactionOutput, GenerationOutput};
 
 const RESPONSE_MAX_ATTEMPTS: NonZeroU32 = NonZeroU32::new(5).unwrap();
+// Match codex-rs remote compaction: the initial request plus two retries
+// on each transport, before fallback or returning the exhausted error.
+const COMPACTION_MAX_ATTEMPTS: u32 = 3;
 
 /// Kind of Responses operation passed through the Tower service stack.
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -261,7 +264,7 @@ impl ResponsesAttempt {
             profile,
             observer,
             attempt: 1,
-            max_attempts: RESPONSE_MAX_ATTEMPTS.get(),
+            max_attempts: COMPACTION_MAX_ATTEMPTS,
             full_replay: previous_response_id.is_none(),
             logical_turn: 0,
             session_transport,

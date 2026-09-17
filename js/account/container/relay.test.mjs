@@ -89,3 +89,47 @@ test("completed call preserves SDP, location, and the fully uploaded body", { ti
   assert.equal(timing.socket_reused, false);
   assert.deepEqual(Object.keys(timing).sort(), ["process_age_ms", "fetch_ms", "socket_wait_ms", "upload_ms", "response_wait_ms", "socket_reused"].sort());
 });
+
+
+test("Responses POST streams SSE and cancels the provider on disconnect", { timeout: 5_000 }, async (t) => {
+  let closed;
+  const upstreamClosed = new Promise((resolve) => { closed = resolve; });
+  const url = await fixture(t, (incoming, response) => {
+    assert.equal(incoming.url, "/backend-api/codex/responses");
+    assert.equal(incoming.headers.accept, "text/event-stream");
+    assert.equal(incoming.headers.authorization, "Bearer fixture");
+    assert.equal(incoming.headers["x-private"], undefined);
+    incoming.resume();
+    incoming.on("end", () => {
+      response.writeHead(200, { "content-type": "text/event-stream", "x-codex-turn-state": "turn", "set-cookie": "secret" });
+      response.write("data: first\n\n");
+    });
+    response.once("close", closed);
+  });
+  const outgoing = request(url.replace(path, "/backend-api/codex/responses"), { method: "POST", headers: {
+    authorization: "Bearer fixture", "content-type": "application/json", accept: "text/event-stream", "x-private": "hidden",
+  } });
+  outgoing.on("error", () => {});
+  outgoing.end('{"stream":true,"input":[]}');
+  const [response] = await once(outgoing, "response");
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["content-type"], "text/event-stream");
+  assert.equal(response.headers["x-codex-turn-state"], "turn");
+  assert.equal(response.headers["set-cookie"], undefined);
+  const [chunk] = await once(response, "data");
+  assert.equal(chunk.toString(), "data: first\n\n");
+  outgoing.destroy();
+  await upstreamClosed;
+});
+
+test("Responses relay rejects alternate methods and paths", async (t) => {
+  let calls = 0;
+  const url = await fixture(t, (_request, response) => { calls++; response.end(); });
+  const responses = url.replace(path, "/backend-api/codex/responses");
+  for (const [target, method] of [[responses, "GET"], [`${responses}/compact`, "POST"], [`${responses}?x=1`, "POST"]]) {
+    const response = await fetch(target, { method, headers: { authorization: "Bearer fixture" } });
+    assert.equal(response.status, 404);
+    await response.text();
+  }
+  assert.equal(calls, 0);
+});

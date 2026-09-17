@@ -1,4 +1,5 @@
 import type {
+  BrowserHttpRequest,
   BrowserWebSocketConnection,
   BrowserWebSocketRequest,
 } from "../browser/host.mjs";
@@ -23,6 +24,7 @@ export type CloudflareEgressOptions = Readonly<{
 export type CloudflareEgressTransportOptions = Readonly<{
   apiBaseUrl: string;
   websocketUrl: string;
+  createResponse(endpoint: string, sessionId: string, request: BrowserHttpRequest): Promise<Response>;
   createWebSocket(
     endpoint: string,
     sessionId: string,
@@ -31,7 +33,7 @@ export type CloudflareEgressTransportOptions = Readonly<{
 }>;
 
 /**
- * Creates the brokered WebSocket seam for a managed Cloudflare Worker.
+ * Creates the brokered WebSocket and streaming HTTPS seams for a managed Cloudflare Worker.
  *
  * The managed Worker supplies only fixed placeholders to `binding`; the
  * separately deployed broker owns and injects the real provider credential.
