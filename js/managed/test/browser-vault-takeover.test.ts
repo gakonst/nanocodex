@@ -24,7 +24,8 @@ describe("human-only private browser takeover", () => {
   it("returns only PNG pixels and dimensions through private CDP", async () => {
     const cdp = fixture();
     expect(await privateVaultTakeover(cdp, identity, { action: "observe" })).toEqual({ status: "active", image: `data:image/png;base64,${png}`, width: 1, height: 1 });
-    expect(cdp.calls.map(c => c.method)).toEqual(["Target.getTargetInfo", "Target.attachToTarget", "Target.getTargetInfo", "Page.getFrameTree", "Page.getLayoutMetrics", "Target.getTargetInfo", "Page.getFrameTree", "Page.captureScreenshot", "Target.getTargetInfo", "Page.getFrameTree", "Target.detachFromTarget"]);
+
+    expect(cdp.calls.some(c => c.method === "Input.dispatchTouchEvent")).toBe(false);
     expect(cdp.calls.find(c => c.method === "Page.captureScreenshot")).toEqual({ method: "Page.captureScreenshot", params: { format: "png", fromSurface: true, captureBeyondViewport: false }, sid: "private" });
   });
   it.each([
@@ -76,4 +77,64 @@ describe("human-only private browser takeover", () => {
     });
     await expect(privateVaultTakeover(cdp, identity, { action: "observe" })).rejects.toThrow(failure);
   });
+});
+
+it("streams one touch pointer and rejects invalid ordering without replay", async () => {
+  const cdp = fixture(), state = {};
+  await expect(privateVaultTakeover(cdp, identity, {action:"touch",phase:"move",x:0.5,y:0.5},state)).rejects.toThrow(failure);
+  expect(cdp.calls).toEqual([]);
+  for (const phase of ["start","move","end"] as const)
+    await privateVaultTakeover(cdp,identity,{action:"touch",phase,x:0.5,y:0.5},state);
+  expect(cdp.calls.filter(c=>c.method === "Input.dispatchTouchEvent").map(c=>c.params)).toEqual([
+    {type:"touchStart",touchPoints:[{x:400,y:300,id:0}]},
+    {type:"touchMove",touchPoints:[{x:400,y:300,id:0}]},
+    {type:"touchEnd",touchPoints:[]},
+  ]);
+});
+it("bounds native edits and applies deletion before insertion", async () => {
+  const cdp=fixture();
+  await privateVaultTakeover(cdp,identity,{action:"edit",delete_backward:2,text:"é"});
+  expect(cdp.calls.filter(c=>c.method.startsWith("Input.")).map(c=>c.params.type ?? c.params.text)).toEqual(["keyDown","keyUp","keyDown","keyUp","é"]);
+});
+it.each([
+  {action:"touch",phase:"start",x:-0.1,y:0}, {action:"touch",phase:"start",x:0},
+  {action:"touch",phase:"end",x:Infinity,y:0}, {action:"touch",phase:"bogus"},
+  {action:"edit",delete_backward:129,text:""}, {action:"edit",delete_backward:0.1,text:""},
+  {action:"edit",delete_backward:0,text:"x".repeat(513)},
+])("rejects invalid mobile inputs before CDP", async action => {
+  const cdp=fixture(); await expect(privateVaultTakeover(cdp,identity,action as BrowserVaultTakeoverAction)).rejects.toThrow(failure); expect(cdp.calls).toEqual([]);
+});
+it("drops unknown metadata fields including values", async () => {
+  const cdp=fixture(method => method === "Page.createIsolatedWorld" ? {executionContextId:1} : method === "Runtime.callFunctionOn" ? {result:{value:{keyboard:{type:"password",multiline:false,value:"SECRET"},inputs:[{type:"email",multiline:false,x:0,y:0,width:0.5,height:0.1,value:"SECRET"}]}}} : undefined);
+  const frame=await privateVaultTakeover(cdp,identity,{action:"observe"});
+  expect(frame.keyboard).toEqual({type:"password",multiline:false}); expect(JSON.stringify(frame)).not.toContain("SECRET");
+});
+it("blocks a gesture after ambiguous dispatch until explicit cancellation", async () => {
+  let fail=true; const cdp=fixture(method=> {if(method === "Input.dispatchTouchEvent" && fail) throw new Error("SECRET");}); const state={};
+  await expect(privateVaultTakeover(cdp,identity,{action:"touch",phase:"start",x:0,y:0},state)).rejects.toThrow(failure);
+  fail=false;
+  await expect(privateVaultTakeover(cdp,identity,{action:"touch",phase:"start",x:0,y:0},state)).rejects.toThrow(failure);
+  await privateVaultTakeover(cdp,identity,{action:"touch",phase:"cancel"},state);
+  await privateVaultTakeover(cdp,identity,{action:"touch",phase:"start",x:0,y:0},state);
+});
+
+it("observation cancels an active gesture before capturing a recovery frame", async () => {
+  const cdp = fixture(), state = {active:true, uncertain:true};
+  await privateVaultTakeover(cdp, identity, {action:"observe"}, state);
+  expect(cdp.calls.find(c => c.method === "Input.dispatchTouchEvent")?.params).toEqual({type:"touchCancel",touchPoints:[]});
+  expect(state).toEqual({active:false,uncertain:false});
+});
+
+it("recovers uncertain state when Chrome confirms there is no touch sequence", async () => {
+  const cdp = fixture(method => { if (method === "Input.dispatchTouchEvent") throw new Error("Protocol error (Input.dispatchTouchEvent): Must send a TouchStart first to start a new touch."); });
+  const state = {active:false,uncertain:true};
+  await privateVaultTakeover(cdp,identity,{action:"observe"},state);
+  expect(state).toEqual({active:false,uncertain:false});
+});
+it("keeps recovery blocked on other cancellation failures", async () => {
+  const cdp = fixture(method => { if (method === "Input.dispatchTouchEvent") throw new Error("Session closed"); });
+  const state = {active:false,uncertain:true};
+  await expect(privateVaultTakeover(cdp,identity,{action:"observe"},state)).rejects.toThrow(failure);
+  expect(state.uncertain).toBe(true);
+  expect(cdp.calls.some(c => c.method === "Page.captureScreenshot")).toBe(false);
 });

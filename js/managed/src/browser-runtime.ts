@@ -11,7 +11,7 @@ import {
   type CreateBrowserToolsOptions,
 } from "agents/browser/ai";
 import type { NamedTool, ToolContext } from "nanocodex";
-import { privateVaultTakeover, type BrowserVaultTakeoverAction } from "./browser-vault-takeover";
+import { privateVaultTakeover, releasePrivateVaultTakeover, validateBrowserVaultTakeoverAction, type BrowserVaultTakeoverAction, type BrowserVaultTouchState } from "./browser-vault-takeover";
 
 import {
   fillBrowserVault, inspectBrowserVault, parseBrowserVaultRequest, PrivateBrowserCdp, PrivateBrowserContinuationSession,
@@ -410,6 +410,7 @@ export async function createManagedBrowserRuntime(
   }
   const privateBrowser = browser;
   const privateContinuation = new PrivateBrowserContinuationSession(privateBrowser);
+  const privateTakeover = new PrivateBrowserContinuationSession(privateBrowser);
   const secrets = secret ? [secret] : [];
   const quarantineKey = `browser-vault-quarantine:${provider}:${options.sessionId}`;
   const takeoverKey = `browser-vault-takeover:${provider}:${options.sessionId}`;
@@ -447,6 +448,7 @@ export async function createManagedBrowserRuntime(
     const info = await runtime.connector.sessionInfo();
     if (info && info.sessionId !== quarantine.sessionId) {
       privateContinuation.close();
+      privateTakeover.close();
       await options.ctx.storage.delete(quarantineKey);
       isolated = false;
       return;
@@ -613,22 +615,42 @@ export async function createManagedBrowserRuntime(
         await options.ctx.storage.delete(challengeKey);
         await options.ctx.storage.put(takeoverKey, lease);
         privateContinuation.close();
+        privateTakeover.close();
         return { type: "browser_vault_takeover", status: "input_required", challenge_id: lease.id,
           agent_id: options.sessionId, origin: identity.expected_origin, expires_at: lease.expiresAt };
       }); } catch { throw new Error("Private user control is unavailable"); }
     }),
   });
+  let takeoverTouch: { leaseId: string; state: BrowserVaultTouchState } | undefined;
+  let takeoverTyping: { index: number; text: string } | undefined;
+  const rememberPrivateTyping = (action: Record<string, unknown>) => {
+    if (action.action === "click" || (action.action === "touch" && action.phase === "start")
+      || (action.action === "key" && ["Enter", "Tab", "Escape"].includes(String(action.key)))) takeoverTyping = undefined;
+    const text = (action.action === "type" || action.action === "edit") && typeof action.text === "string" ? action.text : "";
+    const deleted = action.action === "edit" && Number.isInteger(action.delete_backward) ? Number(action.delete_backward) : action.action === "key" && action.key === "Backspace" ? 1 : 0;
+    if (!text && !deleted) return;
+    if (!takeoverTyping) takeoverTyping = {index: secrets.push("") - 1, text: ""};
+    const characters = Array.from(new Intl.Segmenter(undefined, {granularity:"grapheme"}).segment(takeoverTyping.text), part => part.segment);
+    takeoverTyping.text = characters.slice(0, Math.max(0, characters.length - Math.max(0, deleted))).join("") + text;
+    // Keep the complete typed segment, not every keystroke (which would redact whole pages).
+    secrets[takeoverTyping.index] = takeoverTyping.text;
+  };
   const submitVaultTakeover = (input: unknown, signal: AbortSignal): Promise<unknown> => exclusive(async () => {
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Invalid private control request");
     const value = input as Record<string, unknown>;
     if (typeof value.challenge_id !== "string" || !/^[0-9a-f-]{36}$/.test(value.challenge_id)
-      || !["observe", "click", "type", "key", "scroll", "finish"].includes(String(value.action))) throw new Error("Invalid private control request");
+      || !["observe", "click", "type", "edit", "touch", "key", "scroll", "finish"].includes(String(value.action))) throw new Error("Invalid private control request");
     signal.throwIfAborted();
     const lease = await options.ctx.storage.get<HumanLease>(takeoverKey);
     if (!lease || value.challenge_id !== lease.id) throw new Error("Private control is unavailable");
     if (value.action === "finish") {
       if (Object.keys(value).some(key => !["challenge_id", "action"].includes(key))) throw new Error("Invalid private control request");
+      try {
+        await privateTakeover.run(lease.sessionId, lease.identity, signal, cdp => releasePrivateVaultTakeover(cdp, lease.identity.target_id));
+      } catch { /* No screenshot or retry is needed to relinquish the lease. */ }
+      privateTakeover.close();
       await options.ctx.storage.delete(takeoverKey);
+      takeoverTouch = undefined; takeoverTyping = undefined;
       return { status: "finished" };
     }
     if (lease.expiresAt <= Date.now()) throw new Error("Private control expired; finish the panel or request a new one");
@@ -638,16 +660,18 @@ export async function createManagedBrowserRuntime(
       || quarantine.targetId !== lease.identity.target_id || quarantine.origin !== lease.identity.expected_origin
       || quarantine.vaultId !== lease.identity.vault_id) throw new Error("Private control session changed");
     const { challenge_id: _id, ...action } = value;
-    let cdp: PrivateBrowserCdp | undefined;
-    const abort = () => cdp?.close();
-    signal.addEventListener("abort", abort, { once: true });
+    if (!takeoverTouch || takeoverTouch.leaseId !== lease.id) {
+      takeoverTouch = {leaseId:lease.id,state:{}}; takeoverTyping = undefined;
+    }
     try {
-      cdp = await PrivateBrowserCdp.connect(privateBrowser, info.sessionId, signal);
-      signal.throwIfAborted();
-      if (action.action === "type" && typeof action.text === "string") secrets.push(action.text);
-      return await privateVaultTakeover(cdp, lease.identity, action as BrowserVaultTakeoverAction);
-    } catch { throw new Error("Private control could not be confirmed; refresh the view before trying another action"); }
-    finally { signal.removeEventListener("abort", abort); cdp?.close(); }
+      validateBrowserVaultTakeoverAction(action as BrowserVaultTakeoverAction);
+      rememberPrivateTyping(action);
+      return await privateTakeover.run(info.sessionId, lease.identity, signal,
+        cdp => privateVaultTakeover(cdp, lease.identity, action as BrowserVaultTakeoverAction, takeoverTouch!.state));
+    } catch {
+      takeoverTouch.state.uncertain = true;
+      throw new Error("Private control could not be confirmed; refresh the view before trying another action");
+    }
   });
   const submitVaultChallenge = (input: unknown, signal: AbortSignal): ReturnType<ManagedBrowserRuntime["submitVaultChallenge"]> => exclusive(async () => {
     // This method is only exposed to the authenticated owner HTTP route, never a model tool.
@@ -688,6 +712,7 @@ export async function createManagedBrowserRuntime(
       if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length) throw new Error("Invalid close request");
       try {
         privateContinuation.close();
+        privateTakeover.close();
         await runtime.connector.closeSession();
         await options.ctx.storage.delete(quarantineKey);
         await options.ctx.storage.delete(challengeKey);
@@ -709,6 +734,7 @@ export async function createManagedBrowserRuntime(
     },
     async close() {
       privateContinuation.close();
+      privateTakeover.close();
       await runtime.connector.closeSession();
     },
   });

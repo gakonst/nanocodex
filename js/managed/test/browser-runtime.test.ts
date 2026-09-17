@@ -400,7 +400,7 @@ describe("private browser verification lifecycle", () => {
   const quarantineKey = "browser-vault-quarantine:cloudflare:agent-vault";
   async function fixture() {
     const stored = new Map<string, unknown>();
-    const state = { session: "browser-1", loader: "loader-1", origin: identity.expected_origin, ambiguous: false, otp: true };
+    const state = { session: "browser-1", loader: "loader-1", origin: identity.expected_origin, ambiguous: false, otp: true, snapshotText: "fresh-account-user fresh-account-password" };
     const resolve = vi.fn(async () => ({ username: "fresh-account-user", password: "fresh-account-password" }));
     const injection = vi.fn(async () => {
       expect(stored.has(challengeKey)).toBe(false);
@@ -414,11 +414,13 @@ describe("private browser verification lifecycle", () => {
       }
       if (method === "Target.attachToTarget") return { sessionId: "attached" };
       if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "top", loaderId: state.loader, url: state.origin + "/verify" } } };
+      if (method === "Page.getLayoutMetrics") return { cssLayoutViewport: { clientWidth: 800, clientHeight: 600 } };
+      if (method === "Page.captureScreenshot") return { data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1X8AAAAASUVORK5CYII=" };
       if (method === "Page.createIsolatedWorld") return { executionContextId: 7 };
       if (params.functionDeclaration === BROWSER_VAULT_OTP_FUNCTION) return injection();
       const status = { status: state.otp ? "otp_form" : "unknown", flags: [false, false, state.otp] };
       if (params.arguments?.[1]?.value === "snapshot") return { result: { value: { ...status,
-        snapshot_id: params.arguments[2].value, title: "Account", text: "fresh-account-user fresh-account-password", elements: [] } } };
+        snapshot_id: params.arguments[2].value, title: "Account", text: state.snapshotText, elements: [] } } };
       return { result: { value: status } };
     });
     const connect = vi.spyOn(PrivateBrowserCdp, "connect").mockResolvedValue({ send, close() {} } as unknown as PrivateBrowserCdp);
@@ -545,6 +547,38 @@ describe("private browser verification lifecycle", () => {
       expect(f.stored.has(quarantineKey)).toBe(true);
       await expect(f.call("browser_vault_snapshot", identity, recreated)).resolves.toMatchObject({ title: "Account" });
       await expect(f.call("browser_execute", { code: "1" }, recreated)).rejects.toThrow("isolated");
+    } finally { f.connect.mockRestore(); }
+  });
+  it("redacts accumulated native keyboard text without redacting every typed letter", async () => {
+    const f = await fixture();
+    try {
+      await f.request();
+      const lease = await f.call("browser_vault_request_takeover") as { challenge_id: string };
+      for (const text of ["s", "e", "c", "r", "e", "t"]) {
+        await f.runtime.submitVaultTakeover({ challenge_id: lease.challenge_id, action: "edit", delete_backward: 0, text }, context.signal);
+      }
+      await f.runtime.submitVaultTakeover({ challenge_id: lease.challenge_id, action: "finish" }, context.signal);
+      f.state.snapshotText = "Account secret welcome";
+      const snapshot = JSON.stringify(await f.call("browser_vault_snapshot"));
+      expect(snapshot).toContain("Account [redacted] welcome");
+      expect(JSON.stringify([...f.stored.values()])).not.toContain("secret");
+    } finally { f.connect.mockRestore(); }
+  });
+  it.each(["navigation", "provider failure", "expiration"])("releases human control after %s without reading the page", async failure => {
+    const f = await fixture();
+    const takeoverKey = "browser-vault-takeover:cloudflare:agent-vault";
+    try {
+      await f.request();
+      const lease = await f.call("browser_vault_request_takeover") as { challenge_id: string };
+      if (failure === "navigation") f.state.origin = "https://other.example";
+      if (failure === "provider failure") f.connect.mockRejectedValue(new Error("unavailable"));
+      if (failure === "expiration") f.stored.set(takeoverKey, { ...f.stored.get(takeoverKey) as object, expiresAt: 0 });
+      f.send.mockClear();
+      await expect(f.runtime.submitVaultTakeover({ challenge_id: lease.challenge_id, action: "finish" }, context.signal)).resolves.toEqual({ status: "finished" });
+      expect(f.stored.has(takeoverKey)).toBe(false);
+      expect(f.stored.has(quarantineKey)).toBe(true);
+      expect(f.send.mock.calls.some(([method]) => ["Page.captureScreenshot", "Runtime.callFunctionOn", "Runtime.evaluate"].includes(method))).toBe(false);
+      await expect(f.call("browser_execute", { code: "1" })).rejects.toThrow("isolated");
     } finally { f.connect.mockRestore(); }
   });
   it("does not offer intake without a supported OTP form", async () => {
