@@ -43,6 +43,11 @@ impl ScreenPublisher {
         // Explicit deployment fallback for networks where ICE cannot connect
         // (for example, nested NAT without an authenticated TURN relay).
         let video = if std::env::var("NANOCODEX_SCREEN_TRANSPORT").as_deref() == Ok("frames-v1") {
+            if cfg!(target_os = "macos") && video.is_some() {
+                return Err(error(
+                    "macOS remote viewing requires WebRTC; remove NANOCODEX_SCREEN_TRANSPORT=frames-v1",
+                ));
+            }
             None
         } else {
             video
@@ -362,8 +367,12 @@ async fn session(
     let video = match video {
         Some(source) => match Video::start(source, audio).await {
             Ok(video) => Some(video),
-            Err(_) => {
-                tracing::warn!("Continuous screen encoder unavailable; using screenshot fallback");
+            Err(error) => {
+                if cfg!(target_os = "macos") {
+                    tracing::error!(%error, "macOS WebRTC encoder unavailable; retrying video startup");
+                    return Err(SessionError::Closed);
+                }
+                tracing::warn!(%error, "Continuous screen encoder unavailable; using screenshot fallback");
                 None
             }
         },

@@ -9,18 +9,31 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .json()
         .with_env_filter("nanocodex_hand=debug")
         .init();
+    let mut elapsed = Vec::new();
     for sample in 0..10 {
         let began = Instant::now();
         let frame = nanocodex_hand::request(serde_json::json!({"action":"observe"}))?;
+        elapsed.push(began.elapsed().as_secs_f64() * 1000.0);
         println!(
             "{}",
             serde_json::json!({
-                "sample": sample, "elapsed_ms": began.elapsed().as_secs_f64() * 1000.0,
+                "sample": sample, "elapsed_ms": elapsed[sample],
                 "status": frame["status"], "width": frame["width"], "height": frame["height"],
                 "encoded_bytes": frame["jpeg"].as_str().map(str::len),
             })
         );
     }
+    let cold_ms = elapsed.remove(0);
+    elapsed.sort_by(f64::total_cmp);
+    println!(
+        "{}",
+        serde_json::json!({
+            "summary": true, "cold_ms": cold_ms,
+            "warm_median_ms": elapsed[elapsed.len() / 2],
+            "warm_max_ms": elapsed[elapsed.len() - 1],
+            "warm_samples": elapsed.len(),
+        })
+    );
     Ok(())
 }
 

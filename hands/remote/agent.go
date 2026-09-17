@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,25 @@ import (
 	"os/exec"
 	"time"
 )
+
+//go:embed capture_policy.json
+var capturePolicyJSON []byte
+
+var capturePolicy = func() struct {
+	MaxDimension   int   `json:"max_dimension"`
+	MaxBase64Bytes int   `json:"max_base64_bytes"`
+	JPEGQualities  []int `json:"jpeg_qualities"`
+} {
+	var policy struct {
+		MaxDimension   int   `json:"max_dimension"`
+		MaxBase64Bytes int   `json:"max_base64_bytes"`
+		JPEGQualities  []int `json:"jpeg_qualities"`
+	}
+	if err := json.Unmarshal(capturePolicyJSON, &policy); err != nil {
+		panic(err)
+	}
+	return policy
+}()
 
 type agentInput struct {
 	Context    json.RawMessage `json:"context,omitempty"`
@@ -130,7 +150,7 @@ type boundedSnapshot struct {
 func (output *boundedSnapshot) Write(data []byte) (int, error) {
 	limit := output.limit
 	if limit == 0 {
-		limit = 500_000
+		limit = capturePolicy.MaxBase64Bytes / 4 * 3
 	}
 	if output.buffer.Len()+len(data) > limit {
 		return 0, errors.New("screen snapshot exceeds limit")
@@ -143,16 +163,19 @@ func (output *boundedSnapshot) Write(data []byte) (int, error) {
 func snapshotDesktop(parent context.Context, width, height int) agentResult {
 	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
-	scale := math.Min(1, 1280/float64(max(width, height)))
+	if width < 1 || height < 1 || width > 65536 || height > 65536 {
+		return agentResult{Status: "unavailable"}
+	}
+	scale := math.Min(1, float64(capturePolicy.MaxDimension)/float64(max(width, height)))
 	// Use grim's JPEG encoder when available: avoid PNG compression, a full
 	// decode, and a second encode on every relay/agent observation.
 	direct := &boundedSnapshot{}
-	command := exec.CommandContext(ctx, "grim", "-t", "jpeg", "-q", "65", "-s", fmt.Sprintf("%.6f", scale), "-")
+	command := exec.CommandContext(ctx, "grim", "-t", "jpeg", "-q", fmt.Sprint(capturePolicy.JPEGQualities[0]), "-s", fmt.Sprintf("%.6f", scale), "-")
 	command.Stdout = direct
 	command.WaitDelay = time.Second
 	if command.Run() == nil {
 		config, err := jpeg.DecodeConfig(bytes.NewReader(direct.buffer.Bytes()))
-		if err == nil && ctx.Err() == nil && config.Width > 0 && config.Height > 0 && config.Width <= 1280 && config.Height <= 1280 {
+		if err == nil && ctx.Err() == nil && config.Width > 0 && config.Height > 0 && config.Width <= capturePolicy.MaxDimension && config.Height <= capturePolicy.MaxDimension {
 			return agentResult{Status: "ok", JPEG: base64.StdEncoding.EncodeToString(direct.buffer.Bytes()), Width: config.Width, Height: config.Height}
 		}
 	}
@@ -167,18 +190,23 @@ func snapshotDesktop(parent context.Context, width, height int) agentResult {
 		return agentResult{Status: "unavailable"}
 	}
 	config, err := png.DecodeConfig(bytes.NewReader(captured.buffer.Bytes()))
-	if err != nil || config.Width < 1 || config.Height < 1 || config.Width > 1280 || config.Height > 1280 {
+	if err != nil || config.Width < 1 || config.Height < 1 || config.Width > capturePolicy.MaxDimension || config.Height > capturePolicy.MaxDimension {
 		return agentResult{Status: "unavailable"}
 	}
 	frame, err := png.Decode(bytes.NewReader(captured.buffer.Bytes()))
 	if err != nil || ctx.Err() != nil {
 		return agentResult{Status: "unavailable"}
 	}
-	output := &boundedSnapshot{}
-	if jpeg.Encode(output, frame, &jpeg.Options{Quality: 65}) != nil || ctx.Err() != nil {
-		return agentResult{Status: "unavailable"}
+	for _, quality := range capturePolicy.JPEGQualities {
+		output := &boundedSnapshot{}
+		if ctx.Err() != nil {
+			break
+		}
+		if jpeg.Encode(output, frame, &jpeg.Options{Quality: quality}) == nil && ctx.Err() == nil {
+			return agentResult{Status: "ok", JPEG: base64.StdEncoding.EncodeToString(output.buffer.Bytes()), Width: config.Width, Height: config.Height}
+		}
 	}
-	return agentResult{Status: "ok", JPEG: base64.StdEncoding.EncodeToString(output.buffer.Bytes()), Width: config.Width, Height: config.Height}
+	return agentResult{Status: "unavailable"}
 }
 
 func (action agentInput) validateContext() (*observationContext, error) {

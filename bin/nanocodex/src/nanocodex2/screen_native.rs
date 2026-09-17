@@ -334,3 +334,7 @@ fn native_video() -> super::screen_video::VideoSource {
         })
     })
 }
+
+#[cfg(all(test, target_os = "macos"))]
+#[path = "screen_macos_live_test.rs"]
+mod screen_macos_live_test;

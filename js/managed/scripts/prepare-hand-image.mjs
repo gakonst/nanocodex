@@ -6,7 +6,7 @@ const target = fileURLToPath(new URL("../.generated/hand/", import.meta.url));
 await rm(target, { recursive: true, force: true });
 await mkdir(target, { recursive: true });
 for (const name of await readdir(source)) {
-  if (name === "go.mod" || name === "go.sum" || name === "observation_helper.py" || (name.endsWith(".go") && !name.endsWith("_test.go"))) {
+  if (name === "go.mod" || name === "go.sum" || name === "observation_helper.py" || name === "capture_policy.json" || (name.endsWith(".go") && !name.endsWith("_test.go"))) {
     await cp(`${source}/${name}`, `${target}/${name}`);
   }
 }
