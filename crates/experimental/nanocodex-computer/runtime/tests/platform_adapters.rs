@@ -11,9 +11,7 @@ fn python() -> String {
         return path;
     }
     #[cfg(windows)]
-    for directory in
-        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-    {
+    for directory in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {
         let candidate = directory.join("python.exe");
         if candidate.is_file() {
             return candidate.to_string_lossy().into_owned();
