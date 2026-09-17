@@ -14,7 +14,9 @@
     "prebuild": "npm run prepare:code-evaluator",
     "prepare:code-evaluator": "node scripts/prepare-code-evaluator.mjs && node scripts/prepare-hand-image.mjs",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "phone:bridge": "node scripts/phone-bridge.mjs",
+    "test:phone": "vitest run test/phone-tool.test.ts test/twilio-voice.test.ts test/phone-container.test.ts && node --test scripts/phone-bridge.test.mjs scripts/phone-delegation.test.mjs"
   },
   "dependencies": {
     "nanocodex-computer": "workspace:*",

@@ -18,7 +18,9 @@ import { managedCredentialSubject, scopedManagedModelEgress, sessionCredentialOw
 import { remoteICE } from "./hand-remote-ice";
 import { REMOTE_VM_ASSERTION, type RemoteVMPublisher } from "./hand-remote";
 import { serverHandTool } from "./ssh-hand-setup";
+import { phoneAdminConfigured } from "./phone-admin";
 import { phoneTools } from "./phone-tool";
+import { emailTools, type EmailConfig } from "./email-tool";
 import { PhoneContainer } from "./phone-container";
 export { PhoneContainer };
 import { createVaultIntakeTool } from "./vault-intake-tool";
@@ -355,6 +357,7 @@ const MEMORY_TEAM_ASSERTION = "x-nanocodex-team-id";
 const MEMORY_SUBJECT_ASSERTION = "x-nanocodex-subject-id";
 const MEMORY_MUTATION_ASSERTION = "x-nanocodex-memory-mutation";
 export interface Env extends
+  EmailConfig,
   AccountAuthEnv,
   ChiefOfStaffPrincipalEnv,
   HostPrincipalEnv {
@@ -366,6 +369,7 @@ export interface Env extends
   NANOCODEX_PHONE_BRIDGE_URL?: string;
   NANOCODEX_PHONE_BRIDGE_TOKEN?: string;
   NANOCODEX_PHONE_OWNER_ID?: string;
+  NANOCODEX_PHONE_ADMIN_ID?: string;
   NANOCODEX_PHONE_PUBLIC_ORIGIN?: string;
   NANOCODEX_PHONE_MANAGED_API_KEY?: string;
   TWILIO_VOICE_FROM_NUMBER?: string;
@@ -1409,7 +1413,7 @@ async function managedFetchRoute(
 ): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/v1/phone/bridge/")) {
-      if (!env.NANOCODEX_PHONES || !env.NANOCODEX_PHONE_OWNER_ID) return new Response("Not found", { status: 404 });
+      if (!env.NANOCODEX_PHONES || !env.NANOCODEX_PHONE_OWNER_ID || !phoneAdminConfigured(env)) return new Response("Not found", { status: 404 });
       const target = new URL(url);
       target.pathname = url.pathname.slice("/v1/phone/bridge".length);
       return env.NANOCODEX_PHONES.getByName(env.NANOCODEX_PHONE_OWNER_ID).fetch(new Request(target, request));
@@ -7681,6 +7685,16 @@ export class DurableAgentSession extends DurableComputerSession {
       })]),
       ...(multiplayer ? [] : this.#memoryTools()),
       ...(multiplayer ? [] : [createVaultIntakeTool(context => this.#authorizeVaultTool(context))]),
+      ...emailTools({
+        config: this.env, owner: session.owner_id, agentId: session.session_id, multiplayer,
+        authorize: context => {
+          context.signal.throwIfAborted();
+          const authorization = this.#authorizationForToolContext(context);
+          if (!this.#hasFullAccountAuthority(authorization)
+            || !authorization.capabilities.includes("agents:write") || !authorization.capabilities.includes("tools:use"))
+            throw new ManagedRequestError(403, "forbidden", "email requires full account tool authority");
+        },
+      }),
       ...phoneTools({
         config: this.env, owner: session.owner_id, agentId: session.session_id, multiplayer,
         authorize: context => {

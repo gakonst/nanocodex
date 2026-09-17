@@ -12,7 +12,7 @@ vi.mock("@cloudflare/containers", async importOriginal => ({ ...await importOrig
 const binding = (env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace<MemoryScope> }).NANOCODEX_MEMORY;
 const token = "bridge-token-".repeat(4);
 const config: PhoneContainerEnv = {
-  NANOCODEX_PHONE_BRIDGE_TOKEN: token, NANOCODEX_PHONE_OWNER_ID: "owner",
+  NANOCODEX_PHONE_BRIDGE_TOKEN: token, NANOCODEX_PHONE_OWNER_ID: "owner", NANOCODEX_PHONE_ADMIN_ID: "owner",
   NANOCODEX_PHONE_MANAGED_API_KEY: "managed-key", TWILIO_ACCOUNT_SID: `AC${"a".repeat(32)}`,
   TWILIO_API_KEY_SID: `SK${"b".repeat(32)}`, TWILIO_API_KEY_SECRET: "api-secret", TWILIO_VOICE_FROM_NUMBER: "+15551234567",
 };
@@ -109,4 +109,28 @@ describe("phone container", () => {
       expect((await phone.fetch(request("/health"))).status).toBe(200);
     }, { TWILIO_AUTH_TOKEN: "c".repeat(32) });
   });
+});
+
+it("retains only a distinct valid delegated thread and paired voice-session identity", () => {
+  const value = row();
+  const record = { ...value.record, delegate_agent_id: crypto.randomUUID(), delegate_session_id: crypto.randomUUID(), delegate_cleaned: false };
+  const valid = (r: unknown) => validPhoneCheckpoint({ ...value, record: JSON.stringify(r) });
+  expect(valid(record)).toBe(true);
+  expect(valid({ ...record, delegate_agent_id: value.agent })).toBe(false);
+  expect(valid({ ...record, delegate_session_id: "../other" })).toBe(false);
+  const { delegate_session_id: _session, ...unpaired } = record;
+  expect(valid(unpaired)).toBe(false);
+});
+
+it.each([undefined, "", "other"])("blocks all container routes before provider access without the deployment phone admin: %s", async admin => {
+  const network = vi.fn();
+  vi.stubGlobal("fetch", network);
+  await withPhone(async phone => {
+    for (const path of ["/health", "/calls", "/internal/setup", "/internal/state", `/status/${crypto.randomUUID()}`, `/media/${crypto.randomUUID()}/`]) {
+      expect((await phone.fetch(request(path))).status).toBe(503);
+    }
+    expect(phone.startAndWaitForPorts).not.toHaveBeenCalled();
+    expect(phone.containerFetch).not.toHaveBeenCalled();
+    expect(network).not.toHaveBeenCalled();
+  }, { NANOCODEX_PHONE_ADMIN_ID: admin });
 });

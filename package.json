@@ -26,7 +26,11 @@
     "build:voice-core": "bash apple/NanocodexVoice/scripts/build-core.sh",
     "build:macos": "cargo build --release --locked -p nanocodex2-bin --bin nanocodex2 && pnpm build:computer && pnpm build:voice-core && pnpm --filter @nanocodex/desktop-runtime run build && xcodebuild -project macos/Nanocodex.xcodeproj -scheme Nanocodex -configuration Release -derivedDataPath macos/build build",
     "build:voice-native": "python3 scripts/build-voice-native.py",
-    "build:macos:gpu-hand": "bash scripts/build-macos-gpu-hand.sh"
+    "build:macos:gpu-hand": "bash scripts/build-macos-gpu-hand.sh",
+    "build:phone-voice": "cargo build --release --locked -p nanocodex-phone",
+    "test:phone": "cargo test --locked -p nanocodex-phone && pnpm --filter nanocodex-managed-service run test:phone",
+    "deploy:email": "pnpm --filter nanocodex-email-service run build && pnpm --filter nanocodex-email-service run deploy",
+    "test:email": "pnpm --filter nanocodex-email-service run typecheck && pnpm --filter nanocodex-email-service run test && pnpm --filter nanocodex-managed-service exec vitest run test/email-tool.test.ts"
   },
   "devDependencies": {
     "portless": "0.15.6",

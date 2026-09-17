@@ -72,7 +72,11 @@ jobs:
               js/managed/Dockerfile js/managed/wrangler.jsonc js/managed/.dockerignore \
               js/managed/scripts/prepare-hand-image.mjs js/managed/scripts/bundle-hand-desktop.sh \
               hands/remote crates/nanocodex-vm/image/toolkit \
-              js/managed/scripts/check-dev-stack.sh; then
+              js/managed/scripts/check-dev-stack.sh \
+              .dockerignore js/phone-cloud Cargo.toml Cargo.lock bin crates examples \
+              js/nanocodex py/bindings third_party \
+              js/managed/scripts/phone-bridge.mjs js/managed/scripts/phone-delegation.mjs \
+              js/managed/src/twilio-voice.ts; then
               rollout=none
             fi
           fi
@@ -173,7 +177,11 @@ jobs:
               js/managed/Dockerfile js/managed/wrangler.jsonc js/managed/.dockerignore \
               js/managed/scripts/prepare-hand-image.mjs js/managed/scripts/bundle-hand-desktop.sh \
               hands/remote crates/nanocodex-vm/image/toolkit \
-              js/managed/scripts/check-dev-stack.sh; then
+              js/managed/scripts/check-dev-stack.sh \
+              .dockerignore js/phone-cloud Cargo.toml Cargo.lock bin crates examples \
+              js/nanocodex py/bindings third_party \
+              js/managed/scripts/phone-bridge.mjs js/managed/scripts/phone-delegation.mjs \
+              js/managed/src/twilio-voice.ts; then
               rollout=none
             fi
           fi
@@ -216,6 +224,8 @@ jobs:
         run: npx wrangler deploy --config wrangler.broker.jsonc --message "$DEPLOY_MESSAGE"
       - name: Deploy X Worker
         run: pnpm deploy:x
+      - name: Deploy agent email service
+        run: pnpm deploy:email
       - name: Deploy managed agent service
         working-directory: js/managed
         run: npx wrangler deploy --config wrangler.jsonc --containers-rollout "${{ steps.managed-container.outputs.rollout }}" --message "$DEPLOY_MESSAGE"

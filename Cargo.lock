@@ -5974,6 +5974,7 @@ dependencies = [
 name = "nanocodex-examples"
 version = "0.6.1"
 dependencies = [
+ "base64 0.22.1",
  "dotenvy",
  "eyre",
  "futures-util",
@@ -5981,8 +5982,11 @@ dependencies = [
  "nanocodex",
  "nanocodex-browser",
  "nanocodex-egress",
+ "nanocodex-managed",
+ "nanocodex-oai-api",
  "nanocodex-vm",
  "nanocodex-voice",
+ "nanocodex-voice-protocol",
  "reflink-copy",
  "reqwest",
  "serde",
@@ -5991,6 +5995,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tower",
+ "uuid",
 ]
 
 [[package]]
@@ -6111,6 +6116,20 @@ dependencies = [
  "tracing-appender",
  "tracing-opentelemetry",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "nanocodex-phone"
+version = "0.6.1"
+dependencies = [
+ "base64 0.22.1",
+ "nanocodex-managed",
+ "nanocodex-oai-api",
+ "nanocodex-voice-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

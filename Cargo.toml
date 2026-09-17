@@ -9,6 +9,7 @@ members = [
     "crates/nanocodex",
     "crates/nanocodex-agent",
     "crates/nanocodex-managed",
+    "crates/nanocodex-phone",
     "crates/nanocodex-hand",
     "crates/nanocodex-durability",
     "crates/nanocodex-browser",

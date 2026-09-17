@@ -1,3 +1,4 @@
+import { phoneAdminConfigured } from "../src/phone-admin";
 import { afterEach, expect, it, vi } from "vitest";
 import { phoneTools, type PhoneConfig } from "../src/phone-tool";
 
@@ -6,7 +7,7 @@ const token = "secret-bridge-token".repeat(2);
 const snapshot = { call_id: id, status: "in-progress", transcript: [{ speaker: "user", text: "Hello" }], max_duration_seconds: 180 };
 const context = () => ({ callId: "call", parentCallId: "", sessionId: "session", model: "test", signal: new AbortController().signal });
 const input = { operation: "call", to: "+14155550123", instructions: "Ask for opening hours.", operation_id: id };
-const configuration = (): PhoneConfig => ({ NANOCODEX_PHONE_BRIDGE_URL: "https://phone.example", NANOCODEX_PHONE_BRIDGE_TOKEN: token, NANOCODEX_PHONE_OWNER_ID: "owner" });
+const configuration = (): PhoneConfig => ({ NANOCODEX_PHONE_BRIDGE_URL: "https://phone.example", NANOCODEX_PHONE_BRIDGE_TOKEN: token, NANOCODEX_PHONE_OWNER_ID: "owner", NANOCODEX_PHONE_ADMIN_ID: "owner" });
 function fixture() {
   const config = configuration();
   const authorize = vi.fn();
@@ -162,4 +163,28 @@ it("preserves the managed cloud gateway prefix", async () => {
   f.config.NANOCODEX_PHONE_BRIDGE_URL = "https://nanocodex.gakonst.workers.dev/v1/phone/bridge";
   await f.tool.handler(input, context());
   expect(f.fetcher.mock.calls[0]![0]).toBe("https://nanocodex.gakonst.workers.dev/v1/phone/bridge/calls");
+});
+
+it("exposes the retained call thread identity without projecting arbitrary fields", async () => {
+  const f = fixture();
+  f.fetcher.mockResolvedValue(Response.json({ ...snapshot, call_agent_id: id, private: "hidden" }));
+  expect(await f.tool.handler(input, context())).toEqual({ ...snapshot, call_agent_id: id });
+  f.fetcher.mockResolvedValue(Response.json({ ...snapshot, call_agent_id: "../other" }));
+  expect(await f.tool.handler(input, context())).toEqual(snapshot);
+});
+
+it.each([undefined, "", "other"])("requires the deployment phone admin at discovery and invocation: %s", async admin => {
+  const f = fixture();
+  f.config.NANOCODEX_PHONE_ADMIN_ID = admin;
+  expect(phoneTools({ config: f.config, owner: "owner", agentId: id, authorize() {} })).toEqual([]);
+  for (const value of [input, { operation: "status", call_id: id }, { operation: "hangup", call_id: id }])
+    await expect(f.tool.handler(value, context())).rejects.toThrow("unavailable");
+  expect(f.fetcher).not.toHaveBeenCalled();
+});
+
+it("bridge admission requires an explicitly selected phone admin matching the configured owner", () => {
+  expect(phoneAdminConfigured({})).toBe(false);
+  expect(phoneAdminConfigured({ NANOCODEX_PHONE_OWNER_ID: "owner" })).toBe(false);
+  expect(phoneAdminConfigured({ NANOCODEX_PHONE_ADMIN_ID: "admin", NANOCODEX_PHONE_OWNER_ID: "owner" })).toBe(false);
+  expect(phoneAdminConfigured({ NANOCODEX_PHONE_ADMIN_ID: "admin", NANOCODEX_PHONE_OWNER_ID: "admin" })).toBe(true);
 });

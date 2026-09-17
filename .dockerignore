@@ -25,3 +25,12 @@ trials
 js/account/public/data
 **/__pycache__
 **/*.pyc
+.worktrees
+**/.env*
+**/.dev.vars*
+**/auth.json
+**/phone.env
+**/*.sqlite*
+**/*.log
+**/target
+**/build

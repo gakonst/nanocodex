@@ -127,6 +127,89 @@ impl WebRtcSideband {
     }
 }
 
+/// Caller-owned PCM media peer whose signaling can use an authenticated broker.
+/// Dropping the peer closes its native ICE/DTLS tasks.
+pub struct RealtimeMediaPeer {
+    media: WebRtcMedia,
+    sdp: String,
+    _cleanup: PendingPeer,
+}
+
+impl RealtimeMediaPeer {
+    /// Creates an Opus WebRTC offer carrying 24 kHz mono PCM audio.
+    pub async fn offer() -> Result<Self, RealtimeError> {
+        crate::transport::install_default_rustls_crypto_provider();
+        let offer = create_offer().await?;
+        let cleanup = PendingPeer(Some(Arc::clone(&offer.peer)));
+        Ok(Self {
+            sdp: offer.sdp,
+            media: WebRtcMedia {
+                peer: offer.peer,
+                input: offer.input,
+                audio: offer.audio,
+            },
+            _cleanup: cleanup,
+        })
+    }
+
+    /// SDP to negotiate through the caller's signaling service.
+    pub fn sdp(&self) -> &str {
+        &self.sdp
+    }
+
+    /// Applies the broker's SDP answer with a bounded negotiation deadline.
+    pub async fn answer(&self, sdp: String) -> Result<(), RealtimeError> {
+        timeout(
+            CONNECT_TIMEOUT,
+            self.media.peer.set_remote_description(
+                RTCSessionDescription::answer(sdp)
+                    .map_err(|error| RealtimeError::WebRtc(error.to_string()))?,
+            ),
+        )
+        .await
+        .map_err(|_| RealtimeError::ConnectTimeout)?
+        .map_err(|error| RealtimeError::WebRtc(error.to_string()))
+    }
+
+    /// Waits until ICE and DTLS establish the media transport.
+    pub async fn wait_connected(&self) -> Result<(), RealtimeError> {
+        use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+        timeout(CONNECT_TIMEOUT, async {
+            loop {
+                match self.media.peer.connection_state() {
+                    RTCPeerConnectionState::Connected => return Ok(()),
+                    RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => {
+                        return Err(RealtimeError::WebRtc("media connection failed".to_owned()));
+                    }
+                    _ => sleep(Duration::from_millis(25)).await,
+                }
+            }
+        })
+        .await
+        .map_err(|_| RealtimeError::ConnectTimeout)?
+    }
+
+    /// Sends 24 kHz mono signed little-endian PCM to the media encoder.
+    pub async fn send(&self, audio: RealtimeAudio) -> Result<(), RealtimeError> {
+        self.media
+            .input
+            .send(audio)
+            .await
+            .map_err(|_| RealtimeError::WebRtc("media input closed".to_owned()))
+    }
+
+    /// Receives decoded 24 kHz mono PCM audio.
+    pub async fn recv(&mut self) -> Option<Result<RealtimeAudio, RealtimeError>> {
+        self.media.recv().await
+    }
+
+    /// Closes the media peer.
+    pub async fn close(mut self) {
+        self.media.close().await;
+        self._cleanup.0 = None;
+    }
+}
+
 pub(super) struct WebRtcMedia {
     peer: Arc<RTCPeerConnection>,
     input: mpsc::Sender<RealtimeAudio>,
@@ -1062,6 +1145,15 @@ mod tests {
         OpenAiAuth, OpenAiAuthMode, OpenAiAuthSnapshot,
         realtime::{RealtimeInitialItem, RealtimeTextRole, RealtimeVersion, RealtimeVoice},
     };
+
+    #[tokio::test]
+    async fn broker_media_offer_and_invalid_answer_cleanup() {
+        let media = super::RealtimeMediaPeer::offer().await.unwrap();
+        assert!(media.sdp().contains("m=audio"));
+        assert!(media.sdp().contains("opus/48000/2"));
+        assert!(media.answer("invalid sdp".to_owned()).await.is_err());
+        media.close().await;
+    }
 
     #[test]
     fn derives_chatgpt_call_and_direct_sideband_endpoints() {

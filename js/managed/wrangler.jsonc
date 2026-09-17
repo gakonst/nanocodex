@@ -25,6 +25,7 @@
     }
   },
   "services": [
+    { "binding": "NANOCODEX_EMAIL", "service": "nanocodex-email", "entrypoint": "EmailService" },
     { "binding": "NANOCODEX_REALTIME", "service": "nanocodex-egress", "entrypoint": "ManagedRealtimeEgress" },
     { "binding": "NANOCODEX_X", "service": "nanocodex-x" },
     {
@@ -170,10 +171,12 @@
       "new_sqlite_classes": ["VmHostPool"]
     },
     // Already applied in production. Retain this class and its SQLite state.
-    // Phone image rollout is separate; no phone container image is deployed yet.
     { "tag": "v9", "new_sqlite_classes": ["PhoneContainer"] }
   ],
   "vars": {
+    "NANOCODEX_PHONE_ADMIN_ID": "631f6a83-9e3f-474a-977a-68897d3ee436",
+    "NANOCODEX_EMAIL_ADMIN_ID": "631f6a83-9e3f-474a-977a-68897d3ee436",
+    "NANOCODEX_EMAIL_OWNER_ID": "631f6a83-9e3f-474a-977a-68897d3ee436",
     "AGENT_IDLE_TIMEOUT_MS": "30000",
     "MANAGED_AGENT_DIRECT_CREDENTIALS": "true",
     "NANOCODEX_SANDBOX_DESKTOPS": "true",
@@ -260,6 +263,13 @@
     }
   },
   "containers": [
+    {
+      "class_name": "PhoneContainer",
+      "image": "../phone-cloud/Dockerfile",
+      "image_build_context": "../..",
+      "instance_type": "basic",
+      "max_instances": 1
+    },
     {
       "class_name": "Sandbox",
       "image": "./Dockerfile",
