@@ -36,6 +36,7 @@ impl ScreenPublisher {
         machine: &AttachmentMachine,
         backend: ScreenBackend,
         video: Option<VideoSource>,
+        audio: Option<VideoSource>,
     ) -> Result<Self, ManagedError> {
         // Explicit deployment fallback for networks where ICE cannot connect
         // (for example, nested NAT without an authenticated TURN relay).
@@ -71,7 +72,7 @@ impl ScreenPublisher {
                 let result = tokio::select! {
                     _ = &mut stopped => break,
                     changed = targets.changed() => { if changed.is_err() { break; } continue; },
-                    result = session(&target, &machine, &backend, video.as_ref(), dimensions, &mut ready) => result,
+                    result = session(&target, &machine, &backend, video.as_ref(), audio.as_ref(), dimensions, &mut ready) => result,
                 };
                 let _ = tokio::time::timeout(
                     Duration::from_secs(3),
@@ -301,6 +302,7 @@ async fn session(
     machine: &AttachmentMachine,
     backend: &ScreenBackend,
     video: Option<&VideoSource>,
+    audio: Option<&VideoSource>,
     dimensions: (u64, u64),
     ready: &mut Option<oneshot::Sender<()>>,
 ) -> Result<(), SessionError> {
@@ -348,7 +350,7 @@ async fn session(
     .map_err(|_| SessionError::Closed)?;
     tracing::info!(target: "nanocodex2", stage = "screen.socket.connected", machine_id = machine.id(), elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
     let video = match video {
-        Some(source) => match Video::start(source).await {
+        Some(source) => match Video::start(source, audio).await {
             Ok(video) => Some(video),
             Err(_) => {
                 tracing::warn!("Continuous screen encoder unavailable; using screenshot fallback");
@@ -729,7 +731,7 @@ mod tests {
             );
             socket.close(None).await.unwrap();
         });
-        let publisher = ScreenPublisher::start(&target, &machine, backend, None)
+        let publisher = ScreenPublisher::start(&target, &machine, backend, None, None)
             .await
             .unwrap();
         peer.await.unwrap();

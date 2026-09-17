@@ -6316,6 +6316,7 @@ dependencies = [
  "nanocodex-tools",
  "nanocodex-vm",
  "nix 0.31.3",
+ "opusic-c",
  "percent-encoding",
  "png 0.18.1",
  "portable-pty",

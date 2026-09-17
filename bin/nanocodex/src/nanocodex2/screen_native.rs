@@ -64,8 +64,14 @@ impl NativeScreen {
                     .map_err(configuration)?
                 })
             });
-            let publisher =
-                ScreenPublisher::start(target, machine, backend, Some(native_video())).await?;
+            let publisher = ScreenPublisher::start(
+                target,
+                machine,
+                backend,
+                Some(native_video()),
+                super::screen_audio::native_source(),
+            )
+            .await?;
             Ok(Self {
                 publisher: Some(publisher),
             })
@@ -131,6 +137,7 @@ impl NativeScreen {
                         machine,
                         backend,
                         Some(native_video(video_runtime)),
+                        super::screen_audio::native_source(),
                     )
                     .await?,
                 );

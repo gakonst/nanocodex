@@ -119,7 +119,7 @@ impl Drop for Connection {
 struct Peer {
     connection: Connection,
     control: Arc<RTCDataChannel>,
-    _rtcp: Task,
+    _rtcp: Vec<Task>,
     candidates: Vec<RTCIceCandidateInit>,
     answered: bool,
     started: Instant,
@@ -132,6 +132,7 @@ struct Motion {
 }
 pub(crate) struct Video {
     track: Arc<TrackLocalStaticSample>,
+    audio: Option<super::screen_audio::Audio>,
     peers: HashMap<String, Peer>,
     events: mpsc::Sender<Event>,
     incoming: mpsc::Receiver<Event>,
@@ -140,7 +141,10 @@ pub(crate) struct Video {
     _capture: Task,
 }
 impl Video {
-    pub(crate) async fn start(source: &VideoSource) -> Result<Self> {
+    pub(crate) async fn start(
+        source: &VideoSource,
+        audio_source: Option<&VideoSource>,
+    ) -> Result<Self> {
         let mut capture = tokio::time::timeout(Duration::from_secs(8), source()).await??;
         let track = Arc::new(TrackLocalStaticSample::new(
             RTCRtpCodecCapability {
@@ -199,8 +203,20 @@ impl Video {
             }
         }));
         tokio::time::timeout(Duration::from_secs(10), waiting).await??;
+        let audio = if let Some(source) = audio_source {
+            match super::screen_audio::Audio::start(source).await {
+                Ok(audio) => Some(audio),
+                Err(error) => {
+                    tracing::warn!(%error, "desktop audio unavailable");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         Ok(Self {
             track,
+            audio,
             peers: HashMap::new(),
             events,
             incoming,
@@ -317,6 +333,13 @@ impl Video {
         let rtcp = Task(tokio::spawn(async move {
             while sender.read_rtcp().await.is_ok() {}
         }));
+        let mut rtcp = vec![rtcp];
+        if let Some(audio) = &self.audio {
+            let sender = connection.add_track(audio.track.clone()).await?;
+            rtcp.push(Task(tokio::spawn(async move {
+                while sender.read_rtcp().await.is_ok() {}
+            })));
+        }
         let control = connection
             .create_data_channel("remote-control-v1", None)
             .await?;

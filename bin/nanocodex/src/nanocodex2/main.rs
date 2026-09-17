@@ -20,6 +20,7 @@ mod host;
 #[allow(dead_code)]
 mod installation;
 mod native_hand;
+mod screen_audio;
 #[cfg(target_os = "macos")]
 mod screen_macos;
 mod screen_native;
