@@ -79,14 +79,14 @@ function transportProgress(event: AgentEvent): AgentEvent | undefined {
     payload.delay_ns = p.delay_ns;
     payload.error = "The model request is being retried.";
   } else if (event.type === "model.connection.started") {
-    if (!["initial", "warmup_fallback", "reconnect"].includes(String(p.purpose))) return;
+    if (typeof p.purpose !== "string" || !["initial", "warmup_fallback", "reconnect"].includes(p.purpose)) return;
     payload.purpose = p.purpose;
   } else if (event.type === "model.connection.completed") {
     if (!Number.isSafeInteger(p.connection_generation) || Number(p.connection_generation) < 0) return;
   } else {
     return;
   }
-  if (["generation", "compaction", "warmup"].includes(String(p.phase))) payload.phase = p.phase;
+  if (typeof p.phase === "string" && ["generation", "compaction", "warmup"].includes(p.phase)) payload.phase = p.phase;
   for (const key of ["attempt", "next_attempt", "max_attempts", "connection_generation", "model_call_index"]) {
     if (Number.isSafeInteger(p[key]) && Number(p[key]) >= 0) payload[key] = p[key];
   }
