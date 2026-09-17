@@ -520,7 +520,7 @@ where
                 record_usage(&span, usage, model, self.fast_mode);
                 lifecycle.stats.usage.add(usage, model, self.fast_mode);
             }
-            lifecycle.stats.last_response_id = Some(response_id.clone());
+            lifecycle.stats.last_response_id = Some(response_id);
             Ok((item, usage, server_reasoning_included))
         }
         .await;

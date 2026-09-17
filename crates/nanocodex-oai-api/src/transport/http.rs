@@ -110,7 +110,10 @@ impl ResponsesHttpStream {
         loop {
             if let Some(text) = self.decoder.next()? {
                 return Ok(ReceivedText {
+                    #[cfg(not(target_family = "wasm"))]
                     text: text.into(),
+                    #[cfg(target_family = "wasm")]
+                    text,
                     received_ns: monotonic_now_ns(),
                 });
             }
