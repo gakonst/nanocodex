@@ -170,7 +170,7 @@ function Screen({ hand, onBack }: { hand: RemoteHand; onBack(): void }) {
     if (state.controlling || state.controlPending) { releaseControl(); return; }
     setCaptureNotice(""); session.current?.takeControl();
     const attempt = ++captureAttempt.current;
-    // Request pointer lock before fullscreen consumes this click's activation.
+    // Request pointer lock while this click has user activation.
     // Touch screens retain their existing gestures and never hide a pointer.
     if (window.matchMedia("(any-pointer: fine)").matches && picture.current?.requestPointerLock) {
       try {
@@ -182,7 +182,6 @@ function Screen({ hand, onBack }: { hand: RemoteHand; onBack(): void }) {
         });
       } catch { setCaptureNotice("Mouse capture was unavailable. You can still control inside the picture."); }
     }
-    enterFullscreen();
   }
   function positionVirtualCursor() {
     const bounds = picture.current?.getBoundingClientRect();
