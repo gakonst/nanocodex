@@ -58,6 +58,9 @@ import { browseX, X_API } from "nanocodex-tools/x";
 import { managedCodeEvaluator } from "./code-evaluator";
 import { CronTriggers, CRON_TRIGGER_ID, cronTriggerView, nextCronRun, parseCronTrigger, type CronTriggerConfig } from "./cron-triggers";
 import { createCronTool } from "./cron-tool";
+import { Goals, goalContinuation } from "./goals";
+import { createGoalTools } from "./goal-tools";
+import { GoalRuntime, parseGoalCommand } from "./goal-runtime";
 import {
   cloudflareSandboxTools,
   deleteCloudflareBrainWorkspace,
@@ -3082,6 +3085,8 @@ export class DurableAgentSession extends DurableComputerSession {
   #realtimeRouteTail: Promise<void> = Promise.resolve();
   readonly #cronTriggers: CronTriggers;
   readonly #projectRuns: ProjectThreadRuns;
+  readonly #goals: Goals;
+  readonly #goalRuntime: GoalRuntime;
   #cronPresencePublished?: boolean;
   readonly #startupContext: ManagedStartupContext;
   readonly #personalization = new PreparedPersonalizationCache();
@@ -3109,6 +3114,8 @@ export class DurableAgentSession extends DurableComputerSession {
     initializeTurnInputs(ctx.storage, "managed_history_projection_chunks");
     this.#cronTriggers = new CronTriggers(ctx.storage);
     this.#projectRuns = new ProjectThreadRuns(ctx.storage);
+    this.#goals = new Goals(ctx.storage, () => this.#sessionId()!);
+    this.#goalRuntime = new GoalRuntime(ctx.storage, this.#goals);
     this.#startupContext = new ManagedStartupContext(ctx.storage);
     this.#handPaths = new HandPaths(ctx.storage);
     this.ctx.storage.sql.exec(`
@@ -3585,6 +3592,7 @@ export class DurableAgentSession extends DurableComputerSession {
         || this.ctx.storage.sql.exec("SELECT id FROM managed_artifacts LIMIT 1").toArray().length)
         return json({ error: "session_resources_not_portable", message: "Configured sessions, webhooks and published artifacts are not yet portable." }, { status: 409 });
       if (this.#projectRuns.nextAlarm() !== undefined) return json({ error: "project_work_pending", message: "Wait for project task outcomes before exporting this agent." }, { status: 409 });
+      if (this.#goals.get()) return json({ error: "goal_present", message: "Clear the goal with /goal clear before exporting; goals are not portable yet." }, { status: 409 });
       if (this.#cronTriggers.hasTriggers() || this.#cronTriggers.hasDeliveries()) {
         return json({ error: "cron_triggers_present", message: "Delete cron triggers and wait for pending deliveries before exporting this agent; schedules are not portable yet." }, { status: 409 });
       }
@@ -4212,7 +4220,7 @@ export class DurableAgentSession extends DurableComputerSession {
       await this.#scheduleNextAlarm();
       return;
     }
-    if (this.#recoverableTurnCount() > 0) {
+    if (this.#recoverableTurnCount() > 0 || this.#goalRuntime.pending()) {
       // Recovery remains the sole owner of a retained retry_at and installs
       // the next alarm from the same ordered pass that evaluates that row.
       this.#scheduleRecovery();
@@ -6125,6 +6133,36 @@ export class DurableAgentSession extends DurableComputerSession {
     authorization: TurnAuthorization,
     messageId?: string,
   ): Promise<void> {
+    const command = parseGoalCommand(input);
+    if (command !== null) {
+      await this.#settingsMutationTail;
+      this.#assertDurabilityAdmissionActive();
+      const row = await this.#findManagedTurn(id);
+      if (!row) throw new ManagedRequestError(404, "turn_not_found", `turn ${id} does not exist`);
+      if (!turnControlAuthorizationMatches(parseTurnAuthorization(row.authorization_json), authorization)
+        || !this.#hasFullAccountAuthority(authorization)) throw new ManagedRequestError(403, "forbidden", "goal controls require matching full account authority");
+      if (isTerminalState(row.state)) throw new ManagedRequestError(409, "turn_not_steerable", `turn ${id} is ${row.state}`, row.state);
+      if (row.state === "cancelling" && !["", "status", "help", "pause", "clear"].includes(command)) {
+        const commandId = `goal-control:${messageId ?? crypto.randomUUID()}`;
+        await this.#submitManagedTurn(commandId, input, await hashManagedInput(input), commandId, true, authorization);
+        return;
+      }
+      this.#goalRuntime.flush(id);
+      const controlledGoalId = this.#goals.get()?.goalId;
+      const result = this.#goalRuntime.command(command);
+      if (result.continue) this.#goalRuntime.bind(id, this.#session()!.authorization_epoch);
+      this.#recordAndBroadcast({ type: "event", event: { protocol_version: 1, request_id: messageId ?? `goal:${crypto.randomUUID()}`, seq: 0,
+        type: "managed.goal.updated", payload: { goal: result.goal, message: result.text } } }, id);
+      if ((command === "pause" || command === "clear") && controlledGoalId && this.#goalRuntime.turn(id)?.goal_id === controlledGoalId) {
+        this.#markCancelling(id);
+        this.#scheduleCancellation(id);
+      } else if (result.continue) {
+        const turn = await this.#steerableManagedTurn(id, authorization);
+        await turn.steer({ input: goalContinuation(this.#goals.get())!, messageId });
+      }
+      await this.#scheduleNextAlarm();
+      return;
+    }
     const turn = await this.#steerableManagedTurn(id, authorization);
     await turn.steer({ input, messageId });
   }
@@ -6431,6 +6469,12 @@ export class DurableAgentSession extends DurableComputerSession {
     if (this.#streamError) {
       throw new ManagedRequestError(503, "event_stream_failed", this.#streamError);
     }
+    const goalCommand = parseGoalCommand(input);
+    if (goalCommand !== null && !this.#hasFullAccountAuthority(authorization)) {
+      throw new ManagedRequestError(403, "forbidden", "goal controls require full account authority");
+    }
+    let goalCommandResult: { text: string; continue: boolean } | undefined;
+    let controlledGoalId: string | undefined;
     const now = Date.now();
     const accepted: StreamMessage = { type: "turn_accepted", id, input, replayed: false };
     const firstPrompt = conversationTitle(promptInputText(input));
@@ -6443,10 +6487,20 @@ export class DurableAgentSession extends DurableComputerSession {
         throw new ManagedRequestError(409, "agent_deleting", "the agent is being deleted");
       }
       beforeAdmission?.();
+      if (!id.startsWith("goal:") && goalCommand === null) this.#goalRuntime.discardPending();
       cancellationRequested = this.ctx.storage.sql.exec<{ turn_id: string }>(
         "SELECT turn_id FROM managed_turn_cancel_intents WHERE turn_id = ?",
         id,
       ).toArray()[0] !== undefined;
+      if (!cancellationRequested && goalCommand !== null) {
+        controlledGoalId = this.#goals.get()?.goalId;
+        for (const active of this.#managedTurns("WHERE state IN ('accepted','cancelling')")) this.#goalRuntime.flush(active.id);
+        try {
+          goalCommandResult = this.#goalRuntime.command(goalCommand);
+          this.#goalRuntime.retainCommand(id, goalCommandResult, controlledGoalId, this.#session()!.authorization_epoch);
+        }
+        catch (error) { throw new ManagedRequestError(400, "invalid_goal_command", errorMessage(error)); }
+      }
       event = this.#eventLog.append(accepted, id);
       if (cancellationRequested) {
         cancellingEvent = this.#eventLog.append({ type: "turn_cancelling", id }, id);
@@ -6467,6 +6521,7 @@ export class DurableAgentSession extends DurableComputerSession {
         now,
         now,
       );
+      if (!cancellationRequested && goalCommand === null) this.#goalRuntime.bind(id, this.#session()!.authorization_epoch, true);
       if (cancellationRequested) {
         this.ctx.storage.sql.exec(
           "DELETE FROM managed_turn_cancel_intents WHERE turn_id = ?",
@@ -6494,9 +6549,29 @@ export class DurableAgentSession extends DurableComputerSession {
     });
     const row = this.#managedTurn(id);
     if (!row) throw new Error("managed turn disappeared after acceptance");
+    if (!cancellationRequested && goalCommandResult) {
+      const completed = this.#completeGoalCommand(row);
+      this.#scheduleRecovery();
+      return { created: true, row: completed };
+    }
     if (cancellationRequested) this.#scheduleCancellation(id);
     else this.#scheduleRecovery();
     return { created: true, row };
+  }
+
+  #completeGoalCommand(row: ManagedTurnRow): ManagedTurnRow {
+    const receipt = this.#goalRuntime.retainedCommand(row.id)!;
+    const command = parseGoalCommand(JSON.parse(row.input_json));
+    if (command === "pause" || command === "clear") {
+      for (const active of this.#managedTurns("WHERE state IN ('accepted','cancelling')")) {
+        if (active.id !== row.id && receipt.controlledGoalId && this.#goalRuntime.turn(active.id)?.goal_id === receipt.controlledGoalId) {
+          this.#markCancelling(active.id); this.#scheduleCancellation(active.id);
+        }
+      }
+    }
+    if (receipt.continue && this.#goals.get()?.goalId === receipt.goalId) this.#goalRuntime.bind(row.id, receipt.epoch);
+    return this.#commitManagedTurnTerminal(row.id, { type: "turn_completed", id: row.id,
+      final_message: receipt.text, usage: null, citations: [] });
   }
 
   #reservePreAdmissionCancellation(id: string): ManagedTurnRow | undefined {
@@ -6648,8 +6723,10 @@ export class DurableAgentSession extends DurableComputerSession {
       return latest;
     }
     row = latest;
+    if (row.state !== "cancelling" && this.#goalRuntime.retainedCommand(row.id)) return this.#completeGoalCommand(row);
     let turn: Turn | undefined;
     const input = JSON.parse(row.input_json) as PromptInput;
+    this.#goalRuntime.bind(row.id, this.#session()!.authorization_epoch);
     this.#pendingTurnIds.add(row.id);
     this.#turnInputs.set(row.id, input);
     try {
@@ -7141,6 +7218,7 @@ export class DurableAgentSession extends DurableComputerSession {
       this.ctx.storage.sql.exec("DELETE FROM managed_prepared_personalization");
       this.ctx.storage.sql.exec("DELETE FROM managed_personalization_state");
       this.ctx.storage.sql.exec("DELETE FROM managed_subagent_authorizations");
+      this.#goalRuntime.clear();
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_triggers");
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_deliveries");
       this.ctx.storage.sql.exec("DELETE FROM managed_turns");
@@ -7318,7 +7396,7 @@ export class DurableAgentSession extends DurableComputerSession {
       const admitted = this.#managedTurn(current.id);
       if (admitted && (admitted.state === "cancelling" || admitted.retry_at !== null)) break;
     }
-    await this.#scheduleNextAlarm();
+    try { if (this.#goalRuntime.pending()) await this.#continueGoal(); } finally { await this.#scheduleNextAlarm(); }
   }
 
   #prepareActiveConversation(authorization: TurnAuthorization): void {
@@ -7970,6 +8048,19 @@ export class DurableAgentSession extends DurableComputerSession {
         const authorization = this.#cronToolAuthorization(context);
         return (await this.#saveCronTrigger(id, config, authorization, context)).trigger;
       })]),
+      ...(multiplayer ? [] : createGoalTools(this.#goals, context => {
+        const id = this.#goalToolTurn(context);
+        this.#goalRuntime.flush(id);
+      }, {
+        beforeUpdate: context => this.#goalRuntime.assertCurrentObjective(this.#goalToolTurn(context)),
+        onRead: (goal, context) => this.#goalRuntime.acknowledgeObjective(this.#goalToolTurn(context), goal),
+      }).map(tool => ({ ...tool, handler: async (input: unknown, context: ToolContext) => {
+        const id = this.#goalToolTurn(context);
+        const result = await tool.handler(input, context);
+        if (tool.name === "update_goal") this.#goalRuntime.stop(id);
+        if (tool.name === "create_goal") this.#goalRuntime.bind(id, this.#session()!.authorization_epoch);
+        return result;
+      } }))),
       ...(multiplayer ? [] : this.#memoryTools()),
       ...(multiplayer ? [] : [createVaultIntakeTool(context => this.#authorizeVaultTool(context))]),
       ...emailTools({
@@ -8383,6 +8474,43 @@ export class DurableAgentSession extends DurableComputerSession {
       this.#observe("managed.voice.context_unavailable", { outcome: "failure" });
     }
     return result;
+  }
+
+  #goalToolTurn(context: ToolContext): string {
+    context.signal.throwIfAborted();
+    const authorization = this.#authorizationForToolContext(context);
+    const id = this.#eventTurnId ?? this.#eventTurnQueue[0];
+    if (context.subagent || !id || !authorization || !this.#hasFullAccountAuthority(authorization)
+      || !authorization.capabilities.includes("tools:use")) {
+      throw new ManagedRequestError(403, "forbidden", "goal tools require the root persistent thread and full account tool authority");
+    }
+    return id;
+  }
+
+  async #continueGoal(): Promise<void> {
+    if (this.#deleting || this.#deleted || this.#streamError || this.#durabilityExported
+      || this.#durabilityImportState === "pending" || this.#recoverableTurnCount() > 0 || this.#turns.size > 0) return;
+    const pending = this.#goalRuntime.pending();
+    const session = this.#session();
+    const goal = this.#goals.get();
+    if (!pending || !session) return;
+    if (!goal || goal.goalId !== pending.goal_id || goal.status !== "active" || pending.epoch !== session.authorization_epoch) {
+      this.#goalRuntime.discardPending(); return;
+    }
+    const source = await this.#findManagedTurn(pending.turn_id);
+    if (!source || source.state !== "completed") { this.#goalRuntime.discardPending(); return; }
+    const authorization = parseTurnAuthorization(source.authorization_json);
+    const input = goalContinuation(goal)!;
+    const id = `goal:${(await hashManagedInput(pending.turn_id)).slice(0, 48)}`;
+    await this.#submitManagedTurn(id, input, await hashManagedInput(input), `goal:${pending.turn_id}`, true, authorization, () => {
+      if (this.#session()?.authorization_epoch !== pending.epoch || this.#goalRuntime.pending()?.turn_id !== pending.turn_id
+        || this.#goals.get()?.status !== "active" || this.#goals.get()?.goalId !== goal.goalId
+        || this.#goals.get()?.objective !== goal.objective || this.#goals.get()?.tokenBudget !== goal.tokenBudget
+        || this.#recoverableTurnCount() > 0) {
+        throw new ManagedRequestError(409, "goal_changed", "goal changed before continuation admission");
+      }
+      this.#goalRuntime.discardPending();
+    });
   }
 
   #activeTurnAuthorization(): TurnAuthorization | undefined {
@@ -9245,7 +9373,16 @@ export class DurableAgentSession extends DurableComputerSession {
   }
 
   #commitManagedMessage(id: string, requested: ManagedTurnTransition): ManagedTurnRow {
-    const { committed, event } = commitManagedTransition(this.ctx.storage, this.#eventLog, id, requested);
+    const { committed, event } = this.ctx.storage.transactionSync(() => {
+      const result = commitManagedTransition(this.ctx.storage, this.#eventLog, id, requested);
+      if (result.event && isTerminalState(result.committed.state)) {
+        this.#goalRuntime.finish(id, result.committed.state === "completed",
+          requested.type === "turn_completed" && requested.final_message.trim().length > 0,
+          result.committed.state === "cancelled" ? "paused"
+            : requested.type === "turn_failed" && /usage[_ ]limit|quota exceeded/i.test(requested.error) ? "usageLimited" : "blocked");
+      }
+      return result;
+    });
     if (event) {
       this.#publish(event);
       this.#observe("managed.turn.transition", {
@@ -9461,6 +9598,13 @@ export class DurableAgentSession extends DurableComputerSession {
         this.#eventLog.append(message, turnId),
       );
       this.#publish(event);
+      if (turnId && message.type === "event" && ["model.call.completed", "model.compaction.completed"].includes(message.event.type)) {
+        const goal = this.#goalRuntime.flush(turnId);
+        if ((goal?.status === "budgetLimited" || goal?.status === "usageLimited") && this.#managedTurn(turnId)?.state === "accepted") {
+          this.#markCancelling(turnId);
+          this.#scheduleCancellation(turnId);
+        }
+      }
     } catch (error) {
       this.#failEventStream(error);
     }
@@ -10217,6 +10361,7 @@ export class DurableAgentSession extends DurableComputerSession {
       if (projectAlarm !== undefined) targets.push(projectAlarm);
       const cronAlarm = this.#cronTriggers.nextAlarm();
       if (cronAlarm !== undefined) targets.push(cronAlarm);
+      if (this.#goalRuntime.pending()) targets.push(now + MAX_RETRY_DELAY_MS);
     }
     if (this.#archivesNeedMaintenance()) {
       targets.push(Math.max(now + 1, this.#archiveMaintenance.nextAttemptAt()));

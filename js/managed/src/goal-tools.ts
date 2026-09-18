@@ -1,16 +1,24 @@
 import type { NamedTool, ToolContext } from "nanocodex";
-import { Goals, goalResponse } from "./goals";
+import { Goals, goalResponse, type ThreadGoal } from "./goals";
 
 function args(input: unknown, allowed: string[]): Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => !allowed.includes(key))) throw new TypeError("invalid goal tool arguments");
   return input as Record<string, unknown>;
 }
 /** beforeRead flushes current model usage before returning tool/accounting results. */
-export function createGoalTools(goals: Goals, beforeRead?: (context: ToolContext) => void | Promise<void>): NamedTool[] {
+export function createGoalTools(goals: Goals, beforeRead?: (context: ToolContext) => void | Promise<void>, hooks?: {
+  beforeUpdate?: (context: ToolContext) => void;
+  onRead?: (goal: ThreadGoal | null, context: ToolContext) => void;
+}): NamedTool[] {
   return [
     { name: "get_goal", description: "Get the persisted goal for this thread, its status, token and elapsed-time usage, and remaining token budget.",
       parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
-      handler: async (input, context) => { args(input, []); await beforeRead?.(context); return goalResponse(goals.get()); } },
+      handler: async (input, context) => {
+        args(input, []); await beforeRead?.(context);
+        const goal = goals.get();
+        hooks?.onRead?.(goal, context);
+        return goalResponse(goal);
+      } },
     { name: "create_goal", description: "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks. Set token_budget only when explicitly requested. Fails if an unfinished goal exists.",
       parameters: { type: "object", properties: { objective: { type: "string", minLength: 1, maxLength: 4000 }, token_budget: { type: "integer", minimum: 1 } }, required: ["objective"], additionalProperties: false },
       handler: async (input) => {
@@ -23,6 +31,7 @@ export function createGoalTools(goals: Goals, beforeRead?: (context: ToolContext
         const value = args(input, ["status"]);
         if (value.status !== "complete" && value.status !== "blocked" && value.status !== "paused") throw new TypeError("invalid goal status");
         await beforeRead?.(context);
+        hooks?.beforeUpdate?.(context);
         const goal = goals.updateByModel(value.status);
         return goalResponse(goal, goal.status === "complete");
       } },

@@ -4,6 +4,7 @@ import type { ToolContext } from "nanocodex";
 import type { DurableAgentSession } from "../src/index";
 import { Goals, goalContinuation, goalResponse } from "../src/goals";
 import { createGoalTools } from "../src/goal-tools";
+import { GoalRuntime } from "../src/goal-runtime";
 
 async function withGoals(test: (goals: Goals, state: DurableObjectState) => void | Promise<void>) {
   const ns = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
@@ -68,4 +69,24 @@ describe("persisted managed goals", () => {
     await get!.handler({}, context);
     expect(flushes).toBe(2);
   }));
+  it("revalidates after async accounting and acknowledges only the returned snapshot", async () => withGoals(async (goals, state) => {
+    const runtime = new GoalRuntime(state.storage, goals);
+    goals.create({ objective: "Original" }); runtime.bind("turn", 1);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const tools = createGoalTools(goals, () => gate, {
+      beforeUpdate: () => runtime.assertCurrentObjective("turn"),
+      onRead: snapshot => runtime.acknowledgeObjective("turn", snapshot),
+    });
+    const completing = tools[2]!.handler({ status: "complete" }, context);
+    goals.updateByUser({ objective: "Changed during accounting" });
+    release();
+    await expect(completing).rejects.toThrow("changed");
+    const response = await tools[0]!.handler({}, context) as { goal: NonNullable<ReturnType<Goals["get"]>> };
+    goals.updateByUser({ objective: "Changed after read" });
+    runtime.acknowledgeObjective("turn", response.goal);
+    expect(() => runtime.assertCurrentObjective("turn")).toThrow("changed");
+    expect(goals.get()?.status).toBe("active");
+  }));
+
 });

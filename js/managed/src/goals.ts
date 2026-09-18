@@ -82,7 +82,7 @@ export class Goals {
   }
   /** Cumulative snapshots for one turn; replay and increasing partial snapshots are safe.
    * Capture goalId at turn admission, so an old turn cannot charge a replacement goal.
-   * Tokens should be input + output tokens, with cached input included only once.
+   * Tokens should be uncached input + output tokens (the upstream goal accounting policy).
    */
   accountTurn(goalId: string, turnId: string, tokens: number, seconds: number): ThreadGoal | null {
     if (!Number.isSafeInteger(tokens) || tokens < 0 || !Number.isFinite(seconds) || seconds < 0) throw new TypeError("invalid goal usage");
@@ -112,6 +112,9 @@ export class Goals {
 /** Call only after successful turn completion; errors/cancellation must not auto-resume. */
 export function goalContinuation(goal: ThreadGoal | null): string | null {
   if (!goal || goal.status !== "active") return null;
-  return GOAL_CONTINUATION_TEMPLATE.replace("{{ objective }}", () => goal.objective)
-    + (goal.tokenBudget === undefined ? "" : `\nRemaining token budget: ${Math.max(0, goal.tokenBudget - goal.tokensUsed)}.`);
+  const escaped = goal.objective.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  const values: Record<string, string> = { objective: escaped, tokens_used: String(goal.tokensUsed),
+    token_budget: goal.tokenBudget === undefined ? "unlimited" : String(goal.tokenBudget),
+    remaining_tokens: goal.tokenBudget === undefined ? "unlimited" : String(Math.max(0, goal.tokenBudget - goal.tokensUsed)) };
+  return GOAL_CONTINUATION_TEMPLATE.replace(/{{ (objective|tokens_used|token_budget|remaining_tokens) }}/g, (_, key: string) => values[key]!);
 }
