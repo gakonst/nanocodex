@@ -236,14 +236,25 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     }
     function image(value, detail) {
       controller.signal.throwIfAborted();
+      const object = value !== null && typeof value === "object" && !Array.isArray(value);
+      const mcp = object && value.image_url === undefined && value.type === "image";
       const url = typeof value === "string" ? value
-        : value?.type === "image" ? `data:${value.mimeType};base64,${value.data}`
-        : value?.image_url;
+        : mcp && typeof value.data === "string" ? (value.data.toLowerCase().startsWith("data:")
+          ? value.data : `data:${value.mimeType || value.mime_type || "application/octet-stream"};base64,${value.data}`)
+        : object ? value.image_url : undefined;
       if (typeof url !== "string" || !validImageDataUrl(url)) {
         throw new TypeError("image() requires a nonempty base64 data URL with an image MIME type or MCP image block");
       }
-      const selected = detail ?? value?._meta?.["codex/imageDetail"] ?? value?.detail ?? "auto";
-      if (!["auto", "low", "high", "original"].includes(selected)) throw new TypeError("invalid image detail");
+      const details = ["auto", "low", "high", "original"];
+      const metadataDetail = mcp ? value._meta?.["codex/imageDetail"] : undefined;
+      const embeddedDetail = mcp ? (details.includes(metadataDetail) ? metadataDetail : undefined)
+        : object ? value.detail : undefined;
+      if ((detail != null && typeof detail !== "string")
+        || (embeddedDetail != null && typeof embeddedDetail !== "string")) {
+        throw new TypeError("image detail must be a string when provided");
+      }
+      const selected = (detail ?? embeddedDetail ?? "high").toLowerCase();
+      if (!details.includes(selected)) throw new TypeError("image detail must be one of: auto, low, high, original");
       content.push({ type: "input_image", image_url: url, detail: selected });
     }
     function audio(value) {
@@ -257,18 +268,24 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
       content.push({ type: "input_audio", audio_url: url });
     }
     function generatedImage(result) {
-      if (!result || typeof result !== "object" || typeof result.image_url !== "string") {
-        throw new TypeError("generatedImage() requires an image generation result");
+      if (!result || typeof result !== "object" || Array.isArray(result)) {
+        throw new TypeError("generatedImage expects an image generation result object");
       }
-      image(result.image_url, "high");
-      if (typeof result.output_hint === "string" && result.output_hint) text(result.output_hint);
+      const outputHint = result.output_hint;
+      if (outputHint !== undefined && typeof outputHint !== "string") {
+        throw new TypeError("generatedImage output_hint must be a string when provided");
+      }
+      image(result);
+      if (outputHint !== undefined) text(outputHint);
     }
     function notify(value) {
       controller.signal.throwIfAborted();
+      const notification = stringify(value);
+      if (!notification.trim()) throw new TypeError("notify expects non-empty text");
       if (cell) {
-        cell.notifications.push({ call_id: parentCallId, text: stringify(value) });
+        cell.notifications.push({ call_id: parentCallId, text: notification });
         cell.wake?.();
-      } else text(value);
+      } else text(notification);
     }
     function yield_control() {
       if (cell) { cell.yieldRequested = true; cell.wake?.(); }
@@ -790,17 +807,21 @@ function normalizeIdentifier(name) {
 }
 
 function parseExec(source) {
+  if (typeof source !== "string" || !source.trim()) {
+    throw new TypeError('exec expects raw JavaScript source text (non-empty). Provide JS only, optionally with first-line `// @exec: {"yield_time_ms": 10000, "max_output_tokens": 1000}`.');
+  }
   const [line] = source.split(/\r?\n/, 1);
   if (!line.trimStart().startsWith("// @exec:")) return { source };
   const rest = source.slice(line.length).replace(/^\r?\n/, "");
-  if (!rest) throw new TypeError("exec pragma must be followed by JavaScript source on subsequent lines");
-  return { ...parseCellOptions(JSON.parse(line.trimStart().slice("// @exec:".length)), ["yield_time_ms", "max_output_tokens"]), source: rest };
+  if (!rest.trim()) throw new TypeError("exec pragma must be followed by JavaScript source on subsequent lines");
+  return { ...parseCellOptions(JSON.parse(line.trimStart().slice("// @exec:".length)), ["yield_time_ms", "max_output_tokens"], ["yield_time_ms", "max_output_tokens"]), source: rest };
 }
 
-function parseCellOptions(value, allowed) {
+function parseCellOptions(value, allowed, nullable = []) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("cell options must be a JSON object");
   for (const [key, field] of Object.entries(value)) {
     if (!allowed.includes(key)) throw new TypeError(`unknown cell option: ${key}`);
+    if (field === null && nullable.includes(key)) continue;
     if (key !== "cell_id" && key !== "terminate" && (!Number.isSafeInteger(field) || field < 0)) {
       throw new TypeError(`${key} must be a non-negative safe integer`);
     }

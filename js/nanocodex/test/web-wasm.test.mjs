@@ -958,7 +958,7 @@ test("web-target WASM executes the complete browser harness tool contract", asyn
       output: "browser-shell:pwd",
       wall_time_seconds: 0,
     });
-    assert.deepEqual(JSON.parse(direct.input[1].output), { updated: true });
+    assert.equal(direct.input[1].output, "Plan updated");
     assert.match(direct.input[2].output, /Success.*M note\.txt/s);
     assert.deepEqual(direct.input[3].output, [{
       type: "input_image",

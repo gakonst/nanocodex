@@ -135,7 +135,7 @@ struct ExecCommandArguments {
     // Codex exposes these approval metadata fields even under a fixed
     // full-access/never-ask policy. Nanocodex accepts but does not act on
     // them; this does not add a second approval or sandbox policy owner.
-    #[serde(default)]
+    #[serde(default, rename = "justification")]
     _justification: Option<String>,
     #[serde(default)]
     workdir: Option<String>,
@@ -149,9 +149,9 @@ struct ExecCommandArguments {
     yield_time_ms: Option<u64>,
     #[serde(default)]
     max_output_tokens: Option<usize>,
-    #[serde(default)]
+    #[serde(default, rename = "prefix_rule")]
     _prefix_rule: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, rename = "sandbox_permissions")]
     _sandbox_permissions: Option<String>,
 }
 
@@ -176,6 +176,20 @@ mod tests {
         ToolOutputBody,
         shell::{ExecCommandResult, ShellSessions},
     };
+
+    #[test]
+    fn exec_command_accepts_the_advertised_approval_metadata_names() {
+        let args: super::ExecCommandArguments = serde_json::from_value(serde_json::json!({
+            "cmd": "pwd",
+            "justification": "Show the workspace",
+            "prefix_rule": ["pwd"],
+            "sandbox_permissions": "use_default"
+        }))
+        .unwrap();
+        assert_eq!(args._justification.as_deref(), Some("Show the workspace"));
+        assert_eq!(args._prefix_rule, Some(vec!["pwd".to_owned()]));
+        assert_eq!(args._sandbox_permissions.as_deref(), Some("use_default"));
+    }
 
     #[test]
     fn exec_command_exposes_codex_description_and_shell_parameter() {
