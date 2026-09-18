@@ -1,7 +1,7 @@
-import { env, runInDurableObject } from 'cloudflare:test';
+import { createExecutionContext, env, runInDurableObject } from 'cloudflare:test';
 import { expect, it, vi } from 'vitest';
 import { MainThreadCompletions } from '../src/main-thread-completions';
-import type { Env } from '../src/index';
+import worker, { type Env } from '../src/index';
 
 // SQL seeds identity/configuration and a stale revoked watch only. The scripted
 // provider drives production tool calls and terminal transitions for every turn.
@@ -129,6 +129,22 @@ it('executes Main routing, a persistent child, and both internal outcome turns t
     const outcome = main.find(row => row.id.startsWith('main-result:') && row.input_json.includes('project-result:'));
     expect(outcome).toMatchObject({ state: 'completed', error: null });
     expect(outcome!.terminal_json).toContain('Main processed the outcome.');
+    // accepted also covers active execution; terminal API outcomes are the proof
+    // of completion. attempt_count counts retries, not ordinary dispatches.
+    for (const [agentId, turnId, message] of [
+      [childId!, child[0]!.id, 'Child completed with actual runtime evidence.'],
+      [coordinatorId!, coordinator.find(row => row.id.startsWith('project-result:'))!.id, 'Coordinator processed the outcome.'],
+      [mainId, outcome!.id, 'Main processed the outcome.'],
+    ]) {
+      const response = await worker.fetch(new Request(`https://nanocodex.example/v1/agents/${agentId}/turns/${turnId}`),
+        base, createExecutionContext(), { kind: 'service', userId: owner, organizationId: organization, teamId: team,
+          role: 'writer', subjectId: `user:${owner}`, credentialId: mainId, authorizationEpoch: 2,
+          capabilities: ['agents:read', 'agents:write', 'tools:use'] });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ state: 'completed', terminal: { type: 'turn_completed', final_message: message } });
+    }
+    expect(JSON.stringify(calls.get(mainId))).toContain(expectedCoordinatorId);
+    expect(JSON.stringify(calls.get(coordinatorId!))).toContain(childId!);
     for (const id of [coordinatorId!, childId!]) await runInDurableObject(base.NANOCODEX_SESSIONS.getByName(id), async (_session, state) => {
       expect(JSON.parse(state.storage.sql.exec<{ body: string }>('SELECT body FROM managed_configuration').one().body)).toMatchObject(configuration);
       expect(state.storage.sql.exec('SELECT model,thinking,reasoning_mode,fast_mode FROM managed_agent_settings').one()).toEqual({ ...settings, fast_mode: 0 });

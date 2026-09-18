@@ -128,3 +128,8 @@ are fixtures, and alarm time is accelerated. This proves backend execution and
 delivery, not a live provider or UI status rendering. Older project-thread-runs
 cascade tests remain useful for eviction/replay boundaries but manually supply
 outcomes and are not evidence of full model-driven execution.
+
+Managed turn state `accepted` includes queued and actively executing turns; there
+is no `running` state. `attempt_count` records retries rather than dispatches.
+The runtime cascade regression checks completed terminal outputs through the public
+turn read API instead of treating `accepted` with zero retries as dispatch failure.
