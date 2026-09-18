@@ -133,7 +133,7 @@ describe('persistent project outcome delivery in the managed runtime', () => {
   });
 });
 
-it('delivers late coordinator completion turns to Main after its initial response, once across eviction', async () => {
+it('replays late coordinator completion once across eviction and project rename', async () => {
   const { MainThreadCompletions } = await import('../src/main-thread-completions');
   const mainId = crypto.randomUUID(), coordinatorId = crypto.randomUUID();
   const main = await setup(mainId), coordinator = await setup(coordinatorId);
@@ -157,6 +157,7 @@ it('delivers late coordinator completion turns to Main after its initial respons
     new MainThreadCompletions(state.storage).publish('project-result:later-child');
   });
   await evictDurableObject(main);
+  let originalInput = "";
   await runInDurableObject(main, async (session, state) => {
     blockModel(session);
     await session.alarm();
@@ -164,10 +165,19 @@ it('delivers late coordinator completion turns to Main after its initial respons
     expect(row.id).toBe(`main-result:${coordinatorId}:1`);
     expect(JSON.parse(row.input_json)).toContain('"turn_id":"project-result:later-child"');
     expect(JSON.parse(row.input_json)).toContain('"project_id":"late-project"');
-    // Replay after a lost admission acknowledgement cannot admit a second notification.
-    state.storage.sql.exec('UPDATE main_thread_completion_watches SET cursor=0,retry_at=0');
+    expect(JSON.parse(row.input_json)).not.toContain('Late project');
+    originalInput = row.input_json;
+  });
+  await runInDurableObject(registry, async (_account, registryState) => {
+      registryState.storage.sql.exec('UPDATE canonical_projects SET name=? WHERE coordinator_agent_id=?', 'Renamed project', coordinatorId);
+  });
+  await runInDurableObject(main, async (session, state) => {
+    // Lost admission acknowledgement followed by rename must replay the same body.
+    state.storage.sql.exec("UPDATE main_thread_completion_watches SET cursor=0,retry_at=0,state='watching',authorization_json=?", auth);
     await session.alarm();
     expect(state.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM managed_turns').one().count).toBe(1);
+    expect(new MainThreadCompletions(state.storage).get(coordinatorId)?.cursor).toBe(1);
+    expect(state.storage.sql.exec<{ input_json: string }>('SELECT input_json FROM managed_turns').one().input_json).toBe(originalInput);
     state.storage.sql.exec('UPDATE session_state SET authorization_epoch=2');
     state.storage.sql.exec('UPDATE main_thread_completion_watches SET retry_at=0');
     await session.alarm();
@@ -227,6 +237,7 @@ it('propagates a late nested thread result to its direct coordinator without exp
   await runInDurableObject(child, async (_session, state) => {
     new MainThreadCompletions(state.storage).publish('project-result:grandchild');
   });
+  let originalInput = "";
   await runInDurableObject(parent, async (session, state) => {
     const ledger = new MainThreadCompletions(state.storage);
     ledger.watch(childId, 0, auth, 1);
@@ -236,6 +247,18 @@ it('propagates a late nested thread result to its direct coordinator without exp
     expect(JSON.parse(turn.input_json)).toContain('read_project_thread');
     expect(JSON.parse(turn.input_json)).toContain('"turn_id":"project-result:grandchild"');
     expect(ledger.get(childId)?.cursor).toBe(1);
+    originalInput = turn.input_json;
+  });
+  await runInDurableObject(registry, async (_account, registryState) => {
+      registryState.storage.sql.exec('UPDATE project_threads SET title=? WHERE agent_id=?', 'Renamed child', childId);
+  });
+  await runInDurableObject(parent, async (session, state) => {
+    const ledger = new MainThreadCompletions(state.storage);
+    state.storage.sql.exec("UPDATE main_thread_completion_watches SET cursor=0,retry_at=0,state='watching',authorization_json=?", auth);
+    await session.alarm();
+    expect(ledger.get(childId)?.cursor).toBe(1);
+    expect(state.storage.sql.exec('SELECT id FROM managed_turns').toArray()).toHaveLength(1);
+    expect(state.storage.sql.exec<{ input_json: string }>('SELECT input_json FROM managed_turns').one().input_json).toBe(originalInput);
     ledger.retire(childId);
     state.storage.sql.exec("UPDATE managed_turns SET state='cancelled',retry_at=NULL");
     await state.storage.deleteAlarm();
