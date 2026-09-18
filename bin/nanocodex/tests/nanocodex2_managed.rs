@@ -35,11 +35,29 @@ async fn local_hand_control_pauses_and_resumes_existing_product_sessions() {
     let root = tempfile::tempdir().unwrap();
     let lookups = Arc::new(AtomicUsize::new(0));
     let count = lookups.clone();
+    let per_peer = Arc::new([
+        AtomicUsize::new(0),
+        AtomicUsize::new(0),
+        AtomicUsize::new(0),
+    ]);
+    let peer_counts = per_peer.clone();
     let app = Router::new().route(
         "/v1/me",
-        get(move || {
+        get(move |headers: HeaderMap| {
             let count = count.clone();
+            let peer_counts = peer_counts.clone();
             async move {
+                let index: usize = headers["authorization"]
+                    .to_str()
+                    .unwrap()
+                    .strip_prefix("Bearer ncx_live_")
+                    .unwrap()
+                    .split('_')
+                    .next()
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                peer_counts[index].fetch_add(1, Ordering::SeqCst);
                 count.fetch_add(1, Ordering::SeqCst);
                 StatusCode::UNAUTHORIZED
             }
@@ -74,13 +92,12 @@ async fn local_hand_control_pauses_and_resumes_existing_product_sessions() {
     };
     assert!(control("stop-all").await.contains("disabled"));
     assert!(control("status").await.contains("disabled"));
-    let mut peers = Vec::new();
-    for _ in 0..2 {
-        let mut child = command()
+    let spawn_peer = |mut cmd: tokio::process::Command, index: usize| async move {
+        let mut child = cmd
             .args(["__device-hand", "--parent-pipe"])
             .env(
                 "NANOCODEX_API_KEY",
-                format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43)),
+                format!("ncx_live_{index:012}_{}", "b".repeat(43)),
             )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -97,7 +114,11 @@ async fn local_hand_control_pauses_and_resumes_existing_product_sessions() {
         // Drain subsequent receipts so stdout cannot block the lease loop.
         let drain =
             tokio::spawn(async move { while matches!(lines.next_line().await, Ok(Some(_))) {} });
-        peers.push((child, drain));
+        (child, drain)
+    };
+    let mut peers = Vec::new();
+    for index in 0..2 {
+        peers.push(spawn_peer(command(), index).await);
     }
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert_eq!(
@@ -105,24 +126,42 @@ async fn local_hand_control_pauses_and_resumes_existing_product_sessions() {
         0,
         "disabled sessions must not initialize a publisher"
     );
-    for _ in 0..2 {
-        let before = lookups.load(Ordering::SeqCst);
+    for generation in 0..2 {
+        let before = per_peer
+            .iter()
+            .map(|count| count.load(Ordering::SeqCst))
+            .collect::<Vec<_>>();
         assert!(control("start-all").await.contains("enabled"));
         tokio::time::timeout(Duration::from_secs(5), async {
-            while lookups.load(Ordering::SeqCst) < before + 2 {
+            while !(0..peers.len())
+                .all(|index| per_peer[index].load(Ordering::SeqCst) > before[index])
+            {
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
         })
         .await
         .unwrap();
+        eprintln!(
+            "{}",
+            serde_json::json!({"fixture":"product-leases", "stage":"enabled", "generation":generation, "lease_pids":peers.iter().map(|(peer,_)|peer.id().unwrap()).collect::<Vec<_>>(), "account_lookups":lookups.load(Ordering::SeqCst), "per_peer_lookups":per_peer.iter().map(|count|count.load(Ordering::SeqCst)).collect::<Vec<_>>()})
+        );
         assert!(control("stop-all").await.contains("disabled"));
         tokio::time::sleep(Duration::from_millis(600)).await;
         let stopped = lookups.load(Ordering::SeqCst);
+        if generation == 0 {
+            // A new local session joining while off must observe the same gate,
+            // rather than create a new publisher or bypass existing sessions.
+            peers.push(spawn_peer(command(), peers.len()).await);
+        }
         tokio::time::sleep(Duration::from_millis(1200)).await;
         assert_eq!(
             lookups.load(Ordering::SeqCst),
             stopped,
             "disabled leases must not retry startup"
+        );
+        eprintln!(
+            "{}",
+            serde_json::json!({"fixture":"product-leases", "stage":"disabled", "generation":generation, "lease_pids":peers.iter().map(|(peer,_)|peer.id().unwrap()).collect::<Vec<_>>(), "account_lookups":lookups.load(Ordering::SeqCst), "per_peer_lookups":per_peer.iter().map(|count|count.load(Ordering::SeqCst)).collect::<Vec<_>>()})
         );
         for (peer, _) in &mut peers {
             assert!(peer.try_wait().unwrap().is_none());
