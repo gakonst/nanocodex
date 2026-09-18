@@ -9,7 +9,9 @@ const error = (value: string, status = 409) => Response.json({ error: value }, {
 export function initializeMainThreadRegistry(storage: DurableObjectStorage): void {
   const columns = storage.sql.exec<{ name: string }>("PRAGMA table_info(agent_registry)").toArray();
   if (!columns.some(column => column.name === "team_id")) storage.sql.exec("ALTER TABLE agent_registry ADD COLUMN team_id TEXT");
-  storage.sql.exec(`CREATE TABLE IF NOT EXISTS main_threads (
+  storage.sql.exec(`CREATE TABLE IF NOT EXISTS canonical_generations (
+    team_id TEXT NOT NULL, key TEXT NOT NULL, generation INTEGER NOT NULL, PRIMARY KEY(team_id,key));
+    CREATE TABLE IF NOT EXISTS main_threads (
     team_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL UNIQUE);
     CREATE TABLE IF NOT EXISTS canonical_projects (
     team_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL,
@@ -26,6 +28,16 @@ export async function mainThreadRegistry(
   const team = id.safeParse(url.searchParams.get("team_id"));
   if (!team.success) return error("invalid_team", 400);
   const teamId = team.data;
+  if (url.pathname.startsWith("/canonical-generations/")) {
+    if (request.method !== "GET") return error("method_not_allowed", 405);
+    const identity = url.pathname.slice("/canonical-generations/".length);
+    const project = identity.startsWith("projects/") ? identity.slice("projects/".length) : undefined;
+    if (identity !== "main" && !id.safeParse(project).success) return error("invalid_project", 400);
+    const key = identity === "main" ? "main" : `project:${project}`;
+    const row = storage.sql.exec<{ generation: number }>(
+      "SELECT generation FROM canonical_generations WHERE team_id=? AND key=?", teamId, key).toArray()[0];
+    return Response.json({ generation: row?.generation ?? 0 });
+  }
   const main = url.pathname === "/main-thread";
   const projectId = url.pathname.startsWith("/projects/") ? url.pathname.slice("/projects/".length) : undefined;
   if (!main && url.pathname !== "/projects" && (!projectId || !id.safeParse(projectId).success)) return error("invalid_project", 400);
@@ -95,4 +107,18 @@ export async function mainThreadMembershipGuard(request: Request, storage: Durab
   if (storage.sql.exec("SELECT agent_id FROM main_threads WHERE agent_id=?", body.agent_id).toArray().length
     || storage.sql.exec("SELECT id FROM canonical_projects WHERE coordinator_agent_id=?", body.agent_id).toArray().length)
     return error("project_thread_conflict");
+}
+
+/** Run in the same transaction as the account tombstone. Exact deletion retries do not advance twice. */
+export function retireCanonicalAgent(storage: DurableObjectStorage, agentId: string): void {
+  const main = storage.sql.exec<{ team_id: string }>("SELECT team_id FROM main_threads WHERE agent_id=?", agentId).toArray()[0];
+  const project = storage.sql.exec<{ team_id: string; id: string }>(
+    "SELECT team_id,id FROM canonical_projects WHERE coordinator_agent_id=?", agentId).toArray()[0];
+  for (const identity of [main && { team: main.team_id, key: "main" },
+    project && { team: project.team_id, key: `project:${project.id}` }]) {
+    if (identity) storage.sql.exec(`INSERT INTO canonical_generations(team_id,key,generation) VALUES (?,?,1)
+      ON CONFLICT(team_id,key) DO UPDATE SET generation=generation+1`, identity.team, identity.key);
+  }
+  storage.sql.exec("DELETE FROM main_threads WHERE agent_id=?", agentId);
+  storage.sql.exec("DELETE FROM canonical_projects WHERE coordinator_agent_id=?", agentId);
 }

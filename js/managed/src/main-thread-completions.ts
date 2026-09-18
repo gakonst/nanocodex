@@ -15,6 +15,7 @@ export class MainThreadCompletions {
   constructor(private readonly storage: DurableObjectStorage) {
     storage.sql.exec(`CREATE TABLE IF NOT EXISTS main_thread_completions (
       sequence INTEGER PRIMARY KEY AUTOINCREMENT, turn_id TEXT NOT NULL UNIQUE);
+      CREATE TABLE IF NOT EXISTS main_thread_internal_notifications (turn_id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS main_thread_completion_watches (
         agent_id TEXT PRIMARY KEY, cursor INTEGER NOT NULL,
         authorization_json TEXT NOT NULL, authorization_epoch INTEGER NOT NULL,
@@ -26,8 +27,15 @@ export class MainThreadCompletions {
     if (!columns.has("poll_delay")) storage.sql.exec("ALTER TABLE main_thread_completion_watches ADD COLUMN poll_delay INTEGER NOT NULL DEFAULT 30000");
   }
 
-  /** Call only when an internal coordinator turn's completion is committed. */
-  publish(turnId: string): number {
+  /** Called only inside the actual internal notification admission transaction. */
+  admitInternalNotification(turnId: string): void {
+    this.storage.sql.exec('INSERT INTO main_thread_internal_notifications(turn_id) VALUES (?) ON CONFLICT(turn_id) DO NOTHING', turnId);
+  }
+
+  /** Public turn IDs carry no authority, even if they match an internal prefix. */
+  publish(turnId: string): number | undefined {
+    if (!this.storage.sql.exec('SELECT turn_id FROM main_thread_internal_notifications WHERE turn_id=?', turnId).toArray().length) return;
+
     this.storage.sql.exec('INSERT INTO main_thread_completions (turn_id) VALUES (?) ON CONFLICT(turn_id) DO NOTHING', turnId);
     return this.storage.sql.exec<MainThreadCompletion>(
       'SELECT sequence,turn_id FROM main_thread_completions WHERE turn_id=?', turnId).one().sequence;

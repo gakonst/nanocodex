@@ -5227,12 +5227,21 @@ export class DurableAgentSession extends DurableComputerSession {
       route: async (input, context) => {
         const projects = await canonicalProjects(context);
         if (configuration.multi_agent?.enabled === false) throw new Error("delegation is disabled for this agent");
-        retainMainRoute(this.ctx.storage, input);
+        const plan = retainMainRoute(this.ctx.storage, input,
+          JSON.stringify({ settings: this.#settings(), configuration }));
         let project = projects.find(row => row.id === input.project_id);
         if (!project) {
-          const response = await managedFetch(new Request(new URL(`/v1/projects/${input.project_id}`, session.public_origin), {
+          const principal = principalFor(context);
+          const response = await mainThreadRequest(new Request(new URL(`/v1/projects/${input.project_id}`, session.public_origin), {
             method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: input.name }),
-          }), this.env, this.ctx, principalFor(context));
+          }), {
+            teamId: session.team_id,
+            registry: (path, init) => registry.fetch(`https://user.internal${path}?team_id=${encodeURIComponent(session.team_id)}`, init),
+            create: key => managedFetch(new Request(new URL("/v1/agents", session.public_origin), {
+              method: "POST", headers: { "content-type": "application/json", "idempotency-key": key },
+              body: plan.creation,
+            }), this.env, this.ctx, principal),
+          });
           if (!response.ok) throw new Error(`project creation failed: ${response.status}; retry the same id`);
           project = await response.json<CanonicalProject>();
         }
@@ -5370,6 +5379,7 @@ export class DurableAgentSession extends DurableComputerSession {
             : projectCompletionInput({ agent_id: watch.agent_id, turn_id: entry.turn_id, title: thread!.title }, "terminal");
           await this.#submitManagedTurn(id, input, await hashManagedInput(input), id, true, authorization, () => {
             if (this.#session()?.authorization_epoch !== watch.authorization_epoch) throw new ManagedRequestError(403, "forbidden", "authorization changed");
+            this.#mainCompletions.admitInternalNotification(id);
             this.#mainCompletions.advance(watch.agent_id, entry.sequence);
           });
           this.#mainCompletions.advance(watch.agent_id, entry.sequence);
@@ -5462,6 +5472,7 @@ export class DurableAgentSession extends DurableComputerSession {
           parseTurnAuthorization(run.authorization_json), () => {
             if (this.#session()?.authorization_epoch !== run.authorization_epoch)
               throw new ManagedRequestError(403, "forbidden", "project authorization changed");
+            this.#mainCompletions.admitInternalNotification(id);
             this.#projectRuns.finish(run.id, "delivered");
           });
         // The receipt may already exist after an ambiguous return from admission.
@@ -9396,7 +9407,7 @@ export class DurableAgentSession extends DurableComputerSession {
 
   #commitManagedMessage(id: string, requested: ManagedTurnTransition): ManagedTurnRow {
     const { committed, event } = commitManagedTransition(this.ctx.storage, this.#eventLog, id, requested, () => {
-      if (id.startsWith("project-result:")) this.#mainCompletions.publish(id);
+      this.#mainCompletions.publish(id);
     });
     if (event) {
       this.#publish(event);

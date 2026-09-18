@@ -22,7 +22,12 @@ For legacy registry rows with a NULL team, attachment retries leave metadata
 unchanged. Successful explicit registration first verifies the live session through
 RPC and then stamps only the registry team column. Foreign owners and conflicting
 non-NULL teams are rejected; session membership is never modified.
-No endpoint migrates, deletes, or reparents conversations.
+These navigation endpoints do not migrate or reparent conversations. The existing
+conversation deletion endpoint remains available. Deleting Main or a coordinator
+atomically retires its canonical reference with the account tombstone and advances
+an internal creation generation. A later ensure creates a fresh identity; exact
+deletion retries do not advance the generation again, and deleted sessions are
+never revived.
 
 The account DO stores `main_threads` and `canonical_projects` separately from
 `project_threads`. Creation keys include the team and project ID; agent creation
@@ -32,11 +37,15 @@ retain their behavior. Personal memory storage and scope are unchanged.
 Only canonical Main exposes `list_projects`, `read_project`, and `route_project`.
 Project coordinators and ordinary project conversations retain project-thread tools.
 `route_project` accepts `{project_id, name, id, input}`. It freezes routing intent
-before cross-object effects, reuses the coordinator, and admits a stable turn through
+and the current settings/configuration before cross-object effects. New coordinators
+inherit that immutable creation snapshot, while existing coordinators retain their
+own configuration. Routing reuses the coordinator and admits a stable turn through
 `ProjectThreadRuns`. Reusing the request ID with different content conflicts.
 
 `ProjectThreadRuns` delivers initial results. A separate durable ordered completion
-ledger publishes internal project-result turns atomically with their terminal state.
+ledger publishes internal result turns atomically with their terminal state. Only
+notifications carrying a durable provenance marker written in the notification
+admission transaction can publish; a caller-chosen turn ID prefix is insufficient.
 Parent subscriptions retain cursors and authorization epochs, survive eviction, and
 admit notifications idempotently. This propagates late results from nested project
 threads to coordinators and then Main, including after an initial response has

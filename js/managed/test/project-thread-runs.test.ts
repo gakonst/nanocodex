@@ -75,6 +75,14 @@ describe('persistent project outcome delivery in the managed runtime', () => {
       expect(runs.get('stable')?.state).toBe('delivered');
       const row = state.storage.sql.exec<{ id: string; input_json: string; authorization_json: string }>('SELECT id,input_json,authorization_json FROM managed_turns').one();
       expect(row.id).toBe('project-result:stable');
+      const { MainThreadCompletions } = await import('../src/main-thread-completions');
+      const { commitManagedTransition } = await import('../src/index');
+      const { DurableEventLog } = await import('../src/durable-events');
+      const ledger = new MainThreadCompletions(state.storage);
+      commitManagedTransition(state.storage, new DurableEventLog(state.storage), row.id,
+        { type: 'turn_cancelled', id: row.id },
+        () => ledger.publish(row.id));
+      expect(ledger.entries(0).map(entry => entry.turn_id)).toEqual([row.id]);
       expect(JSON.parse(row.input_json)).toContain('Internal project task completion');
       expect(JSON.parse(row.input_json)).toContain(`"state":"${outcome}"`);
       expect(JSON.parse(row.authorization_json)).toEqual(JSON.parse(auth));
@@ -145,7 +153,9 @@ it('delivers late coordinator completion turns to Main after its initial respons
     new MainThreadCompletions(state.storage).watch(coordinatorId, 0, auth, 1);
   });
   await runInDurableObject(coordinator, async (_session, state) => {
-    new MainThreadCompletions(state.storage).publish('project-result:later-child');
+    const ledger = new MainThreadCompletions(state.storage);
+    ledger.admitInternalNotification('project-result:later-child');
+    ledger.publish('project-result:later-child');
   });
   await evictDurableObject(main);
   await runInDurableObject(main, async (session, state) => {
@@ -172,7 +182,7 @@ it('delivers late coordinator completion turns to Main after its initial respons
   });
 });
 
-it('commits late-result publication atomically with terminal state and rejects changed routing intent', async () => {
+it('does not publish an ordinary caller-prefixed turn and rejects changed routing intent', async () => {
   const { MainThreadCompletions } = await import('../src/main-thread-completions');
   const { retainMainRoute } = await import('../src/main-thread');
   const { commitManagedTransition } = await import('../src/index');
@@ -199,7 +209,7 @@ it('commits late-result publication atomically with terminal state and rejects c
     expect(state.storage.sql.exec<{ state: string }>('SELECT state FROM managed_turns WHERE id=?', id).one().state).toBe('accepted');
     commitManagedTransition(state.storage, log, id, terminal, () => ledger.publish(id));
     commitManagedTransition(state.storage, log, id, terminal, () => { throw new Error('duplicate publication'); });
-    expect(ledger.entries(0)).toEqual([{ sequence: 1, turn_id: id }]);
+    expect(ledger.entries(0)).toEqual([]);
     state.storage.sql.exec('DELETE FROM history_projection_outbox WHERE turn_id=?', id);
     await state.storage.deleteAlarm();
   });
@@ -216,7 +226,9 @@ it('propagates a late nested thread result to its direct coordinator without exp
       VALUES (?,?,?,'origin','project:child','Child','hash',1)`, childId, parentId, parentId);
   });
   await runInDurableObject(child, async (_session, state) => {
-    new MainThreadCompletions(state.storage).publish('project-result:grandchild');
+    const ledger = new MainThreadCompletions(state.storage);
+    ledger.admitInternalNotification('project-result:grandchild');
+    ledger.publish('project-result:grandchild');
   });
   await runInDurableObject(parent, async (session, state) => {
     const ledger = new MainThreadCompletions(state.storage);
@@ -257,7 +269,9 @@ it('renews a revoked completion subscription while recovering a new authorized a
   const child = await setup(childId);
   await runInDurableObject(child, async (_session, state) => {
     state.storage.sql.exec('UPDATE session_state SET authorization_epoch=2');
-    new MainThreadCompletions(state.storage).publish('project-result:before-renewal');
+    const ledger = new MainThreadCompletions(state.storage);
+    ledger.admitInternalNotification('project-result:before-renewal');
+    ledger.publish('project-result:before-renewal');
   });
   await runInDurableObject(parent, async (session, state) => {
     const ledger = new MainThreadCompletions(state.storage);
@@ -306,7 +320,8 @@ it('relays one late nested result child → coordinator → Main and retires idl
     state.storage.sql.exec('DELETE FROM history_projection_outbox WHERE turn_id=?', id);
     await state.storage.deleteAlarm();
   });
-  await runInDurableObject(child, async (session) => {
+  await runInDurableObject(child, async (session, state) => {
+    new MainThreadCompletions(state.storage).admitInternalNotification('project-result:deep-task');
     expect((await session.fetch(new Request('https://session.internal/turns', { method: 'POST', body: JSON.stringify({ id: 'project-result:deep-task', input: 'Review deeper task result' }) }))).status).toBe(202);
   });
   // A still-running descendant prevents ancestors from declaring the subtree idle.

@@ -1,5 +1,5 @@
 import type { DurableAgentSession } from "./index";
-import { initializeMainThreadRegistry, mainThreadRegistry, mainThreadMembershipGuard } from "./main-thread-registry";
+import { initializeMainThreadRegistry, mainThreadRegistry, mainThreadMembershipGuard, retireCanonicalAgent } from "./main-thread-registry";
 import { initializeProjectThreads, projectThreadRegistry } from "./project-threads";
 import { recordHandTiming } from "./hand-timing";
 import { configurationCatalog } from "./agent-configuration";
@@ -1767,7 +1767,7 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
         return projectThreadRegistry(request, this.ctx.storage);
       });
     }
-    if (url.pathname === "/main-thread" || url.pathname === "/projects" || url.pathname.startsWith("/projects/")) {
+    if (url.pathname === "/main-thread" || url.pathname === "/projects" || url.pathname.startsWith("/projects/") || url.pathname.startsWith("/canonical-generations/")) {
       return this.ctx.blockConcurrencyWhile(() => mainThreadRegistry(request, this.ctx.storage,
         this.env.NANOCODEX_SESSIONS ? async (agentId, teamId) => {
           const account = await this.ctx.storage.get<UserRecord>("account");
@@ -1948,16 +1948,16 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
     if (agentMatch && request.method === "DELETE") {
       const agentId = agentMatch[1]!;
       const now = Date.now();
-      this.ctx.storage.sql.exec(
-        `INSERT INTO agent_registry
-           (id, title, created_at, updated_at, turn_count, deleted_at)
-         VALUES (?, '', ?, ?, 0, ?)
-         ON CONFLICT(id) DO UPDATE SET deleted_at = COALESCE(agent_registry.deleted_at, excluded.deleted_at)`,
-        agentId,
-        now,
-        now,
-        now,
-      );
+      this.ctx.storage.transactionSync(() => {
+        retireCanonicalAgent(this.ctx.storage, agentId);
+        this.ctx.storage.sql.exec(
+          `INSERT INTO agent_registry
+             (id, title, created_at, updated_at, turn_count, deleted_at)
+           VALUES (?, '', ?, ?, 0, ?)
+           ON CONFLICT(id) DO UPDATE SET deleted_at = COALESCE(agent_registry.deleted_at, excluded.deleted_at)`,
+          agentId, now, now, now,
+        );
+      });
       return new Response(null, { status: 204 });
     }
     return json({ error: "not_found" }, { status: 404 });

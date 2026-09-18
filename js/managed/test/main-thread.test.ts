@@ -8,6 +8,7 @@ describe('canonical Main protocol', () => {
     const keys: string[] = [];
     const host = { teamId: 'team-a',
       registry: async (path: string, init?: RequestInit) => {
+        if (path === '/canonical-generations/main') return Response.json({ generation: 0 });
         expect(path).toBe('/main-thread');
         if (init) main = JSON.parse(init.body as string);
         return Response.json(main ?? { error: 'not_found' }, { status: main ? 200 : 404 });
@@ -35,7 +36,7 @@ describe('canonical Main protocol', () => {
     const keys: string[] = [];
     let available = false;
     const host = { teamId: 'team-a',
-      registry: async (_path: string, init?: RequestInit) => init ? Response.json(JSON.parse(init.body as string)) : Response.json({ data: [] }),
+      registry: async (path: string, init?: RequestInit) => path.startsWith("/canonical-generations/") ? Response.json({ generation: 0 }) : init ? Response.json(JSON.parse(init.body as string)) : Response.json({ data: [] }),
       create: async (key: string) => { keys.push(key); return available ? Response.json({ agent_id: agent }) : new Response(null, { status: 503 }); },
     };
     const req = () => new Request('https://x/v1/projects/build', { method: 'PUT', body: JSON.stringify({ name: 'Build' }) });
@@ -49,7 +50,7 @@ describe('canonical Main protocol', () => {
 
   it('registers an explicit existing root without creating a conversation', async () => {
     const host = { teamId: 'team',
-      registry: async (_path: string, init?: RequestInit) => init ? Response.json(JSON.parse(init.body as string)) : Response.json({ data: [] }),
+      registry: async (path: string, init?: RequestInit) => path.startsWith("/canonical-generations/") ? Response.json({ generation: 0 }) : init ? Response.json(JSON.parse(init.body as string)) : Response.json({ data: [] }),
       create: async () => { throw new Error('must not create'); },
     };
     const body = { name: 'Existing', coordinator_agent_id: agent };

@@ -42,7 +42,13 @@ export async function mainThreadRequest(request: Request, host: {
     agentId = row?.coordinator_agent_id ?? body!.coordinator_agent_id;
   }
   if (!agentId) {
-    const created = await host.create(`canonical:${host.teamId}:${main ? "main" : `project:${projectId}`}`);
+    const identity = await host.registry(`/canonical-generations/${main ? "main" : `projects/${projectId}`}`);
+    if (!identity.ok) return identity;
+    const { generation } = await identity.json<{ generation: number }>();
+    if (!Number.isSafeInteger(generation) || generation < 0)
+      return Response.json({ error: "invalid_canonical_generation" }, { status: 503 });
+    const key = `canonical:${host.teamId}:${main ? "main" : `project:${projectId}`}`;
+    const created = await host.create(generation === 0 ? key : `${key}:generation:${generation}`);
     if (!created.ok) return created;
     agentId = (await created.json<{ agent_id: string }>()).agent_id;
   }
@@ -51,12 +57,17 @@ export async function mainThreadRequest(request: Request, host: {
 }
 
 /** Freeze routing intent before creating a coordinator or admitting any turn. */
-export function retainMainRoute(storage: DurableObjectStorage, input: { project_id: string; name: string; id: string; input: string }): void {
+export function retainMainRoute(storage: DurableObjectStorage, input: { project_id: string; name: string; id: string; input: string }, creation = "{}"): { creation: string } {
   storage.sql.exec("CREATE TABLE IF NOT EXISTS main_route_plans (id TEXT PRIMARY KEY, request_json TEXT NOT NULL)");
   const value = JSON.stringify(input);
   const previous = storage.sql.exec<{ request_json: string }>("SELECT request_json FROM main_route_plans WHERE id=?", input.id).toArray()[0];
   if (previous && previous.request_json !== value) throw new Error("project route id conflicts with an earlier request");
   if (!previous) storage.sql.exec("INSERT INTO main_route_plans(id,request_json) VALUES (?,?)", input.id, value);
+  // Separate table also upgrades retained routes created before snapshots existed.
+  storage.sql.exec("CREATE TABLE IF NOT EXISTS main_route_creations (id TEXT PRIMARY KEY, creation_json TEXT NOT NULL)");
+  storage.sql.exec("INSERT OR IGNORE INTO main_route_creations(id,creation_json) VALUES (?,?)", input.id, creation);
+  return { creation: storage.sql.exec<{ creation_json: string }>(
+    "SELECT creation_json FROM main_route_creations WHERE id=?", input.id).toArray()[0]!.creation_json };
 }
 
 export function mainThreadTools(handlers: {
