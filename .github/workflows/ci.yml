@@ -353,8 +353,52 @@ jobs:
       - run: ./scripts/check-rustls-provider.sh
       - uses: crate-ci/typos@96d9af6217dc2855210655af7e1ff19d23d4e593 # v1
 
+  wasm-build:
+    name: Build WASM bindings
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: "1.97"
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+          cache-on-failure: true
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
+        with:
+          tool: wasm-bindgen-cli@0.2.126
+      - name: Build WASM package
+        run: |
+          pnpm install --frozen-lockfile
+          ./js/nanocodex-vite/scripts/build-js-package.sh --release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nanocodex-wasm
+          # The common root is js/nanocodex; retain both sibling directories.
+          # Node glue loads the shared pkg-web WASM. Include declarations,
+          # package type markers, build attestation, and the hidden build stamp.
+          path: |
+            js/nanocodex/pkg-node
+            js/nanocodex/pkg-web
+          include-hidden-files: true
+          if-no-files-found: error
+
   bindings:
     name: Node and browser bindings
+    needs: wasm-build
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -378,10 +422,11 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          tool: wasm-bindgen-cli@0.2.126
-      - name: Build WASM consumers
+          name: nanocodex-wasm
+          path: js/nanocodex
+      - name: Check WASM consumers
         run: |
           cargo clippy --locked --target wasm32-unknown-unknown \
             --package nanocodex-oai-api \
@@ -392,7 +437,6 @@ jobs:
             -- -D warnings -A clippy::missing_const_for_fn
           pnpm install --frozen-lockfile
           pnpm exec turbo run build --only --filter nanocodex-tools
-          ./js/nanocodex-vite/scripts/build-js-package.sh --release
           npm ci --prefix examples/privy
           npm ci --prefix examples/better-auth
       - name: Test JS runtime
@@ -441,11 +485,6 @@ jobs:
           NANOCODEX_COMPUTER="$PWD/crates/experimental/nanocodex-computer/runtime/target/debug/nanocodex-computer" python3 crates/experimental/nanocodex-computer/tests/linux/live.py
           browser=$(command -v google-chrome)
           NANOCODEX_TEST_BROWSER="$browser" node --test js/nanocodex-computer/test/browser.test.mjs
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: nanocodex-web-wasm
-          path: js/nanocodex/pkg-web
-          if-no-files-found: error
 
   python:
     name: Python ${{ matrix.python }}
@@ -510,7 +549,7 @@ jobs:
 
   apps:
     name: JavaScript apps
-    needs: bindings
+    needs: wasm-build
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -527,8 +566,8 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: nanocodex-web-wasm
-          path: js/nanocodex/pkg-web
+          name: nanocodex-wasm
+          path: js/nanocodex
       - name: Install JavaScript workspace
         run: |
           pnpm install --frozen-lockfile
@@ -570,7 +609,7 @@ jobs:
   ci-success:
     name: ci success
     if: always()
-    needs: [test, shared-hands, voice-native, windows-hand, quality, vm-guest, policy, bindings, python, apps, codeql]
+    needs: [test, shared-hands, voice-native, windows-hand, quality, vm-guest, policy, wasm-build, bindings, python, apps, codeql]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -583,6 +622,7 @@ jobs:
           QUALITY: ${{ needs.quality.result }}
           VM_GUEST: ${{ needs.vm-guest.result }}
           POLICY: ${{ needs.policy.result }}
+          WASM_BUILD: ${{ needs.wasm-build.result }}
           BINDINGS: ${{ needs.bindings.result }}
           PYTHON: ${{ needs.python.result }}
           APPS: ${{ needs.apps.result }}
@@ -595,6 +635,7 @@ jobs:
           test "$QUALITY" = success
           test "$VM_GUEST" = success
           test "$POLICY" = success
+          test "$WASM_BUILD" = success
           test "$BINDINGS" = success
           test "$PYTHON" = success
           test "$APPS" = success
