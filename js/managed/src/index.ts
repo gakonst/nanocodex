@@ -4113,7 +4113,8 @@ export class DurableAgentSession extends DurableComputerSession {
         if (this.#deleted && !this.#deleting && !this.#sessionId() && !this.#credentialBinding) {
           return new Response(null, { status: 204 });
         }
-        await this.#beginDeletion();
+        const blocked = await this.#beginDeletion();
+        if (blocked) return blocked;
         await this.#deleteOwnedSession();
       } catch (error) {
         console.warn({ type: "managed.session_cleanup_pending", error_kind: errorKind(error) });
@@ -4220,7 +4221,11 @@ export class DurableAgentSession extends DurableComputerSession {
         await this.ctx.storage.setAlarm(credentialBinding.cleanup_at);
         return;
       }
-      await this.#beginDeletion();
+      const blocked = await this.#beginDeletion();
+      if (blocked) {
+        if (blocked.status >= 500) await this.#scheduleCleanupRetry();
+        return;
+      }
       try {
         await this.#deleteOwnedSession();
       } catch (error) {
@@ -7152,7 +7157,37 @@ export class DurableAgentSession extends DurableComputerSession {
     }
   }
 
-  async #beginDeletion(): Promise<void> {
+  async #beginDeletion(): Promise<Response | void> {
+    if (this.#deletionMarkerTask) return this.#deletionMarkerTask;
+    if (this.#deleting) return;
+    // Reserve ordinary deletion in the account registry before any local marker,
+    // shutdown or cleanup. The registry serializes this with project registration.
+    // A role lookup followed by deletion would leave a registration race.
+    if (!this.#deleting && !this.#deleted) {
+      const session = this.#session();
+      const owner = session?.owner_id ?? this.#credentialBinding?.owner_id;
+      const agentId = session?.session_id ?? this.#credentialBinding?.session_id;
+      if (owner && agentId && session?.runtime_profile !== "multiplayer") {
+        try {
+          const response = await fetchWithDeadline(
+            this.env.NANOCODEX_USERS.getByName(owner),
+            `https://user.internal/agents/${agentId}${session ? `?team_id=${encodeURIComponent(session.team_id)}` : ""}`,
+            { method: "DELETE" }, this.#ownershipIoTimeoutMs(), "agent deletion reservation",
+          );
+          if (!response.ok) {
+            if (response.status < 500) return response;
+            return json({ error: "session_cleanup_pending" }, { status: 503, headers: { "retry-after": "1" } });
+          }
+          const current = this.#session();
+          if (current?.owner_id !== session?.owner_id || current?.team_id !== session?.team_id
+            || current?.session_id !== session?.session_id)
+            return json({ error: "agent_scope_changed" }, { status: 409 });
+        } catch {
+          return json({ error: "session_cleanup_pending" }, { status: 503, headers: { "retry-after": "1" } });
+        }
+      }
+    }
+    // Another deletion may have completed the same reservation while we awaited it.
     if (this.#deletionMarkerTask) return this.#deletionMarkerTask;
     if (this.#deleting) return;
     // Fence reconstruction first. A crash after this transaction is recovered

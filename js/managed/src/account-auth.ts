@@ -1971,6 +1971,18 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
     const agentMatch = url.pathname.match(/^\/agents\/([0-9a-f-]{36})$/);
     if (agentMatch && request.method === "DELETE") {
       const agentId = agentMatch[1]!;
+      // This synchronous decision and tombstone serialize with canonical registration.
+      // Protect stored navigation roots too, even when legacy team metadata is NULL.
+      // Do not use discovery: filtered/stale identities must not become deletable.
+      const teamId = url.searchParams.get("team_id");
+      const registered = this.ctx.storage.sql.exec<{ team_id: string | null }>(
+        "SELECT team_id FROM agent_registry WHERE id=?", agentId).toArray()[0];
+      if (teamId !== null && registered?.team_id != null && registered.team_id !== teamId)
+        return json({ error: "not_found" }, { status: 404 });
+      if (this.ctx.storage.sql.exec("SELECT agent_id FROM main_threads WHERE agent_id=?", agentId).toArray().length
+        || this.ctx.storage.sql.exec("SELECT id FROM canonical_projects WHERE coordinator_agent_id=?", agentId).toArray().length
+        || this.ctx.storage.sql.exec("SELECT agent_id FROM conversation_projects WHERE agent_id=? AND project_root_id=agent_id", agentId).toArray().length)
+        return json({ error: "canonical_agent_deletion_forbidden" }, { status: 409 });
       const now = Date.now();
       this.ctx.storage.sql.exec(
         `INSERT INTO agent_registry

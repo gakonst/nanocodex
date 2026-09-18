@@ -80,3 +80,20 @@ RPC checks identity only; callers must perform this live authorization boundary.
 Completion notification bodies contain stable project/agent/turn identifiers and
 terminal state, without mutable project names or thread titles. A rename between
 admission and acknowledgement replay cannot change the idempotent input hash.
+
+## Protected identity deletion
+
+The authoritative session DELETE reserves deletion in the owner account registry before
+writing a session deletion marker or stopping its runtime. The account rejects Main,
+explicit canonical coordinators, and server navigation self-roots with HTTP 409
+`canonical_agent_deletion_forbidden`, including roots with NULL legacy team metadata.
+Stored roles remain protected even when discovery filters them out; this guard does not
+adopt metadata, migrate membership, replace deterministic identities, or delete content.
+The session derives owner/team from its persisted identity, and a conflicting non-NULL
+registry team returns 404. Registry failure leaves local deletion unstarted.
+
+For ordinary conversations, the same synchronous account decision writes the existing
+registry tombstone. Canonical registration rechecks active registry state after identity
+validation, so either registration wins and deletion is rejected, or deletion wins and
+registration is rejected. Session scope is reread after reservation before cleanup starts.
+Navigation group membership alone does not prevent deletion; only its self-root is protected.

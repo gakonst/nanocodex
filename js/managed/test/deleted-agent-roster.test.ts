@@ -31,6 +31,13 @@ describe("deleted agent account discovery", () => {
       const response = await session.fetch(new Request("https://session.internal/session", { method: "DELETE" }));
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({ error: "session_cleanup_pending" });
+      if (accountUnavailable) {
+        // Failed reservation cannot start local deletion or strand a protected role.
+        expect(await state.storage.get("nanocodex:session-deleting")).toBeUndefined();
+        expect(await listAgents(runtime, owner)).toHaveLength(1);
+        accountUnavailable = false;
+        expect((await session.fetch(new Request("https://session.internal/session", { method: "DELETE" }))).status).toBe(503);
+      }
       expect((await session.fetch(new Request("https://session.internal/triggers"))).status).toBe(404);
       expect(await listAgents(runtime, owner)).toHaveLength(accountUnavailable ? 1 : 0);
       expect(await state.storage.get("nanocodex:session-deleting")).toBe(true);
