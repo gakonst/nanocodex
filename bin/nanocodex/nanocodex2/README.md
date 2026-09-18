@@ -12,6 +12,40 @@ keyboard input for capability probes. Recognized Kitty, Ghostty, iTerm2, and
 WezTerm environments use native images where supported; other terminals use
 half-block images.
 
+## Local Hand control
+
+From any running terminal session, `/hand stop-all` disables automatic local
+Hands for **this OS user on this host**, across accounts and CLI sessions.
+`/hand start-all` re-enables them; waiting sessions reconnect without closing
+or recreating their conversations. `/hand status` (or `/hand`) shows the saved
+policy. These commands also appear in the action menu.
+
+Outside the TUI, use `nanocodex2 hands stop-all`, `nanocodex2 hands start-all`,
+or `nanocodex2 hands status`. They work without network access or account login.
+The existing `nanocodex2 hand` command still attaches a Hand.
+
+The disabled policy persists across CLI exits and restarts. Publishers poll
+local state every 250 ms, then gracefully drain their owned screen/computer
+helpers and VM factory; factory-owned VMs are stopped by its normal shutdown.
+The response reports the requested policy, not a completed shutdown count.
+Lightweight session lease processes wait for re-enable. CLI conversations and
+unrelated applications remain running. `NANOCODEX_DISABLE_HAND=1` remains a
+per-session opt-out even after `start-all`.
+
+This controls the shared automatic computer Hand (including `nanocodex2 hand`
+with no custom workspace options). It does not control other OS users, remote
+hosts, or independently launched custom `hand` / `host` services. Older CLI or
+desktop binaries must be upgraded and their local Hand helpers restarted once
+to participate; the command never searches process names or kills legacy PIDs.
+
+The private state lives under `~/.nanocodex/host-control/<host-id-hash>/`.
+Mac scope uses the platform UUID; Linux uses the machine ID; other platforms
+use the hostname. The existing account-scoped publisher lock and IPC leases
+still ensure one publisher survives until its last client closes. A separate
+startup lock prevents simultaneous session launches from spawning duplicate
+publisher candidates. Stop/start generations fence publishers even when both
+commands occur between polls.
+
 ## Hand screens
 
 Type `/screen`, filter by Hand name, then press Enter to watch its live screen

@@ -10,6 +10,7 @@
 mod config;
 mod control;
 mod device_hand;
+mod hand_control;
 mod hand_observability;
 #[cfg(any(
     all(target_os = "linux", not(target_env = "musl")),
@@ -105,6 +106,8 @@ enum Command {
     Hand(Hand),
     #[command(name = "__device-hand", hide = true)]
     DeviceHand(device_hand::DeviceHand),
+    /// Control automatic Hands for all local sessions of this OS user/host.
+    Hands(hand_control::Command),
     /// Publish this Hand's native screen; owned by the desktop runtime.
     #[command(name = "__hand-screen", hide = true)]
     HandScreen(screen_native::ScreenCommand),
@@ -559,6 +562,10 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
             return native_hand::serve_hand(command).await;
         }
         Some(Command::DeviceHand(command)) => return device_hand::serve(command).await,
+        Some(Command::Hands(command)) => {
+            println!("{}", command.action.run()?);
+            return Ok(());
+        }
         Some(Command::Hand(command)) => {
             let _observability = command
                 .observability
@@ -608,6 +615,7 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         Some(Command::Attach(command)) => {
             attach_tui(&client, command.agent.map(|agent| agent.agent_id)).await
         }
+        Some(Command::Hands(_)) => unreachable!("handled before managed client setup"),
         Some(Command::DeviceHand(_)) => unreachable!("handled before managed client setup"),
         Some(Command::Hand(_)) => unreachable!("handled before managed client setup"),
         Some(Command::HandScreen(command)) => screen_native::serve(&client, command).await,
@@ -1101,6 +1109,26 @@ fn write_json_line<T: serde::Serialize>(value: &T) -> Result<(), ManagedError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_hand_control_cli_has_strict_subcommands() {
+        for (argument, action) in [
+            ("stop-all", hand_control::Action::StopAll),
+            ("start-all", hand_control::Action::StartAll),
+            ("status", hand_control::Action::Status),
+        ] {
+            let cli = Cli::try_parse_from(["nanocodex2", "hands", argument]).unwrap();
+            assert!(
+                matches!(cli.command, Some(Command::Hands(command)) if command.action == action)
+            );
+        }
+        assert!(Cli::try_parse_from(["nanocodex2", "hands", "stop-all", "remote"]).is_err());
+        assert!(Cli::try_parse_from(["nanocodex2", "hands"]).is_err());
+        assert!(matches!(
+            Cli::try_parse_from(["nanocodex2", "hand"]).unwrap().command,
+            Some(Command::Hand(_))
+        ));
+    }
 
     #[test]
     fn parses_attach_url_into_its_agent_id() {
