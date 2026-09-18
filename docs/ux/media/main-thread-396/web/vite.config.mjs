@@ -1,0 +1,3 @@
+import { defineConfig } from '../../../../../js/account/node_modules/vite/dist/node/index.js';
+import react from '../../../../../js/account/node_modules/@vitejs/plugin-react/dist/index.js';
+export default defineConfig({root: new URL('../../../../../js/account',import.meta.url).pathname,plugins:[react()],define:{'process.env':'{}'},cacheDir:new URL('./.vite',import.meta.url).pathname,server:{host:'127.0.0.1',port:5197,fs:{allow:[new URL('../../../../..',import.meta.url).pathname,new URL('../../../../../../main-thread-integrated-20260918',import.meta.url).pathname]}},resolve:{dedupe:['react','react-dom','@tanstack/react-query']}});

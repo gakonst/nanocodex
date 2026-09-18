@@ -1,6 +1,6 @@
 {
   "source_commit": "f517a4393b6c3ead1b2fe46d1b6470ec0e1611c1",
-  "fixture": "built-in --demo; synthetic UUID profile",
+  "fixture": "local synthetic data; see per-platform captions",
   "files": [
     {
       "file": "ipad-child-and-result.mp4",
@@ -166,6 +166,66 @@
       "file": "iphone-tasks-and-agents.mp4",
       "bytes": 326974,
       "sha256": "e702c315dc4ecb50bf7c0b61288385ae17982777568101d94abf0a752005d0fa"
+    },
+    {
+      "file": "macos/00.png",
+      "bytes": 65909,
+      "sha256": "693e72d37cac6e3aa1ccf5c1712c73cbb77205931f0fe6f250c4bcc41fc01a43"
+    },
+    {
+      "file": "macos/01.png",
+      "bytes": 70188,
+      "sha256": "25b171faa42ca9b9bde3efb63319393bb9e6b2340ee31727e9b82098a49e2448"
+    },
+    {
+      "file": "macos/02.png",
+      "bytes": 73126,
+      "sha256": "ea8d904655e277000ef403a7dbb17db1a3ed1f61bd9f45487ee1ca12f21af39b"
+    },
+    {
+      "file": "macos/03.png",
+      "bytes": 15634,
+      "sha256": "bae5df508be0905e75dd3fa73978504c108badd1b3256ab5de08faf84f3fb339"
+    },
+    {
+      "file": "macos/04.png",
+      "bytes": 78300,
+      "sha256": "1a716a35fffd0d07f8937bcc69ce7bd026efa414da7d278f2d2de9aeb8870b65"
+    },
+    {
+      "file": "macos/05.png",
+      "bytes": 96711,
+      "sha256": "bf7ceccdcc95bcb3118ec9490f699fecf3aaadb2e2c8c4c0f30a74f510b097f1"
+    },
+    {
+      "file": "macos/native-view-recording.mp4",
+      "bytes": 59861,
+      "sha256": "cbd2ea75da235867f5a7279d23ae8ac7998ae7df8d7e77c421745a107383b2d9"
+    },
+    {
+      "file": "web/01-entry.png",
+      "bytes": 64685,
+      "sha256": "b3728ce400de545680e660598bffcb39dcb95d06ac696820cb870622c9d809d9"
+    },
+    {
+      "file": "web/02-main-thread.png",
+      "bytes": 64791,
+      "sha256": "5ae7f6c9a763870adf333a41266194b1909ae0feb708ba2e02fe121c7a96f478"
+    },
+    {
+      "file": "web/03-project.png",
+      "bytes": 60263,
+      "sha256": "8810c7c631a689dc4e279cfc4672634b389576b54ef53e51003ebfbca58dba4d"
+    },
+    {
+      "file": "web/04-reuse.png",
+      "bytes": 64870,
+      "sha256": "441fc0b3eda7b7c082e8c327c88989bc83a5c210f8fc13ef1a679b2f8e09779a"
+    },
+    {
+      "file": "web/navigation.webm",
+      "bytes": 372249,
+      "sha256": "b23372b79803e4b0437d54b623a3252c68bac2c3cdb1aeef1fd9447fa7eed025"
     }
   ]
 }
