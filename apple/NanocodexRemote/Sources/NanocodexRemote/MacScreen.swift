@@ -136,7 +136,7 @@ public final class MacScreen: NSObject, SCStreamOutput, SCStreamDelegate, @unche
 @MainActor
 public final class MacInput {
     private var bounds: CGRect
-    private var keys = Set<CGKeyCode>()
+    private var keyboard = RemoteMacKeyboardState(capsLock: CGEventSource.flagsState(.combinedSessionState).contains(.maskAlphaShift))
     private var buttons = Set<Int>()
     private var position: CGPoint
     private var lastClick: (button: Int, point: CGPoint, time: TimeInterval, count: Int64)?
@@ -184,8 +184,9 @@ public final class MacInput {
         case .key:
             guard let key = RemoteKey.hidToMac[event.key!] else { throw RemoteError.invalidMessage }
             let down = event.down!
-            if down { keys.insert(key) } else { keys.remove(key) }
+            guard let type = keyboard.apply(key: key, down: down) else { return }
             let keyEvent = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: down)
+            keyEvent?.type = type
             keyEvent?.flags = flags; keyEvent?.post(tap: .cghidEventTap)
         case .text:
             // Quartz limits a Unicode keyboard event to 20 UTF-16 units.
@@ -211,10 +212,10 @@ public final class MacInput {
     }
 
     public func releaseAll() {
-        let pressedKeys = keys; keys.removeAll()
+        let pressedKeys = keyboard.release()
         for key in pressedKeys {
             let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false)
-            event?.flags = []; event?.post(tap: .cghidEventTap)
+            event?.flags = flags; event?.post(tap: .cghidEventTap)
         }
         let pressedButtons = buttons; buttons.removeAll()
         for button in pressedButtons { mouse(type: button == 0 ? .leftMouseUp : button == 1 ? .rightMouseUp : .otherMouseUp, button: button) }
@@ -230,14 +231,6 @@ public final class MacInput {
         event?.flags = flags; event?.post(tap: .cghidEventTap)
     }
 
-    private var flags: CGEventFlags {
-        var flags: CGEventFlags = []
-        if !keys.isDisjoint(with: [55, 54]) { flags.insert(.maskCommand) }
-        if !keys.isDisjoint(with: [56, 60]) { flags.insert(.maskShift) }
-        if !keys.isDisjoint(with: [58, 61]) { flags.insert(.maskAlternate) }
-        if !keys.isDisjoint(with: [59, 62]) { flags.insert(.maskControl) }
-        if keys.contains(63) { flags.insert(.maskSecondaryFn) }
-        return flags
-    }
+    private var flags: CGEventFlags { keyboard.flags }
 }
 #endif

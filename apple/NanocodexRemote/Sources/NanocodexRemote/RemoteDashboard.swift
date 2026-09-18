@@ -40,7 +40,8 @@ public struct RemoteDashboard: View {
     @StateObject private var host: RemoteMacHost
     @StateObject private var phoneHost: RemoteMacHost
     private let ownsHosts: Bool
-    @State private var controlPolicy = RemoteDashboardControlPolicy()
+    @State private var windowForeground = false
+    @AppStorage("nanocodex.remote.input-troubleshooting") private var showInputDiagnostics = false
     @State private var displays: [RemoteSurface] = []
     @State private var displayID = ""
     @State private var starting = false
@@ -118,6 +119,8 @@ public struct RemoteDashboard: View {
                     Label(viewer.controlling ? "Controlling" : "View only", systemImage: viewer.controlling ? "cursorarrow" : "eye")
                         .font(.caption).foregroundStyle(viewer.controlling ? Color.accentColor : Color.secondary)
                     Spacer(minLength: 0)
+                    Toggle("Input diagnostics", isOn: $showInputDiagnostics)
+                        .toggleStyle(.button).help("Troubleshoot this process's remote input capture")
                     if viewer.controlling {
                         Button { showKeyboard.toggle() } label: { Image(systemName: "keyboard") }
                             .help("Remote typing controls").accessibilityLabel("Remote keyboard")
@@ -393,13 +396,16 @@ public struct RemoteDashboard: View {
 #endif
         }
 #if os(macOS)
-        .onChange(of: RemoteDashboardFocus(immersive: immersive, active: scenePhase == .active,
-                                           connected: viewer.connected), initial: true) { _, focus in
-            switch controlPolicy.update(focus) {
-            case .acquire: viewer.takeControl()
-            case .release: viewer.releaseControl()
-            case .none: break
-            }
+        .background(RemoteWindowFocusObserver { foreground in
+            // Apply focus events immediately; SwiftUI may coalesce its state
+            // updates across a rapid deactivate/reactivate pair.
+            viewer.updateControlFocus(.init(immersive: immersive, active: scenePhase == .active && foreground,
+                                            connected: viewer.connected, selection: viewer.hand?.identity))
+            windowForeground = foreground
+        })
+        .onChange(of: RemoteDashboardFocus(immersive: immersive, active: scenePhase == .active && windowForeground,
+                                           connected: viewer.connected, selection: viewer.hand?.identity), initial: true) { _, focus in
+            viewer.updateControlFocus(focus)
         }
 #endif
         .onChange(of: pickerRequest) { _, _ in viewer.close(); restoredSelection = true }

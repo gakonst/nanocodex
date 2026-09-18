@@ -91,7 +91,7 @@ final class RemoteKeyboardCapture {
         self?.makeTap()
     }
     var capturesSystemShortcuts: Bool { controller.enabled }
-    var diagnostic: String { "AX trusted=\(controller.trusted); keyboard tap=\(controller.status.rawValue); capture eligible=\(isActive())" }
+    var diagnostic: String { "AX trusted now=\(AXIsProcessTrusted()); tap status=\(controller.status.rawValue); tap enabled now=\(controller.enabled); capture eligible=\(isActive())" }
     var unavailableReason: String {
         switch controller.status {
         case .accessibilityRequired:

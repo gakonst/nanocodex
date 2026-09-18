@@ -1,29 +1,40 @@
 import Foundation
 
-/// Immersion survives app/window focus changes. A late connection may acquire
-/// on the next activation, but a host revocation never causes a blind retake.
+/// Focus is an input boundary, not an exit from the immersive UI.
 struct RemoteDashboardFocus: Equatable {
     var immersive: Bool
     var active: Bool
     var connected: Bool
+    var selection: String? = nil
 }
 
 struct RemoteDashboardControlPolicy {
     enum Action: Equatable { case none, acquire, release }
-    private var previous = RemoteDashboardFocus(immersive: false, active: true, connected: false)
-    private var pendingAcquire = false
+    private(set) var previous = RemoteDashboardFocus(immersive: false, active: true, connected: false)
+    private(set) var wantsControl = false
+    private var blocked = false
+    var allowsAcquisition: Bool { !previous.immersive || previous.active }
+    mutating func requestControl() { wantsControl = true; blocked = false }
+    mutating func clearIntent() { wantsControl = false; blocked = true }
     mutating func update(_ next: RemoteDashboardFocus) -> Action {
         let old = previous; previous = next
         if old.immersive && !next.immersive {
-            pendingAcquire = false
+            wantsControl = false
             return .release
         }
-        if next.immersive && (!old.immersive || (!old.connected && next.connected)) { pendingAcquire = true }
-        if pendingAcquire && next.immersive && next.active && next.connected {
-            pendingAcquire = false
-            return .acquire
+        let entered = next.immersive && !old.immersive
+        let changedSelection = old.selection != next.selection
+        if entered { wantsControl = next.active; blocked = false }
+        if changedSelection {
+            // A first selection can finish a foreground request in the
+            // background; a different viewer cannot inherit that request.
+            if old.selection != nil || next.active {
+                wantsControl = !blocked && next.selection != nil && next.immersive && next.active
+            }
         }
-        if old.active && !next.active && !next.immersive { return .release }
+        if old.active && !next.active { return .release }
+        if next.immersive && next.active && next.connected && wantsControl &&
+            (entered || changedSelection || !old.active || !old.connected) { return .acquire }
         return .none
     }
 }
@@ -67,7 +78,19 @@ struct RemoteModifierState {
         return changes
     }
     static func isExit(keyCode: UInt16, flags: NSEvent.ModifierFlags) -> Bool {
-        keyCode == 53 && flags.intersection([.command, .shift, .control, .option]) == [.command, .shift]
+        keyCode == 53 && flags.intersection([.command, .shift, .control, .option, .function]) == [.command, .shift]
+    }
+}
+
+/// Caps Lock is a locking key, not a modifier held until releaseAll. The wire's
+/// existing HID 57 key press toggles the remote lock once per physical change.
+struct RemoteCapsLockState {
+    private var observed: Bool?
+    mutating func reset() { observed = nil }
+    mutating func observe(_ enabled: Bool, changed: Bool) -> [RemoteKeyTransition] {
+        defer { observed = enabled }
+        guard changed, observed != enabled else { return [] }
+        return [.init(key: 57, down: true), .init(key: 57, down: false)]
     }
 }
 

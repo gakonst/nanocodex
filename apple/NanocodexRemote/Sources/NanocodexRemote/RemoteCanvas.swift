@@ -15,6 +15,7 @@ import AppKit
 
 public struct RemoteCanvas: NSViewRepresentable {
     @ObservedObject var viewer: RemoteViewer
+    @AppStorage("nanocodex.remote.input-troubleshooting") private var showInputDiagnostics = false
     private var onExit: (() -> Void)?
     private var immersive: Bool
     public init(viewer: RemoteViewer, onExit: (() -> Void)? = nil, immersive: Bool = false) {
@@ -23,6 +24,7 @@ public struct RemoteCanvas: NSViewRepresentable {
     public func makeNSView(context: Context) -> MacRemoteViewport { MacRemoteViewport(viewer: viewer) }
     public func updateNSView(_ view: MacRemoteViewport, context: Context) {
         view.canvas.onExit = onExit; view.canvas.immersive = immersive
+        view.canvas.showInputDiagnostics = showInputDiagnostics
         view.allowsMagnification = !immersive
         if immersive, view.magnification != 1 { view.magnification = 1 }
         view.canvas.update(viewer)
@@ -53,6 +55,8 @@ public final class MacRemoteViewport: NSScrollView {
 public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDelegate {
     var onExit: (() -> Void)?
     var immersive = false
+    var showInputDiagnostics = false
+    private let diagnosticToggle = NSButton(title: "Troubleshoot", target: nil, action: nil)
     private let keyboard = RemoteKeyboardCapture()
     private let keyboardNotice = NSTextField(wrappingLabelWithString: "")
     private var trackSize: CGSize?
@@ -64,6 +68,7 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
     private var pressed = Set<UInt16>()
     private var marked = NSAttributedString(string: "")
     private var modifiers = RemoteModifierState()
+    private var capsLock = RemoteCapsLockState()
     private var pointer = RemotePointerState()
     private var tracking: NSTrackingArea?
     public override var isFlipped: Bool { true }
@@ -95,7 +100,10 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
         keyboardNotice.drawsBackground = true
         keyboardNotice.backgroundColor = NSColor.black.withAlphaComponent(0.85)
         keyboardNotice.isHidden = true
-        addSubview(video); addSubview(snapshot); addSubview(keyboardNotice); update(viewer)
+        diagnosticToggle.target = self; diagnosticToggle.action = #selector(toggleInputDiagnostics)
+        diagnosticToggle.bezelStyle = .rounded
+        diagnosticToggle.setAccessibilityIdentifier("remote-input-troubleshoot")
+        addSubview(video); addSubview(snapshot); addSubview(keyboardNotice); addSubview(diagnosticToggle); update(viewer)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func update(_ viewer: RemoteViewer) {
@@ -135,14 +143,25 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
         guard super.becomeFirstResponder() else { return false }
         keyboard.start(); updateKeyboardNotice(); return true
     }
+    @objc private func toggleInputDiagnostics() {
+        showInputDiagnostics.toggle()
+        UserDefaults.standard.set(showInputDiagnostics, forKey: "nanocodex.remote.input-troubleshooting")
+        updateKeyboardNotice()
+    }
     private func updateKeyboardNotice() {
-        keyboardNotice.stringValue = keyboard.unavailableReason + " System shortcuts may stay on this Mac. Command–Shift–Escape returns to the workspace."
-        keyboardNotice.setAccessibilityValue(keyboard.diagnostic)
-        keyboardNotice.isHidden = !immersive || viewer?.controlling != true || keyboard.capturesSystemShortcuts
+        let warning = keyboard.unavailableReason + " System shortcuts may stay on this Mac. Command–Shift–Escape returns to the workspace."
+        let diagnostic = "PID=\(ProcessInfo.processInfo.processIdentifier); bundle=\(Bundle.main.bundleURL.path)\n"
+            + keyboard.diagnostic + "\napp active=\(NSApp.isActive); key window=\(window?.isKeyWindow == true); canvas first responder=\(window?.firstResponder === self)\n"
+            + "connected=\(viewer?.connected == true); " + (viewer?.inputDiagnostic ?? "viewer detached")
+        keyboardNotice.stringValue = showInputDiagnostics ? diagnostic : warning
+        keyboardNotice.setAccessibilityValue(showInputDiagnostics ? diagnostic : warning)
+        keyboardNotice.isHidden = !showInputDiagnostics && (!immersive || viewer?.controlling != true || keyboard.capturesSystemShortcuts)
+        diagnosticToggle.isHidden = keyboardNotice.isHidden
+        diagnosticToggle.title = showInputDiagnostics ? "Hide diagnostics" : "Troubleshoot"
         needsLayout = true
     }
     private func releaseKeys() {
-        viewer?.input(kind: .releaseAll); pressed.removeAll(); modifiers.reset(); pointer.reset(); unmarkText()
+        viewer?.input(kind: .releaseAll); pressed.removeAll(); modifiers.reset(); capsLock.reset(); pointer.reset(); unmarkText()
     }
     public override func layout() { super.layout()
         let imageSize = viewer?.frame.map { CGSize(width: $0.width, height: $0.height) }
@@ -151,6 +170,8 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
         let width = max(0, min(600, bounds.width - 24))
         let size = keyboardNotice.cell?.cellSize(forBounds: CGRect(x: 0, y: 0, width: width, height: 1000)) ?? .zero
         keyboardNotice.frame = CGRect(x: bounds.midX - width / 2, y: 12, width: width, height: size.height)
+        diagnosticToggle.sizeToFit()
+        diagnosticToggle.setFrameOrigin(CGPoint(x: keyboardNotice.frame.minX, y: keyboardNotice.frame.maxY + 4))
     }
     public override func updateTrackingAreas() {
         if let tracking { removeTrackingArea(tracking) }
@@ -218,7 +239,9 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
         if let key = RemoteKey.macToHID[event.keyCode], pressed.remove(key) != nil { viewer?.input(kind: .key, down: false, key: key) }
     }
     private func synchronizeModifiers(_ event: NSEvent, changedKey: UInt16? = nil) {
-        for change in modifiers.reconcile(event.modifierFlags, changedKey: changedKey) {
+        let changes = modifiers.reconcile(event.modifierFlags, changedKey: changedKey)
+            + capsLock.observe(event.modifierFlags.contains(.capsLock), changed: changedKey == 57)
+        for change in changes {
             viewer?.input(kind: .key, down: change.down, key: change.key)
         }
     }

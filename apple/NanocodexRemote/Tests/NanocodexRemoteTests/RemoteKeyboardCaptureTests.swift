@@ -143,7 +143,7 @@ final class RemoteKeyboardCaptureTests: XCTestCase {
     func testOnlyCommandShiftEscapeIsExit() {
         XCTAssertTrue(RemoteModifierState.isExit(keyCode: 53, flags: [.command, .shift]))
         XCTAssertTrue(RemoteModifierState.isExit(keyCode: 53, flags: [.command, .shift, .capsLock]))
-        for flags: NSEvent.ModifierFlags in [[], .command, .shift, .option, [.command, .option], [.command, .shift, .control], [.command, .shift, .option]] {
+        for flags: NSEvent.ModifierFlags in [[], .command, .shift, .option, [.command, .option], [.command, .shift, .control], [.command, .shift, .option], [.command, .shift, .function]] {
             XCTAssertFalse(RemoteModifierState.isExit(keyCode: 53, flags: flags))
         }
         for key: UInt16 in [48, 12, 13, 3, 49] { // Tab, Q, W, F, Space
@@ -176,7 +176,7 @@ final class RemoteKeyboardCaptureTests: XCTestCase {
         }
     }
 
-    @MainActor private func connect(_ viewer: RemoteViewer, socket: Socket, service: RemoteService) async throws {
+    @MainActor private func connect(_ viewer: RemoteViewer, socket: Socket, service: RemoteService, acquire: Bool = true) async throws {
         let catalog = #"{"id":"screen","machine_id":"test","machine_name":"Test","name":"Screen","kind":"vm","width":3,"height":2,"controllable":true,"generation":"surface","transport":"frames-v1"}"#
         let hand = try JSONDecoder().decode(RemoteHand.self, from: Data(catalog.utf8))
         viewer.makeSignaling = { _ in socket }
@@ -191,6 +191,7 @@ final class RemoteKeyboardCaptureTests: XCTestCase {
         frame.jpeg = (data as Data).base64EncodedString(); frame.width = 3; frame.height = 2
         socket.onMessage(frame)
         XCTAssertTrue(viewer.connected)
+        if !acquire { socket.messages.removeAll(); return }
         viewer.takeControl()
         var grant = RemoteMessage(type: "control"); grant.data = .control(.init(type: .granted, generation: "lease"))
         socket.onMessage(grant)
@@ -257,6 +258,166 @@ final class RemoteKeyboardCaptureTests: XCTestCase {
             modifierFlags: .command, timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
         canvas.mouseMoved(with: event)
         XCTAssertEqual(socket.inputs.map(\.kind), [.move])
+    }
+
+    func testCapsLockFlagsChangesBecomeOneBalancedHIDToggleEach() {
+        var caps = RemoteCapsLockState()
+        XCTAssertEqual(caps.observe(false, changed: false), [])
+        XCTAssertEqual(caps.observe(true, changed: true), [.init(key: 57, down: true), .init(key: 57, down: false)])
+        XCTAssertEqual(caps.observe(true, changed: true), [], "Key release with unchanged lock flags must not toggle again")
+        XCTAssertEqual(caps.observe(false, changed: true), [.init(key: 57, down: true), .init(key: 57, down: false)])
+        caps.reset()
+        XCTAssertEqual(caps.observe(true, changed: false), [], "Held Caps Lock at focus entry is a baseline, not a fabricated press")
+    }
+
+    func testMacHostCapsLockPersistsThroughLeaseCleanupWithoutBeingHeld() {
+        var keyboard = RemoteMacKeyboardState(capsLock: false)
+        XCTAssertEqual(keyboard.apply(key: 57, down: true), .flagsChanged)
+        XCTAssertTrue(keyboard.flags.contains(.maskAlphaShift))
+        XCTAssertNil(keyboard.apply(key: 57, down: true), "Repeat must not toggle a locking key")
+        XCTAssertNil(keyboard.apply(key: 57, down: false))
+        _ = keyboard.apply(key: 56, down: true)
+        _ = keyboard.apply(key: 0, down: true)
+        XCTAssertTrue(keyboard.flags.contains(.maskShift))
+        XCTAssertEqual(keyboard.release(), [0, 56])
+        XCTAssertEqual(keyboard.flags, .maskAlphaShift)
+        XCTAssertEqual(keyboard.apply(key: 57, down: true), .flagsChanged)
+        XCTAssertFalse(keyboard.capsLock)
+        XCTAssertEqual(keyboard.release(), [], "Caps Lock is not a held key to release")
+    }
+
+    @MainActor private func controlMessage(_ type: RemoteControlMessage.Kind, generation: String? = nil, socket: Socket) {
+        var message = RemoteMessage(type: "control"); message.data = .control(.init(type: type, generation: generation))
+        socket.onMessage(message)
+    }
+    @MainActor private func acquires(_ socket: Socket) -> Int {
+        socket.messages.filter { if case .control(let message) = $0.data { return message.type == .acquire }; return false }.count
+    }
+    @MainActor private func focus(_ viewer: RemoteViewer, active: Bool) {
+        viewer.updateControlFocus(.init(immersive: true, active: active, connected: viewer.connected, selection: viewer.hand?.identity))
+    }
+
+    @MainActor func testViewerDeactivationCleansHeldInputThenReleasesAndRetakesSameViewer() async throws {
+        let viewer = RemoteViewer(), socket = Socket()
+        let service = try RemoteService(origin: URL(string: "https://remote.invalid")!) { _ in XCTFail("Unexpected HTTP") }
+        defer { viewer.close(); service.close() }
+        try await connect(viewer, socket: socket, service: service)
+        focus(viewer, active: true)
+        viewer.input(kind: .key, down: true, key: 225)
+        focus(viewer, active: false)
+        XCTAssertFalse(viewer.controlling)
+        XCTAssertEqual(socket.inputs.last?.kind, .releaseAll)
+        guard case .control(let release) = socket.messages.last?.data else { return XCTFail("Lease release must follow input cleanup") }
+        XCTAssertEqual(release.type, .release)
+        controlMessage(.revoked, generation: "lease", socket: socket)
+        XCTAssertEqual(acquires(socket), 0, "Release acknowledgement in background must not reacquire")
+        focus(viewer, active: true)
+        XCTAssertEqual(acquires(socket), 1)
+        controlMessage(.granted, generation: "foreground", socket: socket)
+        XCTAssertTrue(viewer.controlling)
+    }
+
+    @MainActor func testLateDenialCancelsQueuedForegroundRetakeWithoutLoop() async throws {
+        let viewer = RemoteViewer(), socket = Socket()
+        let service = try RemoteService(origin: URL(string: "https://remote.invalid")!) { _ in XCTFail("Unexpected HTTP") }
+        defer { viewer.close(); service.close() }
+        try await connect(viewer, socket: socket, service: service)
+        focus(viewer, active: true); focus(viewer, active: false)
+        controlMessage(.revoked, generation: "lease", socket: socket)
+        focus(viewer, active: true) // acquire pending
+        focus(viewer, active: false) // cancel pending acquire
+        focus(viewer, active: true) // queued retake, waiting for outcome
+        XCTAssertEqual(acquires(socket), 1)
+        controlMessage(.denied, socket: socket)
+        XCTAssertEqual(acquires(socket), 1, "Late denial must cancel the queued automatic retry")
+        for _ in 0..<3 { focus(viewer, active: false); focus(viewer, active: true) }
+        XCTAssertEqual(acquires(socket), 1)
+        XCTAssertFalse(viewer.controlling)
+        viewer.takeControl() // A new explicit request is still allowed.
+        XCTAssertEqual(acquires(socket), 2)
+    }
+
+    @MainActor func testHumanRevocationCannotReacquireOnFocusReturn() async throws {
+        let viewer = RemoteViewer(), socket = Socket()
+        let service = try RemoteService(origin: URL(string: "https://remote.invalid")!) { _ in XCTFail("Unexpected HTTP") }
+        defer { viewer.close(); service.close() }
+        try await connect(viewer, socket: socket, service: service)
+        focus(viewer, active: true)
+        controlMessage(.revoked, generation: "lease", socket: socket)
+        for _ in 0..<3 { focus(viewer, active: false); focus(viewer, active: true) }
+        XCTAssertFalse(viewer.controlling)
+        XCTAssertEqual(acquires(socket), 0)
+    }
+
+    @MainActor func testCanvasCapsLockEmitsBalancedSupportedWireMapping() async throws {
+        let viewer = RemoteViewer(), socket = Socket()
+        let service = try RemoteService(origin: URL(string: "https://remote.invalid")!) { _ in XCTFail("Unexpected HTTP") }
+        let canvas = MacRemoteCanvas(viewer: viewer); canvas.immersive = true
+        defer { canvas.detach(); viewer.close(); service.close() }
+        try await connect(viewer, socket: socket, service: service)
+        for flags: CGEventFlags in [.maskAlphaShift, .maskAlphaShift, []] {
+            let cg = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: 57, keyDown: true))
+            cg.type = .flagsChanged; cg.flags = flags
+            canvas.flagsChanged(with: try XCTUnwrap(NSEvent(cgEvent: cg)))
+        }
+        XCTAssertEqual(socket.inputs.map(\.key), [57, 57, 57, 57])
+        XCTAssertEqual(socket.inputs.map(\.down), [true, false, true, false])
+        for input in socket.inputs { XCTAssertNoThrow(try input.validate()) }
+    }
+
+    @MainActor func testViewerBackgroundConnectDoesNotAcquireWithoutForegroundIntent() async throws {
+        let viewer = RemoteViewer(), socket = Socket()
+        let service = try RemoteService(origin: URL(string: "https://remote.invalid")!) { _ in XCTFail("Unexpected HTTP") }
+        defer { viewer.close(); service.close() }
+        viewer.updateControlFocus(.init(immersive: true, active: false, connected: false))
+        try await connect(viewer, socket: socket, service: service, acquire: false)
+        focus(viewer, active: false)
+        XCTAssertEqual(acquires(socket), 0)
+        focus(viewer, active: true)
+        XCTAssertEqual(acquires(socket), 0)
+        viewer.takeControl()
+        XCTAssertEqual(acquires(socket), 1)
+    }
+
+    @MainActor func testViewerLateBackgroundConnectRetainsOnlyPriorForegroundIntent() async throws {
+        let viewer = RemoteViewer(), socket = Socket()
+        let service = try RemoteService(origin: URL(string: "https://remote.invalid")!) { _ in XCTFail("Unexpected HTTP") }
+        defer { viewer.close(); service.close() }
+        viewer.updateControlFocus(.init(immersive: true, active: true, connected: false))
+        viewer.updateControlFocus(.init(immersive: true, active: false, connected: false))
+        try await connect(viewer, socket: socket, service: service, acquire: false)
+        focus(viewer, active: false)
+        XCTAssertEqual(acquires(socket), 0)
+        focus(viewer, active: true)
+        XCTAssertEqual(acquires(socket), 1)
+    }
+
+    @MainActor func testViewerRapidFocusReturnWaitsForReleaseAcknowledgement() async throws {
+        let viewer = RemoteViewer(), socket = Socket()
+        let service = try RemoteService(origin: URL(string: "https://remote.invalid")!) { _ in XCTFail("Unexpected HTTP") }
+        defer { viewer.close(); service.close() }
+        try await connect(viewer, socket: socket, service: service)
+        focus(viewer, active: true); focus(viewer, active: false); focus(viewer, active: true)
+        XCTAssertEqual(acquires(socket), 0, "New acquire must wait for old lease release acknowledgement")
+        controlMessage(.revoked, generation: "lease", socket: socket)
+        XCTAssertEqual(acquires(socket), 1)
+        focus(viewer, active: true)
+        XCTAssertEqual(acquires(socket), 1)
+    }
+
+    @MainActor func testWindowFocusObserverReleasesBeforeSwiftUICanCoalesceTransitions() async throws {
+        let viewer = RemoteViewer(), socket = Socket()
+        let service = try RemoteService(origin: URL(string: "https://remote.invalid")!) { _ in XCTFail("Unexpected HTTP") }
+        defer { viewer.close(); service.close() }
+        try await connect(viewer, socket: socket, service: service)
+        focus(viewer, active: true)
+        let observer = RemoteWindowFocusObserver.FocusView { [self] foreground in focus(viewer, active: foreground) }
+        defer { observer.stop() }
+        // A notification in this test process only; no application activation,
+        // window ordering, input injection, or remote network takes place.
+        NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: nil)
+        XCTAssertFalse(viewer.controlling, "The observer must release synchronously, before a subsequent activation")
+        XCTAssertEqual(socket.inputs.last?.kind, .releaseAll)
     }
 
 }

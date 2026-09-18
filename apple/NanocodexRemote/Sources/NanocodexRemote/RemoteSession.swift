@@ -31,6 +31,21 @@ struct RemoteViewerControl {
     private var state = State.idle
     private(set) var requested = false
     var generation: String? { if case .held(let value) = state { return value }; return nil }
+    var diagnostic: String {
+        switch state {
+        case .idle: return "idle"
+        case .acquiring: return "acquiring"
+        case .cancelledAcquire: return "cancelled acquisition"
+        case .held: return "held"
+        case .releasing: return "releasing"
+        }
+    }
+    func isHostRevocation(_ message: RemoteControlMessage) -> Bool {
+        guard message.type == .revoked else { return false }
+        if case .releasing = state { return false } // Release acknowledgement.
+        if let generation, let revoked = message.generation, generation != revoked { return false }
+        return true
+    }
 
     mutating func acquire() -> RemoteControlMessage? {
         requested = true
@@ -107,6 +122,7 @@ public final class RemoteViewer: ObservableObject {
     var makeSignaling: (RemoteService) -> any RemoteSignalingTransport = { RemoteSignaling(service: $0) }
     private var connectionSetup: Task<Void, Error>?
     private var control = RemoteViewerControl()
+    private var controlFocus = RemoteDashboardControlPolicy()
     private var generation: String? { control.generation }
     private var sequence: UInt64 = 0
     private var leaseRenewal: Task<Void, Never>?
@@ -182,6 +198,9 @@ public final class RemoteViewer: ObservableObject {
     func diagnosticICE(includeAddresses: Bool = true) async -> String { await peer?.diagnosticICE(includeAddresses: includeAddresses) ?? "no peer" }
 
     public func connect(service: RemoteService, hand: RemoteHand) async {
+        // Choosing a screen in the foreground is a new request. Automatic
+        // reconnect uses start() and must not erase denial/revocation blocking.
+        if controlFocus.previous.immersive && controlFocus.previous.active { controlFocus.requestControl() }
         close(); self.service = service; self.hand = hand
         diagnosticStarted = ProcessInfo.processInfo.systemUptime; diagnosticEvents = []
         await start(refresh: false)
@@ -329,12 +348,32 @@ public final class RemoteViewer: ObservableObject {
         }
     }
 
+    var inputDiagnostic: String {
+        "lease=\(control.diagnostic); control intent=\(controlFocus.wantsControl); immersive=\(controlFocus.previous.immersive); foreground=\(controlFocus.previous.active)"
+    }
+    func updateControlFocus(_ focus: RemoteDashboardFocus) {
+        switch controlFocus.update(focus) {
+        case .acquire: acquireControl()
+        case .release: releaseControlKeepingIntent()
+        case .none: break
+        }
+    }
     public func takeControl() {
-        guard connected, hand?.controllable == true, !control.requested, !controlling else { return }
+        controlFocus.requestControl()
+        acquireControl()
+    }
+    private func acquireControl() {
+        guard controlFocus.allowsAcquisition, connected, hand?.controllable == true, !control.requested, !controlling else { return }
         if let request = control.acquire() { sendControl(request) }
     }
 
     public func releaseControl() {
+        controlFocus.clearIntent()
+        releaseControlKeepingIntent()
+    }
+    private func releaseControlKeepingIntent() {
+        // Send held-state cleanup while the generation is still valid.
+        input(kind: .releaseAll)
         let release = control.release()
         leaseRenewal?.cancel(); leaseRenewal = nil; controlling = false
         if let release { sendControl(release) }
@@ -493,6 +532,12 @@ public final class RemoteViewer: ObservableObject {
         guard let message = try? JSONDecoder().decode(RemoteControlMessage.self, from: data) else { fail(RemoteError.invalidMessage); return }
         do {
             let previous = generation
+            if message.type == .denied || control.isHostRevocation(message) {
+                controlFocus.clearIntent()
+                // A foreground retake can be queued behind a cancelled acquire.
+                // Denial must cancel that queued intent before receive() can retry.
+                if message.type == .denied, controlFocus.previous.immersive { _ = control.release() }
+            }
             let reply = try control.receive(message)
             controlling = generation != nil
             if let generation, generation != previous {

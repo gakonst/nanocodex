@@ -2,53 +2,80 @@ import XCTest
 @testable import NanocodexRemote
 
 final class RemoteDashboardControlPolicyTests: XCTestCase {
-    func testBackgroundDoesNotExitImmersionOrReleaseItsLease() {
-        var policy = RemoteDashboardControlPolicy()
-        XCTAssertEqual(policy.update(.init(immersive: true, active: true, connected: true)), .acquire)
-        XCTAssertEqual(policy.update(.init(immersive: true, active: false, connected: true)), .none)
-        XCTAssertEqual(policy.update(.init(immersive: true, active: true, connected: true)), .none)
-        XCTAssertEqual(policy.update(.init(immersive: false, active: true, connected: true)), .release)
-        XCTAssertEqual(policy.update(.init(immersive: false, active: true, connected: true)), .none)
+    private func focus(_ active: Bool, connected: Bool = true, selection: String? = "screen", immersive: Bool = true) -> RemoteDashboardFocus {
+        .init(immersive: immersive, active: active, connected: connected, selection: selection)
     }
-
-    func testLateBackgroundConnectionWaitsForActivation() {
+    func testDeactivationReleasesLeaseAndSameViewerReacquiresWithoutExiting() {
         var policy = RemoteDashboardControlPolicy()
-        XCTAssertEqual(policy.update(.init(immersive: true, active: true, connected: false)), .none)
-        XCTAssertEqual(policy.update(.init(immersive: true, active: false, connected: true)), .none)
-        XCTAssertEqual(policy.update(.init(immersive: true, active: true, connected: true)), .acquire)
+        XCTAssertEqual(policy.update(focus(true)), .acquire)
+        XCTAssertEqual(policy.update(focus(false)), .release)
+        XCTAssertTrue(policy.previous.immersive)
+        XCTAssertTrue(policy.wantsControl)
+        XCTAssertEqual(policy.update(focus(true)), .acquire)
+        XCTAssertEqual(policy.update(focus(true)), .none)
+        XCTAssertEqual(policy.update(focus(true, immersive: false)), .release)
+        XCTAssertFalse(policy.wantsControl)
     }
-
+    func testLateBackgroundConnectionWaitsForExistingForegroundIntent() {
+        var policy = RemoteDashboardControlPolicy()
+        XCTAssertEqual(policy.update(focus(true, connected: false)), .none)
+        XCTAssertEqual(policy.update(focus(false, connected: false)), .release)
+        XCTAssertEqual(policy.update(focus(false)), .none)
+        XCTAssertEqual(policy.update(focus(true)), .acquire)
+    }
+    func testConnectionCreatedInBackgroundWithoutIntentCannotAcquireOnForeground() {
+        var policy = RemoteDashboardControlPolicy()
+        XCTAssertEqual(policy.update(focus(false)), .release)
+        XCTAssertFalse(policy.wantsControl)
+        XCTAssertEqual(policy.update(focus(true)), .none)
+    }
     func testExplicitExitCancelsDeferredAcquisition() {
         var policy = RemoteDashboardControlPolicy()
-        _ = policy.update(.init(immersive: true, active: false, connected: true))
-        XCTAssertEqual(policy.update(.init(immersive: false, active: false, connected: true)), .release)
-        XCTAssertEqual(policy.update(.init(immersive: false, active: true, connected: true)), .none)
+        _ = policy.update(focus(true))
+        _ = policy.update(focus(false))
+        XCTAssertEqual(policy.update(focus(false, immersive: false)), .release)
+        XCTAssertEqual(policy.update(focus(true, immersive: false)), .none)
     }
-
+    func testDifferentViewerCannotInheritBackgroundIntent() {
+        var policy = RemoteDashboardControlPolicy()
+        _ = policy.update(focus(true))
+        _ = policy.update(focus(false))
+        XCTAssertEqual(policy.update(focus(false, selection: "another")), .none)
+        XCTAssertFalse(policy.wantsControl)
+        XCTAssertEqual(policy.update(focus(true, selection: "another")), .none)
+    }
+    func testDeniedOrRevokedIntentCannotLoopOnActivationOrReconnect() {
+        var policy = RemoteDashboardControlPolicy()
+        _ = policy.update(focus(true))
+        policy.clearIntent()
+        _ = policy.update(focus(false))
+        XCTAssertEqual(policy.update(focus(true)), .none)
+        _ = policy.update(focus(true, connected: false))
+        XCTAssertEqual(policy.update(focus(true)), .none)
+        XCTAssertEqual(policy.update(focus(true, selection: "new-publication-generation")), .none,
+                       "A new automatic publication cannot erase denial/revocation")
+        policy.requestControl() // Explicit Take control may establish new intent.
+        _ = policy.update(focus(false, selection: "new-publication-generation"))
+        XCTAssertEqual(policy.update(focus(true, selection: "new-publication-generation")), .acquire)
+    }
     func testHiddenRetainedDashboardCannotAcquireAfterReconnect() {
         var policy = RemoteDashboardControlPolicy()
-        _ = policy.update(.init(immersive: true, active: true, connected: true))
-        _ = policy.update(.init(immersive: false, active: true, connected: true))
-        _ = policy.update(.init(immersive: false, active: true, connected: false))
-        XCTAssertEqual(policy.update(.init(immersive: false, active: true, connected: true)), .none)
+        _ = policy.update(focus(true))
+        _ = policy.update(focus(true, immersive: false))
+        _ = policy.update(focus(true, connected: false, immersive: false))
+        XCTAssertEqual(policy.update(focus(true, immersive: false)), .none)
     }
-
-    func testHostRevocationDoesNotRetakeOnActivation() throws {
+    func testFirstSelectionMayCompleteAlreadyRequestedForegroundIntent() {
         var policy = RemoteDashboardControlPolicy()
-        var control = RemoteViewerControl()
-        XCTAssertEqual(policy.update(.init(immersive: true, active: true, connected: true)), .acquire)
-        _ = control.acquire()
-        _ = try control.receive(.init(type: .granted, generation: "immersive"))
-        _ = try control.receive(.init(type: .revoked, generation: "immersive"))
-        XCTAssertNil(control.generation)
-        XCTAssertFalse(control.requested)
-        XCTAssertEqual(policy.update(.init(immersive: true, active: false, connected: true)), .none)
-        XCTAssertEqual(policy.update(.init(immersive: true, active: true, connected: true)), .none)
+        _ = policy.update(focus(true, connected: false, selection: nil))
+        _ = policy.update(focus(false, connected: false, selection: nil))
+        XCTAssertEqual(policy.update(focus(false)), .none)
+        XCTAssertEqual(policy.update(focus(true)), .acquire)
     }
-
-    func testNonimmersiveViewerStillReleasesOnBackground() {
+    func testNonimmersiveViewerReleasesOnDeactivation() {
         var policy = RemoteDashboardControlPolicy()
-        _ = policy.update(.init(immersive: false, active: true, connected: true))
-        XCTAssertEqual(policy.update(.init(immersive: false, active: false, connected: true)), .release)
+        _ = policy.update(focus(true, immersive: false))
+        XCTAssertEqual(policy.update(focus(false, immersive: false)), .release)
+        XCTAssertEqual(policy.update(focus(true, immersive: false)), .none)
     }
 }
