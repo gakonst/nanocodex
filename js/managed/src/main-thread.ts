@@ -75,6 +75,13 @@ export function retainMainRoute(storage: DurableObjectStorage, input: { project_
   if (!previous) storage.sql.exec("INSERT INTO main_route_plans(id,request_json) VALUES (?,?)", input.id, value);
 }
 
+/** One immutable creation payload per canonical project, across route IDs and retries. */
+export function retainMainCoordinatorCreation(storage: DurableObjectStorage, projectId: string, creation: string): string {
+  storage.sql.exec("CREATE TABLE IF NOT EXISTS main_coordinator_creation_plans (project_id TEXT PRIMARY KEY, creation_json TEXT NOT NULL)");
+  storage.sql.exec("INSERT OR IGNORE INTO main_coordinator_creation_plans(project_id,creation_json) VALUES (?,?)", projectId, creation);
+  return storage.sql.exec<{ creation_json: string }>("SELECT creation_json FROM main_coordinator_creation_plans WHERE project_id=?", projectId).one().creation_json;
+}
+
 export function mainThreadTools(handlers: {
   list(context: ToolContext): Promise<unknown>;
   read(id: string, turnId: string | undefined, context: ToolContext): Promise<unknown>;

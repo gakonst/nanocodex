@@ -1,7 +1,7 @@
 import { migrationPath, migrationAuthorized } from "./conversation-project-migration";
 import { canonicalRoleInstruction, type CanonicalRole } from "./startup-context";
 import { MainThreadCompletions } from "./main-thread-completions";
-import { canonicalRoleResponse, mainThreadRequest, mainThreadTools, retainMainRoute, type CanonicalProject } from "./main-thread";
+import { canonicalRoleResponse, mainThreadRequest, mainThreadTools, retainMainRoute, retainMainCoordinatorCreation, type CanonicalProject } from "./main-thread";
 import { ProjectThreadRuns, projectCompletionInput, type ProjectThreadRun } from "./project-thread-runs";
 import { projectThreadTools, spawnPersistentProjectThread, retainProjectSpawn, type ProjectThread } from "./project-threads";
 import { downloadPath, downloadBrainFile, downloadHandFile, fileDownloadFailure, FileDownloadError } from "./file-download";
@@ -5258,9 +5258,25 @@ export class DurableAgentSession extends DurableComputerSession {
         retainMainRoute(this.ctx.storage, input);
         let project = projects.find(row => row.id === input.project_id);
         if (!project) {
-          const response = await managedFetch(new Request(new URL(`/v1/projects/${input.project_id}`, session.public_origin), {
+          const creation = retainMainCoordinatorCreation(this.ctx.storage, input.project_id,
+            JSON.stringify({ settings: this.#settings(), configuration }));
+          const response = await mainThreadRequest(new Request(new URL(`/v1/projects/${input.project_id}`, session.public_origin), {
             method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: input.name }),
-          }), this.env, this.ctx, principalFor(context));
+          }), {
+            teamId: session.team_id,
+            registry: (path, init) => {
+              principalFor(context);
+              return registry.fetch(`https://user.internal${path}?team_id=${encodeURIComponent(session.team_id)}`, init);
+            },
+            create: async key => {
+              const principal = principalFor(context);
+              if (!await retainedProjectAuthority(this.env, principal))
+                throw new ManagedRequestError(403, "forbidden", "project account authority was revoked");
+              return managedFetch(new Request(new URL("/v1/agents", session.public_origin), {
+                method: "POST", headers: { "content-type": "application/json", "idempotency-key": key }, body: creation,
+              }), this.env, this.ctx, principalFor(context));
+            },
+          });
           if (!response.ok) throw new Error(`project creation failed: ${response.status}; retry the same id`);
           project = await response.json<CanonicalProject>();
         }
