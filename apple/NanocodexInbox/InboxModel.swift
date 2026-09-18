@@ -252,7 +252,7 @@ final class InboxModel: ObservableObject {
         if let id = mainThreadID { select(id); return }
         if isDemo {
             mainThreadID = "demo-main-thread"
-            admitNavigationAgent("demo-main-thread", title: "Main")
+            admitNavigationAgent("demo-main-thread", title: "Main Thread")
             select("demo-main-thread"); return
         }
         guard let client else { return }
@@ -264,7 +264,7 @@ final class InboxModel: ObservableObject {
             do {
                 guard let id = try await client.mainThread(ensure: true), generation == epoch else { return }
                 navigationRevision = UUID()
-                mainThreadID = id; admitNavigationAgent(id, title: "Main")
+                mainThreadID = id; admitNavigationAgent(id, title: "Main Thread")
                 if focused?.id == selectedID { select(id) }
             } catch { if generation == epoch { self.error = error.localizedDescription } }
         }
@@ -278,7 +278,7 @@ final class InboxModel: ObservableObject {
             let (id, references) = try await (main, projects)
             guard generation == epoch, navigationRevision == revision else { return }
             mainThreadID = id; canonicalProjects = references
-            if let id { admitNavigationAgent(id, title: "Main") }
+            if let id { admitNavigationAgent(id, title: "Main Thread") }
             for project in references { admitNavigationAgent(project.primaryAgentID, title: project.name) }
         } catch { /* Older servers keep local navigation available. Writes surface errors. */ }
     }
@@ -408,10 +408,13 @@ final class InboxModel: ObservableObject {
         savedProjects.append(InboxProject(id: UUID().uuidString, name: name.isEmpty ? "New project" : name, primaryAgentID: id))
         persistProjects()
     }
+    func projectRenameIsLocal(_ id: String) -> Bool {
+        savedProjects.contains { $0.id == id } || !canonicalProjects.contains { $0.id == id }
+    }
     func renameProject(_ id: String, name: String) {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, name.utf16.count <= 160, var project = projects.first(where: { $0.id == id }) else { return }
-        if canonicalProjects.contains(where: { $0.id == id }), !savedProjects.contains(where: { $0.id == id }) {
+        if !projectRenameIsLocal(id) {
             saveCanonicalProject(id: id, name: name, coordinator: project.primaryAgentID, selectOnSuccess: false)
             return
         }
@@ -1041,10 +1044,13 @@ final class InboxModel: ObservableObject {
         guard let client, connected, !isDemo else { throw APIError.invalidResponse }
         try await client.disconnectMcpConnection(connectionID: connectionID)
     }
-    private func reset() {
+    private func resetProjectNavigation() {
         navigationRevision = UUID()
         mainThreadID = nil; canonicalProjects = []; openingMain = false; savingProject = false
         pendingProjectID = nil; pendingProjectName = nil
+    }
+    private func reset() {
+        resetProjectNavigation()
         agentNotificationUpdate?.cancel(); agentNotificationUpdate = nil
         stopOverview()
         overviewTranscripts = [:]; taskCache.removeAll(); projectTaskSummaryCache.removeAll(); tabHistories = [:]; recentTabs = []; tabOrder = []
