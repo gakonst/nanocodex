@@ -9,30 +9,26 @@ import NanocodexRemote
 import NanocodexVoice
 import NanocodexContext
 import NanocodexUI
+import NanocodexChat
+import NanocodexChatUI
 import UIKit
 import AVFoundation
 
 private enum Ink {
-    static let background = Color(uiColor: .systemBackground)
+    static let background = NanocodexConversationPalette.background
     static let card = Color(uiColor: .secondarySystemGroupedBackground)
-    static let surface = ChatPalette.userBubble
+    static let surface = NanocodexConversationPalette.surface
     static let border = Color(uiColor: .separator)
-    static let text = Color.primary
-    static let muted = Color.secondary
+    static let text = NanocodexConversationPalette.text
+    static let muted = NanocodexConversationPalette.muted
     static let accent = Color.primary
     static let amber = Color.secondary
     static let assistant = Color(uiColor: UIColor { traits in
         traits.userInterfaceStyle == .dark ? .secondarySystemGroupedBackground
             : UIColor(red: 0.91, green: 0.91, blue: 0.92, alpha: 1)
     })
-    static let running = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark ? UIColor(red: 0.35, green: 0.85, blue: 0.5, alpha: 1)
-            : UIColor(red: 0.17, green: 0.45, blue: 0.24, alpha: 1)
-    })
-    static let userMessage = Color(uiColor: UIColor { traits in
-        traits.userInterfaceStyle == .dark ? UIColor(red: 0.08, green: 0.25, blue: 0.47, alpha: 1)
-            : UIColor(red: 0.84, green: 0.92, blue: 1, alpha: 1)
-    })
+    static let running = NanocodexConversationPalette.running
+    static let userMessage = NanocodexConversationPalette.userMessage
 }
 
 struct InboxView: View {
@@ -260,7 +256,7 @@ struct InboxView: View {
             .overlay(alignment: .topTrailing) {
                 // A delayed reconnect must not push the transcript down while
                 // the reader is moving through history.
-                ConnectionStatusView(status: model.threadLoading ? "" : model.connection, retry: { model.retryConnection() }, signIn: { showSettings = true })
+                ChatConnectionStatusView(status: model.threadLoading ? "" : model.connection, retry: { model.retryConnection() }, signIn: { showSettings = true })
                     .padding(.horizontal, 16)
             }
             if let error = model.error {
@@ -306,12 +302,13 @@ struct InboxView: View {
 
     private var conversationHeader: some View {
         let card = model.focused
-        return HStack(spacing: 12) {
+        return ChatConversationHeader {
             Button { setConversationsVisible(true) } label: {
                 Image(systemName: "line.3.horizontal").frame(width: 44, height: 44).contentShape(Rectangle())
             }
-            .modifier(InboxHeaderGlass())
+            .modifier(ChatHeaderGlass())
             .accessibilityLabel("Conversations").accessibilityIdentifier("conversation-drawer-open")
+        } title: {
             Button { setConversationsVisible(true) } label: {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
@@ -333,17 +330,15 @@ struct InboxView: View {
             .accessibilityValue(card?.status ?? "")
             .accessibilityAddTraits(.isSelected)
             .accessibilityIdentifier("conversation-title:" + (card?.id ?? "empty"))
+        } trailing: {
             HStack(spacing: 0) {
                 Button(action: createAgent) {
                     Image(systemName: "square.and.pencil").frame(width: 44, height: 44)
                 }.accessibilityLabel("New project").accessibilityIdentifier("new-conversation")
                     .keyboardShortcut("n", modifiers: .command)
                 appMenu
-            }.modifier(InboxHeaderGlass())
+            }.modifier(ChatHeaderGlass())
         }
-        .buttonStyle(.plain)
-        .font(.system(size: 18, weight: .medium))
-        .padding(.horizontal, 16).padding(.vertical, 6)
     }
 
     private var appMenu: some View {
@@ -480,19 +475,6 @@ struct InboxView: View {
 
 }
 
-private struct InboxHeaderGlass: ViewModifier {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    func body(content: Content) -> some View {
-        if reduceTransparency {
-            content.background(Ink.card, in: RoundedRectangle(cornerRadius: 24))
-        } else if #available(iOS 26.0, *) {
-            content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24))
-        } else {
-            content.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
-        }
-    }
-}
-
 /// Navigation uses roster summaries only, without parsing Markdown or starting preview streams.
 private struct ConversationDrawer: View {
     @ObservedObject var model: InboxModel
@@ -503,6 +485,23 @@ private struct ConversationDrawer: View {
     let create: () -> Void
     let settings: () -> Void
     @State private var query = ""
+    @State private var childRosters: [String: ConversationRoster] = [:]
+
+    private func childCards(in project: InboxProject) -> [AgentCard] {
+        let cards = model.cards.filter { project.agentIDs.contains($0.id) && $0.id != project.primaryAgentID }
+        return (childRosters[project.id] ?? ConversationRoster(cards: cards)).visible(in: cards, matching: "")
+    }
+
+    private func reconcileChildRosters() {
+        var next: [String: ConversationRoster] = [:]
+        for project in model.projects {
+            let cards = model.cards.filter { project.agentIDs.contains($0.id) && $0.id != project.primaryAgentID }
+            var roster = childRosters[project.id] ?? ConversationRoster(cards: cards)
+            roster.reconcile(cards)
+            next[project.id] = roster
+        }
+        childRosters = next
+    }
 
     private func matches(_ project: InboxProject) -> Bool {
         query.isEmpty || project.name.localizedCaseInsensitiveContains(query)
@@ -531,8 +530,7 @@ private struct ConversationDrawer: View {
             ScrollView {
                 LazyVStack(spacing: 4) {
                     ForEach(model.projects.filter(matches)) { project in
-                        let children = model.cards.filter { project.agentIDs.contains($0.id) && $0.id != project.primaryAgentID }
-                            .sorted(by: AgentCard.mostRecentFirst)
+                        let children = childCards(in: project)
                         let expanded = expandedProjects.contains(project.id) || !query.isEmpty
                         HStack(spacing: 0) {
                             Button { select(project.primaryAgentID) } label: {
@@ -566,23 +564,15 @@ private struct ConversationDrawer: View {
                         }
                         .background(model.focused?.id == project.primaryAgentID ? Ink.surface : Color.clear, in: RoundedRectangle(cornerRadius: 12))
                         if expanded {
-                            ForEach(children.filter { query.isEmpty || project.name.localizedCaseInsensitiveContains(query) || $0.title.localizedCaseInsensitiveContains(query) }) { child in
+                            ConversationListContent(cards: children.filter { query.isEmpty || project.name.localizedCaseInsensitiveContains(query) || $0.title.localizedCaseInsensitiveContains(query) }) { child in
                                 Button { select(child.id) } label: {
-                                    HStack(spacing: 10) {
-                                        Image(systemName: "bubble.left").font(.caption).foregroundStyle(.secondary)
-                                        Text(child.title).font(.subheadline).lineLimit(2)
-                                        Spacer(minLength: 4)
-                                        if child.isRunning { Circle().fill(Ink.running).frame(width: 6, height: 6) }
-                                    }
-                                    .padding(.leading, 28).padding(.trailing, 14).padding(.vertical, 12)
-                                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                                    .background(model.focused?.id == child.id ? Ink.surface : Color.clear, in: RoundedRectangle(cornerRadius: 12))
-                                    .contentShape(Rectangle())
+                                    ChatConversationRowLabel(title: child.title, running: child.isRunning,
+                                                             selected: model.focused?.id == child.id, runningColor: Ink.running)
                                 }
                                 .accessibilityValue(child.isRunning ? "Working" : child.status)
                                 .accessibilityAddTraits(model.focused?.id == child.id ? [.isSelected] : [])
                                 .accessibilityIdentifier("conversation-row:" + child.id)
-                            }
+                            } empty: { EmptyView() }
                         }
                     }
                 }
@@ -596,10 +586,13 @@ private struct ConversationDrawer: View {
             }
         }.padding(16).background(Ink.background).buttonStyle(.plain)
             .onAppear {
+                reconcileChildRosters()
                 if let project = model.focusedProject, model.focused?.id != project.primaryAgentID {
                     expandedProjects.insert(project.id)
                 }
             }
+            .onChange(of: model.cards.map(\.id)) { _, _ in reconcileChildRosters() }
+            .onChange(of: model.projects) { _, _ in reconcileChildRosters() }
             .accessibilityAction(.escape, close)
     }
 }
@@ -701,39 +694,6 @@ private struct ProjectTaskDetail: View {
     }
 }
 
-private struct ConnectionStatusView: View {
-    let status: String
-    let retry: () -> Void
-    let signIn: () -> Void
-    @State private var showDelay = false
-
-    private var isWaiting: Bool { status == "Connecting" || status == "Reconnecting" }
-
-    var body: some View {
-        HStack(spacing: 0) {
-            if status == "Sign in again" {
-                Button("Sign in again", action: signIn).accessibilityIdentifier("connection-sign-in")
-            } else if isWaiting, showDelay {
-                Button(action: retry) {
-                    ProgressView()
-                }
-                .frame(minHeight: 44)
-                .accessibilityLabel("Updates delayed. Retry connection")
-                .accessibilityIdentifier("connection-retry")
-            }
-        }
-        .font(.system(size: 12)).foregroundStyle(Ink.muted).lineLimit(1)
-        .task(id: isWaiting) {
-            showDelay = false
-            guard isWaiting else { return }
-            // Opening another agent normally involves a brief stream handshake.
-            // Only a sustained delay needs attention in the inbox header.
-            do { try await Task.sleep(for: .seconds(5)) } catch { return }
-            showDelay = true
-        }
-    }
-}
-
 private struct AgentComposerView: View {
     @ObservedObject var model: InboxModel
     @Binding var focused: Bool
@@ -768,7 +728,7 @@ private struct AgentComposerView: View {
     var body: some View {
         let queue = model.focusedQueue
         let visiblePending = queue.queuedMessages
-        VStack(spacing: 0) {
+        ChatComposerShell(focused: focused, background: Ink.background) {
             if let error = model.creationError {
                 HStack {
                     Text(error).font(.caption).foregroundStyle(Ink.muted)
@@ -884,9 +844,9 @@ private struct AgentComposerView: View {
                 Text(error).font(.caption).foregroundStyle(Ink.muted).frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16).padding(.vertical, 8).accessibilityIdentifier("attachment-error")
             }
-            HStack(alignment: .bottom, spacing: 2) {
+            ChatComposerInputRow(hasPendingMessages: !visiblePending.isEmpty) {
                 Button { focused = false; showAttachmentMenu = true } label: {
-                    Image(systemName: "plus").frame(width: 44, height: 44).contentShape(Rectangle())
+                    ChatComposerControlLabel { Image(systemName: "plus") }
                 }.accessibilityLabel("Add attachments").accessibilityIdentifier("add-attachments")
                 ChatComposerEditor(text: $model.draft, focused: $focused, overflowing: $composerOverflows)
                     .accessibilityIdentifier("composer")
@@ -911,40 +871,35 @@ private struct AgentComposerView: View {
                         #endif
                     }
                 } label: {
-                    Group {
+                    ChatComposerPrimaryControlLabel(active: sendShowsStop || model.canSend, accent: Ink.accent, foreground: Ink.background) {
                         if sendShowsStop, let stopRequest, stopRequest.error == nil {
                             ProgressView().tint(Ink.background)
                         } else {
                             Image(systemName: sendShowsStop ? "stop.fill" : model.busy.contains(model.focused?.id ?? "") ? "ellipsis" : "arrow.up")
                         }
-                    }.font(.system(size: 16, weight: .semibold)).frame(width: 32, height: 32)
-                        .background(Ink.accent.opacity(sendShowsStop || model.canSend ? 1 : 0.22), in: Circle()).foregroundStyle(Ink.background)
-                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
                 }.buttonStyle(.plain)
                     .disabled(sendShowsStop ? stopRequest.map { $0.error == nil } ?? false : !model.canSend)
                     .accessibilityLabel(sendShowsStop ? stopRequest.map { $0.error == nil ? "Stopping turn" : "Retry stop" } ?? "Stop turn" : model.focused?.isRunning == true ? "Queue message" : "Send message")
                     .accessibilityIdentifier("send")
                     .keyboardShortcut(sendShowsStop ? nil : KeyboardShortcut(.return, modifiers: .command))
-            }
-                .overlay(alignment: .topTrailing) {
+            } expansion: {
                     if composerOverflows {
                         Button {
                             focused = false
                             showExpandedEditor = true
                         } label: {
-                            Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                .frame(width: 44, height: 44).contentShape(Rectangle())
+                            ChatComposerControlLabel {
+                                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            }
                         }.buttonStyle(.plain).foregroundStyle(Ink.muted)
                             .accessibilityLabel("Expand message editor")
                             .accessibilityIdentifier("expand-composer")
                     }
                 }
-                .padding(.horizontal, 4).padding(.bottom, 4).padding(.top, visiblePending.isEmpty ? 4 : 0).accessibilityElement(children: .contain).accessibilityIdentifier("composer-input")
+                .accessibilityIdentifier("composer-input")
 
-        }.background(ChatPalette.composer, in: RoundedRectangle(cornerRadius: 28))
-            .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(Color.primary.opacity(focused ? 0.18 : 0.1)))
-            .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
-            .padding(.horizontal, 12).padding(.top, 4).padding(.bottom, 6).background(Ink.background)
+        }
             .onChange(of: model.focusedConversationIdentity) { _, _ in
                 showExpandedEditor = false
                 focused = false
@@ -1071,52 +1026,16 @@ private struct ExpandedAgentComposer: View {
     let attachmentCount: Int
     let onCollapse: () -> Void
     let onSend: () -> Void
-    @FocusState private var editorFocused: Bool
 
     var body: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: 8) {
-                TextEditor(text: $draft)
-                    .font(.body)
-                    .scrollContentBackground(.hidden)
-                    .focused($editorFocused)
-                    .accessibilityLabel("Message")
-                    .accessibilityIdentifier("expanded-composer")
-                    .overlay(alignment: .topLeading) {
-                        if draft.isEmpty {
-                            Text("Ask Nanocodex")
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 5).padding(.top, 8)
-                                .allowsHitTesting(false)
-                                .accessibilityHidden(true)
-                        }
-                    }
-                if attachmentCount > 0 {
-                    Label("Attachments: \(attachmentCount)", systemImage: "paperclip")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            .padding(16)
-            .background(Ink.background)
-            .navigationTitle("Message")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(action: onCollapse) {
-                        Label("Collapse", systemImage: "arrow.down.right.and.arrow.up.left")
-                    }.accessibilityLabel("Collapse message editor")
-                        .accessibilityIdentifier("collapse-composer")
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Send", action: onSend)
-                        .disabled(!canSend)
-                        .keyboardShortcut(.return, modifiers: .command)
-                        .accessibilityIdentifier("expanded-composer-send")
-                }
-            }
-            .task { editorFocused = true }
-        }
-        .presentationDetents([.large])
-        .presentationDragIndicator(.visible)
+        ChatExpandedComposer(
+            draft: $draft,
+            canSend: canSend,
+            attachmentCount: attachmentCount,
+            background: Ink.background,
+            onCollapse: onCollapse,
+            onSend: onSend
+        )
     }
 }
 
@@ -1470,82 +1389,44 @@ private struct ConversationMessageContent: View, Equatable {
             && lhs.model === rhs.model
     }
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            if row.role == "You" { Spacer(minLength: 44) }
-            VStack(alignment: .leading, spacing: 10) {
-                if row.role == "Thinking" {
-                    DisclosureGroup {
-                        ChatMarkdown(text: row.text)
-                    } label: {
-                        if row.running { ProgressView().controlSize(.mini).accessibilityLabel("Thinking") }
-                        else { Text("Thought process") }
-                    }.font(.system(size: 13)).foregroundStyle(Ink.muted)
-                } else if row.role == "You", let content = ContextPrompt.separate(row.text) {
-                    Text(content.request).font(.body).lineSpacing(3).textSelection(.enabled)
-                    DisclosureGroup("Captured context (\(content.captures.count))") {
-                        ForEach(Array(content.captures.enumerated()), id: \.offset) { _, capture in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(capture.source + (capture.sender.isEmpty ? "" : " · " + capture.sender)).font(.caption.weight(.semibold))
-                                Text(capture.text.isEmpty ? capture.url : capture.text).font(.subheadline).textSelection(.enabled)
-                            }.padding(.vertical, 4)
-                        }
-                    }.font(.caption).foregroundStyle(Ink.muted)
-                } else if row.role == "Agent", !row.text.isEmpty {
-                    ChatMarkdown(text: row.text, compact: true)
-                } else if !row.text.isEmpty {
-                    Text(row.text).font(.system(size: row.role == "Status" ? 14 : 17))
-                        .lineSpacing(5).textSelection(.enabled)
-                        .foregroundStyle(row.role == "Status" ? Ink.muted : Ink.text)
+        let capturedContext = ContextPrompt.separate(row.text).map { content in
+            NanocodexCapturedMessageContext(request: content.request, captures: content.captures.map {
+                .init(source: $0.source, sender: $0.sender, text: $0.text, url: $0.url)
+            })
+        }
+        NanocodexMessageContent(row: row, capturedContext: capturedContext) {
+            if let delivery, delivery.phase == .failed {
+                Label("Couldn’t confirm delivery", systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("Retry") { model.retryPending(delivery.id) }.accessibilityIdentifier("retry-pending")
+                    Button("Cancel") { model.cancelPending(delivery.id) }.accessibilityLabel("Cancel message")
+                }.font(.caption).disabled(!canRetry)
+            }
+            if let transfer = steering, canWithdraw, (transfer.wasAccepted || transfer.phase == .unconfirmed), transfer.phase != .withdrawn {
+                Button(transfer.phase == .withdrawing ? "Withdrawing…" : "Withdraw steering") { model.withdrawSteering(transfer.id) }
+                    .font(.caption).accessibilityIdentifier("withdraw-steering")
+                    .disabled(!model.connected || (transfer.phase == .withdrawing && transfer.error == nil))
+            }
+            if let images = row.images {
+                ForEach(Array(images.enumerated()), id: \.offset) { _, image in
+                    ChatImageAttachment(source: image).frame(maxWidth: 240)
+                        .accessibilityIdentifier("message-image")
                 }
-                if !row.detail.isEmpty { Text(row.detail).font(.caption).foregroundStyle(Ink.muted) }
-                if let delivery, delivery.phase == .failed {
-                    Label("Couldn’t confirm delivery", systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.secondary)
-                    HStack {
-                        Button("Retry") { model.retryPending(delivery.id) }.accessibilityIdentifier("retry-pending")
-                        Button("Cancel") { model.cancelPending(delivery.id) }.accessibilityLabel("Cancel message")
-                    }.font(.caption).disabled(!canRetry)
-                }
-                if let transfer = steering, canWithdraw, (transfer.wasAccepted || transfer.phase == .unconfirmed), transfer.phase != .withdrawn {
-                    Button(transfer.phase == .withdrawing ? "Withdrawing…" : "Withdraw steering") { model.withdrawSteering(transfer.id) }
-                        .font(.caption).accessibilityIdentifier("withdraw-steering")
-                        .disabled(!model.connected || (transfer.phase == .withdrawing && transfer.error == nil))
-                }
-                if let images = row.images {
-                    ForEach(Array(images.enumerated()), id: \.offset) { _, image in
-                        ChatImageAttachment(source: image).frame(maxWidth: 240)
-                            .accessibilityIdentifier("message-image")
+            }
+            if let attachments = delivery?.attachments, !attachments.isEmpty {
+                ForEach(attachments) { attachment in
+                    if attachment.isVideo {
+                        AttachmentMovieThumbnail(attachment: attachment, poster: model.attachmentURL(attachment), movie: model.attachmentMovieURL(attachment))
+                            .frame(width: 240, height: 180)
+                    } else {
+                        AttachmentPhotoThumbnail(attachment: attachment, model: model).frame(width: 240, height: 180)
                     }
                 }
-                if let attachments = delivery?.attachments, !attachments.isEmpty {
-                    ForEach(attachments) { attachment in
-                        if attachment.isVideo {
-                            AttachmentMovieThumbnail(attachment: attachment, poster: model.attachmentURL(attachment), movie: model.attachmentMovieURL(attachment))
-                                .frame(width: 240, height: 180)
-                        } else {
-                            AttachmentPhotoThumbnail(attachment: attachment, model: model).frame(width: 240, height: 180)
-                        }
-                    }
-                } else {
-                    ForEach(row.imageFiles ?? []) { OriginalImageAttachmentView(attachment: $0, model: model, agentID: agentID) }
-                    ForEach(row.videos ?? []) { VideoAttachmentView(video: $0, model: model, agentID: agentID) }
-                }
+            } else {
+                ForEach(row.imageFiles ?? []) { OriginalImageAttachmentView(attachment: $0, model: model, agentID: agentID) }
+                ForEach(row.videos ?? []) { VideoAttachmentView(video: $0, model: model, agentID: agentID) }
             }
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel(row.role == "You" ? "Your message" : row.role == "Agent" ? "Assistant message" : row.role)
-            .padding(.horizontal, row.role == "You" ? 12 : 0)
-            .padding(.vertical, row.role == "You" || row.role == "Agent" ? 9 : 0)
-            .background(row.role == "You" ? Ink.userMessage : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 18))
-            .contextMenu {
-                if row.role == "Agent", !row.text.isEmpty {
-                    ChatCopyButton(text: row.text, showsLabel: true)
-                }
-            }
-            .accessibilityAction(named: "Copy response") {
-                UIPasteboard.general.string = row.text
-            }
-            if row.role != "You" { Spacer(minLength: row.role == "Agent" ? 16 : 0) }
-        }.frame(maxWidth: .infinity, alignment: row.role == "You" ? .trailing : .leading)
+        }
     }
 }
 
@@ -1784,7 +1665,7 @@ private struct ConversationContentView: View {
                                         .padding(.bottom, 12)
                                 }
                             }
-                            ConversationActivityView(item: content, onExpansion: { expanded in
+                            NanocodexActivityView(item: content, onExpansion: { expanded in
                                 if expanded { rowGeometry.expandedActivity.insert(content.id) }
                                 else {
                                     rowGeometry.expandedActivity.remove(content.id)
@@ -1795,14 +1676,14 @@ private struct ConversationContentView: View {
                         }
                         }.id(item.id)
                             .background(GeometryReader { geometry in
-                                Color.clear.preference(key: ConversationRowFrames.self, value: [item.id: geometry.frame(in: .named("conversation-viewport"))])
+                                Color.clear.preference(key: NanocodexConversationRowFrames.self, value: [item.id: geometry.frame(in: .named("conversation-viewport"))])
                             })
                             .accessibilityElement(children: .contain)
                             .accessibilityIdentifier((item.message?.role == "You" ? "message-user-" : item.message?.role == "Agent" ? "message-assistant-" : "message-") + item.id)
                         if item.id == boundaryItemID {
                             Color.clear.frame(height: 1).accessibilityHidden(true)
                                 .background(GeometryReader { geometry in
-                                    Color.clear.preference(key: ConversationRowFrames.self,
+                                    Color.clear.preference(key: NanocodexConversationRowFrames.self,
                                         value: ["history-gap": geometry.frame(in: .named("conversation-viewport"))])
                                 })
                         }
@@ -1831,7 +1712,7 @@ private struct ConversationContentView: View {
             .scrollDismissesKeyboard(.interactively)
             .scrollBounceBehavior(.always, axes: .vertical)
             .coordinateSpace(name: "conversation-viewport")
-            .onPreferenceChange(ConversationRowFrames.self) { frames in
+            .onPreferenceChange(NanocodexConversationRowFrames.self) { frames in
                 rowGeometry.frames = frames
                 if let target = pendingReadingRestore, let id = target.rowID, let parent = frames[id] {
                     let frame = target.childID.flatMap { frames[$0] } ?? parent
@@ -2009,188 +1890,12 @@ private final class ConversationRowGeometry {
     var historyRestore: (id: String, offsetY: CGFloat, childID: String?)?
 }
 
-private struct ConversationRowFrames: PreferenceKey {
-    static var defaultValue: [String: CGRect] { [:] }
-    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
-        value.merge(nextValue()) { _, new in new }
-    }
-}
 
 private struct ConversationContentPosition: Equatable {
     var nearTop = false
     var approachingTop = false
     var atLatest = false
     var isMeasured = false
-}
-
-private struct ConversationActivityView: View {
-    let item: ConversationItem
-    var onExpansion: (Bool) -> Void = { _ in }
-    var onInteraction: () -> Void = {}
-    @State private var expanded = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var visibleStep: String?
-    private var failures: Int { item.activity.filter { $0.tool?.status == "Failed" }.count }
-    private var headline: String {
-        guard item.isRunning else { return "Activity" }
-        let current = item.activity.last(where: \.running) ?? item.activity.last
-        return current?.tool?.title ?? (current?.role == "Thinking" ? "Thinking" : "Working")
-    }
-    private var summary: String {
-        let calls = item.activity.filter { $0.tool != nil }.count
-        let thoughts = item.activity.filter { $0.role == "Thinking" }.count
-        var parts: [String] = []
-        if thoughts > 0 { parts.append("Reasoning") }
-        if calls > 0 { parts.append("\(calls) tool call\(calls == 1 ? "" : "s")") }
-        if parts.isEmpty { parts.append(item.activity.isEmpty ? "Getting started" : "\(item.activity.count) steps") }
-        return parts.joined(separator: " · ")
-    }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                let opening = !expanded
-                if opening && visibleStep == nil { visibleStep = item.activity.first?.id }
-                // Register the reading anchor before expansion publishes geometry.
-                onExpansion(opening)
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { expanded = opening }
-            } label: {
-                HStack(spacing: 10) {
-                    Group {
-                        if item.isRunning { ProgressView().controlSize(.small) }
-                        else { Image(systemName: failures > 0 ? "exclamationmark.circle" : "checkmark.circle") }
-                    }.frame(width: 20).foregroundStyle(failures > 0 ? Color.orange : Ink.muted)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(headline).font(.subheadline.weight(.medium)).foregroundStyle(Ink.text)
-                        Text(summary).font(.caption).foregroundStyle(Ink.muted)
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                    if failures > 0 {
-                        Text("\(failures) failed").font(.caption.weight(.medium)).foregroundStyle(.orange)
-                    }
-                    if !item.activity.isEmpty {
-                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                            .font(.caption.weight(.semibold)).foregroundStyle(Ink.muted)
-                    }
-                }.frame(minHeight: 44).contentShape(Rectangle())
-            }.buttonStyle(.plain).disabled(item.activity.isEmpty)
-                .accessibilityIdentifier("activity-disclosure")
-                .accessibilityLabel("Activity")
-                .accessibilityValue("\(expanded ? "Expanded" : "Collapsed"), \(headline), \(summary), \(failures) failed")
-                .accessibilityHint(item.activity.isEmpty ? "Waiting for activity" : "Show or hide thinking and tool calls")
-            if expanded && !item.activity.isEmpty {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(item.activity) { row in
-                            ConversationActivityStep(row: row, live: item.isRunning && row.running)
-                                .id(row.id)
-                                .background(GeometryReader { geometry in
-                                    Color.clear.preference(key: ConversationRowFrames.self,
-                                        value: [row.id: geometry.frame(in: .named("conversation-viewport"))])
-                                })
-                        }
-                    }.scrollTargetLayout().padding(.top, 8)
-                }.scrollPosition(id: $visibleStep, anchor: .top)
-                    .frame(maxHeight: 300).fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("activity-timeline")
-                    .background(GeometryReader { geometry in
-                        Color.clear.preference(key: ConversationRowFrames.self,
-                            value: [item.id + ":timeline": geometry.frame(in: .named("conversation-viewport"))])
-                    })
-                    .onScrollPhaseChange { _, phase in
-                        if phase == .tracking || phase == .interacting { onInteraction() }
-                    }
-            }
-        }.padding(.horizontal, 12).padding(.vertical, 6)
-            .background(Ink.surface, in: RoundedRectangle(cornerRadius: 16))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .contain).accessibilityIdentifier("activity-group")
-    }
-}
-
-private struct ConversationActivityStep: View {
-    let row: TranscriptRow
-    let live: Bool
-    @State private var expanded = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private var failed: Bool { row.tool?.status == "Failed" }
-    private var title: String { row.tool?.title ?? (row.role == "Thinking" ? "Thinking" : "Progress update") }
-    private var subject: String {
-        if let subject = row.tool?.subject { return subject }
-        // A bounded plain preview avoids parsing a growing Markdown document on every token.
-        let firstLine = row.text.prefix(180).split(whereSeparator: \.isNewline).first ?? ""
-        return firstLine.trimmingCharacters(in: CharacterSet(charactersIn: "#*` _"))
-    }
-    private var status: String {
-        if failed { return "Failed" }
-        if live { return "Running" }
-        if row.tool?.status == "Stopped" { return "Stopped" }
-        // A past turn can retain an unfinished tool. Don't claim it completed.
-        if row.running || row.tool?.status == "Running" { return "Interrupted" }
-        return "Completed"
-    }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { expanded.toggle() } } label: {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: failed ? "exclamationmark.circle.fill" : row.role == "Tool" ? "terminal" : "text.alignleft")
-                        .font(.subheadline).foregroundStyle(failed ? Color.orange : Ink.muted)
-                        .frame(width: 20).padding(.top, 3)
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(title).font(.subheadline.weight(.medium)).foregroundStyle(Ink.text)
-                            Spacer(minLength: 4)
-                            if live { ProgressView().controlSize(.mini) }
-                            Text(status).font(.caption2).foregroundStyle(failed ? Color.orange : Ink.muted)
-                        }
-                        if !subject.isEmpty { Text(subject).font(.caption).foregroundStyle(Ink.muted).lineLimit(2).multilineTextAlignment(.leading) }
-                    }
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.caption2.weight(.semibold)).foregroundStyle(Ink.muted).padding(.top, 4)
-                }.padding(.vertical, 10).frame(minHeight: 44).contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityIdentifier("activity-step-" + row.id)
-                .accessibilityValue(expanded ? "Expanded" : "Collapsed")
-            if expanded {
-                ScrollView {
-                    Group {
-                        if row.tool != nil { ToolActivityView(row: row) }
-                        else if row.role == "Thinking" { ChatMarkdown(text: row.text) }
-                        else { Text(row.text).font(.body).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-                    }.padding(12)
-                }.frame(maxHeight: 240).fixedSize(horizontal: false, vertical: true)
-                    .background(Ink.background, in: RoundedRectangle(cornerRadius: 12))
-                    .accessibilityIdentifier("activity-detail-" + row.id)
-                    .padding(.bottom, 10)
-            }
-            Divider().opacity(0.4)
-        }.accessibilityElement(children: .contain)
-    }
-}
-
-private struct ToolActivityView: View {
-    let row: TranscriptRow
-    private var tool: ToolPresentation {
-        if let tool = row.tool { return tool }
-        var fallback = ToolPresentation(name: row.text, arguments: .null)
-        if !row.running { fallback.finish(.string(row.detail)) }
-        return fallback
-    }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if !tool.input.isEmpty { fields(tool.input, heading: "Input") }
-            if !tool.output.isEmpty { fields(tool.output, heading: "Result") }
-        }.foregroundStyle(Ink.muted).accessibilityIdentifier("tool-activity")
-    }
-    private func fields(_ values: [ToolField], heading: String) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(heading).font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.muted)
-            ForEach(Array(values.enumerated()), id: \.offset) { _, field in
-                VStack(alignment: .leading, spacing: 3) {
-                    if field.label != heading { Text(field.label).font(.system(size: 12)).foregroundStyle(Ink.muted) }
-                    Text(field.value).font(.system(size: 14, design: field.code ? .monospaced : .default))
-                        .foregroundStyle(Ink.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }.frame(maxWidth: .infinity, alignment: .leading)
-    }
 }
 
 private struct VaultIntakeCard: View {

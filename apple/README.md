@@ -19,6 +19,13 @@ Mac destination are disabled. It connects directly to the managed HTTP/SSE
 contract without a bundled Node runtime.
 Its authenticated native Hand can also bridge [Bluetooth Low Energy devices](../docs/bluetooth-le.md), including typed [Flipper Zero](../docs/flipper-zero.md) RPC tools without custom Flipper firmware.
 
+The local [`NanocodexChat`](NanocodexChat/README.md) package provides unstyled
+SwiftUI lifecycle and content builders backed by the project-scoped conversation
+store in `InboxCore`. Its Connect transport uses the existing single-agent grant
+contract. The mobile drawer shares its list content and stable roster policy;
+full transcript-model migration and named multi-conversation project grants are
+tracked in the [component design](../docs/ux/2026-09-18-swift-project-conversations.md).
+
 The local `apple/NanocodexUI` package owns the shared chat palette, Markdown
 block rendering, and copy feedback. Both Apple apps render headings, lists,
 links, quotes, tables, and code using Foundation’s Markdown parser. Copy

@@ -9,7 +9,9 @@ struct NanocodexInboxApp: App {
     var body: some Scene {
         WindowGroup("Nanocodex", id: "inbox") {
             #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--soundcloud-loopback-smoke") {
+            if ProcessInfo.processInfo.arguments.contains("--component-gallery") {
+                ProjectConversationGallery()
+            } else if ProcessInfo.processInfo.arguments.contains("--soundcloud-loopback-smoke") {
                 SpotifyLoopbackSmokeView(provider: .soundcloud)
             } else if ProcessInfo.processInfo.arguments.contains("--spotify-loopback-smoke") {
                 SpotifyLoopbackSmokeView()
