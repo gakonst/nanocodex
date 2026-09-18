@@ -131,6 +131,52 @@ public final class ManagedClient: @unchecked Sendable {
         }
         return data.isEmpty ? .null : try JSONDecoder().decode(JSON.self, from: data)
     }
+    /// Reads the account's main conversation, optionally ensuring it exists.
+    public func mainThread(ensure: Bool) async throws -> String? {
+        let body: JSON
+        do {
+            body = try await json(path: "/v1/main-thread", method: ensure ? "PUT" : "GET")
+        } catch APIError.http(404) where !ensure {
+            return nil
+        }
+        guard case .object(let fields) = body, let value = fields["agent_id"] else { throw APIError.invalidResponse }
+        if value == .null, !ensure { return nil }
+        guard case .string(let id) = value else { throw APIError.invalidResponse }
+        try Self.validateProjectReference(id)
+        return id
+    }
+
+    public func canonicalProjects() async throws -> [InboxProject] {
+        let body = try await json(path: "/v1/projects")
+        guard case .array(let values) = body["data"] else { throw APIError.invalidResponse }
+        return try values.map(Self.canonicalProject)
+    }
+
+    public func registerProject(id: String, name: String, coordinatorAgentID: String?) async throws -> InboxProject {
+        try Self.validateProjectReference(id)
+        guard !name.isEmpty, name.utf16.count <= 160 else { throw APIError.invalidResponse }
+        var fields: [String: JSON] = ["name": .string(name)]
+        if let coordinatorAgentID {
+            try Self.validateProjectReference(coordinatorAgentID)
+            fields["coordinator_agent_id"] = .string(coordinatorAgentID)
+        }
+        return try Self.canonicalProject(await json(path: "/v1/projects/" + id, method: "PUT", body: .object(fields)))
+    }
+
+    private static func canonicalProject(_ value: JSON) throws -> InboxProject {
+        guard case .string(let id) = value["id"],
+              case .string(let name) = value["name"],
+              case .string(let coordinator) = value["coordinator_agent_id"] else { throw APIError.invalidResponse }
+        try validateProjectReference(id)
+        try validateProjectReference(coordinator)
+        return InboxProject(id: id, name: name, primaryAgentID: coordinator)
+    }
+
+    private static func validateProjectReference(_ id: String) throws {
+        guard id.count <= 64 else { throw APIError.invalidResponse }
+        _ = try agentPath(id)
+    }
+
     public func list() async throws -> [AgentCard] {
         let body = try await json(path: "/v1/agents")
         guard case .array(let ids) = body["data"] else { throw APIError.invalidResponse }

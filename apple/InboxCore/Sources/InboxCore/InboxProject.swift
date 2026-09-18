@@ -23,29 +23,32 @@ public struct InboxProjectIndex {
     public let cardsByID: [String: AgentCard]
     private let links: [String: [String: [AgentCard]]]
 
-    public init(cards: [AgentCard], savedProjects: [InboxProject]) {
+    public init(cards: [AgentCard], savedProjects: [InboxProject], canonicalProjects: [InboxProject] = [], mainThreadID: String? = nil) {
+        let canonicalByRoot = Dictionary(canonicalProjects.map { ($0.primaryAgentID, $0) }, uniquingKeysWith: { first, _ in first })
+        var coordinators = Set<String>()
+        let savedProjects = (canonicalProjects + savedProjects).filter { coordinators.insert($0.primaryAgentID).inserted }
         let cardsByID = Dictionary(cards.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         self.cardsByID = cardsByID
         let available = Set(cardsByID.keys)
         var members: [String: [String]] = [:]
         var links: [String: [String: [AgentCard]]] = [:]
         for card in cards {
-            if let root = card.projectRootID, root != card.id { members[root, default: []].append(card.id) }
+            if let root = card.projectRootID, root != card.id, card.id != mainThreadID { members[root, default: []].append(card.id) }
             if let parent = card.parentAgentID, let turn = card.originTurnID {
                 links[parent, default: [:]][turn, default: []].append(card)
             }
         }
         self.links = links
         let saved = savedProjects.filter { project in
-            guard let card = cardsByID[project.primaryAgentID] else { return false }
+            guard project.primaryAgentID != mainThreadID, let card = cardsByID[project.primaryAgentID] else { return false }
             return card.projectRootID == nil || card.projectRootID == card.id
                 || !available.contains(card.projectRootID!)
         }.map { project in
-            InboxProject(id: project.id, name: cardsByID[project.primaryAgentID]?.projectName ?? project.name, primaryAgentID: project.primaryAgentID,
+            InboxProject(id: project.id, name: canonicalByRoot[project.primaryAgentID]?.name ?? cardsByID[project.primaryAgentID]?.projectName ?? project.name, primaryAgentID: project.primaryAgentID,
                          agentIDs: [project.primaryAgentID] + (members[project.primaryAgentID] ?? []))
         }
         let assigned = Set(saved.flatMap(\.agentIDs))
-        projects = saved + cards.filter { !assigned.contains($0.id)
+        projects = saved + cards.filter { $0.id != mainThreadID && !assigned.contains($0.id)
             && ($0.projectRootID == nil || !available.contains($0.projectRootID!) || $0.projectRootID == $0.id)
         }.sorted(by: AgentCard.mostRecentFirst).map {
             InboxProject(id: "project-" + $0.id, name: $0.projectName ?? $0.title, primaryAgentID: $0.id,

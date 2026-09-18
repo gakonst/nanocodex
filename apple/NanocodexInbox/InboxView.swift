@@ -96,7 +96,7 @@ struct InboxView: View {
             Button("Save") {
                 if let id = renamingProject { model.renameProject(id, name: projectName) }
                 else { model.createProject(name: projectName); setConversationsVisible(false) }
-            }.disabled(projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }.disabled(projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || projectName.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count > 160 || model.savingProject)
         }
         .sheet(isPresented: $showSettings) {
             NavigationStack {
@@ -318,10 +318,10 @@ struct InboxView: View {
                         if card?.isRunning == true {
                             Circle().fill(Ink.running).frame(width: 6, height: 6).accessibilityHidden(true)
                         }
-                        Text(model.focusedProject?.name ?? card?.title ?? "New project")
+                        Text(model.isMainThread ? "Main" : model.focusedProject?.name ?? card?.title ?? "New project")
                             .font(.subheadline.weight(.semibold)).lineLimit(1)
                     }
-                    Text(card?.id == model.focusedProject?.primaryAgentID
+                    Text(model.isMainThread ? "Across all your projects" : card?.id == model.focusedProject?.primaryAgentID
                          ? "Project · \(model.projectTasks.filter(\.isLive).count) active"
                          : "Agent · " + (card?.title ?? ""))
                         .font(.caption2).foregroundStyle(Ink.muted)
@@ -353,6 +353,12 @@ struct InboxView: View {
                 projectName = model.focusedProject?.name ?? ""
                 showProjectName = true
             } label: { Label("Rename project", systemImage: "pencil") }
+            .disabled(model.focusedProject == nil || model.savingProject)
+            if model.canRegisterFocusedProject {
+                Button { model.registerFocusedProject() } label: {
+                    Label("Make project available across devices", systemImage: "icloud")
+                }.disabled(model.savingProject)
+            }
             Button { composerFocused = false; showTasks = true } label: {
                 Label("Tasks and agents", systemImage: "checklist")
             }
@@ -413,8 +419,10 @@ struct InboxView: View {
     private var emptyState: some View {
         VStack(spacing: 18) {
             Image(systemName: "bubble.left.and.bubble.right").font(.system(size: 46, weight: .ultraLight)).foregroundStyle(Ink.accent)
-            Text("No projects yet").font(.title2.weight(.medium))
-            Text("Create a project and start with a message.").font(.subheadline).foregroundStyle(Ink.muted).multilineTextAlignment(.center)
+            Text("Start with Main").font(.title2.weight(.medium))
+            Text("Plan across your projects, or open a project for focused work.").font(.subheadline).foregroundStyle(Ink.muted).multilineTextAlignment(.center)
+            Button(model.openingMain ? "Opening Main…" : "Open Main") { model.openMainThread() }
+                .disabled(model.openingMain).accessibilityIdentifier("empty-open-main")
             Button("New project") { beginProject() }.buttonStyle(.borderedProminent).foregroundStyle(Ink.background)
             Button("Context from other apps") { model.showContext = true }
         }.padding(24).accessibilityElement(children: .contain).accessibilityIdentifier("inbox-empty")
@@ -527,6 +535,23 @@ private struct ConversationDrawer: View {
                         .accessibilityLabel("Clear search")
                 }
             }.padding(12).background(Ink.surface, in: RoundedRectangle(cornerRadius: 14))
+            Button { model.openMainThread(); close() } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "sparkle")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Main").font(.headline)
+                        Text("Across all your projects").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if model.openingMain { ProgressView() }
+                }.padding(12).background(model.isMainThread ? Ink.surface : Color.clear, in: RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(.plain).disabled(model.openingMain)
+                .accessibilityIdentifier("main-thread-entry")
+                .accessibilityAddTraits(model.isMainThread ? [.isSelected] : [])
+            if let name = model.pendingProjectName {
+                Button(model.savingProject ? "Creating \(name)…" : "Retry creating \(name)") { model.retryProjectCreation() }
+                    .disabled(model.savingProject).accessibilityIdentifier("retry-canonical-project")
+            }
             Text("Projects").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             ScrollView {
                 LazyVStack(spacing: 4) {
