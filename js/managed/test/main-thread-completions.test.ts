@@ -143,7 +143,7 @@ describe('main thread completion feed RPC isolation', () => {
       const first = completions.publish('project-result:first');
       const latest = completions.publish('project-result:second');
       expect(session.mainThreadCompletionFeed(owner, team, first)).toEqual({
-        latest, data: [{ sequence: latest, turn_id: 'project-result:second' }],
+        latest, data: [{ sequence: latest, turn_id: 'project-result:second' }], busy: false,
       });
       expect(() => session.mainThreadCompletionFeed('another-owner', team, 0)).toThrow('completion scope mismatch');
       expect(() => session.mainThreadCompletionFeed(owner, 'another-team', 0)).toThrow('completion scope mismatch');
@@ -161,6 +161,47 @@ describe('main thread completion feed RPC isolation', () => {
     await runInDurableObject(stub, async (session, state) => {
       new MainThreadCompletions(state.storage).publish('project-result:orphan');
       expect(() => session.mainThreadCompletionFeed('owner', 'team', 0)).toThrow('completion scope mismatch');
+    });
+  });
+});
+
+describe('bounded completion watch lifecycle', () => {
+  it('backs off to five minutes, becomes idle only when caught up, and resumes without reviving revocation', async () => {
+    const stub = sessions().getByName(crypto.randomUUID());
+    await runInDurableObject(stub, async (_session, state) => {
+      const ledger = new MainThreadCompletions(state.storage);
+      ledger.watch('child', 0, auth, 1);
+      for (let i = 0; i < 8; i++) ledger.settle(ledger.get('child')!, true, 0, false);
+      expect(ledger.get('child')!.poll_delay).toBe(300_000);
+      ledger.settle(ledger.get('child')!, false, 1, false);
+      expect(ledger.get('child')!.state).toBe('watching');
+      ledger.advance('child', 1);
+      ledger.settle(ledger.get('child')!, false, 1, true);
+      expect(ledger.get('child')).toMatchObject({ state: 'idle', authorization_json: '', cursor: 1 });
+      expect(ledger.nextAlarm()).toBeUndefined();
+      ledger.activate('child', auth, 1);
+      expect(ledger.get('child')).toMatchObject({ state: 'watching', cursor: 1, poll_delay: 30_000 });
+      ledger.retire('child');
+      ledger.activate('child', auth, 1);
+      expect(ledger.get('child')!.state).toBe('retired');
+      expect(ledger.nextAlarm()).toBeUndefined();
+    });
+  });
+
+  it('fences a stale idle observation after a newer admission and bounds active watches', async () => {
+    const stub = sessions().getByName(crypto.randomUUID());
+    await runInDurableObject(stub, async (_session, state) => {
+      const ledger = new MainThreadCompletions(state.storage);
+      const old = ledger.watch('child', 0, auth, 1);
+      ledger.activate('child', auth, 1);
+      ledger.settle(old, false, 0, false);
+      ledger.retire('child', old.generation);
+      expect(ledger.get('child')!.state).toBe('watching');
+      for (let i = 1; i < 128; i++) ledger.watch(`child-${i}`, 0, auth, 1);
+      expect(() => ledger.watch('overflow', 0, auth, 1)).toThrow('128');
+      ledger.settle(ledger.get('child')!, false, 0, false);
+      ledger.watch('overflow', 0, auth, 1);
+      expect(() => ledger.activate('child', auth, 1)).toThrow('128');
     });
   });
 });

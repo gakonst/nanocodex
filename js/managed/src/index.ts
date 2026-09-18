@@ -5327,7 +5327,8 @@ export class DurableAgentSession extends DurableComputerSession {
   mainThreadCompletionFeed(ownerId: string, teamId: string, after: number) {
     if (!this.mainThreadIdentity(ownerId, teamId) || !Number.isSafeInteger(after) || after < 0)
       throw new ManagedRequestError(403, "forbidden", "completion scope mismatch");
-    return { latest: this.#mainCompletions.latestSequence(), data: this.#mainCompletions.entries(after) };
+    return { latest: this.#mainCompletions.latestSequence(), data: this.#mainCompletions.entries(after),
+      busy: this.#recoverableTurnCount() > 0 || this.#projectRuns.nextAlarm() !== undefined || this.#mainCompletions.nextAlarm() !== undefined };
   }
 
   async #watchProjectCompletions(agentId: string, authorization: TurnAuthorization, explicit = false): Promise<void> {
@@ -5337,10 +5338,13 @@ export class DurableAgentSession extends DurableComputerSession {
     if (!previous || renewed) {
       const feed = await this.env.NANOCODEX_SESSIONS.getByName(agentId).mainThreadCompletionFeed(session.owner_id, session.team_id, 0);
       if (renewed) {
-        this.#mainCompletions.retire(agentId);
+        const current = this.#mainCompletions.get(agentId);
+        if (current && current.authorization_epoch < session.authorization_epoch)
+          this.#mainCompletions.retire(agentId, current.generation);
         this.#mainCompletions.reauthorize(agentId, feed.latest, JSON.stringify(authorization), session.authorization_epoch);
       } else this.#mainCompletions.watch(agentId, feed.latest, JSON.stringify(authorization), session.authorization_epoch);
     }
+    if (explicit) this.#mainCompletions.activate(agentId, JSON.stringify(authorization), session.authorization_epoch);
     await this.#scheduleNextAlarm();
   }
 
@@ -5361,8 +5365,8 @@ export class DurableAgentSession extends DurableComputerSession {
     const session = this.#session();
     if (!session || this.#deleted || this.#deleting || this.#durabilityExported || this.#durabilityImportState === "pending") return;
     for (const watch of this.#mainCompletions.due(Date.now())) {
-      if (watch.authorization_epoch !== session.authorization_epoch) { this.#mainCompletions.retire(watch.agent_id); continue; }
-      this.#mainCompletions.retry(watch.agent_id, Date.now() + 30_000);
+      if (watch.authorization_epoch !== session.authorization_epoch) { this.#mainCompletions.retire(watch.agent_id, watch.generation); continue; }
+      this.#mainCompletions.settle(watch, true, watch.cursor, false);
       try {
         const project = await this.#mainProject(watch.agent_id);
         let thread: ProjectThread | undefined;
@@ -5370,10 +5374,10 @@ export class DurableAgentSession extends DurableComputerSession {
           const response = await this.env.NANOCODEX_USERS.getByName(session.owner_id).fetch(`https://user.internal/project-threads/${session.session_id}`);
           if (!response.ok) throw new Error("project membership unavailable");
           thread = (await response.json<{ data: ProjectThread[] }>()).data.find(row => row.agent_id === watch.agent_id && row.parent_agent_id === session.session_id);
-          if (!thread) { this.#mainCompletions.retire(watch.agent_id); continue; }
+          if (!thread) { this.#mainCompletions.retire(watch.agent_id, watch.generation); continue; }
         }
         const authorization = parseTurnAuthorization(watch.authorization_json);
-        if (!this.#hasFullAccountAuthority(authorization)) { this.#mainCompletions.retire(watch.agent_id); continue; }
+        if (!this.#hasFullAccountAuthority(authorization)) { this.#mainCompletions.retire(watch.agent_id, watch.generation); continue; }
         const feed = await this.env.NANOCODEX_SESSIONS.getByName(watch.agent_id).mainThreadCompletionFeed(session.owner_id, session.team_id, watch.cursor);
         for (const entry of feed.data) {
           const id = project ? `main-result:${watch.agent_id}:${entry.sequence}` : `project-result:late:${watch.agent_id}:${entry.sequence}`;
@@ -5385,8 +5389,14 @@ export class DurableAgentSession extends DurableComputerSession {
           });
           this.#mainCompletions.advance(watch.agent_id, entry.sequence);
         }
+        // The feed's busy bit includes descendant subscriptions and internal result turns.
+        // Local pending admissions cover the gap before the remote turn exists.
+        this.#mainCompletions.settle(watch, feed.busy || this.#projectRuns.pending(watch.agent_id)
+          || feed.latest > (this.#mainCompletions.get(watch.agent_id)?.cursor ?? 0), feed.latest, feed.data.length > 0);
       } catch (error) {
-        console.warn({ type: "managed.main_completion_retry", error_kind: errorKind(error) });
+        if (typeof error === "object" && error !== null && "status" in error && error.status === 403)
+          this.#mainCompletions.retire(watch.agent_id, watch.generation);
+        else console.warn({ type: "managed.main_completion_retry", error_kind: errorKind(error) });
       }
     }
   }
@@ -5405,7 +5415,6 @@ export class DurableAgentSession extends DurableComputerSession {
     await this.#scheduleNextAlarm();
     if (run.state === "retired") throw new Error("project task admission was permanently rejected; inspect the thread before retrying with a new id");
     if (run.state !== "admitting") return;
-    await this.#watchProjectCompletions(agentId, authorization, true);
     await this.#admitTrackedProjectRun(run);
     await this.#scheduleNextAlarm();
   }

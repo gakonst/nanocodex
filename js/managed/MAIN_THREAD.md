@@ -18,6 +18,10 @@ PUT on an existing ID renames it. A different coordinator for an existing ID is 
 the same team, verifies its current identity through the session RPC, and rejects
 project children, Main, and coordinators already registered elsewhere. Existing
 project roots may be registered without changing their conversations or children.
+For legacy registry rows with a NULL team, attachment retries leave metadata
+unchanged. Successful explicit registration first verifies the live session through
+RPC and then stamps only the registry team column. Foreign owners and conflicting
+non-NULL teams are rejected; session membership is never modified.
 No endpoint migrates, deletes, or reparents conversations.
 
 The account DO stores `main_threads` and `canonical_projects` separately from
@@ -41,6 +45,16 @@ they do not grant new authority or authorize restarting cancelled work. Revoked
 subscriptions cannot resume through a stale retry. A fresh route under a newer
 authorization epoch can establish a new subscription.
 
-Completion subscriptions are not portable yet: exporting an agent with an active
-subscription returns `project_subscriptions_not_portable` rather than losing its
-future outcomes. Registries and subscriptions are not personal-memory records.
+Completion watches are bounded to 128 active children per parent and eight due
+children per alarm. Empty or failed polls back off from 30 seconds to five minutes;
+new results or explicit admissions reset the delay. A caught-up subscription becomes
+idle when both its local admission outbox and the child's entire admitted subtree
+(including descendant watches and internal result turns) are quiet. Idle watches
+schedule no alarms and release the durability export guard. New explicitly delegated
+work resumes the retained cursor. A generation fence prevents an old idle observation
+from retiring a newer admission; idle retirement never revives a revoked watch.
+
+Exporting while a subscription is still active returns
+`project_subscriptions_not_portable` rather than losing future outcomes. This guard
+ends once the admitted subtree settles; a historical watch does not block export
+forever. Registries and subscriptions are not personal-memory records.
