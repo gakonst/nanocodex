@@ -72,6 +72,14 @@ describe("goal HTTP admission", () => {
         const receipt = await created.json();
         expect(receipt).toMatchObject({ turn_id: "create", state: "completed",
           terminal: { type: "turn_completed", final_message: expect.stringContaining("Ship  the feature") } });
+        const events = (id: string) => state.storage.sql.exec<{ message_json: string }>(
+          "SELECT message_json FROM managed_events WHERE turn_id=? ORDER BY cursor", id,
+        ).toArray().map(row => JSON.parse(row.message_json));
+        const completedEvents = events("create");
+        expect(completedEvents.map(event => event.type)).toEqual(["turn_accepted", "event", "turn_completed"]);
+        expect(completedEvents[1]).toMatchObject({ type: "event", event: {
+          protocol_version: 1, type: "run.completed", payload: { status: "completed" },
+        } });
         const goal = f.goals.get();
         expect(goal).toMatchObject({ objective: "Ship  the feature", status: "active", tokensUsed: 0 });
         const pending = f.runtime.pending();
@@ -79,6 +87,7 @@ describe("goal HTTP admission", () => {
         const replay = await f.post("create", "/goal Ship  the feature");
         expect(replay.status).toBe(200);
         expect(await replay.json()).toEqual(receipt);
+        expect(events("create")).toEqual(completedEvents);
         expect(f.goals.get()).toEqual(goal);
         const conflict = await f.post("create", "/goal Different objective");
         expect(conflict.status).toBe(409);
@@ -87,6 +96,7 @@ describe("goal HTTP admission", () => {
           expect(response.status).toBe(202);
           expect(await response.json()).toMatchObject({ turn_id: id, state: "completed",
             terminal: { final_message: expect.stringContaining("Goal active: Ship  the feature") } });
+          expect(events(id).map(event => event.event?.type ?? event.type)).toEqual(["turn_accepted", "run.completed", "turn_completed"]);
           expect(f.runtime.pending()).toEqual(pending);
         }
         expect(f.row("unrelated")).toEqual(busy);

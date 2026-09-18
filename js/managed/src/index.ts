@@ -6570,8 +6570,11 @@ export class DurableAgentSession extends DurableComputerSession {
       }
     }
     if (receipt.continue && this.#goals.get()?.goalId === receipt.goalId) this.#goalRuntime.bind(row.id, receipt.epoch);
-    return this.#commitManagedTurnTerminal(row.id, { type: "turn_completed", id: row.id,
-      final_message: receipt.text, usage: null, citations: [] });
+    return this.#commitManagedMessage(row.id, { type: "turn_completed", id: row.id,
+      final_message: receipt.text, usage: null, citations: [] }, {
+      protocol_version: 1, request_id: this.#session()!.session_id, seq: 0,
+      type: "run.completed", payload: { status: "completed" },
+    });
   }
 
   #reservePreAdmissionCancellation(id: string): ManagedTurnRow | undefined {
@@ -9372,8 +9375,14 @@ export class DurableAgentSession extends DurableComputerSession {
     return this.#commitManagedMessage(id, terminal);
   }
 
-  #commitManagedMessage(id: string, requested: ManagedTurnTransition): ManagedTurnRow {
+  #commitManagedMessage(id: string, requested: ManagedTurnTransition, terminalEvent?: AgentEvent): ManagedTurnRow {
+    let nested: DurableEvent<StreamMessage> | undefined;
     const { committed, event } = this.ctx.storage.transactionSync(() => {
+      // Control commands have no model run to emit the backend terminal event.
+      // Retain it atomically before the outer receipt, including on recovery.
+      if (terminalEvent && !isTerminalState(this.#managedTurn(id)!.state)) {
+        nested = this.#eventLog.append({ type: "event", event: terminalEvent }, id);
+      }
       const result = commitManagedTransition(this.ctx.storage, this.#eventLog, id, requested);
       if (result.event && isTerminalState(result.committed.state)) {
         this.#goalRuntime.finish(id, result.committed.state === "completed",
@@ -9383,6 +9392,7 @@ export class DurableAgentSession extends DurableComputerSession {
       }
       return result;
     });
+    if (nested) this.#publish(nested);
     if (event) {
       this.#publish(event);
       this.#observe("managed.turn.transition", {
