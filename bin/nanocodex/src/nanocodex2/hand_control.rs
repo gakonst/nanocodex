@@ -362,6 +362,54 @@ mod tests {
             );
             fs::write(root.join(format!("{name}-stopped-{generation}")), b"reaped").unwrap();
         }
+        while !root.join("release-peers").exists() {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    #[cfg(unix)]
+    async fn process_snapshot(
+        stage: &str,
+        session_pids: &[u32],
+        owned_pids: &[u32],
+        unrelated_pid: u32,
+        running: bool,
+    ) {
+        let output = tokio::process::Command::new("/bin/ps")
+            .args(["-axo", "pid=,ppid=,stat=,comm="])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let rows = String::from_utf8(output.stdout).unwrap().lines().filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid: u32 = fields.next()?.parse().ok()?;
+            let ppid: u32 = fields.next()?.parse().ok()?;
+            let state = fields.next()?;
+            if !session_pids.contains(&pid) && !owned_pids.contains(&pid) && pid != unrelated_pid { return None; }
+            Some(serde_json::json!({"pid":pid,"ppid":ppid,"state":state,"command":fields.collect::<Vec<_>>().join(" ")}))
+        }).collect::<Vec<_>>();
+        for pid in session_pids.iter().chain(std::iter::once(&unrelated_pid)) {
+            assert!(
+                rows.iter().any(|row| row["pid"] == *pid),
+                "session/unrelated process disappeared: {rows:?}"
+            );
+        }
+        for (index, pid) in owned_pids.iter().enumerate() {
+            let row = rows.iter().find(|row| row["pid"] == *pid);
+            assert_eq!(
+                row.is_some(),
+                running,
+                "owned process lifecycle mismatch: {rows:?}"
+            );
+            if let Some(row) = row {
+                assert_eq!(row["ppid"], session_pids[index]);
+            }
+        }
+        eprintln!(
+            "{}",
+            serde_json::json!({"fixture":"owned-children", "stage":stage,"sessions":session_pids,"owned":owned_pids,"unrelated":unrelated_pid,"ps":rows})
+        );
     }
 
     #[tokio::test]
@@ -416,8 +464,37 @@ mod tests {
                 .set(true)
                 .unwrap();
             wait_for(format!("active-{generation}")).await;
+            let session_pids = peers
+                .iter()
+                .map(|peer| peer.id().unwrap())
+                .collect::<Vec<_>>();
+            let owned_pids = ["one", "two"]
+                .iter()
+                .map(|name| {
+                    fs::read_to_string(root.path().join(format!("{name}-active-{generation}")))
+                        .unwrap()
+                        .parse::<u32>()
+                        .unwrap()
+                })
+                .collect::<Vec<_>>();
+            process_snapshot(
+                &format!("before-stop-{generation}"),
+                &session_pids,
+                &owned_pids,
+                unrelated.id().unwrap(),
+                true,
+            )
+            .await;
             gate.set(false).unwrap();
             wait_for(format!("stopped-{generation}")).await;
+            process_snapshot(
+                &format!("after-stop-{generation}"),
+                &session_pids,
+                &owned_pids,
+                unrelated.id().unwrap(),
+                false,
+            )
+            .await;
             assert!(unrelated.try_wait().unwrap().is_none());
             if generation == 0 {
                 tokio::time::sleep(Duration::from_millis(750)).await;
@@ -428,6 +505,7 @@ mod tests {
                 }
             }
         }
+        fs::write(root.path().join("release-peers"), b"exit").unwrap();
         for peer in &mut peers {
             assert!(
                 tokio::time::timeout(Duration::from_secs(5), peer.wait())
