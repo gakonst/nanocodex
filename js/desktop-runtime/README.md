@@ -36,10 +36,18 @@ discard the prefix. In-process consumers and request responses still receive
 full snapshots.
 
 The allowlist is `state`, `connect`, `disconnect`, `refresh`, `openThread`,
-`closeThread`, `older`, `createThread`, `prompt`, `queuePrompt`, `steer`, `cancel`, `settings`,
+`closeThread`, `older`, `createThread`, `openMainThread`, `listProjects`, `prompt`, `queuePrompt`, `steer`, `cancel`, `settings`,
 `saveLayout`, `saveHand`, `prepareDefaultHand`, `prepareFolderHand`, `startHand`, `stopHand`, and
 `removeHand`. There is no
 arbitrary fetch, command, filesystem, or subprocess bridge.
+
+`openMainThread()` sends an empty `PUT /v1/main-thread` and returns an
+`AgentThread` using the canonical backend `agent_id`. It does not create a local
+fallback, adopt an existing conversation, or choose the durable identity.
+`listProjects()` returns the validated `{ data: [{ id, name, coordinator_agent_id }] }`
+from `GET /v1/projects`. Both calls use the authenticated request boundary and
+reject responses after an account change. Main Thread creation is explicit;
+startup and refresh do not create it.
 
 `NANOCODEX_DESKTOP_DATA` chooses the app's private state directory.
 `NANOCODEX_ENV_FILE` optionally supplies development configuration; normal

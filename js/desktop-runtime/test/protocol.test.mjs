@@ -423,10 +423,12 @@ test("JSONL host exposes only desktop actions and shuts down on stdin EOF", asyn
   const complete = deferred();
   createInterface({ input: child.stdout }).on("line", line => {
     const message = JSON.parse(line); messages.push(message);
-    if (message.id === 2) complete.resolve();
+    if ([1, 2, 3, 4].every(id => messages.some(message => message.id === id))) complete.resolve();
   });
   child.stdin.write(`${JSON.stringify({ id: 1, method: "request", args: ["/v1/agents"] })}\n${JSON.stringify({ id: 2, method: "state", args: [] })}\n`);
+  for (const [id, method] of [[3, "openMainThread"], [4, "listProjects"]]) child.stdin.write(`${JSON.stringify({ id, method, args: [] })}\n`);
   await complete.promise;
+  for (const id of [3, 4]) assert.match(messages.find(message => message.id === id).error, /Connect your Nanocodex account/);
   assert.match(messages.find(message => message.id === 1).error, /Invalid desktop request/);
   assert.equal(messages.find(message => message.id === 2).result.connected, false);
   assert.equal(JSON.stringify(messages).includes("apiKey"), false);

@@ -211,6 +211,7 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $model.showingSettings) { SettingsView() }
+        .sheet(isPresented: $model.showingProjects) { ProjectsView() }
     }
     private var workspace: some View {
         NavigationSplitView(columnVisibility: $tabColumnVisibility) {
