@@ -3665,7 +3665,8 @@ fn session_summaries(list: &AgentList, workspace: &Path) -> Vec<SessionSummary> 
 fn inject_shell_context(context: &mut Vec<String>, prompt: Submission) -> Submission {
     // Server controls must stay literal; retain shell output for the next task.
     if context.is_empty()
-        || (!prompt.has_images() && prompt.display_text().split_whitespace().next() == Some("/goal"))
+        || (!prompt.has_images()
+            && prompt.display_text().split_whitespace().next() == Some("/goal"))
     {
         return prompt;
     }
@@ -3750,7 +3751,8 @@ mod tests {
     fn goal_commands_preserve_pending_shell_context() {
         let mut context = vec!["Shell output: completed".to_owned()];
         for command in ["/goal", "/goal pause", "/goal resume"] {
-            let prompt = super::inject_shell_context(&mut context, Submission::text(command.into()));
+            let prompt =
+                super::inject_shell_context(&mut context, Submission::text(command.into()));
             assert_eq!(prompt.display_text(), command);
             assert_eq!(context.len(), 1);
         }
