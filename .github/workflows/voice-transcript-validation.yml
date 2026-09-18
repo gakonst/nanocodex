@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   voice:
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 35
     defaults:
       run:
