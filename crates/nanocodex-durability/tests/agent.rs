@@ -1840,6 +1840,117 @@ async fn developer_context_during_an_active_turn_acks_only_after_durable_commit(
 }
 
 #[tokio::test]
+async fn developer_context_waits_for_all_admitted_turns_to_settle() -> Result<()> {
+    for (cancel_queued, fail_compaction) in [(false, false), (true, false), (true, true)] {
+        let store = crate::MemoryStore::new()?;
+        let failing = FailEntryOnce {
+            inner: store.clone(),
+            entry_tag: "standalone-compaction-",
+            operation_id: "unused",
+            failed: Arc::new(AtomicBool::new(false)),
+        };
+        let state = DurableSession::open(failing, "queued-developer-context").await?;
+        let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let openai = OpenAi::builder("test-key")
+            .service({
+                let generations = Arc::clone(&generations);
+                let started = Arc::clone(&started);
+                let release = Arc::clone(&release);
+                move || GatedGenerationService {
+                    generations: Arc::clone(&generations),
+                    started: Arc::clone(&started),
+                    release: Arc::clone(&release),
+                }
+            })
+            .build()?;
+        let workspace = temporary_workspace("queued-developer-context")?;
+        let (agent, events) = Nanocodex::builder(openai)
+            .workspace(&workspace)
+            .durability(state.clone())
+            .await?
+            .build()?;
+        let first = agent
+            .prompt(PromptRequest::new("first").request_id("first"))
+            .await?;
+        started.notified().await;
+        let queued = agent
+            .prompt(PromptRequest::new("project result").request_id("project-result:fixture"))
+            .await?;
+        let append = {
+            let agent = agent.clone();
+            tokio::spawn(async move {
+                agent
+                    .append_developer_message("queued startup marker")
+                    .await
+            })
+        };
+        tokio::task::yield_now().await;
+        // Round-trip the command queue while the provider is gated.
+        agent.context().await?;
+        assert!(!append.is_finished());
+        if cancel_queued {
+            queued.cancel().await?;
+        }
+        if fail_compaction {
+            let error = agent
+                .compact()
+                .await
+                .expect_err("compaction admission must fail");
+            assert!(
+                error
+                    .to_string()
+                    .contains("injected state replacement failure")
+            );
+            assert!(matches!(
+                first.result().await,
+                Err(NanocodexError::TurnCancelled)
+            ));
+        } else {
+            release.notify_one();
+            first.result().await?;
+        }
+        if cancel_queued {
+            assert!(matches!(
+                queued.result().await,
+                Err(NanocodexError::TurnCancelled)
+            ));
+        } else {
+            queued.result().await?;
+        }
+        let appended = tokio::time::timeout(Duration::from_secs(2), append).await??;
+        if fail_compaction {
+            let error =
+                appended.expect_err("failed compaction must release buffered context callers");
+            assert_eq!(
+                error.execution_policy_disposition(),
+                Some(ExecutionPolicyDisposition::Retry)
+            );
+        } else {
+            appended?;
+        }
+        assert_eq!(
+            generations.load(Ordering::SeqCst),
+            if cancel_queued { 1 } else { 2 }
+        );
+        agent.shutdown().await?;
+        drop((agent, events));
+        let reopened = DurableSession::open(store, "queued-developer-context").await?;
+        let checkpoint = reopened
+            .agent_snapshot()
+            .await?
+            .ok_or_else(|| eyre!("missing developer checkpoint"))?;
+        assert_eq!(
+            serde_json::to_string(&checkpoint)?.contains("queued startup marker"),
+            !fail_compaction
+        );
+        std::fs::remove_dir_all(workspace)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn queued_developer_context_waits_for_provider_retry_to_terminalize() -> Result<()> {
     let store = crate::MemoryStore::new()?;
     let failing = FailReplaceOnce {

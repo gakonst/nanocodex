@@ -166,3 +166,63 @@ for (const nested of [false, true]) {
     }
   });
 }
+
+test("developer checkpoint preserves the pending project result identity across a cold reopen", { timeout: 60_000 }, async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  let generations = 0;
+  class ModelSocket extends EventTarget {
+    readyState = 1;
+    constructor() { super(); queueMicrotask(() => this.dispatchEvent(new Event("open"))); }
+    close() { this.readyState = 3; }
+    send() {
+      const index = ++generations;
+      queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({
+        type: "response.completed", response: { id: `response-${index}`, status: "completed", end_turn: true,
+          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "finished" }] }],
+          usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+        },
+      }) })));
+    }
+  }
+  const durabilityId = "developer-checkpoint-recovery";
+  const operationId = "project-result:fixture";
+  const store = createMemoryDurabilityStore(durabilityId);
+  let failed = false;
+  const durability = { ...store, replace(id, request) {
+    if (!failed && decode(request.payload).operations[operationId]?.status?.completed) {
+      failed = true;
+      throw new Error("terminal checkpoint unavailable");
+    }
+    return store.replace(id, request);
+  } };
+  const options = { module, harness: false, tools: [], durability, durabilityId,
+    transport: Transport.openAi({ apiKey: "fixture", WebSocketImpl: ModelSocket, websocketWarmup: false }) };
+  let agent = await Agent.create(options);
+  try {
+    await assert.rejects(agent.turn.prompt({ id: operationId, input: "project completed" }).result(),
+      /terminal checkpoint unavailable/);
+    assert.equal(failed, true);
+    await agent.session.shutdown().catch(() => {});
+    agent = await Agent.create(options);
+    const before = store.snapshot();
+    await assert.rejects(agent.session.appendDeveloperMessage("follow-up startup context"), error => {
+      assert.match(error.message, /standalone-checkpoint.*blocked by unfinished operation/);
+      assert.equal(error.code, "retryable");
+      assert.equal(error.blockedBy, operationId);
+      return true;
+    });
+    assert.deepEqual(store.snapshot(), before, "a blocked checkpoint must not alter durable state");
+    assert.ok(!(await agent.session.context()).history.some(item =>
+      JSON.stringify(item).includes("follow-up startup context")), "failed injection must roll back local context");
+    assert.equal((await agent.turn.prompt({ id: operationId, input: "project completed" }).result()).finalMessage, "finished");
+    assert.equal(generations, 1, "recovery must reuse the settled model response");
+    await agent.session.appendDeveloperMessage("follow-up startup context");
+    assert.equal((await agent.turn.prompt({ id: "follow-up", input: "continue" }).result()).finalMessage, "finished");
+    await agent.session.shutdown();
+    agent = await Agent.create(options);
+    assert.ok((await agent.session.context()).history.some(item =>
+      JSON.stringify(item).includes("follow-up startup context")));
+  } finally {
+    await agent.session.shutdown().catch(() => {});
+  }
+});

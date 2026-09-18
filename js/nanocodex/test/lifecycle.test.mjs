@@ -261,6 +261,31 @@ test("durability store failures preserve reopen and retry-safe dispositions", as
   }
 });
 
+test("developer checkpoints preserve retry and reopen dispositions across WASM", async () => {
+  for (const [name, outcome, code] of [
+    ["rollback", { status: "not_committed", message: "checkpoint rolled back" }, "retryable"],
+    ["conflict", { status: "conflict", actualRevision: "1" }, "reopen_required"],
+  ]) {
+    const agent = await Agent.create({
+      transport: Transport.openAi({ apiKey: "test-key", websocketUrl: "ws://127.0.0.1:1" }),
+      thinking: "low",
+      durabilityId: `developer-checkpoint-${name}`,
+      durability: {
+        acquire(_stateId, { ownerId }) {
+          return { ownerId, fence: "1", revision: "0", payload: null };
+        },
+        replace() { return outcome; },
+      },
+    });
+    try {
+      await assert.rejects(agent.session.appendDeveloperMessage("new startup context"),
+        (error) => error instanceof Error && error.code === code);
+    } finally {
+      agent.dispose();
+    }
+  }
+});
+
 test("steering joins the active turn at the next model boundary", async () => {
   const server = await startResponsesServer();
   const initialSeen = deferred();

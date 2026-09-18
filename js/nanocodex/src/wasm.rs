@@ -2974,7 +2974,15 @@ fn blocked_operation(error: &NanocodexError) -> Option<String> {
         {
             return Some(pending_id.clone());
         }
-        source = error.source();
+        // The policy source is Arc-erased; inspect its inner error so the
+        // blocking operation identity survives the JavaScript boundary.
+        source = if let Some(NanocodexError::ExecutionPolicy { source, .. }) =
+            error.downcast_ref::<NanocodexError>()
+        {
+            Some(source.as_ref())
+        } else {
+            error.source()
+        };
     }
     None
 }
@@ -3046,7 +3054,7 @@ async fn append_developer_context(agent: &RustNanocodex, text: &str) -> Result<S
     let context = agent
         .append_developer_message(text)
         .await
-        .map_err(js_error)?;
+        .map_err(|error| js_turn_error(turn_failure(&error)))?;
     serialize_session_context(context)
 }
 
