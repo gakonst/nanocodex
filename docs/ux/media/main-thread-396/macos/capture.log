@@ -1,0 +1,22 @@
+CAPTURE 00: Main Thread entry — isolated native fixture 1280x1569
+fixture RPC: openMainThread
+fixture RPC: openThread
+fixture RPC: saveLayout
+CAPTURE 01: Main Thread opened — synthetic runtime response 1280x1569
+fixture RPC: openMainThread
+PASS: repeated openMainThread reused tab; tab count 2
+fixture RPC: saveLayout
+CAPTURE 02: Main Thread reopened — same tab asserted 1280x1569
+fixture RPC: listProjects
+fixture RPC: listProjects
+CAPTURE 03: Projects picker — synthetic project list 480x400
+fixture RPC: openThread
+PASS: openProject selected fixture-project
+fixture RPC: saveLayout
+CAPTURE 04: Selected project coordinator — synthetic transcript 1280x1569
+fixture RPC: openMainThread
+fixture RPC: openThread
+fixture RPC: saveLayout
+CAPTURE 05: Returned result presentation — seeded text; no delegation executed 1280x1569
+DONE: six native view snapshots; no account services started
+RECORDED native view frames: 76

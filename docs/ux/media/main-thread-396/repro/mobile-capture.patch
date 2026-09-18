@@ -5,7 +5,7 @@ index 9f21ace0..79a48546 100644
 @@ -6,6 +6,38 @@ final class InboxUITests: XCTestCase {
      }
      override func setUp() { super.setUp(); continueAfterFailure = false }
- 
+
 +    // Evidence-only journey: unchanged production app, built-in synthetic demo data.
 +    func testPR396ProjectCreationAndRegistrationEntryEvidence() {
 +        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
