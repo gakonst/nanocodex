@@ -88,3 +88,15 @@ later settings after an ambiguous creation response. Existing coordinators are
 reused without configuration updates. Direct UI project creation keeps its default
 configuration semantics. Creation uses the current checked route principal; no
 capabilities or authorization are copied into the creation snapshot.
+
+`test/main-thread-runtime.test.ts` exercises production managed turn execution with
+a scripted model transport: Main calls route_project, the new coordinator calls
+spawn_project_thread, the child completes, then both coordinator and Main execute
+internal completion turns. Assertions inspect actual durable terminal outputs,
+inherited configuration/model settings, and fresh epoch-2 route renewal of an
+epoch-1 revoked watch. SQL seeds fixture identity/configuration and that old watch;
+it never fabricates terminal outcomes. Account/broker services and model responses
+are fixtures, and alarm time is accelerated. This proves backend execution and
+delivery, not a live provider or UI status rendering. Older project-thread-runs
+cascade tests remain useful for eviction/replay boundaries but manually supply
+outcomes and are not evidence of full model-driven execution.
