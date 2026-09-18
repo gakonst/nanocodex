@@ -54,8 +54,7 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
     var onExit: (() -> Void)?
     var immersive = false
     private let keyboard = RemoteKeyboardCapture()
-    private let keyboardNotice = NSTextField(wrappingLabelWithString:
-        "System shortcuts stay on this Mac unless Accessibility access is enabled for Nanocodex in System Settings. After enabling it, leave and reopen the remote screen. Command–Shift–Escape returns to the workspace.")
+    private let keyboardNotice = NSTextField(wrappingLabelWithString: "")
     private var trackSize: CGSize?
     private let video = RTCMTLNSVideoView()
     private let snapshot = NSImageView()
@@ -64,7 +63,8 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
     private var surface = CGSize(width: 16, height: 9)
     private var pressed = Set<UInt16>()
     private var marked = NSAttributedString(string: "")
-    private var dragging = false
+    private var modifiers = RemoteModifierState()
+    private var pointer = RemotePointerState()
     private var tracking: NSTrackingArea?
     public override var isFlipped: Bool { true }
     public override var acceptsFirstResponder: Bool { viewer?.controlling == true }
@@ -88,6 +88,8 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
         }
         keyboard.release = { [weak self] in self?.releaseKeys() }
         keyboard.statusChanged = { [weak self] in self?.updateKeyboardNotice() }
+        keyboard.focusChanged = { [weak self] in self?.restoreImmersiveFocus() }
+        keyboardNotice.setAccessibilityIdentifier("remote-keyboard-capture-status")
         keyboardNotice.font = .systemFont(ofSize: 12)
         keyboardNotice.textColor = .white
         keyboardNotice.drawsBackground = true
@@ -124,16 +126,23 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
         super.viewDidMoveToWindow()
         if immersive, viewer?.controlling == true { window?.makeFirstResponder(self) }
     }
+    private func restoreImmersiveFocus() {
+        guard immersive, viewer?.controlling == true, NSApp.isActive,
+              let window, window.isKeyWindow, window.firstResponder !== self else { return }
+        window.makeFirstResponder(self)
+    }
     public override func becomeFirstResponder() -> Bool {
         guard super.becomeFirstResponder() else { return false }
         keyboard.start(); updateKeyboardNotice(); return true
     }
     private func updateKeyboardNotice() {
+        keyboardNotice.stringValue = keyboard.unavailableReason + " System shortcuts may stay on this Mac. Command–Shift–Escape returns to the workspace."
+        keyboardNotice.setAccessibilityValue(keyboard.diagnostic)
         keyboardNotice.isHidden = !immersive || viewer?.controlling != true || keyboard.capturesSystemShortcuts
         needsLayout = true
     }
     private func releaseKeys() {
-        viewer?.input(kind: .releaseAll); pressed.removeAll(); dragging = false; unmarkText()
+        viewer?.input(kind: .releaseAll); pressed.removeAll(); modifiers.reset(); pointer.reset(); unmarkText()
     }
     public override func layout() { super.layout()
         let imageSize = viewer?.frame.map { CGSize(width: $0.width, height: $0.height) }
@@ -154,8 +163,10 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
         return CGPoint(x: min(1, max(0, (point.x - rect.minX) / rect.width)), y: min(1, max(0, (point.y - rect.minY) / rect.height)))
     }
     private func button(_ event: NSEvent, down: Bool, button: Int) {
-        guard viewer?.controlling == true, let point = point(event, clamp: !down && dragging) else { return }
-        if down { window?.makeFirstResponder(self) }; dragging = down
+        guard viewer?.controlling == true, let point = point(event, clamp: !down && pointer.dragging) else { return }
+        if down { window?.makeFirstResponder(self) }
+        synchronizeModifiers(event)
+        pointer.button(button, down: down)
         viewer?.input(kind: .button, x: point.x, y: point.y, button: button, down: down)
     }
     public override func mouseDown(with event: NSEvent) { button(event, down: true, button: 0) }
@@ -165,7 +176,10 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
     public override func otherMouseDown(with event: NSEvent) { if event.buttonNumber == 2 { button(event, down: true, button: 2) } }
     public override func otherMouseUp(with event: NSEvent) { if event.buttonNumber == 2 { button(event, down: false, button: 2) } }
     public override func mouseMoved(with event: NSEvent) {
-        guard let point = point(event, clamp: dragging) else { return }
+        guard viewer?.controlling == true, let point = point(event, clamp: pointer.dragging) else { return }
+        // Hovering a nonimmersive canvas must not latch modifiers while a local
+        // text field owns their key-up events.
+        if window?.firstResponder === self { synchronizeModifiers(event) }
         viewer?.input(kind: .move, x: point.x, y: point.y)
     }
     public override func mouseDragged(with event: NSEvent) { mouseMoved(with: event) }
@@ -174,6 +188,8 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
     public override func scrollWheel(with event: NSEvent) {
         guard viewer?.controlling == true else { super.scrollWheel(with: event); return }
         guard let point = point(event) else { return }
+        window?.makeFirstResponder(self)
+        synchronizeModifiers(event)
         let scale: Double = event.hasPreciseScrollingDeltas ? 1 : 20
         viewer?.input(kind: .scroll, x: point.x, y: point.y,
             deltaX: min(4096, max(-4096, event.scrollingDeltaX * scale)), deltaY: min(4096, max(-4096, event.scrollingDeltaY * scale)))
@@ -184,11 +200,13 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
     }
     public override func keyDown(with event: NSEvent) {
         guard viewer?.controlling == true else { return }
-        if event.keyCode == 53, event.modifierFlags.intersection([.command, .shift, .control, .option]) == [.command, .shift] {
+        if RemoteModifierState.isExit(keyCode: event.keyCode, flags: event.modifierFlags) {
             releaseKeys(); keyboard.stop()
-            if let onExit { onExit() } else { viewer?.releaseControl() }
+            viewer?.releaseControl()
+            onExit?()
             return
         }
+        synchronizeModifiers(event)
         if !immersive, viewer?.hand?.kind != .vm, event.modifierFlags.intersection([.command, .control]).isEmpty,
            let characters = event.characters, characters.unicodeScalars.allSatisfy({ $0.value >= 32 && $0.value < 0xF700 }) {
             interpretKeyEvents([event])
@@ -199,17 +217,19 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
     public override func keyUp(with event: NSEvent) {
         if let key = RemoteKey.macToHID[event.keyCode], pressed.remove(key) != nil { viewer?.input(kind: .key, down: false, key: key) }
     }
+    private func synchronizeModifiers(_ event: NSEvent, changedKey: UInt16? = nil) {
+        for change in modifiers.reconcile(event.modifierFlags, changedKey: changedKey) {
+            viewer?.input(kind: .key, down: change.down, key: change.key)
+        }
+    }
     public override func flagsChanged(with event: NSEvent) {
-        guard viewer?.controlling == true, let key = RemoteKey.macToHID[event.keyCode] else { return }
-        let flag: NSEvent.ModifierFlags = [224:.control, 225:.shift, 226:.option, 227:.command, 228:.control, 229:.shift, 230:.option, 231:.command][key] ?? []
-        guard !flag.isEmpty else { return }
-        let down = event.modifierFlags.contains(flag) && !pressed.contains(key)
-        if down { pressed.insert(key) } else { pressed.remove(key) }
-        viewer?.input(kind: .key, down: down, key: key)
+        guard viewer?.controlling == true else { return }
+        synchronizeModifiers(event, changedKey: RemoteKey.macToHID[event.keyCode])
     }
     public override func resignFirstResponder() -> Bool {
-        releaseKeys(); keyboard.stop()
-        return super.resignFirstResponder()
+        guard super.resignFirstResponder() else { return false }
+        releaseKeys(); keyboard.pause()
+        return true
     }
     // SwiftUI dismantles this view while invalidating its graph. Session state
     // belongs to RemoteDashboard.onDisappear; publishing here can crash it.

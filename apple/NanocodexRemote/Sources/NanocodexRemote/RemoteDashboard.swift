@@ -40,6 +40,7 @@ public struct RemoteDashboard: View {
     @StateObject private var host: RemoteMacHost
     @StateObject private var phoneHost: RemoteMacHost
     private let ownsHosts: Bool
+    @State private var controlPolicy = RemoteDashboardControlPolicy()
     @State private var displays: [RemoteSurface] = []
     @State private var displayID = ""
     @State private var starting = false
@@ -386,18 +387,22 @@ public struct RemoteDashboard: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await viewer.resume() } }
-            if phase != .active { viewer.releaseControl() }
 #if os(iOS)
+            if phase != .active { viewer.releaseControl() }
             if phase == .background { viewer.suspend() }
 #endif
         }
-        .onChange(of: immersive) { _, focused in
-            if focused { viewer.takeControl() } else { viewer.releaseControl() }
+#if os(macOS)
+        .onChange(of: RemoteDashboardFocus(immersive: immersive, active: scenePhase == .active,
+                                           connected: viewer.connected), initial: true) { _, focus in
+            switch controlPolicy.update(focus) {
+            case .acquire: viewer.takeControl()
+            case .release: viewer.releaseControl()
+            case .none: break
+            }
         }
+#endif
         .onChange(of: pickerRequest) { _, _ in viewer.close(); restoredSelection = true }
-        .onChange(of: viewer.connected) { _, connected in
-            if connected && immersive { viewer.takeControl() }
-        }
         .onChange(of: viewer.hand?.identity) { _, _ in
             if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
                let hand = viewer.hand, let data = try? JSONEncoder().encode(RemoteScreenSelection(hand: hand)) { savedScreen = data }
