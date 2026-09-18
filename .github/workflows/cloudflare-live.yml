@@ -9,6 +9,12 @@ on:
     types: [completed]
     branches: [master]
   workflow_dispatch:
+    inputs:
+      suite:
+        description: Live validation suite
+        type: choice
+        options: [all, goals]
+        default: all
 
 permissions:
   contents: read
@@ -51,7 +57,7 @@ jobs:
   cron-live:
     name: exercise deployed cron schedules
     needs: deployment
-    if: needs.deployment.outputs.deployed == 'true'
+    if: needs.deployment.outputs.deployed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.suite != 'goals')
     runs-on: ubuntu-latest
     timeout-minutes: 12
     environment: cloudflare-production
@@ -73,7 +79,7 @@ jobs:
   durability-live:
     name: exercise deployed durable threads
     needs: deployment
-    if: needs.deployment.outputs.deployed == 'true'
+    if: needs.deployment.outputs.deployed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.suite != 'goals')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: cloudflare-production
@@ -92,3 +98,25 @@ jobs:
           NANOCODEX_DURABILITY_TEST_API_KEY: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
           NANOCODEX_DURABILITY_RECOVERY_AGENTS: ${{ vars.NANOCODEX_DURABILITY_RECOVERY_AGENTS || '[]' }}
         run: node --test js/managed/test/live-durability.test.mjs js/managed/test/live-large-input.test.mjs
+
+  goals-live:
+    name: exercise deployed goals
+    needs: deployment
+    if: needs.deployment.outputs.deployed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: cloudflare-production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Exercise real goal tools and persisted goal controls
+        env:
+          NANOCODEX_GOALS_TEST_API_KEY: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
+        run: node --test js/managed/test/live-goals.test.mjs
