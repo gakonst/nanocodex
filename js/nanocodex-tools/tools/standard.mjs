@@ -39,26 +39,14 @@ export function imageGeneration(options = {}) {
         prompt: { type: "string" },
         referenced_image_paths: {
           type: ["array", "null"],
-          items: { type: "string" },
-          maxItems: 5,
+          items: { type: "string", description: "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute." },
         },
         num_last_images_to_include: {
           type: ["integer", "null"],
-          minimum: 1,
-          maximum: 5,
         },
       },
       required: ["prompt"],
       additionalProperties: false,
-    },
-    outputSchema: {
-      type: "object",
-      properties: {
-        image_url: { type: "string" },
-        output_hint: { type: "string" },
-      },
-      required: ["image_url"],
-      additionalProperties: true,
     },
     async handler(input, context) {
       const args = requireObject(input, "image_gen__imagegen");
@@ -137,18 +125,19 @@ export function viewImage(options) {
 export function updatePlan() {
   const plans = new Map();
   return namedTool("update_plan", {
-    description: "Update the current task plan. At most one step may be in progress.",
+    description: "Updates the task plan.\nProvide an optional explanation and a list of plan items, each with a step and status.\nAt most one step can be in_progress at a time.\n",
     parameters: {
       type: "object",
       properties: {
-        explanation: { type: "string" },
+        explanation: { type: "string", description: "Optional explanation for this plan update." },
         plan: {
           type: "array",
+          description: "The list of steps",
           items: {
             type: "object",
             properties: {
-              step: { type: "string" },
-              status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+              step: { type: "string", description: "Task step text." },
+              status: { type: "string", enum: ["pending", "in_progress", "completed"], description: "Step status." },
             },
             required: ["step", "status"],
             additionalProperties: false,
@@ -156,12 +145,6 @@ export function updatePlan() {
         },
       },
       required: ["plan"],
-      additionalProperties: false,
-    },
-    outputSchema: {
-      type: "object",
-      properties: { updated: { type: "boolean", const: true } },
-      required: ["updated"],
       additionalProperties: false,
     },
     async handler(input, context) {
@@ -172,7 +155,7 @@ export function updatePlan() {
       );
       if (active.length > 1) throw new Error("at most one plan step may be in_progress");
       plans.set(context.sessionId, structuredClone(value));
-      return { updated: true };
+      return toolResult("Plan updated", {}, { value: {} });
     },
     releaseSession(sessionId) {
       plans.delete(sessionId);

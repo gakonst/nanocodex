@@ -257,7 +257,7 @@ test("the account-action browser harness exposes one exact model-visible tool se
     detail: "high",
   }]);
   assert.equal(viewed.structuredResult.image_url, "data:image/png;base64,iVBORw0KGgo=");
-  assert.deepEqual(await byName.update_plan.handler({ plan: [] }, context), { updated: true });
+  assert.equal((await byName.update_plan.handler({ plan: [] }, context)).output, "Plan updated");
   const opened = await byName.dataset.handler({
     operation: "open",
     source: {

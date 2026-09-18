@@ -145,7 +145,10 @@ test("update_plan validates active work and releases session-owned state", async
       { step: "verify", status: "in_progress" },
     ],
   };
-  assert.deepEqual(await tool.handler(plan, context), { updated: true });
+  const result = await tool.handler(plan, context);
+  assert.equal(result.output, "Plan updated");
+  assert.deepEqual(result.structuredResult, {});
+  assert.deepEqual(result.value, {});
   plan.plan[1].step = "mutated after publish";
   await assert.rejects(
     tool.handler({
@@ -298,3 +301,14 @@ function memoryWorkspace() {
     async mkdir(path) { directories.add(path); },
   };
 }
+
+
+test("standard shared definitions match the compiled upstream contract fixture", async () => {
+  const fixture = JSON.parse(await readFile(new URL("../../../crates/nanocodex-tools/tests/fixtures/codex-parity/shared-tools.json", import.meta.url), "utf8"));
+  for (const tool of [updatePlan(), viewImage({ workspace: {} }), imageGeneration()]) {
+    const expected = fixture.tools[tool.name];
+    assert.equal(tool.description.trimEnd(), expected.description.trimEnd(), tool.name);
+    assert.deepEqual(tool.parameters, expected.parameters, tool.name);
+    assert.deepEqual(tool.outputSchema, expected.output_schema, tool.name);
+  }
+});

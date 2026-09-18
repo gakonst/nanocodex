@@ -3,6 +3,9 @@ use std::{collections::BTreeSet, fmt::Write as _};
 use nanocodex_oai_api::{responses::JsonSchema, tools::ToolDefinition};
 use serde_json::Value;
 
+mod schema_types;
+use schema_types::render_json_schema_to_typescript;
+
 const DEFERRED_NESTED_TOOLS_GUIDANCE: &str = r"Some deferred nested tools may be omitted from this description. They are still available on the global `tools` object and listed in `ALL_TOOLS`.
 To find one, filter `ALL_TOOLS` by `name` and `description`.";
 // Based on https://modelcontextprotocol.io/specification/draft/schema#calltoolresult.
@@ -246,168 +249,6 @@ fn mcp_structured_content_schema(output_schema: &Value) -> Option<&Value> {
     )
 }
 
-fn render_json_schema_to_typescript(schema: &Value) -> String {
-    match schema {
-        Value::Bool(false) => "never".to_owned(),
-        Value::Object(map) => {
-            if let Some(value) = map.get("const") {
-                return render_literal(value);
-            }
-            if let Some(values) = map.get("enum").and_then(Value::as_array) {
-                let rendered = values.iter().map(render_literal).collect::<Vec<_>>();
-                if !rendered.is_empty() {
-                    return rendered.join(" | ");
-                }
-            }
-            for key in ["anyOf", "oneOf"] {
-                if let Some(variants) = map.get(key).and_then(Value::as_array) {
-                    let rendered = variants
-                        .iter()
-                        .map(render_json_schema_to_typescript)
-                        .collect::<Vec<_>>();
-                    if !rendered.is_empty() {
-                        return rendered.join(" | ");
-                    }
-                }
-            }
-            if let Some(variants) = map.get("allOf").and_then(Value::as_array) {
-                let rendered = variants
-                    .iter()
-                    .map(render_json_schema_to_typescript)
-                    .collect::<Vec<_>>();
-                if !rendered.is_empty() {
-                    return rendered.join(" & ");
-                }
-            }
-            if let Some(schema_type) = map.get("type") {
-                if let Some(types) = schema_type.as_array() {
-                    let rendered = types
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(|schema_type| render_type(map, schema_type))
-                        .collect::<Vec<_>>();
-                    if !rendered.is_empty() {
-                        return rendered.join(" | ");
-                    }
-                }
-                if let Some(schema_type) = schema_type.as_str() {
-                    return render_type(map, schema_type);
-                }
-            }
-            if map.contains_key("properties")
-                || map.contains_key("additionalProperties")
-                || map.contains_key("required")
-            {
-                return render_object(map);
-            }
-            if map.contains_key("items") || map.contains_key("prefixItems") {
-                return render_array(map);
-            }
-            "unknown".to_owned()
-        }
-        _ => "unknown".to_owned(),
-    }
-}
-
-fn render_type(map: &serde_json::Map<String, Value>, schema_type: &str) -> String {
-    match schema_type {
-        "string" => "string".to_owned(),
-        "number" | "integer" => "number".to_owned(),
-        "boolean" => "boolean".to_owned(),
-        "null" => "null".to_owned(),
-        "array" => render_array(map),
-        "object" => render_object(map),
-        _ => "unknown".to_owned(),
-    }
-}
-
-fn render_array(map: &serde_json::Map<String, Value>) -> String {
-    if let Some(items) = map.get("items") {
-        return format!("Array<{}>", render_json_schema_to_typescript(items));
-    }
-    if let Some(items) = map.get("prefixItems").and_then(Value::as_array) {
-        let items = items
-            .iter()
-            .map(render_json_schema_to_typescript)
-            .collect::<Vec<_>>();
-        if !items.is_empty() {
-            return format!("[{}]", items.join(", "));
-        }
-    }
-    "unknown[]".to_owned()
-}
-
-fn render_object(map: &serde_json::Map<String, Value>) -> String {
-    let required = map
-        .get("required")
-        .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>())
-        .unwrap_or_default();
-    let properties = map
-        .get("properties")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    let mut properties = properties.iter().collect::<Vec<_>>();
-    properties.sort_unstable_by_key(|(name, _)| *name);
-
-    let multiline = properties.iter().any(|(_, value)| {
-        value
-            .get("description")
-            .and_then(Value::as_str)
-            .is_some_and(|description| !description.is_empty())
-    });
-    let mut lines = Vec::new();
-    for (name, value) in properties {
-        if let (true, Some(description)) =
-            (multiline, value.get("description").and_then(Value::as_str))
-        {
-            for line in description
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-            {
-                lines.push(format!("  // {line}"));
-            }
-        }
-        let optional = if required.iter().any(|required| required == name) {
-            ""
-        } else {
-            "?"
-        };
-        let indent = if multiline { "  " } else { "" };
-        lines.push(format!(
-            "{indent}{}{optional}: {};",
-            render_property_name(name),
-            render_json_schema_to_typescript(value)
-        ));
-    }
-
-    if let Some(additional) = map.get("additionalProperties") {
-        let property_type = match additional {
-            Value::Bool(true) => Some("unknown".to_owned()),
-            Value::Bool(false) => None,
-            value => Some(render_json_schema_to_typescript(value)),
-        };
-        if let Some(property_type) = property_type {
-            let indent = if multiline { "  " } else { "" };
-            lines.push(format!("{indent}[key: string]: {property_type};"));
-        }
-    } else if lines.is_empty() {
-        lines.push("[key: string]: unknown;".to_owned());
-    }
-
-    if multiline {
-        lines.insert(0, "{".to_owned());
-        lines.push("}".to_owned());
-        lines.join("\n")
-    } else if lines.is_empty() {
-        "{}".to_owned()
-    } else {
-        format!("{{ {} }}", lines.join(" "))
-    }
-}
-
 pub(crate) fn normalize_identifier(name: &str) -> String {
     let mut identifier = String::new();
     for (index, character) in name.chars().enumerate() {
@@ -425,17 +266,9 @@ pub(crate) fn normalize_identifier(name: &str) -> String {
     }
 }
 
-fn render_property_name(name: &str) -> String {
-    if normalize_identifier(name) == name {
-        name.to_owned()
-    } else {
-        serde_json::to_string(name).unwrap_or_else(|_| "\"unknown\"".to_owned())
-    }
-}
-
-fn render_literal(value: &Value) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| "unknown".to_owned())
-}
+#[cfg(test)]
+#[path = "parity_tests.rs"]
+mod parity_tests;
 
 #[cfg(test)]
 mod tests {
