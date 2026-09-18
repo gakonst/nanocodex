@@ -1,5 +1,6 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { mainThreadRequest } from "../src/main-thread";
 import { initializeMainThreadRegistry, mainThreadRegistry } from "../src/main-thread-registry";
 
 const a = "11111111-1111-4111-8111-111111111111";
@@ -31,6 +32,65 @@ async function inside(test: (storage: DurableObjectStorage) => Promise<void>) {
 }
 
 describe("account main and canonical project registry", () => {
+  it("discovers migrated roots without writes and reuses their stable coordinator on PUT", () => inside(async storage => {
+    storage.sql.exec("UPDATE agent_registry SET team_id=NULL WHERE id=?", a);
+    storage.sql.exec("INSERT INTO conversation_projects VALUES (?,?,?)", a, a, "Migrated");
+    storage.sql.exec("INSERT INTO conversation_projects VALUES (?,?,?)", b, a, "Migrated");
+    const snapshot = () => ["agent_registry", "conversation_projects", "project_threads", "canonical_projects", "main_threads"]
+      .map(table => storage.sql.exec(`SELECT * FROM ${table}`).toArray());
+    const before = snapshot();
+    const host = { teamId: "team-a", create: async () => { throw new Error("must reuse migrated coordinator"); },
+      registry: (path: string, init?: RequestInit) => mainThreadRegistry(new Request(`https://user.internal${path}?team_id=team-a`, init), storage,
+        async (agent, team) => agent === a && team === "team-a") };
+    expect(await (await mainThreadRequest(new Request("https://x/v1/projects"), host)).json()).toEqual({ data: [
+      { id: `project-${a}`, name: "Migrated", coordinator_agent_id: a },
+    ] });
+    expect(snapshot()).toEqual(before);
+    expect(await (await mainThreadRegistry(request("/projects"), storage)).json()).toEqual({ data: [] });
+    const put = (coordinator?: string) => mainThreadRequest(new Request(`https://x/v1/projects/project-${a}`, {
+      method: "PUT", body: JSON.stringify({ name: "Renamed", ...(coordinator ? { coordinator_agent_id: coordinator } : {}) }),
+    }), host);
+    expect((await put(b)).status).toBe(409);
+    expect((await mainThreadRegistry(request(`/projects/project-${a}`, "team-a", { name: "Hijack", coordinator_agent_id: b }), storage)).status).toBe(409);
+    expect((await put()).status).toBe(201);
+    expect(storage.sql.exec("SELECT * FROM conversation_projects").toArray()).toEqual(before[1]);
+    expect(storage.sql.exec("SELECT * FROM project_threads").toArray()).toEqual(before[2]);
+    expect(await (await host.registry("/projects")).json()).toEqual({ data: [
+      { id: `project-${a}`, name: "Renamed", coordinator_agent_id: a },
+    ] });
+  }));
+
+  it("filters foreign, deleted, Main and execution-child roots and rechecks after validation", () => inside(async storage => {
+    for (const agent of [a, b, c]) storage.sql.exec("INSERT INTO conversation_projects VALUES (?,?,?)", agent, agent, "Migrated");
+    const list = (validate?: (agent: string, team: string) => Promise<boolean>) => mainThreadRegistry(request("/projects"), storage, validate);
+    expect(await (await list(async () => false)).json()).toEqual({ data: [] });
+    expect((await list(async () => { throw new Error("unavailable"); })).status).toBe(503);
+    storage.sql.exec("INSERT INTO main_threads VALUES ('team-a',?)", a);
+    storage.sql.exec(`INSERT INTO project_threads VALUES (?,?,?,'origin','turn','child','hash',1)`, b, a, a);
+    expect(await (await list(async () => true)).json()).toEqual({ data: [] });
+    storage.sql.exec("DELETE FROM main_threads");
+    expect(await (await list(async () => {
+      storage.sql.exec("UPDATE agent_registry SET deleted_at=2 WHERE id=?", a);
+      return true;
+    })).json()).toEqual({ data: [] });
+  }));
+
+  it("gives canonical metadata precedence and deduplicates both coordinator and project ID", () => inside(async storage => {
+    for (const agent of [a, b]) storage.sql.exec("INSERT INTO conversation_projects VALUES (?,?,?)", agent, agent, "Migrated");
+    storage.sql.exec("INSERT INTO canonical_projects VALUES ('team-a','custom','Canonical',?)", a);
+    // A pre-existing canonical ID also wins over a migrated root with that synthetic ID.
+    storage.sql.exec("INSERT INTO canonical_projects VALUES ('team-a',?,'ID winner',?)", `project-${b}`, b);
+    expect(await (await mainThreadRegistry(request("/projects"), storage, async () => true)).json()).toEqual({ data: [
+      { id: "custom", name: "Canonical", coordinator_agent_id: a },
+      { id: `project-${b}`, name: "ID winner", coordinator_agent_id: b },
+    ] });
+    storage.sql.exec("DELETE FROM canonical_projects");
+    storage.sql.exec("INSERT INTO canonical_projects VALUES ('team-a',?,'Collision',?)", `project-${a}`, b);
+    expect(await (await mainThreadRegistry(request("/projects"), storage, async () => true)).json()).toEqual({ data: [
+      { id: `project-${a}`, name: "Collision", coordinator_agent_id: b },
+    ] });
+  }));
+
   it("isolates teams, requires existing live owned agents, and retains main identity", () => inside(async storage => {
     const call = (path: string, team = "team-a", body?: unknown) => mainThreadRegistry(request(path, team, body), storage);
     expect((await call("/main-thread")).status).toBe(404);
@@ -98,6 +158,14 @@ describe("account main and canonical project registry", () => {
         agent_id: child, origin_turn_id: "origin", turn_id: "turn", title: "Child", request_hash: "a".repeat(64),
       }) })).status).toBe(409);
     }
+    await runInDurableObject(account, async (_, state) => {
+      state.storage.sql.exec("INSERT INTO conversation_projects VALUES (?,?,?)", b, b, "Migrated");
+    });
+    expect(await (await account.fetch(request("/projects"))).json()).toEqual({ data: [{ id: "root", name: "Root", coordinator_agent_id: b }] });
+    await runInDurableObject(sessions().getByName(b), async (_, state) => {
+      state.storage.sql.exec("UPDATE session_state SET owner_id=?", crypto.randomUUID());
+    });
+    expect(await (await account.fetch(request("/projects"))).json()).toEqual({ data: [] });
     await runInDurableObject(sessions().getByName(b), async (_, state) => {
       state.storage.sql.exec("UPDATE session_state SET team_id='team-b'");
     });

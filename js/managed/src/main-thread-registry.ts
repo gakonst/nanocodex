@@ -16,6 +16,21 @@ export function initializeMainThreadRegistry(storage: DurableObjectStorage): voi
     coordinator_agent_id TEXT NOT NULL UNIQUE, PRIMARY KEY(team_id,id));`);
 }
 
+/** Project discovery is a read-only view; legacy team metadata is never adopted here. */
+function projectCandidates(storage: DurableObjectStorage, team: string, verifiedLegacy: boolean): CanonicalProject[] {
+  const eligible = `JOIN agent_registry a ON a.id=p.coordinator_agent_id
+    WHERE (a.team_id=? OR (a.team_id IS NULL AND ?)) AND a.deleted_at IS NULL
+    AND NOT EXISTS (SELECT 1 FROM project_threads t WHERE t.agent_id=a.id)
+    AND NOT EXISTS (SELECT 1 FROM main_threads m WHERE m.agent_id=a.id)`;
+  const canonical = storage.sql.exec<CanonicalProject>(`SELECT p.id,p.name,p.coordinator_agent_id
+    FROM canonical_projects p ${eligible} AND p.team_id=? ORDER BY p.id`, team, verifiedLegacy ? 1 : 0, team).toArray();
+  const projected = verifiedLegacy ? storage.sql.exec<CanonicalProject>(`SELECT p.id,p.name,p.coordinator_agent_id FROM
+    (SELECT 'project-' || agent_id AS id, project_name AS name, agent_id AS coordinator_agent_id
+      FROM conversation_projects WHERE agent_id=project_root_id) p ${eligible} ORDER BY p.id`, team, verifiedLegacy ? 1 : 0).toArray()
+    .filter(row => z.string().uuid().safeParse(row.coordinator_agent_id).success) : [];
+  return [...canonical, ...projected];
+}
+
 /** The account DO supplies ownership; registration metadata supplies exact team scope. */
 export async function mainThreadRegistry(
   request: Request,
@@ -36,8 +51,20 @@ export async function mainThreadRegistry(
       return row ? Response.json(row) : error("not_found", 404);
     }
     if (projectId) return error("method_not_allowed", 405);
-    return Response.json({ data: storage.sql.exec<CanonicalProject>(`SELECT p.id,p.name,p.coordinator_agent_id FROM canonical_projects p
-      JOIN agent_registry a ON a.id=p.coordinator_agent_id WHERE p.team_id=? AND a.team_id=? AND a.deleted_at IS NULL ORDER BY p.id`, teamId, teamId).toArray() });
+    const approved = new Set<string>();
+    for (const row of projectCandidates(storage, teamId, !!validateIdentity)) {
+      if (approved.has(row.coordinator_agent_id)) continue;
+      try {
+        if (!validateIdentity || await validateIdentity(row.coordinator_agent_id, teamId)) approved.add(row.coordinator_agent_id);
+      } catch { return error("identity_validation_unavailable", 503); }
+    }
+    // Identity validation yields: re-read active state, membership and metadata afterwards.
+    const ids = new Set<string>(), coordinators = new Set<string>();
+    const data = projectCandidates(storage, teamId, !!validateIdentity).filter(row => {
+      if (!approved.has(row.coordinator_agent_id) || ids.has(row.id) || coordinators.has(row.coordinator_agent_id)) return false;
+      ids.add(row.id); coordinators.add(row.coordinator_agent_id); return true;
+    }).sort((a, b) => a.id.localeCompare(b.id));
+    return Response.json({ data });
   }
   if (request.method !== "PUT" || (!main && !projectId)) return error("method_not_allowed", 405);
   let body: unknown;
@@ -74,6 +101,12 @@ export async function mainThreadRegistry(
   }
   if (storage.sql.exec("SELECT agent_id FROM main_threads WHERE agent_id=?", agent).toArray().length) return error("main_thread_conflict");
   const existing = storage.sql.exec<CanonicalProject>("SELECT id,name,coordinator_agent_id FROM canonical_projects WHERE team_id=? AND id=?", teamId, projectId!).toArray()[0];
+  // A migrated root's stable ID cannot be claimed by a different coordinator,
+  // even if its projection is currently hidden by ownership or active-state checks.
+  const projectedRoot = projectId!.startsWith("project-") ? projectId!.slice("project-".length) : undefined;
+  if (!existing && projectedRoot && storage.sql.exec(
+    "SELECT agent_id FROM conversation_projects WHERE agent_id=? AND project_root_id=agent_id", projectedRoot).toArray().length
+    && projectedRoot !== agent) return error("project_conflict");
   if (existing && existing.coordinator_agent_id !== agent) return error("project_conflict");
   const assigned = storage.sql.exec<{ team_id: string; id: string }>("SELECT team_id,id FROM canonical_projects WHERE coordinator_agent_id=?", agent).toArray()[0];
   if (assigned && (assigned.team_id !== teamId || assigned.id !== projectId)) return error("project_conflict");
