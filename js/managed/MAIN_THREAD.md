@@ -76,3 +76,7 @@ agents:write, and tools:use in both retained and current authority; a retained
 capability cannot exceed the current grant. Revocation retires the subscription;
 authorization-service 429/5xx responses preserve bounded retries. The private feed
 RPC checks identity only; callers must perform this live authorization boundary.
+
+Completion notification bodies contain stable project/agent/turn identifiers and
+terminal state, without mutable project names or thread titles. A rename between
+admission and acknowledgement replay cannot change the idempotent input hash.
