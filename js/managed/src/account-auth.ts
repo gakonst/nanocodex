@@ -1,6 +1,6 @@
 import { initializeConversationProjects, conversationProjectMigration } from "./conversation-project-migration";
 import type { DurableAgentSession } from "./index";
-import { initializeMainThreadRegistry, mainThreadRegistry, mainThreadMembershipGuard } from "./main-thread-registry";
+import { initializeMainThreadRegistry, mainThreadRegistry, mainThreadMembershipGuard, retireCanonicalAgent } from "./main-thread-registry";
 import { initializeProjectThreads, projectThreadRegistry } from "./project-threads";
 import { recordHandTiming } from "./hand-timing";
 import { configurationCatalog } from "./agent-configuration";
@@ -1789,7 +1789,7 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
         return projectThreadRegistry(request, this.ctx.storage);
       });
     }
-    if (url.pathname.startsWith("/canonical-role/") || url.pathname === "/main-thread" || url.pathname === "/projects" || url.pathname.startsWith("/projects/")) {
+    if (url.pathname.startsWith("/canonical-role/") || url.pathname === "/main-thread" || url.pathname === "/projects" || url.pathname.startsWith("/projects/") || url.pathname.startsWith("/canonical-generations/")) {
       return this.ctx.blockConcurrencyWhile(() => mainThreadRegistry(request, this.ctx.storage,
         this.env.NANOCODEX_SESSIONS ? async (agentId, teamId) => {
           const account = await this.ctx.storage.get<UserRecord>("account");
@@ -1971,29 +1971,35 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
     const agentMatch = url.pathname.match(/^\/agents\/([0-9a-f-]{36})$/);
     if (agentMatch && request.method === "DELETE") {
       const agentId = agentMatch[1]!;
-      // This synchronous decision and tombstone serialize with canonical registration.
-      // Protect stored navigation roots too, even when legacy team metadata is NULL.
-      // Do not use discovery: filtered/stale identities must not become deletable.
-      const teamId = url.searchParams.get("team_id");
-      const registered = this.ctx.storage.sql.exec<{ team_id: string | null }>(
-        "SELECT team_id FROM agent_registry WHERE id=?", agentId).toArray()[0];
-      if (teamId !== null && registered?.team_id != null && registered.team_id !== teamId)
-        return json({ error: "not_found" }, { status: 404 });
-      if (this.ctx.storage.sql.exec("SELECT agent_id FROM main_threads WHERE agent_id=?", agentId).toArray().length
-        || this.ctx.storage.sql.exec("SELECT id FROM canonical_projects WHERE coordinator_agent_id=?", agentId).toArray().length
-        || this.ctx.storage.sql.exec("SELECT agent_id FROM conversation_projects WHERE agent_id=? AND project_root_id=agent_id", agentId).toArray().length)
-        return json({ error: "canonical_agent_deletion_forbidden" }, { status: 409 });
-      const now = Date.now();
-      this.ctx.storage.sql.exec(
-        `INSERT INTO agent_registry
-           (id, title, created_at, updated_at, turn_count, deleted_at)
-         VALUES (?, '', ?, ?, 0, ?)
-         ON CONFLICT(id) DO UPDATE SET deleted_at = COALESCE(agent_registry.deleted_at, excluded.deleted_at)`,
-        agentId,
-        now,
-        now,
-        now,
-      );
+      // Session deletion supplies its persisted team. Never call back into that session
+      // here: its cleanup reservation is waiting on this account operation.
+      const requestedTeam = url.searchParams.get("team_id");
+      if (requestedTeam !== null && !/^[A-Za-z0-9_-]{1,64}$/.test(requestedTeam))
+        return json({ error: "invalid_team" }, { status: 400 });
+      const result = this.ctx.storage.transactionSync(() => {
+        const registered = this.ctx.storage.sql.exec<{ team_id: string | null; deleted_at: number | null }>(
+          "SELECT team_id,deleted_at FROM agent_registry WHERE id=?", agentId).toArray()[0];
+        const scopes = this.ctx.storage.sql.exec<{ team_id: string }>(
+          "SELECT team_id FROM main_threads WHERE agent_id=? UNION SELECT team_id FROM canonical_projects WHERE coordinator_agent_id=?", agentId, agentId).toArray();
+        const teamId = requestedTeam ?? registered?.team_id ?? scopes[0]?.team_id;
+        if ((registered?.team_id != null && teamId !== registered.team_id) || scopes.some(row => row.team_id !== teamId))
+          return json({ error: "not_found" }, { status: 404 });
+        const projected = this.ctx.storage.sql.exec(
+          "SELECT agent_id FROM conversation_projects WHERE agent_id=? AND project_root_id=agent_id", agentId).toArray().length > 0;
+        if (projected && !teamId) return json({ error: "agent_scope_required" }, { status: 409 });
+        retireCanonicalAgent(this.ctx.storage, agentId, teamId ?? undefined);
+        const now = Date.now();
+        this.ctx.storage.sql.exec(
+          `INSERT INTO agent_registry
+             (id, title, created_at, updated_at, turn_count, deleted_at, team_id)
+           VALUES (?, '', ?, ?, 0, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET deleted_at = COALESCE(agent_registry.deleted_at, excluded.deleted_at),
+             team_id = COALESCE(agent_registry.team_id, excluded.team_id)`,
+          agentId, now, now, now, teamId ?? null,
+        );
+        return undefined;
+      });
+      if (result) return result;
       return new Response(null, { status: 204 });
     }
     return json({ error: "not_found" }, { status: 404 });

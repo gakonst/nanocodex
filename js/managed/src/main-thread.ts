@@ -28,7 +28,7 @@ export async function mainThreadRequest(request: Request, host: Parameters<typeo
 async function mainThreadRoute(request: Request, host: {
   teamId: string;
   registry(path: string, init?: RequestInit): Promise<Response>;
-  create(key: string): Promise<Response>;
+  create(key: string, generation: number): Promise<Response>;
 }): Promise<Response> {
   const url = new URL(request.url);
   if (url.search) return Response.json({ error: "invalid_request" }, { status: 400 });
@@ -58,7 +58,13 @@ async function mainThreadRoute(request: Request, host: {
     agentId = row?.coordinator_agent_id ?? body!.coordinator_agent_id;
   }
   if (!agentId) {
-    const created = await host.create(`canonical:${host.teamId}:${main ? "main" : `project:${projectId}`}`);
+    const identity = await host.registry(`/canonical-generations/${main ? "main" : `projects/${projectId}`}`);
+    if (!identity.ok) return identity;
+    const { generation } = await identity.json<{ generation: number }>();
+    if (!Number.isSafeInteger(generation) || generation < 0)
+      return Response.json({ error: "invalid_canonical_generation" }, { status: 503 });
+    const key = `canonical:${host.teamId}:${main ? "main" : `project:${projectId}`}`;
+    const created = await host.create(generation === 0 ? key : `${key}:generation:${generation}`, generation);
     if (!created.ok) return created;
     agentId = (await created.json<{ agent_id: string }>()).agent_id;
   }
@@ -67,19 +73,26 @@ async function mainThreadRoute(request: Request, host: {
 }
 
 /** Freeze routing intent before creating a coordinator or admitting any turn. */
-export function retainMainRoute(storage: DurableObjectStorage, input: { project_id: string; name: string; id: string; input: string }): void {
+export function retainMainRoute(storage: DurableObjectStorage, input: { project_id: string; name: string; id: string; input: string }, creation = "{}"): { creation: string } {
   storage.sql.exec("CREATE TABLE IF NOT EXISTS main_route_plans (id TEXT PRIMARY KEY, request_json TEXT NOT NULL)");
   const value = JSON.stringify(input);
   const previous = storage.sql.exec<{ request_json: string }>("SELECT request_json FROM main_route_plans WHERE id=?", input.id).toArray()[0];
   if (previous && previous.request_json !== value) throw new Error("project route id conflicts with an earlier request");
   if (!previous) storage.sql.exec("INSERT INTO main_route_plans(id,request_json) VALUES (?,?)", input.id, value);
+  // Separate table also upgrades retained routes created before snapshots existed.
+  storage.sql.exec("CREATE TABLE IF NOT EXISTS main_route_creations (id TEXT PRIMARY KEY, creation_json TEXT NOT NULL)");
+  storage.sql.exec("INSERT OR IGNORE INTO main_route_creations(id,creation_json) VALUES (?,?)", input.id, creation);
+  return { creation: storage.sql.exec<{ creation_json: string }>(
+    "SELECT creation_json FROM main_route_creations WHERE id=?", input.id).toArray()[0]!.creation_json };
 }
 
-/** One immutable creation payload per canonical project, across route IDs and retries. */
-export function retainMainCoordinatorCreation(storage: DurableObjectStorage, projectId: string, creation: string): string {
+/** One immutable creation payload per project generation, across route IDs and retries. */
+export function retainMainCoordinatorCreation(storage: DurableObjectStorage, projectId: string, creation: string, generation = 0): string {
+  if (!Number.isSafeInteger(generation) || generation < 0) throw new Error("invalid canonical generation");
+  const identity = generation === 0 ? projectId : `${projectId}:generation:${generation}`;
   storage.sql.exec("CREATE TABLE IF NOT EXISTS main_coordinator_creation_plans (project_id TEXT PRIMARY KEY, creation_json TEXT NOT NULL)");
-  storage.sql.exec("INSERT OR IGNORE INTO main_coordinator_creation_plans(project_id,creation_json) VALUES (?,?)", projectId, creation);
-  return storage.sql.exec<{ creation_json: string }>("SELECT creation_json FROM main_coordinator_creation_plans WHERE project_id=?", projectId).one().creation_json;
+  storage.sql.exec("INSERT OR IGNORE INTO main_coordinator_creation_plans(project_id,creation_json) VALUES (?,?)", identity, creation);
+  return storage.sql.exec<{ creation_json: string }>("SELECT creation_json FROM main_coordinator_creation_plans WHERE project_id=?", identity).one().creation_json;
 }
 
 export function mainThreadTools(handlers: {

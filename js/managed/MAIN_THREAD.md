@@ -22,7 +22,12 @@ For legacy registry rows with a NULL team, attachment retries leave metadata
 unchanged. Successful explicit registration first verifies the live session through
 RPC and then stamps only the registry team column. Foreign owners and conflicting
 non-NULL teams are rejected; session membership is never modified.
-No endpoint migrates, deletes, or reparents conversations.
+These navigation endpoints do not migrate or reparent conversations. The existing
+conversation deletion endpoint remains available. Deleting Main or a coordinator
+atomically retires its canonical reference with the account tombstone and advances
+an internal creation generation. A later ensure creates a fresh identity; exact
+deletion retries do not advance the generation again, and deleted sessions are
+never revived.
 
 The account DO stores `main_threads` and `canonical_projects` separately from
 `project_threads`. Creation keys include the team and project ID; agent creation
@@ -32,11 +37,15 @@ retain their behavior. Personal memory storage and scope are unchanged.
 Only canonical Main exposes `list_projects`, `read_project`, and `route_project`.
 Project coordinators and ordinary project conversations retain project-thread tools.
 `route_project` accepts `{project_id, name, id, input}`. It freezes routing intent
-before cross-object effects, reuses the coordinator, and admits a stable turn through
+and the current settings/configuration before cross-object effects. New coordinators
+inherit that immutable creation snapshot, while existing coordinators retain their
+own configuration. Routing reuses the coordinator and admits a stable turn through
 `ProjectThreadRuns`. Reusing the request ID with different content conflicts.
 
 `ProjectThreadRuns` delivers initial results. A separate durable ordered completion
-ledger publishes internal project-result turns atomically with their terminal state.
+ledger publishes internal result turns atomically with their terminal state. Only
+notifications carrying a durable provenance marker written in the notification
+admission transaction can publish; a caller-chosen turn ID prefix is insufficient.
 Parent subscriptions retain cursors and authorization epochs, survive eviction, and
 admit notifications idempotently. This propagates late results from nested project
 threads to coordinators and then Main, including after an initial response has
@@ -64,10 +73,6 @@ canonical project coordinator, a persistent project task, or an ordinary convers
 Project roles include scoped project/root/parent identifiers, never project titles.
 Main spawn preflight runs before deriving or creating any child agent.
 
-A deleted Main retains its reserved canonical identity. Both GET and PUT
-`/v1/main-thread` return 410 `main_thread_deleted`; ensure deliberately cannot
-recreate or silently bind another conversation. No session membership is changed.
-
 Retained completion grants are revalidated against the live account record and
 organization membership before registry/feed reads and again at internal turn
 admission. Matching cached session epochs alone is insufficient. Both initial
@@ -81,26 +86,24 @@ Completion notification bodies contain stable project/agent/turn identifiers and
 terminal state, without mutable project names or thread titles. A rename between
 admission and acknowledgement replay cannot change the idempotent input hash.
 
-## Protected identity deletion
+## Explicit deletion and recreation
 
-The authoritative session DELETE reserves deletion in the owner account registry before
-writing a session deletion marker or stopping its runtime. The account rejects Main,
-explicit canonical coordinators, and server navigation self-roots with HTTP 409
-`canonical_agent_deletion_forbidden`, including roots with NULL legacy team metadata.
-Stored roles remain protected even when discovery filters them out; this guard does not
-adopt metadata, migrate membership, replace deterministic identities, or delete content.
-The session derives owner/team from its persisted identity, and a conflicting non-NULL
-registry team returns 404. Registry failure leaves local deletion unstarted.
+Session deletion first reserves retirement in its owner account. The account atomically
+removes canonical references, advances creation generations, and tombstones the old
+agent before session cleanup. Retries do not advance generations again. Persisted
+owner/team scope is checked before retirement and reread before session cleanup;
+registry unavailability leaves session deletion unstarted.
 
-For ordinary conversations, the same synchronous account decision writes the existing
-registry tombstone. Canonical registration rechecks active registry state after identity
-validation, so either registration wins and deletion is rejected, or deletion wins and
-registration is rejected. Session scope is reread after reservation before cleanup starts.
-Navigation group membership alone does not prevent deletion; only its self-root is protected.
+Projected navigation roots use their stable project-UUID identity for recreation.
+Retirement leaves all conversation_projects assignments unchanged. Once the old root
+is tombstoned, a fresh coordinator can register under that stable project ID; an active
+root still cannot be replaced. No ensure, retry, or explicit registration revives an
+old agent ID. GET discovery and role projection remain read-only, including NULL-team
+roots validated through live identity.
 
 Routing to a new canonical project freezes Main's settings and agent configuration
 (including model and tool policy) before creation. The retained creation body is
-keyed by canonical project ID, so retries and other route IDs cannot substitute
+keyed by canonical project ID and creation generation, so retries and other route IDs cannot substitute
 later settings after an ambiguous creation response. Existing coordinators are
 reused without configuration updates. Direct UI project creation keeps its default
 configuration semantics. Creation uses the current checked route principal; no

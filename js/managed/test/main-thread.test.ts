@@ -9,6 +9,7 @@ describe('canonical Main protocol', () => {
     const keys: string[] = [];
     const host = { teamId: 'team-a',
       registry: async (path: string, init?: RequestInit) => {
+        if (path === '/canonical-generations/main') return Response.json({ generation: 0 });
         expect(path).toBe('/main-thread');
         if (init) main = JSON.parse(init.body as string);
         return Response.json(main ?? { error: 'not_found' }, { status: main ? 200 : 404 });
@@ -18,10 +19,10 @@ describe('canonical Main protocol', () => {
     for (let i = 0; i < 2; i++) expect(await (await mainThreadRequest(new Request('https://x/v1/main-thread', { method: 'PUT' }), host)).json()).toEqual({ agent_id: agent });
     expect(keys).toEqual(['canonical:team-a:main']);
   });
-  it('does not recreate a tombstoned Main on lookup or ensure', async () => {
+  it('propagates unresolved legacy tombstones instead of treating them as absent registrations', async () => {
     const host = { teamId: 'team',
       registry: async () => Response.json({ error: 'main_thread_deleted' }, { status: 410 }),
-      create: async () => { throw new Error('deleted canonical identity must remain reserved'); } };
+      create: async () => { throw new Error('a 410 response is not an absent registration'); } };
     for (const method of ['GET', 'PUT']) {
       const response = await mainThreadRequest(new Request('https://x/v1/main-thread', { method }), host);
       expect(response.status).toBe(410);
@@ -46,7 +47,7 @@ describe('canonical Main protocol', () => {
     const keys: string[] = [];
     let available = false;
     const host = { teamId: 'team-a',
-      registry: async (_path: string, init?: RequestInit) => init ? Response.json(JSON.parse(init.body as string)) : Response.json({ data: [] }),
+      registry: async (path: string, init?: RequestInit) => path.startsWith("/canonical-generations/") ? Response.json({ generation: 0 }) : init ? Response.json(JSON.parse(init.body as string)) : Response.json({ data: [] }),
       create: async (key: string) => { keys.push(key); return available ? Response.json({ agent_id: agent }) : new Response(null, { status: 503 }); },
     };
     const req = () => new Request('https://x/v1/projects/build', { method: 'PUT', body: JSON.stringify({ name: 'Build' }) });
@@ -60,7 +61,7 @@ describe('canonical Main protocol', () => {
 
   it('registers an explicit existing root without creating a conversation', async () => {
     const host = { teamId: 'team',
-      registry: async (_path: string, init?: RequestInit) => init ? Response.json(JSON.parse(init.body as string)) : Response.json({ data: [] }),
+      registry: async (path: string, init?: RequestInit) => path.startsWith("/canonical-generations/") ? Response.json({ generation: 0 }) : init ? Response.json(JSON.parse(init.body as string)) : Response.json({ data: [] }),
       create: async () => { throw new Error('must not create'); },
     };
     const body = { name: 'Existing', coordinator_agent_id: agent };
@@ -98,7 +99,8 @@ it('freezes coordinator creation per project across failed creation, settings ch
       const snapshot = retainMainCoordinatorCreation(state.storage, input.project_id, creation);
       return mainThreadRequest(new Request('https://test/v1/projects/research', { method: 'PUT', body: JSON.stringify({ name: 'Research' }) }), {
         teamId: 'team',
-        registry: async (_path, init) => {
+        registry: async (path, init) => {
+          if (path === '/canonical-generations/projects/research') return Response.json({ generation: 0 });
           if (!init) return Response.json({ data: projects });
           const body = JSON.parse(init.body as string);
           projects[0] = { id: 'research', ...body };

@@ -9,7 +9,9 @@ const error = (value: string, status = 409) => Response.json({ error: value }, {
 export function initializeMainThreadRegistry(storage: DurableObjectStorage): void {
   const columns = storage.sql.exec<{ name: string }>("PRAGMA table_info(agent_registry)").toArray();
   if (!columns.some(column => column.name === "team_id")) storage.sql.exec("ALTER TABLE agent_registry ADD COLUMN team_id TEXT");
-  storage.sql.exec(`CREATE TABLE IF NOT EXISTS main_threads (
+  storage.sql.exec(`CREATE TABLE IF NOT EXISTS canonical_generations (
+    team_id TEXT NOT NULL, key TEXT NOT NULL, generation INTEGER NOT NULL, PRIMARY KEY(team_id,key));
+    CREATE TABLE IF NOT EXISTS main_threads (
     team_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL UNIQUE);
     CREATE TABLE IF NOT EXISTS canonical_projects (
     team_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL,
@@ -89,6 +91,16 @@ export async function mainThreadRegistry(
     }
     return Response.json({ role: "conversation" });
   }
+  if (url.pathname.startsWith("/canonical-generations/")) {
+    if (request.method !== "GET") return error("method_not_allowed", 405);
+    const identity = url.pathname.slice("/canonical-generations/".length);
+    const project = identity.startsWith("projects/") ? identity.slice("projects/".length) : undefined;
+    if (identity !== "main" && !id.safeParse(project).success) return error("invalid_project", 400);
+    const key = identity === "main" ? "main" : `project:${project}`;
+    const row = storage.sql.exec<{ generation: number }>(
+      "SELECT generation FROM canonical_generations WHERE team_id=? AND key=?", teamId, key).toArray()[0];
+    return Response.json({ generation: row?.generation ?? 0 });
+  }
   const main = url.pathname === "/main-thread";
   const projectId = url.pathname.startsWith("/projects/") ? url.pathname.slice("/projects/".length) : undefined;
   if (!main && url.pathname !== "/projects" && (!projectId || !id.safeParse(projectId).success)) return error("invalid_project", 400);
@@ -152,12 +164,14 @@ export async function mainThreadRegistry(
   }
   if (storage.sql.exec("SELECT agent_id FROM main_threads WHERE agent_id=?", agent).toArray().length) return error("main_thread_conflict");
   const existing = storage.sql.exec<CanonicalProject>("SELECT id,name,coordinator_agent_id FROM canonical_projects WHERE team_id=? AND id=?", teamId, projectId!).toArray()[0];
-  // A migrated root's stable ID cannot be claimed by a different coordinator,
-  // even if its projection is currently hidden by ownership or active-state checks.
+  // A projected ID can move only after its original root was retired in this scope.
   const projectedRoot = projectId!.startsWith("project-") ? projectId!.slice("project-".length) : undefined;
-  if (!existing && projectedRoot && storage.sql.exec(
-    "SELECT agent_id FROM conversation_projects WHERE agent_id=? AND project_root_id=agent_id", projectedRoot).toArray().length
-    && projectedRoot !== agent) return error("project_conflict");
+  if (!existing && projectedRoot && projectedRoot !== agent && storage.sql.exec(
+    "SELECT agent_id FROM conversation_projects WHERE agent_id=? AND project_root_id=agent_id", projectedRoot).toArray().length) {
+    const retired = storage.sql.exec<{ team_id: string | null; deleted_at: number | null }>(
+      "SELECT team_id,deleted_at FROM agent_registry WHERE id=?", projectedRoot).toArray()[0];
+    if (!retired || retired.deleted_at === null || retired.team_id !== teamId) return error("project_conflict");
+  }
   if (existing && existing.coordinator_agent_id !== agent) return error("project_conflict");
   const assigned = storage.sql.exec<{ team_id: string; id: string }>("SELECT team_id,id FROM canonical_projects WHERE coordinator_agent_id=?", agent).toArray()[0];
   if (assigned && (assigned.team_id !== teamId || assigned.id !== projectId)) return error("project_conflict");
@@ -185,4 +199,25 @@ export async function mainThreadMembershipGuard(request: Request, storage: Durab
   if (storage.sql.exec("SELECT agent_id FROM main_threads WHERE agent_id=?", body.agent_id).toArray().length
     || storage.sql.exec("SELECT id FROM canonical_projects WHERE coordinator_agent_id=?", body.agent_id).toArray().length)
     return error("project_thread_conflict");
+}
+
+/** Run in the same transaction as the account tombstone. Exact deletion retries do not advance twice. */
+export function retireCanonicalAgent(storage: DurableObjectStorage, agentId: string, teamId?: string): void {
+  const registered = storage.sql.exec<{ deleted_at: number | null }>("SELECT deleted_at FROM agent_registry WHERE id=?", agentId).toArray()[0];
+  const main = storage.sql.exec<{ team_id: string }>("SELECT team_id FROM main_threads WHERE agent_id=?", agentId).toArray()[0];
+  const project = storage.sql.exec<{ team_id: string; id: string }>(
+    "SELECT team_id,id FROM canonical_projects WHERE coordinator_agent_id=?", agentId).toArray()[0];
+  const projected = registered?.deleted_at == null && teamId && z.string().uuid().safeParse(agentId).success && storage.sql.exec(
+    "SELECT agent_id FROM conversation_projects WHERE agent_id=? AND project_root_id=agent_id", agentId).toArray().length
+    ? { team: teamId, key: `project:project-${agentId}` } : undefined;
+  const retired = new Set<string>();
+  for (const identity of [main && { team: main.team_id, key: "main" },
+    project && { team: project.team_id, key: `project:${project.id}` }, projected]) {
+    if (!identity || retired.has(`${identity.team}:${identity.key}`)) continue;
+    retired.add(`${identity.team}:${identity.key}`);
+    storage.sql.exec(`INSERT INTO canonical_generations(team_id,key,generation) VALUES (?,?,1)
+      ON CONFLICT(team_id,key) DO UPDATE SET generation=generation+1`, identity.team, identity.key);
+  }
+  storage.sql.exec("DELETE FROM main_threads WHERE agent_id=?", agentId);
+  storage.sql.exec("DELETE FROM canonical_projects WHERE coordinator_agent_id=?", agentId);
 }

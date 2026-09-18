@@ -6,9 +6,35 @@ import { MainThreadCompletions } from '../src/main-thread-completions';
 const sessions = () => (env as unknown as {
   NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
 }).NANOCODEX_SESSIONS;
+function publishInternal(completions: MainThreadCompletions, id: string): number {
+  completions.admitInternalNotification(id);
+  return completions.publish(id)!;
+}
 const auth = JSON.stringify({ capabilities: ['agents:read', 'agents:write'] });
 
 describe('durable main thread completion ledger', () => {
+  it('publishes only durable internal admissions, never caller-chosen prefixes', async () => {
+    const stub = sessions().getByName(crypto.randomUUID());
+    await runInDurableObject(stub, async (_session, state) => {
+      const completions = new MainThreadCompletions(state.storage);
+      expect(completions.publish('project-result:external')).toBeUndefined();
+      expect(completions.entries(0)).toEqual([]);
+      expect(() => state.storage.transactionSync(() => {
+        completions.admitInternalNotification('project-result:rolled-back');
+        throw new Error('admission failed');
+      })).toThrow('admission failed');
+      expect(completions.publish('project-result:rolled-back')).toBeUndefined();
+      state.storage.transactionSync(() => completions.admitInternalNotification('actual-internal'));
+    });
+    await evictDurableObject(stub);
+    await runInDurableObject(stub, async (_session, state) => {
+      const completions = new MainThreadCompletions(state.storage);
+      expect(completions.publish('project-result:external')).toBeUndefined();
+      expect(completions.publish('actual-internal')).toBeGreaterThan(0);
+      expect(completions.entries(0).map(row => row.turn_id)).toEqual(['actual-internal']);
+    });
+  });
+
   it('persists deduplicated ordered completion pages across eviction', async () => {
     const stub = sessions().getByName(crypto.randomUUID());
     let first = 0;
@@ -16,15 +42,15 @@ describe('durable main thread completion ledger', () => {
       const completions = new MainThreadCompletions(state.storage);
       expect(completions.latestSequence()).toBe(0);
       expect(completions.entries(0)).toEqual([]);
-      first = completions.publish('internal:first');
+      first = publishInternal(completions, 'internal:first');
       expect(first).toBeGreaterThan(0);
-      expect(completions.publish('internal:first')).toBe(first);
-      for (let i = 0; i < 35; i++) completions.publish(`internal:${i}`);
+      expect(publishInternal(completions, 'internal:first')).toBe(first);
+      for (let i = 0; i < 35; i++) publishInternal(completions, `internal:${i}`);
     });
     await evictDurableObject(stub);
     await runInDurableObject(stub, async (_session, state) => {
       const completions = new MainThreadCompletions(state.storage);
-      expect(completions.publish('internal:first')).toBe(first);
+      expect(publishInternal(completions, 'internal:first')).toBe(first);
       const page = completions.entries(0);
       expect(page).toHaveLength(32);
       expect(page[0]).toEqual({ sequence: first, turn_id: 'internal:first' });
@@ -44,7 +70,7 @@ describe('durable main thread completion ledger', () => {
     const coordinator = sessions().getByName(coordinatorId);
     let original = 0;
     await runInDurableObject(coordinator, async (_session, state) => {
-      original = new MainThreadCompletions(state.storage).publish('original-response');
+      original = publishInternal(new MainThreadCompletions(state.storage), 'original-response');
     });
     await runInDurableObject(main, async (_session, state) => {
       const completions = new MainThreadCompletions(state.storage);
@@ -60,7 +86,7 @@ describe('durable main thread completion ledger', () => {
     await evictDurableObject(coordinator);
     const late = await runInDurableObject(coordinator, async (_session, state) => {
       const completions = new MainThreadCompletions(state.storage);
-      completions.publish('project-result:late-child');
+      publishInternal(completions, 'project-result:late-child');
       return completions.entries(original);
     });
     expect(late).toHaveLength(1);
@@ -140,8 +166,8 @@ describe('main thread completion feed RPC isolation', () => {
         VALUES (1,?,?,'22222222-2222-4222-8222-222222222222',?,1,'https://nanocodex.example','managed',?)`,
       id, owner, team, Date.now());
       const completions = new MainThreadCompletions(state.storage);
-      const first = completions.publish('project-result:first');
-      const latest = completions.publish('project-result:second');
+      const first = publishInternal(completions, 'project-result:first');
+      const latest = publishInternal(completions, 'project-result:second');
       expect(session.mainThreadCompletionFeed(owner, team, first)).toEqual({
         latest, data: [{ sequence: latest, turn_id: 'project-result:second' }], busy: false,
       });
@@ -159,7 +185,7 @@ describe('main thread completion feed RPC isolation', () => {
   it('does not expose an uninitialized session ledger through the RPC', async () => {
     const stub = sessions().getByName(crypto.randomUUID());
     await runInDurableObject(stub, async (session, state) => {
-      new MainThreadCompletions(state.storage).publish('project-result:orphan');
+      publishInternal(new MainThreadCompletions(state.storage), 'project-result:orphan');
       expect(() => session.mainThreadCompletionFeed('owner', 'team', 0)).toThrow('completion scope mismatch');
     });
   });

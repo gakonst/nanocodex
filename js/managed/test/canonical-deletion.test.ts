@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { mainThreadRegistry } from "../src/main-thread-registry";
 import type worker from "../src/index";
 import type { DurableAgentSession } from "../src/index";
@@ -48,49 +48,38 @@ async function assertSessionPreserved(session: DurableObjectStub<DurableAgentSes
 describe("canonical agent deletion reservation", () => {
   for (const role of ["main", "project", "navigation"] as const) {
     for (const team of ["team-a", null]) {
-      it(`preserves ${role} roots and all registry rows (registry team=${team})`, async () => {
-        const { id, account, session } = await fixture(team, role);
-        const before = await runInDurableObject(account, async (_, state) => snapshot(state.storage));
-        for (const scope of [undefined, "team-a"]) {
-          const response = await account.fetch(deletion(id, scope));
-          expect(response.status).toBe(409);
-          expect(await response.json()).toEqual({ error: "canonical_agent_deletion_forbidden" });
-        }
-        await assertSessionPreserved(session, async instance => {
-          const response = await instance.fetch(new Request("https://session.internal/session", { method: "DELETE" }));
-          expect(response.status).toBe(409);
-          expect(await response.json()).toEqual({ error: "canonical_agent_deletion_forbidden" });
+      it(`retires ${role} roots atomically and retries once (registry team=${team})`, async () => {
+        const { id, account } = await fixture(team, role);
+        const navigation = await runInDurableObject(account, async (_, state) => state.storage.sql.exec("SELECT * FROM conversation_projects").toArray());
+        if (role === "navigation" && team === null) expect((await account.fetch(deletion(id))).status).toBe(409);
+        if (team !== null || role !== "navigation") expect((await account.fetch(deletion(id, "team-b"))).status).toBe(404);
+        for (let retry = 0; retry < 2; retry++) expect((await account.fetch(deletion(id, "team-a"))).status).toBe(204);
+        await runInDurableObject(account, async (_, state) => {
+          expect(state.storage.sql.exec("SELECT * FROM main_threads").toArray()).toEqual([]);
+          expect(state.storage.sql.exec("SELECT * FROM canonical_projects").toArray()).toEqual([]);
+          expect(state.storage.sql.exec("SELECT * FROM conversation_projects").toArray()).toEqual(navigation);
+          const key = role === "main" ? "main" : role === "project" ? "project:build" : `project:project-${id}`;
+          expect(state.storage.sql.exec("SELECT generation FROM canonical_generations WHERE team_id='team-a' AND key=?", key).one()).toEqual({ generation: 1 });
         });
-        expect(await runInDurableObject(account, async (_, state) => snapshot(state.storage))).toEqual(before);
+        expect((await account.fetch("https://user.internal/agents", { method: "POST", body: JSON.stringify({ agentId: id, teamId: "team-a" }) })).status).toBe(410);
       });
     }
   }
 
-  it("an expired preparing-credential alarm cannot delete a protected root", async () => {
-    const { owner, id, account, session } = await fixture(null, "navigation");
-    const before = await runInDurableObject(account, async (_, state) => snapshot(state.storage));
+  it("session-derived scope retires a NULL projected root without callback deadlock", async () => {
+    const { id, account, session } = await fixture(null, "navigation");
     await runInDurableObject(session, async (instance, state) => {
-      const prepared = await instance.fetch(new Request("https://session.internal/credential-binding", {
-        method: "PUT", body: JSON.stringify({ owner_id: owner, session_id: id, subject: state.id.toString(), durability_import: null }),
-      }));
-      expect(prepared.status).toBe(204);
-      const ownership = await state.storage.get<{ cleanup_at: number }>("nanocodex:credential-binding");
-      expect(ownership).toBeDefined();
-      const sessionBefore = state.storage.sql.exec("SELECT * FROM session_state").toArray();
-      // Expire the real prepared in-memory ownership without reconstructing private fields.
-      const clock = vi.spyOn(Date, "now").mockReturnValue(ownership!.cleanup_at + 1);
-      try {
-        await instance.alarm();
-        expect(await state.storage.get("nanocodex:session-deleting")).toBeUndefined();
-        expect(await state.storage.get("nanocodex:credential-binding")).toEqual(ownership);
-        expect(state.storage.sql.exec("SELECT * FROM session_state").toArray()).toEqual(sessionBefore);
-        expect(await state.storage.get("retained-content")).toEqual({ text: "Keep this conversation" });
-      } finally {
-        clock.mockRestore();
-        await state.storage.deleteAlarm();
-      }
+      Object.defineProperty(instance, "env", { value: { ...runtime, NANOCODEX_MEMORY: { getByName: () => ({ fetch: async () => new Response(null, { status: 503 }) }) } } });
+      expect((await instance.fetch(new Request("https://session.internal/session?team_id=team-b", { method: "DELETE" }))).status).toBe(503);
+      expect(await state.storage.get("nanocodex:session-deleting")).toBe(true);
+      await state.storage.deleteAlarm();
     });
-    expect(await runInDurableObject(account, async (_, state) => snapshot(state.storage))).toEqual(before);
+    expect((await account.fetch(deletion(id, "team-a"))).status).toBe(204);
+    await runInDurableObject(account, async (_, state) => {
+      expect(state.storage.sql.exec("SELECT team_id,deleted_at FROM agent_registry WHERE id=?", id).one()).toEqual({ team_id: "team-a", deleted_at: expect.any(Number) });
+      expect(state.storage.sql.exec("SELECT team_id,key,generation FROM canonical_generations").toArray()).toEqual([{ team_id: "team-a", key: `project:project-${id}`, generation: 1 }]);
+      expect(state.storage.sql.exec("SELECT * FROM conversation_projects").toArray()).toHaveLength(1);
+    });
   });
 
   it("uses persisted session team and rejects foreign registry membership without mutation", async () => {
@@ -129,7 +118,7 @@ describe("canonical agent deletion reservation", () => {
     for (const kind of ["main", "project"] as const) expect((await account.fetch(registration(id, kind))).status).toBe(404);
   });
 
-  it("allows deleting a navigation member while preserving its self-root", async () => {
+  it("allows deleting navigation members and roots while preserving assignments", async () => {
     const { id, account } = await fixture();
     const root = crypto.randomUUID();
     await runInDurableObject(account, async (_, state) => {
@@ -138,10 +127,10 @@ describe("canonical agent deletion reservation", () => {
       state.storage.sql.exec("INSERT INTO conversation_projects VALUES (?,?,?)", id, root, "Shared project");
     });
     expect((await account.fetch(deletion(id, "team-a"))).status).toBe(204);
-    expect((await account.fetch(deletion(root, "team-a"))).status).toBe(409);
+    expect((await account.fetch(deletion(root, "team-a"))).status).toBe(204);
     await runInDurableObject(account, async (_, state) => {
       expect(state.storage.sql.exec<{ deleted_at: number | null }>("SELECT deleted_at FROM agent_registry WHERE id=?", id).one().deleted_at).toEqual(expect.any(Number));
-      expect(state.storage.sql.exec<{ deleted_at: number | null }>("SELECT deleted_at FROM agent_registry WHERE id=?", root).one().deleted_at).toBeNull();
+      expect(state.storage.sql.exec<{ deleted_at: number | null }>("SELECT deleted_at FROM agent_registry WHERE id=?", root).one().deleted_at).toEqual(expect.any(Number));
       expect(state.storage.sql.exec("SELECT * FROM conversation_projects WHERE agent_id=?", root).toArray()).toEqual([
         { agent_id: root, project_root_id: root, project_name: "Shared project" },
       ]);
@@ -204,12 +193,11 @@ describe("canonical agent deletion reservation", () => {
       });
     });
 
-    it(`${kind} registration wins and subsequent deletion cannot tombstone its root`, async () => {
+    it(`${kind} registration wins and subsequent deletion retires its root`, async () => {
       const { id, account } = await fixture();
       expect((await account.fetch(registration(id, kind))).status).toBe(201);
-      const before = await runInDurableObject(account, async (_, state) => snapshot(state.storage));
-      expect((await account.fetch(deletion(id, "team-a"))).status).toBe(409);
-      expect(await runInDurableObject(account, async (_, state) => snapshot(state.storage))).toEqual(before);
+      expect((await account.fetch(deletion(id, "team-a"))).status).toBe(204);
+      expect((await account.fetch(registration(id, kind))).status).toBe(404);
     });
   }
 });

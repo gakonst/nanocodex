@@ -5255,11 +5255,10 @@ export class DurableAgentSession extends DurableComputerSession {
       route: async (input, context) => {
         const projects = await canonicalProjects(context);
         if (configuration.multi_agent?.enabled === false) throw new Error("delegation is disabled for this agent");
-        retainMainRoute(this.ctx.storage, input);
+        const plan = retainMainRoute(this.ctx.storage, input,
+          JSON.stringify({ settings: this.#settings(), configuration }));
         let project = projects.find(row => row.id === input.project_id);
         if (!project) {
-          const creation = retainMainCoordinatorCreation(this.ctx.storage, input.project_id,
-            JSON.stringify({ settings: this.#settings(), configuration }));
           const response = await mainThreadRequest(new Request(new URL(`/v1/projects/${input.project_id}`, session.public_origin), {
             method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: input.name }),
           }), {
@@ -5268,12 +5267,13 @@ export class DurableAgentSession extends DurableComputerSession {
               principalFor(context);
               return registry.fetch(`https://user.internal${path}?team_id=${encodeURIComponent(session.team_id)}`, init);
             },
-            create: async key => {
+            create: async (key, generation) => {
               const principal = principalFor(context);
               if (!await retainedProjectAuthority(this.env, principal))
                 throw new ManagedRequestError(403, "forbidden", "project account authority was revoked");
               return managedFetch(new Request(new URL("/v1/agents", session.public_origin), {
-                method: "POST", headers: { "content-type": "application/json", "idempotency-key": key }, body: creation,
+                method: "POST", headers: { "content-type": "application/json", "idempotency-key": key },
+                body: retainMainCoordinatorCreation(this.ctx.storage, input.project_id, plan.creation, generation),
               }), this.env, this.ctx, principalFor(context));
             },
           });
@@ -5417,6 +5417,7 @@ export class DurableAgentSession extends DurableComputerSession {
             : projectCompletionInput({ agent_id: watch.agent_id, turn_id: entry.turn_id }, "terminal");
           await this.#submitManagedTurn(id, input, await hashManagedInput(input), id, true, authorization, () => {
             if (this.#session()?.authorization_epoch !== watch.authorization_epoch) throw new ManagedRequestError(403, "forbidden", "authorization changed");
+            this.#mainCompletions.admitInternalNotification(id);
             this.#mainCompletions.advance(watch.agent_id, entry.sequence);
           }, undefined, "unknown", {}, () => this.#authorizeProjectDelivery(watch));
           this.#mainCompletions.advance(watch.agent_id, entry.sequence);
@@ -5518,6 +5519,7 @@ export class DurableAgentSession extends DurableComputerSession {
           parseTurnAuthorization(run.authorization_json), () => {
             if (this.#session()?.authorization_epoch !== run.authorization_epoch)
               throw new ManagedRequestError(403, "forbidden", "project authorization changed");
+            this.#mainCompletions.admitInternalNotification(id);
             this.#projectRuns.finish(run.id, "delivered");
           }, undefined, "unknown", {}, () => this.#authorizeProjectDelivery(run));
         // The receipt may already exist after an ambiguous return from admission.
@@ -9487,7 +9489,7 @@ export class DurableAgentSession extends DurableComputerSession {
 
   #commitManagedMessage(id: string, requested: ManagedTurnTransition): ManagedTurnRow {
     const { committed, event } = commitManagedTransition(this.ctx.storage, this.#eventLog, id, requested, () => {
-      if (id.startsWith("project-result:")) this.#mainCompletions.publish(id);
+      this.#mainCompletions.publish(id);
     });
     if (event) {
       this.#publish(event);
