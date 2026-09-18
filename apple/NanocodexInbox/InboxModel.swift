@@ -409,7 +409,10 @@ final class InboxModel: ObservableObject {
         persistProjects()
     }
     func projectRenameIsLocal(_ id: String) -> Bool {
-        savedProjects.contains { $0.id == id } || !canonicalProjects.contains { $0.id == id }
+        if canonicalProjects.contains(where: { $0.id == id }) { return false }
+        guard let project = projects.first(where: { $0.id == id }) else { return true }
+        // Server-assigned group names are shared; stale device aliases cannot rename them locally.
+        return cards.first(where: { $0.id == project.primaryAgentID })?.projectName == nil
     }
     func renameProject(_ id: String, name: String) {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)

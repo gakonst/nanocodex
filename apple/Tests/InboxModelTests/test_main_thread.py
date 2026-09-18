@@ -23,8 +23,8 @@ assert 'generation = UUID()' in reset, 'Account reset must invalidate pending na
 
 source = r'''
 import Foundation
-struct AgentCard { let id: String; var title = "" }
-struct InboxProject: Equatable { let id: String; let name: String; let primaryAgentID: String }
+struct AgentCard { let id: String; var title = ""; var projectName: String? }
+struct InboxProject: Equatable { let id: String; var name: String; let primaryAgentID: String }
 struct Failure: LocalizedError { var errorDescription: String? { "old account failure" } }
 @MainActor final class Preferences { func flush() async {} }
 @MainActor final class Client {
@@ -32,6 +32,7 @@ struct Failure: LocalizedError { var errorDescription: String? { "old account fa
     var projects: [CheckedContinuation<[InboxProject], Error>] = []
     var writes: [CheckedContinuation<InboxProject, Error>] = []
     var ensureCount = 0
+    var registrations: [(String, String, String?)] = []
     func mainThread(ensure: Bool) async throws -> String? {
         if ensure { ensureCount += 1 }
         return try await withCheckedThrowingContinuation { mains.append((ensure, $0)) }
@@ -40,7 +41,8 @@ struct Failure: LocalizedError { var errorDescription: String? { "old account fa
         try await withCheckedThrowingContinuation { projects.append($0) }
     }
     func registerProject(id: String, name: String, coordinatorAgentID: String?) async throws -> InboxProject {
-        try await withCheckedThrowingContinuation { writes.append($0) }
+        registrations.append((id, name, coordinatorAgentID))
+        return try await withCheckedThrowingContinuation { writes.append($0) }
     }
     func main(_ ensure: Bool, _ result: Result<String?, Error>) {
         let index = mains.firstIndex { $0.0 == ensure }!
@@ -53,6 +55,7 @@ struct Failure: LocalizedError { var errorDescription: String? { "old account fa
     var generation = UUID(), navigationRevision = UUID()
     var cards: [AgentCard] = [], canonicalProjects: [InboxProject] = []
     var savedProjects: [InboxProject] = []
+    var projects: [InboxProject] { canonicalProjects + savedProjects }
     var unlistedAgents = Set<String>()
     var focused: AgentCard?
     var client: Client? = Client()
@@ -66,6 +69,7 @@ struct Failure: LocalizedError { var errorDescription: String? { "old account fa
     func newConversationCard(_ id: String) -> AgentCard { AgentCard(id: id) }
     func select(_ id: String) { focused = AgentCard(id: id) }
     func persistPendingProject() { persisted += 1 }
+    func persistProjects() { persisted += 1 }
     func refresh() async { await refreshNavigation() }
     func save() {
         pendingProjectID = "pending"; pendingProjectName = "Project"
@@ -80,7 +84,8 @@ struct Failure: LocalizedError { var errorDescription: String? { "old account fa
 '''
 for signature in ['    private func admitNavigationAgent(', '    func openMainThread()',
                   '    private func refreshNavigation()', '    private func saveCanonicalProject(',
-                  '    private func resetProjectNavigation()', '    func projectRenameIsLocal(']:
+                  '    private func resetProjectNavigation()', '    func projectRenameIsLocal(',
+                  '    func renameProject(']:
     source += method(signature)
 source += r'''
 }
@@ -98,11 +103,34 @@ source += r'''
         aliases.canonicalProjects = [project]
         precondition(!aliases.projectRenameIsLocal(project.id), "Canonical-only rename is shared")
         aliases.savedProjects = [project]
-        precondition(aliases.projectRenameIsLocal(project.id), "Registering an existing saved project preserves local rename semantics")
+        precondition(!aliases.projectRenameIsLocal(project.id), "Canonical identity keeps shared rename semantics despite stale saved entry")
         aliases.savedProjects = [InboxProject(id: "local-alias", name: "My name", primaryAgentID: "root")]
         precondition(aliases.projectRenameIsLocal("local-alias"), "Local alias of a canonical root stays local")
         precondition(!aliases.projectRenameIsLocal(project.id))
         precondition(aliases.projectRenameIsLocal("unregistered"))
+        aliases.cards = [AgentCard(id: "root", projectName: "Server group")]
+        precondition(!aliases.projectRenameIsLocal("local-alias"), "Server-named root renames are shared")
+        aliases.cards = []
+        let localRename = Model()
+        localRename.savedProjects = [project]
+        localRename.renameProject(project.id, name: "Local rename")
+        precondition(localRename.savedProjects.first?.name == "Local rename" && localRename.persisted == 1)
+        precondition(localRename.jobs.isEmpty && localRename.client!.registrations.isEmpty)
+        for canonical in [false, true] {
+            let sharedRename = Model(), transport = Client()
+            sharedRename.client = transport
+            sharedRename.savedProjects = [project]
+            if canonical { sharedRename.canonicalProjects = [project] }
+            sharedRename.cards = [AgentCard(id: "root", projectName: "Old server name")]
+            sharedRename.renameProject(project.id, name: "  Shared rename  ")
+            await until { transport.writes.count == 1 }
+            precondition(transport.registrations[0].0 == project.id)
+            precondition(transport.registrations[0].1 == "Shared rename" && transport.registrations[0].2 == "root")
+            transport.writes.removeFirst().resume(returning: InboxProject(id: project.id, name: "Shared rename", primaryAgentID: "root"))
+            await sharedRename.jobs[0].value
+            precondition(sharedRename.canonicalProjects.first?.name == "Shared rename")
+            precondition(sharedRename.savedProjects == [project] && sharedRename.persisted == 0)
+        }
         let m = Model(), c: Client
         c = m.client!
         m.openMainThread(); m.openMainThread()

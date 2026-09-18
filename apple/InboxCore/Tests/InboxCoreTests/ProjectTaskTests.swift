@@ -2,7 +2,7 @@ import XCTest
 @testable import InboxCore
 
 final class ProjectTaskTests: XCTestCase {
-    func testCanonicalReferencesPreserveLocalNamesAndExcludeMainThread() {
+    func testCanonicalReferencesOverrideStaleLocalNamesAndExcludeMainThread() {
         let cards = [AgentCard(id: "main", title: "Main Thread", updatedAt: 3),
                      AgentCard(id: "root", title: "Root", updatedAt: 2),
                      AgentCard(id: "other", title: "Other", updatedAt: 1)]
@@ -11,8 +11,8 @@ final class ProjectTaskTests: XCTestCase {
             InboxProject(id: "canonical", name: "Shared name", primaryAgentID: "root"),
             InboxProject(id: "second", name: "Shared project", primaryAgentID: "other")
         ], mainThreadID: "main")
-        XCTAssertEqual(index.projects.map(\.name), ["My local name", "Shared project"])
-        XCTAssertEqual(index.projects.first?.id, "local")
+        XCTAssertEqual(index.projects.map(\.name), ["Shared name", "Shared project"])
+        XCTAssertEqual(index.projects.first?.id, "canonical")
         XCTAssertFalse(index.projects.contains { $0.agentIDs.contains("main") })
         XCTAssertEqual(local.name, "My local name")
     }
@@ -26,7 +26,7 @@ final class ProjectTaskTests: XCTestCase {
         let index = InboxProjectIndex(cards: [main, child, AgentCard(id: "root", title: "Root")], savedProjects: saved,
             canonicalProjects: [InboxProject(id: "main-project", name: "Main", primaryAgentID: "main"),
                                 InboxProject(id: "canonical", name: "Canonical", primaryAgentID: "root")], mainThreadID: "main")
-        XCTAssertEqual(index.projects.map(\.id), ["local"])
+        XCTAssertEqual(index.projects.map(\.id), ["canonical"])
         XCTAssertEqual(index.projects.first?.agentIDs, ["root"])
         XCTAssertEqual(index.cardsByID["main"], main)
         XCTAssertEqual(index.children(parentAgentID: "root", originTurnID: "turn"), [main])
@@ -56,9 +56,34 @@ final class ProjectTaskTests: XCTestCase {
         let savedRoot = InboxProject(id: "local", name: "Local name", primaryAgentID: "root")
         let localIndex = InboxProjectIndex(cards: [main, root, child], savedProjects: [savedMain, savedRoot],
                                            canonicalProjects: references, mainThreadID: "main")
-        XCTAssertEqual(localIndex.projects.map(\.id), ["local"])
-        XCTAssertEqual(localIndex.projects.first?.name, "Local name")
+        XCTAssertEqual(localIndex.projects.map(\.id), ["canonical-first"])
+        XCTAssertEqual(localIndex.projects.first?.name, "First")
         XCTAssertEqual(localIndex.projects.first?.agentIDs, ["root", "child"])
+    }
+
+    func testSharedRenameOverridesRosterNameAndRetainsMigratedGroupWithoutMainDuplicate() {
+        var root = AgentCard(id: "root", title: "Root")
+        root.projectRootID = "root"; root.projectName = "Old server name"
+        var migrated = AgentCard(id: "old", title: "Former project")
+        migrated.projectRootID = "root"; migrated.projectName = "Old server name"
+        var child = AgentCard(id: "child", title: "Task")
+        child.projectRootID = "root"; child.parentAgentID = "old"; child.originTurnID = "turn"
+        var main = AgentCard(id: "main", title: "Main Thread")
+        main.projectRootID = "root"
+        let index = InboxProjectIndex(cards: [root, migrated, child, main], savedProjects: [
+            InboxProject(id: "local", name: "Stale alias", primaryAgentID: "root"),
+            InboxProject(id: "old-local", name: "Old project alias", primaryAgentID: "old"),
+            InboxProject(id: "saved-main", name: "Main", primaryAgentID: "main")
+        ], canonicalProjects: [
+            InboxProject(id: "shared", name: "Renamed shared group", primaryAgentID: "root"),
+            InboxProject(id: "obsolete", name: "Old canonical project", primaryAgentID: "old"),
+            InboxProject(id: "canonical-main", name: "Main", primaryAgentID: "main")
+        ], mainThreadID: "main")
+        XCTAssertEqual(index.projects.map(\.id), ["shared"])
+        XCTAssertEqual(index.projects.first?.name, "Renamed shared group")
+        XCTAssertEqual(index.projects.first?.agentIDs, ["root", "old", "child"])
+        XCTAssertEqual(index.children(parentAgentID: "old", originTurnID: "turn"), [child])
+        XCTAssertEqual(index.cardsByID["main"], main)
     }
 
     func testCanonicalProjectIncludesOnlyServerDeclaredMembers() {
