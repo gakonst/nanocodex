@@ -992,6 +992,26 @@ struct ToolCatalogGrammar {
 }
 impl PromptInput {
     fn text(&self) -> ApiResult<String> {
+        let is_goal_command = match self {
+            Self::Text(text) => text.split_whitespace().next() == Some("/goal"),
+            Self::Content(items) => {
+                items
+                    .iter()
+                    .all(|item| item["type"] == "input_text" && item["text"].is_string())
+                    && items
+                        .iter()
+                        .filter_map(|item| item["text"].as_str())
+                        .flat_map(str::split_whitespace)
+                        .next()
+                        == Some("/goal")
+            }
+        };
+        if is_goal_command {
+            return Err(ApiError::bad(
+                "goal_unsupported",
+                "/goal commands require the hosted managed runtime; the Rust local managed server does not support goals",
+            ));
+        }
         match self {
             Self::Text(v) if !v.trim().is_empty() => Ok(v.clone()),
             Self::Text(_) => Err(ApiError::bad("invalid_input", "prompt must not be empty")),
@@ -1941,6 +1961,52 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn goal_commands_are_rejected_for_submission_and_steering_inputs() {
+        for text in [
+            "/goal",
+            "/goal status",
+            "  /goal pause  ",
+            "/goal\tresume",
+            "/goal\nclear",
+        ] {
+            for wire_input in [
+                json!(text),
+                json!([{"type": "input_text", "text": text}]),
+                json!([
+                    {"type": "input_text", "text": "  "},
+                    {"type": "input_text", "text": text}
+                ]),
+            ] {
+                let submission: Submission =
+                    serde_json::from_value(json!({"input": wire_input})).unwrap();
+                let steer: Steer = serde_json::from_value(json!({"input": wire_input})).unwrap();
+                for input in [submission.input, steer.input] {
+                    let error = input
+                        .text()
+                        .expect_err("goal controls must not reach the model");
+                    assert_eq!(error.status, StatusCode::BAD_REQUEST);
+                    assert_eq!(error.code, "goal_unsupported");
+                    assert!(error.message.contains("hosted managed runtime"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn goal_mentions_and_similar_commands_remain_ordinary_prompts() {
+        for text in [
+            "Discuss /goal",
+            "/goals",
+            "/goalkeeper",
+            "/goal.md",
+            "finish this task",
+        ] {
+            let input = PromptInput::Text(text.to_owned());
+            assert_eq!(input.text().ok().as_deref(), Some(text));
+        }
+    }
+
     #[test]
     fn tool_catalog_accepts_current_attachment_metadata_and_rejects_invalid_values() {
         let mut catalog = json!({

@@ -20,9 +20,10 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-const ACTIONS: [Action; 14] = [
+const ACTIONS: [Action; 15] = [
     Action::Effort,
     Action::FastMode,
+    Action::Goal,
     Action::Theme,
     Action::NewSession,
     Action::ResumeSession,
@@ -53,6 +54,7 @@ pub(super) struct ActionAvailability {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Action {
+    Goal,
     Bug,
     Screen,
     Zoom,
@@ -78,6 +80,7 @@ pub(super) enum Action {
 pub(super) enum ActionsEffect {
     Dismiss,
     Trigger(Action),
+    Submit(String),
     Settings(SettingsCommand),
 }
 
@@ -185,6 +188,14 @@ impl ActionsMenu {
     }
 
     fn trigger_selected(&self) -> ComponentUpdate<ActionsEffect> {
+        // Managed goal commands are interpreted by the server. Preserve their
+        // arguments and send them through the ordinary prompt submission path.
+        if self.query.split_whitespace().next() == Some("goal") {
+            return ComponentUpdate {
+                effects: vec![ActionsEffect::Submit(format!("/{}", self.query))],
+                render: RenderRequest::Immediate,
+            };
+        }
         if let Some(command) = SettingsCommand::parse(&format!("/{}", self.query)) {
             return ComponentUpdate {
                 effects: vec![ActionsEffect::Settings(command)],
@@ -285,7 +296,7 @@ impl ActionsMenu {
             Action::ReloadConfig => true,
             Action::EditConfig => true,
             Action::DebugContext => true,
-            Action::Bug => true,
+            Action::Bug | Action::Goal => true,
         }
     }
 
@@ -317,6 +328,7 @@ impl ActionsMenu {
 impl Action {
     const fn label(self) -> &'static str {
         match self {
+            Self::Goal => "Goal",
             Self::Bug => "Debug a bug",
             Self::Screen => "Watch Hand screen",
             Self::Zoom => "Zoom focused pane",
@@ -341,6 +353,7 @@ impl Action {
 
     const fn alias(self) -> Option<&'static str> {
         match self {
+            Self::Goal => Some("goal"),
             Self::Bug => Some("bug"),
             Self::Screen => Some("screen"),
             Self::Zoom => Some("zoom"),
@@ -445,6 +458,37 @@ mod tests {
             fast_mode,
             model,
         }
+    }
+
+    #[test]
+    fn goal_action_is_discoverable_and_forwards_literal_commands() {
+        let mut menu = ActionsMenu::new(availability(false, false));
+        menu.availability.new_session = false;
+        assert!(super::ACTIONS.contains(&Action::Goal));
+        assert_eq!(menu.display_label(Action::Goal), "Goal");
+        assert!(menu.is_enabled(Action::Goal));
+        assert_eq!(
+            menu.trigger(Action::Goal).effects,
+            [ActionsEffect::Trigger(Action::Goal)]
+        );
+        for query in [
+            "goal",
+            "goal status",
+            "goal pause",
+            "goal resume",
+            "goal clear",
+            "goal build  a better TUI",
+        ] {
+            menu.query = query.to_owned();
+            menu.refresh_matches();
+            assert_eq!(
+                menu.trigger_selected().effects,
+                [ActionsEffect::Submit(format!("/{query}"))]
+            );
+        }
+        menu.query = "goalpost".to_owned();
+        menu.refresh_matches();
+        assert!(menu.trigger_selected().effects.is_empty());
     }
 
     #[test]
