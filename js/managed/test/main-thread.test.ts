@@ -1,5 +1,6 @@
+import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from 'vitest';
-import { canonicalRoleResponse, mainThreadRequest, mainThreadTools } from '../src/main-thread';
+import { canonicalRoleResponse, mainThreadRequest, mainThreadTools, retainMainCoordinatorCreation, retainMainRoute } from '../src/main-thread';
 
 describe('canonical Main protocol', () => {
   const agent = '11111111-1111-4111-8111-111111111111';
@@ -80,5 +81,43 @@ describe('canonical role availability boundary', () => {
   it('permits ordinary conversation fallback only for absent registration', async () => {
     expect(await canonicalRoleResponse(new Response(null, { status: 404 }))).toEqual({ role: 'conversation' });
     expect(await canonicalRoleResponse(Response.json({ role: 'main' }))).toEqual({ role: 'main' });
+  });
+});
+
+
+it('freezes coordinator creation per project across failed creation, settings changes, and route IDs', async () => {
+  const users = (env as unknown as { NANOCODEX_USERS: DurableObjectNamespace }).NANOCODEX_USERS;
+  await runInDurableObject(users.getByName(crypto.randomUUID()), async (_account, state) => {
+    const initial = JSON.stringify({ settings: { model: 'original' }, configuration: { instructions: 'Original policy', multi_agent: { enabled: true } } });
+    const changed = JSON.stringify({ settings: { model: 'changed' }, configuration: { instructions: 'Changed policy' } });
+    const input = { id: 'first', project_id: 'research', name: 'Research', input: 'Do the work' };
+    const bodies: string[] = [], keys: string[] = [];
+    const projects: Array<{ id: string; name: string; coordinator_agent_id: string }> = [];
+    const route = async (id: string, creation: string) => {
+      retainMainRoute(state.storage, { ...input, id });
+      const snapshot = retainMainCoordinatorCreation(state.storage, input.project_id, creation);
+      return mainThreadRequest(new Request('https://test/v1/projects/research', { method: 'PUT', body: JSON.stringify({ name: 'Research' }) }), {
+        teamId: 'team',
+        registry: async (_path, init) => {
+          if (!init) return Response.json({ data: projects });
+          const body = JSON.parse(init.body as string);
+          projects[0] = { id: 'research', ...body };
+          return Response.json(projects[0]);
+        },
+        create: async key => {
+          keys.push(key); bodies.push(snapshot);
+          return bodies.length === 1 ? new Response(null, { status: 503 }) : Response.json({ agent_id: '11111111-1111-4111-8111-111111111111' });
+        },
+      });
+    };
+    expect((await route('first', initial)).status).toBe(503);
+    expect((await route('first', changed)).status).toBe(200);
+    expect(bodies).toEqual([initial, initial]);
+    expect(keys).toEqual(['canonical:team:project:research', 'canonical:team:project:research']);
+    expect((await route('followup', changed)).status).toBe(200);
+    expect(bodies).toHaveLength(2);
+    expect(retainMainCoordinatorCreation(state.storage, 'research', changed)).toBe(initial);
+    expect(retainMainCoordinatorCreation(state.storage, 'other', changed)).toBe(changed);
+    expect(JSON.parse(initial)).not.toHaveProperty('capabilities');
   });
 });

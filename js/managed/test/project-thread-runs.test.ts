@@ -294,6 +294,8 @@ it('renews a revoked completion subscription while recovering a new authorized a
   await runInDurableObject(parent, async (session, state) => {
     const ledger = new MainThreadCompletions(state.storage);
     ledger.watch(childId, 0, auth, 1);
+    ledger.retire(childId);
+    expect(ledger.get(childId)?.state).toBe('retired');
     state.storage.sql.exec('UPDATE session_state SET authorization_epoch=2');
     blockModel(session, 2);
     // Isolate loss occurred after saving this explicit new-epoch intent but before renewing its watch.

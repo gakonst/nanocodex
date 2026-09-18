@@ -80,3 +80,11 @@ RPC checks identity only; callers must perform this live authorization boundary.
 Completion notification bodies contain stable project/agent/turn identifiers and
 terminal state, without mutable project names or thread titles. A rename between
 admission and acknowledgement replay cannot change the idempotent input hash.
+
+Routing to a new canonical project freezes Main's settings and agent configuration
+(including model and tool policy) before creation. The retained creation body is
+keyed by canonical project ID, so retries and other route IDs cannot substitute
+later settings after an ambiguous creation response. Existing coordinators are
+reused without configuration updates. Direct UI project creation keeps its default
+configuration semantics. Creation uses the current checked route principal; no
+capabilities or authorization are copied into the creation snapshot.
