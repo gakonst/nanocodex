@@ -78,12 +78,14 @@ export function retainProjectSpawn(storage: DurableObjectStorage, input: Project
 /** Retryable create/link/admit sequence. Each stage reuses durable identities. */
 export async function spawnPersistentProjectThread(input: ProjectThreadInput, host: {
   sessionId: string; originTurnId: string;
+  authorize?(): Promise<void>;
   identity(key: string): Promise<string>;
   existing(agentId: string): Promise<ProjectThread | undefined>;
   create(key: string): Promise<void>;
   link(value: Omit<ProjectThread, "parent_agent_id" | "project_root_id" | "created_at">): Promise<ProjectThread>;
   admit(agentId: string, turnId: string, input: string): Promise<void>;
 }): Promise<Omit<ProjectThread, "request_hash" | "created_at"> & { status: "accepted" }> {
+  await host.authorize?.();
   const key = `project:${host.sessionId}:${input.id}`;
   const agentId = await host.identity(key);
   const turnId = `project:${input.id}`;

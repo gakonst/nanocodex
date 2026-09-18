@@ -7,6 +7,15 @@ import { withHardDeadline } from "./deadline";
 import { performanceStage } from "./performance";
 import type { AccountInfo } from "./account-info";
 
+export type CanonicalRole = Readonly<{ role: "main" | "project_coordinator" | "project_task" | "conversation"; project_id?: string; project_root_id?: string; parent_agent_id?: string }>;
+
+export function canonicalRoleInstruction(role: CanonicalRole): string {
+  if (role.role === "main") return "This session is the canonical Main Thread. Use list_projects/read_project/route_project to coordinate project work through canonical project coordinators. Handle general discussion directly. Main cannot spawn_project_thread.";
+  if (role.role === "project_coordinator") return "This session is a canonical project coordinator. Coordinate work within its registered project using persistent project threads and report outcomes to Main. Project identity is given in canonical_role context.";
+  if (role.role === "project_task") return "This session is a persistent project task. Complete the assigned task and report outcomes to its parent coordinator or task. Project and parent identities are given in canonical_role context.";
+  return "This session is an ordinary conversation without a canonical Main or registered project role.";
+}
+
 export type StartupTransport = "http" | "websocket" | "schedule" | "voice" | "unknown";
 
 type StartupToolName = "find_session" | "memory";
@@ -23,6 +32,7 @@ type StartupCall = {
 
 export type StartupEnvironment = Readonly<{
   accountInfo: AccountInfo;
+  canonical_role?: CanonicalRole;
   runtime: "cloudflare-durable-object";
   default_cwd: "/brain";
   started_at: string;
@@ -39,6 +49,7 @@ function startupEnvironmentText(environment: StartupEnvironment): string {
     contextData("history_context", { scope: "active team", loaded: false, search: "find_session", read: "read_session", memory: "memory scan/read" }),
     contextData("environment", projectEnvironment(environment.accountInfo, environment)),
     contextData("scope", environment.scope),
+    ...(environment.canonical_role ? [canonicalRoleInstruction(environment.canonical_role), contextData("canonical_role", environment.canonical_role)] : []),
     contextData("request_origin", environment.request_origin),
     contextData("time", { started_at: environment.started_at, timezone: "UTC", user_timezone: environment.request_origin.timezone ?? null }),
   ].join("\n\n");

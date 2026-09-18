@@ -26,14 +26,47 @@ export async function mainThreadRegistry(
   const team = id.safeParse(url.searchParams.get("team_id"));
   if (!team.success) return error("invalid_team", 400);
   const teamId = team.data;
+  if (url.pathname.startsWith("/canonical-role/")) {
+    if (request.method !== "GET") return error("method_not_allowed", 405);
+    const agent = url.pathname.slice("/canonical-role/".length);
+    if (!id.safeParse(agent).success) return error("not_found", 404);
+    const active = (agentId: string) => storage.sql.exec(
+      "SELECT id FROM agent_registry WHERE id=? AND team_id=? AND deleted_at IS NULL", agentId, teamId).toArray().length > 0;
+    if (!active(agent)) return error("not_found", 404);
+    if (storage.sql.exec("SELECT agent_id FROM main_threads WHERE agent_id=? AND team_id<>?", agent, teamId).toArray().length
+      || storage.sql.exec("SELECT id FROM canonical_projects WHERE coordinator_agent_id=? AND team_id<>?", agent, teamId).toArray().length)
+      return error("not_found", 404);
+    if (storage.sql.exec("SELECT agent_id FROM main_threads WHERE agent_id=? AND team_id=?", agent, teamId).toArray().length)
+      return Response.json({ role: "main" });
+    const project = storage.sql.exec<{ id: string }>(
+      "SELECT id FROM canonical_projects WHERE coordinator_agent_id=? AND team_id=?", agent, teamId).toArray()[0];
+    if (project) return Response.json({ role: "project_coordinator", project_id: project.id, project_root_id: agent });
+    const task = storage.sql.exec<{ project_root_id: string; parent_agent_id: string; project_id: string | null }>(`SELECT t.project_root_id,t.parent_agent_id,p.id AS project_id
+      FROM project_threads t JOIN agent_registry root ON root.id=t.project_root_id
+      LEFT JOIN canonical_projects p ON p.coordinator_agent_id=root.id AND p.team_id=?
+      WHERE t.agent_id=? AND root.team_id=? AND root.deleted_at IS NULL`, teamId, agent, teamId).toArray()[0];
+    if (task) {
+      // Foreign canonical metadata must not turn a legacy membership into a project identity.
+      const foreign = storage.sql.exec("SELECT id FROM canonical_projects WHERE coordinator_agent_id=? AND team_id<>?", task.project_root_id, teamId).toArray().length;
+      if (foreign) return error("not_found", 404);
+      return Response.json({ role: "project_task",
+        ...(task.project_id ? { project_id: task.project_id } : {}), project_root_id: task.project_root_id,
+        ...(active(task.parent_agent_id) ? { parent_agent_id: task.parent_agent_id } : {}),
+      });
+    }
+    return Response.json({ role: "conversation" });
+  }
   const main = url.pathname === "/main-thread";
   const projectId = url.pathname.startsWith("/projects/") ? url.pathname.slice("/projects/".length) : undefined;
   if (!main && url.pathname !== "/projects" && (!projectId || !id.safeParse(projectId).success)) return error("invalid_project", 400);
   if (request.method === "GET") {
     if (main) {
-      const row = storage.sql.exec<{ agent_id: string }>(`SELECT m.agent_id FROM main_threads m
-        JOIN agent_registry a ON a.id=m.agent_id WHERE m.team_id=? AND a.team_id=? AND a.deleted_at IS NULL`, teamId, teamId).toArray()[0];
-      return row ? Response.json(row) : error("not_found", 404);
+      const row = storage.sql.exec<{ agent_id: string; registered_id: string | null; team_id: string | null; deleted_at: number | null }>(`SELECT m.agent_id,a.id AS registered_id,a.team_id,a.deleted_at FROM main_threads m
+        LEFT JOIN agent_registry a ON a.id=m.agent_id WHERE m.team_id=?`, teamId).toArray()[0];
+      if (!row) return error("not_found", 404);
+      if (row.registered_id && row.team_id !== teamId) return error("not_found", 404);
+      if (!row.registered_id || row.deleted_at !== null) return error("main_thread_deleted", 410);
+      return Response.json({ agent_id: row.agent_id });
     }
     if (projectId) return error("method_not_allowed", 405);
     return Response.json({ data: storage.sql.exec<CanonicalProject>(`SELECT p.id,p.name,p.coordinator_agent_id FROM canonical_projects p
@@ -86,10 +119,16 @@ export async function mainThreadRegistry(
 
 /** Keep established main/coordinator identities from becoming children later. */
 export async function mainThreadMembershipGuard(request: Request, storage: DurableObjectStorage): Promise<Response | undefined> {
+  const url = new URL(request.url);
+  const parent = url.pathname.split("/")[2]!;
+  if (request.method === "GET" && url.searchParams.get("spawn_preflight") === "1") {
+    if (storage.sql.exec("SELECT agent_id FROM main_threads WHERE agent_id=?", parent).toArray().length)
+      return error("main_thread_conflict");
+    return;
+  }
   if (request.method !== "POST") return;
   let body: { agent_id?: unknown };
   try { body = await request.clone().json(); } catch { return error("invalid_request", 400); }
-  const parent = new URL(request.url).pathname.split("/")[2]!;
   if (storage.sql.exec("SELECT agent_id FROM main_threads WHERE agent_id=?", parent).toArray().length) return error("main_thread_conflict");
   if (typeof body?.agent_id !== "string") return error("invalid_request", 400);
   if (storage.sql.exec("SELECT agent_id FROM main_threads WHERE agent_id=?", body.agent_id).toArray().length

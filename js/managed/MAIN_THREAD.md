@@ -58,3 +58,12 @@ Exporting while a subscription is still active returns
 `project_subscriptions_not_portable` rather than losing future outcomes. This guard
 ends once the admitted subtree settles; a historical watch does not block export
 forever. Registries and subscriptions are not personal-memory records.
+
+Runtime system and startup context explicitly identify the session as Main, a
+canonical project coordinator, a persistent project task, or an ordinary conversation.
+Project roles include scoped project/root/parent identifiers, never project titles.
+Main spawn preflight runs before deriving or creating any child agent.
+
+A deleted Main retains its reserved canonical identity. Both GET and PUT
+`/v1/main-thread` return 410 `main_thread_deleted`; ensure deliberately cannot
+recreate or silently bind another conversation. No session membership is changed.
