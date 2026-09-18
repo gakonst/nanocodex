@@ -362,9 +362,9 @@ it('relays one late nested result child → coordinator → Main and retires idl
     await state.storage.deleteAlarm();
   });
   await runInDurableObject(child, async (session, state) => {
-    expect((await session.fetch(new Request('https://session.internal/turns', { method: 'POST', body: JSON.stringify({ id: 'project-result:deep-task', input: 'Review deeper task result' }) }))).status).toBe(202);
     // Simulate the trusted internal admission of this deeper task notification.
     new MainThreadCompletions(state.storage).admitInternalNotification('project-result:deep-task');
+    expect((await session.fetch(new Request('https://session.internal/turns', { method: 'POST', body: JSON.stringify({ id: 'project-result:deep-task', input: 'Review deeper task result' }) }))).status).toBe(202);
   });
   // A still-running descendant prevents ancestors from declaring the subtree idle.
   await runInDurableObject(main, async (session, state) => {
