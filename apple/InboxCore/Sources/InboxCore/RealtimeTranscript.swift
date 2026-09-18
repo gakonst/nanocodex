@@ -18,13 +18,21 @@ public enum RealtimeTranscript {
         if envelope.range(of: "^<realtime_conversation(?:\\s|>|$)", options: .regularExpression) != nil { return [] }
         guard envelope.range(of: "^<realtime_delegation(?:\\s|>|$)", options: .regularExpression) != nil else { return nil }
         guard let encoded = field("transcript_delta", in: envelope), !encoded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            // Tail input is a synthetic instruction, never the user's speech.
-            guard !envelope.contains("<source>"), !envelope.contains("<soruce>"),
+            // A transcript still arriving must not temporarily become a user
+            // handoff instruction. Wait for the complete envelope before fallback.
+            guard !isPartial || envelope.hasSuffix("</realtime_delegation>"),
+                  !envelope.contains("<transcript_delta>") || field("transcript_delta", in: envelope) != nil else { return [] }
+            // Bootstrap input is real speech. Tail flushes and unknown lifecycle
+            // sources contain synthetic instructions and must stay hidden.
+            let hasOnlySpeechSources = ["source", "soruce"].allSatisfy { name in
+                !envelope.contains("<\(name)>") || field(name, in: envelope)?.trimmingCharacters(in: .whitespacesAndNewlines) == "voice_bootstrap"
+            }
+            guard hasOnlySpeechSources,
                   let input = field("input", in: envelope), !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
             return [Turn(speaker: "user", text: decode(input))]
         }
         var turns: [Turn] = []
-        for line in decode(encoded).components(separatedBy: "\n") {
+        for line in decode(encoded).replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n") {
             if let speaker = ["user", "assistant"].first(where: { line.hasPrefix($0 + ":") }) {
                 var value = String(line.dropFirst(speaker.count + 1))
                 if value.hasPrefix(" ") { value.removeFirst() }

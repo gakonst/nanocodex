@@ -70,31 +70,43 @@ public struct NanocodexVoiceTranscript: View {
     private let conversationID: String
     private let durableRows: [TranscriptRow]
     private let onUpdate: @MainActor () -> Void
+    private let rowContent: ((VoiceTranscript) -> AnyView)?
 
-    public init(session: VoiceSession, conversationID: String, durableRows: [TranscriptRow] = [], onUpdate: @escaping @MainActor () -> Void = {}) {
+    public init(session: VoiceSession, conversationID: String, durableRows: [TranscriptRow] = [], rowContent: ((VoiceTranscript) -> AnyView)? = nil, onUpdate: @escaping @MainActor () -> Void = {}) {
         self.feed = session.transcriptFeed; self.conversationID = conversationID
-        self.durableRows = durableRows; self.onUpdate = onUpdate
+        self.durableRows = durableRows; self.rowContent = rowContent; self.onUpdate = onUpdate
     }
     public var body: some View {
-        let transcripts = feed.conversations[conversationID] ?? []
-        VStack(alignment: .leading, spacing: 18) {
-            ForEach(transcripts) { transcript in
-                HStack(alignment: .top, spacing: 0) {
-                    if transcript.speaker == "user" { Spacer(minLength: 44) }
-                    Text(transcript.text).font(.system(size: 17)).lineSpacing(5)
-                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
-                        .padding(transcript.speaker == "user" ? 16 : 0)
-                        .background(transcript.speaker == "user" ? Color.primary.opacity(0.055) : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: 24))
-                        .accessibilityIdentifier("voice-transcript-" + transcript.speaker)
-                    if transcript.speaker != "user" { Spacer(minLength: 0) }
-                }.frame(maxWidth: .infinity, alignment: transcript.speaker == "user" ? .trailing : .leading)
-                    .id("voice-" + transcript.id.uuidString)
+        let transcripts = (feed.conversations[conversationID] ?? []).filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        Group {
+            if !transcripts.isEmpty {
+                VStack(alignment: .leading, spacing: 18) {
+                    ForEach(transcripts) { transcript in
+                        Group {
+                            if let rowContent { rowContent(transcript) }
+                            else { defaultRow(transcript) }
+                        }.id("voice-" + transcript.id.uuidString)
+                    }
+                }
             }
         }
         .onAppear { feed.reconcile(conversationID: conversationID, durableRows: durableRows) }
+        .onChange(of: conversationID) { _, id in feed.reconcile(conversationID: id, durableRows: durableRows) }
         .onChange(of: durableRows) { _, rows in feed.reconcile(conversationID: conversationID, durableRows: rows) }
         .onChange(of: transcripts) { _, _ in onUpdate() }
+    }
+
+    private func defaultRow(_ transcript: VoiceTranscript) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            if transcript.speaker == "user" { Spacer(minLength: 44) }
+            Text(transcript.text).font(.system(size: 17)).lineSpacing(5)
+                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                .padding(transcript.speaker == "user" ? 16 : 0)
+                .background(transcript.speaker == "user" ? Color.primary.opacity(0.055) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 24))
+                .accessibilityIdentifier("voice-transcript-" + transcript.speaker)
+            if transcript.speaker != "user" { Spacer(minLength: 0) }
+        }.frame(maxWidth: .infinity, alignment: transcript.speaker == "user" ? .trailing : .leading)
     }
 }
 

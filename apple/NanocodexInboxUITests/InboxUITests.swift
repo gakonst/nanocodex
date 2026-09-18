@@ -350,11 +350,11 @@ final class InboxUITests: XCTestCase {
         XCTAssertNotEqual(app.staticTexts["voice-status"].label, "Voice paused")
         app.buttons["close-voice"].tap()
         XCTAssertTrue(app.buttons["end-voice-compact"].waitForExistence(timeout: 5))
-        let assistantCount = app.staticTexts.matching(identifier: "voice-transcript-assistant").count
+        let assistantCount = app.otherElements.matching(identifier: "voice-transcript-assistant").count
         FileHandle.standardOutput.write(Data("PHONE_VOICE_INPUT_READY at=\(Date().timeIntervalSince1970)\n".utf8))
-        XCTAssertTrue(app.staticTexts["voice-transcript-user"].firstMatch.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.otherElements["voice-transcript-user"].firstMatch.waitForExistence(timeout: 15))
         let reply = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            app.staticTexts.matching(identifier: "voice-transcript-assistant").count > assistantCount
+            app.otherElements.matching(identifier: "voice-transcript-assistant").count > assistantCount
         }, object: app)
         let replied = XCTWaiter.wait(for: [reply], timeout: 30)
         capture(app, "voice-greeting-reply")
@@ -1987,8 +1987,10 @@ final class InboxUITests: XCTestCase {
         let conversation = app.scrollViews["conversation"]
         XCTAssertTrue(conversation.waitForExistence(timeout: 5))
         XCTAssertEqual(composer(app).value as? String, "Keep my typed draft.")
-        let user = conversation.staticTexts["voice-transcript-user"]
-        let assistant = conversation.staticTexts["voice-transcript-assistant"]
+        let userRow = conversation.otherElements["voice-transcript-user"].firstMatch
+        let assistantRow = conversation.otherElements["voice-transcript-assistant"].firstMatch
+        let user = userRow.staticTexts.firstMatch
+        let assistant = assistantRow.staticTexts.firstMatch
         XCTAssertTrue(user.waitForExistence(timeout: 5))
         XCTAssertEqual(user.label, "Can you hear", "Show input directly in chat before turn.done")
         XCTAssertFalse(assistant.exists)
@@ -1999,7 +2001,7 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(assistant.waitForExistence(timeout: 20))
         XCTAssertEqual(assistant.label, "I can", "Show output directly in chat before turn.done")
         XCTAssertEqual(user.label, "Can you hear me?")
-        XCTAssertEqual(conversation.staticTexts.matching(identifier: "voice-transcript-user").count, 1)
+        XCTAssertEqual(conversation.otherElements.matching(identifier: "voice-transcript-user").count, 1)
         let grew = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label == %@", "I can hear you"), object: assistant)
         XCTAssertEqual(XCTWaiter.wait(for: [grew], timeout: 12), .completed)
         capture(app, "voice-04-chat-assistant-partial")

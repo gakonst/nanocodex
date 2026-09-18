@@ -1603,7 +1603,12 @@ private struct ConversationContentView: View {
                     }
 
                     if let agentID = model.focused?.id {
-                        NanocodexVoiceTranscript(session: model.voice, conversationID: agentID, durableRows: model.rows) {
+                        NanocodexVoiceTranscript(session: model.voice, conversationID: agentID, durableRows: model.rows, rowContent: { transcript in
+                            let row = TranscriptRow(id: "voice-" + transcript.id.uuidString,
+                                                    role: transcript.speaker == "user" ? "You" : "Agent", text: transcript.text)
+                            return AnyView(ConversationMessageView(row: row, model: model, agentID: agentID)
+                                .accessibilityIdentifier("voice-transcript-" + transcript.speaker))
+                        }) {
                             if followsLatest { scroll.scrollTo("latest", anchor: .bottom) }
                         }
                     }

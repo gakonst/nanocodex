@@ -1,0 +1,54 @@
+name: Focused voice transcript validation
+on:
+  push:
+    branches: [validation/voice-transcript-20260918]
+permissions:
+  contents: read
+concurrency:
+  group: focused-voice-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  voice:
+    runs-on: macos-26
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: "1.97"
+          targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - name: Build shared voice XCFramework
+        run: |
+          mkdir -p apple/build/evidence
+          bash apple/NanocodexVoice/scripts/build-core.sh 2>&1 | tee apple/build/evidence/voice-core.log
+      - name: Transcript policy and feed tests
+        run: |
+          swift test --package-path apple/InboxCore --filter RealtimeTranscriptTests 2>&1 | tee apple/build/evidence/core-tests.log
+          swift test --package-path apple/NanocodexVoice --filter VoiceTranscriptFeedTests 2>&1 | tee apple/build/evidence/feed-tests.log
+      - name: Focused simulator journey
+        run: |
+          device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for ds in json.load(sys.stdin)["devices"].values() for d in ds if d["name"].startswith("iPhone")))')
+          xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination "platform=iOS Simulator,id=$device" -derivedDataPath apple/build/ios CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing 2>&1 | tee apple/build/evidence/build.log
+          xcrun simctl boot "$device" || true
+          xcrun simctl bootstatus "$device" -b
+          xcrun simctl status_bar "$device" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 --batteryState charged --batteryLevel 100
+          xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination "platform=iOS Simulator,id=$device" -parallel-testing-enabled NO -test-timeouts-enabled YES -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 300 -derivedDataPath apple/build/ios -resultBundlePath apple/build/inbox.xcresult -only-testing:NanocodexInboxUITests/InboxUITests/testVoiceConversationStreamsBothSpeakersWhileMinimized CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test-without-building 2>&1 | tee apple/build/evidence/inbox-xcodebuild.log
+      - name: Export screenshots
+        if: always()
+        run: |
+          if [ -f apple/build/inbox.xcresult/Info.plist ]; then
+            xcrun xcresulttool export attachments --path apple/build/inbox.xcresult --output-path apple/build/evidence/screenshots
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: focused-voice-evidence
+          path: |
+            apple/build/evidence
+            apple/build/inbox.xcresult
+          if-no-files-found: warn

@@ -57,6 +57,10 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
             return cursor > boundary && durableIDs[conversationID]?.contains(row.id) != true
         }
         durableIDs[conversationID, default: []].formUnion(spoken.map(\.id))
+        // A durable row keeps its identity while streaming. Refresh candidates
+        // already waiting for speech, without reusing rows that settled earlier.
+        let latest = Dictionary(spoken.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+        awaiting[conversationID] = (awaiting[conversationID] ?? []).map { latest[$0.id] ?? $0 }
         awaiting[conversationID, default: []].append(contentsOf: incoming)
         settle(conversationID)
     }
@@ -66,7 +70,6 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
             if let index = current.firstIndex(where: { $0.id == transcript.id }) { current[index] = transcript }
             else { current.append(transcript) }
         }
-        current = Array(current.suffix(80))
         if conversations[conversationID] != current { conversations[conversationID] = current }
         settle(conversationID)
     }
@@ -74,11 +77,11 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         var current = conversations[conversationID] ?? []
         var remaining: [TranscriptRow] = []
         for row in awaiting[conversationID] ?? [] {
-            if let index = current.firstIndex(where: { (row.id.contains(":voice:") || $0.recovered) && ($0.speaker == "user" ? "You" : "Agent") == row.role && $0.text == row.text }) {
+            if let index = current.firstIndex(where: { !row.running && !$0.isPartial && (row.id.contains(":voice:") || $0.recovered) && ($0.speaker == "user" ? "You" : "Agent") == row.role && $0.text == row.text }) {
                 acknowledged.insert(current.remove(at: index).id)
             } else { remaining.append(row) }
         }
-        awaiting[conversationID] = Array(remaining.suffix(80))
+        awaiting[conversationID] = remaining
         if conversations[conversationID] != current { conversations[conversationID] = current }
     }
     public func clear() { conversations = [:]; durableIDs = [:]; startedAfter = [:]; awaiting = [:]; acknowledged = [] }
@@ -568,7 +571,7 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
             RealtimeTranscript.project(transcript.text, isPartial: !transcript.isFinal)?.map {
                 ManagedVoiceTranscript(speaker: $0.speaker, text: $0.text, isFinal: transcript.isFinal)
             } ?? [transcript]
-        }
+        }.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         for transcript in visibleTranscripts {
             let text = String(transcript.text.prefix(8_192))
             if let partialID = partialTranscriptIDs[transcript.speaker],
