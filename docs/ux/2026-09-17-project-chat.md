@@ -1,5 +1,7 @@
 # Project chat and persistent task threads
 
+The [Main Thread follow-up](2026-09-18-main-thread.md) adds global routing and canonical cross-device project names. Existing local names remain intact; the device-local naming descriptions below record the original project-chat implementation.
+
 Reference: [0xDesigner’s project chat](https://x.com/0xDesigner/status/2100679849249771839), [original walkthrough](https://x.com/0xDesigner/status/2092635269081989572), and [Boris Cherny’s quoted workflow](https://x.com/bcherny/status/2100669598995816511).
 
 The mobile shell uses a project sidebar, a persistent master chat, compact project header, blue user bubbles, unboxed replies, and one composer. A live-task pill opens a native Tasks/Agents sheet. Tasks are durable child threads, with status and drill-down to their messages. Links beside the originating message open delegated work. Back, screens, captured context, connectors and scheduled jobs remain in the header menu.
