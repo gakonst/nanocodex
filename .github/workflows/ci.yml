@@ -396,6 +396,14 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
+  js-preview:
+    needs: wasm-build
+    permissions:
+      contents: read
+    uses: ./.github/workflows/js-preview.yml
+    with:
+      wasm-artifact: nanocodex-wasm
+
   bindings:
     name: Node and browser bindings
     needs: wasm-build

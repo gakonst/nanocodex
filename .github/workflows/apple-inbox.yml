@@ -125,8 +125,8 @@ jobs:
         run: swift test --package-path apple/NanocodexContext
       - name: Native Hand boundaries
         run: swift test --package-path apple/NanocodexHand
-      - name: Build iPhone app
-        run: xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath apple/build/ios CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build
+      # build-for-testing below builds the app and test runner together for
+      # the actual simulator; a preceding generic simulator build is redundant.
       - name: Native iPhone journey
         run: |
           device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for ds in json.load(sys.stdin)["devices"].values() for d in ds if d["name"].startswith("iPhone")))')

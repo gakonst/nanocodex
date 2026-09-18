@@ -33,10 +33,17 @@ preview environment.
 
 CI builds WASM once and uploads both `pkg-node` and `pkg-web`, including package
 markers, declarations, and the attestation. Binding tests and JavaScript app
-checks download the same artifact and run independently. The success gate still
-requires every job. The desktop Hand integration test has a separate 60-second
+checks and immutable package previews download the same artifact and run independently.
+The preview workflow remains manually dispatchable with a standalone build; normal
+pushes and PRs call it from CI and do not repeat Rust/wasm-bindgen/Binaryen work.
+The success gate still requires every validation job; preview publication
+reports its own result, as it did in its standalone workflow. The desktop Hand integration test has a separate 60-second
 watchdog because a node:test timeout cannot reliably interrupt child-process
 teardown; phase logs identify the blocked operation without losing coverage.
+
+The iOS journey builds the app and test runner together with `build-for-testing`
+for the simulator it actually runs. It omits the preceding generic simulator
+build; all Swift package checks, UI cases, retries, and evidence remain enabled.
 
 ## Measurement
 
