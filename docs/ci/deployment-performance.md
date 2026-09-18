@@ -41,6 +41,12 @@ reports its own result, as it did in its standalone workflow. The desktop Hand i
 watchdog because a node:test timeout cannot reliably interrupt child-process
 teardown; phase logs identify the blocked operation without losing coverage.
 
+The four iOS Swift package suites run in two bounded lanes on the same runner,
+with independent package build directories and full transcripts saved alongside
+the existing evidence. Each lane completes both suites even if one fails; any
+failure fails the job. Compiler jobs are divided between lanes. The simulator
+UI suite retains its sequential execution and every existing case.
+
 The iOS journey builds the app and test runner together with `build-for-testing`
 for the simulator it actually runs. It omits the preceding generic simulator
 build; all Swift package checks, UI cases, retries, and evidence remain enabled.
@@ -55,3 +61,16 @@ a speedup. The prior observed production workflow took 47m04s: 5m09s initial wai
 24m31s deployment, 1m44s wait for durability, and 15m40s durability. Its managed
 container step took 20m03s, including a 7m59s sandbox push. No measured after figure
 is implied by the new execution graph.
+
+To capture recent runs without changing them:
+
+```sh
+node scripts/ci/timings.mjs gakonst/nanocodex 25 /tmp/ci-timings
+# Or compare specific runs (the limit is ignored when IDs are supplied):
+node scripts/ci/timings.mjs gakonst/nanocodex 1 /tmp/ci-comparison 35288898416 35294536791
+```
+
+The tool uses the authenticated `gh` CLI and writes JSON step details plus a
+Markdown summary. Pre-execution elapsed includes dependency and concurrency
+waits as well as runner scheduling; it is not a pure runner-queue statistic.
+It never treats a queued job's placeholder `started_at` as runner execution.

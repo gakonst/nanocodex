@@ -2,9 +2,9 @@ name: Apple apps
 on:
   push:
     branches: [master]
-    paths: ['Cargo.toml', 'Cargo.lock', 'bin/nanocodex/src/nanocodex2/**', 'bin/nanocodex/nanocodex2/**', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/nanocodex-voice-protocol/**', 'crates/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml']
+    paths: ['Cargo.toml', 'Cargo.lock', 'bin/nanocodex/src/nanocodex2/**', 'bin/nanocodex/nanocodex2/**', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/nanocodex-voice-protocol/**', 'crates/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml', 'scripts/ci/apple-package-tests.sh']
   pull_request:
-    paths: ['Cargo.toml', 'Cargo.lock', 'bin/nanocodex/src/nanocodex2/**', 'bin/nanocodex/nanocodex2/**', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/nanocodex-voice-protocol/**', 'crates/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml']
+    paths: ['Cargo.toml', 'Cargo.lock', 'bin/nanocodex/src/nanocodex2/**', 'bin/nanocodex/nanocodex2/**', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/nanocodex-voice-protocol/**', 'crates/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml', 'scripts/ci/apple-package-tests.sh']
 permissions:
   contents: read
 # Explicit bash enables GitHub Actions' -e -o pipefail invocation, including
@@ -117,14 +117,8 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Build shared Rust voice core
         run: bash apple/NanocodexVoice/scripts/build-core.sh
-      - name: Protocol and inbox policy
-        run: swift test --package-path apple/InboxCore
-      - name: Voice protocol
-        run: swift test --package-path apple/NanocodexVoice
-      - name: Context capture boundaries
-        run: swift test --package-path apple/NanocodexContext
-      - name: Native Hand boundaries
-        run: swift test --package-path apple/NanocodexHand
+      - name: Protocol, voice, context, and native Hand package tests
+        run: bash scripts/ci/apple-package-tests.sh
       # build-for-testing below builds the app and test runner together for
       # the actual simulator; a preceding generic simulator build is redundant.
       - name: Native iPhone journey
