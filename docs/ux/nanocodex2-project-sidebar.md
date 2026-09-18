@@ -1,32 +1,42 @@
 # Nanocodex2 project navigation
 
-Press **F2** to show or hide Projects > Threads. Opening focuses the sidebar:
-use Up/Down and Enter to switch, or click a thread. Escape or Tab returns to
-the composer. Press `r` in the sidebar to refresh. The sidebar automatically
-refreshes every five seconds while visible and leaves the composer usable.
-It hides below 60 terminal columns to preserve chat space.
+F2 toggles the project sidebar. Each project appears once: its row opens the
+master conversation, and Left/Right or the disclosure marker folds its child
+threads. The current project starts expanded. Up/Down, the mouse wheel, and
+clicks navigate; Enter opens a thread. Escape/Tab returns to chat. Press `/` to
+filter project and thread names locally, including children of folded projects.
+The current-thread marker is separate from the keyboard selection.
 
-Project names and parent relationships come from managed service metadata.
-Conversations without project metadata appear as standalone projects; deleted
-parents and missing roots do not hide their remaining children. The `›` marker
-identifies the open thread independently of keyboard selection. Thread markers
-mean running (`●`), idle (`○`), or unknown (`?`). Status enrichment prioritizes
-the current project, queries at most 64 conversations with eight concurrent
-requests, and stops after 750 ms. Failed or unqueried states remain unknown.
+The compact rail uses the current theme, muted child rows, and a subtle selected
+background. Running counts roll up to the project. Up to three running helpers
+appear beneath the current thread, with an overflow count. Unknown activity is
+not presented as confirmed idle. Missing names have readable fallbacks instead
+of raw UUIDs. The grouping and quiet visual treatment are inspired by
+[Herdr's workspace navigation](https://herdr.dev/docs/concepts/).
 
-The running section shows up to five in-process subagents of the open thread,
-with an overflow count. It derives activity from retained/live managed run
-lifecycle and structured subagent tool receipts, including nested parent IDs.
-Persistent project child conversations remain separately selectable threads.
+The catalog is prefetched and cached. Opening paints retained rows immediately
+and independently refreshes metadata; slow activity requests never gate the
+list. Activity requests cover at most 12 visible/relevant threads with four
+concurrent requests and a 750 ms background budget. Cached activity expires in
+15 seconds. The sidebar refreshes while visible; `r` requests fresh metadata.
+Generation checks discard stale catalog and status responses. The sidebar hides
+below 60 columns, keeping composer input usable.
 
 Switching detaches the local observer without cancelling service-owned work.
-Draft text, image attachments and cursor position are retained per conversation
-for this TUI process. Switching waits for local shell work and unresolved
-message delivery or queued followups; it does not silently discard that input.
-Failed or cancelled switches keep the current draft and conversation.
+Draft text, image attachments, and cursor position survive per conversation for
+the TUI process. Unresolved local work, message delivery, or queued followups
+must settle before switching. A newer sidebar selection replaces an attachment
+still in flight. Failed/cancelled switches preserve the original conversation.
+Actual transcript attachment remains network-bound: fresh state is required,
+then history and attachment run concurrently. No stale state is used to enable
+input on a different thread.
 
-Validation: 537 TUI unit tests pass (two existing ignored), and all 70 terminal
-lifecycle tests pass. The new PTY journeys exercise project/child switching
-while the master stays active, independent drafts, progress while detached,
-no navigation-triggered cancellation or submission, and nested hosted subagent
-lifecycle. These use a controlled managed service and real terminal input.
+Validation uses real terminal input against a controlled managed service:
+73 terminal lifecycle tests pass, including active switching, independent
+drafts, detached progress, nested hosted helpers, local filtering over 501
+threads, and superseding a slow attachment with a later keyboard selection.
+The old build fails the 500 ms catalog-paint test with a blocked status request;
+the redesigned build paints in about 12 ms, reopens from cache in about 13 ms,
+and filters the 501-thread fixture in about 13 ms on the development machine.
+These are fixture measurements, not production network-latency guarantees.
+A synthetic themed rendering is covered by `synthetic_sidebar_preview`.

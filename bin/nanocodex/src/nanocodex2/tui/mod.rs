@@ -473,6 +473,7 @@ enum ConnectionResult {
     Sessions {
         pane: PaneId,
         request_id: u64,
+        cached: bool,
         result: Option<Result<Vec<SessionSummary>, ManagedError>>,
     },
     Disconnected(Result<(), NanocodexError>),
@@ -568,6 +569,14 @@ struct DriverRuntime {
     recent_prompts: Vec<RecentPrompt>,
     connection: JoinSet<ConnectionResult>,
     session_list_cancellations: HashMap<(PaneId, u64), CancellationToken>,
+    session_statuses: JoinSet<SessionStatusCompletion>,
+    session_status_tasks: HashMap<PaneId, tokio::task::AbortHandle>,
+    session_status_generation: u64,
+    session_status_cache: HashMap<String, (Instant, bool)>,
+    session_catalog_cache: Option<(Instant, Vec<SessionSummary>)>,
+    session_catalog_prefetch: JoinSet<(Instant, Result<Vec<SessionSummary>, ManagedError>)>,
+    session_catalog_refreshes: JoinSet<(PaneId, u64, Result<Vec<SessionSummary>, ManagedError>)>,
+    session_catalog_request: Option<(PaneId, u64)>,
     session_searches: JoinSet<SessionSearchCompletion>,
     session_search_tasks: HashMap<PaneId, tokio::task::AbortHandle>,
     retry_target: Option<RetryTarget>,
@@ -1172,6 +1181,13 @@ impl DriverRuntime {
         // Discard any queued recovery result for the old agent as well.
         self.connection = JoinSet::new();
         self.session_list_cancellations.clear();
+        self.session_statuses = JoinSet::new();
+        self.session_status_tasks.clear();
+        self.session_status_generation += 1;
+        self.session_catalog_cache = None;
+        self.session_catalog_prefetch = JoinSet::new();
+        self.session_catalog_refreshes = JoinSet::new();
+        self.session_catalog_request = None;
         self.shell_cancellation.cancel();
         self.shells = JoinSet::new();
         self.shell_cancellation = CancellationToken::new();
@@ -1349,6 +1365,7 @@ async fn connect_agent(
             )
         }
         Some(agent_id) => {
+            let switch_started = Instant::now();
             let state = client
                 .state(&agent_id)
                 .await
@@ -1356,6 +1373,7 @@ async fn connect_agent(
                     error,
                     retry: RetryTarget::Agent(agent_id.clone()),
                 })?;
+            let state_elapsed = switch_started.elapsed();
             let cursor =
                 EventCursor::parse(state.latest_event_cursor.clone()).map_err(|error| {
                     ConnectionFailure {
@@ -1379,6 +1397,15 @@ async fn connect_agent(
                 HistoryWindow::from_page(before.clone(), page)
             };
             let (opened, history) = tokio::join!(opening, history);
+            tracing::debug!(
+                state_ms = state_elapsed.as_millis() as u64,
+                attach_and_history_ms = switch_started
+                    .elapsed()
+                    .saturating_sub(state_elapsed)
+                    .as_millis() as u64,
+                total_ms = switch_started.elapsed().as_millis() as u64,
+                "managed thread connection latency"
+            );
             (
                 opened,
                 Some(history),
@@ -1571,6 +1598,14 @@ async fn run_inner(
         recent_prompts: Vec::new(),
         connection: JoinSet::new(),
         session_list_cancellations: HashMap::new(),
+        session_statuses: JoinSet::new(),
+        session_status_tasks: HashMap::new(),
+        session_status_generation: 0,
+        session_status_cache: HashMap::new(),
+        session_catalog_cache: None,
+        session_catalog_prefetch: JoinSet::new(),
+        session_catalog_refreshes: JoinSet::new(),
+        session_catalog_request: None,
         session_searches: JoinSet::new(),
         session_search_tasks: HashMap::new(),
         retry_target: None,
@@ -1580,6 +1615,15 @@ async fn run_inner(
         .draw(|frame| app.render(frame))
         .map_err(terminal_error)?;
     scheduler.presented(Instant::now());
+    let catalog_client = runtime.client.clone();
+    let catalog_workspace = runtime.workspace.clone();
+    let catalog_started = Instant::now();
+    runtime.session_catalog_prefetch.spawn(async move {
+        (
+            catalog_started,
+            load_session_catalog(&catalog_client, &catalog_workspace).await,
+        )
+    });
     match attach {
         Some(None) => {
             let update = app.open_resume_selector();
@@ -1925,6 +1969,39 @@ async fn run_inner(
                     None => runtime.begin_recovery(&mut app, &mut scheduler, true),
                 }
             }
+            Some(result) = runtime.session_catalog_refreshes.join_next(), if !runtime.session_catalog_refreshes.is_empty() => {
+                if let Ok((pane, request_id, Ok(mut sessions))) = result {
+                    if runtime.session_catalog_request != Some((pane, request_id)) { continue; }
+                    runtime.session_catalog_cache = Some((Instant::now(), sessions.clone()));
+                    for session in &mut sessions {
+                        session.active = runtime.session_status_cache.get(&session.session_id)
+                            .filter(|(at, _)| at.elapsed() < SESSION_STATUS_TTL)
+                            .map(|(_, active)| *active);
+                    }
+                    let update = app.update(AppEvent::SessionCatalogRefreshed { pane, request_id, sessions });
+                    stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
+                }
+            }
+            Some(result) = runtime.session_catalog_prefetch.join_next(), if !runtime.session_catalog_prefetch.is_empty() => {
+                if let Ok((started, Ok(sessions))) = result {
+                    // A delayed prefetch must not overwrite a catalog refreshed
+                    // by an explicit request after this background request began.
+                    if runtime.session_catalog_cache.as_ref().is_none_or(|(at, _)| *at <= started) {
+                        runtime.session_catalog_cache = Some((Instant::now(), sessions));
+                    }
+                }
+            }
+            Some(result) = runtime.session_statuses.join_next(), if !runtime.session_statuses.is_empty() => {
+                if let Ok(status) = result {
+                    if status.generation != runtime.session_status_generation { continue; }
+                    for (id, active) in &status.statuses {
+                        runtime.session_status_cache.insert(id.clone(), (Instant::now(), *active));
+                    }
+                    request_render(app.update(AppEvent::SessionStatusesLoaded {
+                        pane: status.pane, request_id: status.request_id, statuses: status.statuses,
+                    }), &mut scheduler);
+                }
+            }
             Some(result) = runtime.session_searches.join_next(), if !runtime.session_searches.is_empty() => {
                 if let Ok(search) = result {
                     request_render(app.update(AppEvent::SessionSearchResults {
@@ -2044,17 +2121,25 @@ async fn run_inner(
                                 error: format!("Could not reconnect: {}. Press Enter to retry.", failure.error),
                             }), &mut scheduler);
                         }
-                        ConnectionResult::Sessions { pane, request_id, result } => {
+                        ConnectionResult::Sessions { pane, request_id, cached, result } => {
                             let cancelled = runtime.session_list_cancellations.remove(&(pane, request_id))
                                 .is_none_or(|token| token.is_cancelled());
                             if cancelled { continue; }
                             let Some(result) = result else { continue; };
                             let update = match result {
-                                Ok(list) => app.update(AppEvent::SessionsLoaded {
-                                    pane,
-                                    request_id,
-                                    sessions: list,
-                                }),
+                                Ok(mut list) => {
+                                    if !cached {
+                                        runtime.session_catalog_cache = Some((Instant::now(), list.clone()));
+                                    }
+                                    let retained: HashSet<_> = list.iter().map(|s| s.session_id.as_str()).collect();
+                                    runtime.session_status_cache.retain(|id, _| retained.contains(id.as_str()));
+                                    for session in &mut list {
+                                        session.active = runtime.session_status_cache.get(&session.session_id)
+                                            .filter(|(at, _)| at.elapsed() < SESSION_STATUS_TTL)
+                                            .map(|(_, active)| *active);
+                                    }
+                                    app.update(AppEvent::SessionsLoaded { pane, request_id, sessions: list })
+                                },
                                 Err(error) => app.update(AppEvent::SessionListFailed {
                                     pane,
                                     request_id,
@@ -2062,6 +2147,13 @@ async fn run_inner(
                                 }),
                             };
                             stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
+                            if cached && runtime.session_catalog_request == Some((pane, request_id)) {
+                                let client = runtime.client.clone();
+                                let workspace = runtime.workspace.clone();
+                                runtime.session_catalog_refreshes.spawn(async move {
+                                    (pane, request_id, load_session_catalog(&client, &workspace).await)
+                                });
+                            }
                         }
                         ConnectionResult::Agent { purpose, result: Ok((agent, managed_events, agent_id, workspace, history, warning, settings, created, active_turns)) } => {
                             if let ConnectionPurpose::Resume(pane) = purpose {
@@ -3269,7 +3361,14 @@ async fn apply_update(
                     RootEffect::LoadSessions { request_id, kind } => {
                         let client = runtime.client.clone();
                         let workspace = runtime.workspace.clone();
-                        let current_agent = runtime.agent_id.clone();
+                        let cached = (kind == components::SessionListKind::Sidebar)
+                            .then(|| runtime.session_catalog_cache.as_ref())
+                            .flatten()
+                            .map(|(_, sessions)| sessions.clone());
+                        if kind == components::SessionListKind::Sidebar {
+                            runtime.session_catalog_refreshes.abort_all();
+                            runtime.session_catalog_request = Some((pane, request_id));
+                        }
                         let cancellation = CancellationToken::new();
                         runtime
                             .session_list_cancellations
@@ -3278,12 +3377,41 @@ async fn apply_update(
                             ConnectionResult::Sessions {
                                 pane,
                                 request_id,
+                                cached: cached.is_some(),
                                 result: tokio::select! {
                                     () = cancellation.cancelled() => None,
-                                    result = load_session_catalog(&client, &workspace, &current_agent, kind == components::SessionListKind::Sidebar) => Some(result),
+                                    result = async {
+                                        match cached {
+                                            Some(sessions) => Ok(sessions),
+                                            None => load_session_catalog(&client, &workspace).await,
+                                        }
+                                    } => Some(result),
                                 },
                             }
                         });
+                    }
+                    RootEffect::LoadSessionStatuses { request_id, session_ids } => {
+                        if let Some(task) = runtime.session_status_tasks.remove(&pane) { task.abort(); }
+                        runtime.session_status_generation += 1;
+                        let generation = runtime.session_status_generation;
+                        let mut statuses = Vec::new();
+                        let mut ids = Vec::new();
+                        let mut seen = HashSet::new();
+                        for id in session_ids.into_iter().filter(|id| seen.insert(id.clone())).take(12) {
+                            match runtime.session_status_cache.get(&id) {
+                                Some((at, active)) if at.elapsed() < SESSION_STATUS_TTL => statuses.push((id, *active)),
+                                _ => ids.push(id),
+                            }
+                        }
+                        request_render(app.update(AppEvent::SessionStatusesLoaded { pane, request_id, statuses }), scheduler);
+                        let client = runtime.client.clone();
+                        if !ids.is_empty() {
+                            let task = runtime.session_statuses.spawn(async move {
+                                SessionStatusCompletion { pane, request_id, generation,
+                                    statuses: load_session_statuses(&client, ids).await }
+                            });
+                            runtime.session_status_tasks.insert(pane, task);
+                        }
                     }
                     RootEffect::CancelSessionList(request_id) => {
                         if let Some(cancellation) =
@@ -3665,63 +3793,37 @@ fn cursor_at_or_before(cursor: &str, through: &str) -> bool {
         || (cursor.len() == through.len() && cursor <= through)
 }
 
+const SESSION_STATUS_TTL: std::time::Duration = std::time::Duration::from_secs(15);
+
 async fn load_session_catalog(
     client: &ManagedClient,
     workspace: &Path,
-    current_agent: &str,
-    activity: bool,
 ) -> Result<Vec<SessionSummary>, ManagedError> {
-    let list = client.list().await?;
-    let mut sessions = session_summaries(&list, workspace);
-    if activity {
-        // Prioritize the open project's newest threads. A single deadline bounds
-        // optional status enrichment; slow/failed/unqueried states remain unknown.
-        let current_root = sessions
-            .iter()
-            .find(|s| s.session_id == current_agent)
-            .map(|s| {
-                s.project_root_id
-                    .as_deref()
-                    .unwrap_or(&s.session_id)
-                    .to_owned()
-            });
-        sessions.sort_by_key(|s| {
-            (
-                std::cmp::Reverse(
-                    current_root.as_deref()
-                        == Some(s.project_root_id.as_deref().unwrap_or(&s.session_id)),
-                ),
-                std::cmp::Reverse(s.updated_at_unix_ms),
-            )
-        });
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(750);
-        let ids: Vec<_> = sessions
-            .iter()
-            .take(64)
-            .map(|session| session.session_id.clone())
-            .collect();
-        let mut states = futures_util::stream::iter(ids.into_iter().map(|id| async move {
-            let state =
-                tokio::time::timeout(std::time::Duration::from_secs(2), client.state(&id)).await;
-            (
-                id,
-                state
-                    .ok()
-                    .and_then(Result::ok)
-                    .map(|state| !state.active_turns.is_empty()),
-            )
-        }))
-        .buffer_unordered(8);
-        let mut activity = HashMap::new();
-        while let Ok(Some((id, state))) = tokio::time::timeout_at(deadline, states.next()).await {
-            activity.insert(id, state);
-        }
-        drop(states);
-        for session in &mut sessions {
-            session.active = activity.remove(&session.session_id).flatten();
+    // Catalog painting must never wait for optional per-agent status requests.
+    Ok(session_summaries(&client.list().await?, workspace))
+}
+
+async fn load_session_statuses(client: &ManagedClient, ids: Vec<String>) -> Vec<(String, bool)> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(750);
+    let mut states = futures_util::stream::iter(ids.into_iter().take(12).map(|id| async move {
+        let state = client.state(&id).await;
+        state.ok().map(|state| (id, !state.active_turns.is_empty()))
+    }))
+    .buffer_unordered(4);
+    let mut statuses = Vec::new();
+    while let Ok(Some(state)) = tokio::time::timeout_at(deadline, states.next()).await {
+        if let Some(state) = state {
+            statuses.push(state);
         }
     }
-    Ok(sessions)
+    statuses
+}
+
+struct SessionStatusCompletion {
+    pane: PaneId,
+    request_id: u64,
+    generation: u64,
+    statuses: Vec<(String, bool)>,
 }
 
 fn session_summaries(list: &AgentList, workspace: &Path) -> Vec<SessionSummary> {
@@ -3840,6 +3942,68 @@ mod tests {
         path::Path,
     };
     use tokio::task::JoinSet;
+
+    #[tokio::test]
+    async fn catalog_paints_before_slow_status_requests_complete() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use std::time::{Duration, Instant};
+        let status_calls = Arc::new(AtomicUsize::new(0));
+        let calls = status_calls.clone();
+        let service = axum::Router::new().route("/v1/agents", axum::routing::get(|| async {
+            axum::Json(json!({"data": ["agent-test"], "summaries": {
+                "agent-test": {"title":"Synthetic project", "created_at":1.0, "updated_at":2.0, "turn_count":0}
+            }}))
+        })).fallback(move || {
+            let calls = calls.clone();
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                axum::http::StatusCode::SERVICE_UNAVAILABLE
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, service).await.unwrap();
+        });
+        let client = ManagedClient::new(
+            origin,
+            ManagedApiKey::parse(format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43)))
+                .unwrap(),
+        )
+        .unwrap();
+        let started = Instant::now();
+        let sessions = tokio::time::timeout(
+            Duration::from_millis(500),
+            super::load_session_catalog(&client, Path::new("/workspace")),
+        )
+        .await
+        .expect("catalog must not wait for the 750ms status deadline")
+        .unwrap();
+        let catalog_ms = started.elapsed().as_millis();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(status_calls.load(Ordering::SeqCst), 0);
+        let started = Instant::now();
+        let statuses =
+            super::load_session_statuses(&client, (0..64).map(|n| format!("agent-{n}")).collect())
+                .await;
+        let status_ms = started.elapsed().as_millis();
+        assert!(statuses.is_empty());
+        assert_eq!(
+            status_calls.load(Ordering::SeqCst),
+            4,
+            "only four visible requests in flight"
+        );
+        assert!(status_ms >= 700);
+        assert!(status_ms < 1500);
+        eprintln!(
+            "sidebar slow-status mock: catalog={catalog_ms}ms, independent enrichment={status_ms}ms, status_calls=4 (64 candidates)"
+        );
+        server.abort();
+    }
 
     #[test]
     fn goal_commands_preserve_pending_shell_context() {
@@ -4104,6 +4268,14 @@ mod tests {
             recent_prompts,
             connection: JoinSet::new(),
             session_list_cancellations: HashMap::new(),
+            session_statuses: JoinSet::new(),
+            session_status_tasks: HashMap::new(),
+            session_status_generation: 0,
+            session_status_cache: HashMap::new(),
+            session_catalog_cache: None,
+            session_catalog_prefetch: JoinSet::new(),
+            session_catalog_refreshes: JoinSet::new(),
+            session_catalog_request: None,
             session_searches: JoinSet::new(),
             session_search_tasks: HashMap::new(),
             retry_target: None,

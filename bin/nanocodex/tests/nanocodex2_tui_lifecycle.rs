@@ -3392,7 +3392,7 @@ async fn terminal_project_sidebar_switches_active_threads_and_preserves_drafts()
             .insert(CHILD.to_owned(), Vec::new());
         fixture.terminal.prompt("MASTER_UNSENT_DRAFT", "");
         fixture.terminal.input("\x1bOQ"); // F2
-        fixture.terminal.wait_text("Projects > Threads").await;
+        fixture.terminal.wait_text("PROJECTS").await;
         fixture.terminal.wait_text("SIDEBAR_CHILD").await;
         fixture.terminal.input("\x1b[B\r"); // child, open
         fixture.replacement_connection().await;
@@ -3416,7 +3416,7 @@ async fn terminal_project_sidebar_switches_active_threads_and_preserves_drafts()
             .wait_no_text("MASTER_PROGRESS_WHILE_AWAY")
             .await;
         fixture.terminal.input("\x1bOQ"); // hide
-        fixture.terminal.wait_no_text("Projects > Threads").await;
+        fixture.terminal.wait_no_text("PROJECTS").await;
         fixture.terminal.input("\x1bOQ"); // show/focus
         fixture.terminal.wait_text("SIDEBAR_CHILD").await;
         fixture.terminal.input("\x1b[A\r"); // master, open
@@ -3475,7 +3475,7 @@ async fn terminal_project_sidebar_tracks_hosted_subagent_lifecycle() {
         }),
     );
     fixture.terminal.input("\x1bOQ");
-    fixture.terminal.wait_text("Projects > Threads").await;
+    fixture.terminal.wait_text("PROJECTS").await;
     fixture
         .terminal
         .wait_sidebar_text("SIDEBAR_REVIEWER", true)
@@ -3520,4 +3520,126 @@ async fn terminal_project_sidebar_tracks_hosted_subagent_lifecycle() {
         .wait_sidebar_text("SIDEBAR_NESTED", false)
         .await;
     assert!(fixture.cancellations.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn terminal_sidebar_paints_catalog_without_waiting_for_status_requests() {
+    const CHILD: &str = "019fc927-b280-79a7-8445-1b9996ad2fb1";
+    let fixture = Fixture::start_with_active(true).await;
+    *fixture.project_catalog.lock().unwrap() = Some(json!({
+        "data": [AGENT, CHILD],
+        "summaries": {
+            AGENT: {"title": "SIDEBAR_MASTER", "created_at": 1, "updated_at": 2,
+                "turn_count": 1, "project_root_id": AGENT, "project_name": "SIDEBAR_PROJECT"},
+            CHILD: {"title": "SIDEBAR_CHILD", "created_at": 1, "updated_at": 1,
+                "turn_count": 1, "project_root_id": AGENT, "parent_agent_id": AGENT}
+        }
+    }));
+    let _status_gate = fixture.resume_gate.clone().acquire_owned().await.unwrap();
+    let mut fixture = fixture;
+    let started = std::time::Instant::now();
+    fixture.terminal.input("\x1bOQ");
+    tokio::time::timeout(
+        Duration::from_millis(500),
+        fixture.terminal.wait_sidebar_text("SIDEBAR_CHILD", true),
+    )
+    .await
+    .expect("catalog rendering must not wait for unrelated state requests");
+    eprintln!("sidebar catalog first paint: {:?}", started.elapsed());
+    let _catalog_gate = fixture
+        .session_list_gate
+        .clone()
+        .acquire_owned()
+        .await
+        .unwrap();
+    fixture.terminal.input("\x1bOQ");
+    fixture
+        .terminal
+        .wait_sidebar_text("SIDEBAR_CHILD", false)
+        .await;
+    let started = std::time::Instant::now();
+    fixture.terminal.input("\x1bOQ");
+    tokio::time::timeout(
+        Duration::from_millis(250),
+        fixture.terminal.wait_sidebar_text("SIDEBAR_CHILD", true),
+    )
+    .await
+    .expect("cached sidebar reopening must not wait for network");
+    eprintln!("sidebar cached reopen: {:?}", started.elapsed());
+}
+
+#[tokio::test]
+async fn terminal_sidebar_filters_large_project_catalog_locally() {
+    let mut fixture = Fixture::start_with_active(true).await;
+    let mut summaries = serde_json::Map::new();
+    let mut ids = vec![AGENT.to_owned()];
+    summaries.insert(AGENT.to_owned(), json!({"title":"PRIMARY_PROJECT", "project_name":"PRIMARY_PROJECT", "created_at":1,"updated_at":2,"turn_count":1,"project_root_id":AGENT}));
+    for i in 0..500 {
+        let id = format!("019fc927-b280-79a7-8445-{:012x}", i + 1);
+        ids.push(id.clone());
+        summaries.insert(id, json!({"title":if i == 417 {"TARGET_NEEDLE".to_owned()} else {format!("BACKGROUND_TASK_{i:03}")}, "created_at":1,"updated_at":1,"turn_count":1,"project_root_id":AGENT,"parent_agent_id":AGENT}));
+    }
+    *fixture.project_catalog.lock().unwrap() = Some(json!({"data":ids,"summaries":summaries}));
+    fixture.terminal.prompt("PRESERVED_COMPOSER", "");
+    fixture.terminal.input("\x1bOQ");
+    fixture
+        .terminal
+        .wait_sidebar_text("BACKGROUND_TASK_000", true)
+        .await;
+    let _catalog_gate = fixture
+        .session_list_gate
+        .clone()
+        .acquire_owned()
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    fixture.terminal.input("/TARGET_NEEDLE");
+    tokio::time::timeout(
+        Duration::from_millis(250),
+        fixture.terminal.wait_sidebar_text("TARGET_NEEDLE", true),
+    )
+    .await
+    .expect("filtering should be local even with network blocked");
+    fixture
+        .terminal
+        .wait_sidebar_text("BACKGROUND_TASK_000", false)
+        .await;
+    eprintln!("501-thread local filter: {:?}", started.elapsed());
+    fixture.terminal.input("\x1bOQ");
+    fixture.terminal.wait_sidebar_text("PROJECTS", false).await;
+    fixture.terminal.wait_text("PRESERVED_COMPOSER").await;
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn terminal_sidebar_replaces_slow_attach_with_latest_keyboard_selection() {
+    const FIRST: &str = "019fc927-b280-79a7-8445-1b9996ad2fb1";
+    const SECOND: &str = "019fc927-b280-79a7-8445-1b9996ad2fb2";
+    let mut fixture = Fixture::start_with_active(true).await;
+    *fixture.project_catalog.lock().unwrap() = Some(json!({
+        "data": [AGENT, FIRST, SECOND], "summaries": {
+            AGENT: {"title":"RAPID_MASTER","created_at":1,"updated_at":3,"turn_count":1,"project_root_id":AGENT},
+            FIRST: {"title":"RAPID_FIRST","created_at":1,"updated_at":2,"turn_count":1,"project_root_id":AGENT,"parent_agent_id":AGENT},
+            SECOND: {"title":"RAPID_SECOND","created_at":1,"updated_at":1,"turn_count":1,"project_root_id":AGENT,"parent_agent_id":AGENT}
+        }
+    }));
+    let gate = fixture.resume_gate.clone().acquire_owned().await.unwrap();
+    fixture.terminal.input("\x1bOQ");
+    fixture
+        .terminal
+        .wait_sidebar_text("RAPID_SECOND", true)
+        .await;
+    fixture.terminal.input("\x1b[B\r");
+    fixture.terminal.wait_text("Resuming session").await;
+    fixture.terminal.input("\x1b[B\r");
+    drop(gate);
+    fixture.replacement_connection().await;
+    fixture.terminal.wait_no_text("Resuming session").await;
+    assert_eq!(
+        fixture.connection_ids.lock().unwrap().last().unwrap(),
+        SECOND
+    );
+    assert!(fixture.cancellations.try_recv().is_err());
+    assert!(fixture.submissions.try_recv().is_err());
 }

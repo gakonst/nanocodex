@@ -185,6 +185,14 @@ pub(crate) enum RootEvent {
         query: String,
         result: Result<Vec<nanocodex_managed::SessionSearchHit>, String>,
     },
+    SessionCatalogRefreshed {
+        request_id: u64,
+        sessions: Vec<SessionSummary>,
+    },
+    SessionStatusesLoaded {
+        request_id: u64,
+        statuses: Vec<(String, bool)>,
+    },
     SessionsLoaded {
         request_id: u64,
         sessions: Vec<SessionSummary>,
@@ -314,6 +322,10 @@ pub(crate) enum RootEffect {
         query: String,
     },
     CancelSessionSearch,
+    LoadSessionStatuses {
+        request_id: u64,
+        session_ids: Vec<String>,
+    },
     LoadSessions {
         request_id: u64,
         kind: SessionListKind,
@@ -855,7 +867,7 @@ impl RootNode {
         self.refresh_actions();
         let mut agents = self.managed_activity.labels();
         agents.extend(self.subagents.sidebar_labels());
-        let area = self.sidebar.render(frame, area, agents);
+        let area = self.sidebar.render(frame, area, theme, agents);
         let height = self
             .composer
             .component_mut()
@@ -1087,9 +1099,6 @@ impl RootNode {
         &mut self,
         mut event: Event,
     ) -> ComponentUpdate<RootEffect> {
-        if self.resuming_session {
-            return ComponentUpdate::none();
-        }
         if self.overlay.is_none() {
             if let Event::Key(key) = &event {
                 if key.kind != KeyEventKind::Release && key.code == KeyCode::F(2) {
@@ -1105,7 +1114,28 @@ impl RootNode {
                     && self.sidebar.focused
                     && key.kind != KeyEventKind::Release
                 {
+                    if self.sidebar.filtering {
+                        match key.code {
+                            KeyCode::Esc => self.sidebar.clear_filter(),
+                            KeyCode::Enter => self.sidebar.filtering = false,
+                            KeyCode::Backspace => self.sidebar.filter_input(None),
+                            KeyCode::Char(ch)
+                                if !key
+                                    .modifiers
+                                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                            {
+                                self.sidebar.filter_input(Some(ch))
+                            }
+                            KeyCode::Up => self.sidebar.step(false),
+                            KeyCode::Down => self.sidebar.step(true),
+                            _ => return ComponentUpdate::none(),
+                        }
+                        return self.sidebar_status_update();
+                    }
                     match key.code {
+                        KeyCode::Left => self.sidebar.expand(false),
+                        KeyCode::Right => self.sidebar.expand(true),
+                        KeyCode::Char('/') => self.sidebar.filtering = true,
                         KeyCode::Up => self.sidebar.step(false),
                         KeyCode::Down => self.sidebar.step(true),
                         KeyCode::Esc | KeyCode::Tab => self.sidebar.focused = false,
@@ -1115,24 +1145,41 @@ impl RootNode {
                         KeyCode::Enter => return self.resume_sidebar(),
                         _ => return ComponentUpdate::none(),
                     }
-                    return ComponentUpdate::render(RenderRequest::Immediate);
+                    return self.sidebar_status_update();
                 }
             }
             if let Event::Mouse(mouse) = &event {
+                if self
+                    .sidebar
+                    .area
+                    .contains(Position::new(mouse.column, mouse.row))
+                {
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                            self.sidebar.focused = true;
+                            self.sidebar.step(mouse.kind == MouseEventKind::ScrollDown);
+                            return self.sidebar_status_update();
+                        }
+                        _ => {}
+                    }
+                }
                 if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
                     if self
                         .sidebar
                         .area
                         .contains(Position::new(mouse.column, mouse.row))
                     {
-                        if self.sidebar.click(mouse.row) {
+                        if self.sidebar.click(mouse.column, mouse.row) {
                             return self.resume_sidebar();
                         }
-                        return ComponentUpdate::render(RenderRequest::Immediate);
+                        return self.sidebar_status_update();
                     }
                     self.sidebar.focused = false;
                 }
             }
+        }
+        if self.resuming_session {
+            return ComponentUpdate::none();
         }
         if let Some(connecting) = self.reconnecting {
             // Local editing and shell controls remain available while Enter
@@ -2133,11 +2180,23 @@ impl RootNode {
         }
     }
 
+    fn sidebar_status_update(&mut self) -> ComponentUpdate<RootEffect> {
+        self.sidebar.status_generation = self.sidebar.status_generation.wrapping_add(1);
+        ComponentUpdate {
+            effects: vec![RootEffect::LoadSessionStatuses {
+                request_id: self.sidebar.status_generation,
+                session_ids: self.sidebar.relevant_ids(),
+            }],
+            render: RenderRequest::Immediate,
+        }
+    }
+
     fn load_sidebar(&mut self) -> ComponentUpdate<RootEffect> {
         self.pending_sidebar = true;
         self.sidebar.loading = true;
         self.sidebar.next_refresh = Some(Instant::now() + Duration::from_secs(5));
         let request_id = self.next_session_list;
+        self.sidebar.catalog_generation = Some(request_id);
         self.next_session_list = self.next_session_list.wrapping_add(1);
         let previous = self.pending_session_list.replace(request_id);
         ComponentUpdate {
@@ -2157,10 +2216,18 @@ impl RootNode {
         let Some(id) = self.sidebar.selected_id().map(str::to_owned) else {
             return ComponentUpdate::none();
         };
-        self.sidebar.focused = false;
         if self.sidebar.current_id.as_deref() == Some(&id) {
+            self.sidebar.focused = false;
+            if self.resuming_session {
+                self.resuming_session = false;
+                let mut update = self.restore_session_activity();
+                update.effects.push(RootEffect::CancelSessionResume);
+                return update;
+            }
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
+        // Keep navigation responsive so a newer selection can replace a slow attach.
+        // The successful SessionRestored event returns focus to the composer.
         self.resuming_session = true;
         self.session_resume_status();
         ComponentUpdate {
@@ -2316,7 +2383,7 @@ impl RootNode {
             self.pending_sidebar = false;
             self.sidebar.load(sessions);
             self.sidebar.next_refresh = Some(Instant::now() + Duration::from_secs(5));
-            return ComponentUpdate::render(RenderRequest::Immediate);
+            return self.sidebar_status_update();
         }
         let update = self.resume_after_session_lookup();
         let mode = if self.pending_session_mention.is_some() {
@@ -3740,6 +3807,28 @@ impl Component for RootNode {
                     render: update.render,
                 }
             }
+            RootEvent::SessionCatalogRefreshed {
+                request_id,
+                sessions,
+            } => {
+                if self.sidebar.visible && self.sidebar.catalog_generation == Some(request_id) {
+                    self.sidebar.load(sessions);
+                    self.sidebar_status_update()
+                } else {
+                    ComponentUpdate::none()
+                }
+            }
+            RootEvent::SessionStatusesLoaded {
+                request_id,
+                statuses,
+            } => {
+                if request_id == self.sidebar.status_generation {
+                    self.sidebar.update_statuses(statuses);
+                    ComponentUpdate::render(RenderRequest::Immediate)
+                } else {
+                    ComponentUpdate::none()
+                }
+            }
             RootEvent::SessionsLoaded {
                 request_id,
                 sessions,
@@ -3773,6 +3862,7 @@ impl Component for RootNode {
             } => {
                 // Startup restoration installs history for the session already
                 // being edited. Preserve the complete draft, not just its text.
+                self.sidebar.focused = false;
                 self.reconnecting = None;
                 self.interactive = true;
                 self.composer

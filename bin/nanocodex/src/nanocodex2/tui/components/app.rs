@@ -167,6 +167,16 @@ pub(crate) enum AppEvent {
         request_id: u64,
         sessions: Vec<SessionSummary>,
     },
+    SessionCatalogRefreshed {
+        pane: PaneId,
+        request_id: u64,
+        sessions: Vec<SessionSummary>,
+    },
+    SessionStatusesLoaded {
+        pane: PaneId,
+        request_id: u64,
+        statuses: Vec<(String, bool)>,
+    },
     SessionListFailed {
         pane: PaneId,
         request_id: u64,
@@ -488,6 +498,28 @@ impl AppNode {
                 RootEvent::SessionsLoaded {
                     request_id,
                     sessions,
+                },
+            ),
+            AppEvent::SessionCatalogRefreshed {
+                pane,
+                request_id,
+                sessions,
+            } => self.update_root(
+                pane,
+                RootEvent::SessionCatalogRefreshed {
+                    request_id,
+                    sessions,
+                },
+            ),
+            AppEvent::SessionStatusesLoaded {
+                pane,
+                request_id,
+                statuses,
+            } => self.update_root(
+                pane,
+                RootEvent::SessionStatusesLoaded {
+                    request_id,
+                    statuses,
                 },
             ),
             AppEvent::SessionListFailed {
