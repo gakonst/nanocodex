@@ -1,3 +1,4 @@
+import type { CanonicalRole } from "./startup-context";
 import type { NamedTool, ToolContext } from "nanocodex";
 import { z } from "zod";
 
@@ -8,8 +9,23 @@ export const canonicalProjectInput = z.object({
 export const canonicalProjectId = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 export type CanonicalProject = { id: string; name: string; coordinator_agent_id: string };
 
-/** Public protocol; account/team selection comes exclusively from the authenticated principal. */
-export async function mainThreadRequest(request: Request, host: {
+/** Only an absent registration permits ordinary-conversation tool fallback. */
+export async function canonicalRoleResponse(response: Response): Promise<CanonicalRole> {
+  if (response.status === 404) return { role: "conversation" };
+  if (!response.ok) throw new Error("canonical role registry unavailable");
+  return response.json<CanonicalRole>();
+}
+
+/** Public account/team navigation must never enter browser or intermediary caches. */
+export async function mainThreadRequest(request: Request, host: Parameters<typeof mainThreadRoute>[1]): Promise<Response> {
+  const response = await mainThreadRoute(request, host);
+  const headers = new Headers(response.headers);
+  headers.set("cache-control", "no-store");
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+/** Account/team selection comes exclusively from the authenticated principal. */
+async function mainThreadRoute(request: Request, host: {
   teamId: string;
   registry(path: string, init?: RequestInit): Promise<Response>;
   create(key: string): Promise<Response>;

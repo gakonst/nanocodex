@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mainThreadRequest, mainThreadTools } from '../src/main-thread';
+import { canonicalRoleResponse, mainThreadRequest, mainThreadTools } from '../src/main-thread';
 
 describe('canonical Main protocol', () => {
   const agent = '11111111-1111-4111-8111-111111111111';
@@ -69,5 +69,16 @@ describe('canonical Main protocol', () => {
   it('exposes explicit routing tools without changing project-thread tools', () => {
     const tools = mainThreadTools({ list: async () => [], read: async () => ({}), route: async () => ({}) });
     expect(tools.map(tool => tool.name)).toEqual(['list_projects', 'read_project', 'route_project']);
+  });
+});
+
+
+describe('canonical role availability boundary', () => {
+  it.each([400, 401, 403, 410, 429, 500, 503])('does not fall back to project spawning for registry status %s', async status => {
+    await expect(canonicalRoleResponse(Response.json({ error: 'unavailable' }, { status }))).rejects.toThrow('registry unavailable');
+  });
+  it('permits ordinary conversation fallback only for absent registration', async () => {
+    expect(await canonicalRoleResponse(new Response(null, { status: 404 }))).toEqual({ role: 'conversation' });
+    expect(await canonicalRoleResponse(Response.json({ role: 'main' }))).toEqual({ role: 'main' });
   });
 });
