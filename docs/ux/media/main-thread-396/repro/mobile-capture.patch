@@ -1,0 +1,43 @@
+diff --git a/apple/NanocodexInboxUITests/InboxUITests.swift b/apple/NanocodexInboxUITests/InboxUITests.swift
+index 9f21ace0..79a48546 100644
+--- a/apple/NanocodexInboxUITests/InboxUITests.swift
++++ b/apple/NanocodexInboxUITests/InboxUITests.swift
+@@ -6,6 +6,38 @@ final class InboxUITests: XCTestCase {
+     }
+     override func setUp() { super.setUp(); continueAfterFailure = false }
+ 
++    // Evidence-only journey: unchanged production app, built-in synthetic demo data.
++    func testPR396ProjectCreationAndRegistrationEntryEvidence() {
++        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
++        switchConversation(app, id: "inbox")
++        app.buttons["app-menu"].tap()
++        XCTAssertTrue(app.buttons["Make project available across devices"].waitForExistence(timeout: 5))
++        capture(app, "project-registration-entry")
++        // Demo mode has no ManagedClient; show the entry without claiming registration.
++        app.terminate(); app.launch()
++        XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 10))
++        app.buttons["conversation-drawer-open"].tap()
++        app.buttons["drawer-new-conversation"].tap()
++        let alert = app.alerts["New project"]
++        XCTAssertTrue(alert.waitForExistence(timeout: 5))
++        alert.textFields.firstMatch.tap()
++        alert.textFields.firstMatch.typeText("Evidence Project")
++        capture(app, "project-create-form")
++        alert.buttons["Save"].tap()
++        Thread.sleep(forTimeInterval: 1)
++        XCTAssertTrue(app.staticTexts["Evidence Project"].waitForExistence(timeout: 5))
++        capture(app, "project-created")
++        app.terminate(); app.launch()
++        XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 10))
++        app.buttons["conversation-drawer-open"].tap()
++        let saved = app.scrollViews["conversation-list"].buttons["Evidence Project"]
++        XCTAssertTrue(saved.waitForExistence(timeout: 5))
++        capture(app, "project-created-relaunched")
++        saved.tap()
++        XCTAssertTrue(app.staticTexts["Evidence Project"].waitForExistence(timeout: 5))
++        capture(app, "project-created-selected")
++    }
++
+     func testMainThreadKeepsIndependentDraftAndProjectNavigation() {
+         let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString, "NANOCODEX_DEMO_PROJECT_TASKS": "1"])
+         switchConversation(app, id: "inbox")

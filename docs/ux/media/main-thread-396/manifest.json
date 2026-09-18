@@ -1,0 +1,171 @@
+{
+  "source_commit": "f517a4393b6c3ead1b2fe46d1b6470ec0e1611c1",
+  "fixture": "built-in --demo; synthetic UUID profile",
+  "files": [
+    {
+      "file": "ipad-child-and-result.mp4",
+      "bytes": 430719,
+      "sha256": "7d0906ad1a339aaf5ca19cfa0ba61e2a92d0fe583c018ca63a3c3d36c44033c9"
+    },
+    {
+      "file": "ipad-main-entry-drawer.png",
+      "bytes": 191574,
+      "sha256": "cb3383476f9f8aa911eee29cda4f5edcdc110a88e04625bdb2b9b0546d492ed7"
+    },
+    {
+      "file": "ipad-main-thread-chat.png",
+      "bytes": 226622,
+      "sha256": "ec853fe77947c98747fa926e8bd3aa715154504196f80d8a0b07889f9d9b5c30"
+    },
+    {
+      "file": "ipad-main-thread.mp4",
+      "bytes": 268288,
+      "sha256": "3ac3271cf72cb48dddf64da8b7dbae5153f295f7fa82bb4a421d541752980a54"
+    },
+    {
+      "file": "ipad-project-agents-sheet.png",
+      "bytes": 319767,
+      "sha256": "36c2595030ab61e32b994a2dd524998cea4280e612fe91724e9704a5675038da"
+    },
+    {
+      "file": "ipad-project-chat.png",
+      "bytes": 220047,
+      "sha256": "edea00bfdb77862fb98d4ad952ee546f0024a2ce62e50f1c03a2c647fa292268"
+    },
+    {
+      "file": "ipad-project-create-form.png",
+      "bytes": 333953,
+      "sha256": "2854b48e90067ec328b9e586f7ce88d6699c8380eb118a1ae72b274be9c92dee"
+    },
+    {
+      "file": "ipad-project-create.mp4",
+      "bytes": 310439,
+      "sha256": "e418cc09fc280c1116d539a8fa67adde33b2eb0e9fbb08df27bde1344ee30a05"
+    },
+    {
+      "file": "ipad-project-created-relaunched.png",
+      "bytes": 182093,
+      "sha256": "fde0734943319b2e5b9f312d41926c77a218bdb1957a4db9c37658314519db0c"
+    },
+    {
+      "file": "ipad-project-created-selected.png",
+      "bytes": 135556,
+      "sha256": "0368f00ba69d1c55b4cb4f9f5953021e92881db2a5896d2c30b99dda0e682555"
+    },
+    {
+      "file": "ipad-project-created.png",
+      "bytes": 135950,
+      "sha256": "1485d9d02f74d3f5013c807db53eb8dbde4205b4692d547db2bba45a3f0c7c77"
+    },
+    {
+      "file": "ipad-project-origin-thread.png",
+      "bytes": 318134,
+      "sha256": "dd6f3f3b8d68e06ae76cfb2685f95291ee871f22a396926ec6a41b980242cde8"
+    },
+    {
+      "file": "ipad-project-registration-entry.png",
+      "bytes": 449306,
+      "sha256": "9843343052dde4bea022ea66e1460b33ee4ca3c460b6c15812229fcd5b665059"
+    },
+    {
+      "file": "ipad-project-sidebar.png",
+      "bytes": 198414,
+      "sha256": "1b98d418af6307feea176debfc0ed3b176dc4c720591509d7503739b525356a2"
+    },
+    {
+      "file": "ipad-project-task-detail.png",
+      "bytes": 319013,
+      "sha256": "5cb2e72abf9aa40eac1a92c3e4459a4905d58340d292e605ebb97cc0cfc2251d"
+    },
+    {
+      "file": "ipad-project-tasks-sheet.png",
+      "bytes": 315828,
+      "sha256": "9dd1c16f5b3175e78eeb458325e5c47e2a890f4853548eabac8da22b40393478"
+    },
+    {
+      "file": "ipad-tasks-and-agents.mp4",
+      "bytes": 285612,
+      "sha256": "5859297d1093787ba84e4d659627cf968b3309839af94cd98959ae73238110b9"
+    },
+    {
+      "file": "iphone-child-and-result.mp4",
+      "bytes": 486156,
+      "sha256": "172efd819201989fe03af05573b82d19064fb5515f44dfba348026ff6a15f330"
+    },
+    {
+      "file": "iphone-main-entry-drawer.png",
+      "bytes": 131425,
+      "sha256": "3403a0352b4f96d2a4048b7976eefc1687620d8a561fd28d5fa8fe0aacb0af97"
+    },
+    {
+      "file": "iphone-main-thread-chat.png",
+      "bytes": 249102,
+      "sha256": "bcd8270ba664c8f44e4b0468620350ae1baf0e2f907d4556b5d614fc66d8a339"
+    },
+    {
+      "file": "iphone-main-thread.mp4",
+      "bytes": 282982,
+      "sha256": "c784dde0ac322a5a38416f66392d1499a00bfb888253c4dae6cd6edc26e5a7b8"
+    },
+    {
+      "file": "iphone-project-agents-sheet.png",
+      "bytes": 226644,
+      "sha256": "f874d4b126e862515c62b65f212c79f60be960170833ae9f3d306d4a19b39a8d"
+    },
+    {
+      "file": "iphone-project-chat.png",
+      "bytes": 272693,
+      "sha256": "32dcf4c1643bb1368b16f4b9f221e19a15bfc2a13b0f5e4a7c81d71080bcc056"
+    },
+    {
+      "file": "iphone-project-create-form.png",
+      "bytes": 964089,
+      "sha256": "1f98d8ffe0f94bb754133dca67c26632e29353c1e74cd8c5dfadf7a476d7fe99"
+    },
+    {
+      "file": "iphone-project-created-relaunched.png",
+      "bytes": 162097,
+      "sha256": "90ad1c3932a55e68b1425b6e6ca887ad9eeb115cb114e36660f27c37d01fb5aa"
+    },
+    {
+      "file": "iphone-project-created-selected.png",
+      "bytes": 157832,
+      "sha256": "39234036772e3aee2390fb09a5747d6ada079f0054d66d57fcfc415b6dadc5b0"
+    },
+    {
+      "file": "iphone-project-created.png",
+      "bytes": 157832,
+      "sha256": "39234036772e3aee2390fb09a5747d6ada079f0054d66d57fcfc415b6dadc5b0"
+    },
+    {
+      "file": "iphone-project-origin-thread.png",
+      "bytes": 238215,
+      "sha256": "7e43f70781fb002f64f585acef7d6873d30ca8a6f38232dede52deed73c3019c"
+    },
+    {
+      "file": "iphone-project-registration-entry.png",
+      "bytes": 749218,
+      "sha256": "f322e805e432eb882b09af0e5ec58c826d7058274d82fcdba549690b06e429cd"
+    },
+    {
+      "file": "iphone-project-sidebar.png",
+      "bytes": 131247,
+      "sha256": "99a6a549d7a119dac19c46d7a1e124338d1618a10e817c47c62bfeed4f3a10f5"
+    },
+    {
+      "file": "iphone-project-task-detail.png",
+      "bytes": 238062,
+      "sha256": "2900a58e1143f57a26e8f420595492e1dffa8cbc0b30c622bfb1d6cffebaff4c"
+    },
+    {
+      "file": "iphone-project-tasks-sheet.png",
+      "bytes": 224609,
+      "sha256": "2f97126f2308dde62803c025565e12a6ade3ac7b1f501ed5bfc2e4cb45c4db3e"
+    },
+    {
+      "file": "iphone-tasks-and-agents.mp4",
+      "bytes": 326974,
+      "sha256": "e702c315dc4ecb50bf7c0b61288385ae17982777568101d94abf0a752005d0fa"
+    }
+  ]
+}
