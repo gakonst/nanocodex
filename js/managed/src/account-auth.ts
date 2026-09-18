@@ -789,6 +789,21 @@ async function authenticateLive(request: Request, env: AccountAuthEnv, url: URL)
   };
 }
 
+/** Retained project grants are ceilings, never fresh account authority. No cache. */
+export async function retainedProjectAuthority(env: AccountAuthEnv, principal: Principal): Promise<boolean> {
+  const required: OrganizationCapability[] = ["agents:read", "agents:write", "tools:use"];
+  if (principal.connectGrant || !required.every(cap => principal.capabilities.includes(cap))) return false;
+  const [account, grant] = await Promise.all([
+    readAccount(env, principal.userId, true),
+    resolveOrganizationGrant(env, { id: principal.userId, organizationId: principal.organizationId }, true),
+  ]);
+  return !!account && account.organizationId === principal.organizationId && !!grant
+    && grant.teamId === principal.teamId && grant.authorizationEpoch === principal.authorizationEpoch
+    && organizationRoleRank(principal.role) <= organizationRoleRank(grant.role)
+    && required.every(cap => grant.capabilities.includes(cap))
+    && principal.capabilities.every(cap => grant.capabilities.includes(cap));
+}
+
 async function apiKeyAuthorized(env: AccountAuthEnv, record: StoredApiKey): Promise<boolean> {
   const [account, grant] = await Promise.all([
     readAccount(env, record.userId),
@@ -1444,10 +1459,11 @@ async function proxyAccountWalletRequest(
   }
 }
 
-async function readAccount(env: AccountAuthEnv, userId: string): Promise<UserRecord | undefined> {
+async function readAccount(env: AccountAuthEnv, userId: string, retryUnavailable = false): Promise<UserRecord | undefined> {
   const response = await env.NANOCODEX_USERS.getByName(userId).fetch("https://user.internal/account");
   if (!response.ok) {
     await response.body?.cancel();
+    if (retryUnavailable && (response.status >= 500 || response.status === 429)) throw new Error("account authorization unavailable");
     return undefined;
   }
   const record = await response.json<UserRecord>();
@@ -1461,12 +1477,14 @@ export async function isPersistentAccount(env: AccountAuthEnv, userId: string): 
 async function resolveOrganizationGrant(
   env: AccountAuthEnv,
   account: Pick<UserRecord, "id" | "organizationId">,
+  retryUnavailable = false,
 ): Promise<OrganizationGrant | undefined> {
   const response = await env.NANOCODEX_ORGANIZATIONS.getByName(account.organizationId).fetch(
     `https://organization.internal/resolve?userId=${encodeURIComponent(account.id)}`,
   );
   if (!response.ok) {
     await response.body?.cancel();
+    if (retryUnavailable && (response.status >= 500 || response.status === 429)) throw new Error("organization authorization unavailable");
     return undefined;
   }
   const grant = await response.json<OrganizationGrant>();

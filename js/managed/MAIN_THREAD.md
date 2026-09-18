@@ -67,3 +67,12 @@ Main spawn preflight runs before deriving or creating any child agent.
 A deleted Main retains its reserved canonical identity. Both GET and PUT
 `/v1/main-thread` return 410 `main_thread_deleted`; ensure deliberately cannot
 recreate or silently bind another conversation. No session membership is changed.
+
+Retained completion grants are revalidated against the live account record and
+organization membership before registry/feed reads and again at internal turn
+admission. Matching cached session epochs alone is insufficient. Both initial
+project-run delivery and recursive completion delivery require agents:read,
+agents:write, and tools:use in both retained and current authority; a retained
+capability cannot exceed the current grant. Revocation retires the subscription;
+authorization-service 429/5xx responses preserve bounded retries. The private feed
+RPC checks identity only; callers must perform this live authorization boundary.
