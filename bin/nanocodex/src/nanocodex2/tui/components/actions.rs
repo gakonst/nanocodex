@@ -20,7 +20,7 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-const ACTIONS: [Action; 15] = [
+const ACTIONS: [Action; 16] = [
     Action::Effort,
     Action::FastMode,
     Action::Goal,
@@ -34,6 +34,7 @@ const ACTIONS: [Action; 15] = [
     Action::Model,
     Action::AgentId,
     Action::Voice,
+    Action::Hand,
     Action::Screen,
     Action::Zoom,
 ];
@@ -54,6 +55,7 @@ pub(super) struct ActionAvailability {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Action {
+    Hand,
     Goal,
     Bug,
     Screen,
@@ -284,7 +286,7 @@ impl ActionsMenu {
 
     const fn is_enabled(&self, action: Action) -> bool {
         match action {
-            Action::Screen | Action::Zoom | Action::AgentId | Action::Voice => true,
+            Action::Hand | Action::Screen | Action::Zoom | Action::AgentId | Action::Voice => true,
             Action::Handoff | Action::Review | Action::Reflection => self.availability.new_session,
             Action::Effort | Action::FastMode => true,
             Action::Model => self.availability.model,
@@ -330,6 +332,7 @@ impl Action {
         match self {
             Self::Goal => "Goal",
             Self::Bug => "Debug a bug",
+            Self::Hand => "Local Hands: stop-all / start-all / status",
             Self::Screen => "Watch Hand screen",
             Self::Zoom => "Zoom focused pane",
             Self::Voice => "Toggle voice",
@@ -355,6 +358,7 @@ impl Action {
         match self {
             Self::Goal => Some("goal"),
             Self::Bug => Some("bug"),
+            Self::Hand => Some("hand"),
             Self::Screen => Some("screen"),
             Self::Zoom => Some("zoom"),
             Self::Voice => Some("voice"),

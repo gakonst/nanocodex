@@ -1795,6 +1795,12 @@ impl RootNode {
                 self.overlay = None;
                 return self.apply_settings_command(SettingsCommand::Bug(String::new()));
             }
+            Some(ActionsEffect::Trigger(Action::Hand)) => {
+                self.overlay = None;
+                return self.apply_settings_command(SettingsCommand::Hand(
+                    crate::hand_control::Action::Status,
+                ));
+            }
             Some(ActionsEffect::Trigger(Action::Screen)) => {
                 self.overlay = None;
                 return self.apply_settings_command(SettingsCommand::Screen);
@@ -2660,6 +2666,14 @@ impl RootNode {
 
     fn apply_settings_command(&mut self, command: SettingsCommand) -> ComponentUpdate<RootEffect> {
         match command {
+            SettingsCommand::Hand(action) => {
+                let (message, color) = match action.run() {
+                    Ok(message) => (message, Color::Green),
+                    Err(error) => (error.to_string(), Color::Red),
+                };
+                self.notification = Some(Notification::plain(message, color));
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
             SettingsCommand::Bug(description) => ComponentUpdate {
                 effects: vec![RootEffect::Bug(description)],
                 render: RenderRequest::Immediate,

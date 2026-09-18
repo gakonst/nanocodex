@@ -62,6 +62,7 @@ pub(crate) enum ComposerEffect {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SettingsCommand {
+    Hand(crate::hand_control::Action),
     Bug(String),
     Attach,
     Screen,
@@ -79,6 +80,19 @@ impl SettingsCommand {
         let mut parts = input.split_whitespace();
         let command = parts.next()?;
         match command {
+            "/hand" => {
+                let action = crate::hand_control::Action::parse(parts.next().unwrap_or_default());
+                Some(if parts.next().is_some() {
+                    Self::Invalid(
+                        "Usage: /hand [stop-all|start-all|status] (this OS user, this host)".into(),
+                    )
+                } else {
+                    match action {
+                        Ok(action) => Self::Hand(action),
+                        Err(error) => Self::Invalid(error),
+                    }
+                })
+            }
             "/bug" => Some(Self::Bug(
                 input.trim_start()[command.len()..].trim().to_owned(),
             )),
@@ -3235,6 +3249,35 @@ mod tests {
             assert!(composer.draft().is_empty());
         }
         assert_eq!(SettingsCommand::parse("/bugfix rendering"), None);
+    }
+
+    #[test]
+    fn hand_controls_are_local_commands_with_strict_arguments() {
+        use crate::hand_control::Action;
+        let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+        for (input, action) in [
+            ("/hand", Action::Status),
+            ("/hand status", Action::Status),
+            ("/hand stop-all", Action::StopAll),
+            ("/hand start-all", Action::StartAll),
+        ] {
+            assert_eq!(
+                SettingsCommand::parse(input),
+                Some(SettingsCommand::Hand(action))
+            );
+            composer.replace_draft(input.to_owned());
+            assert_eq!(
+                composer.submit().effect,
+                Some(ComposerEffect::Settings(SettingsCommand::Hand(action)))
+            );
+        }
+        for input in ["/hand stop", "/hand stop-all remote", "/hand status extra"] {
+            assert!(matches!(
+                SettingsCommand::parse(input),
+                Some(SettingsCommand::Invalid(_))
+            ));
+        }
+        assert_eq!(SettingsCommand::parse("/handbook"), None);
     }
 
     #[test]

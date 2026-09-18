@@ -26,6 +26,122 @@ const LOCAL_TURN_ID: &str = "019fc927-b282-7a11-8445-1b9996ad2fb0";
 const CLOUD_TURN_ID: &str = "019fc927-b283-7a11-8445-1b9996ad2fb0";
 const PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+// Real product processes with private homes and an account lookup that always
+// rejects. No publisher, capture service, VM or real account can be started.
+#[tokio::test]
+async fn local_hand_control_pauses_and_resumes_existing_product_sessions() {
+    use std::{process::Stdio, time::Duration};
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let root = tempfile::tempdir().unwrap();
+    let lookups = Arc::new(AtomicUsize::new(0));
+    let count = lookups.clone();
+    let app = Router::new().route(
+        "/v1/me",
+        get(move || {
+            let count = count.clone();
+            async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                StatusCode::UNAUTHORIZED
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let command = || {
+        let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"));
+        cmd.env_clear()
+            .env("HOME", root.path())
+            .env("USERPROFILE", root.path())
+            .env("NANOCODEX_MANAGED_URL", &origin)
+            .current_dir(root.path())
+            .kill_on_drop(true);
+        cmd
+    };
+    let control = |action: &'static str| {
+        let mut cmd = command();
+        async move {
+            let output = cmd.args(["hands", action]).output().await.unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap()
+        }
+    };
+    assert!(control("stop-all").await.contains("disabled"));
+    assert!(control("status").await.contains("disabled"));
+    let mut peers = Vec::new();
+    for _ in 0..2 {
+        let mut child = command()
+            .args(["__device-hand", "--parent-pipe"])
+            .env(
+                "NANOCODEX_API_KEY",
+                format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43)),
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        let line = tokio::time::timeout(Duration::from_secs(5), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(line.contains("waiting"), "{line}");
+        // Drain subsequent receipts so stdout cannot block the lease loop.
+        let drain =
+            tokio::spawn(async move { while matches!(lines.next_line().await, Ok(Some(_))) {} });
+        peers.push((child, drain));
+    }
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(
+        lookups.load(Ordering::SeqCst),
+        0,
+        "disabled sessions must not initialize a publisher"
+    );
+    for _ in 0..2 {
+        let before = lookups.load(Ordering::SeqCst);
+        assert!(control("start-all").await.contains("enabled"));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while lookups.load(Ordering::SeqCst) < before + 2 {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(control("stop-all").await.contains("disabled"));
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let stopped = lookups.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert_eq!(
+            lookups.load(Ordering::SeqCst),
+            stopped,
+            "disabled leases must not retry startup"
+        );
+        for (peer, _) in &mut peers {
+            assert!(peer.try_wait().unwrap().is_none());
+        }
+    }
+    for (mut peer, drain) in peers {
+        drop(peer.stdin.take());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), peer.wait())
+                .await
+                .unwrap()
+                .unwrap()
+                .success()
+        );
+        drain.await.unwrap();
+    }
+    server.abort();
+}
+
 #[tokio::test]
 async fn hand_help_exposes_the_vm_and_machine_contract() {
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))

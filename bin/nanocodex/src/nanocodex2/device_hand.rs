@@ -85,7 +85,7 @@ impl BackgroundHand {
 fn error(value: impl std::fmt::Display) -> ManagedError {
     ManagedError::Configuration(value.to_string())
 }
-fn home() -> Result<PathBuf, ManagedError> {
+pub(super) fn home() -> Result<PathBuf, ManagedError> {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .map(PathBuf::from)
         .ok_or_else(|| error("A user home directory is required for the device Hand"))
@@ -96,7 +96,7 @@ fn digest(value: &str) -> String {
         .map(|b| format!("{b:02x}"))
         .collect()
 }
-fn private_directory(path: &Path) -> Result<(), ManagedError> {
+pub(super) fn private_directory(path: &Path) -> Result<(), ManagedError> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -120,7 +120,7 @@ fn private_directory(path: &Path) -> Result<(), ManagedError> {
     }
     Ok(())
 }
-fn log_file(directory: &Path, name: &str) -> Result<fs::File, ManagedError> {
+pub(super) fn log_file(directory: &Path, name: &str) -> Result<fs::File, ManagedError> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -256,8 +256,8 @@ pub(crate) async fn serve(command: DeviceHand) -> Result<(), ManagedError> {
     let (origin, key) = nanocodex_cli_auth::enrollment_credentials(None)?;
     // The managed client installs the shared TLS provider before any identity HTTP request.
     let client = super::client_from_environment(None)?;
-    let directory = directory(&origin, &key).await?;
     if command.describe {
+        let directory = directory(&origin, &key).await?;
         // Another client can be publishing the initial identity at this instant.
         for _ in 0..20 {
             match identity(&directory) {
@@ -273,6 +273,7 @@ pub(crate) async fn serve(command: DeviceHand) -> Result<(), ManagedError> {
         }
         return Err(error("The computer Hand is still preparing its identity"));
     }
+    let gate = super::hand_control::Gate::local()?;
     let cancel = CancellationToken::new();
     let shutdown = cancel.clone();
     let parent_pipe = command.parent_pipe;
@@ -288,17 +289,41 @@ pub(crate) async fn serve(command: DeviceHand) -> Result<(), ManagedError> {
         tokio::select! { _ = super::service::shutdown_signal() => {}, () = eof => {} }
         shutdown.cancel();
     });
-    let result = if command.daemon {
-        share(&client, &directory, &origin, &key, &cancel).await
-    } else {
+    let mut resolved_directory = None;
+    let result = async {
         loop {
-            match connect(&directory, &cancel).await {
-                Ok(()) => break Ok(()),
-                Err(e) => emit(&json!({"status": "connecting", "error": e.to_string()})),
+            // A disabled daemon exits; lease clients remain ready to reconnect.
+            // A daemon must not wait here holding any native resources.
+            let ticket = if command.daemon {
+                gate.ticket()?
+            } else {
+                emit(&json!({"status": "waiting", "scope": "local-host"}));
+                gate.wait_enabled(&cancel).await
+            };
+            let Some(ticket) = ticket else { return Ok(()); };
+            let active = cancel.child_token();
+            let result = async {
+                if resolved_directory.is_none() {
+                    resolved_directory = Some(tokio::select! {
+                        () = active.cancelled() => return Ok(()),
+                        directory = directory(&origin, &key) => directory?,
+                    });
+                }
+                let directory = resolved_directory.as_ref().unwrap();
+                if command.daemon {
+                    share(&client, directory, &origin, &key, &active).await
+                } else {
+                    connect(directory, &active, &gate, &ticket).await
+                }
+            };
+            let outcome = gate.supervise(&ticket, &active, result).await;
+            if command.daemon || cancel.is_cancelled() { return outcome; }
+            if let Err(e) = outcome {
+                emit(&json!({"status": "connecting", "error": e.to_string()}));
             }
-            tokio::select! { () = cancel.cancelled() => break Ok(()), () = tokio::time::sleep(Duration::from_secs(1)) => {} }
+            tokio::select! { () = cancel.cancelled() => return Ok(()), () = tokio::time::sleep(Duration::from_secs(1)) => {} }
         }
-    };
+    }.await;
     cancel.cancel();
     watcher.abort();
     result
@@ -412,6 +437,7 @@ async fn share(
                 .is_err()
             {
                 screen.abort();
+                let _ = screen.await;
             }
             let _ = fs::remove_file(directory.join("status.json"));
             result
@@ -455,16 +481,43 @@ fn unix_socket_path(base: PathBuf, directory: &Path) -> Result<PathBuf, ManagedE
     Ok(path)
 }
 
-async fn connect(directory: &Path, cancel: &CancellationToken) -> Result<(), ManagedError> {
+struct LaunchLock(fs::File);
+impl Drop for LaunchLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+async fn connect(
+    directory: &Path,
+    cancel: &CancellationToken,
+    gate: &super::hand_control::Gate,
+    ticket: &super::hand_control::State,
+) -> Result<(), ManagedError> {
     let socket = socket_path(directory)?;
     let mut stream = None;
+    // Only one client attempts daemon startup at a time, even across binaries
+    // and accounts sharing this identity. The publisher still owns host.lock.
+    private_directory(directory)?;
+    let launch_lock = LaunchLock(log_file(directory, "launch.lock")?);
+    let mut launching = false;
     for attempt in 0..100 {
+        if cancel.is_cancelled() || !gate.permits(ticket) {
+            return Ok(());
+        }
         match transport::connect(&socket).await {
             Ok(connection) => {
                 stream = Some(connection);
                 break;
             }
             Err(_) if attempt % 10 == 0 => {
+                if !launching {
+                    launching = launch_lock.0.try_lock().is_ok();
+                }
+                if !launching {
+                    tokio::select! { () = cancel.cancelled() => return Ok(()), () = tokio::time::sleep(Duration::from_millis(100)) => {} }
+                    continue;
+                }
                 let mut command = Command::new(std::env::current_exe().map_err(error)?);
                 #[cfg(unix)]
                 command.process_group(0);
@@ -485,6 +538,7 @@ async fn connect(directory: &Path, cancel: &CancellationToken) -> Result<(), Man
         }
         tokio::select! { () = cancel.cancelled() => return Ok(()), () = tokio::time::sleep(Duration::from_millis(100)) => {} }
     }
+    let _ = launch_lock.0.unlock();
     let mut stream = stream.ok_or_else(|| error("The shared computer Hand did not start"))?;
     let mut previous = Value::Null;
     let mut bytes = [0u8; 1];
