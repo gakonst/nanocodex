@@ -3,6 +3,8 @@ export { ManagedError } from "./ManagedError.mjs";
 export { withManagedAccess } from "./Access.mjs";
 export type {
   Agent as ManagedAgent,
+  CanonicalProject as ManagedProject,
+  ProjectInput as ManagedProjectInput,
   CronTrigger as ManagedCronTrigger,
   CronTriggerConfig as ManagedCronTriggerConfig,
   CreateOptions as ManagedCreateOptions,

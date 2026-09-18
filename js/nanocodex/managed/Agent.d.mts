@@ -443,6 +443,15 @@ export type Agent = Readonly<{
 export function create(options?: CreateOptions): Promise<Agent>;
 /** Create a session and admit its first turn with one durable client mutation. */
 export function createAndPrompt(options: CreateAndPromptOptions): Promise<CreateAndPromptResult>;
+/** Ensure the account/team's durable global conversation. Repeated calls reuse its identity. */
+export function mainThread(options?: Options): Promise<Agent>;
+export type CanonicalProject = Readonly<{ id: string; name: string; coordinator_agent_id: string }>;
+export type ProjectInput = Readonly<{ name: string; coordinator_agent_id?: string }>;
+export const projects: Readonly<{
+  list(options?: Options): Promise<readonly CanonicalProject[]>;
+  /** Reuse a stable project id. Omit the coordinator to create one; an existing coordinator cannot be reassigned. */
+  put(id: string, project: ProjectInput, options?: Options): Promise<CanonicalProject>;
+}>;
 export function list(options?: Options): Promise<readonly Agent[]>;
 export function get(id: string, options?: Options): Promise<Agent>;
 /** Open a handle immediately; each subsequent operation verifies ownership server-side. */

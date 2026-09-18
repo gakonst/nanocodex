@@ -242,3 +242,17 @@ Deleting an agent removes its triggers. Portable durability export currently
 returns `409 cron_triggers_present` while any trigger or pending delivery exists: delete
 triggers and let claimed deliveries finish before transfer, then recreate schedules at the destination. This avoids
 silently dropping schedules or running the same schedule on two agents.
+
+
+## Main Thread and projects
+
+`Agent.mainThread(options)` ensures the authenticated account/team's durable global conversation and returns a normal managed agent handle. Repeated calls reuse its identity; prompt, events, cancellation, and direct steering use the same APIs as other conversations.
+
+```js
+const main = await Agent.mainThread(options);
+const projects = await Agent.projects.list(options);
+const project = await Agent.projects.put("compiler", { name: "Compiler" }, options);
+const coordinator = Agent.open(project.coordinator_agent_id, options);
+```
+
+Project IDs are stable, account/team scoped names with 1–64 letters, digits, underscores, or hyphens. `put` creates a coordinator when needed and reuses it on subsequent calls. To explicitly register an existing conversation as a project coordinator, include `coordinator_agent_id`. The server verifies ownership and project role; it rejects reassignment. These APIs do not move or delete existing conversations. Main Thread routes through project coordinators, whose persistent task threads retain their existing project access boundaries. Personal memory continues to use the existing memory API.
