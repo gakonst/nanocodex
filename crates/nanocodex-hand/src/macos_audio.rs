@@ -267,10 +267,10 @@ fn capture(
         let mut next = std::time::Instant::now();
         while !stop.load(Ordering::Acquire) {
             if video.is_some() {
-                if let Ok(mut slot) = shared_latest.lock() {
-                    if let Some(bytes) = slot.take() {
-                        latest = Some(bytes);
-                    }
+                if let Ok(mut slot) = shared_latest.lock()
+                    && let Some(bytes) = slot.take()
+                {
+                    latest = Some(bytes);
                 }
                 if let Some(bytes) = &latest {
                     writer.write_all(bytes)?;

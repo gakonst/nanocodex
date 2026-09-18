@@ -23,9 +23,15 @@ export async function describeDeviceHand(binary, env, { spawnProcess = spawn } =
 
 export function connectDeviceHand({ binary, env, signal, onState, spawnProcess = spawn, timeoutMs = 30_000 }) {
   const child = spawnProcess(binary, ["__device-hand", "--parent-pipe"], { env, stdio: ["pipe", "pipe", "pipe"] });
-  let settleReady, rejectReady, closed = false, stopping = false, error = "";
+  let settleReady, rejectReady, exited = false, stopping = false, error = "";
   const ready = new Promise((resolve, reject) => { settleReady = resolve; rejectReady = reject; });
-  const done = new Promise(resolve => child.once("close", () => { closed = true; resolve(); }));
+  // "close" also waits for pipes inherited by the shared publisher on Windows.
+  // Only the direct helper process owns this client lease; its exit releases it.
+  const done = new Promise(resolve => {
+    const finish = () => { exited = true; resolve(); };
+    child.once("exit", finish);
+    child.once("error", () => { if (!child.pid) finish(); }); // Spawn failures have no exit event.
+  });
   let buffer = "";
   child.stdout.on("data", data => {
     buffer = (buffer + data).slice(-32_768);
@@ -54,10 +60,14 @@ export function connectDeviceHand({ binary, env, signal, onState, spawnProcess =
     rejectReady(new Error("Computer Hand connection stopped."));
     child.stdin.end();
     await Promise.race([done, delay(25_000, undefined, { ref: false })]);
-    if (!closed) child.kill("SIGTERM");
+    if (!exited) child.kill("SIGTERM");
     await Promise.race([done, delay(2_000, undefined, { ref: false })]);
-    if (!closed) child.kill("SIGKILL");
+    if (!exited) child.kill("SIGKILL");
     await done;
+    // Stop observing our pipes without terminating the shared publisher.
+    child.stdin.destroy();
+    child.stdout.destroy();
+    child.stderr.destroy();
   })();
   const abort = () => { void close(); };
   const timer = setTimeout(() => { rejectReady(new Error("The computer Hand did not connect within 30 seconds.")); void close(); }, timeoutMs);

@@ -372,12 +372,13 @@ mod broadcast_live_tests {
         use std::time::Duration;
         let url = std::env::var("NANOCODEX_RTMP_TEST_URL").unwrap();
         let preset = std::env::var("NANOCODEX_RTMP_TEST_PRESET").unwrap_or("source".into());
-        let mut broadcast = crate::screen_broadcast::Broadcast::new(
+        let broadcast = crate::screen_broadcast::Broadcast::new(
             Some(super::native_command()),
             crate::screen_audio::native_source(),
         );
         #[cfg(target_os = "macos")]
-        let mut broadcast = broadcast.with_raw(super::native_broadcast_frames());
+        let broadcast = broadcast.with_raw(super::native_broadcast_frames());
+        let mut broadcast = broadcast;
         assert_eq!(
             broadcast
                 .request(&json!({"action":"start","url":url,"preset":preset}))

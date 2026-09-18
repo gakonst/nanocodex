@@ -185,7 +185,6 @@ mod tests {
                     ..Default::default()
                 },
                 payload: encoded[..count].to_vec().into(),
-                ..Default::default()
             };
             player
                 .socket

@@ -68,15 +68,14 @@ impl Registry {
                     .filter(|s| !s.is_empty() && s.len() <= 4096),
             },
         )];
-        if let Ok(config) = std::env::var("NANOCODEX_OBSERVATION_SNAPSHOT_PATHS") {
-            if config.len() <= 16_384 {
-                if let Ok(paths) = serde_json::from_str::<Vec<String>>(&config) {
-                    for (index, path) in paths.into_iter().take(4).enumerate() {
-                        let path = PathBuf::from(path);
-                        if path.is_absolute() {
-                            providers.push((format!("external:{index}"), Provider::External(path)));
-                        }
-                    }
+        if let Ok(config) = std::env::var("NANOCODEX_OBSERVATION_SNAPSHOT_PATHS")
+            && config.len() <= 16_384
+            && let Ok(paths) = serde_json::from_str::<Vec<String>>(&config)
+        {
+            for (index, path) in paths.into_iter().take(4).enumerate() {
+                let path = PathBuf::from(path);
+                if path.is_absolute() {
+                    providers.push((format!("external:{index}"), Provider::External(path)));
                 }
             }
         }

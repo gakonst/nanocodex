@@ -180,80 +180,6 @@ pub(crate) fn review_lines(text: &str, width: u16) -> Vec<String> {
     lines
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    #[test]
-    fn exact_origins_and_local_commands() {
-        assert!(matches!(
-            Command::parse("/vault review abcdefghijklmnopqrstuv https://example.com"),
-            Some(Command::Review { .. })
-        ));
-        for origin in [
-            "http://example.com",
-            "https://example.com/",
-            "https://user@example.com",
-            "https://example.com?q=x",
-            "https://example.com/#x",
-        ] {
-            assert!(!valid_origin(origin));
-        }
-        assert_eq!(
-            Command::parse("/vault review bad https://example.com"),
-            Some(Command::Help)
-        );
-        assert_eq!(Command::parse("ordinary prompt"), None);
-    }
-    #[test]
-    fn intake_is_strict_and_approval_ignores_unverified_name() {
-        let mut value = json!({"type":"vault_intake","status":"input_required","operation":"authorize_origin","vault_id":"abcdefghijklmnopqrstuv","kind":"login","name":"Unverified label","origin":"https://example.com"});
-        let text = intake_summary(&value).unwrap();
-        assert!(text.contains("/vault"));
-        assert!(!text.contains("Unverified label"));
-        value["password"] = "secret".into();
-        assert!(intake_summary(&value).is_none());
-    }
-    #[test]
-    fn receipts_project_only_safe_fields() {
-        let value = json!({"type":"vault_intake_receipt","status":"saved","operation":"authorize_origin","id":"abcdefghijklmnopqrstuv","name":"Example","kind":"login","browser_origin":"https://example.com","password":"secret"});
-        let text = receipt_summary(&value.to_string()).unwrap();
-        assert!(text.contains("Website approved for Example"));
-        assert!(!text.contains("secret"));
-    }
-    #[test]
-    fn vault_scope_rejects_switch_away_and_back() {
-        assert!(scope_matches("a", 1, "a", 1));
-        assert!(!scope_matches("a", 1, "b", 2));
-        assert!(!scope_matches("a", 1, "a", 3));
-        assert!(!scope_matches("", 1, "", 1));
-    }
-    #[test]
-    fn vault_nested_envelope_is_plain_text() {
-        let request = serde_json::json!({"type":"vault_intake","status":"input_required","operation":"authorize_origin","kind":"login","vault_id":"abcdefghijklmnopqrstuv","origin":"https://example.com"});
-        let wrapped = serde_json::json!({"content":[{"type":"text", "text":request.to_string()}]});
-        let summary = payload_summary(&wrapped, 0).unwrap();
-        assert!(summary.contains("/vault"));
-        assert!(!summary.contains("input_required"));
-        assert!(!summary.contains('{'));
-        assert!(matches!(
-            intake_command(&wrapped),
-            Some(Command::Review { .. })
-        ));
-        let mixed =
-            serde_json::json!([wrapped, {"type":"text","text":"Unrelated output stays visible"}]);
-        assert!(
-            payload_summary(&mixed, 0)
-                .unwrap()
-                .contains("Unrelated output stays visible")
-        );
-    }
-    #[test]
-    fn review_wraps_all_content() {
-        assert_eq!(review_lines("123456\nabc", 3), ["123", "456", "abc"]);
-    }
-}
-
 /// Recognize nested Code Mode/MCP result envelopes without exposing their JSON.
 pub(crate) fn payload_summary(value: &Value, depth: usize) -> Option<String> {
     if depth > 10 {
@@ -274,13 +200,12 @@ pub(crate) fn payload_summary(value: &Value, depth: usize) -> Option<String> {
     }
     let items: Vec<_> = if let Some(items) = value.as_array() {
         items.iter().collect()
-    } else if let Some(fields) = value.as_object() {
+    } else {
+        let fields = value.as_object()?;
         ["text", "content", "structuredContent", "result", "output"]
             .iter()
             .filter_map(|key| fields.get(*key))
             .collect()
-    } else {
-        return None;
     };
     let summaries: Vec<_> = items
         .iter()
@@ -399,4 +324,78 @@ pub(crate) fn request(record: &super::transcript::TranscriptRecord) -> Option<(S
     // The semantic command is shared by the direct result and its exec echo.
     let key = format!("{turn:?}:{command:?}");
     Some((key, command))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn exact_origins_and_local_commands() {
+        assert!(matches!(
+            Command::parse("/vault review abcdefghijklmnopqrstuv https://example.com"),
+            Some(Command::Review { .. })
+        ));
+        for origin in [
+            "http://example.com",
+            "https://example.com/",
+            "https://user@example.com",
+            "https://example.com?q=x",
+            "https://example.com/#x",
+        ] {
+            assert!(!valid_origin(origin));
+        }
+        assert_eq!(
+            Command::parse("/vault review bad https://example.com"),
+            Some(Command::Help)
+        );
+        assert_eq!(Command::parse("ordinary prompt"), None);
+    }
+    #[test]
+    fn intake_is_strict_and_approval_ignores_unverified_name() {
+        let mut value = json!({"type":"vault_intake","status":"input_required","operation":"authorize_origin","vault_id":"abcdefghijklmnopqrstuv","kind":"login","name":"Unverified label","origin":"https://example.com"});
+        let text = intake_summary(&value).unwrap();
+        assert!(text.contains("/vault"));
+        assert!(!text.contains("Unverified label"));
+        value["password"] = "secret".into();
+        assert!(intake_summary(&value).is_none());
+    }
+    #[test]
+    fn receipts_project_only_safe_fields() {
+        let value = json!({"type":"vault_intake_receipt","status":"saved","operation":"authorize_origin","id":"abcdefghijklmnopqrstuv","name":"Example","kind":"login","browser_origin":"https://example.com","password":"secret"});
+        let text = receipt_summary(&value.to_string()).unwrap();
+        assert!(text.contains("Website approved for Example"));
+        assert!(!text.contains("secret"));
+    }
+    #[test]
+    fn vault_scope_rejects_switch_away_and_back() {
+        assert!(scope_matches("a", 1, "a", 1));
+        assert!(!scope_matches("a", 1, "b", 2));
+        assert!(!scope_matches("a", 1, "a", 3));
+        assert!(!scope_matches("", 1, "", 1));
+    }
+    #[test]
+    fn vault_nested_envelope_is_plain_text() {
+        let request = serde_json::json!({"type":"vault_intake","status":"input_required","operation":"authorize_origin","kind":"login","vault_id":"abcdefghijklmnopqrstuv","origin":"https://example.com"});
+        let wrapped = serde_json::json!({"content":[{"type":"text", "text":request.to_string()}]});
+        let summary = payload_summary(&wrapped, 0).unwrap();
+        assert!(summary.contains("/vault"));
+        assert!(!summary.contains("input_required"));
+        assert!(!summary.contains('{'));
+        assert!(matches!(
+            intake_command(&wrapped),
+            Some(Command::Review { .. })
+        ));
+        let mixed =
+            serde_json::json!([wrapped, {"type":"text","text":"Unrelated output stays visible"}]);
+        assert!(
+            payload_summary(&mixed, 0)
+                .unwrap()
+                .contains("Unrelated output stays visible")
+        );
+    }
+    #[test]
+    fn review_wraps_all_content() {
+        assert_eq!(review_lines("123456\nabc", 3), ["123", "456", "abc"]);
+    }
 }

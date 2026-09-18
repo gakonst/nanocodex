@@ -91,7 +91,7 @@ jobs:
         run: |
           NANOCODEX_DEVICE_TEST_BINARY="$(node -p 'require("node:path").resolve("target/debug/nanocodex2" + (process.platform === "win32" ? ".exe" : ""))')"
           export NANOCODEX_DEVICE_TEST_BINARY
-          node --test js/desktop-runtime/test/device-hand.integration.test.mjs
+          node --test js/desktop-runtime/test/device-hand.integration.test.mjs js/desktop-runtime/test/device-hand-shutdown.test.mjs
 
   voice-native:
     name: native voice and relocated runtime

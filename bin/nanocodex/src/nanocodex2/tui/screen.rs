@@ -931,7 +931,9 @@ mod tests {
     async fn decoder_reports_launch_failure_without_claiming_it_is_missing() {
         let directory = tempfile::tempdir().unwrap();
         let missing = directory.path().join("missing");
-        let error = spawn_decoder(&[missing.clone()]).unwrap_err().to_string();
+        let error = spawn_decoder(std::slice::from_ref(&missing))
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("FFmpeg was not found"));
         assert!(error.contains(&missing.display().to_string()));
         let denied = directory.path().join("not-executable");
@@ -1039,7 +1041,6 @@ mod tests {
                     ..Default::default()
                 },
                 payload: payload.into(),
-                ..Default::default()
             });
         }
         samples.push(webrtc::rtp::packet::Packet {
@@ -1050,7 +1051,6 @@ mod tests {
                 ..Default::default()
             },
             payload: vec![0x61, 1].into(),
-            ..Default::default()
         });
         let frame = samples
             .pop()
@@ -1061,12 +1061,7 @@ mod tests {
     #[test]
     fn catalog_rejects_invalid_dimensions_and_identity() {
         let surface = json!({"id":"desktop","machine_id":"hand","machine_name":"Hand","name":"Desktop","generation":"one","width":1920,"height":1080});
-        assert_eq!(
-            catalog(json!({"surfaces":[surface.clone()]}))
-                .unwrap()
-                .len(),
-            1
-        );
+        assert_eq!(catalog(json!({"surfaces":[surface]})).unwrap().len(), 1);
         for field in ["id", "machine_id", "generation"] {
             let mut bad = surface.clone();
             bad[field] = json!("");

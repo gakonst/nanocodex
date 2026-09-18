@@ -62,8 +62,20 @@ fn file_path(destination: &str) -> Result<Option<String>, String> {
         if url.host_str().is_some_and(|host| host != "localhost") {
             return Err("File links with a remote hostname are unsupported.".to_owned());
         }
-        let path = url.to_file_path().map_err(|_| "Invalid file link")?;
-        return Ok(Some(strip_location(&path.to_string_lossy()).to_owned()));
+        // Logical Hand paths use a POSIX namespace even on Windows, where
+        // Url::to_file_path rejects paths without a drive letter.
+        #[cfg(windows)]
+        if url.path().as_bytes().get(2) == Some(&b':') {
+            let path = url.to_file_path().map_err(|_| "Invalid file link")?;
+            return Ok(Some(strip_location(&path.to_string_lossy()).to_owned()));
+        }
+        let path = percent_encoding::percent_decode_str(url.path())
+            .decode_utf8()
+            .map_err(|_| "Invalid UTF-8 in file link")?;
+        if path.contains('\0') {
+            return Err("Invalid file link".to_owned());
+        }
+        return Ok(Some(strip_location(&path).to_owned()));
     }
     // Absolute paths can contain colons, hashes and question marks. They are
     // filesystem names, not URLs; only decode Markdown's URL escaping.
@@ -167,8 +179,27 @@ mod tests {
                 .as_deref(),
             Some("/brain/My Report.pdf")
         );
+        assert_eq!(
+            file_path("file://localhost/other-hand/My%20Report.pdf:12")
+                .unwrap()
+                .as_deref(),
+            Some("/other-hand/My Report.pdf")
+        );
+        assert!(file_path("file:///brain/a%00b").is_err());
+        assert!(file_path("file:///brain/%FF").is_err());
         assert!(file_path("file://another-box/private/file").is_err());
         assert!(file_path("/brain/a%00b").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_windows_file_urls_keep_their_drive() {
+        assert_eq!(
+            file_path("file:///C:/Users/me/My%20Report.pdf")
+                .unwrap()
+                .as_deref(),
+            Some(r"C:\Users\me\My Report.pdf")
+        );
     }
 
     #[tokio::test]

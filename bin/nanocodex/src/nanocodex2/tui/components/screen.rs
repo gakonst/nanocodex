@@ -163,15 +163,14 @@ impl ScreenPane {
             ..area
         };
         if let Some(surface) = &self.selected {
-            if let Some(protocol) = &self.snapshot.frame {
-                if self
+            if let Some(protocol) = &self.snapshot.frame
+                && self
                     .presented
                     .as_ref()
                     .is_none_or(|previous| !Arc::ptr_eq(previous, protocol))
-                {
-                    self.frame_count += 1;
-                    self.presented = Some(protocol.clone());
-                }
+            {
+                self.frame_count += 1;
+                self.presented = Some(protocol.clone());
             }
             if self.measured_at.elapsed() >= Duration::from_secs(1) {
                 self.fps = (f64::from(self.frame_count) / self.measured_at.elapsed().as_secs_f64())

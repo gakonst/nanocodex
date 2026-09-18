@@ -29,6 +29,7 @@ mod spinner;
 mod theme;
 #[path = "transcript/mod.rs"]
 mod transcript;
+mod vault;
 #[path = "../voice_command.rs"]
 mod voice;
 #[path = "../voice_state.rs"]
@@ -37,7 +38,7 @@ mod voice_state;
 // Keep production components on their normal module paths in this private target.
 mod tui {
     pub(crate) use crate::{
-        context, format, pane, prompt, screen, session, spinner, theme, transcript,
+        context, format, pane, prompt, screen, session, spinner, theme, transcript, vault,
     };
 }
 

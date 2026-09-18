@@ -37,6 +37,7 @@ impl Broadcast {
             status,
         }
     }
+    #[cfg(target_os = "macos")]
     pub fn with_raw(mut self, source: RawSource) -> Self {
         self.raw = Some(source);
         self
@@ -51,14 +52,13 @@ impl Broadcast {
         if let Some(stop) = self.stop.take() {
             stop.send_replace(true);
         }
-        if let Some(mut task) = self.task.take() {
-            if tokio::time::timeout(Duration::from_secs(3), &mut task.0)
+        if let Some(mut task) = self.task.take()
+            && tokio::time::timeout(Duration::from_secs(3), &mut task.0)
                 .await
                 .is_err()
-            {
-                task.0.abort();
-                let _ = (&mut task.0).await;
-            }
+        {
+            task.0.abort();
+            let _ = (&mut task.0).await;
         }
         let (_, status) = watch::channel(json!({"status":"stopped"}));
         self.status = status;

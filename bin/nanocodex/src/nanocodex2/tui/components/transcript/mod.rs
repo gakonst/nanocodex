@@ -257,16 +257,16 @@ impl Transcript {
                         .as_ref()
                         .and_then(crate::tui::vault::intake_command)
                     {
-                        if let crate::tui::vault::Command::Review { id, origin } = &command {
-                            if receipts.iter().any(|text| {
+                        if let crate::tui::vault::Command::Review { id, origin } = &command
+                            && receipts.iter().any(|text| {
                                 text.contains(id)
                                     && text.contains(origin)
                                     && (text.contains("vault_intake_receipt")
                                         || text.starts_with("Vault website approval saved.")
                                         || text.starts_with("Website approved for "))
-                            }) {
-                                continue;
-                            }
+                            })
+                        {
+                            continue;
                         }
                         return Some(command);
                     }

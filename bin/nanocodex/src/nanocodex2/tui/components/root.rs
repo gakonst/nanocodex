@@ -3312,11 +3312,11 @@ impl RootNode {
         }
         let vault = crate::tui::vault::request(&record);
         let mut update = self.update_transcript(TranscriptEvent::Record(record));
-        if let Some((key, command)) = vault {
-            if self.seen_vault_requests.insert(key) {
-                update.effects.push(RootEffect::Vault(command));
-                update.render = RenderRequest::Immediate;
-            }
+        if let Some((key, command)) = vault
+            && self.seen_vault_requests.insert(key)
+        {
+            update.effects.push(RootEffect::Vault(command));
+            update.render = RenderRequest::Immediate;
         }
         if let Some(event) = turn_timer {
             let timer = self.update_composer(event, RenderRequest::Streaming);
@@ -4441,6 +4441,11 @@ mod live_control_tests {
         use nanocodex::agent::events::{AgentEvent, AgentEventKind};
         use serde_json::value::to_raw_value;
         let record = |sequence, tool: &str, result: serde_json::Value| {
+            let (structured_result, result) = if tool == "request_vault_intake" {
+                (result, serde_json::Value::Null)
+            } else {
+                (serde_json::Value::Null, result)
+            };
             Arc::new(TranscriptRecord::from_agent(
                 sequence,
                 sequence,
@@ -4452,8 +4457,8 @@ mod live_control_tests {
                     payload: to_raw_value(
                         &json!({"call_id": format!("call-{sequence}"), "tool": tool,
                     "status": "completed",
-                    "structured_result": if tool == "request_vault_intake" { result.clone() } else { serde_json::Value::Null },
-                    "result": if tool == "request_vault_intake" { serde_json::Value::Null } else { result }}),
+                    "structured_result": structured_result,
+                    "result": result}),
                     )
                     .unwrap()
                     .into(),
