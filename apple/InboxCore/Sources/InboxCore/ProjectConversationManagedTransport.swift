@@ -36,7 +36,9 @@ import Foundation
     public func send(_ command: AgentCommand) async throws {
         try authorize(command.agentID)
         guard (command.kind == .followUp || command.kind == .stop), command.images.isEmpty, command.rawInput == nil else { throw APIError.invalidResponse }
-        _ = try await client.command(command)
+        let receipt = try await client.command(command)
+        let expected = command.kind == .followUp ? command.requestID : command.turnID
+        guard receipt["turn_id"].string == expected else { throw APIError.invalidResponse }
     }
 }
 #endif

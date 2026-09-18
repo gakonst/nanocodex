@@ -1,5 +1,6 @@
 #if canImport(Combine)
 import XCTest
+import Combine
 @testable import InboxCore
 
 @MainActor final class ProjectConversationStoreTests: XCTestCase {
@@ -101,7 +102,10 @@ import XCTest
         let stop = Task { await store.stop() }
         await fulfillment(of: [started], timeout: 2)
         await store.select("b")
+        transport.failSend = true
         continuation?.resume(); await stop.value
+        XCTAssertNil(store.error, "A delayed stop failure belongs to A, not the newly selected B")
+        XCTAssertNotNil(store.cards.first { $0.id == "a" }?.error)
         XCTAssertEqual(transport.commands.count, 1)
         XCTAssertEqual(transport.commands[0].agentID, "a")
         XCTAssertEqual(transport.commands[0].turnID, "running")
@@ -142,8 +146,17 @@ import XCTest
         XCTAssertEqual(transport.commands[0], transport.commands[1])
         XCTAssertNotNil(store.pending["a"]); XCTAssertEqual(store.drafts["a"], "next")
         await waitForStream(transport)
+        transport.active = [transport.commands[0].requestID]
+        transport.pages = [try page([], latest: 0)]
+        await store.resume(); await waitForStream(transport, count: 2)
+        XCTAssertNotNil(store.pending["a"], "A state receipt cannot hide input missing from the visible history")
+        let published = expectation(description: "durable user row published")
+        let observation = store.$rows.filter { $0.contains { $0.text == "hello" } }.prefix(1).sink { _ in published.fulfill() }
+        defer { observation.cancel() }
         let admitted = try AgentEvent(.object(["cursor": .string("1"), "type": .string("turn_accepted"), "turn_id": .string(transport.commands[0].requestID), "input": .string("hello")]))
-        await transport.streams[0].1(.init(event: admitted, cursor: admitted.cursor))
+        await transport.streams[1].1(.init(event: admitted, cursor: admitted.cursor))
+        XCTAssertNotNil(store.pending["a"], "Keep input visible until coalesced projection publishes")
+        await fulfillment(of: [published], timeout: 2)
         XCTAssertNil(store.pending["a"])
         store.suspend()
     }
@@ -189,7 +202,7 @@ import XCTest
         XCTAssertFalse(store.isLoading); store.suspend()
     }
 
-    func testOlderPagingPausesStreamAndResumeRestoresLatest() async throws {
+    func testOlderPagingSurvivesResumeUntilExplicitLatest() async throws {
         let transport = Transport()
         transport.pages = [try page([event(3, "three")], latest: 3, more: true), try page([event(1, "one"), event(2, "two")], latest: 3), try page([event(4, "four")], latest: 4, more: true)]
         let store = ProjectConversationStore(transport: transport, byteLimit: 1)
@@ -201,7 +214,13 @@ import XCTest
         let late = try AgentEvent(event(5, "late"))
         await transport.streams[0].1(ProjectConversationFrame(event: late, cursor: late.cursor))
         XCTAssertEqual(store.rows.map(\.text), ["one"])
-        await store.resume(); await waitForStream(transport, count: 2)
+        store.suspend()
+        await store.resume()
+        XCTAssertEqual(store.rows.map(\.text), ["one"])
+        XCTAssertTrue(store.isBrowsingHistory)
+        XCTAssertEqual(transport.streams.count, 1)
+        await store.jumpToLatest(); await waitForStream(transport, count: 2)
+        XCTAssertFalse(store.isBrowsingHistory)
         XCTAssertEqual(store.rows.map(\.text), ["four"])
         XCTAssertEqual(transport.streams[1].0.rawValue, "4")
         store.suspend()
@@ -253,6 +272,73 @@ import XCTest
         XCTAssertFalse(store.isLoading); XCTAssertTrue(store.rows.isEmpty)
         XCTAssertEqual(store.connection, .suspended)
         XCTAssertTrue(transport.streams.isEmpty)
+    }
+
+    func testMalformedOlderPageCannotReplaceVisibleWindow() async throws {
+        let transport = Transport()
+        transport.pages = [try page([event(3, "three")], latest: 3, more: true),
+                           try page([event(4, "wrong direction")], latest: 4)]
+        let store = ProjectConversationStore(transport: transport)
+        await store.select("a")
+        await store.loadOlder()
+        XCTAssertEqual(store.rows.map(\.text), ["three"])
+        XCTAssertTrue(store.hasOlder)
+        XCTAssertNotNil(store.error)
+        XCTAssertFalse(store.isLoadingOlder)
+        store.suspend()
+    }
+
+    func testUnencodableEventTerminatesBeforeLaterCheckpoint() async throws {
+        let transport = Transport(); transport.pages = [try page([], latest: 0)]
+        let store = ProjectConversationStore(transport: transport)
+        await store.select("a"); await waitForStream(transport)
+        let invalid = try AgentEvent(.object(["cursor": .string("1"), "type": .string("turn_accepted"),
+            "turn_id": .string("bad"), "input": .string("bad"), "invalid": .number(.nan)]))
+        await transport.streams[0].1(.init(event: invalid, cursor: invalid.cursor))
+        await transport.streams[0].1(.init(cursor: Cursor(rawValue: "99")))
+        let late = try AgentEvent(event(100, "must not follow corrupt event"))
+        await transport.streams[0].1(.init(event: late, cursor: late.cursor))
+        XCTAssertEqual(store.connection, .disconnected)
+        XCTAssertNotNil(store.error)
+        XCTAssertTrue(store.rows.isEmpty)
+        store.suspend()
+    }
+
+    func testLateSendFailureCannotChangeTheNextPendingMessage() async throws {
+        let transport = Transport(); transport.pages = [try page([], latest: 0)]
+        let store = ProjectConversationStore(transport: transport)
+        await store.select("a"); await waitForStream(transport)
+        var firstReply: CheckedContinuation<Void, Error>?
+        var secondReply: CheckedContinuation<Void, Error>?
+        let firstStarted = expectation(description: "first sending")
+        let secondStarted = expectation(description: "second sending")
+        transport.sendHandler = { command in
+            try await withCheckedThrowingContinuation { continuation in
+                if command.input == "first" { firstReply = continuation; firstStarted.fulfill() }
+                else { secondReply = continuation; secondStarted.fulfill() }
+            }
+        }
+        store.setDraft("first", for: "a")
+        let first = Task { await store.send() }
+        await fulfillment(of: [firstStarted], timeout: 2)
+        let visible = expectation(description: "first visible")
+        let observation = store.$rows.filter { $0.contains { $0.text == "first" } }.prefix(1).sink { _ in visible.fulfill() }
+        defer { observation.cancel() }
+        let accepted = try AgentEvent(.object(["cursor": .string("1"), "type": .string("turn_accepted"),
+            "turn_id": .string(transport.commands[0].requestID), "input": .string("first")]))
+        await transport.streams[0].1(.init(event: accepted, cursor: accepted.cursor))
+        await fulfillment(of: [visible], timeout: 2)
+        store.setDraft("second", for: "a")
+        let second = Task { await store.send() }
+        await fulfillment(of: [secondStarted], timeout: 2)
+        firstReply?.resume(throwing: URLError(.networkConnectionLost))
+        await first.value
+        XCTAssertEqual(store.pending["a"]?.command.input, "second")
+        XCTAssertEqual(store.pending["a"]?.isSending, true)
+        XCTAssertNil(store.pending["a"]?.error)
+        secondReply?.resume(returning: ())
+        await second.value
+        store.suspend()
     }
 
 }

@@ -9,6 +9,7 @@ import NanocodexRemote
 import NanocodexVoice
 import NanocodexContext
 import NanocodexUI
+import NanocodexChat
 import UIKit
 import AVFoundation
 
@@ -503,6 +504,24 @@ private struct ConversationDrawer: View {
     let create: () -> Void
     let settings: () -> Void
     @State private var query = ""
+    @State private var childRosters: [String: ConversationRoster] = [:]
+
+    private func children(in project: InboxProject) -> [AgentCard] {
+        let cards = model.cards.filter { project.agentIDs.contains($0.id) && $0.id != project.primaryAgentID }
+        return (childRosters[project.id] ?? ConversationRoster(cards: cards)).visible(in: cards, matching: "")
+    }
+
+    private func reconcileChildRosters() {
+        var next: [String: ConversationRoster] = [:]
+        for project in model.projects {
+            let cards = model.cards.filter { project.agentIDs.contains($0.id) && $0.id != project.primaryAgentID }
+            var roster = childRosters[project.id] ?? ConversationRoster(cards: cards)
+            roster.reconcile(cards)
+            next[project.id] = roster
+        }
+        childRosters = next
+    }
+
 
     private func matches(_ project: InboxProject) -> Bool {
         query.isEmpty || project.name.localizedCaseInsensitiveContains(query)
@@ -531,8 +550,7 @@ private struct ConversationDrawer: View {
             ScrollView {
                 LazyVStack(spacing: 4) {
                     ForEach(model.projects.filter(matches)) { project in
-                        let children = model.cards.filter { project.agentIDs.contains($0.id) && $0.id != project.primaryAgentID }
-                            .sorted(by: AgentCard.mostRecentFirst)
+                        let children = children(in: project)
                         let expanded = expandedProjects.contains(project.id) || !query.isEmpty
                         HStack(spacing: 0) {
                             Button { select(project.primaryAgentID) } label: {
@@ -566,7 +584,7 @@ private struct ConversationDrawer: View {
                         }
                         .background(model.focused?.id == project.primaryAgentID ? Ink.surface : Color.clear, in: RoundedRectangle(cornerRadius: 12))
                         if expanded {
-                            ForEach(children.filter { query.isEmpty || project.name.localizedCaseInsensitiveContains(query) || $0.title.localizedCaseInsensitiveContains(query) }) { child in
+                            ConversationListContent(cards: children.filter { query.isEmpty || project.name.localizedCaseInsensitiveContains(query) || $0.title.localizedCaseInsensitiveContains(query) }) { child in
                                 Button { select(child.id) } label: {
                                     HStack(spacing: 10) {
                                         Image(systemName: "bubble.left").font(.caption).foregroundStyle(.secondary)
@@ -582,7 +600,7 @@ private struct ConversationDrawer: View {
                                 .accessibilityValue(child.isRunning ? "Working" : child.status)
                                 .accessibilityAddTraits(model.focused?.id == child.id ? [.isSelected] : [])
                                 .accessibilityIdentifier("conversation-row:" + child.id)
-                            }
+                            } empty: { EmptyView() }
                         }
                     }
                 }
@@ -596,10 +614,13 @@ private struct ConversationDrawer: View {
             }
         }.padding(16).background(Ink.background).buttonStyle(.plain)
             .onAppear {
+                reconcileChildRosters()
                 if let project = model.focusedProject, model.focused?.id != project.primaryAgentID {
                     expandedProjects.insert(project.id)
                 }
             }
+            .onChange(of: model.cards.map(\.id)) { _, _ in reconcileChildRosters() }
+            .onChange(of: model.projects) { _, _ in reconcileChildRosters() }
             .accessibilityAction(.escape, close)
     }
 }

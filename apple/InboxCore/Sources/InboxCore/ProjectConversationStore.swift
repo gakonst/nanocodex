@@ -34,6 +34,7 @@ public struct ProjectConversationFrame: Sendable {
     var scope: ProjectConversationScope { get }
     func state(_ id: String) async throws -> JSON
     func history(_ id: String, before: Cursor?, after: Cursor?) async throws -> EventPage
+    /// Deliver callbacks serially and await each receive before continuing.
     /// Must propagate cancellation to the underlying foreground connection.
     func stream(_ id: String, after: Cursor, receive: @escaping @Sendable (ProjectConversationFrame) async -> Void) async throws
     func send(_ command: AgentCommand) async throws
@@ -54,20 +55,23 @@ public struct ProjectConversationPending: Equatable, Sendable {
 /// SwiftUI view builders. No account-wide discovery, creation, uploads, steering,
 /// background reconnect loop or durable draft persistence is performed here.
 /// Replacing authorization requires a new transport/store. Call suspend when the
-/// host leaves the foreground. Older paging pauses live delivery until resume.
+/// host leaves the foreground. Older paging pauses live delivery until jumpToLatest().
 @MainActor public final class ProjectConversationStore: ObservableObject {
     public let scope: ProjectConversationScope
     public var roster: [ProjectConversation] { scope.conversations }
-    @Published public private(set) var cards: [AgentCard]
+    @Published public private(set) var cards: [AgentCard] { didSet { updateItems() } }
     public var activeTurns: [String] { cards.first { $0.id == selection }?.activeTurns ?? [] }
-    public var items: [ConversationItem] { ConversationItem.group(rows, activeTurns: activeTurns) }
+    @Published public private(set) var items: [ConversationItem] = []
     @Published public private(set) var selection: String?
-    @Published public private(set) var rows: [TranscriptRow] = []
+    @Published public private(set) var rows: [TranscriptRow] = [] {
+        didSet { updateItems(); reconcilePending() }
+    }
     @Published public private(set) var drafts: [String: String] = [:]
     @Published public private(set) var pending: [String: ProjectConversationPending] = [:]
     @Published public private(set) var isLoading = false
     @Published public private(set) var isLoadingOlder = false
     @Published public private(set) var hasOlder = false
+    @Published public private(set) var isBrowsingHistory = false
     @Published public private(set) var error: String?
     @Published public private(set) var connection: ProjectConversationConnection = .suspended
     private let transport: any ProjectConversationTransport
@@ -96,7 +100,7 @@ public struct ProjectConversationPending: Equatable, Sendable {
     public func select(_ id: String?) async {
         guard id == nil || roster.contains(where: { $0.id == id }) else { return }
         invalidate()
-        selection = id; events = []; sizes = []; projector = TranscriptStreamProjection(); rows = []; cursor = .zero; hasOlder = false; error = nil
+        selection = id; isBrowsingHistory = false; events = []; sizes = []; projector = TranscriptStreamProjection(); rows = []; cursor = .zero; hasOlder = false; error = nil
         guard let id else { connection = .suspended; return }
         await beginLatest(id)
     }
@@ -105,15 +109,19 @@ public struct ProjectConversationPending: Equatable, Sendable {
         foreground = false; invalidate(); connection = .suspended
     }
 
-    /// Reload the newest bounded page and replay SSE strictly after its cursor.
-    /// This also exits backward browsing without leaving holes in the projection.
+    /// Resume foreground observation, preserving an explicitly opened older
+    /// window. Only jumpToLatest exits history browsing.
     public func resume() async {
         foreground = true; invalidate()
-        guard let selection else { return }
+        guard let selection else { connection = .suspended; return }
+        guard !isBrowsingHistory else { connection = .suspended; return }
         await beginLatest(selection)
     }
 
-    public func jumpToLatest() async { await resume() }
+    public func jumpToLatest() async {
+        isBrowsingHistory = false
+        await resume()
+    }
 
     private func beginLatest(_ id: String) async {
         let token = generation
@@ -137,7 +145,6 @@ public struct ProjectConversationPending: Equatable, Sendable {
             guard current(token, id) else { return }
             if let index = cards.firstIndex(where: { $0.id == id }) {
                 try cards[index].apply(state: state)
-                reconcilePending(id, events: [])
             }
             let page = try await transport.history(id, before: nil, after: nil)
             guard current(token, id) else { return }
@@ -159,7 +166,7 @@ public struct ProjectConversationPending: Equatable, Sendable {
 
     private static func retryable(_ error: Error) -> Bool {
         if let error = error as? APIError {
-            if case .http(let code) = error { return code == 429 || code >= 500 }
+            if case .http(let code) = error { return code >= 500 }
             return false
         }
         return error is URLError && (error as? URLError)?.code != .cancelled
@@ -192,7 +199,14 @@ public struct ProjectConversationPending: Equatable, Sendable {
         guard current(token, id), foreground else { return }
         error = nil
         if let event = frame.event, event.cursor > cursor {
-            guard let counts = try? await TranscriptPreparation.byteCounts([event]), current(token, id), foreground, event.cursor > cursor else { return }
+            let counts: [Int]
+            do { counts = try await TranscriptPreparation.byteCounts([event]) }
+            catch {
+                guard current(token, id) else { return }
+                failObservation(error)
+                return
+            }
+            guard current(token, id), foreground, !Task.isCancelled, event.cursor > cursor else { return }
             events.append(event); sizes.append(contentsOf: counts); cursor = event.cursor
             trim(older: false); applyCard(id, events: [event])
             scheduleProjection(id, token: token)
@@ -205,7 +219,14 @@ public struct ProjectConversationPending: Equatable, Sendable {
             do { try await Task.sleep(nanoseconds: 16_000_000) } catch { return }
             guard let self, self.current(token, id) else { return }
             let snapshot = self.events
-            guard let rows = try? await self.projector.rows(snapshot), self.current(token, id), !Task.isCancelled else { return }
+            let rows: [TranscriptRow]
+            do { rows = try await self.projector.rows(snapshot) }
+            catch {
+                guard self.current(token, id) else { return }
+                self.failObservation(error)
+                return
+            }
+            guard self.current(token, id), !Task.isCancelled else { return }
             self.rows = rows; self.projectionTask = nil
             if let event = snapshot.last { self.applyCard(id, events: [event]) }
             if snapshot.last?.cursor != self.events.last?.cursor { self.scheduleProjection(id, token: token) }
@@ -213,11 +234,20 @@ public struct ProjectConversationPending: Equatable, Sendable {
     }
     private func applyCard(_ id: String, events: [AgentEvent]) {
         if let index = cards.firstIndex(where: { $0.id == id }) { cards[index].apply(events: events, transcriptRows: rows) }
-        reconcilePending(id, events: events)
     }
-    private func reconcilePending(_ id: String, events: [AgentEvent]) {
-        guard let item = pending[id] else { return }
-        if cards.first(where: { $0.id == id })?.activeTurns.contains(item.command.requestID) == true || events.contains(where: { $0.turnID == item.command.requestID && $0.type == "turn_accepted" }) { pending[id] = nil }
+    private func updateItems() {
+        items = ConversationItem.group(rows, activeTurns: activeTurns)
+    }
+    private func reconcilePending() {
+        guard let id = selection, let item = pending[id] else { return }
+        if rows.contains(where: { $0.role == "You" && $0.turnID == item.command.requestID }) {
+            pending[id] = nil
+        }
+    }
+    private func failObservation(_ failure: Error) {
+        invalidate()
+        error = failure.localizedDescription
+        connection = .disconnected
     }
 
     public func loadOlder() async {
@@ -231,6 +261,7 @@ public struct ProjectConversationPending: Equatable, Sendable {
     }
     private func loadOlderPage() async {
         guard !isLoading, !isLoadingOlder, hasOlder, let id = selection, let before = events.first?.cursor else { return }
+        isBrowsingHistory = true
         generation = UUID(); streamTask?.cancel(); streamTask = nil
         projectionTask?.cancel(); projectionTask = nil; connection = .suspended
         let token = generation
@@ -240,7 +271,10 @@ public struct ProjectConversationPending: Equatable, Sendable {
             let page = try await transport.history(id, before: before, after: nil)
             guard current(token, id) else { return }
             guard !Task.isCancelled else { isLoadingOlder = false; return }
-            let older = page.events.filter { $0.cursor < before }
+            guard !page.events.isEmpty, page.events.allSatisfy({ $0.cursor < before }) else {
+                throw APIError.invalidResponse
+            }
+            let older = page.events
             let counts = try await TranscriptPreparation.byteCounts(older)
             guard current(token, id), !Task.isCancelled else { return }
             events = older + events; sizes = counts + sizes; hasOlder = page.hasMore && !older.isEmpty
@@ -267,8 +301,13 @@ public struct ProjectConversationPending: Equatable, Sendable {
 
     public func stop() async {
         guard let id = selection, let turn = activeTurns.first else { return }
+        let token = generation
         let command = AgentCommand(agentID: id, turnID: turn, kind: .stop)
-        do { try await transport.send(command) } catch { self.error = error.localizedDescription }
+        do { try await transport.send(command) }
+        catch {
+            if let index = cards.firstIndex(where: { $0.id == id }) { cards[index].error = error.localizedDescription }
+            if current(token, id) { self.error = error.localizedDescription }
+        }
     }
 
     public func send() async {
@@ -286,8 +325,10 @@ public struct ProjectConversationPending: Equatable, Sendable {
     private func perform(_ command: AgentCommand) async {
         do {
             try await transport.send(command)
+            guard pending[command.agentID]?.command.requestID == command.requestID else { return }
             pending[command.agentID]?.isSending = false
         } catch {
+            guard pending[command.agentID]?.command.requestID == command.requestID else { return }
             pending[command.agentID]?.isSending = false
             pending[command.agentID]?.error = error.localizedDescription
         }
