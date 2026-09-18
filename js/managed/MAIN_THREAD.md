@@ -73,6 +73,7 @@ canonical project coordinator, a persistent project task, or an ordinary convers
 Project roles include scoped project/root/parent identifiers, never project titles.
 Main spawn preflight runs before deriving or creating any child agent.
 
+Canonical routing tools validate live account authority before reading registry metadata.
 Retained completion grants are revalidated against the live account record and
 organization membership before registry/feed reads and again at internal turn
 admission. Matching cached session epochs alone is insufficient. Both initial

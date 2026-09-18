@@ -27,7 +27,13 @@ Existing conversations remain in place. Server-owned navigation groups are proje
 
 Stable route request IDs and the retained admission outbox prevent an ambiguous response from creating duplicate work. Completion notifications are internal task data, not new user instructions or expanded authorization. The coordinator's summary and routing choices remain model behavior; protocol tests verify delivery and isolation independently of model choices.
 
+## Turn state
+
+The managed turn protocol has no separate `running` state. A turn remains `accepted` while executing until it completes, fails, or is cancelled. `attempt_count` counts retries, so zero does not mean execution has not started. Completion claims require the terminal outcome, not admission status alone.
+
 ## Validation
+
+Backend: the final combined managed run passes 192 tests across 15 suites, covering routing/access boundaries, legacy adoption, trusted completion provenance, lifecycle generations, old-route replay, watch retirement/renewal, and actual runtime execution. Managed typecheck passes.
 
 Client contract: 54 managed-agent tests pass, including Main Thread reuse, normal conversation handles, authorization errors, project registration, malformed responses, and rejection of caller-selected team scope. The JavaScript type contract passes after building its workspace dependency. The account proxy's 14 tests pass, including unchanged authenticated forwarding and exact route matching for Main Thread and projects.
 
@@ -35,6 +41,6 @@ Web: the four focused API tests and integrated account typecheck pass after work
 
 Desktop: the integrated Main Thread/runtime protocol suites pass all 34 tests. The isolated desktop worktree also passed its runtime build, native Debug build, and four selected native tests covering identity reuse, drafts, account-switch fencing, project navigation, and the existing queue/steering flow. The native build reused ignored prerequisite VoiceCore/Hand artifacts; it did not replace the installed application.
 
-Mobile: the integrated InboxCore suite completed 210 tests with five expected live-integration skips and zero failures. The production-method harness passed ensure coalescing, account reset, stale success/error/defer rejection, refresh races, selection preservation, and alias policy. The simulator test build passed in the isolated mobile worktree, but simulator startup prevented UI test execution. The rebased mobile compatibility checks also passed (17 project-index tests, five API tests, and the updated production-method harness). Backend validation is recorded in the PR once integrated checks complete.
+Mobile: the integrated InboxCore suite completed 210 tests with five expected live-integration skips and zero failures. The production-method harness passed ensure coalescing, account reset, stale success/error/defer rejection, refresh races, selection preservation, and alias policy. The simulator test build passed in the isolated mobile worktree, but simulator startup prevented UI test execution. The rebased mobile compatibility checks also passed (17 project-index tests, five API tests, and the updated production-method harness). Delivery tests exercise durable alarms, eviction, publication, notification admission, cursors, and retirement using terminal fixtures. A separate scripted-provider regression executes real routing tools and terminal transitions through Main → coordinator → child → coordinator → Main, including inherited settings and fresh-authority watch renewal. It verifies runtime execution independently of live-model decisions.
 
-The package packing check requires generated `pkg-web/nanocodex.js`, absent in this source checkout, and therefore did not run to completion. No production deployment or live-model routing claim is implied by fixture tests.
+The package artifact check passes. Worker and package checks used generated WASM artifacts after verifying matching Rust/Cargo sources; no generated artifact is committed. No production deployment or live-model routing claim is implied by fixture tests.

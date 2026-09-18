@@ -5232,6 +5232,10 @@ export class DurableAgentSession extends DurableComputerSession {
         project_root_id: row.project_root_id, origin_turn_id: row.origin_turn_id, turn };
     };
     const canonicalProjects = async (context: ToolContext) => {
+      const principal = principalFor(context);
+      if (!await retainedProjectAuthority(this.env, principal))
+        throw new ManagedRequestError(403, "forbidden", "project account authority was revoked");
+      // Fence local authorization changes while the authoritative lookup yielded.
       principalFor(context);
       const scope = `?team_id=${encodeURIComponent(session.team_id)}`;
       const main = await registry.fetch(`https://user.internal/main-thread${scope}`);
