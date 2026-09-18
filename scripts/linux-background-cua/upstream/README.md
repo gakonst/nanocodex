@@ -47,6 +47,17 @@ for pointer actions, cursor position, without restoration. The canonical native
 harness covers defined GTK3, Electron, and Tauri foreground cases. A background
 refusal never authorizes a hidden foreground fallback.
 
+While an independent lane owns a native Wayland client, newly mapped toplevels
+from that client suppress initial primary focus. Both early layout placement
+and ordinary new-window focus are covered; unrelated clients and explicit human
+focus decisions retain normal compositor behavior. The protection ends when
+there is no active bound reservation. It does not automatically retarget input
+to a dialog: discover and bind the dialog explicitly. Separate lanes cannot
+control two windows of the same Wayland client concurrently. When switching
+windows through a runtime that retains a lane per window, reset the CUA session
+to release its reservation before binding the other window.
+
+
 This branch also contains a separate, opt-in
 [isolated-input compatibility experiment](protocol/input-experiment.md).
 It is not enabled by the normal build or package. Its test-only operator

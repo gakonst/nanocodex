@@ -41,7 +41,9 @@ use crate::{
         transcript::TranscriptRecord,
     },
 };
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+};
 use nanocodex::Model;
 use nanocodex_subagents::{AgentId, AgentStatus, AgentUpdate, MessageSender};
 use ratatui::{
@@ -1765,6 +1767,18 @@ impl RootNode {
         }
     }
 
+    fn submit_action_command(&mut self, command: String) -> ComponentUpdate<RootEffect> {
+        self.overlay = None;
+        self.composer.component_mut().replace_draft(command);
+        self.update_composer(
+            ComposerEvent::Terminal(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            ))),
+            RenderRequest::Immediate,
+        )
+    }
+
     fn update_actions(&mut self, event: Event) -> ComponentUpdate<RootEffect> {
         self.refresh_actions();
         let Some(Overlay::Actions(actions)) = &mut self.overlay else {
@@ -1773,6 +1787,10 @@ impl RootNode {
         let update = actions.update(ActionsEvent::Terminal(event));
         match update.effects.into_iter().next() {
             Some(ActionsEffect::Dismiss) => self.overlay = None,
+            Some(ActionsEffect::Submit(command)) => return self.submit_action_command(command),
+            Some(ActionsEffect::Trigger(Action::Goal)) => {
+                return self.submit_action_command("/goal".to_owned());
+            }
             Some(ActionsEffect::Trigger(Action::Bug)) => {
                 self.overlay = None;
                 return self.apply_settings_command(SettingsCommand::Bug(String::new()));
@@ -2578,6 +2596,14 @@ impl RootNode {
                 vec![RootEffect::Vault(command)]
             }
             Some(ComposerEffect::ShowAgentId) => vec![RootEffect::ShowAgentId],
+            // Goal controls are intercepted by the managed server and must not
+            // wait behind active model work or an unacknowledged steer.
+            Some(ComposerEffect::Submit(prompt))
+                if prompt.display_text().split_whitespace().next() == Some("/goal") =>
+            {
+                self.in_flight_turns = self.in_flight_turns.saturating_add(1);
+                vec![RootEffect::Submit(prompt)]
+            }
             Some(ComposerEffect::Submit(prompt)) if self.has_active_turns() => {
                 let (id, prompt) = self.queue.component_mut().begin_steer(prompt);
                 vec![RootEffect::Steer { id, prompt }]
@@ -4635,6 +4661,76 @@ mod live_control_tests {
             terminal_expected: false,
         });
         assert!(!rendered(&mut root).contains("Thinking…"));
+    }
+
+    #[test]
+    fn goal_menu_selection_submits_the_bare_command() {
+        let mut root = root_with_draft("");
+        for character in "/Goal".chars() {
+            root.update(key(KeyCode::Char(character)));
+        }
+        let update = root.update(key(KeyCode::Enter));
+        assert!(
+            matches!(update.effects.as_slice(), [RootEffect::Submit(prompt)] if prompt.display_text() == "/goal")
+        );
+        assert!(root.overlay.is_none());
+    }
+
+    #[test]
+    fn slash_goal_bypasses_active_work_and_pending_steers() {
+        for typed in [false, true] {
+            for active in [false, true] {
+                for pending_steer in [false, true] {
+                    for command in ["/goal status", "/goal pause", "/goal resume", "/goal clear"] {
+                        let mut root = root_with_draft(if typed { "" } else { command });
+                        root.managed_active_turns = usize::from(active);
+                        if pending_steer {
+                            root.queue
+                                .component_mut()
+                                .begin_steer("existing steer".to_owned().into());
+                        }
+                        let _ = root.sync_live_controls();
+                        if typed {
+                            for character in command.chars() {
+                                root.update(key(KeyCode::Char(character)));
+                            }
+                        }
+                        let update = root.update(key(KeyCode::Enter));
+                        assert!(
+                            matches!(update.effects.as_slice(), [RootEffect::Submit(prompt)] if prompt.display_text() == command)
+                        );
+                        assert_eq!(root.queue.component().has_pending_steer(), pending_steer);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn slash_goal_routes_literal_commands_from_draft_and_actions() {
+        for typed in [false, true] {
+            for command in [
+                "/goal",
+                "/goal status",
+                "/goal pause",
+                "/goal resume",
+                "/goal clear",
+                "/goal build  a better TUI",
+            ] {
+                let mut root = root_with_draft(if typed { "" } else { command });
+                if typed {
+                    for character in command.chars() {
+                        root.update(key(KeyCode::Char(character)));
+                    }
+                }
+                let update = root.update(key(KeyCode::Enter));
+                assert!(
+                    matches!(update.effects.as_slice(), [RootEffect::Submit(prompt)] if prompt.display_text() == command)
+                );
+                assert!(root.composer.component().draft().is_empty());
+                assert!(root.overlay.is_none());
+            }
+        }
     }
 
     #[test]

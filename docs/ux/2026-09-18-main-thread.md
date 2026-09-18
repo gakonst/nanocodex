@@ -33,9 +33,9 @@ The managed turn protocol has no separate `running` state. A turn remains `accep
 
 ## Validation
 
-Backend: the final combined managed run passes 192 tests across 15 suites, covering routing/access boundaries, legacy adoption, trusted completion provenance, lifecycle generations, old-route replay, watch retirement/renewal, and actual runtime execution. Managed typecheck passes.
+Backend: the final combined managed run passes 215 tests across 20 suites, covering routing/access boundaries, legacy adoption, trusted completion provenance, lifecycle generations, old-route replay, watch retirement/renewal, and actual runtime execution. Managed typecheck passes.
 
-Client contract: 54 managed-agent tests pass, including Main Thread reuse, normal conversation handles, authorization errors, project registration, malformed responses, and rejection of caller-selected team scope. The JavaScript type contract passes after building its workspace dependency. The account proxy's 14 tests pass, including unchanged authenticated forwarding and exact route matching for Main Thread and projects.
+Client contract: 54 managed-agent tests pass, including Main Thread reuse, normal conversation handles, authorization errors, project registration, malformed responses, and rejection of caller-selected team scope. The JavaScript type contract passes after building its workspace dependency. The account proxy/boundary suites' 15 tests pass, including unchanged authenticated forwarding and exact route matching for Main Thread and projects.
 
 Web: the four focused API tests and integrated account typecheck pass after workspace dependency builds. The isolated browser component journey verifies repeated ensure, coordinator selection, failure, and retry. [Web navigation fixture](media/main-thread-web-navigation.png) is component evidence with a mocked API, not a deployed end-to-end run.
 

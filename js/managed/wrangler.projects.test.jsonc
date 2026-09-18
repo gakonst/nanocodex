@@ -1,5 +1,5 @@
 {
-  "name": "conversation-project-migration-test",
+  "name": "conversation-projects-test",
   "main": "test/conversation-project-worker.ts",
   "compatibility_date": "2026-07-29",
   "compatibility_flags": [

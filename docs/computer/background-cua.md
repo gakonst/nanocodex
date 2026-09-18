@@ -295,3 +295,23 @@ Approval waits continue polling and renewing previously admitted lanes. Ordinary
 capture failures return to the child as screenshot errors, preserving optional
 AX-only observations and queued work. Invalid capture bindings still revoke the
 lane. Both cases have causal scheduler regressions.
+
+The staged Omarchy bundle and the active desktop are distinct. The staged
+`nanocodex-computer` was refreshed after `concurrency-staged/README.md` was
+written; its reviewed SHA-256 is
+`66da0d5959f4d61b3893e5c92ec67de210e286edd79441626d0f697005a92421`.
+The existing desktop compositor still owns its older process-lifetime module;
+copying a candidate does not increase that session's lane capacity. The fixed
+companion wrapper and activation marker pin the plugin hash for that compositor
+lifetime. Do not unload or hot-replace it. Use the
+[offline upgrade and rollback procedure](../../scripts/linux-background-cua/deployment/UPGRADE.md)
+after logging out, through an administrator's SSH/text console. The procedure
+refuses active Hyprland sessions, retains a complete rollback installation, and
+never restarts the desktop or Hand. A fresh session and fresh companion binding
+must pass runtime ABI and input/capture checks before reporting activation.
+For long-lived independent observe/decide/act loops, see the runnable
+[`examples/independent-cua`](../../examples/independent-cua/README.md) example.
+It retains a single remote transport, uses one companion JS session per owned
+window to avoid separate-eval serialization, bounds per-window admission, and
+journals uncertain writes without replay. Its deterministic-delay acceptance
+uses a private compositor and native GTK fixtures; it is not a model benchmark.

@@ -569,6 +569,34 @@ fn chord(value: &str) -> Result<(u16, u8)> {
         "delete" => 111,
         "home" => 102,
         "end" => 107,
+        "pageup" | "page_up" => 104,
+        "pagedown" | "page_down" => 109,
+        "insert" => 110,
+        // Linux evdev codes, not XKB keycodes (which add an offset of eight).
+        "f1" => 59,
+        "f2" => 60,
+        "f3" => 61,
+        "f4" => 62,
+        "f5" => 63,
+        "f6" => 64,
+        "f7" => 65,
+        "f8" => 66,
+        "f9" => 67,
+        "f10" => 68,
+        "f11" => 87,
+        "f12" => 88,
+        "f13" => 183,
+        "f14" => 184,
+        "f15" => 185,
+        "f16" => 186,
+        "f17" => 187,
+        "f18" => 188,
+        "f19" => 189,
+        "f20" => 190,
+        "f21" => 191,
+        "f22" => 192,
+        "f23" => 193,
+        "f24" => 194,
         _ => {
             let mut chars = last.chars();
             let c = chars.next().ok_or_else(|| Error::invalid("Empty key"))?;
@@ -1032,6 +1060,22 @@ mod tests {
                 .is_err()
         );
         assert_eq!(key('W').unwrap(), (17, 1));
+    }
+    #[test]
+    fn background_function_keys_preserve_evdev_boundaries_and_modifiers() {
+        assert_eq!(chord("F2").unwrap(), (60, 0));
+        assert_eq!(chord("Shift+F2").unwrap(), (60, 1));
+        assert_eq!(chord("Ctrl+Alt+F10").unwrap(), (68, 6));
+        assert_eq!(chord("F11").unwrap(), (87, 0));
+        assert_eq!(chord("F12").unwrap(), (88, 0));
+        assert_eq!(chord("F13").unwrap(), (183, 0));
+        assert_eq!(chord("F24").unwrap(), (194, 0));
+        for invalid in ["F0", "F25", "F02", "Ctrl+Ctrl+F2"] {
+            assert!(chord(invalid).is_err(), "{invalid}");
+        }
+        assert_eq!(chord("Ctrl+f").unwrap(), (33, 2));
+        assert_eq!(chord("Page_Up").unwrap(), (104, 0));
+        assert_eq!(chord("Shift+PageDown").unwrap(), (109, 1));
     }
     #[test]
     fn chords_do_not_silently_drop_modifiers() {

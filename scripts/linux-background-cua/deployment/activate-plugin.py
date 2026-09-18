@@ -11,7 +11,10 @@ def ctl(*args):
     return subprocess.check_output(['hyprctl', '-i', signature, *args], env=env, timeout=5).decode()
 version = json.loads(ctl('version', '-j'))
 expected = json.loads((root / 'compositor-version.json').read_text())
-if version.get('commit') != expected.get('commit') or version.get('version') != expected.get('version'):
+identity = ('commit', 'version', 'abiHash', 'dirty')
+if (any(key not in expected or key not in version or version[key] != expected[key] for key in identity)
+        or expected['dirty'] is not False
+        or any(not isinstance(expected[key], str) or not expected[key] for key in identity[:3])):
     sys.exit('Compositor differs from tested build; rebuild and validate first')
 plugins = json.loads(ctl('plugin', 'list', '-j'))
 marker = pathlib.Path(env['XDG_RUNTIME_DIR']) / 'nanocodex-background-cua.json'

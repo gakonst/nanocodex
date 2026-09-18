@@ -3271,6 +3271,25 @@ mod tests {
     }
 
     #[test]
+    fn slash_goal_commands_remain_standard_submissions() {
+        let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+        for command in [
+            "/goal",
+            "/goal status",
+            "/goal pause",
+            "/goal resume",
+            "/goal clear",
+            "/goal build  a better TUI",
+        ] {
+            assert_eq!(SettingsCommand::parse(command), None);
+            composer.replace_draft(command.to_owned());
+            assert!(
+                matches!(composer.submit().effect, Some(ComposerEffect::Submit(prompt)) if prompt.display_text() == command)
+            );
+        }
+    }
+
+    #[test]
     fn similarly_prefixed_prompts_are_not_treated_as_settings_commands() {
         let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
         composer.replace_draft("/modeling the system".to_owned());

@@ -3663,7 +3663,11 @@ fn session_summaries(list: &AgentList, workspace: &Path) -> Vec<SessionSummary> 
 }
 
 fn inject_shell_context(context: &mut Vec<String>, prompt: Submission) -> Submission {
-    if context.is_empty() {
+    // Server controls must stay literal; retain shell output for the next task.
+    if context.is_empty()
+        || (!prompt.has_images()
+            && prompt.display_text().split_whitespace().next() == Some("/goal"))
+    {
         return prompt;
     }
     let prefix = context.join("\n\n");
@@ -3742,6 +3746,20 @@ mod tests {
         path::Path,
     };
     use tokio::task::JoinSet;
+
+    #[test]
+    fn goal_commands_preserve_pending_shell_context() {
+        let mut context = vec!["Shell output: completed".to_owned()];
+        for command in ["/goal", "/goal pause", "/goal resume"] {
+            let prompt =
+                super::inject_shell_context(&mut context, Submission::text(command.into()));
+            assert_eq!(prompt.display_text(), command);
+            assert_eq!(context.len(), 1);
+        }
+        let next = super::inject_shell_context(&mut context, Submission::text("continue".into()));
+        assert_eq!(next.display_text(), "Shell output: completed\n\ncontinue");
+        assert!(context.is_empty());
+    }
 
     #[tokio::test]
     async fn bug_switch_discards_old_local_work_and_queued_recovery() {

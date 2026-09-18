@@ -1333,6 +1333,7 @@ struct InputExperiment::DesktopListeners {
     std::vector<MonitorListeners> monitors;
     CHyprSignalListener lock, unlock, active, layout, added, removed, destroyed;
     CHyprSignalListener keyboard_layout, pointer_focus, keyboard_focus;
+    CHyprSignalListener window_open_early, window_open;
     CHyprSignalListener mouse_move, mouse_button, mouse_axis, keyboard_key, touch_down, tablet_tip;
 
     explicit DesktopListeners(InputExperiment& input) : owner(input) {
@@ -1342,6 +1343,15 @@ struct InputExperiment::DesktopListeners {
             active = g_pCompositor->m_aqBackend->session->events.changeActive.listen([this] { changed(); });
         layout = Event::bus()->m_events.monitor.layoutChanged.listen([this] { changed(); });
         if (kProduction) {
+            // openEarly precedes layout placement, which can itself focus a
+            // window. open runs after allowsInput rules may reset the flag and
+            // before the ordinary NEW_WINDOW focus. Neither callback borrows
+            // or restores primary focus: prevent that transition in the first
+            // place, and leave explicit human focus decisions untouched.
+            window_open_early = Event::bus()->m_events.window.openEarly.listen(
+                [this](PHLWINDOW window) { protect_background_window(window); });
+            window_open = Event::bus()->m_events.window.open.listen(
+                [this](PHLWINDOW window) { protect_background_window(window); });
             keyboard_layout = Event::bus()->m_events.input.keyboard.layout.listen(
                 [this](SP<IKeyboard>, const std::string&) { changed(); });
             pointer_focus = g_pSeatManager->m_events.pointerFocusChange.listen([this] { primary_changed(); });
@@ -1364,6 +1374,22 @@ struct InputExperiment::DesktopListeners {
             std::erase_if(monitors, [&](const auto& entry) { return !entry.monitor || entry.monitor == monitor; });
         });
         for (const auto& monitor : State::monitorState()->allMonitors()) watch(monitor);
+    }
+    void protect_background_window(const PHLWINDOW& window) {
+        if (!window || window->m_isX11 || !window->resource()) return;
+        const auto surface = window->resource();
+        for (const auto& lane : owner.lanes_) {
+            const auto* reserved = lane->reservation;
+            if (!reserved || reserved->dead || !reserved->has_bound_target ||
+                reserved->route != InputRoute::independent || lane->suspended || lane->retired)
+                continue;
+            const auto controlled = reserved->surface.lock();
+            if (!controlled || !controlled->good() || controlled->client() != surface->client() ||
+                lane->primary_conflict(surface))
+                continue;
+            window->m_noInitialFocus = true;
+            return;
+        }
     }
     void changed() {
         for (auto& lane : owner.lanes_) lane->desktop_transition();
