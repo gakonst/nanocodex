@@ -72,12 +72,10 @@ it("sends and reads an unrelated conversation through the actual managed tool ha
       state.storage.sql.exec("INSERT INTO managed_turn_dispatch_chunks VALUES ('source',0,'\"Send and read the reference\"')");
       try {
         await session.alarm();
-        await expect.poll(() => {
-          const row = state.storage.sql.exec<{ state: string; error: string | null; terminal_json: string | null }>("SELECT state,error,terminal_json FROM managed_turns WHERE id='source'").one();
-          if (row.state === "failed") throw new Error(JSON.stringify(row));
-          return row.state;
-        },
-          { timeout: 15_000 }).toBe("completed");
+        const sourceTurn = () => state.storage.sql.exec<{ state: string; error: string | null }>(
+          "SELECT state,error FROM managed_turns WHERE id='source'").one();
+        await expect.poll(() => sourceTurn().state, { timeout: 15_000 }).not.toBe("accepted");
+        expect(sourceTurn(), JSON.stringify(sourceTurn())).toMatchObject({ state: "completed" });
         expect(outputs.get("send-reference")).toContain(turnId);
         expect(outputs.get("send-reference")).toContain("accepted");
         expect(outputs.get("read-reference")).toContain(taskInput);
