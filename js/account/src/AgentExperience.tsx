@@ -1,5 +1,6 @@
 import { ManagedAgentInspector } from "./ManagedAgentInspector";
-import { sessionQueryKey } from "./queryClient";
+import { mainThread } from "./mainThreadApi";
+import { accountQueryKey, sessionQueryKey } from "./queryClient";
 import type { BrowserSession } from "./sessionQueries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -86,6 +87,11 @@ export const AgentExperience = memo(function AgentExperience({
   const hasDurableCredential = credentialSource === "brokered";
   const queryClient = useQueryClient();
   const accountId = account.account?.id;
+  const mainThreadQuery = useQuery({
+    queryKey: [...accountQueryKey(accountId ?? ""), "main-thread"],
+    queryFn: ({ signal }) => mainThread("GET", fetch, signal),
+    enabled: Boolean(accountId), retry: false,
+  });
   const conversationsQuery = useQuery({
     ...managedConversationsQueryOptions(accountId ?? ""),
     enabled: !landing && account.status === "ready" && Boolean(accountId) && hasDurableCredential && authStatus?.state === "ready",
@@ -246,7 +252,7 @@ export const AgentExperience = memo(function AgentExperience({
     else void navigate("/connect");
   };
   const selectedConversation = managedConversations.find(({ id }) => id === visibleManagedConversationId);
-  const title = landing ? "New chat" : selectedConversation
+  const title = landing ? "New chat" : visibleManagedConversationId && mainThreadQuery.data === visibleManagedConversationId ? "Main Thread" : selectedConversation
     ? /^Conversation [a-f\d]{8}$/i.test(selectedConversation.title) ? "New agent" : selectedConversation.title
     : "Your agents";
 
