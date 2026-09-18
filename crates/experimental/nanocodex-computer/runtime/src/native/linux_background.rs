@@ -123,7 +123,7 @@ struct Connection {
     drag_options: bool,
 }
 impl Connection {
-    fn connect(path: &std::path::Path, expected: i32) -> Result<Self> {
+    fn connect(path: &std::path::Path, expected: i32) -> Result<(Option<Self>, usize)> {
         use std::os::unix::ffi::OsStrExt;
         let bytes = path.as_os_str().as_bytes();
         let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
@@ -181,10 +181,35 @@ impl Connection {
             return Err(failure("unsupported input protocol"));
         }
         c.drag_options = hello["background_drag_options"] == true;
-        c.request("CLAIM")?;
-        Ok(c)
+        // Older v3 builds expose exactly two seats. New builds advertise a
+        // bounded capacity; never guess additional sockets on an old plugin.
+        let lanes = Self::lane_capacity(&hello)?;
+        // Only an explicit refusal proves no lane was claimed. Transport
+        // failures have unknown outcomes and must never trigger a retry.
+        c.send("CLAIM")?;
+        let claim = c.receive_value()?;
+        if !Self::claimed(claim)? {
+            return Ok((None, lanes));
+        }
+        Ok((Some(c), lanes))
     }
-    fn request(&mut self, message: &str) -> Result<Value> {
+    fn lane_capacity(hello: &Value) -> Result<usize> {
+        match hello.get("background_lanes") {
+            None => Ok(2),
+            Some(value) => value
+                .as_u64()
+                .filter(|n| (1..=16).contains(n))
+                .map(|n| n as usize)
+                .ok_or_else(|| failure("invalid background lane capacity")),
+        }
+    }
+    fn claimed(response: Value) -> Result<bool> {
+        if response["ok"] == false && response["code"] == "lane_busy" {
+            return Ok(false);
+        }
+        Self::accepted(response).map(|_| true)
+    }
+    fn send(&mut self, message: &str) -> Result<()> {
         let sent = unsafe {
             libc::send(
                 self.fd.as_raw_fd(),
@@ -196,9 +221,22 @@ impl Connection {
         if sent != message.len() as isize {
             return Err(failure("input send failed; outcome unknown, no retry"));
         }
+        Ok(())
+    }
+    fn request(&mut self, message: &str) -> Result<Value> {
+        self.send(message)?;
         self.receive()
     }
     fn receive(&mut self) -> Result<Value> {
+        Self::accepted(self.receive_value()?)
+    }
+    fn accepted(response: Value) -> Result<Value> {
+        if response["ok"] != true {
+            return Err(failure(format!("input refused: {}", response["code"])));
+        }
+        Ok(response)
+    }
+    fn receive_value(&mut self) -> Result<Value> {
         let mut buffer = [0u8; 16384];
         let n = unsafe {
             libc::recv(
@@ -211,11 +249,7 @@ impl Connection {
         if n <= 0 || n as usize > buffer.len() {
             return Err(failure("input receipt missing; outcome unknown, no retry"));
         }
-        let response: Value = serde_json::from_slice(&buffer[..n as usize]).map_err(failure)?;
-        if response["ok"] != true {
-            return Err(failure(format!("input refused: {}", response["code"])));
-        }
-        Ok(response)
+        serde_json::from_slice(&buffer[..n as usize]).map_err(failure)
     }
 }
 pub struct Hyprland {
@@ -225,7 +259,8 @@ pub struct Hyprland {
     compositor: i32,
     bound: HashMap<String, Identity>,
     observed: HashMap<String, [f64; 2]>,
-    connection: Option<Connection>,
+    connections: HashMap<(String, String), Connection>,
+    visual_scope: String,
 }
 impl Hyprland {
     pub fn from_environment() -> Result<Self> {
@@ -272,7 +307,8 @@ impl Hyprland {
             compositor,
             bound: HashMap::new(),
             observed: HashMap::new(),
-            connection: None,
+            connections: HashMap::new(),
+            visual_scope: "initial".into(),
         })
     }
     fn windows(&self) -> Result<Vec<Window>> {
@@ -320,7 +356,15 @@ impl Hyprland {
         args: String,
         points: &[[f64; 2]],
     ) -> Result<()> {
-        let current = self.checked(app)?;
+        let connection_id = (self.visual_scope.clone(), app.id.clone());
+        let current = match self.checked(app) {
+            Ok(current) => current,
+            Err(error) => {
+                self.connections.remove(&connection_id);
+                self.observed.remove(&app.id);
+                return Err(error);
+            }
+        };
         if !points.is_empty() && self.observed.get(&app.id) != Some(&current.window.size) {
             return Err(failure(
                 "take a fresh app screenshot before coordinate input",
@@ -332,13 +376,34 @@ impl Hyprland {
                 *point,
             )?;
         }
-        if self.connection.is_none() {
-            self.connection = Some(Connection::connect(
-                &self.directory.join("cua-input-v3.sock"),
-                self.compositor,
-            )?);
+        if !self.connections.contains_key(&connection_id) {
+            let mut claimed = None;
+            let mut lane = 0;
+            let mut capacity = 1;
+            while lane < capacity {
+                let socket = if lane == 0 {
+                    "cua-input-v3.sock".into()
+                } else {
+                    format!("cua-input-v3-{}.sock", lane + 1)
+                };
+                let (connection, advertised) =
+                    Connection::connect(&self.directory.join(socket), self.compositor)?;
+                if lane == 0 {
+                    capacity = advertised;
+                } else if advertised != capacity {
+                    return Err(failure("inconsistent background lane capacity"));
+                }
+                if connection.is_some() {
+                    claimed = connection;
+                    break;
+                }
+                lane += 1;
+            }
+            let connection =
+                claimed.ok_or_else(|| failure("all background input lanes are busy"))?;
+            self.connections.insert(connection_id.clone(), connection);
         }
-        let connection = self.connection.as_mut().unwrap();
+        let connection = self.connections.get_mut(&connection_id).unwrap();
         let result = (|| {
             if command == "DRAG" && args.split_whitespace().count() == 7 && !connection.drag_options
             {
@@ -380,7 +445,7 @@ impl Hyprland {
             Ok(())
         })();
         if result.is_err() {
-            self.connection = None;
+            self.connections.remove(&connection_id);
         }
         result
     }
@@ -482,6 +547,17 @@ fn chord(value: &str) -> Result<(u16, u8)> {
     Ok((code, modifiers))
 }
 impl Desktop for Hyprland {
+    fn action_in_scope(&mut self, app: &App, action: Action, scope: &str) -> Result<()> {
+        let previous = std::mem::replace(&mut self.visual_scope, scope.to_owned());
+        let result = self.action(app, action);
+        self.visual_scope = previous;
+        result
+    }
+    fn reset_visual_scope(&mut self, scope: &str) -> Result<()> {
+        self.connections.retain(|(owner, _), _| owner != scope);
+        Ok(())
+    }
+
     fn session_key(&self, app: &App) -> String {
         app.id.clone()
     }
@@ -500,6 +576,7 @@ impl Desktop for Hyprland {
                 i.window.pid, i.start, i.window.address, i.window.stable_id
             );
             apps.push(App {
+                window_id: None,
                 id: id.clone(),
                 name: i.window.class.clone(),
                 path: i.executable.clone(),
@@ -507,6 +584,11 @@ impl Desktop for Hyprland {
             });
             self.bound.entry(id).or_insert(i);
         }
+        let live: std::collections::HashSet<_> = apps.iter().map(|app| app.id.as_str()).collect();
+        self.connections
+            .retain(|(_, id), _| live.contains(id.as_str()));
+        self.observed.retain(|id, _| live.contains(id.as_str()));
+        self.bound.retain(|id, _| live.contains(id.as_str()));
         Ok(apps)
     }
     fn validate_app(&mut self, app: &App) -> Result<bool> {
@@ -666,7 +748,9 @@ impl Desktop for Hyprland {
         vec!["background-app-input", "get_screenshot"]
     }
     fn end_session(&mut self, _: &str) -> Result<()> {
-        self.connection = None;
+        // Desktop belongs to one Engine; its opaque owner is not an app ID.
+        // Ending that engine releases every target it owns, never another Engine.
+        self.connections.clear();
         self.observed.clear();
         Ok(())
     }
@@ -674,6 +758,145 @@ impl Desktop for Hyprland {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_two_lane_capacity_and_bounded_new_capacity() {
+        assert_eq!(
+            Connection::lane_capacity(&serde_json::json!({})).unwrap(),
+            2
+        );
+        assert_eq!(
+            Connection::lane_capacity(&serde_json::json!({"background_lanes":8})).unwrap(),
+            8
+        );
+        for value in [
+            serde_json::json!(0),
+            serde_json::json!(17),
+            serde_json::json!(-1),
+            serde_json::json!("8"),
+            Value::Null,
+        ] {
+            assert!(
+                Connection::lane_capacity(&serde_json::json!({"background_lanes":value})).is_err()
+            );
+        }
+    }
+    #[test]
+    fn only_explicit_busy_claim_allows_another_lane() {
+        assert!(!Connection::claimed(serde_json::json!({"ok":false,"code":"lane_busy"})).unwrap());
+        assert!(Connection::claimed(serde_json::json!({"ok":true,"lane":1})).unwrap());
+        for response in [
+            serde_json::json!({"code":"lane_busy"}),
+            serde_json::json!({"ok":false,"code":"session_unavailable"}),
+            Value::Null,
+        ] {
+            assert!(Connection::claimed(response).is_err());
+        }
+    }
+    #[test]
+    fn ending_engine_releases_all_its_target_lanes() {
+        fn connection() -> (Connection, OwnedFd) {
+            let mut pair = [-1; 2];
+            assert_eq!(
+                unsafe {
+                    libc::socketpair(
+                        libc::AF_UNIX,
+                        libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                        0,
+                        pair.as_mut_ptr(),
+                    )
+                },
+                0
+            );
+            (
+                Connection {
+                    fd: unsafe { OwnedFd::from_raw_fd(pair[0]) },
+                    sequence: 0,
+                    drag_options: true,
+                },
+                unsafe { OwnedFd::from_raw_fd(pair[1]) },
+            )
+        }
+        let (a, peer_a) = connection();
+        let (b, peer_b) = connection();
+        let mut desktop = Hyprland {
+            signature: String::new(),
+            directory: PathBuf::new(),
+            capture: PathBuf::new(),
+            compositor: 1,
+            bound: HashMap::new(),
+            observed: HashMap::from([("a".into(), [100., 100.]), ("b".into(), [200., 200.])]),
+            connections: HashMap::from([
+                (("first".into(), "a".into()), a),
+                (("second".into(), "b".into()), b),
+            ]),
+            visual_scope: "initial".into(),
+        };
+        desktop.reset_visual_scope("first").unwrap();
+        assert!(
+            !desktop
+                .connections
+                .contains_key(&("first".into(), "a".into()))
+        );
+        assert!(
+            desktop
+                .connections
+                .contains_key(&("second".into(), "b".into()))
+        );
+        let mut pending = 0u8;
+        assert_eq!(
+            unsafe {
+                libc::recv(
+                    peer_b.as_raw_fd(),
+                    (&mut pending as *mut u8).cast(),
+                    1,
+                    libc::MSG_DONTWAIT,
+                )
+            },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert_eq!(
+            unsafe {
+                libc::recv(
+                    peer_a.as_raw_fd(),
+                    (&mut pending as *mut u8).cast(),
+                    1,
+                    libc::MSG_DONTWAIT,
+                )
+            },
+            0
+        );
+        desktop.end_session("opaque-engine-owner").unwrap();
+        assert!(!desktop.observed.contains_key("a"));
+        assert!(desktop.connections.is_empty());
+        assert!(desktop.observed.is_empty());
+        let mut byte = 0u8;
+        assert_eq!(
+            unsafe {
+                libc::recv(
+                    peer_a.as_raw_fd(),
+                    (&mut byte as *mut u8).cast(),
+                    1,
+                    libc::MSG_DONTWAIT,
+                )
+            },
+            0
+        );
+        assert_eq!(
+            unsafe {
+                libc::recv(
+                    peer_b.as_raw_fd(),
+                    (&mut byte as *mut u8).cast(),
+                    1,
+                    libc::MSG_DONTWAIT,
+                )
+            },
+            0
+        );
+    }
     #[test]
     fn reject_text_before_any_delivery() {
         assert!(

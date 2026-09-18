@@ -175,6 +175,7 @@ impl Win32 {
             return Err(Error::action("Window belongs to a different application"));
         }
         let app = App {
+            window_id: None,
             id: canonical.clone(),
             name: path.rsplit(['\\', '/']).next().unwrap_or(&path).into(),
             path,
@@ -448,6 +449,7 @@ impl Desktop for Win32 {
         }
         let path = canonical.to_string_lossy().into_owned();
         Ok(App {
+            window_id: None,
             id: path.clone(),
             name: canonical
                 .file_name()
@@ -713,6 +715,7 @@ impl Desktop for Win32 {
             let process = pid(hwnd);
             let path = path_for(process);
             apps.entry(process).or_insert_with(|| App {
+                window_id: None,
                 id: format!("win32:{process}"),
                 name: path.rsplit(['\\', '/']).next().unwrap_or(&path).into(),
                 path,

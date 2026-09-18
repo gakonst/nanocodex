@@ -43,6 +43,13 @@ export type AppInfo = {
   useCount?: number;
   isRunning?: boolean;
 };
+export type AppWindowInfo = {
+  windowId: number;
+  pid: number;
+  title?: string | null;
+  frame?: [x: number, y: number, width: number, height: number] | null;
+};
+export type GetAppOptions = { windowId?: number };
 export interface App extends Target {
   /** Native gesture; unsupported backends refuse before input. */
   drag(from: Vec2, to: Vec2, options?: CuaDragOptions): Promise<void>;
@@ -99,7 +106,10 @@ export interface Cua {
   getScreenshot?(options?: ObservationOptions): Promise<Uint8Array>;
   readonly browsers: BrowserProvider;
   readonly computer: Computer;
-  getApp(app: string): Promise<App>;
+  /** Bind an exact window from listWindows for independent background control. */
+  getApp(app: string, options?: GetAppOptions): Promise<App>;
+  /** Present when the backend supports explicit native-window discovery. */
+  listWindows?(app: string, options?: ObservationOptions): Promise<AppWindowInfo[]>;
   listApps(options?: ObservationOptions): Promise<AppInfo[]>;
   getBrowser(options?: GetBrowserOptions): Promise<Browser>;
   createBrowserTab(

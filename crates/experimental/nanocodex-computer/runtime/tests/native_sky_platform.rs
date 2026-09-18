@@ -158,6 +158,7 @@ fn linux_app_modified_drags_refuse_before_any_helper_or_focus_change() {
     let helper = fixture(dir.path());
     let mut desktop = LinuxDesktop::new(helper.clone(), helper);
     let app = App {
+        window_id: None,
         id: "x11:123".into(),
         name: "owned fixture".into(),
         path: "x11:123".into(),

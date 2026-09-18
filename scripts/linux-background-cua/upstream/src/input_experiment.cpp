@@ -10,6 +10,8 @@
 #include "seat_lifetime.hpp"
 #include "owned_socket_path.hpp"
 #include "foreground_route.hpp"
+#include "agent_cursor_decoration.hpp"
+#include <src/plugins/PluginAPI.hpp>
 
 #include <src/Compositor.hpp>
 #include <src/devices/IKeyboard.hpp>
@@ -220,7 +222,37 @@ struct InputExperiment::Impl {
     WP<IKeyboard> physical_keyboard;
     CHyprSignalListener keymap_listener;
     unsigned lane;
-    std::array<Impl*, 2> peers{};
+    HANDLE plugin = nullptr;
+    std::shared_ptr<AgentCursorState> cursor = std::make_shared<AgentCursorState>();
+    AgentCursorDecoration* decoration = nullptr;
+    std::weak_ptr<int> decoration_lifetime;
+    PHLWINDOWREF decorated_window;
+    void clear_cursor() {
+        cursor->visible = false;
+        if (decoration && !decoration_lifetime.expired() && decorated_window) {
+            decoration->damageEntire();
+            HyprlandAPI::removeWindowDecoration(plugin, decoration);
+        }
+        decoration = nullptr;
+        decoration_lifetime.reset();
+        decorated_window.reset();
+    }
+    void show_cursor(const PHLWINDOW& window, double x, double y) {
+        if (decorated_window != window || decoration_lifetime.expired()) {
+            clear_cursor();
+            auto deco = makeUnique<AgentCursorDecoration>(window, cursor, lane);
+            auto* raw = deco.get();
+            if (HyprlandAPI::addWindowDecoration(plugin, window, std::move(deco))) {
+                decoration = raw;
+                decoration_lifetime = raw->lifetime();
+                decorated_window = window;
+            }
+        }
+        if (decoration && !decoration_lifetime.expired() && decorated_window) decoration->damageEntire();
+        cursor->move(x, y, Clock::now());
+        if (decoration && !decoration_lifetime.expired() && decorated_window) decoration->damageEntire();
+    }
+    std::array<Impl*, 8> peers{};
     PrimaryTrace* trace = nullptr;
     bool foreground_started = false, foreground_activating = false;
     bool foreground_keyboard_used = false;
@@ -237,9 +269,8 @@ struct InputExperiment::Impl {
         if (public_key.size() != 32)
             throw std::runtime_error("invalid test operator public key");
 #endif
-        path = directory + (kProduction ?
-            (lane == 0 ? "/cua-input-v3.sock" : "/cua-input-v3-2.sock") :
-            (lane == 0 ? "/cua-input-test.sock" : "/cua-input-test-2.sock"));
+        path = directory + (kProduction ? "/cua-input-v3" : "/cua-input-test") +
+            (lane == 0 ? ".sock" : std::format("-{}.sock", lane + 1));
         if (path.size() >= sizeof(sockaddr_un::sun_path))
             throw std::runtime_error("input socket path too long");
         // No private key or input-enabled default exists in this component.
@@ -414,9 +445,8 @@ struct InputExperiment::Impl {
         seat->wl->setGetPointer([&self](CWlSeat* r, std::uint32_t child) { self.add_pointer(r, child); });
         seat->wl->setGetKeyboard([&self](CWlSeat* r, std::uint32_t child) { self.add_keyboard(r, child); });
         seat->wl->setGetTouch([&self](CWlSeat* r, std::uint32_t child) { self.add_touch(r, child); });
-        if (version >= 2) seat->wl->sendName(kProduction ?
-            (self.lane == 0 ? "Cua-Agent" : "Cua-Agent-2") :
-            (self.lane == 0 ? "Cua-Test-Agent" : "Cua-Test-Agent-2"));
+        if (version >= 2) seat->wl->sendName((std::string(kProduction ? "Cua-Agent" : "Cua-Test-Agent") +
+            (self.lane == 0 ? "" : std::format("-{}", self.lane + 1))).c_str());
         seat->wl->sendCapabilities(static_cast<wl_seat_capability>(self.retired ? 0 :
             WL_SEAT_CAPABILITY_POINTER | (self.keyboard_state ? WL_SEAT_CAPABILITY_KEYBOARD : 0)));
         self.seats.push_back(std::move(seat));
@@ -501,7 +531,8 @@ struct InputExperiment::Impl {
             if (!peer || peer == this) continue;
             // Passive hover still participates after its transport owner dies.
             if (peer->pointer_target.same_client(surface)) return true;
-            const auto other = peer->lease ? peer->lease->surface.lock() : nullptr;
+            const auto* owner = peer->reservation ? peer->reservation : peer->lease;
+            const auto other = owner ? owner->surface.lock() : nullptr;
             if (other && other->client() == surface->client()) return true;
         }
         return false;
@@ -550,6 +581,7 @@ struct InputExperiment::Impl {
         held_button = 0;
     }
     void leave_pointer() {
+        clear_cursor();
         release_pointer_button();
         for (auto& p : pointers) {
             const auto surface = p->focus.lock();
@@ -930,9 +962,11 @@ struct InputExperiment::Impl {
             pointer_unmap = window->m_events.unmap.listen([this] { revoke("stale_target"); });
             pointer_destroy = window->m_events.destroy.listen([this] { revoke("stale_target"); });
         }
+        if (count) show_cursor(c.window.lock(), x, y);
         return count > 0;
     }
     void button(std::uint32_t value, bool pressed) {
+        if (pressed) cursor->press(Clock::now());
         for (auto& p : pointers) {
             if (p->dead || !p->wl->resource() || !p->focus) continue;
             p->wl->sendButton(serial(), event_ms(), value, pressed ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
@@ -978,7 +1012,7 @@ struct InputExperiment::Impl {
             if (f.size() != 1 || c.hello) { send(c, refusal("invalid_request")); return; }
             c.hello = true;
             if (kProduction)
-                send(c, std::format(R"({{"ok":true,"protocol":3,"epoch":"{}","foreground_target":true,"background_drag_options":true}})", epoch));
+                send(c, std::format(R"({{"ok":true,"protocol":3,"epoch":"{}","foreground_target":true,"background_drag_options":true,"background_cursor":true,"background_lanes":8}})", epoch));
             else
                 send(c, std::format(R"({{"ok":true,"protocol":0,"epoch":"{}","challenge":"{}"}})", epoch, c.challenge));
             return;
@@ -1233,6 +1267,10 @@ struct InputExperiment::Impl {
         wl_event_source_timer_update(self.timer, self.retired ? 500 : 16); return 0;
     }
     void step() {
+        if (cursor->visible && decoration && !decoration_lifetime.expired() && decorated_window) {
+            decoration->damageEntire();
+            if (cursor->alpha(Clock::now()) == 0) cursor->visible = false;
+        }
         if (!retired) sync_keymap();
         for (auto& c : clients) if (c->deadline.expired(c->hello, Clock::now())) c->dead = true;
         if (lease) {
@@ -1355,7 +1393,11 @@ struct InputExperiment::DesktopListeners {
 InputExperiment::InputExperiment(const std::string& directory, void* plugin) {
     SeatLifetime lifetime(directory);
     for (unsigned i = 0; i < lanes_.size(); ++i) lanes_[i] = std::make_unique<Impl>(directory, i);
-    for (auto& lane : lanes_) { lane->peers = {lanes_[0].get(), lanes_[1].get()}; lane->start(); }
+    for (auto& lane : lanes_) {
+        lane->plugin = plugin;
+        for (unsigned i = 0; i < lanes_.size(); ++i) lane->peers[i] = lanes_[i].get();
+        lane->start();
+    }
 #if defined(CUA_HYPRLAND_TEST_INPUT) || defined(CUA_HYPRLAND_INPUT_TRACE)
     trace_ = std::make_unique<PrimaryTrace>(plugin, [this](wl_resource* resource) {
         for (unsigned i = 0; i < lanes_.size(); ++i) {
@@ -1377,7 +1419,7 @@ InputExperiment::~InputExperiment() {
     trace_.reset();
     // Intentional process-lifetime ownership: callbacks, removed global, and
     // remaining client-owned resources cannot outlive their Impl. The instance
-    // marker refuses replacement modules, so this retains at most two lanes.
+    // marker refuses replacement modules, so this retains at most eight lanes.
     for (auto& lane : lanes_) (void)lane.release();
 }
 void InputExperiment::suspend() {
@@ -1403,9 +1445,14 @@ std::string InputExperiment::status_json() const {
             lane->held_button, lane->held_keys.size(), lane->drag.has_value(), pointer_focus, keyboard_focus);
     }
     // Aggregate legacy fields remain available to existing test probes.
-    return std::format(R"({{"protocol":{},"test_only":{},"seat_lifetime":"compositor","upgrade":"desktop_restart","transport_ready":{},"epoch":"{}","lease_active":{},"seat_resources":{},"pointer_resources":{},"keyboard_resources":{},"dispatches":{},"lanes":[{}]}})",
-        kProduction ? 3 : 0, !kProduction, !lanes_[0]->suspended && !lanes_[1]->suspended, lanes_[0]->epoch, lanes_[0]->lease != nullptr || lanes_[1]->lease != nullptr,
-        lanes_[0]->seats.size() + lanes_[1]->seats.size(), lanes_[0]->pointers.size() + lanes_[1]->pointers.size(),
-        lanes_[0]->keyboards.size() + lanes_[1]->keyboards.size(), lanes_[0]->dispatches + lanes_[1]->dispatches, states);
+    std::size_t seats = 0, pointers = 0, keyboards = 0;
+    std::uint64_t dispatches = 0;
+    bool ready = true, leased = false;
+    for (const auto& lane : lanes_) {
+        seats += lane->seats.size(); pointers += lane->pointers.size(); keyboards += lane->keyboards.size();
+        dispatches += lane->dispatches; ready &= !lane->suspended; leased |= lane->lease != nullptr;
+    }
+    return std::format(R"({{"protocol":{},"test_only":{},"seat_lifetime":"compositor","upgrade":"desktop_restart","background_cursor":true,"background_lanes":8,"transport_ready":{},"epoch":"{}","lease_active":{},"seat_resources":{},"pointer_resources":{},"keyboard_resources":{},"dispatches":{},"lanes":[{}]}})",
+        kProduction ? 3 : 0, !kProduction, ready, lanes_[0]->epoch, leased, seats, pointers, keyboards, dispatches, states);
 }
 } // namespace cua::hyprland

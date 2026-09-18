@@ -19,6 +19,7 @@ struct State {
 struct Provider(Rc<RefCell<State>>);
 fn app() -> App {
     App {
+        window_id: None,
         id: "owned.instructions".into(),
         name: "Owned instructions".into(),
         path: "fixture://instructions".into(),
@@ -136,6 +137,7 @@ mod macos {
         (
             directory,
             App {
+                window_id: None,
                 id: "owned.controller".into(),
                 name: "Slack".into(),
                 path: path.to_str().unwrap().into(),

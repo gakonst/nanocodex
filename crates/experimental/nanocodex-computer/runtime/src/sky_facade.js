@@ -132,6 +132,7 @@ globalThis.__skyreComputerFacade = ({rpc, bytes, getNodeRepl = () => globalThis.
         lastUsedDate:app.lastUsedDate ?? undefined,useCount:app.useCount ?? undefined,
       }));
     }
+    if (method === "list_app_windows") return execute(method,[{app:requireApp(input.app)}]);
     if (method === "get_app_state") {
       const request = {app:requireApp(input.app),disableDiff:input.disableDiff,
         ...(input.screenshot === undefined ? {} : {screenshot:input.screenshot}),

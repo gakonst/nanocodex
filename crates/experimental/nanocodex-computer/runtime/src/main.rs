@@ -25,6 +25,25 @@ use std::{
     time::{Duration, Instant},
 };
 
+// Native overlays and AX observers belong to the main run loop. Channel waits
+// do not service it: pump without sleeping before every dispatch/idle wait so
+// cursor animation and expiry continue even when JavaScript is not making calls.
+fn pump_native_run_loop() {
+    #[cfg(target_os = "macos")]
+    if objc2::MainThreadMarker::new().is_some() {
+        unsafe {
+            core_foundation::runloop::CFRunLoop::run_in_mode(
+                core_foundation::runloop::kCFRunLoopDefaultMode,
+                Duration::ZERO,
+                true,
+            );
+        }
+    }
+}
+fn native_idle_interval() -> Duration {
+    Duration::from_millis(if cfg!(target_os = "macos") { 16 } else { 50 })
+}
+
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
@@ -357,6 +376,7 @@ impl Server {
         let chooser_scope = self.engine.borrow_mut().begin_chooser_cell(ticket);
         let result = (|| {
             loop {
+                pump_native_run_loop();
                 self.check_connection_output()?;
                 // A parked kernel can fail while this cell runs. Failed cleanup
                 // stays pending; dispatch below must not bypass that failure.
@@ -530,6 +550,7 @@ impl Server {
         }
         emit(&json!({"jsonrpc":"2.0","id":id,"method":"elicitation/create","params":params}))?;
         loop {
+            pump_native_run_loop();
             self.check_connection_output()?;
             self.reap_kernel_losses()?;
             if self.host.as_ref().is_some_and(Worker::cancelled) {
@@ -975,6 +996,7 @@ impl Server {
         self.input = Some(receiver);
         self.pending.clear();
         while !self.shutdown {
+            pump_native_run_loop();
             output.status()?;
             // Idle failures have no tool response to attach to. Keep retryable
             // cleanup pending and surface any failure on the next request.
@@ -985,7 +1007,7 @@ impl Server {
                     .input
                     .as_ref()
                     .unwrap()
-                    .recv_timeout(Duration::from_millis(50))
+                    .recv_timeout(native_idle_interval())
                 {
                     Ok(value) => value,
                     Err(mpsc::RecvTimeoutError::Disconnected) => Ok(None),

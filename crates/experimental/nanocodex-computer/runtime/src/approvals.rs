@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const APP_METHODS: &[&str] = &[
+    "list_app_windows",
     "get_app_state",
     "click",
     "drag",

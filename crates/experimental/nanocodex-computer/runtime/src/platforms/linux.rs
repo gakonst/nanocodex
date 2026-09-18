@@ -816,6 +816,7 @@ impl crate::native::Desktop for LinuxDesktop {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0);
             apps.push(crate::native::App {
+                window_id: None,
                 id: format!("x11:{}", id.as_u64().unwrap()),
                 name: state["title"].as_str().unwrap_or("").into(),
                 path: format!("x11:{}", id.as_u64().unwrap()),

@@ -268,7 +268,17 @@
           return screenshot;
         }
       } : {}),
-      async getApp(identifier) {
+      ...(typeof computer.list_app_windows === 'function' ? {async listWindows(identifier, options) {
+        if (typeof computer.list_app_windows !== 'function') throw new Error('Explicit native windows are unavailable.');
+        const windows = await computer.list_app_windows({app:identifier});
+        await emit(windows,options);
+        return windows;
+      }} : {}),
+      async getApp(identifier, options) {
+        if (options?.windowId !== undefined) {
+          if (!Number.isInteger(options.windowId) || options.windowId <= 0 || options.windowId > 0xffffffff) throw new TypeError('windowId must be a positive u32');
+          identifier = identifier + '#window=' + options.windowId;
+        }
         if (typeof computer.get_app_state !== 'function') throw new Error('Native app bindings are unavailable for ' + computer.target + '.');
         const state = await computer.get_app_state({app:identifier,disableDiff:true,screenshot:false});
         const app = nativeTarget(computer,state.app);

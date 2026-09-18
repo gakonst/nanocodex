@@ -183,3 +183,62 @@ and `/etc/sudoers.d/nanocodex-background-cua`, daemon-reload and restart the Han
 As `gakonst`, disable `plugin:cua:enabled` and call `cua:refresh`; the retired seat
 resources remain until the compositor naturally exits. Do not unload/replace a
 live input plugin or reboot the desktop merely to complete rollback.
+
+## Concurrent window bindings and agent cursors
+
+On a provider that exposes native window discovery, initialize CUA, discover the
+window IDs, then retain a separate handle for each target:
+
+```javascript
+const windows = await cua.listWindows("Example App");
+const first = await cua.getApp("Example App", { windowId: windows[0].windowId });
+const second = await cua.getApp("Example App", { windowId: windows[1].windowId });
+```
+
+Choose windows from their observed titles and IDs. Never infer an ID or reuse an
+old binding after its window closes. Native executable authorization remains
+separate from the exact-window session identity. AX handles, screenshot geometry
+and observation history must remain valid independently for each bound window.
+
+Mac applications share keyboard focus across their own windows. A cooperative
+cross-process lock covers each synthetic-focus/input transaction for a PID;
+other applications use different locks. This coordinates independent companion
+sessions rather than promising parallel keyboard focus within a single app.
+The background route refuses keyboard/pointer input into the human's foreground
+process. Separate calls are separate transactions; inspect the resulting state
+before depending on a sequence another agent could also modify.
+
+The agent cursor is an independent visual indicator. It must never move, hide or
+replace the human's hardware pointer. Its panels ignore mouse events, cannot
+become key/main, and are ordered relative to their target windows. Cursor state
+is per target; movement interpolation, click feedback and fading do not delay
+input delivery. Native run-loop servicing continues while the companion waits
+for the next request. Foreign window ordering and Spaces remain OS constraints
+that require live verification; there is no unconditional floating overlay over
+the human's foreground app.
+
+Sky evidence supports per-controller virtual cursors, window-relative ordering,
+main-thread view ownership, spring/scoot animation states and separate input
+readiness from visual completion. It does not establish exact animation timings,
+colors or artwork. Nanocodex's visual design and timings are independent choices.
+Sky also explicitly composes virtual cursor windows into target screenshots;
+Nanocodex's Mac exact-window screenshots currently remain clean target captures.
+The human-facing desktop view displays the separate agent overlay.
+
+The Hyprland candidate provides eight independent native Wayland lanes, with a
+window decoration for each agent cursor. Decorations are clipped to their
+window and participate in its normal stacking/occlusion. Each lane has its own
+color, click pulse and idle fade. The runtime retains a connection per target
+and discovers the plugin's advertised capacity; legacy plugins without a
+capacity field retain the two-lane behavior. Only an explicit `lane_busy`
+receipt permits trying the next lane. Unknown transport outcomes are never
+retried. Windows that share a Wayland client cannot occupy competing lanes.
+
+An isolated Hyprland 0.56.2 test verified eight simultaneous 800 ms drags in eight
+GTK clients while a ninth foreground client received primary keyboard events.
+Target destruction and transport cleanup released the corresponding input
+state; cursor render artifacts showed eight indicators and their idle fade.
+This is not a live WoW acceptance test. A changed compositor plugin must wait
+for a fresh desktop session: existing process-lifetime Wayland seat callbacks
+make hot replacement/unloading unsafe. Keep the installed plugin active until
+that transition; staging a candidate is not activation.

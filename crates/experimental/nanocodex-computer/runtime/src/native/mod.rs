@@ -18,6 +18,8 @@ pub mod url;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct App {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_id: Option<u32>,
     pub id: String,
     pub name: String,
     pub path: String,
@@ -114,6 +116,11 @@ pub trait Desktop {
         )))
     }
     fn apps(&mut self) -> Result<Vec<App>>;
+    fn app_windows(&mut self, _app: &App) -> Result<serde_json::Value> {
+        Err(Error::unsupported(
+            "Explicit native windows are unavailable",
+        ))
+    }
     /// Stable window binding, separate from executable-based policy authorization.
     fn session_key(&self, app: &App) -> String {
         app.path.clone()
@@ -181,6 +188,13 @@ pub trait Desktop {
         self.snapshot(app).map(|_| ())
     }
     fn action(&mut self, app: &App, action: Action) -> Result<()>;
+    /// Visual ownership follows the JavaScript kernel without changing app state.
+    fn action_in_scope(&mut self, app: &App, action: Action, _scope: &str) -> Result<()> {
+        self.action(app, action)
+    }
+    fn reset_visual_scope(&mut self, _scope: &str) -> Result<()> {
+        Ok(())
+    }
     fn screenshot(&mut self, _app: &App) -> Result<Image> {
         Err(Error::unsupported("Screenshot backend unavailable"))
     }
@@ -315,5 +329,38 @@ mod desktop_screenshot_tests {
         let expected = Error::unsupported("Desktop screenshot backend unavailable");
         assert_eq!(error.code, expected.code);
         assert_eq!(error.message, expected.message);
+    }
+}
+
+/// Explicit native window binding, retaining executable identity for policy.
+pub fn window_binding(identifier: &str) -> Result<Option<(&str, u32)>> {
+    let Some((app, id)) = identifier.rsplit_once("#window=") else {
+        return Ok(None);
+    };
+    let id = id
+        .parse::<u32>()
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| Error::invalid("window ID must be a positive u32"))?;
+    if app.is_empty() {
+        return Err(Error::invalid("Window binding requires an app"));
+    }
+    Ok(Some((app, id)))
+}
+
+#[cfg(test)]
+mod window_binding_tests {
+    use super::*;
+    #[test]
+    fn window_binding_is_exact_and_rejects_invalid_ids() {
+        assert_eq!(
+            window_binding("/Applications/Owned.app#window=42").unwrap(),
+            Some(("/Applications/Owned.app", 42))
+        );
+        assert_eq!(window_binding("org.owned").unwrap(), None);
+        for id in ["", "0", "-1", "4294967296", "2.5", "42junk"] {
+            assert!(window_binding(&format!("org.owned#window={id}")).is_err());
+        }
+        assert!(window_binding("#window=42").is_err());
     }
 }

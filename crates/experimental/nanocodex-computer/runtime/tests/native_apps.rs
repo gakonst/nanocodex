@@ -16,6 +16,7 @@ fn installed_bundle_discovery_reads_owned_metadata_without_launch_and_merges_run
     let rows = discover(
         &[directory.path().into()],
         vec![App {
+            window_id: None,
             id: "org.skyre.synthetic.metadata".into(),
             name: "Synthetic Running".into(),
             path: bundle.to_str().unwrap().into(),

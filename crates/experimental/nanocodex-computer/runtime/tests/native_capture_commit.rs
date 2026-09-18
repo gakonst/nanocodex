@@ -25,6 +25,7 @@ struct State {
 struct Provider(Rc<RefCell<State>>);
 fn app() -> App {
     App {
+        window_id: None,
         id: "owned.capture".into(),
         name: "Owned capture".into(),
         path: "fixture://capture".into(),

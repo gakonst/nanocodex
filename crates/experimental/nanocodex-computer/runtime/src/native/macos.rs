@@ -35,6 +35,10 @@ use core_graphics::{
 use monitor::Monitor;
 #[path = "macos_background.rs"]
 mod background;
+#[path = "macos_capture.rs"]
+mod capture;
+#[path = "macos_input_transaction.rs"]
+mod input_transaction;
 use objc2::{
     AnyThread, DefinedClass, define_class, msg_send,
     rc::Retained,
@@ -906,11 +910,14 @@ struct WindowContext {
 }
 pub struct MacDesktop {
     handles: BTreeMap<String, Ax>,
+    cursor_targets: BTreeMap<String, std::collections::BTreeSet<(i32, u32)>>,
+    visual_scope: String,
+    window_handles: BTreeMap<(i32, Option<u32>), std::collections::HashSet<String>>,
     audio: super::audio::Audio,
     next: u64,
     monitors: BTreeMap<i32, Monitor>,
-    contexts: BTreeMap<i32, WindowContext>,
-    screenshot_geometry: BTreeMap<i32, super::screenshot::Publication>,
+    contexts: BTreeMap<(i32, Option<u32>), WindowContext>,
+    screenshot_geometry: BTreeMap<(i32, Option<u32>), super::screenshot::Publication>,
     screenshot_configuration: super::screenshot::Configuration,
     monitor_errors: BTreeMap<i32, String>,
     needs_settle: std::collections::BTreeSet<i32>,
@@ -925,6 +932,9 @@ impl MacDesktop {
     pub fn new() -> Self {
         Self {
             handles: BTreeMap::new(),
+            window_handles: BTreeMap::new(),
+            cursor_targets: Default::default(),
+            visual_scope: "initial".into(),
             audio: Default::default(),
             next: 0,
             monitors: BTreeMap::new(),
@@ -949,7 +959,7 @@ impl MacDesktop {
         self.settle(app);
         self.ensure_monitor(app)?;
         let window = self.root(app)?;
-        if self.contexts.get(&app.pid).is_some_and(|prior|
+        if self.contexts.get(&(app.pid, app.window_id)).is_some_and(|prior|
             unsafe { CFEqual(prior.window.0.as_CFTypeRef(), window.0.as_CFTypeRef()) } == 0
                 || prior.frame != window.frame()) {
             self.invalidate_screenshot(app);
@@ -968,6 +978,7 @@ impl MacDesktop {
                     matches!(r.as_str(), "AXMenu" | "AXMenuBarItem" | "AXMenuItem")
                 })
             });
+        let menu = menu.filter(|_| app.window_id.is_none());
         let is_menu = menu.is_some();
         let root = menu.unwrap_or(window);
         let text_deadline = Instant::now() + Duration::from_secs(10);
@@ -987,7 +998,10 @@ impl MacDesktop {
             Instant::now() + Duration::from_secs(10),
         );
         if let Ok(root) = &mut result {
-            if !is_menu && let Some(menu) = self.application(app)?.element_checked("AXMenuBar")? {
+            if app.window_id.is_none()
+                && !is_menu
+                && let Some(menu) = self.application(app)?.element_checked("AXMenuBar")?
+            {
                 let mut menu_node = self.capture(
                     app.pid,
                     menu,
@@ -1003,7 +1017,15 @@ impl MacDesktop {
             let focus = if let Some(focused) = self
                 .application(app)?
                 .element_checked("AXFocusedUIElement")?
-            {
+                .filter(|focused| {
+                    app.window_id.is_none()
+                        || focused
+                            .element_checked("AXWindow")
+                            .ok()
+                            .flatten()
+                            .and_then(|w| background::window_id(&w))
+                            == app.window_id
+                }) {
                 let identity = self.identity(app.pid, focused.clone());
                 let focus = if let Some(node) = root.by_identity(&identity) {
                     node.clone()
@@ -1037,7 +1059,7 @@ impl MacDesktop {
             if let Some(monitor) = self.monitors.get_mut(&app.pid) {
                 monitor.acknowledge();
             }
-            self.contexts.insert(app.pid, context);
+            self.contexts.insert((app.pid, app.window_id), context);
         }
         if let Ok(root) = &result {
             let mut nodes = vec![];
@@ -1046,10 +1068,16 @@ impl MacDesktop {
                 focus.walk(&mut nodes);
             }
             let live: std::collections::HashSet<_> =
-                nodes.into_iter().map(|n| n.identity.as_str()).collect();
+                nodes.into_iter().map(|n| n.identity.clone()).collect();
+            self.window_handles.insert((app.pid, app.window_id), live);
             let prefix = format!("ax:{}:", app.pid);
-            self.handles
-                .retain(|id, _| !id.starts_with(&prefix) || live.contains(id.as_str()));
+            self.handles.retain(|id, _| {
+                !id.starts_with(&prefix)
+                    || self
+                        .window_handles
+                        .iter()
+                        .any(|((pid, _), live)| *pid == app.pid && live.contains(id))
+            });
         }
         self.ensure_monitor(app)?;
         result
@@ -1095,6 +1123,29 @@ impl MacDesktop {
     }
     fn root(&self, app: &App) -> Result<Ax> {
         let ax = self.application(app)?;
+        if let Some(id) = app.window_id {
+            let window = ax
+                .elements_checked("AXWindows")?
+                .into_iter()
+                .find(|window| background::window_id(window) == Some(id))
+                .ok_or_else(|| {
+                    Error::action(
+                        "Bound window closed or is unavailable; bind an existing window again",
+                    )
+                })?;
+            if self
+                .contexts
+                .get(&(app.pid, app.window_id))
+                .is_some_and(|prior| unsafe {
+                    CFEqual(prior.window.0.as_CFTypeRef(), window.0.as_CFTypeRef()) == 0
+                })
+            {
+                return Err(Error::action(
+                    "Bound window identity changed; input was not sent",
+                ));
+            }
+            return Ok(window);
+        }
         if let Some(window) = ax.element_checked("AXFocusedWindow")? {
             return Ok(window);
         }
@@ -1264,7 +1315,7 @@ impl MacDesktop {
             actions: ax
                 .actions()?
                 .into_iter()
-                .filter(|a| a != "AXPress")
+                .filter(|a| a != "AXPress" && a != "AXRaise")
                 .collect(),
             ..Default::default()
         };
@@ -1359,7 +1410,7 @@ impl MacDesktop {
             || window.frame(),
             || window.checked_frame(),
         )?;
-        if let Some(previous) = self.contexts.get(&app.pid)
+        if let Some(previous) = self.contexts.get(&(app.pid, app.window_id))
             && (unsafe { CFEqual(previous.window.0.as_CFTypeRef(), window.0.as_CFTypeRef()) } == 0
                 || previous.frame != frame)
         {
@@ -1379,7 +1430,7 @@ impl MacDesktop {
             .frame
             .ok_or_else(|| Error::action("No window frame for screenshot coordinates"))?;
         self.screenshot_geometry
-            .get(&app.pid)
+            .get(&(app.pid, app.window_id))
             .ok_or_else(|| {
                 Error::action("Query get_app_state before using screenshot coordinates")
             })?
@@ -1387,8 +1438,12 @@ impl MacDesktop {
             .screen_point(point)
     }
     fn capture_screenshot(&mut self, app: &App, publish_geometry: bool) -> Result<Image> {
-        let receipt =
-            publish_geometry.then(|| self.screenshot_geometry.entry(app.pid).or_default().begin());
+        let receipt = publish_geometry.then(|| {
+            self.screenshot_geometry
+                .entry((app.pid, app.window_id))
+                .or_default()
+                .begin()
+        });
         let result = (|| {
             self.ensure_monitor(app)?;
             self.settle(app);
@@ -1419,13 +1474,13 @@ impl MacDesktop {
             )?;
             self.ensure_monitor(app)?;
             if let Some(receipt) = receipt {
-                if !self.contexts.contains_key(&app.pid) {
+                if !self.contexts.contains_key(&(app.pid, app.window_id)) {
                     return Err(Error::action(
                         "Screenshot observation requires a successful AX observation",
                     ));
                 }
                 self.screenshot_geometry
-                    .entry(app.pid)
+                    .entry((app.pid, app.window_id))
                     .or_default()
                     .commit(receipt, geometry, displays)?;
             }
@@ -1436,14 +1491,52 @@ impl MacDesktop {
         }
         result
     }
-    fn key(app: &App, input: &str) -> Result<()> {
+    fn require_background(app: &App) -> Result<()> {
+        Self::require_background_pid(app.pid)
+    }
+    fn require_background_pid(pid: i32) -> Result<()> {
+        let running = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+            .filter(|running| !running.isTerminated())
+            .ok_or_else(|| Error::action("Application terminated"))?;
+        let _ = running;
+        if NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .is_some_and(|front| front.processIdentifier() == pid)
+        {
+            return Err(Error::action(
+                "Background input paused: the target application is in human foreground use",
+            ));
+        }
+        Ok(())
+    }
+    fn require_keyboard_window(&self, app: &App) -> Result<()> {
+        if let Some(expected) = app.window_id {
+            let focused = self.application(app)?.element_checked("AXFocusedWindow")?;
+            if focused.as_ref().and_then(background::window_id) != Some(expected) {
+                return Err(Error::action(
+                    "Bound keyboard window lost focus; remaining input was not sent",
+                ));
+            }
+        }
+        Ok(())
+    }
+    fn key(&self, app: &App, input: &str) -> Result<()> {
         let keys = super::keys::parse(input).map_err(Error::from)?;
         let mut factory = KeyEventFactory { source: source()? };
         // Construct the whole sequence before dispatch. A later allocation
         // failure drops all owned events without sending any earlier chord.
-        let events = super::keys::prepare_events(&keys, &mut factory)?;
-        for event in events {
-            event.post_to_pid(app.pid);
+        let chords = keys
+            .iter()
+            .map(|key| super::keys::prepare_events(std::slice::from_ref(key), &mut factory))
+            .collect::<Result<Vec<_>>>()?;
+        for events in chords {
+            Self::require_background(app)?;
+            self.require_keyboard_window(app)?;
+            // Complete each already allocated chord without a guard between
+            // down and up, so a human takeover cannot strand app-local keys.
+            for event in events {
+                event.post_to_pid(app.pid);
+            }
         }
         Ok(())
     }
@@ -1458,16 +1551,30 @@ impl MacDesktop {
     }
 }
 impl Desktop for MacDesktop {
+    fn app_windows(&mut self, app: &App) -> Result<serde_json::Value> {
+        let windows = self.application(app)?.elements_checked("AXWindows")?;
+        Ok(serde_json::json!(windows.into_iter().filter_map(|window| {
+            let id = background::window_id(&window)?;
+            Some(serde_json::json!({"windowId":id,"title":window.text("AXTitle"),"frame":window.frame(),"pid":app.pid}))
+        }).collect::<Vec<_>>()))
+    }
+    fn session_key(&self, app: &App) -> String {
+        match app.window_id {
+            Some(id) => format!("{}#window={id}", app.pid),
+            None => app.path.clone(),
+        }
+    }
+
     fn prepare_screenshot(&mut self, app: &App) -> Result<()> {
         self.ensure_monitor(app)?;
         self.settle(app);
         let window = self.root(app)?;
         let frame = Some(window.checked_frame()?);
-        if self.contexts.get(&app.pid).is_some_and(|prior| unsafe { CFEqual(prior.window.0.as_CFTypeRef(), window.0.as_CFTypeRef()) } == 0 || prior.frame != frame) {
+        if self.contexts.get(&(app.pid, app.window_id)).is_some_and(|prior| unsafe { CFEqual(prior.window.0.as_CFTypeRef(), window.0.as_CFTypeRef()) } == 0 || prior.frame != frame) {
             self.invalidate_screenshot(app);
         }
         self.contexts.insert(
-            app.pid,
+            (app.pid, app.window_id),
             WindowContext {
                 frame,
                 window_id: background::window_id(&window),
@@ -1498,6 +1605,12 @@ impl Desktop for MacDesktop {
         apps::instructions(app)
     }
     fn app_policy_target(&mut self, identifier: &str) -> Result<App> {
+        if let Some((identifier, id)) = super::window_binding(identifier)? {
+            let mut app = self.app_policy_target(identifier)?;
+            app.window_id = Some(id);
+            self.root(&app)?;
+            return Ok(app);
+        }
         // NSWorkspace's process list can lag launch/exit notifications. An
         // explicit PID must resolve that live process, never a cached namesake.
         if let Ok(pid) = identifier.parse::<i32>() {
@@ -1505,6 +1618,7 @@ impl Desktop for MacDesktop {
                 .filter(|process| pid > 0 && !process.isTerminated())
                 .ok_or_else(|| Error::action("Application process not found"))?;
             return Ok(App {
+                window_id: None,
                 id: process
                     .bundleIdentifier()
                     .ok_or_else(|| Error::action("Application has no bundle identifier"))?
@@ -1556,6 +1670,7 @@ impl Desktop for MacDesktop {
         }
         .ok_or_else(|| Error::action("Application not found"))?;
         Ok(App {
+            window_id: None,
             id: row["bundleIdentifier"].as_str().unwrap().into(),
             name: row["displayName"].as_str().unwrap().into(),
             path: row["appPath"].as_str().unwrap().into(),
@@ -1581,6 +1696,7 @@ impl Desktop for MacDesktop {
                 let id = a.bundleIdentifier()?.to_string();
                 let path = a.bundleURL()?.path()?.to_string();
                 Some(App {
+                    window_id: None,
                     id,
                     name: a.localizedName().map(|s| s.to_string()).unwrap_or_default(),
                     path,
@@ -1590,6 +1706,9 @@ impl Desktop for MacDesktop {
             .collect())
     }
     fn bind(&mut self, identifier: &str) -> Result<App> {
+        if super::window_binding(identifier)?.is_some() {
+            return self.app_policy_target(identifier);
+        }
         if identifier.parse::<i32>().is_ok() {
             return self.app_policy_target(identifier);
         }
@@ -1682,7 +1801,25 @@ impl Desktop for MacDesktop {
         }
         result
     }
+    fn action_in_scope(&mut self, app: &App, action: Action, scope: &str) -> Result<()> {
+        let previous = std::mem::replace(&mut self.visual_scope, scope.to_owned());
+        let result = self.action(app, action);
+        self.visual_scope = previous;
+        result
+    }
+    fn reset_visual_scope(&mut self, scope: &str) -> Result<()> {
+        if let Some(targets) = self.cursor_targets.remove(scope) {
+            background::clear_cursor_targets(input_transaction::release_cursor_targets(targets));
+        }
+        Ok(())
+    }
     fn action(&mut self, app: &App, action: Action) -> Result<()> {
+        // Normalize plain paste before lock acquisition; never recursively lock
+        // the same app while holding a distinct file description.
+        let action = match action {
+            Action::Paste { text, format } if format == "text" => Action::TypeText { text },
+            action => action,
+        };
         match &action {
             Action::Click { button, count, .. } if *button > 2 || !(1..=3).contains(count) => {
                 return Err(Error::invalid("Invalid click button/count"));
@@ -1709,6 +1846,8 @@ impl Desktop for MacDesktop {
             _ => (),
         }
         trusted()?;
+        let _transaction = input_transaction::Transaction::acquire(app.pid)?;
+        Self::require_background(app)?;
         self.ensure_monitor(app)?;
         self.application(app)?;
         // App-local synthetic focus is distinct from the user's front process.
@@ -1719,10 +1858,41 @@ impl Desktop for MacDesktop {
                 | Action::Drag { .. }
                 | Action::PressKey { .. }
                 | Action::TypeText { .. }
+                | Action::Paste { .. }
                 | Action::Scroll { .. }
         ) {
+            Self::require_background(app)?;
             let context = self.current_context(app)?;
+            if let Some(id) = context.window_id {
+                let target = (app.pid, id);
+                if self
+                    .cursor_targets
+                    .entry(self.visual_scope.clone())
+                    .or_default()
+                    .insert(target)
+                {
+                    input_transaction::retain_cursor_target(target);
+                }
+            }
+            if app.window_id.is_some() && context.window.settable("AXMain") {
+                Self::require_background(app)?;
+                context.window.set(
+                    "AXMain",
+                    &core_foundation::boolean::CFBoolean::true_value().as_CFType(),
+                )?;
+            }
             background::focus_window(app.pid, context.window_id)?;
+            Self::require_background(app)?;
+            if matches!(&action, Action::PressKey { .. } | Action::TypeText { .. }) {
+                let focused = self.application(app)?.element_checked("AXFocusedWindow")?;
+                if focused.as_ref().and_then(background::window_id) != context.window_id {
+                    return Err(Error::action(format!(
+                        "Target window did not accept keyboard focus (expected {:?}, observed {:?}); no keyboard input was sent",
+                        context.window_id,
+                        focused.as_ref().and_then(background::window_id)
+                    )));
+                }
+            }
         }
         self.needs_settle.insert(app.pid);
         match action {
@@ -1747,6 +1917,7 @@ impl Desktop for MacDesktop {
                 } else {
                     CFString::new(&value).as_CFType()
                 };
+                Self::require_background(app)?;
                 ax.set("AXValue", &value)?;
             }
             Action::SelectText { identity, range } => {
@@ -1771,6 +1942,7 @@ impl Desktop for MacDesktop {
                     return Err(Error::action("Cannot allocate AX range"));
                 }
                 let value = unsafe { CFType::wrap_under_create_rule(raw as _) };
+                Self::require_background(app)?;
                 ax.set("AXSelectedTextRange", &value)?;
                 let deadline = Instant::now() + Duration::from_secs(1);
                 loop {
@@ -1809,6 +1981,7 @@ impl Desktop for MacDesktop {
                         "Raising windows is unsupported in background mode",
                     ));
                 }
+                Self::require_background(app)?;
                 self.handle(&identity)?.perform(&action)?;
             }
             Action::Click {
@@ -1822,7 +1995,20 @@ impl Desktop for MacDesktop {
                         return Err(Error::action("Target is disabled"));
                     }
                     if button == 0 && count == 1 && ax.actions()?.iter().any(|a| a == "AXPress") {
+                        Self::require_background(app)?;
                         ax.perform("AXPress")?;
+                        if let (Ok(context), Some([x, y, w, h])) =
+                            (self.current_context(app), ax.frame())
+                        {
+                            background::show_cursor(
+                                app.pid,
+                                context.window_id,
+                                context.frame,
+                                [x + w / 2., y + h / 2.],
+                                true,
+                            );
+                        }
+                        self.settle(app);
                         return self.ensure_monitor(app);
                     }
                 }
@@ -1865,8 +2051,11 @@ impl Desktop for MacDesktop {
                         events.push(event);
                     }
                 }
-                for event in events {
-                    self.post_pointer(app, &context, &event, p)?;
+                for pair in events.chunks_exact(2) {
+                    Self::require_background(app)?;
+                    for event in pair {
+                        self.post_pointer(app, &context, event, p)?;
+                    }
                 }
             }
             Action::Drag {
@@ -1888,7 +2077,7 @@ impl Desktop for MacDesktop {
                     &modifiers,
                 )?;
             }
-            Action::PressKey { key } => Self::key(app, &key)?,
+            Action::PressKey { key } => self.key(app, &key)?,
             Action::TypeText { text } => {
                 if text.is_empty() {
                     return self.ensure_monitor(app);
@@ -1896,6 +2085,7 @@ impl Desktop for MacDesktop {
                 // Drain the preceding command's observed state before deriving
                 // an insertion expectation (notably a menu-backed Select All).
                 self.settle(app);
+                self.require_keyboard_window(app)?;
                 let application = self.application(app)?;
                 let focused = application.element_checked("AXFocusedUIElement")?;
                 let expectation = if let Some(focused) = &focused {
@@ -1924,6 +2114,8 @@ impl Desktop for MacDesktop {
                     None
                 };
                 let check_focus = || -> Result<()> {
+                    Self::require_background(app)?;
+                    self.require_keyboard_window(app)?;
                     self.application(app)?;
                     if let Some(expected) = &focused {
                         let actual = application.element_checked("AXFocusedUIElement")?;
@@ -2011,17 +2203,16 @@ impl Desktop for MacDesktop {
                     .map_err(|_| Error::action("Cannot allocate scroll event"))?;
                 event.set_flags(CGEventFlags::empty());
                 event.set_location(CGPoint::new(position[0], position[1]));
+                Self::require_background(app)?;
                 self.post_pointer(app, &context, &event, position)?;
             }
-            Action::Paste { text, format } => {
-                if format == "text" {
-                    return self.action(app, Action::TypeText { text });
-                }
+            Action::Paste { .. } => {
                 return Err(Error::action(
                     "Formatted background paste is unsupported without changing the shared clipboard; use typeText or setValue",
                 ));
             }
         }
+        self.settle(app);
         self.ensure_monitor(app)
     }
     fn screenshot(&mut self, app: &App) -> Result<Image> {
@@ -2035,7 +2226,7 @@ impl Desktop for MacDesktop {
     }
     fn invalidate_screenshot(&mut self, app: &App) {
         self.screenshot_geometry
-            .entry(app.pid)
+            .entry((app.pid, app.window_id))
             .or_default()
             .invalidate();
     }
@@ -2052,10 +2243,16 @@ impl Desktop for MacDesktop {
     }
     fn end_session(&mut self, owner: &str) -> Result<()> {
         self.audio.end_session(owner)?;
+        background::clear_cursor_targets(input_transaction::release_cursor_targets(
+            std::mem::take(&mut self.cursor_targets)
+                .into_values()
+                .flatten(),
+        ));
         self.monitors.clear();
         self.contexts.clear();
         self.screenshot_geometry.clear();
         self.handles.clear();
+        self.window_handles.clear();
         self.needs_settle.clear();
         self.monitor_errors.clear();
         Ok(())
@@ -2067,6 +2264,7 @@ impl Desktop for MacDesktop {
         vec![
             "list_apps",
             "bind_app",
+            "list_app_windows",
             "get_app_state",
             "click",
             "drag",
@@ -2400,126 +2598,9 @@ fn capture_window(
     geometry: super::screenshot::Geometry,
     encoding: super::screenshot::Encoding,
 ) -> Result<Image> {
-    if !unsafe { CGPreflightScreenCaptureAccess() } {
-        return Err(Error::new(
-            -32003,
-            "Grant Screen Recording permission to this executable or launching terminal",
-        ));
-    }
-    let (send, receive) = std::sync::mpsc::channel();
-    let content_callback = RcBlock::new(
-        move |content: *mut SCShareableContent, error: *mut NSError| {
-            let fail = |message: String| {
-                let _ = send.send(Err(Error::action(message)));
-            };
-            // SAFETY: ScreenCaptureKit guarantees callback pointers for the duration
-            // of the invocation. No borrowed Cocoa objects leave this callback.
-            unsafe {
-                if let Some(error) = error.as_ref() {
-                    fail(error.localizedDescription().to_string());
-                    return;
-                }
-                let Some(content) = content.as_ref() else {
-                    fail("No shareable content".into());
-                    return;
-                };
-                let windows = content.windows();
-                let matches: Vec<_> = windows
-                    .iter()
-                    .filter(|w| {
-                        w.owningApplication().is_some_and(|a| a.processID() == pid)
-                            && w.windowLayer() == 0
-                            && window_id.is_none_or(|id| w.windowID() == id)
-                            && (window_id.is_some() || {
-                                let [x, y, width, height] = ax_frame;
-                                let f = w.frame();
-                                (f.origin.x - x).abs() < 2.
-                                    && (f.origin.y - y).abs() < 2.
-                                    && (f.size.width - width).abs() < 2.
-                                    && (f.size.height - height).abs() < 2.
-                            })
-                    })
-                    .collect();
-                // The native AX tree represents one window. Match the known ID,
-                // or require a unique frame match when no native ID is available.
-                if matches.len() != 1 {
-                    fail(window_capture_match_error(matches.len()));
-                    return;
-                }
-                let filter = SCContentFilter::initWithDesktopIndependentWindow(
-                    SCContentFilter::alloc(),
-                    &matches[0],
-                );
-                let rect = filter.contentRect();
-                let actual_frame = matches[0].frame();
-                let actual_frame = [
-                    actual_frame.origin.x,
-                    actual_frame.origin.y,
-                    actual_frame.size.width,
-                    actual_frame.size.height,
-                ];
-                if actual_frame
-                    .into_iter()
-                    .zip(ax_frame)
-                    .any(|(actual, expected)| {
-                        !actual.is_finite() || (actual - expected).abs() > 0.01
-                    })
-                    || (rect.size.width - ax_frame[2]).abs() > 0.01
-                    || (rect.size.height - ax_frame[3]).abs() > 0.01
-                    || !rect.size.width.is_finite()
-                    || !rect.size.height.is_finite()
-                {
-                    fail("Capture content does not match the observed window geometry".into());
-                    return;
-                }
-                let config = SCStreamConfiguration::new();
-                config.setWidth(geometry.pixels[0]);
-                config.setHeight(geometry.pixels[1]);
-                config.setShowsCursor(false);
-                config.setIgnoreShadowsSingleWindow(true);
-                let sender = send.clone();
-                let callback = RcBlock::new(
-                    move |image: *mut objc2_core_graphics::CGImage, error: *mut NSError| {
-                        let result = if let Some(error) = error.as_ref() {
-                            Err(Error::action(error.localizedDescription().to_string()))
-                        } else if image.is_null() {
-                            Err(Error::action("No screenshot image"))
-                        } else {
-                            super::screenshot::macos::encode(
-                                image as *mut c_void,
-                                encoding,
-                                geometry.pixels,
-                            )
-                        };
-                        let _ = sender.send(result);
-                    },
-                );
-                SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(
-                    &filter,
-                    &config,
-                    Some(&callback),
-                );
-            }
-        },
-    );
-    unsafe {
-        SCShareableContent::getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler(true,false,&content_callback)
-    };
-    let start = Instant::now();
-    loop {
-        match receive.try_recv() {
-            Ok(result) => return result,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                return Err(Error::action("Screenshot callback disconnected"));
-            }
-            _ => {}
-        }
-        if start.elapsed() > Duration::from_secs(10) {
-            return Err(Error::action("Screenshot timed out"));
-        }
-        pump(Duration::from_millis(10));
-    }
+    capture::capture_window(pid, ax_frame, window_id, geometry, encoding)
 }
+
 pub fn permissions(request: bool) -> Result<serde_json::Value> {
     let accessibility = if request {
         let key = unsafe { CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt) };
@@ -2545,6 +2626,181 @@ pub fn permissions(request: bool) -> Result<serde_json::Value> {
 mod screenshot_diagnostic_tests {
     use super::*;
     use crate::native::screenshot::{Displays, Screen};
+
+    #[test]
+    #[ignore = "live foreground admission; requires Accessibility; mismatched app identity prevents input even if guard regresses"]
+    fn all_mutations_reject_human_foreground_before_resolving_targets() {
+        let mut desktop = MacDesktop::new();
+        let target = || Target::Element {
+            identity: "never-resolve-human-element".into(),
+        };
+        let actions = vec![
+            Action::SetValue {
+                identity: "never-resolve".into(),
+                value: "blocked".into(),
+            },
+            Action::SelectText {
+                identity: "never-resolve".into(),
+                range: crate::selection::TextRange {
+                    location: 0,
+                    length: 0,
+                },
+            },
+            Action::Secondary {
+                identity: "never-resolve".into(),
+                action: "AXPress".into(),
+            },
+            Action::Click {
+                target: target(),
+                button: 0,
+                count: 1,
+            },
+            Action::Drag {
+                from: [0., 0.],
+                to: [1., 1.],
+                button: 0,
+                modifiers: vec![],
+            },
+            Action::PressKey { key: "a".into() },
+            Action::TypeText {
+                text: "blocked".into(),
+            },
+            Action::Scroll {
+                target: target(),
+                direction: "down".into(),
+                pages: 1.,
+            },
+            Action::Paste {
+                text: "blocked".into(),
+                format: "text".into(),
+            },
+            Action::Paste {
+                text: "blocked".into(),
+                format: "html".into(),
+            },
+        ];
+        for action in actions {
+            let pid = NSWorkspace::sharedWorkspace()
+                .frontmostApplication()
+                .unwrap()
+                .processIdentifier();
+            let app = App {
+                window_id: None,
+                pid,
+                id: "org.nanocodex.intentionally-mismatched-safety-sentinel".into(),
+                name: "Owned sentinel".into(),
+                path: "/nonexistent-owned-sentinel".into(),
+            };
+            let error = desktop.action(&app, action).unwrap_err();
+            assert!(error.message.contains("human foreground use"), "{error}");
+        }
+    }
+
+    #[test]
+    fn kernel_visual_reset_preserves_other_scopes_and_external_window_state() {
+        let mut desktop = MacDesktop::new();
+        let shared = (777_778, 41);
+        let exclusive = (777_778, 42);
+        for target in [shared, shared, exclusive] {
+            input_transaction::retain_cursor_target(target);
+        }
+        desktop
+            .cursor_targets
+            .insert("first".into(), [shared, exclusive].into());
+        desktop
+            .cursor_targets
+            .insert("parked".into(), [shared].into());
+        desktop
+            .window_handles
+            .insert((777_778, Some(41)), ["owned-element".into()].into());
+        desktop.reset_visual_scope("first").unwrap();
+        assert!(!desktop.cursor_targets.contains_key("first"));
+        assert!(desktop.cursor_targets["parked"].contains(&shared));
+        assert!(desktop.window_handles.contains_key(&(777_778, Some(41))));
+        assert_eq!(
+            input_transaction::release_cursor_targets([shared]),
+            vec![shared]
+        );
+        desktop.cursor_targets.clear();
+        assert!(input_transaction::release_cursor_targets([exclusive]).is_empty());
+    }
+
+    #[test]
+    fn explicit_windows_keep_distinct_sessions_and_coordinate_authority() {
+        let mut desktop = MacDesktop::new();
+        let first = App {
+            window_id: Some(41),
+            id: "org.owned".into(),
+            name: "Owned".into(),
+            path: "/Applications/Owned.app".into(),
+            pid: 123,
+        };
+        let second = App {
+            window_id: Some(42),
+            ..first.clone()
+        };
+        assert_ne!(desktop.session_key(&first), desktop.session_key(&second));
+        assert_eq!(desktop.session_key(&first), "123#window=41");
+        let first_node = Node {
+            identity: "window41-button".into(),
+            role: "AXButton".into(),
+            title: Some("Save".into()),
+            ..Default::default()
+        };
+        let second_node = Node {
+            identity: "window42-button".into(),
+            ..first_node.clone()
+        };
+        let mut sessions = crate::ax::Sessions::default();
+        let (_, first_revision) = sessions
+            .observe(&desktop.session_key(&first), first_node.clone(), true)
+            .unwrap();
+        let (_, second_revision) = sessions
+            .observe(&desktop.session_key(&second), second_node.clone(), true)
+            .unwrap();
+        let id = first_revision.root.id.unwrap();
+        assert_eq!(
+            Some(id),
+            second_revision.root.id,
+            "Numeric element IDs can overlap between windows"
+        );
+        assert_eq!(
+            sessions
+                .resolve(&desktop.session_key(&first), id, first_node, false)
+                .unwrap()
+                .identity,
+            "window41-button"
+        );
+        assert_eq!(
+            sessions
+                .resolve(&desktop.session_key(&second), id, second_node, false)
+                .unwrap()
+                .identity,
+            "window42-button"
+        );
+        let frame = [0., 0., 100., 100.];
+        let geometry =
+            super::super::screenshot::Geometry::new(frame, 2., Default::default()).unwrap();
+        for app in [&first, &second] {
+            let publication = desktop
+                .screenshot_geometry
+                .entry((app.pid, app.window_id))
+                .or_default();
+            let receipt = publication.begin();
+            publication.commit(receipt, geometry, displays()).unwrap();
+        }
+        desktop.invalidate_screenshot(&first);
+        assert!(
+            desktop.screenshot_geometry[&(first.pid, first.window_id)]
+                .current(frame, &displays())
+                .is_err()
+        );
+        assert!(
+            desktop.screenshot_geometry[&(second.pid, second.window_id)]
+                .current(frame, &displays())
+                .is_ok()
+        );
+    }
 
     #[test]
     fn ambiguous_or_missing_window_requires_explicit_desktop_capture() {

@@ -84,6 +84,7 @@ impl Desktop for Fixture {
     }
     fn apps(&mut self) -> Result<Vec<App>> {
         Ok(vec![App {
+            window_id: None,
             id: "org.skyre.fixture".into(),
             name: "Skyre Fixture".into(),
             path: "fixture://native".into(),

@@ -98,6 +98,7 @@ impl Engine {
     /// A parked kernel may fail while another route is selected. Clean its
     /// resources without changing the selected route or touching another owner.
     pub fn reset_kernel_scope_resources(&mut self, scope: &str) -> Result<()> {
+        self.desktop.reset_visual_scope(scope)?;
         self.browsers.reset_chooser_scope(scope);
         self.navigation_security.reset(scope);
         self.security.clear_origin_scope(scope);
@@ -201,18 +202,21 @@ impl Engine {
         )
     }
     fn app(&mut self, identifier: &str) -> Result<App> {
-        if self.security.check_app(identifier).is_err() {
-            let candidate = self
-                .desktop
-                .apps()?
-                .into_iter()
-                .find(|a| a.id == identifier || a.path == identifier || a.name == identifier);
+        let policy_identifier =
+            crate::native::window_binding(identifier)?.map_or(identifier, |(app, _)| app);
+        if self.security.check_app(policy_identifier).is_err() {
+            let candidate = self.desktop.apps()?.into_iter().find(|a| {
+                a.id == policy_identifier
+                    || a.path == policy_identifier
+                    || a.name == policy_identifier
+                    || policy_identifier.parse::<i32>().ok() == Some(a.pid)
+            });
             if !candidate.as_ref().is_some_and(|a| {
                 [a.id.as_str(), a.path.as_str(), a.name.as_str()]
                     .iter()
                     .any(|s| self.security.check_app(s).is_ok())
             }) {
-                self.security.check_app(identifier)?;
+                self.security.check_app(policy_identifier)?;
             }
         }
         if let Some(app) = self.apps.get(identifier).cloned() {
@@ -550,6 +554,7 @@ impl Engine {
         let native = method.strip_prefix("sky.").unwrap_or(method);
         if [
             "bind_app",
+            "list_app_windows",
             "get_app_state",
             "get_screenshot",
             "click",
@@ -594,6 +599,7 @@ impl Engine {
             || method == "platform.call"
             || [
                 "bind_app",
+                "list_app_windows",
                 "get_app_state",
                 "get_screenshot",
                 "click",
@@ -651,9 +657,19 @@ impl Engine {
     ) -> Result<Value> {
         if method == "sky.app_policy" {
             let app = self.desktop.app_policy_target(string(args, "app")?)?;
-            let binding = self.desktop.session_key(&app);
+            let binding = if app.window_id.is_none() && string(args, "app")?.parse::<i32>().is_ok()
+            {
+                app.pid.to_string()
+            } else {
+                self.desktop.session_key(&app)
+            };
+            let explicit_process = string(args, "app")?.parse::<i32>().is_ok();
+            let explicit_window = app.window_id.is_some();
             let mut policy = self.approvals.policy(app, &self.security);
-            if self.desktop.sky_target() != "mac" && self.desktop.app_interface() {
+            if explicit_window
+                || explicit_process
+                || self.desktop.sky_target() != "mac" && self.desktop.app_interface()
+            {
                 policy["target"]["bindingIdentifier"] = json!(binding);
             }
             return Ok(policy);
@@ -837,6 +853,7 @@ impl Engine {
         }
         if ![
             "bind_app",
+            "list_app_windows",
             "get_app_state",
             "get_screenshot",
             "click",
@@ -857,6 +874,9 @@ impl Engine {
         }
         let identifier = string(args, "app")?;
         let app = self.app(identifier)?;
+        if method == "list_app_windows" {
+            return self.desktop.app_windows(&app);
+        }
         if method == "bind_app" {
             return Ok(serde_json::to_value(app)?);
         }
@@ -1053,7 +1073,8 @@ impl Engine {
             }
         };
         let validate_after = matches!(&action, Action::SetValue { .. });
-        self.desktop.action(&app, action)?;
+        self.desktop
+            .action_in_scope(&app, action, &self.kernel_scope)?;
         // A setter may have succeeded even if subsequent target validation fails.
         // Preserve that observable ordering; never imply rollback on an error.
         if validate_after {
@@ -1111,6 +1132,9 @@ impl Engine {
             ],
             _ => vec![],
         };
+        if self.desktop.capabilities().contains(&"list_app_windows") {
+            methods.push("list_app_windows");
+        }
         if std::env::var("SKY_ENABLE_AUDIO").as_deref() == Ok("1") {
             methods.extend(["start_audio_recording", "stop_audio_recording"]);
         }

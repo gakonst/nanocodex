@@ -2,6 +2,12 @@
 //! front-process manipulation is permitted here. Private window-local metadata
 //! is required because PID addressing alone does not preserve AppKit hit testing.
 use super::*;
+#[path = "macos_cursor.rs"]
+mod cursor;
+
+pub(super) fn clear_cursor_targets(targets: Vec<(i32, u32)>) {
+    cursor::clear_targets(targets);
+}
 use foreign_types::ForeignType;
 use std::sync::OnceLock;
 
@@ -157,7 +163,39 @@ pub(super) fn post_pointer(
         set_location(event.as_ptr().cast(), local);
     }
     event.post_to_pid(pid);
+    show_cursor(
+        pid,
+        Some(id),
+        frame,
+        point,
+        matches!(
+            event.get_type(),
+            CGEventType::LeftMouseDown | CGEventType::RightMouseDown | CGEventType::OtherMouseDown
+        ),
+    );
     Ok(())
+}
+
+/// AXPress also uses this visual path. Invalid/missing geometry suppresses
+/// feedback without turning a successful input action into an overlay failure.
+pub(super) fn show_cursor(
+    pid: i32,
+    id: Option<u32>,
+    frame: Option<[f64; 4]>,
+    point: [f64; 2],
+    click: bool,
+) {
+    if let Ok((window, _)) = local_point(pid, id, frame, point) {
+        if let Some(frame) = frame {
+            cursor::post(cursor::Update {
+                pid,
+                window,
+                frame,
+                point,
+                click,
+            });
+        }
+    }
 }
 
 fn drag_flags(modifiers: &[String]) -> Result<CGEventFlags> {
@@ -240,10 +278,31 @@ pub(super) fn drag(
     }
     // Allocate and validate before down. All events, including up, keep the same
     // PID/window address. Modifier bits are event-local: no hardware key is held.
+    let (release, _) = events.pop().expect("prepared drag release");
+    let mut last = from;
+    let mut pressed = false;
     for (event, point) in events {
-        post_pointer(pid, id, frame, &event, point)?;
+        if let Err(error) = MacDesktop::require_background_pid(pid) {
+            if pressed {
+                release.set_location(CGPoint::new(last[0], last[1]));
+                let _ = post_pointer(pid, id, frame, &release, last);
+            }
+            return Err(error);
+        }
+        if let Err(error) = post_pointer(pid, id, frame, &event, point) {
+            if pressed {
+                release.set_location(CGPoint::new(last[0], last[1]));
+                let _ = post_pointer(pid, id, frame, &release, last);
+            }
+            return Err(error);
+        }
+        pressed = true;
+        last = point;
         pump(Duration::from_millis(5));
     }
+    // Always balance down, including a takeover just after the final movement.
+    release.set_location(CGPoint::new(last[0], last[1]));
+    post_pointer(pid, id, frame, &release, last)?;
     Ok(())
 }
 
