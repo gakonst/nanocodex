@@ -19,6 +19,17 @@ function call(runtime: Env, path: string, method = "GET", actor = principal, req
 }
 
 describe("public Main Thread routing authority", () => {
+  it.each([200, 404, 410, 503])("marks public navigation responses no-store, including status %s", async status => {
+    const runtime = { ...env, NANOCODEX_USERS: { getByName: () => ({
+      fetch: async () => Response.json(status === 200 ? { data: [] } : { error: 'unavailable' },
+        { status, headers: { 'cache-control': 'public, max-age=3600' } }),
+    }) } } as unknown as Env;
+    for (const path of ['/v1/main-thread', '/v1/projects']) {
+      const response = await call(runtime, path);
+      expect(response.status).toBe(status);
+      expect(response.headers.get('cache-control')).toBe('no-store');
+    }
+  });
   it("rejects insufficient capabilities and Connect grants before accessing a registry or session", async () => {
     const unexpected = () => { throw new Error("unauthorized request reached account data"); };
     const runtime = { ...env, NANOCODEX_USERS: { getByName: unexpected }, NANOCODEX_SESSIONS: { getByName: unexpected } } as unknown as Env;

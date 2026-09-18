@@ -1,6 +1,6 @@
 import { canonicalRoleInstruction, type CanonicalRole } from "./startup-context";
 import { MainThreadCompletions } from "./main-thread-completions";
-import { mainThreadRequest, mainThreadTools, retainMainRoute, type CanonicalProject } from "./main-thread";
+import { canonicalRoleResponse, mainThreadRequest, mainThreadTools, retainMainRoute, type CanonicalProject } from "./main-thread";
 import { ProjectThreadRuns, projectCompletionInput, type ProjectThreadRun } from "./project-thread-runs";
 import { projectThreadTools, spawnPersistentProjectThread, retainProjectSpawn, type ProjectThread } from "./project-threads";
 import { downloadPath, downloadBrainFile, downloadHandFile, fileDownloadFailure, FileDownloadError } from "./file-download";
@@ -5180,9 +5180,7 @@ export class DurableAgentSession extends DurableComputerSession {
   async #canonicalRole(session: SessionRow): Promise<CanonicalRole> {
     const response = await this.env.NANOCODEX_USERS.getByName(session.owner_id).fetch(
       `https://user.internal/canonical-role/${session.session_id}?team_id=${encodeURIComponent(session.team_id)}`);
-    if (response.status === 404) return { role: "conversation" };
-    if (!response.ok) throw new Error("canonical role registry unavailable");
-    return response.json<CanonicalRole>();
+    return canonicalRoleResponse(response);
   }
 
   async #projectTools(session: SessionRow, configuration: AgentConfiguration): Promise<NamedTool[]> {
