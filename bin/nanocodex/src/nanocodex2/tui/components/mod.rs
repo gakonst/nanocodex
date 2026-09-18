@@ -13,6 +13,7 @@ mod floating;
 mod keybindings;
 mod model_selector;
 mod node;
+mod project_sidebar;
 mod queue;
 mod recent_prompt_picker;
 mod review_confirmation;
@@ -28,6 +29,7 @@ mod transcript;
 mod waved_text;
 
 pub(crate) use app::{AppEffect, AppEvent, AppNode};
+pub(crate) use composer::ComposerDraft;
 pub(crate) use node::{ComponentUpdate, RenderRequest};
 pub(crate) use queue::QueueId;
 pub(crate) use root::{

@@ -473,7 +473,7 @@ enum ConnectionResult {
     Sessions {
         pane: PaneId,
         request_id: u64,
-        result: Option<Result<AgentList, ManagedError>>,
+        result: Option<Result<Vec<SessionSummary>, ManagedError>>,
     },
     Disconnected(Result<(), NanocodexError>),
 }
@@ -510,6 +510,7 @@ struct DriverRuntime {
     agent: Option<Nanocodex>,
     startup_attach: bool,
     pending_resume: Option<(tokio::task::AbortHandle, PaneId)>,
+    thread_drafts: HashMap<String, components::ComposerDraft>,
     managed_events: Option<mpsc::UnboundedReceiver<ManagedEvent>>,
     managed_events_open: bool,
     recovery: Option<RecoveryPhase>,
@@ -1512,6 +1513,7 @@ async fn run_inner(
         agent: None,
         startup_attach: matches!(attach, Some(Some(_))),
         pending_resume: None,
+        thread_drafts: HashMap::new(),
         managed_events: None,
         managed_events_open: false,
         recovery: None,
@@ -2051,7 +2053,7 @@ async fn run_inner(
                                 Ok(list) => app.update(AppEvent::SessionsLoaded {
                                     pane,
                                     request_id,
-                                    sessions: session_summaries(&list, &runtime.workspace),
+                                    sessions: list,
                                 }),
                                 Err(error) => app.update(AppEvent::SessionListFailed {
                                     pane,
@@ -2062,7 +2064,17 @@ async fn run_inner(
                             stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
                         }
                         ConnectionResult::Agent { purpose, result: Ok((agent, managed_events, agent_id, workspace, history, warning, settings, created, active_turns)) } => {
-                            if matches!(purpose, ConnectionPurpose::Bug(_)) {
+                            if let ConnectionPurpose::Resume(pane) = purpose {
+                                let outgoing = runtime.agent_id.clone();
+                                if let Some(draft) = app.take_thread_draft(pane) {
+                                    runtime.thread_drafts.insert(outgoing, draft);
+                                } else {
+                                    runtime.thread_drafts.remove(&outgoing);
+                                }
+                            }
+                            if matches!(purpose, ConnectionPurpose::Bug(_) | ConnectionPurpose::Resume(_)) {
+                                // Drop old local observers, including queued recovery/settings
+                                // results. Disconnect below leaves service-owned turns running.
                                 runtime.detach_bug_source();
                             }
                             runtime.startup_attach = false;
@@ -2185,6 +2197,12 @@ async fn run_inner(
                                     })
                                 }
                             };
+                            app.set_current_thread(pane, runtime.agent_id.clone());
+                            if matches!(purpose, ConnectionPurpose::Resume(_)) {
+                                if let Some(draft) = runtime.thread_drafts.remove(&runtime.agent_id) {
+                                    app.restore_thread_draft(pane, draft);
+                                }
+                            }
                             request_render(update, &mut scheduler);
                             if matches!(purpose, ConnectionPurpose::Bug(_)) {
                                 request_render(app.update(AppEvent::NotifySuccess {
@@ -3248,8 +3266,10 @@ async fn apply_update(
                             task.abort();
                         }
                     }
-                    RootEffect::LoadSessions { request_id, .. } => {
+                    RootEffect::LoadSessions { request_id, kind } => {
                         let client = runtime.client.clone();
+                        let workspace = runtime.workspace.clone();
+                        let current_agent = runtime.agent_id.clone();
                         let cancellation = CancellationToken::new();
                         runtime
                             .session_list_cancellations
@@ -3260,7 +3280,7 @@ async fn apply_update(
                                 request_id,
                                 result: tokio::select! {
                                     () = cancellation.cancelled() => None,
-                                    result = client.list() => Some(result),
+                                    result = load_session_catalog(&client, &workspace, &current_agent, kind == components::SessionListKind::Sidebar) => Some(result),
                                 },
                             }
                         });
@@ -3300,18 +3320,25 @@ async fn apply_update(
                         if let Some(task) = runtime.session_search_tasks.remove(&pane) {
                             task.abort();
                         }
-                        if !runtime.idle() {
+                        if runtime.active_shells > 0 || !runtime.admitting.is_empty()
+                            || runtime.pending_submission.is_some() || !runtime.unacknowledged_inputs.is_empty()
+                            || !runtime.waiting_steers.is_empty() || !runtime.steers.is_empty()
+                            || runtime.unconfirmed_steer.is_some()
+                            || app.root(pane).is_some_and(RootNode::has_unsent_thread_input) {
                             absorb(
                             app.update(AppEvent::SessionLoadFailed {
                                 pane,
                                 error:
-                                    "Finish or interrupt the active work before switching agents."
+                                    "Resolve queued messages or wait for local work and message delivery before switching threads."
                                         .to_owned(),
                             }),
                             &mut effects,
                             scheduler,
                         );
                             continue;
+                        }
+                        if let Some((previous, _)) = runtime.pending_resume.take() {
+                            previous.abort();
                         }
                         let client = runtime.client.clone();
                         let resume = runtime.connection.spawn(async move {
@@ -3638,6 +3665,65 @@ fn cursor_at_or_before(cursor: &str, through: &str) -> bool {
         || (cursor.len() == through.len() && cursor <= through)
 }
 
+async fn load_session_catalog(
+    client: &ManagedClient,
+    workspace: &Path,
+    current_agent: &str,
+    activity: bool,
+) -> Result<Vec<SessionSummary>, ManagedError> {
+    let list = client.list().await?;
+    let mut sessions = session_summaries(&list, workspace);
+    if activity {
+        // Prioritize the open project's newest threads. A single deadline bounds
+        // optional status enrichment; slow/failed/unqueried states remain unknown.
+        let current_root = sessions
+            .iter()
+            .find(|s| s.session_id == current_agent)
+            .map(|s| {
+                s.project_root_id
+                    .as_deref()
+                    .unwrap_or(&s.session_id)
+                    .to_owned()
+            });
+        sessions.sort_by_key(|s| {
+            (
+                std::cmp::Reverse(
+                    current_root.as_deref()
+                        == Some(s.project_root_id.as_deref().unwrap_or(&s.session_id)),
+                ),
+                std::cmp::Reverse(s.updated_at_unix_ms),
+            )
+        });
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(750);
+        let ids: Vec<_> = sessions
+            .iter()
+            .take(64)
+            .map(|session| session.session_id.clone())
+            .collect();
+        let mut states = futures_util::stream::iter(ids.into_iter().map(|id| async move {
+            let state =
+                tokio::time::timeout(std::time::Duration::from_secs(2), client.state(&id)).await;
+            (
+                id,
+                state
+                    .ok()
+                    .and_then(Result::ok)
+                    .map(|state| !state.active_turns.is_empty()),
+            )
+        }))
+        .buffer_unordered(8);
+        let mut activity = HashMap::new();
+        while let Ok(Some((id, state))) = tokio::time::timeout_at(deadline, states.next()).await {
+            activity.insert(id, state);
+        }
+        drop(states);
+        for session in &mut sessions {
+            session.active = activity.remove(&session.session_id).flatten();
+        }
+    }
+    Ok(sessions)
+}
+
 fn session_summaries(list: &AgentList, workspace: &Path) -> Vec<SessionSummary> {
     list.data
         .iter()
@@ -3656,7 +3742,15 @@ fn session_summaries(list: &AgentList, workspace: &Path) -> Vec<SessionSummary> 
                 effort: ReasoningEffort::Medium,
                 reasoning_mode: ReasoningMode::Standard,
                 workspace: workspace.to_path_buf(),
-                preview: summary.title.clone(),
+                preview: summary
+                    .project_title
+                    .clone()
+                    .filter(|title| !title.is_empty())
+                    .unwrap_or_else(|| summary.title.clone()),
+                project_root_id: summary.project_root_id.clone(),
+                parent_agent_id: summary.parent_agent_id.clone(),
+                project_name: summary.project_name.clone(),
+                active: None,
             })
         })
         .collect()
@@ -3952,6 +4046,7 @@ mod tests {
             agent: None,
             startup_attach: false,
             pending_resume: None,
+            thread_drafts: HashMap::new(),
             managed_events: None,
             managed_events_open: false,
             recovery: None,
@@ -5204,6 +5299,10 @@ mod tests {
                     created_at: 1_750_000_000.0,
                     updated_at: 1_750_000_100.0,
                     turn_count: 2,
+                    project_root_id: None,
+                    parent_agent_id: None,
+                    project_title: None,
+                    project_name: None,
                 },
             )]),
         };

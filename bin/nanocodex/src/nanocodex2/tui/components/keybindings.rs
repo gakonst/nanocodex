@@ -19,7 +19,11 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 const FOOTER: [(&str, &str); 2] = [("↑↓", "scroll"), ("esc", "close")];
-const BINDINGS: [(&str, &str); 31] = [
+const BINDINGS: [(&str, &str); 32] = [
+    (
+        "F2",
+        "toggle Projects > Threads sidebar · Esc returns to composer",
+    ),
     ("ctrl+x", "mute · unmute microphone while voice is active"),
     ("ctrl+s", "change reasoning effort"),
     ("ctrl+d", "select model · before first prompt"),

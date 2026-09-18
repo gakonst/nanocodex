@@ -72,6 +72,8 @@ impl Terminal {
         command.env_remove("TMUX_PANE");
         command.env_remove("TERM_PROGRAM");
         command.env("TERM", "xterm-256color");
+        // Exercise terminal clipboard output consistently, without touching the host clipboard.
+        command.env("SSH_TTY", "/dev/pts/nanocodex-test");
         command.env("NANOCODEX_MANAGED_URL", origin);
         command.env(
             "NANOCODEX_API_KEY",
@@ -103,6 +105,34 @@ impl Terminal {
             _master: pair.master,
             _workspace: workspace,
         }
+    }
+
+    async fn wait_sidebar_text(&self, text: &str, present: bool) {
+        tokio::time::timeout(TIMEOUT, async {
+            loop {
+                let sidebar = self
+                    .screen
+                    .lock()
+                    .unwrap()
+                    .screen()
+                    .contents()
+                    .lines()
+                    .map(|line| line.chars().take(38).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if sidebar.contains(text) == present {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "sidebar {text:?} presence={present}: {}",
+                self.screen.lock().unwrap().screen().contents()
+            )
+        });
     }
 
     fn input(&mut self, input: &str) {
@@ -174,6 +204,9 @@ impl Drop for Terminal {
 struct Service {
     vault_writes: Arc<Mutex<Vec<Value>>>,
     listed_agent: Arc<Mutex<String>>,
+    project_catalog: Arc<Mutex<Option<Value>>>,
+    thread_histories: Arc<Mutex<HashMap<String, Vec<Value>>>>,
+    connection_ids: Arc<Mutex<Vec<String>>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
     active: bool,
     state_available: Arc<AtomicBool>,
@@ -190,6 +223,36 @@ struct Service {
 }
 
 impl Service {
+    fn history_for(&self, agent: &str) -> Vec<Value> {
+        self.thread_histories
+            .lock()
+            .unwrap()
+            .get(agent)
+            .cloned()
+            .unwrap_or_else(|| self.history.lock().unwrap().clone())
+    }
+
+    fn active_for(&self, agent: &str) -> Vec<String> {
+        if !self.thread_histories.lock().unwrap().contains_key(agent) {
+            return self.active_turns();
+        }
+        let mut active = std::collections::BTreeSet::new();
+        for event in self.history_for(agent) {
+            if let Some(id) = event["id"].as_str() {
+                match event["type"].as_str() {
+                    Some("turn_accepted") => {
+                        active.insert(id.to_owned());
+                    }
+                    Some("turn_completed" | "turn_failed" | "turn_cancelled") => {
+                        active.remove(id);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        active.into_iter().collect()
+    }
+
     fn active_turns(&self) -> Vec<String> {
         let mut active = std::collections::BTreeSet::new();
         if self.active {
@@ -209,15 +272,6 @@ impl Service {
             }
         }
         active.into_iter().collect()
-    }
-
-    fn latest_cursor(&self) -> String {
-        self.history
-            .lock()
-            .unwrap()
-            .last()
-            .map_or("0", |event| event["cursor"].as_str().unwrap())
-            .to_owned()
     }
 }
 
@@ -247,6 +301,9 @@ async fn approve_vault_origin(
 
 async fn list_agents(State(service): State<Service>) -> Json<Value> {
     let _permit = service.session_list_gate.acquire().await.unwrap();
+    if let Some(catalog) = service.project_catalog.lock().unwrap().clone() {
+        return Json(catalog);
+    }
     let agent = service.listed_agent.lock().unwrap().clone();
     Json(
         json!({"data": [agent], "summaries": {agent: {"title": "RETAINED_REMOTE_WORK", "created_at": 1, "updated_at": 1, "turn_count": 1}}}),
@@ -255,6 +312,7 @@ async fn list_agents(State(service): State<Service>) -> Json<Value> {
 
 async fn event_history(
     State(service): State<Service>,
+    axum::extract::Path(agent): axum::extract::Path<String>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Json<Value> {
     let _permit = service.history_gate.acquire().await.unwrap();
@@ -267,7 +325,7 @@ async fn event_history(
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(100);
     service.history_requests.lock().unwrap().push(before);
-    let events = service.history.lock().unwrap();
+    let events = service.history_for(&agent);
     let data: Vec<_> = events
         .iter()
         .filter(|event| event["cursor"].as_str().unwrap().parse::<u64>().unwrap() < before)
@@ -299,14 +357,14 @@ async fn socket(
 }
 
 async fn serve(mut socket: WebSocket, service: Service, cursor: u64, agent: String) {
-    let history = service.history.lock().unwrap().clone();
+    let history = service.history_for(&agent);
     let latest_cursor = history
         .last()
         .map_or("0", |event| event["cursor"].as_str().unwrap());
     let (outgoing, mut events) = mpsc::unbounded_channel::<Value>();
     let ready = json!({
         "type": "ready", "session_id": agent, "restored": false,
-        "active_turns": service.active_turns(), "active_turn_details": [], "latest_event_cursor": latest_cursor,
+        "active_turns": service.active_for(&agent), "active_turn_details": [], "latest_event_cursor": latest_cursor,
         "capabilities": {"durable_turns": true, "resumable_events": true,
             "live_steer": true, "live_cancel": true, "workspace": "cloudflare-computer",
             "execution_environments": true, "execution_namespace": "cwd-root-v1", "native_cross_mounts": false},
@@ -331,6 +389,7 @@ async fn serve(mut socket: WebSocket, service: Service, cursor: u64, agent: Stri
             return;
         }
     }
+    service.connection_ids.lock().unwrap().push(agent.clone());
     if service.connected.send(outgoing).is_err() {
         return;
     }
@@ -376,12 +435,12 @@ async fn state(
     Ok(Json(json!({
         "agent_id": agent, "session_id": agent, "has_snapshot": false,
         "completed_turns": 0, "last_active": 1, "agent_loaded": true, "connected_clients": 1,
-        "active_turns": service.active_turns(), "active_turn_details": [],
+        "active_turns": service.active_for(&agent), "active_turn_details": [],
         "capabilities": {"durable_turns": true, "resumable_events": true,
             "live_steer": true, "live_cancel": true, "workspace": "cloudflare-computer",
             "execution_environments": true, "execution_namespace": "cwd-root-v1", "native_cross_mounts": false},
         "settings": service.settings.lock().unwrap().clone(),
-        "latest_event_cursor": service.latest_cursor(), "stream_error": null
+        "latest_event_cursor": service.history_for(&agent).last().and_then(|e| e["cursor"].as_str()).unwrap_or("0"), "stream_error": null
     })))
 }
 
@@ -438,6 +497,9 @@ async fn cancel(
 struct Fixture {
     vault_writes: Arc<Mutex<Vec<Value>>>,
     listed_agent: Arc<Mutex<String>>,
+    project_catalog: Arc<Mutex<Option<Value>>>,
+    thread_histories: Arc<Mutex<HashMap<String, Vec<Value>>>>,
+    connection_ids: Arc<Mutex<Vec<String>>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
     origin: String,
     terminal: Terminal,
@@ -505,6 +567,9 @@ impl Fixture {
         let history_requests = Arc::new(Mutex::new(Vec::new()));
         let session_list_gate = Arc::new(tokio::sync::Semaphore::new(1));
         let listed_agent = Arc::new(Mutex::new(AGENT.to_owned()));
+        let project_catalog = Arc::new(Mutex::new(None));
+        let thread_histories = Arc::new(Mutex::new(HashMap::new()));
+        let connection_ids = Arc::new(Mutex::new(Vec::new()));
         let resume_gate = Arc::new(tokio::sync::Semaphore::new(1));
         let vault_writes = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new()
@@ -532,6 +597,9 @@ impl Fixture {
             .with_state(Service {
                 vault_writes: vault_writes.clone(),
                 listed_agent: listed_agent.clone(),
+                project_catalog: project_catalog.clone(),
+                thread_histories: thread_histories.clone(),
+                connection_ids: connection_ids.clone(),
                 resume_gate: resume_gate.clone(),
                 active,
                 state_available: state_available.clone(),
@@ -559,6 +627,9 @@ impl Fixture {
         Self {
             vault_writes,
             listed_agent,
+            project_catalog,
+            thread_histories,
+            connection_ids,
             resume_gate,
             origin,
             terminal,
@@ -3290,4 +3361,153 @@ async fn terminal_vault_approval_cancel_then_explicit_approve_sends_one_safe_rec
             "unsafe/raw Vault output: {forbidden}"
         );
     }
+}
+
+#[tokio::test]
+async fn terminal_project_sidebar_switches_active_threads_and_preserves_drafts() {
+    const CHILD: &str = "019fc927-b280-79a7-8445-1b9996ad2fb1";
+    let mut fixture = Fixture::start_with_active(true).await;
+    *fixture.project_catalog.lock().unwrap() = Some(json!({
+        "data": [AGENT, CHILD],
+        "summaries": {
+            AGENT: {"title": "SIDEBAR_MASTER", "created_at": 1, "updated_at": 2,
+                "turn_count": 1, "project_root_id": AGENT},
+            CHILD: {"title": "SIDEBAR_CHILD", "created_at": 1, "updated_at": 1,
+                "turn_count": 1, "project_root_id": AGENT, "parent_agent_id": AGENT}
+        }
+    }));
+    fixture
+        .thread_histories
+        .lock()
+        .unwrap()
+        .insert(CHILD.to_owned(), Vec::new());
+    fixture.terminal.prompt("MASTER_UNSENT_DRAFT", "");
+    fixture.terminal.input("\x1bOQ"); // F2
+    fixture.terminal.wait_text("Projects > Threads").await;
+    fixture.terminal.wait_text("SIDEBAR_CHILD").await;
+    fixture.terminal.input("\x1b[B\r"); // child, open
+    fixture.replacement_connection().await;
+    fixture.terminal.wait_no_text("MASTER_UNSENT_DRAFT").await;
+    assert_eq!(
+        fixture.connection_ids.lock().unwrap().last().unwrap(),
+        CHILD
+    );
+    fixture.terminal.wait_text("/ actions").await;
+    fixture.terminal.prompt("CHILD_UNSENT_DRAFT", "");
+    let mut progress = json!({"type": "event", "event": {
+        "protocol_version": 1, "request_id": AGENT, "seq": 1,
+        "type": "assistant.message", "payload": {"model_call_index": 1, "text": "MASTER_PROGRESS_WHILE_AWAY", "phase": "commentary"}
+    }});
+    fixture.cursor += 1;
+    progress["cursor"] = json!(fixture.cursor.to_string());
+    progress["turn_id"] = json!(REMOTE_TURN);
+    fixture.history.lock().unwrap().push(progress);
+    fixture
+        .terminal
+        .wait_no_text("MASTER_PROGRESS_WHILE_AWAY")
+        .await;
+    fixture.terminal.input("\x1bOQ"); // hide
+    fixture.terminal.wait_no_text("Projects > Threads").await;
+    fixture.terminal.input("\x1bOQ"); // show/focus
+    fixture.terminal.wait_text("SIDEBAR_CHILD").await;
+    fixture.terminal.input("\x1b[A\r"); // master, open
+    fixture.replacement_connection().await;
+    assert_eq!(
+        fixture.connection_ids.lock().unwrap().last().unwrap(),
+        AGENT
+    );
+    fixture.terminal.wait_text("MASTER_UNSENT_DRAFT").await;
+    fixture
+        .terminal
+        .wait_text("MASTER_PROGRESS_WHILE_AWAY")
+        .await;
+    fixture.terminal.wait_text("Enter steer").await;
+    fixture.terminal.wait_no_text("CHILD_UNSENT_DRAFT").await;
+    fixture.terminal.input("\x1bOQ\x1bOQ"); // hide/show to focus
+    fixture.terminal.wait_text("SIDEBAR_CHILD").await;
+    fixture.terminal.input("\x1b[B\r");
+    fixture.replacement_connection().await;
+    assert_eq!(
+        fixture.connection_ids.lock().unwrap().last().unwrap(),
+        CHILD
+    );
+    fixture.terminal.wait_text("CHILD_UNSENT_DRAFT").await;
+    fixture.terminal.wait_no_text("MASTER_UNSENT_DRAFT").await;
+    fixture
+        .terminal
+        .wait_no_text("MASTER_PROGRESS_WHILE_AWAY")
+        .await;
+    assert!(
+        fixture.cancellations.try_recv().is_err(),
+        "navigation cancelled remote work"
+    );
+    assert!(
+        fixture.submissions.try_recv().is_err(),
+        "navigation submitted a draft"
+    );
+    assert!(
+        fixture.steers.try_recv().is_err(),
+        "navigation steered remote work"
+    );
+}
+
+#[tokio::test]
+async fn terminal_project_sidebar_tracks_hosted_subagent_lifecycle() {
+    let mut fixture = Fixture::start_with_active(true).await;
+    fixture.nested(
+        REMOTE_TURN,
+        "tool.result",
+        json!({
+            "call_id": "spawn-reviewer", "tool": "spawn_agent", "status": "completed",
+            "duration_ns": 1, "structured_result": {
+                "agent_id": 7, "role": "SIDEBAR_REVIEWER", "status": {"state": "running"}
+            }
+        }),
+    );
+    fixture.terminal.input("\x1bOQ");
+    fixture.terminal.wait_text("Projects > Threads").await;
+    fixture
+        .terminal
+        .wait_sidebar_text("SIDEBAR_REVIEWER", true)
+        .await;
+    fixture.emit(
+        REMOTE_TURN,
+        json!({"type": "event", "agent_id": 7, "event": {
+            "protocol_version": 1, "request_id": "reviewer-session", "seq": 1,
+            "type": "tool.result", "payload": {
+                "call_id": "spawn-nested", "tool": "spawn_agent", "status": "completed",
+                "duration_ns": 1, "result": {
+                    "agent_id": 8, "role": "SIDEBAR_NESTED", "status": {"state": "running"}
+                }
+            }
+        }}),
+    );
+    fixture
+        .terminal
+        .wait_sidebar_text("SIDEBAR_NESTED", true)
+        .await;
+    fixture.emit(
+        REMOTE_TURN,
+        json!({"type": "event", "agent_id": 7, "event": {
+            "protocol_version": 1, "request_id": "reviewer-session", "seq": 2,
+            "type": "run.completed", "payload": {"status": "completed"}
+        }}),
+    );
+    fixture.emit(
+        REMOTE_TURN,
+        json!({"type": "event", "agent_id": 8, "event": {
+            "protocol_version": 1, "request_id": "nested-session", "seq": 1,
+            "type": "run.completed", "payload": {"status": "completed"}
+        }}),
+    );
+    // Completed helpers must leave the running section, even while the root works.
+    fixture
+        .terminal
+        .wait_sidebar_text("SIDEBAR_REVIEWER", false)
+        .await;
+    fixture
+        .terminal
+        .wait_sidebar_text("SIDEBAR_NESTED", false)
+        .await;
+    assert!(fixture.cancellations.try_recv().is_err());
 }

@@ -229,6 +229,20 @@ impl SubagentTree {
         }
     }
 
+    pub(super) fn sidebar_labels(&self) -> Vec<String> {
+        self.nodes
+            .iter()
+            .filter(|node| node.status.is_active())
+            .map(|node| {
+                sanitize_terminal_text_inline(&format!(
+                    "  ● #{} {}",
+                    node.descriptor.id, node.descriptor.role
+                ))
+                .into_owned()
+            })
+            .collect()
+    }
+
     pub(super) fn active_count(&self) -> usize {
         self.nodes
             .iter()

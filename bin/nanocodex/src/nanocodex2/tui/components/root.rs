@@ -245,6 +245,7 @@ pub(crate) struct RestoredSessionProjection {
     context_tokens: Option<u64>,
     recent_prompts: Vec<RecentPromptDraft>,
     seen_vault_requests: std::collections::HashSet<String>,
+    managed_activity: super::project_sidebar::ManagedActivity,
 }
 
 impl RestoredSessionProjection {
@@ -253,6 +254,7 @@ impl RestoredSessionProjection {
         records: impl IntoIterator<Item = Arc<TranscriptRecord>>,
     ) {
         for record in records {
+            self.managed_activity.observe(&record);
             if self.transcript.ignores_finished_run_event(&record) {
                 continue;
             }
@@ -283,6 +285,7 @@ pub(crate) struct RecentPromptDraft {
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum SessionListKind {
+    Sidebar,
     Resume,
     Mention,
 }
@@ -454,6 +457,9 @@ pub(crate) struct RootNode {
     pending_session_list: Option<u64>,
     next_session_list: u64,
     reflection_input: bool,
+    sidebar: super::project_sidebar::ProjectSidebar,
+    pending_sidebar: bool,
+    managed_activity: super::project_sidebar::ManagedActivity,
 }
 
 impl RootNode {
@@ -509,6 +515,9 @@ impl RootNode {
             pending_session_list: None,
             next_session_list: 0,
             reflection_input: false,
+            sidebar: Default::default(),
+            pending_sidebar: false,
+            managed_activity: Default::default(),
         }
     }
 
@@ -589,6 +598,29 @@ impl RootNode {
         self.preferred_reasoning_mode
     }
 
+    pub(crate) fn has_unsent_thread_input(&self) -> bool {
+        !self.queue.component().is_empty()
+            || self.queue.component().has_pending_steer()
+            || self.queue_edit.is_some()
+            || self.withdrawing_prompt.is_some()
+            || self.withdrawing_steer.is_some()
+    }
+
+    pub(crate) fn set_current_thread(&mut self, id: String) {
+        self.sidebar.current_id = Some(id);
+        self.sidebar.next_refresh = Some(Instant::now());
+    }
+
+    pub(crate) fn take_thread_draft(&mut self) -> Option<ComposerDraft> {
+        self.discarded_draft = None;
+        self.withdrawn_draft = None;
+        self.composer.component_mut().take_draft()
+    }
+
+    pub(crate) fn restore_thread_draft(&mut self, draft: ComposerDraft) {
+        self.composer.component_mut().restore_draft(draft);
+    }
+
     pub(crate) fn set_max_subagents(&mut self, limit: usize) {
         self.subagents.set_max_subagents(limit);
     }
@@ -613,7 +645,9 @@ impl RootNode {
         let theme_mode = self.theme_mode;
         let max_subagents = self.subagents.max_subagents();
         let next_session_list = self.next_session_list;
+        let sidebar = std::mem::take(&mut self.sidebar);
         *self = Self::new(workspace, thinking);
+        self.sidebar = sidebar;
         self.next_session_list = next_session_list;
         self.set_reasoning_modes(reasoning_mode, preferred_reasoning_mode);
         self.discarded_draft = discarded_draft;
@@ -675,6 +709,7 @@ impl RootNode {
             context_tokens: None,
             recent_prompts: Vec::new(),
             seen_vault_requests: Default::default(),
+            managed_activity: Default::default(),
         };
         projection.append_records(records);
         if stream_closed {
@@ -693,6 +728,7 @@ impl RootNode {
             .set_effort(self.composer.component().effort());
         self.seen_vault_requests
             .extend(projection.seen_vault_requests);
+        self.managed_activity = projection.managed_activity;
         self.transcript = Node::new(projection.transcript);
         self.context_diagnostics = projection.context_diagnostics;
         self.recent_prompts = projection.recent_prompts;
@@ -746,6 +782,7 @@ impl RootNode {
         projection.transcript.set_workspace(workspace);
         self.seen_vault_requests
             .extend(projection.seen_vault_requests);
+        self.managed_activity = projection.managed_activity;
         self.transcript = Node::new(projection.transcript);
         self.context_diagnostics = projection.context_diagnostics;
         self.recent_prompts = projection.recent_prompts;
@@ -799,6 +836,15 @@ impl RootNode {
                 .as_ref()
                 .map(|scroll| scroll.deadline),
             self.subagents.animation_deadline(),
+            if self.sidebar.visible
+                && self.overlay.is_none()
+                && self.pending_session_list.is_none()
+                && !self.resuming_session
+            {
+                self.sidebar.next_refresh
+            } else {
+                None
+            },
         ]
         .into_iter()
         .flatten()
@@ -807,6 +853,9 @@ impl RootNode {
 
     fn render_root(&mut self, frame: &mut Frame<'_>, area: Rect, theme: &Theme, focused: bool) {
         self.refresh_actions();
+        let mut agents = self.managed_activity.labels();
+        agents.extend(self.subagents.sidebar_labels());
+        let area = self.sidebar.render(frame, area, agents);
         let height = self
             .composer
             .component_mut()
@@ -972,7 +1021,10 @@ impl RootNode {
         if is_confirmation_key_repeat(&event) {
             return ComponentUpdate::none();
         }
-        if self.pending_session_list.is_some() && (is_escape(&event) || is_control_c(&event)) {
+        if !self.pending_sidebar
+            && self.pending_session_list.is_some()
+            && (is_escape(&event) || is_control_c(&event))
+        {
             return self.cancel_session_list();
         }
         if self.resuming_session && (is_escape(&event) || is_control_c(&event)) {
@@ -1037,6 +1089,50 @@ impl RootNode {
     ) -> ComponentUpdate<RootEffect> {
         if self.resuming_session {
             return ComponentUpdate::none();
+        }
+        if self.overlay.is_none() {
+            if let Event::Key(key) = &event {
+                if key.kind != KeyEventKind::Release && key.code == KeyCode::F(2) {
+                    self.sidebar.visible = !self.sidebar.visible;
+                    self.sidebar.focused = self.sidebar.visible;
+                    if self.sidebar.visible {
+                        return self.load_sidebar();
+                    }
+                    return ComponentUpdate::render(RenderRequest::Immediate);
+                }
+                if self.sidebar.visible
+                    && self.sidebar.area.width > 0
+                    && self.sidebar.focused
+                    && key.kind != KeyEventKind::Release
+                {
+                    match key.code {
+                        KeyCode::Up => self.sidebar.step(false),
+                        KeyCode::Down => self.sidebar.step(true),
+                        KeyCode::Esc | KeyCode::Tab => self.sidebar.focused = false,
+                        KeyCode::Char('r') if key.modifiers.is_empty() => {
+                            return self.load_sidebar();
+                        }
+                        KeyCode::Enter => return self.resume_sidebar(),
+                        _ => return ComponentUpdate::none(),
+                    }
+                    return ComponentUpdate::render(RenderRequest::Immediate);
+                }
+            }
+            if let Event::Mouse(mouse) = &event {
+                if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                    if self
+                        .sidebar
+                        .area
+                        .contains(Position::new(mouse.column, mouse.row))
+                    {
+                        if self.sidebar.click(mouse.row) {
+                            return self.resume_sidebar();
+                        }
+                        return ComponentUpdate::render(RenderRequest::Immediate);
+                    }
+                    self.sidebar.focused = false;
+                }
+            }
         }
         if let Some(connecting) = self.reconnecting {
             // Local editing and shell controls remain available while Enter
@@ -1109,7 +1205,7 @@ impl RootNode {
             }
             return self.update_composer(ComposerEvent::Terminal(event), RenderRequest::Immediate);
         }
-        if !self.interactive || self.pending_session_list.is_some() {
+        if !self.interactive || (self.pending_session_list.is_some() && !self.pending_sidebar) {
             return ComponentUpdate::none();
         }
         if self.queue_edit.is_some() {
@@ -2037,12 +2133,50 @@ impl RootNode {
         }
     }
 
+    fn load_sidebar(&mut self) -> ComponentUpdate<RootEffect> {
+        self.pending_sidebar = true;
+        self.sidebar.loading = true;
+        self.sidebar.next_refresh = Some(Instant::now() + Duration::from_secs(5));
+        let request_id = self.next_session_list;
+        self.next_session_list = self.next_session_list.wrapping_add(1);
+        let previous = self.pending_session_list.replace(request_id);
+        ComponentUpdate {
+            effects: previous
+                .into_iter()
+                .map(RootEffect::CancelSessionList)
+                .chain([RootEffect::LoadSessions {
+                    request_id,
+                    kind: SessionListKind::Sidebar,
+                }])
+                .collect(),
+            render: RenderRequest::Immediate,
+        }
+    }
+
+    fn resume_sidebar(&mut self) -> ComponentUpdate<RootEffect> {
+        let Some(id) = self.sidebar.selected_id().map(str::to_owned) else {
+            return ComponentUpdate::none();
+        };
+        self.sidebar.focused = false;
+        if self.sidebar.current_id.as_deref() == Some(&id) {
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        self.resuming_session = true;
+        self.session_resume_status();
+        ComponentUpdate {
+            effects: vec![RootEffect::ResumeSession(id)],
+            render: RenderRequest::Immediate,
+        }
+    }
+
     pub(super) fn load_sessions(&mut self) -> ComponentUpdate<RootEffect> {
+        self.pending_sidebar = false;
         self.pending_session_mention = None;
         self.start_session_list(SessionListKind::Resume)
     }
 
     fn load_session_mentions(&mut self, start: usize) -> ComponentUpdate<RootEffect> {
+        self.pending_sidebar = false;
         self.pending_session_mention = Some(start);
         self.start_session_list(SessionListKind::Mention)
     }
@@ -2093,6 +2227,8 @@ impl RootNode {
             return ComponentUpdate::none();
         };
         self.pending_session_mention = None;
+        self.pending_sidebar = false;
+        self.sidebar.loading = false;
         self.key_confirmation = None;
         let mut update = self.resume_after_session_lookup();
         update
@@ -2176,6 +2312,12 @@ impl RootNode {
             return ComponentUpdate::none();
         }
         self.pending_session_list = None;
+        if self.pending_sidebar {
+            self.pending_sidebar = false;
+            self.sidebar.load(sessions);
+            self.sidebar.next_refresh = Some(Instant::now() + Duration::from_secs(5));
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
         let update = self.resume_after_session_lookup();
         let mode = if self.pending_session_mention.is_some() {
             SessionPickerMode::Mention
@@ -2858,7 +3000,7 @@ impl RootNode {
                 "Connection lost · Enter to reconnect"
             });
         }
-        if self.pending_session_list.is_some() {
+        if self.pending_session_list.is_some() && !self.pending_sidebar {
             let _ = self.session_lookup_status();
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
@@ -2920,7 +3062,8 @@ impl RootNode {
     ) -> ComponentUpdate<RootEffect> {
         self.set_reasoning_modes(reasoning_mode, reasoning_mode);
         self.reconnecting = None;
-        self.interactive = self.pending_session_list.is_none() && !self.resuming_session;
+        self.interactive =
+            (self.pending_session_list.is_none() || self.pending_sidebar) && !self.resuming_session;
         self.composer
             .component_mut()
             .update(ComposerEvent::SubmissionPaused(false));
@@ -3130,7 +3273,10 @@ impl RootNode {
         };
         if self.resuming_session {
             render.max(self.session_resume_status())
-        } else if self.pending_session_list.is_some() && self.reconnecting.is_none() {
+        } else if self.pending_session_list.is_some()
+            && !self.pending_sidebar
+            && self.reconnecting.is_none()
+        {
             render.max(self.session_lookup_status())
         } else {
             render
@@ -3148,7 +3294,7 @@ impl RootNode {
             // Background activity must not replace the foreground status while
             // reconnection or a session lookup owns the input controls.
             if self.reconnecting.is_some()
-                || self.pending_session_list.is_some()
+                || (self.pending_session_list.is_some() && !self.pending_sidebar)
                 || self.resuming_session
             {
                 continue;
@@ -3178,6 +3324,17 @@ impl RootNode {
     }
 
     fn update_animation(&mut self, now: Instant) -> ComponentUpdate<RootEffect> {
+        if self.sidebar.visible
+            && self.pending_session_list.is_none()
+            && !self.resuming_session
+            && self.overlay.is_none()
+            && self
+                .sidebar
+                .next_refresh
+                .is_some_and(|deadline| now >= deadline)
+        {
+            return self.load_sidebar();
+        }
         let confirmation = if self
             .key_confirmation
             .as_ref()
@@ -3319,6 +3476,7 @@ impl RootNode {
     }
 
     fn transcript_record(&mut self, record: Arc<TranscriptRecord>) -> ComponentUpdate<RootEffect> {
+        self.managed_activity.observe(&record);
         if self
             .transcript
             .component()
@@ -3592,6 +3750,8 @@ impl Component for RootNode {
                 }
                 self.pending_session_list = None;
                 self.pending_session_mention = None;
+                self.pending_sidebar = false;
+                self.sidebar.loading = false;
                 self.notification = Some(Notification::plain(error, Color::Red));
                 self.resume_after_session_lookup()
             }
@@ -5717,6 +5877,10 @@ mod live_control_tests {
                     reasoning_mode: ReasoningMode::Standard,
                     workspace: root.workspace.clone(),
                     preview: "selected session".to_owned(),
+                    project_root_id: None,
+                    parent_agent_id: None,
+                    project_name: None,
+                    active: None,
                 }],
             );
             assert!(
@@ -6280,5 +6444,46 @@ mod live_control_tests {
         assert_eq!(root.managed_active_turns, 0);
         assert!(root.has_active_turns());
         assert_eq!(root.in_flight_turns, 1);
+    }
+    #[test]
+    fn sidebar_refresh_is_nonblocking_and_late_lists_cannot_replace_the_picker() {
+        let mut root = root_with_draft("draft");
+        root.load_sidebar();
+        let old = root.pending_session_list.unwrap();
+        assert!(root.interactive);
+        root.update(key(KeyCode::Char('!')));
+        assert_eq!(root.composer.component().draft(), "draft!");
+        root.load_sessions();
+        let current = root.pending_session_list.unwrap();
+        root.sessions_loaded(old, vec![]);
+        assert_eq!(root.pending_session_list, Some(current));
+        assert!(root.overlay.is_none());
+        root.sessions_loaded(current, vec![]);
+        assert!(matches!(root.overlay, Some(super::Overlay::Sessions(_))));
+    }
+
+    #[test]
+    fn thread_draft_round_trip_preserves_images_cursor_and_clears_cross_thread_undo() {
+        let mut root = root_with_draft("draft");
+        root.update(RootEvent::PasteImage(
+            "data:image/png;base64,aGVsbG8=".to_owned(),
+        ));
+        root.update(key(KeyCode::Left));
+        let text = root.composer.component().draft().to_owned();
+        let cursor = root.composer.component().cursor();
+        root.discarded_draft = Some("other thread".to_owned().into());
+        let draft = root.take_thread_draft().unwrap();
+        assert!(root.discarded_draft.is_none());
+        root.reset_session(
+            Path::new("/workspace"),
+            ReasoningEffort::Medium,
+            ReasoningMode::Standard,
+            ReasoningMode::Standard,
+            super::DraftReset::Clear,
+        );
+        root.restore_thread_draft(draft);
+        assert_eq!(root.composer.component().draft(), text);
+        assert_eq!(root.composer.component().cursor(), cursor);
+        assert!(root.composer.component().has_images());
     }
 }

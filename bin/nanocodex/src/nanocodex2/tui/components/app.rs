@@ -770,6 +770,29 @@ impl AppNode {
         self.render_split_hint(frame, area, divider_x);
     }
 
+    pub(crate) fn set_current_thread(&mut self, pane: PaneId, id: String) {
+        if let Some(root) = self.pane_mut(pane) {
+            root.component_mut().set_current_thread(id);
+        }
+    }
+
+    pub(crate) fn take_thread_draft(
+        &mut self,
+        pane: PaneId,
+    ) -> Option<super::composer::ComposerDraft> {
+        self.pane_mut(pane)?.component_mut().take_thread_draft()
+    }
+
+    pub(crate) fn restore_thread_draft(
+        &mut self,
+        pane: PaneId,
+        draft: super::composer::ComposerDraft,
+    ) {
+        if let Some(root) = self.pane_mut(pane) {
+            root.component_mut().restore_thread_draft(draft);
+        }
+    }
+
     pub(crate) fn root(&self, pane: PaneId) -> Option<&RootNode> {
         self.pane(pane).map(Node::component)
     }

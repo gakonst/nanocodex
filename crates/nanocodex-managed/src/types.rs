@@ -166,6 +166,18 @@ pub struct AgentSummary {
     pub updated_at: f64,
     /// Number of accepted turns.
     pub turn_count: u64,
+    /// Root conversation of a persistent project, when supplied by the service.
+    #[serde(default)]
+    pub project_root_id: Option<String>,
+    /// Conversation that spawned this persistent thread.
+    #[serde(default)]
+    pub parent_agent_id: Option<String>,
+    /// Human-readable persistent thread title.
+    #[serde(default)]
+    pub project_title: Option<String>,
+    /// Shared project navigation name, when available.
+    #[serde(default)]
+    pub project_name: Option<String>,
 }
 
 /// Semantic search request over retained managed sessions.
@@ -1092,6 +1104,23 @@ fn decode_raw<T: DeserializeOwned>(raw: &RawValue) -> Result<T, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn project_summary_fields_are_optional_and_preserve_service_lineage() {
+        let legacy =
+            serde_json::json!({"title":"old","created_at":1,"updated_at":2,"turn_count":0});
+        let summary: super::AgentSummary = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(summary.project_root_id.is_none());
+        let mut value = legacy;
+        value["project_root_id"] = "master".into();
+        value["parent_agent_id"] = "parent".into();
+        value["project_title"] = "Child task".into();
+        value["project_name"] = "Project".into();
+        let summary: super::AgentSummary = serde_json::from_value(value).unwrap();
+        assert_eq!(summary.project_root_id.as_deref(), Some("master"));
+        assert_eq!(summary.parent_agent_id.as_deref(), Some("parent"));
+        assert_eq!(summary.project_name.as_deref(), Some("Project"));
+    }
+
     use super::{
         FindSessionsRequest, ManagedEvent, ManagedEventData, MemoryKey, ReadSessionRequest,
     };

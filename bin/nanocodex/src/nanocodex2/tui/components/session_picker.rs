@@ -611,6 +611,10 @@ mod tests {
             reasoning_mode: ReasoningMode::Standard,
             workspace: PathBuf::from("/work"),
             preview: preview.to_owned(),
+            project_root_id: None,
+            parent_agent_id: None,
+            project_name: None,
+            active: None,
         }
     }
 

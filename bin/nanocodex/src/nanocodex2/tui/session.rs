@@ -16,6 +16,14 @@ pub(crate) struct SessionSummary {
     pub(crate) reasoning_mode: ReasoningMode,
     pub(crate) workspace: PathBuf,
     pub(crate) preview: String,
+    #[serde(default)]
+    pub(crate) project_root_id: Option<String>,
+    #[serde(default)]
+    pub(crate) parent_agent_id: Option<String>,
+    #[serde(default)]
+    pub(crate) project_name: Option<String>,
+    #[serde(default)]
+    pub(crate) active: Option<bool>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
