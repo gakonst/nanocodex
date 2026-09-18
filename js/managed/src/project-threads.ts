@@ -103,6 +103,24 @@ export async function spawnPersistentProjectThread(input: ProjectThreadInput, ho
     origin_turn_id: row.origin_turn_id, turn_id: turnId, title: row.title, status: "accepted" };
 }
 
+/** Scope caller-chosen IDs to the sender, since unrelated conversations may reuse them. */
+export function projectFollowupTurnId(senderId: string, id: string): string {
+  return `project-followup:${senderId}:${id}`;
+}
+
+/** Account authorization is resolved by the host; project ancestry is deliberately irrelevant. */
+export async function sendPersistentThreadFollowup(input: { agent_id: string; id: string; input: string }, host: {
+  sessionId: string;
+  resolve(agentId: string): Promise<string>;
+  legacyTurnId(agentId: string, id: string): Promise<string | undefined>;
+  admit(agentId: string, turnId: string, title: string, input: string): Promise<void>;
+}): Promise<{ agent_id: string; turn_id: string; status: "accepted" }> {
+  const title = await host.resolve(input.agent_id);
+  const turnId = await host.legacyTurnId(input.agent_id, input.id) ?? projectFollowupTurnId(host.sessionId, input.id);
+  await host.admit(input.agent_id, turnId, title, input.input);
+  return { agent_id: input.agent_id, turn_id: turnId, status: "accepted" };
+}
+
 export function projectThreadTools(handlers: {
   spawn(input: ProjectThreadInput, context: ToolContext): Promise<unknown>;
   list(context: ToolContext): Promise<unknown>;
@@ -123,14 +141,14 @@ export function projectThreadTools(handlers: {
     parameters: { type: "object", properties: {}, additionalProperties: false },
     handler: (input, context) => { z.object({}).strict().parse(input); return handlers.list(context); },
   }, {
-    name: "read_project_thread", description: "Read a persistent project thread's admitted task, execution state and final result. Only threads in the current project are accessible. If still running, continue independent work before checking again.",
+    name: "read_project_thread", description: "Read a persistent project thread's admitted task, execution state and final result. Threads in the current project and conversations this agent has sent follow-ups to are accessible. If still running, continue independent work before checking again.",
     parameters: { type: "object", properties: { agent_id: { type: "string" }, turn_id: { type: "string" } }, required: ["agent_id"], additionalProperties: false },
     handler: (input, context) => {
       const value = z.object({ agent_id: z.string().regex(uuid), turn_id: z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/).optional() }).strict().parse(input);
       return handlers.read(value.agent_id, context, value.turn_id);
     },
   }, {
-    name: "send_project_thread", description: "Continue a directly delegated persistent thread with a follow-up instead of creating a new thread. Supply a stable id and explicit task input. Exact retries reuse the same turn; different input conflicts. Outcomes return automatically to this conversation.",
+    name: "send_project_thread", description: "Send a follow-up to any accessible conversation in the same account, including parents, siblings and other projects. Use its agent_id from history search or project listings. Supply a stable id and explicit task input. Exact retries from this sender reuse the same turn; different input conflicts. Project membership and authority are unchanged. Outcomes return automatically to this conversation.",
     parameters: { type: "object", properties: { agent_id: { type: "string" }, id: { type: "string", pattern: "^[A-Za-z0-9_-]{1,64}$" }, input: { type: "string", minLength: 1, maxLength: 65536 } }, required: ["agent_id", "id", "input"], additionalProperties: false },
     handler: (input, context) => handlers.send(z.object({ agent_id: z.string().regex(uuid), id: projectThreadInput.shape.id, input: projectThreadInput.shape.input }).strict().parse(input), context),
   }];

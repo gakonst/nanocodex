@@ -1,7 +1,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import type { ToolContext } from "nanocodex";
-import { projectThreadTools, projectThreadRegistry, initializeProjectThreads, spawnPersistentProjectThread, retainProjectSpawn, type ProjectThread } from "../src/project-threads";
+import { projectThreadTools, projectThreadRegistry, initializeProjectThreads, spawnPersistentProjectThread, retainProjectSpawn, sendPersistentThreadFollowup, projectFollowupTurnId, type ProjectThread } from "../src/project-threads";
 
 const parent = "11111111-1111-4111-8111-111111111111";
 const child = "22222222-2222-4222-8222-222222222222";
@@ -77,6 +77,36 @@ describe("persistent project threads", () => {
     expect(original.originTurnId).toBe("first-turn");
     expect(() => retainProjectSpawn(storage, { ...input, input: "different" }, "{}", "later")).toThrow("conflicts");
   }));
+
+  it("sends to unrelated conversations with sender-scoped IDs and preserves legacy retries", async () => {
+    const admit = vi.fn(async () => {});
+    const resolve = vi.fn(async () => "Existing conversation");
+    const legacyTurnId = vi.fn(async (): Promise<string | undefined> => undefined);
+    const host = { sessionId: parent, resolve, legacyTurnId, admit };
+    const input = { agent_id: nested, id: "review", input: "Read this reference" };
+    const first = await sendPersistentThreadFollowup(input, host);
+    expect(await sendPersistentThreadFollowup(input, host)).toEqual(first);
+    const second = await sendPersistentThreadFollowup(input, { ...host, sessionId: child });
+    expect(first.turn_id).not.toBe(second.turn_id);
+    expect(resolve).toHaveBeenCalledWith(nested);
+    expect(admit).toHaveBeenCalledWith(nested, first.turn_id, "Existing conversation", input.input);
+    expect(projectFollowupTurnId(parent, "x".repeat(64))).toMatch(/^[A-Za-z0-9._:-]{1,128}$/);
+    legacyTurnId.mockResolvedValue("project-followup:review");
+    expect(await sendPersistentThreadFollowup(input, host)).toMatchObject({ turn_id: "project-followup:review" });
+  });
+
+  it("does not admit or acknowledge a follow-up when target authorization or admission fails", async () => {
+    const resolve = vi.fn(async (): Promise<string> => { throw new Error("thread is not accessible"); });
+    const legacyTurnId = vi.fn(async () => undefined);
+    const admit = vi.fn(async () => { throw new Error("conflicting input"); });
+    const host = { sessionId: parent, resolve, legacyTurnId, admit };
+    const input = { agent_id: nested, id: "review", input: "Reference" };
+    await expect(sendPersistentThreadFollowup(input, host)).rejects.toThrow("not accessible");
+    expect(legacyTurnId).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
+    resolve.mockResolvedValue("Conversation");
+    await expect(sendPersistentThreadFollowup(input, host)).rejects.toThrow("conflicting input");
+  });
 
   it("passes the exact invoking context and rejects authority overrides before execution", async () => {
     const spawn = vi.fn(async () => ({ agent_id: child }));

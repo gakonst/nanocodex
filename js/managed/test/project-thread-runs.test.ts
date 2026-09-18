@@ -1,6 +1,7 @@
 import { env, runInDurableObject, evictDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import type { DurableAgentSession } from '../src/index';
+import { projectFollowupTurnId } from '../src/project-threads';
 import { ProjectThreadRuns, projectCompletionInput } from '../src/project-thread-runs';
 
 const sessions = () => (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
@@ -84,6 +85,50 @@ describe('persistent project outcome delivery in the managed runtime', () => {
       await session.alarm();
       expect(runs.get('revoked')?.state).toBe('retired');
       expect(runs.nextAlarm()).toBeUndefined();
+      expect(state.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM managed_turns').one().count).toBe(0);
+    });
+  });
+
+  it('admits independent senders using the same follow-up id into an unrelated conversation', async () => {
+    const targetId = crypto.randomUUID(), target = await setup(targetId);
+    const senders = [crypto.randomUUID(), crypto.randomUUID()];
+    for (const senderId of senders) {
+      const sender = await setup(senderId);
+      await runInDurableObject(sender, async (session, state) => {
+        const runs = new ProjectThreadRuns(state.storage);
+        const turnId = projectFollowupTurnId(senderId, 'review');
+        runs.put({ id: 'review', agent_id: targetId, turn_id: turnId, title: 'Unrelated conversation',
+          input: `Reference from ${senderId}`, request_hash: senderId, authorization_json: auth, authorization_epoch: 1 });
+        await session.alarm();
+        expect(runs.get('review')?.state).toBe('watching');
+        runs.finish('review', 'retired');
+        await state.storage.deleteAlarm();
+      });
+    }
+    await runInDurableObject(target, async (_session, state) => {
+      const rows = state.storage.sql.exec<{ id: string; input_json: string }>('SELECT id,input_json FROM managed_turns ORDER BY rowid').toArray();
+      expect(rows.map(row => row.id)).toEqual(senders.map(id => projectFollowupTurnId(id, 'review')));
+      expect(rows.map(row => JSON.parse(row.input_json))).toEqual(senders.map(id => `Reference from ${id}`));
+      state.storage.sql.exec("UPDATE managed_turns SET state='cancelled',retry_at=NULL");
+      await state.storage.deleteAlarm();
+    });
+  });
+
+  it.each(['owner_id', 'organization_id', 'team_id', 'authorization_epoch'])('rejects a follow-up across the %s boundary', async column => {
+    const sender = await setup(crypto.randomUUID()), targetId = crypto.randomUUID();
+    const target = await setup(targetId);
+    await runInDurableObject(target, async (_session, state) => {
+      state.storage.sql.exec(`UPDATE session_state SET ${column}=?`, column === 'authorization_epoch' ? 2 : crypto.randomUUID());
+    });
+    await runInDurableObject(sender, async (session, state) => {
+      const runs = new ProjectThreadRuns(state.storage);
+      runs.put({ id: 'denied', agent_id: targetId, turn_id: 'project-followup:denied', title: 'Inaccessible',
+        input: 'Must not arrive', request_hash: 'hash', authorization_json: auth, authorization_epoch: 1 });
+      await session.alarm();
+      expect(runs.get('denied')?.state).toBe('retired');
+      await state.storage.deleteAlarm();
+    });
+    await runInDurableObject(target, async (_session, state) => {
       expect(state.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM managed_turns').one().count).toBe(0);
     });
   });
