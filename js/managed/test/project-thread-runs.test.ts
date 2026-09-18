@@ -17,9 +17,18 @@ afterEach(async () => {
   });
 });
 const auth = JSON.stringify({ capabilities: ['agents:read', 'agents:write', 'tools:use'] });
-function blockModel(session: DurableAgentSession) {
+function blockModel(session: DurableAgentSession, epoch = 1) {
   const runtime = (session as unknown as { env: Record<string, unknown> }).env;
-  Object.defineProperty(session, 'env', { value: { ...runtime, NANOCODEX_ACCOUNT_TOOLS: { getByName: () => {
+  const users = runtime.NANOCODEX_USERS as DurableObjectNamespace;
+  Object.defineProperty(session, 'env', { value: { ...runtime,
+    NANOCODEX_USERS: { getByName: (id: string) => ({ fetch: (input: Request | string, init?: RequestInit) =>
+      new URL(typeof input === 'string' ? input : input.url).pathname === '/account'
+        ? Promise.resolve(Response.json({ id, organizationId: '22222222-2222-4222-8222-222222222222', persistent: true, createdAt: 1, lastAuthenticatedAt: 1 }))
+        : users.getByName(id).fetch(input, init) }) },
+    NANOCODEX_ORGANIZATIONS: { getByName: () => ({ fetch: async () => Response.json({
+      organizationId: '22222222-2222-4222-8222-222222222222', teamId: '33333333-3333-4333-8333-333333333333',
+      role: 'writer', authorizationEpoch: epoch, capabilities: JSON.parse(auth).capabilities }) }) },
+    NANOCODEX_ACCOUNT_TOOLS: { getByName: () => {
     throw Object.assign(new Error('test retains work at durable retry boundary'), { code: 'retryable' });
   } } } });
 }
@@ -263,6 +272,7 @@ it('renews a revoked completion subscription while recovering a new authorized a
     const ledger = new MainThreadCompletions(state.storage);
     ledger.watch(childId, 0, auth, 1);
     state.storage.sql.exec('UPDATE session_state SET authorization_epoch=2');
+    blockModel(session, 2);
     // Isolate loss occurred after saving this explicit new-epoch intent but before renewing its watch.
     const runs = new ProjectThreadRuns(state.storage);
     runs.put({ id: 'new-epoch', agent_id: childId, turn_id: 'project:renewed', title: 'Renewed', input: 'New authorized work', request_hash: 'new', authorization_json: auth, authorization_epoch: 2 });
@@ -343,5 +353,65 @@ it('relays one late nested result child → coordinator → Main and retires idl
     state.storage.sql.exec("UPDATE managed_turns SET state='cancelled',retry_at=NULL");
     expect(session.mainThreadCompletionFeed(owner, team, 0).busy).toBe(false);
     await state.storage.deleteAlarm();
+  });
+});
+
+ it.each(['epoch', 'membership', 'tools', 'retained-tools'])('retires completion authority on %s revocation with cached session epoch unchanged', async reason => {
+  const { MainThreadCompletions } = await import('../src/main-thread-completions');
+  const parent = await setup(crypto.randomUUID()), childId = crypto.randomUUID();
+  await runInDurableObject(parent, async (session, state) => {
+    const ledger = new MainThreadCompletions(state.storage);
+    const retained = reason === 'retained-tools' ? JSON.stringify({ capabilities: ['agents:read', 'agents:write'] }) : auth;
+    ledger.watch(childId, 0, retained, 1);
+    const runs = new ProjectThreadRuns(state.storage);
+    runs.put({ id: 'revoked-account', agent_id: childId, turn_id: 'task', title: 'Task', input: 'Work', request_hash: 'hash', authorization_json: retained, authorization_epoch: 1 });
+    const runtime = (session as unknown as { env: Record<string, unknown> }).env;
+    let feeds = 0;
+    Object.defineProperty(session, 'env', { value: { ...runtime,
+      NANOCODEX_SESSIONS: { getByName: () => ({ mainThreadCompletionFeed: () => { feeds++; throw new Error('unauthorized feed read'); } }) },
+      NANOCODEX_ORGANIZATIONS: { getByName: () => ({ fetch: async () => reason === 'membership'
+        ? new Response(null, { status: 403 }) : Response.json({
+          organizationId: '22222222-2222-4222-8222-222222222222', teamId: '33333333-3333-4333-8333-333333333333', role: 'writer',
+          authorizationEpoch: reason === 'epoch' ? 2 : 1,
+          capabilities: reason === 'tools' ? ['agents:read', 'agents:write'] : JSON.parse(auth).capabilities }) }) },
+    } });
+    await session.alarm();
+    expect(state.storage.sql.exec<{ authorization_epoch: number }>('SELECT authorization_epoch FROM session_state').one().authorization_epoch).toBe(1);
+    expect(ledger.get(childId)?.state).toBe('retired');
+    expect(runs.get('revoked-account')?.state).toBe('retired');
+    expect(feeds).toBe(0);
+    expect(state.storage.sql.exec('SELECT id FROM managed_turns').toArray()).toEqual([]);
+  });
+});
+
+it('rechecks live authority after reading the feed and before internal admission', async () => {
+  const { MainThreadCompletions } = await import('../src/main-thread-completions');
+  const parentId = crypto.randomUUID(), childId = crypto.randomUUID();
+  const parent = await setup(parentId);
+  await runInDurableObject(parent, async (session, state) => {
+    const runtime = (session as unknown as { env: Record<string, unknown> }).env;
+    const users = runtime.NANOCODEX_USERS as DurableObjectNamespace;
+    const organizations = runtime.NANOCODEX_ORGANIZATIONS as DurableObjectNamespace;
+    let revoked = false, feeds = 0;
+    Object.defineProperty(session, 'env', { value: { ...runtime,
+      NANOCODEX_USERS: { getByName: (id: string) => ({ fetch: (input: string) => {
+        const path = new URL(input).pathname;
+        if (path === '/main-thread') return Promise.resolve(Response.json({ agent_id: parentId }));
+        if (path === '/projects') return Promise.resolve(Response.json({ data: [{ id: 'project', name: 'Project', coordinator_agent_id: childId }] }));
+        return users.getByName(id).fetch(input);
+      } }) },
+      NANOCODEX_ORGANIZATIONS: { getByName: (id: string) => ({ fetch: (input: string) => revoked
+        ? Promise.resolve(new Response(null, { status: 403 })) : organizations.getByName(id).fetch(input) }) },
+      NANOCODEX_SESSIONS: { getByName: () => ({ mainThreadCompletionFeed: async () => {
+        feeds++; revoked = true;
+        return { latest: 1, data: [{ sequence: 1, turn_id: 'project-result:late' }], busy: false };
+      } }) },
+    } });
+    const ledger = new MainThreadCompletions(state.storage);
+    ledger.watch(childId, 0, auth, 1);
+    await session.alarm();
+    expect(feeds).toBe(1);
+    expect(ledger.get(childId)).toMatchObject({ state: 'retired', cursor: 0 });
+    expect(state.storage.sql.exec('SELECT id FROM managed_turns').toArray()).toEqual([]);
   });
 });

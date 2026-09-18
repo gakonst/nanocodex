@@ -254,6 +254,7 @@ import {
 } from "./mount-tool";
 import { routeConnectorRequest } from "./connectors";
 import {
+  retainedProjectAuthority,
   attachAgent,
   authenticate,
   detachAgent,
@@ -5318,7 +5319,7 @@ export class DurableAgentSession extends DurableComputerSession {
     });
   }
 
-  /** Internal RPC; the caller must also be canonical Main before consuming this feed. */
+  /** Private identity-scoped RPC; parent must verify live account authority before reading. */
   mainThreadCompletionFeed(ownerId: string, teamId: string, after: number) {
     if (!this.mainThreadIdentity(ownerId, teamId) || !Number.isSafeInteger(after) || after < 0)
       throw new ManagedRequestError(403, "forbidden", "completion scope mismatch");
@@ -5363,6 +5364,7 @@ export class DurableAgentSession extends DurableComputerSession {
       if (watch.authorization_epoch !== session.authorization_epoch) { this.#mainCompletions.retire(watch.agent_id, watch.generation); continue; }
       this.#mainCompletions.settle(watch, true, watch.cursor, false);
       try {
+        await this.#authorizeProjectDelivery(watch);
         const project = await this.#mainProject(watch.agent_id);
         let thread: ProjectThread | undefined;
         if (!project) {
@@ -5373,6 +5375,7 @@ export class DurableAgentSession extends DurableComputerSession {
         }
         const authorization = parseTurnAuthorization(watch.authorization_json);
         if (!this.#hasFullAccountAuthority(authorization)) { this.#mainCompletions.retire(watch.agent_id, watch.generation); continue; }
+        await this.#authorizeProjectDelivery(watch);
         const feed = await this.env.NANOCODEX_SESSIONS.getByName(watch.agent_id).mainThreadCompletionFeed(session.owner_id, session.team_id, watch.cursor);
         for (const entry of feed.data) {
           const id = project ? `main-result:${watch.agent_id}:${entry.sequence}` : `project-result:late:${watch.agent_id}:${entry.sequence}`;
@@ -5381,7 +5384,7 @@ export class DurableAgentSession extends DurableComputerSession {
           await this.#submitManagedTurn(id, input, await hashManagedInput(input), id, true, authorization, () => {
             if (this.#session()?.authorization_epoch !== watch.authorization_epoch) throw new ManagedRequestError(403, "forbidden", "authorization changed");
             this.#mainCompletions.advance(watch.agent_id, entry.sequence);
-          });
+          }, undefined, "unknown", {}, () => this.#authorizeProjectDelivery(watch));
           this.#mainCompletions.advance(watch.agent_id, entry.sequence);
         }
         // The feed's busy bit includes descendant subscriptions and internal result turns.
@@ -5414,7 +5417,14 @@ export class DurableAgentSession extends DurableComputerSession {
     await this.#scheduleNextAlarm();
   }
 
-  #projectRunPrincipal(run: ProjectThreadRun): Principal {
+  async #authorizeProjectDelivery(run: Pick<ProjectThreadRun, "authorization_json" | "authorization_epoch">): Promise<void> {
+    if (!await retainedProjectAuthority(this.env, this.#projectRunPrincipal(run)))
+      throw new ManagedRequestError(403, "forbidden", "project account authority was revoked");
+    // Fence local changes while the authoritative lookup was in flight.
+    this.#projectRunPrincipal(run);
+  }
+
+  #projectRunPrincipal(run: Pick<ProjectThreadRun, "authorization_json" | "authorization_epoch">): Principal {
     const session = this.#session()!;
     const authorization = parseTurnAuthorization(run.authorization_json);
     if (run.authorization_epoch !== session.authorization_epoch || authorization.connectGrant
@@ -5429,8 +5439,9 @@ export class DurableAgentSession extends DurableComputerSession {
     const session = this.#session()!;
     // A retained admission is itself the durable explicit routing intent. Recovery
     // must renew its subscription before admitting work under a newer epoch.
-    this.#projectRunPrincipal(run);
+    await this.#authorizeProjectDelivery(run);
     await this.#watchProjectCompletions(run.agent_id, parseTurnAuthorization(run.authorization_json), true);
+    await this.#authorizeProjectDelivery(run);
     const accepted = await managedFetch(new Request(new URL(`/v1/agents/${run.agent_id}/turns`, session.public_origin), {
       method: "POST", headers: { "content-type": "application/json", "idempotency-key": run.turn_id },
       body: JSON.stringify({ id: run.turn_id, input: run.input }),
@@ -5452,6 +5463,7 @@ export class DurableAgentSession extends DurableComputerSession {
       // Install backoff before any remote read or admission, including isolate loss.
       this.#projectRuns.retry(run.id, Date.now() + MAX_RETRY_DELAY_MS);
       try {
+        await this.#authorizeProjectDelivery(run);
         if (run.state === "admitting") { await this.#admitTrackedProjectRun(run); continue; }
         const response = await managedFetch(new Request(new URL(`/v1/agents/${run.agent_id}/turns/${run.turn_id}`, session.public_origin)),
           this.env, this.ctx, this.#projectRunPrincipal(run));
@@ -5473,7 +5485,7 @@ export class DurableAgentSession extends DurableComputerSession {
             if (this.#session()?.authorization_epoch !== run.authorization_epoch)
               throw new ManagedRequestError(403, "forbidden", "project authorization changed");
             this.#projectRuns.finish(run.id, "delivered");
-          });
+          }, undefined, "unknown", {}, () => this.#authorizeProjectDelivery(run));
         // The receipt may already exist after an ambiguous return from admission.
         this.#projectRuns.finish(run.id, "delivered");
       } catch (error) {
@@ -6529,6 +6541,7 @@ export class DurableAgentSession extends DurableComputerSession {
     voiceSessionId?: string,
     transport: import("./startup-context").StartupTransport = "unknown",
     caller: CallerContext = {},
+    authorizeAdmission?: () => Promise<void>,
   ): Promise<ManagedTurnSubmission> {
     await this.#settingsMutationTail;
     if (this.#deleting || this.#deleted) {
@@ -6544,6 +6557,7 @@ export class DurableAgentSession extends DurableComputerSession {
         ? Promise.resolve(undefined)
         : this.#archivedTurnByRequestKey(requestKey),
     ]);
+    await authorizeAdmission?.();
     this.#assertDurabilityAdmissionActive();
     if (this.#deleting || this.#deleted) {
       throw new ManagedRequestError(409, "agent_deleting", "the agent is being deleted");
