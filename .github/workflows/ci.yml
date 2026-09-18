@@ -114,7 +114,12 @@ jobs:
         run: brew install gstreamer
       - name: Test native media and process lifecycle
         run: |
-          cargo test --locked --manifest-path third_party/codex-voice/Cargo.toml -p nanocodex-voice-host
+          # This test measures real 10 ms device cadence with injected 100 ms
+          # packet bursts. Keep its assertions intact and run it without the
+          # other tests' simultaneous decoders/transports distorting that clock.
+          continuity=devices::playout::tests::continuous_speech_survives_device_cadence_and_packet_jitter
+          cargo test --locked --manifest-path third_party/codex-voice/Cargo.toml -p nanocodex-voice-host -- --skip "$continuity"
+          cargo test --locked --manifest-path third_party/codex-voice/Cargo.toml -p nanocodex-voice-host "$continuity" -- --exact
           cargo test --locked -p nanocodex-voice-native
       - name: Stage private runtime
         run: python3 scripts/build-voice-native.py
@@ -618,7 +623,9 @@ jobs:
 
   ci-success:
     name: ci success
-    if: always()
+    # Report failed prerequisites, but do not keep a cancelled workflow holding
+    # its concurrency slot while this final job waits for a runner.
+    if: always() && !cancelled()
     needs: [test, shared-hands, voice-native, windows-hand, quality, vm-guest, policy, wasm-build, bindings, python, apps, codeql]
     runs-on: ubuntu-latest
     timeout-minutes: 5
