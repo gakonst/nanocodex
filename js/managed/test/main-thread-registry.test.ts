@@ -103,6 +103,67 @@ describe("account main and canonical project registry", () => {
     });
     expect((await account.fetch(request("/projects/root", "team-a", { name: "Rename", coordinator_agent_id: b }))).status).toBe(404);
   });
+  it("verifies a legacy coordinator through session RPC before stamping only registry team metadata", async () => {
+    const coordinator = crypto.randomUUID(), child = crypto.randomUUID();
+    const account = ns().getByName(crypto.randomUUID());
+    await initializeAccountSessions(account, [coordinator]);
+    const attach = (teamId?: string) => account.fetch("https://user.internal/agents", {
+      method: "POST", body: JSON.stringify({ agentId: coordinator, teamId }),
+    });
+    expect((await attach()).status).toBe(204);
+    await runInDurableObject(account, async (_, state) => {
+      state.storage.sql.exec(`INSERT INTO project_threads(agent_id,parent_agent_id,project_root_id,origin_turn_id,turn_id,title,request_hash,created_at)
+        VALUES (?,?,?,'origin','turn','Existing child','hash',1)`, child, coordinator, coordinator);
+    });
+    const registry = () => runInDurableObject(account, async (_, state) => ({
+      agent: state.storage.sql.exec("SELECT * FROM agent_registry WHERE id=?", coordinator).toArray()[0]!,
+      threads: state.storage.sql.exec("SELECT * FROM project_threads").toArray(),
+    }));
+    const identity = () => runInDurableObject(sessions().getByName(coordinator), async (_, state) =>
+      state.storage.sql.exec("SELECT owner_id,team_id FROM session_state").toArray());
+    const before = await registry();
+    const sessionBefore = await identity();
+    expect(before.agent.team_id).toBeNull();
+    // Repeated unverified attaches must accept legacy rows without assigning a team.
+    for (const team of ["team-a", "team-a", "team-b"]) expect((await attach(team)).status).toBe(204);
+    expect(await registry()).toEqual(before);
+    const project = { name: "Legacy", coordinator_agent_id: coordinator };
+    expect((await account.fetch(request("/projects/legacy", "team-a", project))).status).toBe(201);
+    expect((await account.fetch(request("/projects/legacy", "team-a", project))).status).toBe(200);
+    expect(await registry()).toEqual({ ...before, agent: { ...before.agent, team_id: "team-a" } });
+    expect(await identity()).toEqual(sessionBefore);
+    expect(await (await account.fetch(request("/projects"))).json()).toEqual({
+      data: [{ id: "legacy", ...project }],
+    });
+    expect((await attach("team-b")).status).toBe(409);
+  });
+
+  it("rejects legacy coordinators with foreign session owners or conflicting registry teams through session RPC", async () => {
+    const foreign = crypto.randomUUID(), conflict = crypto.randomUUID();
+    const account = ns().getByName(crypto.randomUUID());
+    await initializeAccountSessions(account, [foreign, conflict]);
+    await runInDurableObject(sessions().getByName(foreign), async (_, state) => {
+      state.storage.sql.exec("UPDATE session_state SET owner_id=?", crypto.randomUUID());
+    });
+    for (const [agentId, teamId] of [[foreign, undefined], [conflict, "team-b"]]) {
+      expect((await account.fetch("https://user.internal/agents", {
+        method: "POST", body: JSON.stringify({ agentId, teamId }),
+      })).status).toBe(204);
+    }
+    const snapshot = () => runInDurableObject(account, async (_, state) => ({
+      agents: state.storage.sql.exec("SELECT * FROM agent_registry ORDER BY id").toArray(),
+      projects: state.storage.sql.exec("SELECT * FROM canonical_projects").toArray(),
+      threads: state.storage.sql.exec("SELECT * FROM project_threads").toArray(),
+    }));
+    const before = await snapshot();
+    for (const agent of [foreign, conflict]) {
+      expect((await account.fetch(request("/projects/rejected", "team-a", {
+        name: "Rejected", coordinator_agent_id: agent,
+      }))).status).toBe(404);
+    }
+    expect(await snapshot()).toEqual(before);
+  });
+
   it("serializes competing main registration and project membership", async () => {
     const a = crypto.randomUUID(), b = crypto.randomUUID();
     const account = ns().getByName(crypto.randomUUID());

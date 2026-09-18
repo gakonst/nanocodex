@@ -1,9 +1,21 @@
 import { env, runInDurableObject, evictDurableObject } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { DurableAgentSession } from '../src/index';
 import { ProjectThreadRuns, projectCompletionInput } from '../src/project-thread-runs';
 
 const sessions = () => (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
+const fixtures: ReturnType<ReturnType<typeof sessions>['getByName']>[] = [];
+afterEach(async () => {
+  for (const stub of fixtures.splice(0)) await runInDurableObject(stub, async (_session, state) => {
+    // Model dispatch is intentionally blocked in these tests. Release its retained
+    // alarms and synthetic history receipts after assertions, not during the scenario.
+    state.storage.sql.exec("UPDATE main_thread_completion_watches SET state='retired',authorization_json=''");
+    state.storage.sql.exec("UPDATE project_thread_runs SET state='retired'");
+    state.storage.sql.exec("UPDATE managed_turns SET state='cancelled',retry_at=NULL WHERE state IN ('accepted','cancelling')");
+    state.storage.sql.exec('DELETE FROM history_projection_outbox');
+    await state.storage.deleteAlarm();
+  });
+});
 const auth = JSON.stringify({ capabilities: ['agents:read', 'agents:write', 'tools:use'] });
 function blockModel(session: DurableAgentSession) {
   const runtime = (session as unknown as { env: Record<string, unknown> }).env;
@@ -13,6 +25,7 @@ function blockModel(session: DurableAgentSession) {
 }
 async function setup(id: string) {
   const stub = sessions().getByName(id);
+  fixtures.push(stub);
   await runInDurableObject(stub, async (session, state) => {
     blockModel(session);
     state.storage.sql.exec(`INSERT INTO session_state (singleton,session_id,owner_id,organization_id,team_id,authorization_epoch,public_origin,runtime_profile,last_active)
@@ -187,6 +200,7 @@ it('commits late-result publication atomically with terminal state and rejects c
     commitManagedTransition(state.storage, log, id, terminal, () => ledger.publish(id));
     commitManagedTransition(state.storage, log, id, terminal, () => { throw new Error('duplicate publication'); });
     expect(ledger.entries(0)).toEqual([{ sequence: 1, turn_id: id }]);
+    state.storage.sql.exec('DELETE FROM history_projection_outbox WHERE turn_id=?', id);
     await state.storage.deleteAlarm();
   });
 });
@@ -260,4 +274,74 @@ it('renews a revoked completion subscription while recovering a new authorized a
     await state.storage.deleteAlarm();
   });
   await terminal(child, 'project:renewed', 'cancelled');
+});
+
+it('relays one late nested result child → coordinator → Main and retires idle watches without blocking export forever', async () => {
+  const { MainThreadCompletions } = await import('../src/main-thread-completions');
+  const { commitManagedTransition } = await import('../src/index');
+  const { DurableEventLog } = await import('../src/durable-events');
+  const mainId = crypto.randomUUID(), coordinatorId = crypto.randomUUID(), childId = crypto.randomUUID();
+  const main = await setup(mainId), coordinator = await setup(coordinatorId), child = await setup(childId);
+  const owner = '11111111-1111-4111-8111-111111111111', team = '33333333-3333-4333-8333-333333333333';
+  const registry = (env as unknown as { NANOCODEX_USERS: DurableObjectNamespace }).NANOCODEX_USERS.getByName(owner);
+  await runInDurableObject(registry, async (_account, state) => {
+    for (const id of [mainId, coordinatorId, childId]) state.storage.sql.exec('INSERT INTO agent_registry(id,created_at,updated_at,team_id) VALUES (?,1,1,?)', id, team);
+    state.storage.sql.exec('INSERT INTO main_threads(team_id,agent_id) VALUES (?,?)', team, mainId);
+    state.storage.sql.exec("INSERT INTO canonical_projects(team_id,id,name,coordinator_agent_id) VALUES (?,'nested','Nested',?)", team, coordinatorId);
+    state.storage.sql.exec(`INSERT INTO project_threads(agent_id,parent_agent_id,project_root_id,origin_turn_id,turn_id,title,request_hash,created_at)
+      VALUES (?,?,?,'origin','project:child','Child','hash',1)`, childId, coordinatorId, coordinatorId);
+  });
+  for (const [parent, target] of [[main, coordinatorId], [coordinator, childId]] as const) {
+    await runInDurableObject(parent, async (_session, state) => {
+      // Initial responses have already finished. Only the recursive completion watch remains.
+      new MainThreadCompletions(state.storage).watch(target, 0, auth, 1);
+    });
+  }
+  const complete = async (stub: typeof child, id: string) => runInDurableObject(stub, async (_session, state) => {
+    const log = new DurableEventLog<Extract<import('../src/protocol').ServerMessage, { type: 'turn_completed' }>>(state.storage);
+    commitManagedTransition(state.storage, log, id, { type: 'turn_completed', id, final_message: 'Verified result', usage: null, citations: [] },
+      () => new MainThreadCompletions(state.storage).publish(id));
+    // This synthetic provider receipt exercises completion delivery, not memory
+    // indexing. The fixture has no corresponding history projection grant.
+    state.storage.sql.exec('DELETE FROM history_projection_outbox WHERE turn_id=?', id);
+    await state.storage.deleteAlarm();
+  });
+  await runInDurableObject(child, async (session) => {
+    expect((await session.fetch(new Request('https://session.internal/turns', { method: 'POST', body: JSON.stringify({ id: 'project-result:deep-task', input: 'Review deeper task result' }) }))).status).toBe(202);
+  });
+  // A still-running descendant prevents ancestors from declaring the subtree idle.
+  await runInDurableObject(main, async (session, state) => {
+    await session.alarm();
+    expect(new MainThreadCompletions(state.storage).get(coordinatorId)?.state).toBe('watching');
+  });
+  await complete(child, 'project-result:deep-task');
+  await evictDurableObject(coordinator);
+  const coordinatorTurn = `project-result:late:${childId}:1`;
+  await runInDurableObject(coordinator, async (session, state) => {
+    blockModel(session);
+    state.storage.sql.exec('UPDATE main_thread_completion_watches SET retry_at=0');
+    await session.alarm();
+    expect(state.storage.sql.exec<{ input_json: string }>('SELECT input_json FROM managed_turns WHERE id=?', coordinatorTurn).one().input_json).toContain('project-result:deep-task');
+    expect(new MainThreadCompletions(state.storage).get(childId)?.state).toBe('idle');
+    expect(session.mainThreadCompletionFeed(owner, team, 0).busy).toBe(true);
+  });
+  await complete(coordinator, coordinatorTurn);
+  await evictDurableObject(main);
+  const mainTurn = `main-result:${coordinatorId}:1`;
+  await runInDurableObject(main, async (session, state) => {
+    blockModel(session);
+    state.storage.sql.exec('UPDATE main_thread_completion_watches SET retry_at=0');
+    await session.alarm();
+    const row = state.storage.sql.exec<{ input_json: string }>('SELECT input_json FROM managed_turns WHERE id=?', mainTurn).one();
+    expect(row.input_json).toContain(coordinatorTurn);
+    expect(row.input_json).toContain('read_project');
+    const ledger = new MainThreadCompletions(state.storage);
+    expect(ledger.get(coordinatorId)?.state).toBe('idle');
+    expect(ledger.nextAlarm()).toBeUndefined();
+    // The export subscription guard uses nextAlarm(); idle watches release it.
+    // Finish the fixture's model-blocked report without starting durability I/O.
+    state.storage.sql.exec("UPDATE managed_turns SET state='cancelled',retry_at=NULL");
+    expect(session.mainThreadCompletionFeed(owner, team, 0).busy).toBe(false);
+    await state.storage.deleteAlarm();
+  });
 });

@@ -38,6 +38,9 @@ export class ProjectThreadRuns {
   due(now: number): ProjectThreadRun[] {
     return this.storage.sql.exec<ProjectThreadRun>("SELECT * FROM project_thread_runs WHERE state IN ('admitting','watching') AND retry_at<=? ORDER BY retry_at LIMIT 8", now).toArray();
   }
+  pending(agentId: string): boolean {
+    return this.storage.sql.exec("SELECT id FROM project_thread_runs WHERE agent_id=? AND state IN ('admitting','watching') LIMIT 1", agentId).toArray().length > 0;
+  }
   nextAlarm(): number | undefined {
     return this.storage.sql.exec<{ deadline: number | null }>("SELECT MIN(retry_at) AS deadline FROM project_thread_runs WHERE state IN ('admitting','watching')").one().deadline ?? undefined;
   }
