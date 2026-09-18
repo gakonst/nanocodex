@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"strings"
+	"unicode/utf8"
 )
 
 type remoteInput struct {
@@ -73,7 +74,7 @@ func (event remoteInput) validate() error {
 		_, supported := hidToEvdev[valueOrZero(event.Key)]
 		valid = supported && event.Key != nil && event.Down != nil && noPoint && event.Button == nil && event.Text == nil && noDeltas
 	case "text":
-		valid = event.Text != nil && len(*event.Text) > 0 && len(*event.Text) <= 4096 && !strings.ContainsRune(*event.Text, 0) && noPoint && event.Button == nil && event.Down == nil && event.Key == nil && noDeltas
+		valid = event.Text != nil && len(*event.Text) > 0 && len(*event.Text) <= 4096 && utf8.ValidString(*event.Text) && !strings.ContainsRune(*event.Text, 0) && noPoint && event.Button == nil && event.Down == nil && event.Key == nil && noDeltas
 	case "releaseAll":
 		valid = noPoint && event.Button == nil && event.Down == nil && event.Key == nil && event.Text == nil && noDeltas
 	}

@@ -32,6 +32,7 @@ type waymoteCapture struct {
 	mu       sync.Mutex
 	sequence uint32
 	closed   bool
+	inputErr error
 }
 
 func startWaymote(ctx context.Context, executable string) (*waymoteCapture, error) {
@@ -144,6 +145,9 @@ func (capture *waymoteCapture) apply(event remoteInput) error {
 	if capture.closed {
 		return errors.New("Wayland capture closed")
 	}
+	if capture.inputErr != nil {
+		return capture.inputErr
+	}
 	capture.sequence++
 	if capture.sequence == 0 {
 		capture.sequence = 1
@@ -190,10 +194,14 @@ func (capture *waymoteCapture) apply(event remoteInput) error {
 			for count < len(remaining) && !utf8.RuneStart(remaining[count]) {
 				count--
 			}
-			if err := capture.record(10, 0, uint32(count), sequence, 0); err != nil {
-				return err
-			}
-			if err := capture.write(remaining[:count]); err != nil {
+			// Keep header and payload in one write (at most 4016 bytes,
+			// below Linux PIPE_BUF), so a timeout cannot strand a header.
+			wire := make([]byte, 16+count)
+			wire[0], wire[1] = 2, 10
+			binary.LittleEndian.PutUint32(wire[4:8], uint32(count))
+			binary.LittleEndian.PutUint32(wire[8:12], sequence)
+			copy(wire[16:], remaining[:count])
+			if err := capture.write(wire); err != nil {
 				return err
 			}
 			remaining = remaining[count:]
@@ -291,15 +299,22 @@ func (capture *waymoteCapture) record(kind, state byte, a, b, sequence uint32) e
 	return capture.write(wire[:])
 }
 func (capture *waymoteCapture) write(data []byte) error {
+	if capture.inputErr != nil {
+		return capture.inputErr
+	}
 	if pipe, ok := capture.input.(*os.File); ok {
 		_ = pipe.SetWriteDeadline(time.Now().Add(250 * time.Millisecond))
 	}
 	n, err := capture.input.Write(data)
-	if err != nil {
-		return err
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
 	}
-	if n != len(data) {
-		return fmt.Errorf("incomplete input write: %d", n)
+	if err != nil {
+		// The parser may be inside a record. Never append another key or
+		// release record to an ambiguous prefix, or retry delivered text.
+		capture.inputErr = fmt.Errorf("Wayland input write: %w", err)
+		_ = capture.input.Close()
+		return capture.inputErr
 	}
 	return nil
 }
@@ -311,8 +326,10 @@ var hidToEvdev = map[uint16]uint32{
 	30: 2, 31: 3, 32: 4, 33: 5, 34: 6, 35: 7, 36: 8, 37: 9, 38: 10, 39: 11, 40: 28, 41: 1, 42: 14, 43: 15, 44: 57,
 	45: 12, 46: 13, 47: 26, 48: 27, 49: 43, 51: 39, 52: 40, 53: 41, 54: 51, 55: 52, 56: 53, 57: 58,
 	58: 59, 59: 60, 60: 61, 61: 62, 62: 63, 63: 64, 64: 65, 65: 66, 66: 67, 67: 68, 68: 87, 69: 88,
+	70: 99, 71: 70, 72: 119,
 	73: 110, 74: 102, 75: 104, 76: 111, 77: 107, 78: 109, 79: 106, 80: 105, 81: 108, 82: 103,
-	83: 69, 84: 98, 85: 55, 86: 74, 87: 78, 88: 96, 89: 79, 90: 80, 91: 81, 92: 75, 93: 76, 94: 77, 95: 71, 96: 72, 97: 73, 98: 82, 99: 83, 100: 86, 103: 117,
+	83: 69, 84: 98, 85: 55, 86: 74, 87: 78, 88: 96, 89: 79, 90: 80, 91: 81, 92: 75, 93: 76, 94: 77, 95: 71, 96: 72, 97: 73, 98: 82, 99: 83, 100: 86, 101: 127, 102: 116, 103: 117,
+	104: 183, 105: 184, 106: 185, 107: 186, 108: 187, 109: 188, 110: 189, 111: 190, 112: 191, 113: 192, 114: 193, 115: 194,
 	224: 29, 225: 42, 226: 56, 227: 125, 228: 97, 229: 54, 230: 100, 231: 126,
 }
 
