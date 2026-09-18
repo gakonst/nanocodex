@@ -148,6 +148,98 @@ describe("account main and canonical project registry", () => {
     expect(await role(b)).toEqual({ role: "conversation" });
   }));
 
+  it("resolves projected roles read-only without turning navigation groups into execution membership", () => inside(async storage => {
+    storage.sql.exec("UPDATE agent_registry SET team_id=NULL WHERE id=?", a);
+    storage.sql.exec("INSERT INTO conversation_projects VALUES (?,?,?)", a, a, "Migrated");
+    storage.sql.exec("INSERT INTO conversation_projects VALUES (?,?,?)", b, a, "Migrated");
+    const snapshot = () => ["agent_registry", "conversation_projects", "canonical_projects", "project_threads"]
+      .map(table => storage.sql.exec(`SELECT * FROM ${table}`).toArray());
+    const before = snapshot();
+    const calls: string[] = [];
+    const role = (agent: string) => mainThreadRegistry(request(`/canonical-role/${agent}`), storage, async (agent, team) => {
+      calls.push(agent); return team === "team-a" && [a, b].includes(agent);
+    });
+    expect((await mainThreadRegistry(request(`/canonical-role/${a}`), storage)).status).toBe(404);
+    expect(await (await role(a)).json()).toEqual({ role: "project_coordinator", project_id: `project-${a}`, project_root_id: a });
+    expect(await (await role(b)).json()).toEqual({ role: "conversation" });
+    expect(snapshot()).toEqual(before);
+    storage.sql.exec(`INSERT INTO project_threads VALUES (?,?,?,'origin','turn','Task','hash',1)`, b, a, a);
+    calls.length = 0;
+    const withTask = snapshot();
+    expect(await (await role(b)).json()).toEqual({ role: "project_task", project_id: `project-${a}`, project_root_id: a, parent_agent_id: a });
+    expect(calls).toEqual([b, a]);
+    expect(snapshot()).toEqual(withTask);
+    storage.sql.exec("INSERT INTO canonical_projects VALUES ('team-a','registered','Shared',?)", a);
+    expect(await (await role(a)).json()).toEqual({ role: "project_coordinator", project_id: "registered", project_root_id: a });
+    expect(await (await role(b)).json()).toMatchObject({ role: "project_task", project_id: "registered" });
+    expect(storage.sql.exec<{ team_id: string | null }>("SELECT team_id FROM agent_registry WHERE id=?", a).toArray()[0]!.team_id).toBeNull();
+  }));
+
+  it("fails closed on projected role identity denial and rechecks scope and membership after validation", () => inside(async storage => {
+    storage.sql.exec("UPDATE agent_registry SET team_id=NULL WHERE id=?", a);
+    storage.sql.exec("INSERT INTO conversation_projects VALUES (?,?,?)", a, a, "Migrated");
+    const role = (validate: (agent: string, team: string) => Promise<boolean>) => mainThreadRegistry(request(`/canonical-role/${a}`), storage, validate);
+    expect((await role(async () => false)).status).toBe(404);
+    expect((await role(async () => { throw new Error("offline"); })).status).toBe(503);
+    for (const mutate of [
+      () => storage.sql.exec("UPDATE agent_registry SET deleted_at=2 WHERE id=?", a),
+      () => storage.sql.exec("UPDATE agent_registry SET team_id='team-b' WHERE id=?", a),
+      () => storage.sql.exec("INSERT INTO canonical_projects VALUES ('team-b','foreign','Hidden',?)", a),
+      () => storage.sql.exec("INSERT INTO main_threads VALUES ('team-b',?)", a),
+      () => storage.sql.exec(`INSERT INTO project_threads VALUES (?,?,?,'origin','turn','Task','hash',1)`, a, b, b),
+    ]) {
+      expect((await role(async () => { mutate(); return true; })).status).toBe(404);
+      storage.sql.exec("UPDATE agent_registry SET team_id=NULL,deleted_at=NULL WHERE id=?", a);
+      storage.sql.exec("DELETE FROM canonical_projects");
+      storage.sql.exec("DELETE FROM main_threads");
+      storage.sql.exec("DELETE FROM project_threads");
+    }
+    expect(await (await role(async () => {
+      storage.sql.exec("DELETE FROM conversation_projects"); return true;
+    })).json()).toEqual({ role: "conversation" });
+    expect(storage.sql.exec<{ team_id: string | null }>("SELECT team_id FROM agent_registry WHERE id=?", a).toArray()[0]!.team_id).toBeNull();
+  }));
+
+  it("revalidates a projected task root without accepting navigation or changed execution scope", () => inside(async storage => {
+    storage.sql.exec("UPDATE agent_registry SET team_id=NULL WHERE id=?", a);
+    storage.sql.exec("INSERT INTO conversation_projects VALUES (?,?,?)", a, a, "Migrated");
+    storage.sql.exec(`INSERT INTO project_threads VALUES (?,?,?,'origin','turn','Task','hash',1)`, b, a, a);
+    const role = (validate: (agent: string, team: string) => Promise<boolean>) => mainThreadRegistry(request(`/canonical-role/${b}`), storage, validate);
+    expect((await role(async agent => agent !== a)).status).toBe(404);
+    expect((await role(async agent => {
+      if (agent === a) storage.sql.exec("UPDATE project_threads SET project_root_id=? WHERE agent_id=?", c, b);
+      return true;
+    })).status).toBe(404);
+    storage.sql.exec("UPDATE project_threads SET project_root_id=? WHERE agent_id=?", a, b);
+    expect(await (await role(async agent => {
+      if (agent === a) storage.sql.exec("UPDATE agent_registry SET team_id='team-b' WHERE id=?", a);
+      return true;
+    })).json()).toEqual({ role: "conversation" });
+  }));
+
+  it("uses live account identity for NULL-team projected roles without adopting registry metadata", async () => {
+    const coordinator = crypto.randomUUID();
+    const account = ns().getByName(crypto.randomUUID());
+    await initializeAccountSessions(account, [coordinator]);
+    await account.fetch("https://user.internal/agents", { method: "POST", body: JSON.stringify({ agentId: coordinator }) });
+    await runInDurableObject(account, async (_, state) => {
+      state.storage.sql.exec("INSERT INTO conversation_projects VALUES (?,?,?)", coordinator, coordinator, "Migrated");
+    });
+    const role = () => account.fetch(request(`/canonical-role/${coordinator}`));
+    expect(await (await role()).json()).toEqual({ role: "project_coordinator", project_id: `project-${coordinator}`, project_root_id: coordinator });
+    await runInDurableObject(sessions().getByName(coordinator), async (_, state) => {
+      state.storage.sql.exec("UPDATE session_state SET owner_id=?", crypto.randomUUID());
+    });
+    expect((await role()).status).toBe(404);
+    await runInDurableObject(account, async (_, state) => {
+      expect(state.storage.sql.exec<{ team_id: string | null }>("SELECT team_id FROM agent_registry WHERE id=?", coordinator).toArray()[0]!.team_id).toBeNull();
+      expect(state.storage.sql.exec("SELECT * FROM canonical_projects").toArray()).toEqual([]);
+      expect(state.storage.sql.exec("SELECT * FROM conversation_projects").toArray()).toEqual([
+        { agent_id: coordinator, project_root_id: coordinator, project_name: "Migrated" },
+      ]);
+    });
+  });
+
   it("retains missing main tombstones and hides foreign stale metadata", () => inside(async storage => {
     storage.sql.exec("INSERT INTO main_threads VALUES ('team-a',?)", a);
     expect((await mainThreadRegistry(request(`/canonical-role/${b}`, "team-a", {}), storage)).status).toBe(405);

@@ -45,27 +45,45 @@ export async function mainThreadRegistry(
     if (request.method !== "GET") return error("method_not_allowed", 405);
     const agent = url.pathname.slice("/canonical-role/".length);
     if (!id.safeParse(agent).success) return error("not_found", 404);
+    const verified = new Set<string>();
+    const membership = () => storage.sql.exec<{ project_root_id: string; parent_agent_id: string }>(
+      "SELECT project_root_id,parent_agent_id FROM project_threads WHERE agent_id=?", agent).toArray()[0];
+    const initialTask = membership();
+    if (validateIdentity) {
+      try {
+        for (const candidate of new Set([agent, ...(initialTask ? [initialTask.project_root_id] : [])])) {
+          if (!await validateIdentity(candidate, teamId)) return error("not_found", 404);
+          verified.add(candidate);
+        }
+      } catch { return error("identity_validation_unavailable", 503); }
+    }
+    // No awaits below: re-read active scope and execution membership after live identity I/O.
     const active = (agentId: string) => storage.sql.exec(
-      "SELECT id FROM agent_registry WHERE id=? AND team_id=? AND deleted_at IS NULL", agentId, teamId).toArray().length > 0;
-    if (!active(agent)) return error("not_found", 404);
-    if (storage.sql.exec("SELECT agent_id FROM main_threads WHERE agent_id=? AND team_id<>?", agent, teamId).toArray().length
-      || storage.sql.exec("SELECT id FROM canonical_projects WHERE coordinator_agent_id=? AND team_id<>?", agent, teamId).toArray().length)
+      "SELECT id FROM agent_registry WHERE id=? AND (team_id=? OR (team_id IS NULL AND ?)) AND deleted_at IS NULL",
+      agentId, teamId, verified.has(agentId) ? 1 : 0).toArray().length > 0;
+    const foreign = (agentId: string) => storage.sql.exec(
+      "SELECT agent_id FROM main_threads WHERE agent_id=? AND team_id<>?", agentId, teamId).toArray().length > 0
+      || storage.sql.exec("SELECT id FROM canonical_projects WHERE coordinator_agent_id=? AND team_id<>?", agentId, teamId).toArray().length > 0;
+    if (!active(agent) || foreign(agent)) return error("not_found", 404);
+    const task = membership();
+    if (task?.project_root_id !== initialTask?.project_root_id || task?.parent_agent_id !== initialTask?.parent_agent_id)
       return error("not_found", 404);
     if (storage.sql.exec("SELECT agent_id FROM main_threads WHERE agent_id=? AND team_id=?", agent, teamId).toArray().length)
       return Response.json({ role: "main" });
-    const project = storage.sql.exec<{ id: string }>(
-      "SELECT id FROM canonical_projects WHERE coordinator_agent_id=? AND team_id=?", agent, teamId).toArray()[0];
+    // Match discovery's canonical-first coordinator/ID deduplication. Only an
+    // individually verified navigation root can supply a projected identity.
+    const ids = new Set<string>(), coordinators = new Set<string>();
+    const projects = projectCandidates(storage, teamId, !!validateIdentity).filter(project => {
+      if (ids.has(project.id) || coordinators.has(project.coordinator_agent_id)) return false;
+      ids.add(project.id); coordinators.add(project.coordinator_agent_id); return true;
+    });
+    const project = projects.find(project => project.coordinator_agent_id === agent);
     if (project) return Response.json({ role: "project_coordinator", project_id: project.id, project_root_id: agent });
-    const task = storage.sql.exec<{ project_root_id: string; parent_agent_id: string; project_id: string | null }>(`SELECT t.project_root_id,t.parent_agent_id,p.id AS project_id
-      FROM project_threads t JOIN agent_registry root ON root.id=t.project_root_id
-      LEFT JOIN canonical_projects p ON p.coordinator_agent_id=root.id AND p.team_id=?
-      WHERE t.agent_id=? AND root.team_id=? AND root.deleted_at IS NULL`, teamId, agent, teamId).toArray()[0];
-    if (task) {
-      // Foreign canonical metadata must not turn a legacy membership into a project identity.
-      const foreign = storage.sql.exec("SELECT id FROM canonical_projects WHERE coordinator_agent_id=? AND team_id<>?", task.project_root_id, teamId).toArray().length;
-      if (foreign) return error("not_found", 404);
+    if (task && active(task.project_root_id)) {
+      if (foreign(task.project_root_id)) return error("not_found", 404);
+      const rootProject = projects.find(project => project.coordinator_agent_id === task.project_root_id);
       return Response.json({ role: "project_task",
-        ...(task.project_id ? { project_id: task.project_id } : {}), project_root_id: task.project_root_id,
+        ...(rootProject ? { project_id: rootProject.id } : {}), project_root_id: task.project_root_id,
         ...(active(task.parent_agent_id) ? { parent_agent_id: task.parent_agent_id } : {}),
       });
     }
