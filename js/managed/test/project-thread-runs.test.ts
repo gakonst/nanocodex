@@ -110,3 +110,154 @@ describe('persistent project outcome delivery in the managed runtime', () => {
     await terminal(child, 'project-followup:review', 'cancelled');
   });
 });
+
+it('delivers late coordinator completion turns to Main after its initial response, once across eviction', async () => {
+  const { MainThreadCompletions } = await import('../src/main-thread-completions');
+  const mainId = crypto.randomUUID(), coordinatorId = crypto.randomUUID();
+  const main = await setup(mainId), coordinator = await setup(coordinatorId);
+  const owner = '11111111-1111-4111-8111-111111111111';
+  const team = '33333333-3333-4333-8333-333333333333';
+  const users = (env as unknown as { NANOCODEX_USERS: DurableObjectNamespace }).NANOCODEX_USERS;
+  const registry = users.getByName(owner);
+  await runInDurableObject(registry, async (_account, state) => {
+    for (const id of [mainId, coordinatorId]) state.storage.sql.exec('INSERT INTO agent_registry(id,created_at,updated_at,team_id) VALUES (?,?,?,?)', id, Date.now(), Date.now(), team);
+    state.storage.sql.exec('INSERT INTO main_threads(team_id,agent_id) VALUES (?,?)', team, mainId);
+    state.storage.sql.exec('INSERT INTO canonical_projects(team_id,id,name,coordinator_agent_id) VALUES (?,?,?,?)', team, 'late-project', 'Late project', coordinatorId);
+  });
+  await runInDurableObject(main, async (_session, state) => {
+    // Initial routed turn is already delivered; the subscription remains durable.
+    const runs = new ProjectThreadRuns(state.storage);
+    runs.put({ id: 'initial-route', agent_id: coordinatorId, turn_id: 'main-route:initial', title: 'Late project', input: 'Work', request_hash: 'hash', authorization_json: auth, authorization_epoch: 1 });
+    runs.finish('initial-route', 'delivered');
+    new MainThreadCompletions(state.storage).watch(coordinatorId, 0, auth, 1);
+  });
+  await runInDurableObject(coordinator, async (_session, state) => {
+    new MainThreadCompletions(state.storage).publish('project-result:later-child');
+  });
+  await evictDurableObject(main);
+  await runInDurableObject(main, async (session, state) => {
+    blockModel(session);
+    await session.alarm();
+    const row = state.storage.sql.exec<{ id: string; input_json: string }>('SELECT id,input_json FROM managed_turns').one();
+    expect(row.id).toBe(`main-result:${coordinatorId}:1`);
+    expect(JSON.parse(row.input_json)).toContain('"turn_id":"project-result:later-child"');
+    expect(JSON.parse(row.input_json)).toContain('"project_id":"late-project"');
+    // Replay after a lost admission acknowledgement cannot admit a second notification.
+    state.storage.sql.exec('UPDATE main_thread_completion_watches SET cursor=0,retry_at=0');
+    await session.alarm();
+    expect(state.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM managed_turns').one().count).toBe(1);
+    state.storage.sql.exec('UPDATE session_state SET authorization_epoch=2');
+    state.storage.sql.exec('UPDATE main_thread_completion_watches SET retry_at=0');
+    await session.alarm();
+    expect(new MainThreadCompletions(state.storage).nextAlarm()).toBeUndefined();
+    state.storage.sql.exec("UPDATE managed_turns SET state='cancelled',retry_at=NULL");
+    await state.storage.deleteAlarm();
+  });
+  await runInDurableObject(registry, async (_account, state) => {
+    state.storage.sql.exec('DELETE FROM canonical_projects WHERE coordinator_agent_id=?', coordinatorId);
+    state.storage.sql.exec('DELETE FROM main_threads WHERE agent_id=?', mainId);
+  });
+});
+
+it('commits late-result publication atomically with terminal state and rejects changed routing intent', async () => {
+  const { MainThreadCompletions } = await import('../src/main-thread-completions');
+  const { retainMainRoute } = await import('../src/main-thread');
+  const { commitManagedTransition } = await import('../src/index');
+  const { DurableEventLog } = await import('../src/durable-events');
+  const stub = await setup(crypto.randomUUID());
+  await runInDurableObject(stub, async (session, state) => {
+    const input = { project_id: 'build', name: 'Build', id: 'stable', input: 'Implement it' };
+    retainMainRoute(state.storage, input);
+    retainMainRoute(state.storage, input);
+    expect(() => retainMainRoute(state.storage, { ...input, project_id: 'different' })).toThrow('conflicts');
+    expect(() => retainMainRoute(state.storage, { ...input, input: 'Different work' })).toThrow('conflicts');
+    const id = 'project-result:atomic';
+    expect((await session.fetch(new Request('https://session.internal/turns', {
+      method: 'POST', body: JSON.stringify({ id, input: 'Report child outcome' }),
+    }))).status).toBe(202);
+    const ledger = new MainThreadCompletions(state.storage);
+    const log = new DurableEventLog<Extract<import('../src/protocol').ServerMessage, { type: 'turn_completed' }>>(state.storage);
+    const terminal = { type: 'turn_completed' as const, id, final_message: 'Done', usage: null, citations: [] };
+    expect(() => commitManagedTransition(state.storage, log, id, terminal, () => {
+      ledger.publish(id);
+      throw new Error('injected failure');
+    })).toThrow('injected failure');
+    expect(ledger.entries(0)).toEqual([]);
+    expect(state.storage.sql.exec<{ state: string }>('SELECT state FROM managed_turns WHERE id=?', id).one().state).toBe('accepted');
+    commitManagedTransition(state.storage, log, id, terminal, () => ledger.publish(id));
+    commitManagedTransition(state.storage, log, id, terminal, () => { throw new Error('duplicate publication'); });
+    expect(ledger.entries(0)).toEqual([{ sequence: 1, turn_id: id }]);
+    await state.storage.deleteAlarm();
+  });
+});
+
+it('propagates a late nested thread result to its direct coordinator without expanding project access', async () => {
+  const { MainThreadCompletions } = await import('../src/main-thread-completions');
+  const parentId = crypto.randomUUID(), childId = crypto.randomUUID();
+  const parent = await setup(parentId), child = await setup(childId);
+  const registry = (env as unknown as { NANOCODEX_USERS: DurableObjectNamespace }).NANOCODEX_USERS.getByName('11111111-1111-4111-8111-111111111111');
+  await runInDurableObject(registry, async (_account, state) => {
+    for (const id of [parentId, childId]) state.storage.sql.exec('INSERT INTO agent_registry(id,created_at,updated_at) VALUES (?,1,1)', id);
+    state.storage.sql.exec(`INSERT INTO project_threads(agent_id,parent_agent_id,project_root_id,origin_turn_id,turn_id,title,request_hash,created_at)
+      VALUES (?,?,?,'origin','project:child','Child','hash',1)`, childId, parentId, parentId);
+  });
+  await runInDurableObject(child, async (_session, state) => {
+    new MainThreadCompletions(state.storage).publish('project-result:grandchild');
+  });
+  await runInDurableObject(parent, async (session, state) => {
+    const ledger = new MainThreadCompletions(state.storage);
+    ledger.watch(childId, 0, auth, 1);
+    await session.alarm();
+    const turn = state.storage.sql.exec<{ id: string; input_json: string }>('SELECT id,input_json FROM managed_turns').one();
+    expect(turn.id).toBe(`project-result:late:${childId}:1`);
+    expect(JSON.parse(turn.input_json)).toContain('read_project_thread');
+    expect(JSON.parse(turn.input_json)).toContain('"turn_id":"project-result:grandchild"');
+    expect(ledger.get(childId)?.cursor).toBe(1);
+    ledger.retire(childId);
+    state.storage.sql.exec("UPDATE managed_turns SET state='cancelled',retry_at=NULL");
+    await state.storage.deleteAlarm();
+  });
+});
+
+it('retains late-result subscriptions through transient registry failures', async () => {
+  const { MainThreadCompletions } = await import('../src/main-thread-completions');
+  const parent = await setup(crypto.randomUUID());
+  await runInDurableObject(parent, async (session, state) => {
+    const runtime = (session as unknown as { env: Record<string, unknown> }).env;
+    Object.defineProperty(session, 'env', { value: { ...runtime, NANOCODEX_USERS: { getByName: () => ({ fetch: async () => new Response(null, { status: 503 }) }) } } });
+    const ledger = new MainThreadCompletions(state.storage);
+    const child = crypto.randomUUID();
+    ledger.watch(child, 7, auth, 1);
+    await session.alarm();
+    expect(ledger.get(child)).toMatchObject({ cursor: 7, state: 'watching', authorization_epoch: 1 });
+    expect(ledger.nextAlarm()).toBeGreaterThan(Date.now());
+    expect(state.storage.sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM managed_turns').one().count).toBe(0);
+    ledger.retire(child);
+    await state.storage.deleteAlarm();
+  });
+});
+
+it('renews a revoked completion subscription while recovering a new authorized admission', async () => {
+  const { MainThreadCompletions } = await import('../src/main-thread-completions');
+  const parent = await setup(crypto.randomUUID()), childId = crypto.randomUUID();
+  const child = await setup(childId);
+  await runInDurableObject(child, async (_session, state) => {
+    state.storage.sql.exec('UPDATE session_state SET authorization_epoch=2');
+    new MainThreadCompletions(state.storage).publish('project-result:before-renewal');
+  });
+  await runInDurableObject(parent, async (session, state) => {
+    const ledger = new MainThreadCompletions(state.storage);
+    ledger.watch(childId, 0, auth, 1);
+    state.storage.sql.exec('UPDATE session_state SET authorization_epoch=2');
+    // Isolate loss occurred after saving this explicit new-epoch intent but before renewing its watch.
+    const runs = new ProjectThreadRuns(state.storage);
+    runs.put({ id: 'new-epoch', agent_id: childId, turn_id: 'project:renewed', title: 'Renewed', input: 'New authorized work', request_hash: 'new', authorization_json: auth, authorization_epoch: 2 });
+    await session.alarm();
+    expect(runs.get('new-epoch')?.state).toBe('watching');
+    expect(ledger.get(childId)).toMatchObject({ state: 'watching', authorization_epoch: 2, cursor: 1 });
+    runs.finish('new-epoch', 'retired');
+    ledger.retire(childId);
+    await state.storage.deleteAlarm();
+  });
+  await terminal(child, 'project:renewed', 'cancelled');
+});
