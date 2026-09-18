@@ -3366,89 +3366,99 @@ async fn terminal_vault_approval_cancel_then_explicit_approve_sends_one_safe_rec
 #[tokio::test]
 async fn terminal_project_sidebar_switches_active_threads_and_preserves_drafts() {
     const CHILD: &str = "019fc927-b280-79a7-8445-1b9996ad2fb1";
-    let mut fixture = Fixture::start_with_active(true).await;
-    *fixture.project_catalog.lock().unwrap() = Some(json!({
-        "data": [AGENT, CHILD],
-        "summaries": {
-            AGENT: {"title": "SIDEBAR_MASTER", "created_at": 1, "updated_at": 2,
-                "turn_count": 1, "project_root_id": AGENT},
-            CHILD: {"title": "SIDEBAR_CHILD", "created_at": 1, "updated_at": 1,
-                "turn_count": 1, "project_root_id": AGENT, "parent_agent_id": AGENT}
-        }
-    }));
-    fixture
-        .thread_histories
-        .lock()
-        .unwrap()
-        .insert(CHILD.to_owned(), Vec::new());
-    fixture.terminal.prompt("MASTER_UNSENT_DRAFT", "");
-    fixture.terminal.input("\x1bOQ"); // F2
-    fixture.terminal.wait_text("Projects > Threads").await;
-    fixture.terminal.wait_text("SIDEBAR_CHILD").await;
-    fixture.terminal.input("\x1b[B\r"); // child, open
-    fixture.replacement_connection().await;
-    fixture.terminal.wait_no_text("MASTER_UNSENT_DRAFT").await;
-    assert_eq!(
-        fixture.connection_ids.lock().unwrap().last().unwrap(),
-        CHILD
-    );
-    fixture.terminal.wait_text("/ actions").await;
-    fixture.terminal.prompt("CHILD_UNSENT_DRAFT", "");
-    let mut progress = json!({"type": "event", "event": {
-        "protocol_version": 1, "request_id": AGENT, "seq": 1,
-        "type": "assistant.message", "payload": {"model_call_index": 1, "text": "MASTER_PROGRESS_WHILE_AWAY", "phase": "commentary"}
-    }});
-    fixture.cursor += 1;
-    progress["cursor"] = json!(fixture.cursor.to_string());
-    progress["turn_id"] = json!(REMOTE_TURN);
-    fixture.history.lock().unwrap().push(progress);
-    fixture
-        .terminal
-        .wait_no_text("MASTER_PROGRESS_WHILE_AWAY")
-        .await;
-    fixture.terminal.input("\x1bOQ"); // hide
-    fixture.terminal.wait_no_text("Projects > Threads").await;
-    fixture.terminal.input("\x1bOQ"); // show/focus
-    fixture.terminal.wait_text("SIDEBAR_CHILD").await;
-    fixture.terminal.input("\x1b[A\r"); // master, open
-    fixture.replacement_connection().await;
-    assert_eq!(
-        fixture.connection_ids.lock().unwrap().last().unwrap(),
-        AGENT
-    );
-    fixture.terminal.wait_text("MASTER_UNSENT_DRAFT").await;
-    fixture
-        .terminal
-        .wait_text("MASTER_PROGRESS_WHILE_AWAY")
-        .await;
-    fixture.terminal.wait_text("Enter steer").await;
-    fixture.terminal.wait_no_text("CHILD_UNSENT_DRAFT").await;
-    fixture.terminal.input("\x1bOQ\x1bOQ"); // hide/show to focus
-    fixture.terminal.wait_text("SIDEBAR_CHILD").await;
-    fixture.terminal.input("\x1b[B\r");
-    fixture.replacement_connection().await;
-    assert_eq!(
-        fixture.connection_ids.lock().unwrap().last().unwrap(),
-        CHILD
-    );
-    fixture.terminal.wait_text("CHILD_UNSENT_DRAFT").await;
-    fixture.terminal.wait_no_text("MASTER_UNSENT_DRAFT").await;
-    fixture
-        .terminal
-        .wait_no_text("MASTER_PROGRESS_WHILE_AWAY")
-        .await;
-    assert!(
-        fixture.cancellations.try_recv().is_err(),
-        "navigation cancelled remote work"
-    );
-    assert!(
-        fixture.submissions.try_recv().is_err(),
-        "navigation submitted a draft"
-    );
-    assert!(
-        fixture.steers.try_recv().is_err(),
-        "navigation steered remote work"
-    );
+    for attached in [true, false] {
+        let mut fixture = Fixture::start_with_active(attached).await;
+        let master_turn = if attached {
+            REMOTE_TURN.to_owned()
+        } else {
+            fixture.terminal.prompt("MASTER_ACCEPTED_WORK", "\r");
+            let turn = fixture.submission("MASTER_ACCEPTED_WORK").await;
+            fixture.terminal.wait_text("Enter steer").await;
+            turn
+        };
+        *fixture.project_catalog.lock().unwrap() = Some(json!({
+            "data": [AGENT, CHILD],
+            "summaries": {
+                AGENT: {"title": "SIDEBAR_MASTER", "created_at": 1, "updated_at": 2,
+                    "turn_count": 1, "project_root_id": AGENT},
+                CHILD: {"title": "SIDEBAR_CHILD", "created_at": 1, "updated_at": 1,
+                    "turn_count": 1, "project_root_id": AGENT, "parent_agent_id": AGENT}
+            }
+        }));
+        fixture
+            .thread_histories
+            .lock()
+            .unwrap()
+            .insert(CHILD.to_owned(), Vec::new());
+        fixture.terminal.prompt("MASTER_UNSENT_DRAFT", "");
+        fixture.terminal.input("\x1bOQ"); // F2
+        fixture.terminal.wait_text("Projects > Threads").await;
+        fixture.terminal.wait_text("SIDEBAR_CHILD").await;
+        fixture.terminal.input("\x1b[B\r"); // child, open
+        fixture.replacement_connection().await;
+        fixture.terminal.wait_no_text("MASTER_UNSENT_DRAFT").await;
+        assert_eq!(
+            fixture.connection_ids.lock().unwrap().last().unwrap(),
+            CHILD
+        );
+        fixture.terminal.wait_text("/ actions").await;
+        fixture.terminal.prompt("CHILD_UNSENT_DRAFT", "");
+        let mut progress = json!({"type": "event", "event": {
+            "protocol_version": 1, "request_id": AGENT, "seq": 1,
+            "type": "assistant.message", "payload": {"model_call_index": 1, "text": "MASTER_PROGRESS_WHILE_AWAY", "phase": "commentary"}
+        }});
+        fixture.cursor += 1;
+        progress["cursor"] = json!(fixture.cursor.to_string());
+        progress["turn_id"] = json!(master_turn);
+        fixture.history.lock().unwrap().push(progress);
+        fixture
+            .terminal
+            .wait_no_text("MASTER_PROGRESS_WHILE_AWAY")
+            .await;
+        fixture.terminal.input("\x1bOQ"); // hide
+        fixture.terminal.wait_no_text("Projects > Threads").await;
+        fixture.terminal.input("\x1bOQ"); // show/focus
+        fixture.terminal.wait_text("SIDEBAR_CHILD").await;
+        fixture.terminal.input("\x1b[A\r"); // master, open
+        fixture.replacement_connection().await;
+        assert_eq!(
+            fixture.connection_ids.lock().unwrap().last().unwrap(),
+            AGENT
+        );
+        fixture.terminal.wait_text("MASTER_UNSENT_DRAFT").await;
+        fixture
+            .terminal
+            .wait_text("MASTER_PROGRESS_WHILE_AWAY")
+            .await;
+        fixture.terminal.wait_text("Enter steer").await;
+        fixture.terminal.wait_no_text("CHILD_UNSENT_DRAFT").await;
+        fixture.terminal.input("\x1bOQ\x1bOQ"); // hide/show to focus
+        fixture.terminal.wait_text("SIDEBAR_CHILD").await;
+        fixture.terminal.input("\x1b[B\r");
+        fixture.replacement_connection().await;
+        assert_eq!(
+            fixture.connection_ids.lock().unwrap().last().unwrap(),
+            CHILD
+        );
+        fixture.terminal.wait_text("CHILD_UNSENT_DRAFT").await;
+        fixture.terminal.wait_no_text("MASTER_UNSENT_DRAFT").await;
+        fixture
+            .terminal
+            .wait_no_text("MASTER_PROGRESS_WHILE_AWAY")
+            .await;
+        assert!(
+            fixture.cancellations.try_recv().is_err(),
+            "navigation cancelled remote work"
+        );
+        assert!(
+            fixture.submissions.try_recv().is_err(),
+            "navigation submitted a draft"
+        );
+        assert!(
+            fixture.steers.try_recv().is_err(),
+            "navigation steered remote work"
+        );
+    }
 }
 
 #[tokio::test]
