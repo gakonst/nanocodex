@@ -8,11 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"image/jpeg"
 	"image/png"
-	"math"
 	"os/exec"
 	"time"
+
+	"golang.org/x/image/draw"
 )
 
 //go:embed capture_policy.json
@@ -166,36 +168,89 @@ func snapshotDesktop(parent context.Context, width, height int) agentResult {
 	if width < 1 || height < 1 || width > 65536 || height > 65536 {
 		return agentResult{Status: "unavailable"}
 	}
-	scale := math.Min(1, float64(capturePolicy.MaxDimension)/float64(max(width, height)))
-	// Use grim's JPEG encoder when available: avoid PNG compression, a full
-	// decode, and a second encode on every relay/agent observation.
-	direct := &boundedSnapshot{}
-	command := exec.CommandContext(ctx, "grim", "-t", "jpeg", "-q", fmt.Sprint(capturePolicy.JPEGQualities[0]), "-s", fmt.Sprintf("%.6f", scale), "-")
-	command.Stdout = direct
-	command.WaitDelay = time.Second
-	if command.Run() == nil {
-		config, err := jpeg.DecodeConfig(bytes.NewReader(direct.buffer.Bytes()))
-		if err == nil && ctx.Err() == nil && config.Width > 0 && config.Height > 0 && config.Width <= capturePolicy.MaxDimension && config.Height <= capturePolicy.MaxDimension {
-			return agentResult{Status: "ok", JPEG: base64.StdEncoding.EncodeToString(direct.buffer.Bytes()), Width: config.Width, Height: config.Height}
+	// Configured dimensions describe the headless mode, not necessarily the
+	// live output. grim -s scales logical geometry, so a physical-pixel ratio
+	// here double-downscales HiDPI outputs. Capture all native geometry first.
+	for _, format := range []string{"jpeg", "png"} {
+		args := []string{"-t", format}
+		if format == "jpeg" {
+			args = append(args, "-q", fmt.Sprint(capturePolicy.JPEGQualities[0]))
+		} else {
+			args = append(args, "-l", "1")
+		}
+		captured := &boundedSnapshot{limit: maxNativeSnapshotBytes}
+		command := exec.CommandContext(ctx, "grim", append(args, "-")...)
+		command.Stdout = captured
+		command.WaitDelay = time.Second
+		if command.Run() == nil {
+			if result := encodeSnapshot(ctx, captured.buffer.Bytes(), format); result.Status == "ok" {
+				return result
+			}
+		}
+		if ctx.Err() != nil {
+			break
 		}
 	}
-	// Distribution builds of grim may advertise JPEG while disabling it at
-	// compile time. PNG is its baseline format; encode a bounded JPEG here only
-	// when the agent asks for an observation. The live H.264 path is unaffected.
-	command = exec.CommandContext(ctx, "grim", "-t", "png", "-l", "1", "-s", fmt.Sprintf("%.6f", scale), "-")
-	captured := &boundedSnapshot{limit: 8_000_000}
-	command.Stdout = captured
-	command.WaitDelay = time.Second
-	if command.Run() != nil {
-		return agentResult{Status: "unavailable"}
+	return agentResult{Status: "unavailable"}
+}
+
+// Bound compressed input and decoded pixel allocation independently. This
+// admits an 8K desktop but rejects compressed images with enormous dimensions.
+const maxNativeSnapshotBytes = 64 * 1024 * 1024
+const maxNativeSnapshotPixels = 32 * 1024 * 1024
+
+func snapshotDimensions(width, height int) (int, int, bool) {
+	if width < 1 || height < 1 || width > 65536 || height > 65536 || int64(width)*int64(height) > maxNativeSnapshotPixels {
+		return 0, 0, false
 	}
-	config, err := png.DecodeConfig(bytes.NewReader(captured.buffer.Bytes()))
-	if err != nil || config.Width < 1 || config.Height < 1 || config.Width > capturePolicy.MaxDimension || config.Height > capturePolicy.MaxDimension {
-		return agentResult{Status: "unavailable"}
+	longest := max(width, height)
+	if longest <= capturePolicy.MaxDimension {
+		return width, height, true
 	}
-	frame, err := png.Decode(bytes.NewReader(captured.buffer.Bytes()))
+	// Integer rounding gives an exact longest edge without decimal scale
+	// truncation. Resize the entire source rectangle, including every corner.
+	return max(1, (width*capturePolicy.MaxDimension+longest/2)/longest),
+		max(1, (height*capturePolicy.MaxDimension+longest/2)/longest), true
+}
+
+func encodeSnapshot(ctx context.Context, data []byte, format string) agentResult {
+	unavailable := agentResult{Status: "unavailable"}
+	if len(data) > maxNativeSnapshotBytes || ctx.Err() != nil {
+		return unavailable
+	}
+	var config image.Config
+	var err error
+	switch format {
+	case "jpeg":
+		config, err = jpeg.DecodeConfig(bytes.NewReader(data))
+	case "png":
+		config, err = png.DecodeConfig(bytes.NewReader(data))
+	default:
+		return unavailable
+	}
+	if err != nil {
+		return unavailable
+	}
+	width, height, valid := snapshotDimensions(config.Width, config.Height)
+	if !valid {
+		return unavailable
+	}
+	if format == "jpeg" && width == config.Width && height == config.Height && base64.StdEncoding.EncodedLen(len(data)) <= capturePolicy.MaxBase64Bytes && ctx.Err() == nil {
+		return agentResult{Status: "ok", JPEG: base64.StdEncoding.EncodeToString(data), Width: width, Height: height}
+	}
+	var frame image.Image
+	if format == "jpeg" {
+		frame, err = jpeg.Decode(bytes.NewReader(data))
+	} else {
+		frame, err = png.Decode(bytes.NewReader(data))
+	}
 	if err != nil || ctx.Err() != nil {
-		return agentResult{Status: "unavailable"}
+		return unavailable
+	}
+	if width != config.Width || height != config.Height {
+		resized := image.NewRGBA(image.Rect(0, 0, width, height))
+		draw.BiLinear.Scale(resized, resized.Bounds(), frame, frame.Bounds(), draw.Src, nil)
+		frame = resized
 	}
 	for _, quality := range capturePolicy.JPEGQualities {
 		output := &boundedSnapshot{}
@@ -203,10 +258,10 @@ func snapshotDesktop(parent context.Context, width, height int) agentResult {
 			break
 		}
 		if jpeg.Encode(output, frame, &jpeg.Options{Quality: quality}) == nil && ctx.Err() == nil {
-			return agentResult{Status: "ok", JPEG: base64.StdEncoding.EncodeToString(output.buffer.Bytes()), Width: config.Width, Height: config.Height}
+			return agentResult{Status: "ok", JPEG: base64.StdEncoding.EncodeToString(output.buffer.Bytes()), Width: width, Height: height}
 		}
 	}
-	return agentResult{Status: "unavailable"}
+	return unavailable
 }
 
 func (action agentInput) validateContext() (*observationContext, error) {

@@ -109,3 +109,45 @@ input receipt, application response/capture, encode completion, send/receive,
 decode, and actual presentation timestamps, plus p50/p95/p99 under controlled
 network loss and writer stalls. Run that in an isolated desktop before claiming
 nearly native latency or complete keyboard correctness.
+
+## Snapshot geometry correction
+
+Agent/relay snapshots are independent JPEG captures, not WebRTC frames. The
+previous snapshot path computed a physical-mode ratio from configured width and
+height, then supplied it to grim's logical-geometry `-s`. That can double-shrink
+a scaled output; formatting the ratio to six decimals also permits pixel-floor
+loss. For example, configured 3840x2160 with a 1920x1080 output at scale 2
+gives logical 960x540; multiplying that by the formatted factor 0.333333
+produces 319x179 after truncation, instead of the intended 1280x720. This
+explains a snapshot-resolution failure mode, not a separate large game crop.
+
+Snapshots now capture the complete native raster without a configured scale or
+crop region, validate its decoded dimensions, and explicitly resize the entire
+source rectangle to a maximum 1280-pixel edge. Aspect ratio uses integer rounding,
+small rasters are not enlarged, and portrait dimensions remain portrait. Direct
+JPEGs within geometry/byte limits still avoid re-encoding. Larger JPEGs are
+resized/re-encoded; PNG remains the fallback for JPEG-disabled grim builds.
+Native compressed input is capped at 64 MiB and native decoded geometry at
+32 Mi pixels before decoding. Encoded results retain the 500000-byte base64 cap
+and quality ladder. Bilinear resampling adds the pinned x/image dependency
+without upgrading existing dependencies.
+
+Tests use a fake grim that refuses scale/region flags and returns known complete
+rasters. They cover four native geometries, configured-mode scales 1/1.25/2/3,
+JPEG and PNG fallback, decoded/reported dimensions, small markers at all four
+corners, valid oversized PNG headers, cancellation, native noisy image resizing, aspect
+ratio rounding, no upscaling, and invalid/oversized geometry. These isolate the
+Go boundary; they do not emulate the compositor or prove live input delivery.
+
+A 10-iteration M1 Max benchmark of native 1920x1080 JPEG decode, bilinear resize,
+and bounded JPEG encode measured 58.93 ms/op, 51.35 MB allocated/op, 30
+allocations/op. It uses a synthetic corner-marker fixture; scene complexity affects
+codec costs and size. This is added snapshot CPU work, not a WebRTC performance
+improvement. Native capture/transport costs are excluded. The larger intermediate
+allocation is a tradeoff for filtered full-frame resampling and is bounded by
+the native geometry limits; further optimization must retain image quality.
+
+Snapshot revision validation passed: full Go suite, full race suite (58.17s),
+vet, and Linux amd64/arm64 cross-builds. An earlier full race run hit existing
+text-backend timing assertions; those passed in the focused rerun and the final
+full run. No live observe/input, deployment, or process restart was performed.

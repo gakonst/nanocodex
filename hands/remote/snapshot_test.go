@@ -92,9 +92,9 @@ func TestSnapshotRejectsInvalidSourceDimensions(t *testing.T) {
 	}
 }
 
-func TestNoisySnapshotFallbackFitsBase64Budget(t *testing.T) {
+func TestNoisySnapshotNativeResizeFitsBase64Budget(t *testing.T) {
 	directory := t.TempDir()
-	frame := image.NewRGBA(image.Rect(0, 0, 1280, 1280))
+	frame := image.NewRGBA(image.Rect(0, 0, 1920, 1080))
 	random := uint32(1)
 	for i := 0; i < len(frame.Pix); i += 4 {
 		for c := 0; c < 3; c++ {
@@ -138,7 +138,7 @@ func TestNoisySnapshotFallbackFitsBase64Budget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decoded.Bounds().Dx() != 1280 || decoded.Bounds().Dy() != 1280 {
+	if decoded.Bounds().Dx() != 1280 || decoded.Bounds().Dy() != 720 {
 		t.Fatal("wrong decoded dimensions")
 	}
 }

@@ -7,6 +7,7 @@ require (
 	github.com/danielpaulus/go-ios v1.3.3-0.20260904123936-7e82aa2c8395
 	github.com/pion/rtp v1.10.5
 	github.com/pion/webrtc/v4 v4.2.20
+	golang.org/x/image v0.38.0
 	howett.net/plist v1.0.1
 )
 
