@@ -149,6 +149,7 @@ final class PhoneScreen: NSObject, RemoteCapture, URLSessionDataDelegate, @unche
         try event.validate(); if let failure { throw failure }
         let point = CGPoint(x: (event.x ?? 0) * (size.width - 1), y: (event.y ?? 0) * (size.height - 1))
         switch event.kind {
+        case .relativeMove: throw RemoteError.invalidMessage // This host does not advertise relativePointer.
         case .button:
             if event.button == 1 {
                 if event.down == false { try enqueue("/wda/touchAndHold", ["x": point.x, "y": point.y, "duration": 0.6]) }

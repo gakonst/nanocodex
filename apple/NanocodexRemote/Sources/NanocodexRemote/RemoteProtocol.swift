@@ -20,9 +20,10 @@ public enum RemoteError: LocalizedError, Equatable {
 }
 
 /// Coordinates refer to the complete captured surface, before local letterboxing.
-/// Discrete pointer events carry their own position so they cannot overtake motion.
+/// Absolute pointer events carry a position so they cannot overtake motion.
+/// Negotiated relative deltas and positionless pointer events use reliable ordering.
 public struct RemoteInput: Codable, Equatable, Sendable {
-    public enum Kind: String, Codable, Sendable { case move, button, scroll, key, text, releaseAll }
+    public enum Kind: String, Codable, Sendable { case move, relativeMove, button, scroll, key, text, releaseAll }
     public let kind: Kind
     public let sequence: UInt64
     public let generation: String
@@ -53,11 +54,15 @@ public struct RemoteInput: Codable, Equatable, Sendable {
         case .move:
             guard x != nil, y != nil, button == nil, down == nil, key == nil, text == nil,
                   deltaX == nil, deltaY == nil else { throw RemoteError.invalidMessage }
+        case .relativeMove:
+            guard x == nil, y == nil, let deltaX, let deltaY, deltaX.isFinite, deltaY.isFinite,
+                  abs(deltaX) <= 4096, abs(deltaY) <= 4096,
+                  button == nil, down == nil, key == nil, text == nil else { throw RemoteError.invalidMessage }
         case .button:
-            guard x != nil, y != nil, let button, (0...2).contains(button), down != nil,
+            guard (x == nil) == (y == nil), let button, (0...2).contains(button), down != nil,
                   key == nil, text == nil, deltaX == nil, deltaY == nil else { throw RemoteError.invalidMessage }
         case .scroll:
-            guard x != nil, y != nil, let deltaX, let deltaY, deltaX.isFinite, deltaY.isFinite,
+            guard (x == nil) == (y == nil), let deltaX, let deltaY, deltaX.isFinite, deltaY.isFinite,
                   abs(deltaX) <= 4096, abs(deltaY) <= 4096,
                   button == nil, down == nil, key == nil, text == nil else { throw RemoteError.invalidMessage }
         case .key:

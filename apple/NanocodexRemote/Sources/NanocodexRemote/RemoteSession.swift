@@ -21,6 +21,7 @@ struct RemoteControlMessage: Codable, Sendable {
     enum Kind: String, Codable, Sendable { case acquire, granted, denied, renew, release, revoked }
     let type: Kind
     var generation: String?
+    var relativePointer: Bool?
 }
 
 // Hosts acknowledge release with `revoked`, including older hosts that omit a
@@ -30,6 +31,8 @@ struct RemoteViewerControl {
     private enum State { case idle, acquiring, cancelledAcquire, held(String), releasing(String) }
     private var state = State.idle
     private(set) var requested = false
+    private var grantedRelativePointer = false
+    var relativePointer: Bool { generation != nil && grantedRelativePointer }
     var generation: String? { if case .held(let value) = state { return value }; return nil }
 
     mutating func acquire() -> RemoteControlMessage? {
@@ -56,7 +59,9 @@ struct RemoteViewerControl {
         case .granted:
             guard let generation = message.generation, !generation.isEmpty, generation.count <= 128 else { throw RemoteError.invalidMessage }
             switch state {
-            case .acquiring: state = .held(generation)
+            case .acquiring:
+                state = .held(generation)
+                grantedRelativePointer = message.relativePointer == true
             case .cancelledAcquire:
                 state = .releasing(generation)
                 return .init(type: .release, generation: generation)
@@ -92,6 +97,8 @@ public final class RemoteViewer: ObservableObject {
     @Published public private(set) var track: RTCVideoTrack?
     @Published public private(set) var frame: CGImage?
     @Published public private(set) var controlling = false
+    /// Negotiated for the current control lease; older hosts remain absolute-only.
+    @Published public private(set) var relativePointer = false
     @Published public private(set) var connected = false
     @Published public private(set) var hand: RemoteHand?
     @Published public private(set) var connecting = false
@@ -336,14 +343,29 @@ public final class RemoteViewer: ObservableObject {
 
     public func releaseControl() {
         let release = control.release()
-        leaseRenewal?.cancel(); leaseRenewal = nil; controlling = false
+        leaseRenewal?.cancel(); leaseRenewal = nil; controlling = false; relativePointer = false
         if let release { sendControl(release) }
         if connected { status = "Watching" }
+    }
+
+    /// Best-effort cleanup during view teardown must not publish observable state.
+    public func releasePressedInput() {
+        guard controlling, let generation else { return }
+        sequence += 1
+        let event = RemoteInput(kind: .releaseAll, sequence: sequence, generation: generation)
+        if hand?.transport == .frames {
+            var message = RemoteMessage(type: "input"); message.data = .input(event)
+            signaling?.send(message)
+        } else if let data = try? JSONEncoder().encode(event) {
+            _ = try? peer?.send(data)
+        }
     }
 
     public func input(kind: RemoteInput.Kind, x: Double? = nil, y: Double? = nil, button: Int? = nil,
                       down: Bool? = nil, key: UInt16? = nil, text: String? = nil, deltaX: Double? = nil, deltaY: Double? = nil) {
         guard controlling, let generation else { return }
+        let needsRelativePointer = kind == .relativeMove || ((kind == .button || kind == .scroll) && x == nil && y == nil)
+        guard !needsRelativePointer || relativePointer else { return }
         sequence += 1
         let event = RemoteInput(kind: kind, sequence: sequence, generation: generation, x: x, y: y,
             button: button, down: down, key: key, text: text, deltaX: deltaX, deltaY: deltaY)
@@ -351,6 +373,7 @@ public final class RemoteViewer: ObservableObject {
             try event.validate()
             if hand?.transport == .frames {
                 var message = RemoteMessage(type: "input"); message.data = .input(event); signaling?.send(message)
+            // Relative deltas must not be dropped or reordered with button events.
             } else { try peer?.send(JSONEncoder().encode(event), motion: kind == .move) }
         }
         catch { fail(error) }
@@ -374,7 +397,7 @@ public final class RemoteViewer: ObservableObject {
                 signaling?.send(relay)
             } else if let data = try? JSONEncoder().encode(release) { try? peer?.send(data) }
         }
-        control = RemoteViewerControl(); controlling = false
+        control = RemoteViewerControl(); controlling = false; relativePointer = false
         leaseRenewal?.cancel(); leaseRenewal = nil
         connectionSetup?.cancel(); connectionSetup = nil
         signalQueue?.cancel(); signalQueue = nil
@@ -495,6 +518,7 @@ public final class RemoteViewer: ObservableObject {
             let previous = generation
             let reply = try control.receive(message)
             controlling = generation != nil
+            relativePointer = control.relativePointer
             if let generation, generation != previous {
                 sequence = 0; status = "You’re controlling"
                 leaseRenewal?.cancel()

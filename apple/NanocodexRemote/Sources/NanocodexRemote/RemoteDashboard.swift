@@ -32,6 +32,7 @@ public struct RemoteDashboard: View {
         hands.filter { screenQuery.isEmpty || ($0.machineName + " " + $0.name).localizedCaseInsensitiveContains(screenQuery) }
     }
 #if os(macOS)
+    @StateObject private var fullscreen = RemoteFullscreen()
     @StateObject private var host: RemoteMacHost
     @StateObject private var phoneHost: RemoteMacHost
     private let ownsHosts: Bool
@@ -111,6 +112,9 @@ public struct RemoteDashboard: View {
                     Label(viewer.controlling ? "Controlling" : "View only", systemImage: viewer.controlling ? "cursorarrow" : "eye")
                         .font(.caption).foregroundStyle(viewer.controlling ? Color.accentColor : Color.secondary)
                     Spacer(minLength: 0)
+                    Button { fullscreen.open(viewer: viewer) } label: {
+                        Label("Open full screen", systemImage: "arrow.up.left.and.arrow.down.right")
+                    }.accessibilityIdentifier("remote-open-fullscreen")
                     if viewer.controlling {
                         Button { showKeyboard.toggle() } label: { Image(systemName: "keyboard") }
                             .help("Remote typing controls").accessibilityLabel("Remote keyboard")
@@ -165,24 +169,20 @@ public struct RemoteDashboard: View {
 #endif
             if viewer.hand != nil {
 
-                RemoteCanvas(viewer: viewer).accessibilityIdentifier("remote-canvas")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
 #if os(macOS)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                if fullscreen.isPresented {
+                    VStack(spacing: 12) {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right").font(.title)
+                        Text("Screen open in full screen")
+                        Button("Back to screen pane") { fullscreen.close() }
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityIdentifier("remote-fullscreen-placeholder")
+                } else {
+                    dashboardCanvas
+                }
+#else
+                dashboardCanvas
 #endif
-                    .overlay {
-                        if viewer.connecting { ProgressView().accessibilityLabel(viewer.status).padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) }
-                    }
-                    .overlay {
-                        if !viewer.connected && !viewer.connecting {
-                            VStack(spacing: 10) {
-                                Image(systemName: "display.trianglebadge.exclamationmark").font(.title2)
-                                Text("Screen disconnected").font(.headline)
-                                Button("Reconnect") { Task { await viewer.reconnect() } }
-                                    .accessibilityIdentifier("remote-reconnect")
-                            }.padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-                        }
-                    }
                 HStack {
                     Text(viewer.status).font(.caption).foregroundStyle(.secondary)
                         .accessibilityValue(viewer.diagnosticPresentation)
@@ -374,12 +374,38 @@ public struct RemoteDashboard: View {
 #endif
         }
         .onChange(of: viewer.controlling) { _, controlling in if !controlling { text = ""; showKeyboard = false } }
+#if os(macOS)
+        .onChange(of: viewer.hand?.identity) { _, _ in fullscreen.close() }
+#endif
         .onDisappear {
+#if os(macOS)
+            fullscreen.close()
+#endif
             viewer.close()
 #if os(macOS)
             if ownsHosts { Task { await host.stop(); await phoneHost.stop() } }
 #endif
         }
+    }
+    private var dashboardCanvas: some View {
+        RemoteCanvas(viewer: viewer).accessibilityIdentifier("remote-canvas")
+            .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
+#if os(macOS)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+#endif
+            .overlay {
+                if viewer.connecting { ProgressView().accessibilityLabel(viewer.status).padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) }
+            }
+            .overlay {
+                if !viewer.connected && !viewer.connecting {
+                    VStack(spacing: 10) {
+                        Image(systemName: "display.trianglebadge.exclamationmark").font(.title2)
+                        Text("Screen disconnected").font(.headline)
+                        Button("Reconnect") { Task { await viewer.reconnect() } }
+                            .accessibilityIdentifier("remote-reconnect")
+                    }.padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
     }
     private func screenRow(_ hand: RemoteHand) -> some View {
         Button { Task { await viewer.connect(service: service, hand: hand) } } label: {

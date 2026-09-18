@@ -2,6 +2,28 @@ import XCTest
 @testable import NanocodexRemote
 
 final class RemoteControlExchangeTests: XCTestCase {
+    func testRelativeCapabilityIsScopedToAcceptedLease() throws {
+        var control = RemoteViewerControl()
+        _ = control.acquire()
+        let grant = try JSONDecoder().decode(RemoteControlMessage.self, from: Data(#"{"type":"granted","generation":"g","relativePointer":true}"#.utf8))
+        _ = try control.receive(grant)
+        XCTAssertTrue(control.relativePointer)
+        _ = try control.receive(.init(type: .revoked, generation: "stale"))
+        XCTAssertTrue(control.relativePointer)
+        _ = control.release()
+        XCTAssertFalse(control.relativePointer)
+        _ = try control.receive(.init(type: .revoked))
+        _ = control.acquire()
+        _ = try control.receive(.init(type: .granted, generation: "legacy"))
+        XCTAssertFalse(control.relativePointer)
+        _ = try control.receive(.init(type: .revoked))
+        _ = control.acquire(); _ = control.release()
+        _ = try control.receive(grant)
+        XCTAssertFalse(control.relativePointer, "A cancelled grant must not enable capture")
+        XCTAssertThrowsError(try JSONDecoder().decode(RemoteControlMessage.self, from: Data(#"{"type":"granted","generation":"g","relativePointer":"yes"}"#.utf8)))
+    }
+
+
     // Both existing Linux and native hosts send this acknowledgement without a
     // generation. The ordered reliable channel must finish it before reacquire.
     private func revoked() throws -> RemoteControlMessage {

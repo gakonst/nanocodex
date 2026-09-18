@@ -43,6 +43,34 @@ final class RemoteProtocolTests: XCTestCase {
         XCTAssertThrowsError(try RemoteAgentInput(action: "drag", x: 0, y: 0, endX: .nan, endY: 1).steps(generation: "lease"))
         XCTAssertThrowsError(try RemoteAgentInput(action: "key", key: 40, modifiers: [224, 224]).steps(generation: "lease"))
     }
+    func testRelativePointerCommandsMatchHostContract() throws {
+        let event = RemoteInput(kind: .relativeMove, sequence: 1, generation: "g", deltaX: -12.5, deltaY: 4096)
+        XCTAssertEqual(try RemoteInput.decode(JSONEncoder().encode(event)), event)
+        let changes: [(inout RemoteInput) -> Void] = [
+            { $0.deltaX = 4097 }, { $0.deltaY = .infinity }, { $0.deltaX = .nan },
+            { $0.deltaY = nil }, { $0.x = 0.5 }, { $0.button = 0 }, { $0.down = true },
+            { $0.key = 4 }, { $0.text = "x" }
+        ]
+        for change in changes {
+            var invalid = event; change(&invalid)
+            XCTAssertThrowsError(try invalid.validate())
+        }
+        try RemoteInput(kind: .button, sequence: 2, generation: "g", button: 0, down: true).validate()
+        try RemoteInput(kind: .scroll, sequence: 3, generation: "g", deltaX: 0, deltaY: 2).validate()
+        XCTAssertThrowsError(try RemoteInput(kind: .button, sequence: 2, generation: "g", x: 0.5, button: 0, down: true).validate())
+        XCTAssertThrowsError(try RemoteInput(kind: .scroll, sequence: 3, generation: "g", y: 0.5, deltaX: 0, deltaY: 2).validate())
+    }
+
+    func testRelativeDeltasShareReliableOrderingWithButtons() throws {
+        var lease = RemoteControlLease()
+        try lease.acquire(owner: "a", generation: "g", now: 1)
+        let delta = RemoteInput(kind: .relativeMove, sequence: 2, generation: "g", deltaX: 2, deltaY: -3)
+        XCTAssertTrue(try lease.accept(delta, from: "a", now: 2))
+        XCTAssertFalse(try lease.accept(delta, from: "a", now: 2))
+        XCTAssertTrue(try lease.accept(.init(kind: .button, sequence: 3, generation: "g", button: 0, down: true), from: "a", now: 2))
+        XCTAssertFalse(try lease.accept(.init(kind: .move, sequence: 1, generation: "g", x: 0, y: 0), from: "a", now: 2))
+    }
+
     func testInputRejectsUnboundedAndMixedCommands() throws {
         let valid = RemoteInput(kind: .button, sequence: 1, generation: "lease-1", x: 0.5, y: 1, button: 0, down: true)
         XCTAssertEqual(try RemoteInput.decode(JSONEncoder().encode(valid)), valid)

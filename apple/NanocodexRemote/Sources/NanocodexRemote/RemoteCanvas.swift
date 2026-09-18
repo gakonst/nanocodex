@@ -13,18 +13,32 @@ private func fitted(_ surface: CGSize, in bounds: CGRect) -> CGRect {
 #if os(macOS)
 import AppKit
 
+/// Device-dependent flag bits distinguish a released left modifier while its
+/// right counterpart is still held (the aggregate AppKit flag remains set).
+enum MacCapturedInputPolicy {
+    static func modifierDown(key: UInt16, flags: UInt) -> Bool? {
+        let masks: [UInt16: UInt] = [224: 0x0001, 225: 0x0002, 226: 0x0020, 227: 0x0008,
+                                   228: 0x2000, 229: 0x0004, 230: 0x0040, 231: 0x0010]
+        guard let mask = masks[key] else { return nil }
+        return flags & mask != 0
+    }
+    static func sendsPhysicalDown(isRepeat: Bool, alreadyPressed: Bool) -> Bool { !isRepeat && !alreadyPressed }
+    static func boundedDelta(_ value: Double) -> Double { value.isFinite ? min(4096, max(-4096, value)) : 0 }
+}
+
 public struct RemoteCanvas: NSViewRepresentable {
     @ObservedObject var viewer: RemoteViewer
-    public init(viewer: RemoteViewer) { self.viewer = viewer }
-    public func makeNSView(context: Context) -> MacRemoteViewport { MacRemoteViewport(viewer: viewer) }
-    public func updateNSView(_ view: MacRemoteViewport, context: Context) { view.canvas.update(viewer) }
+    private let capturesInput: Bool
+    public init(viewer: RemoteViewer, capturesInput: Bool = false) { self.viewer = viewer; self.capturesInput = capturesInput }
+    public func makeNSView(context: Context) -> MacRemoteViewport { MacRemoteViewport(viewer: viewer, capturesInput: capturesInput) }
+    public func updateNSView(_ view: MacRemoteViewport, context: Context) { view.canvas.update(viewer, capturesInput: capturesInput) }
     public static func dismantleNSView(_ view: MacRemoteViewport, coordinator: ()) { view.canvas.detach() }
 }
 
 public final class MacRemoteViewport: NSScrollView {
     let canvas: MacRemoteCanvas
-    init(viewer: RemoteViewer) {
-        canvas = MacRemoteCanvas(viewer: viewer)
+    init(viewer: RemoteViewer, capturesInput: Bool = false) {
+        canvas = MacRemoteCanvas(viewer: viewer, capturesInput: capturesInput)
         super.init(frame: .zero)
         drawsBackground = true; backgroundColor = .black
         allowsMagnification = true; minMagnification = 1; maxMagnification = 6
@@ -47,31 +61,139 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient {
     private var track: RTCVideoTrack?
     private var surface = CGSize(width: 16, height: 9)
     private var pressed = Set<UInt16>()
+    private var buttons = Set<Int>()
+    private var capturesInput: Bool
+    private var capturing = false
+    private var relativeMouse = false
+    private var monitor: Any?
+    private var observing = false
     private var marked = NSAttributedString(string: "")
     private var dragging = false
     private var tracking: NSTrackingArea?
     public override var isFlipped: Bool { true }
     public override var acceptsFirstResponder: Bool { viewer?.controlling == true }
-    init(viewer: RemoteViewer) {
-        self.viewer = viewer
+    init(viewer: RemoteViewer, capturesInput: Bool = false) {
+        self.viewer = viewer; self.capturesInput = capturesInput
         super.init(frame: .zero)
         wantsLayer = true; layer?.backgroundColor = NSColor.black.cgColor
         snapshot.imageScaling = .scaleProportionallyUpOrDown
         addSubview(video); addSubview(snapshot); update(viewer)
     }
+    deinit {
+        // AppKit views are owned and destroyed on the main thread. This also
+        // covers callers that do not use NSViewRepresentable's dismantle hook.
+        MainActor.assumeIsolated {
+            stopCapture()
+            NotificationCenter.default.removeObserver(self)
+        }
+    }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    func update(_ viewer: RemoteViewer) {
+    func update(_ viewer: RemoteViewer, capturesInput: Bool? = nil) {
         self.viewer = viewer
+        if let capturesInput { self.capturesInput = capturesInput }
         if let hand = viewer.hand { surface = CGSize(width: hand.width, height: hand.height) }
         if track !== viewer.track { track?.remove(video); track = viewer.track; track?.add(video) }
         video.isHidden = !viewer.connected || track == nil
         snapshot.image = viewer.frame.map { NSImage(cgImage: $0, size: .zero) }
         snapshot.isHidden = !viewer.connected || viewer.frame == nil
-        if !viewer.controlling {
-            pressed.removeAll(); dragging = false; unmarkText()
+        if !viewer.controlling || !viewer.connected {
+            releasePressedInput()
             if window?.firstResponder === self { window?.makeFirstResponder(nil) }
         }
+        refreshCapture()
         needsLayout = true
+    }
+    private var inputEligible: Bool {
+        viewer?.controlling == true && viewer?.connected == true && window?.isKeyWindow == true && NSApp.isActive
+    }
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(self)
+        observing = window != nil
+        if observing {
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+                NotificationCenter.default.addObserver(self, selector: #selector(focusChanged), name: name, object: window)
+            }
+            for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
+                NotificationCenter.default.addObserver(self, selector: #selector(focusChanged), name: name, object: NSApp)
+            }
+        }
+        refreshCapture()
+        if window == nil { releasePressedInput() }
+    }
+    @objc private func focusChanged(_ notification: Notification) {
+        if notification.name == NSWindow.didResignKeyNotification || notification.name == NSApplication.didResignActiveNotification {
+            stopCapture(); releasePressedInput()
+            if capturesInput { viewer?.releaseControl() }
+        } else { refreshCapture() }
+    }
+    private func refreshCapture() {
+        guard capturesInput && inputEligible else { stopCapture(); return }
+        if !capturing {
+            capturing = true; unmarkText()
+            window?.makeFirstResponder(self)
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged, .mouseMoved,
+                .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .leftMouseDown, .leftMouseUp,
+                .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp, .scrollWheel]) { [weak self] event in
+                guard let self else { return event }
+                return self.handleCapturedEvent(event)
+            }
+        }
+        if viewer?.relativePointer == true && !relativeMouse {
+            if CGAssociateMouseAndMouseCursorPosition(0) == .success {
+                relativeMouse = true; NSCursor.hide()
+                viewer?.input(kind: .relativeMove, deltaX: 0, deltaY: 0)
+            }
+        } else if viewer?.relativePointer != true { restorePointer() }
+    }
+    var isCapturingInput: Bool { capturing }
+    var isRelativePointerCaptured: Bool { relativeMouse }
+    /// Called by the local monitor before NSApplication dispatches menu shortcuts.
+    func handleCapturedEvent(_ event: NSEvent) -> NSEvent? {
+        guard capturing else { return event }
+        guard inputEligible else { stopCapture(); return event }
+        // Keep system process switching and Force Quit available locally.
+        if event.type == .keyDown && event.modifierFlags.contains(.command) &&
+            (event.keyCode == 48 || (event.keyCode == 53 && event.modifierFlags.contains(.option))) {
+            stopCapture(); viewer?.releaseControl()
+            return event
+        }
+        switch event.type {
+        case .keyDown:
+            if event.keyCode == 53 && event.modifierFlags.contains([.command, .shift]) {
+                stopCapture(); viewer?.releaseControl()
+            } else { keyDown(with: event) }
+        case .keyUp: keyUp(with: event)
+        case .flagsChanged: flagsChanged(with: event)
+        default:
+            guard relativeMouse else { return event }
+            switch event.type {
+            case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged: mouseMoved(with: event)
+            case .leftMouseDown: button(event, down: true, button: 0)
+            case .leftMouseUp: button(event, down: false, button: 0)
+            case .rightMouseDown: button(event, down: true, button: 1)
+            case .rightMouseUp: button(event, down: false, button: 1)
+            case .otherMouseDown, .otherMouseUp:
+                if event.buttonNumber == 2 { button(event, down: event.type == .otherMouseDown, button: 2) }
+            case .scrollWheel: scrollWheel(with: event)
+            default: return event
+            }
+        }
+        return nil
+    }
+    private func restorePointer() {
+        guard relativeMouse else { return }
+        CGAssociateMouseAndMouseCursorPosition(1)
+        NSCursor.unhide(); relativeMouse = false
+    }
+    private func stopCapture() {
+        if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+        if capturing { releasePressedInput() }
+        capturing = false; restorePointer()
+    }
+    private func releasePressedInput() {
+        viewer?.releasePressedInput()
+        pressed.removeAll(); buttons.removeAll(); dragging = false; unmarkText()
     }
     public override func layout() { super.layout(); video.frame = fitted(surface, in: bounds); snapshot.frame = video.frame }
     public override func updateTrackingAreas() {
@@ -85,9 +207,12 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient {
         return CGPoint(x: min(1, max(0, (point.x - rect.minX) / rect.width)), y: min(1, max(0, (point.y - rect.minY) / rect.height)))
     }
     private func button(_ event: NSEvent, down: Bool, button: Int) {
-        guard viewer?.controlling == true, let point = point(event, clamp: !down && dragging) else { return }
-        if down { window?.makeFirstResponder(self) }; dragging = down
-        viewer?.input(kind: .button, x: point.x, y: point.y, button: button, down: down)
+        guard inputEligible else { return }
+        let position = relativeMouse ? nil : point(event, clamp: !down && dragging)
+        guard relativeMouse || position != nil else { return }
+        if down { window?.makeFirstResponder(self); buttons.insert(button) } else { buttons.remove(button) }
+        dragging = !buttons.isEmpty
+        viewer?.input(kind: .button, x: position.map { Double($0.x) }, y: position.map { Double($0.y) }, button: button, down: down)
     }
     public override func mouseDown(with event: NSEvent) { button(event, down: true, button: 0) }
     public override func mouseUp(with event: NSEvent) { button(event, down: false, button: 0) }
@@ -96,6 +221,11 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient {
     public override func otherMouseDown(with event: NSEvent) { if event.buttonNumber == 2 { button(event, down: true, button: 2) } }
     public override func otherMouseUp(with event: NSEvent) { if event.buttonNumber == 2 { button(event, down: false, button: 2) } }
     public override func mouseMoved(with event: NSEvent) {
+        guard inputEligible else { return }
+        if relativeMouse {
+            viewer?.input(kind: .relativeMove, deltaX: MacCapturedInputPolicy.boundedDelta(event.deltaX), deltaY: MacCapturedInputPolicy.boundedDelta(event.deltaY))
+            return
+        }
         guard let point = point(event, clamp: dragging) else { return }
         viewer?.input(kind: .move, x: point.x, y: point.y)
     }
@@ -103,23 +233,25 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient {
     public override func rightMouseDragged(with event: NSEvent) { mouseMoved(with: event) }
     public override func otherMouseDragged(with event: NSEvent) { mouseMoved(with: event) }
     public override func scrollWheel(with event: NSEvent) {
-        guard viewer?.controlling == true else { super.scrollWheel(with: event); return }
-        guard let point = point(event) else { return }
+        guard inputEligible else { super.scrollWheel(with: event); return }
+        let point = relativeMouse ? nil : point(event)
+        guard relativeMouse || point != nil else { return }
         let scale: Double = event.hasPreciseScrollingDeltas ? 1 : 20
-        viewer?.input(kind: .scroll, x: point.x, y: point.y,
+        viewer?.input(kind: .scroll, x: point.map { Double($0.x) }, y: point.map { Double($0.y) },
             deltaX: min(4096, max(-4096, event.scrollingDeltaX * scale)), deltaY: min(4096, max(-4096, event.scrollingDeltaY * scale)))
     }
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard window?.firstResponder === self, viewer?.controlling == true else { return false }
-        if event.keyCode == 53, event.modifierFlags.contains([.command, .shift]) { viewer?.releaseControl(); return true }
+        if event.keyCode == 53, event.modifierFlags.contains([.command, .shift]) { stopCapture(); releasePressedInput(); viewer?.releaseControl(); return true }
         keyDown(with: event); return true
     }
     public override func keyDown(with event: NSEvent) {
-        guard viewer?.controlling == true else { return }
-        if viewer?.hand?.kind != .vm, event.modifierFlags.intersection([.command, .control]).isEmpty,
+        guard inputEligible else { return }
+        if !capturing, viewer?.hand?.kind != .vm, event.modifierFlags.intersection([.command, .control]).isEmpty,
            let characters = event.characters, characters.unicodeScalars.allSatisfy({ $0.value >= 32 && $0.value < 0xF700 }) {
             interpretKeyEvents([event])
         } else if let key = RemoteKey.macToHID[event.keyCode] {
+            if capturing && !MacCapturedInputPolicy.sendsPhysicalDown(isRepeat: event.isARepeat, alreadyPressed: pressed.contains(key)) { return }
             pressed.insert(key); viewer?.input(kind: .key, down: true, key: key)
         }
     }
@@ -127,23 +259,22 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient {
         if let key = RemoteKey.macToHID[event.keyCode], pressed.remove(key) != nil { viewer?.input(kind: .key, down: false, key: key) }
     }
     public override func flagsChanged(with event: NSEvent) {
-        guard let key = RemoteKey.macToHID[event.keyCode] else { return }
-        let flag: NSEvent.ModifierFlags = [224:.control, 225:.shift, 226:.option, 227:.command, 228:.control, 229:.shift, 230:.option, 231:.command][key] ?? []
-        guard !flag.isEmpty else { return }
-        let down = event.modifierFlags.contains(flag) && !pressed.contains(key)
+        guard inputEligible, let key = RemoteKey.macToHID[event.keyCode],
+              let down = MacCapturedInputPolicy.modifierDown(key: key, flags: event.modifierFlags.rawValue) else { return }
+        guard down != pressed.contains(key) else { return }
         if down { pressed.insert(key) } else { pressed.remove(key) }
         viewer?.input(kind: .key, down: down, key: key)
     }
     public override func resignFirstResponder() -> Bool {
-        viewer?.input(kind: .releaseAll); pressed.removeAll(); dragging = false; unmarkText()
+        stopCapture(); releasePressedInput()
         return super.resignFirstResponder()
     }
     // SwiftUI dismantles this view while invalidating its graph. Session state
     // belongs to RemoteDashboard.onDisappear; publishing here can crash it.
-    func detach() { viewer = nil; track?.remove(video); track = nil; video.isHidden = true; snapshot.image = nil; snapshot.isHidden = true }
+    func detach() { stopCapture(); releasePressedInput(); NotificationCenter.default.removeObserver(self); observing = false; viewer = nil; track?.remove(video); track = nil; video.isHidden = true; snapshot.image = nil; snapshot.isHidden = true }
     public func insertText(_ string: Any, replacementRange: NSRange) {
         let text = (string as? NSAttributedString)?.string ?? (string as? String ?? "")
-        if !text.isEmpty, text.utf8.count <= 4096 { viewer?.input(kind: .text, text: text) }; unmarkText()
+        if !capturing, inputEligible, !text.isEmpty, text.utf8.count <= 4096 { viewer?.input(kind: .text, text: text) }; unmarkText()
     }
     public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         marked = (string as? NSAttributedString) ?? NSAttributedString(string: string as? String ?? "")

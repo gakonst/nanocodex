@@ -449,6 +449,157 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(model.activeTab?.draft, draft)
     }
 
+    /// Start the local fixture with NANOCODEX_REMOTE_CAPTURE_FIXTURE=1 and
+    /// pass the same environment variable to this hosted test. No account is used.
+    @MainActor
+    func testNativeRemoteFullscreenCapture() async throws {
+        guard ProcessInfo.processInfo.environment["NANOCODEX_REMOTE_CAPTURE_FIXTURE"] == "1" else {
+            throw XCTSkip("Start remote-screen.mjs with NANOCODEX_REMOTE_CAPTURE_FIXTURE=1")
+        }
+        let origin = try XCTUnwrap(URL(string: "http://127.0.0.1:18965"))
+        func fixtureEvents() async throws -> JSONValue {
+            let (data, response) = try await URLSession.shared.data(from: origin.appendingPathComponent("fixture-events"))
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+            return try JSONDecoder().decode(JSONValue.self, from: data)
+        }
+        let initial = try await fixtureEvents()
+        guard case .number(let initialConnections) = initial["connections"] else {
+            return XCTFail("Fixture must also run with NANOCODEX_REMOTE_CAPTURE_FIXTURE=1")
+        }
+        let service = try RemoteService(origin: origin) { _ in }
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-native-capture-test", remoteService: service)
+        model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
+        model.runtime.requestOverride = { _, _ in .null }
+        model.tabs = [WorkspaceTab(title: "Native capture", draft: "Preserve this conversation")]
+        model.activeTabID = model.tabs[0].id; model.showingScreens = true
+        let content = NSHostingView(rootView: ContentView().environmentObject(model)
+            .environment(\.scenePhase, .active).environment(\.colorScheme, .dark).frame(width: 1280, height: 800))
+        content.sizingOptions = []
+        let window = EvidenceWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 800),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = content
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        var fullscreen: NSWindow?
+        defer { fullscreen?.close(); model.shutdown(); window.close() }
+        func attribute(_ value: NSObject, _ name: String) -> Any? {
+            let selector = NSSelectorFromString(name)
+            guard value.responds(to: selector) else { return nil }
+            return value.perform(selector)?.takeUnretainedValue()
+        }
+        func find(_ value: Any, _ id: String) -> NSObject? {
+            var visited = Set<ObjectIdentifier>()
+            func visit(_ value: Any) -> NSObject? {
+                guard let element = value as? NSObject, visited.insert(ObjectIdentifier(element)).inserted else { return nil }
+                if attribute(element, "accessibilityIdentifier") as? String == id { return element }
+                for child in (attribute(element, "accessibilityChildren") as? [Any]) ?? [] {
+                    if let found = visit(child) { return found }
+                }
+                for child in (element as? NSView)?.subviews ?? [] {
+                    if let found = visit(child) { return found }
+                }
+                return nil
+            }
+            return visit(value)
+        }
+        func wait(_ description: String, _ condition: () -> Bool) async throws {
+            let deadline = Date().addingTimeInterval(10)
+            while !condition() {
+                guard Date() < deadline else { throw RuntimeFailure(message: "Timed out: " + description) }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+        }
+        func press(_ root: Any, _ id: String) throws {
+            let element = try XCTUnwrap(find(root, id), id)
+            let selector = NSSelectorFromString("accessibilityPerformPress")
+            XCTAssertTrue(element.responds(to: selector))
+            typealias Press = @convention(c) (AnyObject, Selector) -> Bool
+            let action = unsafeBitCast(element.method(for: selector), to: Press.self)
+            XCTAssertTrue(action(element, selector), id)
+        }
+        func canvas(_ view: NSView) -> MacRemoteCanvas? {
+            if let value = view as? MacRemoteCanvas { return value }
+            return view.subviews.lazy.compactMap { canvas($0) }.first
+        }
+        try await wait("local screen listing") { find(content, "remote-screen:fixture:desktop") != nil }
+        try press(content, "remote-screen:fixture:desktop")
+        try await wait("decoded dashboard frame") {
+            canvas(content)?.subviews.contains { ($0 as? NSImageView)?.image != nil } == true
+        }
+        try press(content, "remote-open-fullscreen")
+        try await wait("native fullscreen window") {
+            fullscreen = NSApp.windows.first { $0 !== window && $0.isVisible && find($0, "remote-fullscreen-take-control") != nil }
+            return fullscreen?.styleMask.contains(.fullScreen) == true && fullscreen?.isKeyWindow == true
+        }
+        let remoteWindow = try XCTUnwrap(fullscreen)
+        try press(remoteWindow, "remote-fullscreen-take-control")
+        try await wait("control grant and canvas focus") {
+            find(remoteWindow, "remote-fullscreen-take-control") == nil && remoteWindow.firstResponder is MacRemoteCanvas
+        }
+        func key(_ type: NSEvent.EventType, _ code: UInt16, _ characters: String, _ flags: NSEvent.ModifierFlags = []) throws {
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags,
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: remoteWindow.windowNumber,
+                context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code))
+            NSApp.sendEvent(event)
+        }
+        for (code, character, flags) in [(UInt16(53), "\u{1b}", NSEvent.ModifierFlags()),
+                                          (12, "q", .command), (13, "w", .command), (13, "w", [])] {
+            if flags.contains(.command) { try key(.flagsChanged, 55, "", NSEvent.ModifierFlags(rawValue: NSEvent.ModifierFlags.command.rawValue | 0x8)) }
+            try key(.keyDown, code, character, flags)
+            try key(.keyUp, code, character, flags)
+            if flags.contains(.command) { try key(.flagsChanged, 55, "") }
+            XCTAssertTrue(remoteWindow.isVisible, "Captured Escape and Command shortcuts must leave the window open")
+            XCTAssertTrue(window.isVisible, "The conversation window survives captured Command-Q/W")
+        }
+        let motion = try XCTUnwrap(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+            mouseCursorPosition: .zero, mouseButton: .left))
+        motion.setIntegerValueField(.mouseEventDeltaX, value: 17)
+        motion.setIntegerValueField(.mouseEventDeltaY, value: -9)
+        NSApp.sendEvent(try XCTUnwrap(NSEvent(cgEvent: motion)))
+        // Leave W held: the local escape chord must flush remote state before releasing the lease.
+        try key(.keyDown, 13, "w")
+        try key(.keyDown, 53, "\u{1b}", [.command, .shift])
+        try await wait("local release chord") { find(remoteWindow, "remote-fullscreen-take-control") != nil }
+        var recorded = try await fixtureEvents()
+        for _ in 0..<100 {
+            if recorded["events"].array.dropFirst(initial["events"].array.count).contains(where: { $0["type"].string == "control" && $0["data"]["type"].string == "release" }) { break }
+            try await Task.sleep(for: .milliseconds(50)); recorded = try await fixtureEvents()
+        }
+        let events = Array(recorded["events"].array.dropFirst(initial["events"].array.count))
+        let keys = events.filter { $0["type"].string == "input" && $0["data"]["kind"].string == "key" }
+        // USB HID: Escape 41, Q 20, W 26. Two W pairs include Command-W and physical W.
+        for (hid, count) in [(41, 1), (20, 1), (26, 2), (227, 2)] {
+            for down in [true, false] {
+                XCTAssertEqual(keys.filter { $0["data"]["key"] == .number(Double(hid)) && $0["data"]["down"] == .bool(down) }.count, count + (hid == 26 && down ? 1 : 0),
+                    "Fixture must receive each physical key edge, with the release chord kept local")
+            }
+        }
+        XCTAssertTrue(events.contains { $0["type"].string == "control" && $0["data"]["type"].string == "release" })
+        XCTAssertTrue(events.contains { $0["type"].string == "input" && $0["data"]["kind"].string == "relativeMove"
+            && $0["data"]["deltaX"] == .number(17) && $0["data"]["deltaY"] == .number(-9) })
+        let releaseIndex = try XCTUnwrap(events.firstIndex { $0["type"].string == "control" && $0["data"]["type"].string == "release" })
+        let heldWIndex = try XCTUnwrap(events.lastIndex { $0["type"].string == "input" && $0["data"]["key"] == .number(26) && $0["data"]["down"] == .bool(true) })
+        XCTAssertTrue(events.enumerated().contains { index, event in index > heldWIndex && index < releaseIndex && event["type"].string == "input" && event["data"]["kind"].string == "releaseAll" },
+            "Held W must be released before relinquishing the control lease")
+        XCTAssertFalse(events.contains { $0["type"].string == "input" && $0["data"]["kind"].string == "text" })
+        let evidence = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        let remoteContent = try XCTUnwrap(remoteWindow.contentView)
+        remoteContent.layoutSubtreeIfNeeded(); remoteContent.displayIfNeeded()
+        let bitmap = try XCTUnwrap(remoteContent.bitmapImageRepForCachingDisplay(in: remoteContent.bounds))
+        remoteContent.cacheDisplay(in: remoteContent.bounds, to: bitmap)
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: evidence.appendingPathComponent("native-remote-fullscreen.png"))
+        try press(remoteWindow, "remote-fullscreen-close")
+        try await wait("return to connected pane") {
+            !remoteWindow.isVisible && canvas(content)?.subviews.contains { ($0 as? NSImageView)?.image != nil } == true
+        }
+        let final = try await fixtureEvents()
+        XCTAssertEqual(final["connections"], .number(initialConnections + 1), "The entire pane/fullscreen journey opens one connection")
+        XCTAssertEqual(final["connections"], recorded["connections"], "Fullscreen return reuses the existing transport")
+        XCTAssertEqual(model.activeTab?.draft, "Preserve this conversation")
+        try JSONEncoder().encode(final).write(to: evidence.appendingPathComponent("native-remote-fullscreen-events.json"))
+    }
+
     func testStreamedAnswerSurvivesInterleavedEventsAndFinalization() throws {
         func output(_ cursor: String, _ type: String, _ text: String, agent: String? = nil) -> ManagedEvent {
             var data: [String: JSONValue] = ["type": .string("event"), "event": .object([

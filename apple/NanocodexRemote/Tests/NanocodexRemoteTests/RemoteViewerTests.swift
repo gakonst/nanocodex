@@ -140,6 +140,56 @@ final class RemoteViewerTests: XCTestCase {
         withExtendedLifetime(observer) {}
     }
 
+#if os(macOS)
+    @MainActor func testControllingCanvasTeardownReleasesInputWithoutPublishing() async throws {
+        let service = try service { _ in XCTFail("Frame transport must not fetch ICE") }
+        defer { service.close() }
+        var catalog = surface("cleanup")
+        catalog["transport"] = "frames-v1"
+        let hand = try JSONDecoder().decode(RemoteHand.self, from: JSONSerialization.data(withJSONObject: catalog))
+        let socket = ViewerSocket()
+        socket.onConnect = { socket.onMessage(.init(type: "ready")) }
+        let viewer = RemoteViewer(); viewer.makeSignaling = { _ in socket }
+        defer { viewer.close() }
+        await viewer.connect(service: service, hand: hand)
+        let context = try XCTUnwrap(CGContext(data: nil, width: 3, height: 2, bitsPerComponent: 8,
+            bytesPerRow: 12, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        let bytes = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(bytes, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        var frame = RemoteMessage(type: "frame")
+        frame.jpeg = (bytes as Data).base64EncodedString(); frame.width = 3; frame.height = 2
+        socket.onMessage(frame)
+        XCTAssertTrue(viewer.connected)
+        viewer.takeControl()
+        var grant = RemoteMessage(type: "control")
+        grant.data = .control(.init(type: .granted, generation: "held", relativePointer: true))
+        socket.onMessage(grant)
+        XCTAssertTrue(viewer.controlling)
+        XCTAssertTrue(viewer.relativePointer)
+#if os(macOS)
+        let canvas = MacRemoteCanvas(viewer: viewer)
+#else
+        let canvas = TouchRemoteCanvas(viewer: viewer)
+#endif
+        viewer.input(kind: .key, down: true, key: 4)
+        var changes = 0
+        let observer = viewer.objectWillChange.sink { changes += 1 }
+        canvas.detach()
+        XCTAssertEqual(changes, 0)
+        XCTAssertTrue(viewer.controlling, "Input cleanup must preserve the lease")
+        XCTAssertTrue(viewer.relativePointer)
+        let message = try XCTUnwrap(socket.messages.last)
+        XCTAssertEqual(message.type, "input")
+        guard case .input(let event) = message.data else { return XCTFail("Missing cleanup input") }
+        XCTAssertEqual(event.kind, .releaseAll)
+        XCTAssertEqual(event.generation, "held")
+        XCTAssertEqual(event.sequence, 2)
+        withExtendedLifetime(observer) {}
+    }
+#endif
+
     override func tearDown() {
         RemoteHTTPFixture.lock.withLock { RemoteHTTPFixture.handler = nil }
         super.tearDown()

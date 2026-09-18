@@ -72,7 +72,22 @@ The **Screens** button beside the tabs (or **Hands → Remote Screens**) opens t
 shared native viewer as a resizable pane beside the conversation. The split
 divider adjusts the workspace and screen widths. Agent tabs, history, and the
 composer remain usable while viewing, and switching tabs retains the screen.
-The pane's **×** closes the viewer. Mac/iPhone publishing controls are under
+The pane's **×** closes the viewer. **Open full screen** opens the selected screen in a
+separate native window using the same connection. Choose **Take control** there
+to send physical key presses, including Escape, Command-Q, and Command-W, to
+the remote computer. **Command-Shift-Escape** releases control and reveals the
+local controls. Command-Tab remains a local escape and releases remote control
+when the app loses focus. Closing the window returns the screen to the pane.
+
+On hosts advertising relative-pointer support, captured mode hides the local
+cursor and sends mouse deltas so game cameras can turn continuously. Older
+hosts retain absolute-pointer control. The embedded pane retains text input and
+IME composition; captured mode sends physical keys for held-key game controls.
+Focus loss, disconnection, and window teardown restore the local cursor and
+release remote input. After reconnecting, control must be explicitly acquired
+again.
+
+ Mac/iPhone publishing controls are under
 **Share a screen**, and app-owned sharing continues when the viewer closes. Desktop-enabled
 factory VMs appear automatically once their publisher connects. The same screens
 are available from the iPhone/iPad inbox and conversations. Mac screen sharing
@@ -493,3 +508,18 @@ Shared Markdown parsing uses a background actor and bounded cache, coalescing
 streaming updates for 32 ms. Only current, uncancelled parses publish blocks.
 AppKit, SwiftUI rendering, input routing, and observable state commits remain on
 macOS's main actor.
+
+### Native remote capture check
+
+Run the local screen fixture with `NANOCODEX_REMOTE_CAPTURE_FIXTURE=1 node
+apple/NanocodexInboxUITests/fixtures/remote-screen.mjs`, then run the hosted test:
+
+```sh
+TEST_RUNNER_NANOCODEX_REMOTE_CAPTURE_FIXTURE=1 xcodebuild -project macos/Nanocodex.xcodeproj -scheme Nanocodex -configuration Debug -destination 'platform=macOS,arch=arm64' -derivedDataPath macos/build -only-testing:NanocodexTests/ProtocolTests/testNativeRemoteFullscreenCapture -parallel-testing-enabled NO test
+```
+
+This uses a disposable local screen without account credentials. It opens a native
+fullscreen Space and checks the app event loop, remote key and mouse events, release
+chord, and return to the existing pane without reconnecting. Evidence is written to
+`macos/build/evidence/native-remote-fullscreen.png` and
+`native-remote-fullscreen-events.json`.
