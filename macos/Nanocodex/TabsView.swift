@@ -126,7 +126,19 @@ struct WorkspaceToolbar: ToolbarContent {
             Button("Forward", systemImage: "chevron.right") { model.navigateHistory(back: false) }
                 .disabled(!canGoForward).help("Forward (⌘])").accessibilityIdentifier("conversation-forward")
         }
+        ToolbarItem(placement: .navigation) {
+            Button { Task { await model.openMainThread() } } label: {
+                Label(model.openingMainThread ? "Opening Main Thread…" : "Main Thread", systemImage: "house")
+                    .labelStyle(.titleAndIcon)
+            }
+            .disabled(!model.state.connected || model.openingMainThread)
+            .help("Open your durable Main Thread")
+            .accessibilityIdentifier("open-main-thread")
+        }
         ToolbarItemGroup(placement: .primaryAction) {
+            Button("Projects", systemImage: "folder") { model.showingProjects = true }
+                .disabled(!model.state.connected)
+                .help("Open a project coordinator").accessibilityIdentifier("open-projects")
             Button("Search conversations", systemImage: "magnifyingglass") { model.showingSearch = true }
                 .help("Search conversations (⌘K)").accessibilityIdentifier("search-threads")
             Button("New conversation", systemImage: "square.and.pencil") { model.newTab() }
@@ -362,5 +374,41 @@ struct ThreadSearchView: View {
         guard !filtered.isEmpty else { return }
         let index = filtered.firstIndex { $0.id == selectedID } ?? 0
         selectedID = filtered[min(filtered.count - 1, max(0, index + offset))].id
+    }
+}
+
+/// A project coordinator opens in the same workspace as every other durable agent.
+struct ProjectsView: View {
+    @EnvironmentObject private var model: AppModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Projects").font(.title2).bold()
+                Spacer()
+                Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refreshProjects() } }
+                    .disabled(model.loadingProjects)
+                Button("Done") { model.showingProjects = false }.keyboardShortcut(.cancelAction)
+            }
+            if model.loadingProjects { ProgressView("Loading projects…") }
+            if let error = model.projectsError {
+                Text(error).foregroundStyle(.red).textSelection(.enabled)
+            } else if !model.loadingProjects && model.projects.isEmpty {
+                ContentUnavailableView("No projects yet", systemImage: "folder", description: Text("Projects created with Main Thread appear here."))
+            }
+            List(model.projects) { project in
+                Button { model.openProject(project) } label: {
+                    HStack {
+                        Label(project.name, systemImage: "folder")
+                        Spacer()
+                        Text(project.coordinator_agent_id == nil ? "No coordinator" : "Open coordinator")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }.contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                    .disabled(project.coordinator_agent_id?.isEmpty != false)
+                    .accessibilityIdentifier("project-\(project.id)")
+            }
+        }.padding(20).frame(width: 480, height: 400)
+            .task { await model.refreshProjects() }
+            .accessibilityIdentifier("projects-picker")
     }
 }

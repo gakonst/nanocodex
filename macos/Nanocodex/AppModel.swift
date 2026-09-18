@@ -79,6 +79,11 @@ final class AppModel: ObservableObject {
     @Published var isStarting = true
     @Published var error: String?
     @Published var showingSettings = false
+    @Published var showingProjects = false
+    @Published private(set) var openingMainThread = false
+    @Published private(set) var loadingProjects = false
+    @Published private(set) var projects: [DesktopProject] = []
+    @Published private(set) var projectsError: String?
     @Published var showingSearch = false
     @Published var showingTabOverview = false
     @Published private(set) var backTabs: [String] = []
@@ -612,6 +617,44 @@ final class AppModel: ObservableObject {
         if beside { openBeside(tab.id) } else { selectWorkspace(PaneNode(id: tab.id)); requestEditorFocus(tab.id) }
         showingPanePicker = false; persistLayout()
     }
+    func openMainThread() async {
+        guard !openingMainThread, state.connected else { return }
+        let accountGeneration = generation
+        openingMainThread = true
+        defer { if accountGeneration == generation { openingMainThread = false } }
+        do {
+            let thread: AgentThread = try await runtime.call("openMainThread")
+            guard accountGeneration == generation else { return }
+            open(thread)
+            requestEditorFocus(activeTabID)
+        } catch {
+            guard accountGeneration == generation else { return }
+            self.error = "Could not open Main Thread: \(error.localizedDescription)"
+        }
+    }
+
+    func refreshProjects() async {
+        guard !loadingProjects, state.connected else { return }
+        let accountGeneration = generation
+        loadingProjects = true; projectsError = nil
+        defer { if accountGeneration == generation { loadingProjects = false } }
+        do {
+            let result: DesktopProjectList = try await runtime.call("listProjects")
+            guard accountGeneration == generation else { return }
+            projects = result.data
+        } catch {
+            guard accountGeneration == generation else { return }
+            projectsError = error.localizedDescription
+        }
+    }
+
+    func openProject(_ project: DesktopProject) {
+        guard let id = project.coordinator_agent_id, !id.isEmpty else { return }
+        open(AgentThread(id: id, title: project.name, updatedAt: 0, turnCount: 0))
+        showingProjects = false
+        requestEditorFocus(activeTabID)
+    }
+
     func open(_ thread: AgentThread) {
         if let tab = tabs.first(where: { $0.threadId == thread.id }) { selectWorkspace(browserTabs.first { $0.leaves.contains(tab.id) } ?? PaneNode(id: tab.id)); select(tab.id) }
         else { let tab = WorkspaceTab(threadId: thread.id); tabs.append(tab); selectWorkspace(PaneNode(id: tab.id)) }
@@ -1032,6 +1075,7 @@ final class AppModel: ObservableObject {
         catch { self.error = error.localizedDescription }
     }
     private func resetAccount() {
+        openingMainThread = false; loadingProjects = false; projects = []; projectsError = nil; showingProjects = false
         voice.stop(); voice.clearHistory(); preparingVoiceTabID = nil
         accountHandDiscovery?.cancel(); accountHandDiscovery = nil
         defaultHandConnection?.cancel(); defaultHandConnection = nil
