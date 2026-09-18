@@ -71,3 +71,18 @@ The first slice supports text follow-ups and stopping a turn. Multi-agent projec
 ## Validation
 
 Run `swift test --package-path apple/InboxCore` and `swift test --package-path apple/NanocodexChat` from the repository root. Tests exercise project boundaries, grant routes, state/history races, stream cursors, explicit retry identity and outgoing composer bindings. The mobile drawer consumes the shared roster/list primitive; its existing simulator tests cover switching and independent drafts.
+
+## Runnable gallery and visual evidence
+
+Launch a Debug build of the iOS app with `--component-gallery` to run
+[`Examples/ProjectConversationGallery.swift`](Examples/ProjectConversationGallery.swift).
+It uses the public component API and a fixture transport, with a picker between
+bare SwiftUI content and an illustrative DJ Booth-style theme. Switching
+presentation retains the same store. The gallery can show independent drafts,
+older/latest paging, interrupted-send retry, completed replies and stopping a turn.
+It performs no login or live API calls and is excluded from Release builds.
+
+`ComponentGalleryUITests` exercises and captures both presentations and the
+recovery controls. [Visual evidence](../../docs/screenshots/project-conversation-components/README.md)
+links the screenshots and walkthroughs. The themed gallery is a consumer example;
+DJ Booth's actual application integration remains separate.
