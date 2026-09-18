@@ -22,6 +22,8 @@ it('executes Main routing, a persistent child, and both internal outcome turns t
   const calls = new Map<string, unknown[]>();
   let coordinatorId: string | undefined;
   let childId: string | undefined;
+  let revoked = false;
+  const probes = new Map<string, { name: string; args: Record<string, string>; issued: boolean }>();
   let offset = 0;
   const realNow = Date.now.bind(Date);
   const clock = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + offset);
@@ -39,12 +41,16 @@ it('executes Main routing, a persistent child, and both internal outcome turns t
       const args = name === 'route_project'
         ? { project_id: 'runtime', name: 'Runtime project', id: 'route', input: 'Delegate the fixture task to a persistent child.' }
         : { id: 'child', title: 'Runtime child', input: 'Complete the fixture task and report evidence.' };
-      const output = first && name ? [{ type: 'function_call', call_id: `call-${this.id}`, name, arguments: JSON.stringify(args) }]
+      const probe = probes.get(this.id);
+      const probeCall = probe && !probe.issued;
+      if (probeCall) probe.issued = true;
+      const output = probeCall ? [{ type: 'function_call', call_id: `probe-${probe.name}`, name: probe.name, arguments: JSON.stringify(probe.args) }]
+        : first && name ? [{ type: 'function_call', call_id: `call-${this.id}`, name, arguments: JSON.stringify(args) }]
         : [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text:
           this.id === mainId ? 'Main processed the outcome.' : this.id === coordinatorId ? 'Coordinator processed the outcome.' : 'Child completed with actual runtime evidence.' }] }];
       queueMicrotask(() => this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({
         type: 'response.completed', response: { id: `response-${this.id}-${history.length}`, status: 'completed',
-          end_turn: !(first && name), output, usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 } },
+          end_turn: !(probeCall || (first && name)), output, usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 } },
       }) })));
     }
   }
@@ -62,7 +68,7 @@ it('executes Main routing, a persistent child, and both internal outcome turns t
         NANOCODEX_USERS: users,
         MANAGED_BROWSER_PROVIDER: 'cloudflare', LOADER: {}, BROWSER: {},
         NANOCODEX_ORGANIZATIONS: { getByName: () => ({ fetch: async () => Response.json({ organizationId: organization,
-          teamId: team, role: 'owner', authorizationEpoch: 2, capabilities }) }) },
+          teamId: team, role: 'owner', authorizationEpoch: revoked ? 3 : 2, capabilities }) }) },
         NANOCODEX_SESSIONS: { idFromName: (name: string) => base.NANOCODEX_SESSIONS.idFromName(name), getByName: (target: string) => new Proxy({}, { get: (_object, key) => async (...args: unknown[]) => {
           await install(target);
           const stub = base.NANOCODEX_SESSIONS.getByName(target);
@@ -153,6 +159,37 @@ it('executes Main routing, a persistent child, and both internal outcome turns t
     expect(calls.get(mainId)!.length).toBeGreaterThanOrEqual(3);
     expect(calls.get(coordinatorId!)!.length).toBeGreaterThanOrEqual(3);
     expect(calls.get(childId!)).toHaveLength(1);
+    // Revoke authoritative membership epoch while both cached sessions stay at 2.
+    // The existing turn runtime must reject live reads before returning metadata.
+    revoked = true;
+    for (const [agentId, name, args] of [
+      [mainId, 'list_projects', {}],
+      [mainId, 'read_project', { project_id: 'runtime', turn_id: 'main-route:route' }],
+      [coordinatorId!, 'list_project_threads', {}],
+      [coordinatorId!, 'read_project_thread', { agent_id: childId!, turn_id: 'project:child' }],
+    ] as const) {
+      probes.set(agentId, { name, args, issued: false });
+      await runInDurableObject(base.NANOCODEX_SESSIONS.getByName(agentId), async (session) => {
+        const response = await session.fetch(new Request('https://session.internal/turns', { method: 'POST', headers: {
+          'x-nanocodex-owner-id': owner, 'x-nanocodex-session-organization-id': organization,
+          'x-nanocodex-session-team-id': team, 'x-nanocodex-authorization-epoch': '2',
+          'x-nanocodex-capabilities': JSON.stringify(capabilities),
+        }, body: JSON.stringify({ id: `probe-${name}`, input: `Probe ${name} with retained stale authority.` }) }));
+        expect(response.status).toBe(202);
+      });
+      await expect.poll(async () => (await rows(agentId)).find(row => row.id === `probe-${name}`)?.state,
+        { timeout: 10_000, interval: 50 }).toBe('completed');
+      const outputs = (calls.get(agentId) ?? []).flatMap(request =>
+        (request as { input?: Array<{ type: string; call_id?: string; output?: string }> }).input ?? [])
+        .filter(item => item.type === 'function_call_output' && item.call_id === `probe-${name}`);
+      expect(outputs.length).toBeGreaterThan(0);
+      for (const output of outputs) {
+        expect(output.output).toContain('project account authority was revoked');
+        expect(output.output).not.toContain('Child completed with actual runtime evidence.');
+        expect(output.output).not.toContain('Runtime project');
+      }
+    }
+
   } finally {
     for (const id of installed) await runInDurableObject(base.NANOCODEX_SESSIONS.getByName(id), async (_session, state) => {
       // Fixture cleanup only, after all runtime assertions; no fabricated outcomes.

@@ -5195,31 +5195,45 @@ export class DurableAgentSession extends DurableComputerSession {
         subjectId: `user:${session.owner_id}`, credentialId: session.session_id,
         capabilities: authorization.capabilities };
     };
+    const livePrincipalFor = async (context: ToolContext): Promise<Principal> => {
+      const principal = principalFor(context);
+      if (!await retainedProjectAuthority(this.env, principal))
+        throw new ManagedRequestError(403, "forbidden", "project account authority was revoked");
+      context.signal.throwIfAborted();
+      if (this.#session()?.authorization_epoch !== principal.authorizationEpoch)
+        throw new ManagedRequestError(403, "forbidden", "project authorization changed");
+      return principal;
+    };
     const registry = this.env.NANOCODEX_USERS.getByName(session.owner_id);
     const membership = async (context: ToolContext) => {
-      principalFor(context);
+      await livePrincipalFor(context);
       const response = await registry.fetch(`https://user.internal/project-threads/${session.session_id}`);
       if (!response.ok) throw new Error(`project membership unavailable: ${response.status}`);
-      return response.json<{ project_root_id: string; data: ProjectThread[] }>();
+      const result = await response.json<{ project_root_id: string; data: ProjectThread[] }>();
+      await livePrincipalFor(context);
+      return result;
     };
     const read = async (row: ProjectThread, context: ToolContext, turnId?: string) => {
       const target = turnId ?? this.#projectRuns.latest(row.agent_id)?.turn_id ?? row.turn_id;
       const response = await managedFetch(new Request(new URL(`/v1/agents/${row.agent_id}/turns/${target}`, session.public_origin)),
-        this.env, this.ctx, principalFor(context));
+        this.env, this.ctx, await livePrincipalFor(context));
+      const turn = response.ok ? await response.json<Record<string, unknown>>() : undefined;
+      await livePrincipalFor(context);
       if (!response.ok) return { agent_id: row.agent_id, title: row.title, status: "unavailable", http_status: response.status };
-      const turn = await response.json<Record<string, unknown>>();
       return { agent_id: row.agent_id, title: row.title, parent_agent_id: row.parent_agent_id,
         project_root_id: row.project_root_id, origin_turn_id: row.origin_turn_id, turn };
     };
     const canonicalProjects = async (context: ToolContext) => {
-      principalFor(context);
+      await livePrincipalFor(context);
       const scope = `?team_id=${encodeURIComponent(session.team_id)}`;
       const main = await registry.fetch(`https://user.internal/main-thread${scope}`);
       if (!main.ok || (await main.json<{ agent_id: string }>()).agent_id !== session.session_id)
         throw new ManagedRequestError(403, "forbidden", "project routing is available only in canonical Main Thread");
       const response = await registry.fetch(`https://user.internal/projects${scope}`);
       if (!response.ok) throw new Error("canonical project registry unavailable");
-      return (await response.json<{ data: CanonicalProject[] }>()).data;
+      const result = (await response.json<{ data: CanonicalProject[] }>()).data;
+      await livePrincipalFor(context);
+      return result;
     };
     const mainTools = mainThreadTools({
       list: async context => ({ data: await canonicalProjects(context) }),
@@ -5228,9 +5242,11 @@ export class DurableAgentSession extends DurableComputerSession {
         if (!project) throw new ManagedRequestError(404, "not_found", "project not found");
         const target = turnId ?? this.#projectRuns.latest(project.coordinator_agent_id)?.turn_id;
         const response = await managedFetch(new Request(new URL(`/v1/agents/${project.coordinator_agent_id}${target ? `/turns/${target}` : ""}`, session.public_origin)),
-          this.env, this.ctx, principalFor(context));
+          this.env, this.ctx, await livePrincipalFor(context));
         if (!response.ok) throw new Error(`project read failed: ${response.status}`);
-        return { ...project, ...(target ? { turn: await response.json() } : { state: await response.json() }) };
+        const result = await response.json();
+        await livePrincipalFor(context);
+        return { ...project, ...(target ? { turn: result } : { state: result }) };
       },
       route: async (input, context) => {
         const projects = await canonicalProjects(context);

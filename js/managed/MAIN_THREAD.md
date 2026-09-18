@@ -105,3 +105,10 @@ Managed turn state `accepted` includes queued and actively executing turns; ther
 is no `running` state. `attempt_count` records retries rather than dispatches.
 The runtime cascade regression checks completed terminal outputs through the public
 turn read API instead of treating `accepted` with zero retries as dispatch failure.
+
+Foreground Main/project list and read tools also revalidate live account authority
+before registry/outcome access and before returning successful results. A cached
+turn grant cannot expose project titles or terminal outcomes after authoritative
+revocation. The scripted runtime test revokes the account epoch while sessions
+retain the old epoch, then executes all four list/read tools and verifies denial
+without project metadata or child outcome disclosure.
