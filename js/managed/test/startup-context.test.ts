@@ -57,6 +57,18 @@ const contextText = (state: DurableObjectState) => state.storage.sql.exec<{ cont
 ).one().content;
 
 describe("managed first-prompt bootstrap boundary", () => {
+  it.each(["main", "project_coordinator", "project_task"] as const)("identifies canonical %s role and project identity in startup", async role => {
+    await withStartup(async (startup, state) => {
+      startup.reserve("first", await plan(firstPrompt));
+      await startup.prepare("first", async () => ({}), async () => ({ ...environment,
+        canonical_role: { role, ...(role === "main" ? {} : { project_id: "project-123", project_root_id: "root" }) } }), assertActive);
+      const text = contextText(state);
+      expect(text).toContain('<canonical_role>');
+      expect(text).toContain(`"role":"${role}"`);
+      if (role === "main") expect(text).toContain("Use list_projects/read_project/route_project");
+      else expect(text).toContain("project-123");
+    });
+  });
   it("requests a shared catalog only while startup preparation is pending", async () => {
     await withStartup(async (startup) => {
       expect(startup.needsPreparation("first")).toBe(false);

@@ -17,6 +17,16 @@ describe('canonical Main protocol', () => {
     for (let i = 0; i < 2; i++) expect(await (await mainThreadRequest(new Request('https://x/v1/main-thread', { method: 'PUT' }), host)).json()).toEqual({ agent_id: agent });
     expect(keys).toEqual(['canonical:team-a:main']);
   });
+  it('does not recreate a tombstoned Main on lookup or ensure', async () => {
+    const host = { teamId: 'team',
+      registry: async () => Response.json({ error: 'main_thread_deleted' }, { status: 410 }),
+      create: async () => { throw new Error('deleted canonical identity must remain reserved'); } };
+    for (const method of ['GET', 'PUT']) {
+      const response = await mainThreadRequest(new Request('https://x/v1/main-thread', { method }), host);
+      expect(response.status).toBe(410);
+      expect(await response.json()).toEqual({ error: 'main_thread_deleted' });
+    }
+  });
   it('reuses the canonical coordinator for rename and rejects reassignment', async () => {
     const data = [{ id: 'project', name: 'Old', coordinator_agent_id: agent }];
     const host = { teamId: 'team-a', create: async () => { throw new Error('must reuse'); },

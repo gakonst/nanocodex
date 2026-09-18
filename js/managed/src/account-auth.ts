@@ -1771,7 +1771,7 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
         return projectThreadRegistry(request, this.ctx.storage);
       });
     }
-    if (url.pathname === "/main-thread" || url.pathname === "/projects" || url.pathname.startsWith("/projects/")) {
+    if (url.pathname.startsWith("/canonical-role/") || url.pathname === "/main-thread" || url.pathname === "/projects" || url.pathname.startsWith("/projects/")) {
       return this.ctx.blockConcurrencyWhile(() => mainThreadRegistry(request, this.ctx.storage,
         this.env.NANOCODEX_SESSIONS ? async (agentId, teamId) => {
           const account = await this.ctx.storage.get<UserRecord>("account");

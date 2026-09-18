@@ -109,8 +109,58 @@ describe("account main and canonical project registry", () => {
     expect(await (await call("/main-thread")).json()).toEqual({ agent_id: a });
     expect((await call("/main-thread", "team-b")).status).toBe(404);
     storage.sql.exec("UPDATE agent_registry SET deleted_at=2 WHERE id=?", a);
-    expect((await call("/main-thread")).status).toBe(404);
+    const deleted = await call("/main-thread");
+    expect(deleted.status).toBe(410);
+    expect(await deleted.json()).toEqual({ error: "main_thread_deleted" });
+    expect((await call("/main-thread", "team-a", { agent_id: b })).status).toBe(409);
+    expect(storage.sql.exec("SELECT agent_id FROM main_threads").toArray()).toEqual([{ agent_id: a }]);
     expect((await call("/main-thread", "team-a", { agent_id: a })).status).toBe(404);
+  }));
+
+  it("projects only scoped canonical roles without names or titles", () => inside(async storage => {
+    const role = async (agent: string, team = "team-a") => (await mainThreadRegistry(request(`/canonical-role/${agent}`, team), storage)).json();
+    expect(await role(a)).toEqual({ role: "conversation" });
+    storage.sql.exec("INSERT INTO main_threads VALUES ('team-a',?)", a);
+    expect(await role(a)).toEqual({ role: "main" });
+    storage.sql.exec("DELETE FROM main_threads");
+    storage.sql.exec("INSERT INTO canonical_projects VALUES ('team-a','build','Secret project name',?)", a);
+    storage.sql.exec(`INSERT INTO project_threads(agent_id,parent_agent_id,project_root_id,origin_turn_id,turn_id,title,request_hash,created_at)
+      VALUES (?,?,?,'origin','turn','Secret title','hash',1)`, b, a, a);
+    expect(await role(a)).toEqual({ role: "project_coordinator", project_id: "build", project_root_id: a });
+    expect(await role(b)).toEqual({ role: "project_task", project_id: "build", project_root_id: a, parent_agent_id: a });
+    for (const agent of [a, b, "missing"]) expect((await mainThreadRegistry(request(`/canonical-role/${agent}`, "team-b"), storage)).status).toBe(404);
+    storage.sql.exec("DELETE FROM canonical_projects");
+    expect(await role(a)).toEqual({ role: "conversation" });
+    expect(await role(b)).toEqual({ role: "project_task", project_root_id: a, parent_agent_id: a });
+    storage.sql.exec("INSERT INTO canonical_projects VALUES ('team-b','foreign','Hidden',?)", a);
+    for (const agent of [a, b]) {
+      const stale = await mainThreadRegistry(request(`/canonical-role/${agent}`), storage);
+      expect(stale.status).toBe(404);
+      expect(await stale.json()).toEqual({ error: "not_found" });
+    }
+    storage.sql.exec("DELETE FROM canonical_projects");
+    storage.sql.exec("UPDATE agent_registry SET team_id='team-b' WHERE id=?", a);
+    expect(await role(b)).toEqual({ role: "conversation" });
+    storage.sql.exec("UPDATE agent_registry SET team_id='team-a',deleted_at=2 WHERE id=?", a);
+    expect(await role(b)).toEqual({ role: "conversation" });
+    expect((await mainThreadRegistry(request(`/canonical-role/${a}`), storage)).status).toBe(404);
+    storage.sql.exec("DELETE FROM agent_registry WHERE id=?", a);
+    expect(await role(b)).toEqual({ role: "conversation" });
+  }));
+
+  it("retains missing main tombstones and hides foreign stale metadata", () => inside(async storage => {
+    storage.sql.exec("INSERT INTO main_threads VALUES ('team-a',?)", a);
+    expect((await mainThreadRegistry(request(`/canonical-role/${b}`, "team-a", {}), storage)).status).toBe(405);
+    storage.sql.exec("UPDATE agent_registry SET team_id='team-b' WHERE id=?", a);
+    expect((await mainThreadRegistry(request(`/canonical-role/${a}`, "team-b"), storage)).status).toBe(404);
+    const foreign = await mainThreadRegistry(request("/main-thread"), storage);
+    expect(foreign.status).toBe(404);
+    expect(await foreign.json()).toEqual({ error: "not_found" });
+    storage.sql.exec("DELETE FROM agent_registry WHERE id=?", a);
+    const missing = await mainThreadRegistry(request("/main-thread"), storage);
+    expect(missing.status).toBe(410);
+    expect(await missing.json()).toEqual({ error: "main_thread_deleted" });
+    expect((await mainThreadRegistry(request("/main-thread", "team-a", { agent_id: b }), storage)).status).toBe(409);
   }));
 
   it("keeps projects distinct from main, allows rename and rejects coordinator reassignment", () => inside(async storage => {
@@ -157,9 +207,24 @@ describe("account main and canonical project registry", () => {
     expect((await register(c, "team-a")).status).toBe(204);
     expect((await account.fetch(request("/projects/unverified", "team-a", { name: "Unverified", coordinator_agent_id: c }))).status).toBe(404);
     expect((await account.fetch(request("/main-thread", "team-a", { agent_id: a }))).status).toBe(201);
+    expect(await (await account.fetch(request(`/canonical-role/${a}`))).json()).toEqual({ role: "main" });
+    expect((await other.fetch(request(`/canonical-role/${a}`))).status).toBe(404);
     expect((await other.fetch(request("/main-thread"))).status).toBe(404);
     expect((await other.fetch(request("/main-thread", "team-a", { agent_id: a }))).status).toBe(404);
     expect((await account.fetch(request("/projects/root", "team-a", { name: "Root", coordinator_agent_id: b }))).status).toBe(201);
+    const preflight = (agent: string) => account.fetch(`https://user.internal/project-threads/${agent}?spawn_preflight=1`);
+    const mainPreflight = await preflight(a);
+    expect(mainPreflight.status).toBe(409);
+    expect(await mainPreflight.json()).toEqual({ error: "main_thread_conflict" });
+    expect((await preflight(b)).status).toBe(200);
+    // Legacy unscoped registry rows remain eligible; preflight does not stamp a team.
+    expect((await preflight(c)).status).toBe(200);
+    await runInDurableObject(account, async (_, state) => {
+      expect(state.storage.sql.exec<{ team_id: string | null }>("SELECT team_id FROM agent_registry WHERE id=?", c).toArray()[0]!.team_id).toBeNull();
+      expect(state.storage.sql.exec("SELECT * FROM project_threads").toArray()).toEqual([]);
+    });
+    expect((await preflight(crypto.randomUUID())).status).toBe(404);
+    expect((await other.fetch(`https://user.internal/project-threads/${b}?spawn_preflight=1`)).status).toBe(404);
     for (const [parent, child] of [[a, c], [c, a], [c, b]]) {
       expect((await account.fetch(`https://user.internal/project-threads/${parent}`, { method: "POST", body: JSON.stringify({
         agent_id: child, origin_turn_id: "origin", turn_id: "turn", title: "Child", request_hash: "a".repeat(64),

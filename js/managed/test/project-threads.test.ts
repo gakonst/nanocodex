@@ -21,6 +21,15 @@ async function inside(test: (storage: DurableObjectStorage) => Promise<void>) {
 }
 
 describe("persistent project threads", () => {
+  it("checks spawn authorization before deriving or creating a child", async () => {
+    const host = { sessionId: parent, originTurnId: "origin",
+      authorize: vi.fn(async () => { throw new Error("Main cannot spawn"); }),
+      identity: vi.fn(async () => child), create: vi.fn(async () => {}),
+      existing: vi.fn(async () => undefined), link: vi.fn(async (): Promise<ProjectThread> => { throw new Error("unexpected"); }),
+      admit: vi.fn(async () => {}) };
+    await expect(spawnPersistentProjectThread({ id: "task", title: "Task", input: "Work" }, host)).rejects.toThrow("Main cannot spawn");
+    for (const operation of [host.identity, host.create, host.existing, host.link, host.admit]) expect(operation).not.toHaveBeenCalled();
+  });
   it("links exact retries once, keeps nested threads in the root project, and rejects changed requests", () => inside(async storage => {
     expect((await projectThreadRegistry(req(parent, body()), storage)).status).toBe(201);
     expect((await projectThreadRegistry(req(parent, body()), storage)).status).toBe(200);
