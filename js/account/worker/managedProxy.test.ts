@@ -247,11 +247,11 @@ test("cloud phone controls and signed callbacks reach managed authentication", (
 });
 
 
-test("Main Thread and canonical projects preserve the authenticated managed boundary", async () => {
-  for (const path of ["/v1/main-thread", "/v1/projects", "/v1/projects/my-project_1"]) {
+test("Main Thread, canonical projects and scoped migration preserve the authenticated managed boundary", async () => {
+  for (const path of ["/v1/main-thread", "/v1/projects", "/v1/projects/my-project_1", "/v1/account/conversation-project-migration-20260918"]) {
     assert.equal(isManagedRoutePath(path), true, path);
     const request = new Request(`https://nanocodex.localhost${path}`, {
-      method: "PUT", headers: { authorization: "Bearer account-test", "content-type": "application/json" },
+      method: path.includes("migration") ? "POST" : "PUT", headers: { authorization: "Bearer account-test", "content-type": "application/json" },
       body: JSON.stringify({ name: "Project" }),
     });
     let forwarded: Request | undefined;
