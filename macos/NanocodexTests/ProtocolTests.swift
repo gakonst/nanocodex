@@ -331,7 +331,7 @@ final class ProtocolTests: XCTestCase {
     }
 
     @MainActor
-    func testScreenPaneResizesWithoutReplacingConversation() async throws {
+    func testFocusedScreenRetainsConversationAndFitsResizing() async throws {
         guard ProcessInfo.processInfo.environment["NANOCODEX_SCREEN_FIXTURE"] == "1" else {
             throw XCTSkip("Run apple/NanocodexInboxUITests/fixtures/remote-screen.mjs")
         }
@@ -381,16 +381,6 @@ final class ProtocolTests: XCTestCase {
             for child in view.subviews { if let found = editor(child) { return found } }
             return nil
         }
-        for _ in 0..<50 {
-            if find(content, "remote-screen:fixture:desktop") != nil { break }
-            try await Task.sleep(for: .milliseconds(100))
-        }
-        let screen = try XCTUnwrap(find(content, "remote-screen:fixture:desktop"))
-        let pressSelector = NSSelectorFromString("accessibilityPerformPress")
-        XCTAssertTrue(screen.responds(to: pressSelector))
-        typealias Press = @convention(c) (AnyObject, Selector) -> Bool
-        let press = unsafeBitCast(screen.method(for: pressSelector), to: Press.self)
-        XCTAssertTrue(press(screen, pressSelector))
         func canvas(_ view: NSView) -> MacRemoteCanvas? {
             if let found = view as? MacRemoteCanvas { return found }
             for child in view.subviews { if let found = canvas(child) { return found } }
@@ -411,40 +401,28 @@ final class ProtocolTests: XCTestCase {
             XCTAssertTrue(canvas(content) === preview, "Tab orientation must retain the connected screen")
             XCTAssertTrue(editor(content) === input)
         }
-        func split(_ view: NSView) -> NSSplitView? {
-            if let split = view as? NSSplitView,
-               let inputColumn = split.subviews.firstIndex(where: { editor($0) != nil }),
-               let screenColumn = split.subviews.firstIndex(where: { canvas($0) != nil }),
-               inputColumn != screenColumn { return split }
-            for child in view.subviews { if let found = split(child) { return found } }
-            return nil
-        }
-        let divider = try XCTUnwrap(split(content))
-        divider.setPosition(560, ofDividerAt: 0)
+        // The focused screen occupies the full window; workspace stays mounted underneath.
+        window.setContentSize(NSSize(width: 1100, height: 680))
         try await Task.sleep(for: .milliseconds(200))
-        XCTAssertTrue(editor(content) === input, "Resizing must retain the conversation editor")
+        XCTAssertTrue(canvas(content) === preview)
+        XCTAssertTrue(editor(content) === input)
         XCTAssertEqual(model.activeTab?.draft, draft)
+        XCTAssertGreaterThan(preview.bounds.width, 900)
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         content.layoutSubtreeIfNeeded(); content.displayIfNeeded()
         let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
         content.cacheDisplay(in: content.bounds, to: bitmap)
-        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: root.appendingPathComponent("native-screen-pane.png"))
-        divider.setPosition(940, ofDividerAt: 0)
-        try await Task.sleep(for: .milliseconds(200))
-        XCTAssertTrue(canvas(content) === preview, "A narrow screen pane keeps the same viewer")
-        XCTAssertTrue(editor(content) === input)
-        XCTAssertGreaterThan(preview.bounds.width, 250)
-        XCTAssertLessThan(preview.bounds.width, 360)
-        let narrow = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
-        content.cacheDisplay(in: content.bounds, to: narrow)
-        try XCTUnwrap(narrow.representation(using: .png, properties: [:])).write(to: root.appendingPathComponent("native-screen-pane-narrow.png"))
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: root.appendingPathComponent("native-focused-screen.png"))
         model.select(model.tabs[1].id)
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertTrue(canvas(content) === preview, "Switching conversations keeps the screen pane mounted")
         model.showingScreens = false
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertNil(canvas(content))
+        XCTAssertTrue(canvas(content) === preview, "Returning to workspace keeps the remote session mounted")
+        model.showingScreens = true
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(canvas(content) === preview)
         model.select(model.tabs[0].id)
         XCTAssertEqual(model.activeTab?.draft, draft)
     }

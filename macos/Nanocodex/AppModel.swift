@@ -107,6 +107,11 @@ final class AppModel: ObservableObject {
     @Published var showingHandSetup = false
     @Published var showingRemoteSetup = false
     @Published var showingScreens = false
+    @Published var screenPickerRequest = 0
+    func exitScreenFocus() {
+        showingScreens = false
+        if let window = NSApp.keyWindow, window.styleMask.contains(.fullScreen) { window.toggleFullScreen(nil) }
+    }
     @Published private(set) var remoteService: RemoteService?
     private(set) var remoteMacHost = RemoteMacHost()
     private(set) var remotePhoneHost = RemoteMacHost()
@@ -465,6 +470,7 @@ final class AppModel: ObservableObject {
         self.remoteService = remoteService
         runtime = RuntimeClient(dataDirectory: runtimeDirectory)
         isolatedSession = runtimeDirectory != nil || ProcessInfo.processInfo.environment["NANOCODEX_DESKTOP_DATA"] != nil || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        showingScreens = !isolatedSession
         self.backgroundPreferences = backgroundPreferences ?? (isolatedSession ? nil : .standard)
         launchAtLogin = LaunchAtLogin.installed(isolatedSession: isolatedSession, preferences: self.backgroundPreferences)
         keepMacAwake = self.backgroundPreferences?.object(forKey: "keepMacAwakeWhileHandsRunning") as? Bool ?? true

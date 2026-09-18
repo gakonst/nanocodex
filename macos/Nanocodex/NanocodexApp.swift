@@ -101,6 +101,11 @@ struct NanocodexApp: App {
                 Button("Search Threads…") { model.showingSearch = true }.keyboardShortcut("k")
             }
             CommandGroup(after: .toolbar) {
+                Button("Enter / Exit Full Screen") { NSApp.keyWindow?.toggleFullScreen(nil) }
+                Button("Return to Workspace") { model.exitScreenFocus() }
+                    .keyboardShortcut(.escape, modifiers: [.command, .shift])
+                Button("Choose Remote Screen…") { model.screenPickerRequest += 1; model.showingScreens = true }
+                Divider()
                 Button("Zoom In") { model.changeZoom(1) }.keyboardShortcut("+", modifiers: .command).disabled(model.workspaceZoom >= 1.5)
                 Button("Zoom Out") { model.changeZoom(-1) }.keyboardShortcut("-", modifiers: .command).disabled(model.workspaceZoom <= 0.75)
                 Button("Actual Size") { model.resetZoom() }.keyboardShortcut("0", modifiers: .command)
@@ -164,13 +169,7 @@ private struct WorkspaceSplitContent: View {
             Group {
                 if model.screen == .hands { HandsView() } else { TiledWorkspaceView() }
             }.frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
-            if model.showingScreens, let service = model.remoteService {
-                RemoteDashboard(service: service, host: model.remoteMacHost, phoneHost: model.remotePhoneHost,
-                                onClose: { model.showingScreens = false })
-                    .id(ObjectIdentifier(service))
-                    .frame(minWidth: 320, idealWidth: 620, maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color(nsColor: .textBackgroundColor))
-            }
+
         }.environmentObject(model).preferredColorScheme(model.preferredColorScheme)
     }
 }
@@ -198,12 +197,33 @@ struct ContentView: View {
             } else if model.showsOnboarding {
                 OnboardingView()
             } else {
-                workspace
+                ZStack {
+                    workspace
+                        .opacity(model.showingScreens ? 0 : 1)
+                        .allowsHitTesting(!model.showingScreens)
+                        .accessibilityHidden(model.showingScreens)
+                    if let service = model.remoteService {
+                        RemoteDashboard(service: service, host: model.remoteMacHost, phoneHost: model.remotePhoneHost,
+                            immersive: model.showingScreens, pickerRequest: model.screenPickerRequest,
+                            onClose: { model.exitScreenFocus() })
+                            .id(ObjectIdentifier(service))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .opacity(model.showingScreens ? 1 : 0)
+                            .allowsHitTesting(model.showingScreens)
+                            .accessibilityHidden(!model.showingScreens)
+                    } else if model.showingScreens {
+                        VStack(spacing: 16) {
+                            Text("Screens are connecting…")
+                            Button("Open workspace") { model.showingScreens = false }
+                        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
             }
         }
+        .toolbar(model.showingScreens && !model.showsOnboarding ? .hidden : .visible, for: .windowToolbar)
         .navigationTitle(model.screen == .hands ? "Hands" : "Nanocodex")
         .toolbar {
-            if !model.isStarting && !model.showsOnboarding {
+            if !model.isStarting && !model.showsOnboarding && !model.showingScreens {
                 WorkspaceToolbar(model: model, verticalTabs: model.tabPosition == "left" && tabColumnVisibility != .detailOnly) { vertical in
                     model.setTabPosition(vertical ? "left" : "top")
                     tabColumnVisibility = vertical ? .all : .detailOnly

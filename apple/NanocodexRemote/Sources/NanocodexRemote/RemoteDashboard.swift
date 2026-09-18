@@ -15,6 +15,9 @@ enum RemoteHostIdentity {
 
 public struct RemoteDashboard: View {
     private let service: RemoteService
+    private var immersive = false
+    private var pickerRequest = 0
+    @AppStorage("nanocodex.remote.last-screen") private var savedScreen = Data()
     private var initialSelection: RemoteScreenSelection? = nil
     @State private var restoredSelection = false
     private let onClose: (() -> Void)?
@@ -54,8 +57,9 @@ public struct RemoteDashboard: View {
 #endif
     }
 #if os(macOS)
-    public init(service: RemoteService, host: RemoteMacHost, phoneHost: RemoteMacHost, onClose: (() -> Void)? = nil) {
+    public init(service: RemoteService, host: RemoteMacHost, phoneHost: RemoteMacHost, immersive: Bool = false, pickerRequest: Int = 0, onClose: (() -> Void)? = nil) {
         self.service = service; self.onClose = onClose
+        self.immersive = immersive; self.pickerRequest = pickerRequest
         _host = StateObject(wrappedValue: host); _phoneHost = StateObject(wrappedValue: phoneHost); ownsHosts = false
     }
 #endif
@@ -161,19 +165,27 @@ public struct RemoteDashboard: View {
         }.onChange(of: viewer.hand?.identity) { _, _ in broadcastURL = "" }
     }
     public var body: some View {
-        VStack(spacing: embedded ? 6 : 12) {
+        VStack(spacing: immersive ? 0 : (embedded ? 6 : 12)) {
 #if os(macOS)
-            screenControls
+            if !immersive || viewer.hand == nil { screenControls }
 #endif
             if viewer.hand != nil {
 
-                RemoteCanvas(viewer: viewer).accessibilityIdentifier("remote-canvas")
+                RemoteCanvas(viewer: viewer, onExit: onClose, immersive: immersive).accessibilityIdentifier("remote-canvas")
                     .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
 #if os(macOS)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .clipShape(RoundedRectangle(cornerRadius: immersive ? 0 : 12))
 #endif
                     .overlay {
                         if viewer.connecting { ProgressView().accessibilityLabel(viewer.status).padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) }
+                    }
+                    .overlay(alignment: .top) {
+                        if immersive && viewer.connected && !viewer.controlling {
+                            HStack {
+                                Text(viewer.status + " · ⌘⇧Esc returns to workspace").font(.caption)
+                                Button("Take control") { viewer.takeControl() }.disabled(viewer.hand?.controllable != true)
+                            }.padding(8).background(.regularMaterial, in: Capsule()).padding(8)
+                        }
                     }
                     .overlay {
                         if !viewer.connected && !viewer.connecting {
@@ -185,6 +197,7 @@ public struct RemoteDashboard: View {
                             }.padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                         }
                     }
+                if !immersive {
                 HStack {
                     Text(viewer.status).font(.caption).foregroundStyle(.secondary)
                         .accessibilityValue(viewer.diagnosticPresentation)
@@ -216,8 +229,9 @@ public struct RemoteDashboard: View {
 #if os(iOS)
                 .padding(.horizontal)
 #endif
-                if viewer.hand?.broadcast == true { broadcastControls }
-                if viewer.controlling && (!embedded || showKeyboard) {
+                }
+                if !immersive && viewer.hand?.broadcast == true { broadcastControls }
+                if !immersive && viewer.controlling && (!embedded || showKeyboard) {
                     VStack(spacing: 8) {
                         HStack {
                             TextField("Type on remote screen", text: $text).textFieldStyle(.roundedBorder).onSubmit(sendText)
@@ -263,6 +277,7 @@ public struct RemoteDashboard: View {
             }
             if let message = error ?? discoveryError { Text(message).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
 #if os(macOS)
+            if !immersive {
             Divider()
             DisclosureGroup("Share a screen") {
                 ScrollView {
@@ -337,10 +352,11 @@ public struct RemoteDashboard: View {
                     }
                 }.frame(maxHeight: 180)
             }
+            }
 #endif
         }
 #if os(macOS)
-        .padding(embedded ? 8 : 16)
+        .padding(immersive ? 0 : (embedded ? 8 : 16))
 #else
         .padding(.bottom, 8)
         .navigationTitle(viewer.hand?.name ?? "Screens")
@@ -374,6 +390,17 @@ public struct RemoteDashboard: View {
 #if os(iOS)
             if phase == .background { viewer.suspend() }
 #endif
+        }
+        .onChange(of: immersive) { _, focused in
+            if focused { viewer.takeControl() } else { viewer.releaseControl() }
+        }
+        .onChange(of: pickerRequest) { _, _ in viewer.close(); restoredSelection = true }
+        .onChange(of: viewer.connected) { _, connected in
+            if connected && immersive { viewer.takeControl() }
+        }
+        .onChange(of: viewer.hand?.identity) { _, _ in
+            if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
+               let hand = viewer.hand, let data = try? JSONEncoder().encode(RemoteScreenSelection(hand: hand)) { savedScreen = data }
         }
         .onChange(of: viewer.controlling) { _, controlling in if !controlling { text = ""; showKeyboard = false } }
         .onDisappear {
@@ -412,10 +439,14 @@ public struct RemoteDashboard: View {
         do {
             let values = try await service.list(); guard !Task.isCancelled else { return }
             hands = values; discoveryError = nil; discoveryLoaded = true
-            if !restoredSelection, let initialSelection,
-               let hand = values.first(where: initialSelection.matches) {
-                restoredSelection = true
-                await viewer.connect(service: service, hand: hand)
+            if !restoredSelection {
+                let selection = initialSelection ?? (immersive ? try? JSONDecoder().decode(RemoteScreenSelection.self, from: savedScreen) : nil)
+                let selected = selection.flatMap { selected in values.first(where: selected.matches) }
+                    ?? (immersive && values.count == 1 ? values.first : nil)
+                if let selected {
+                    restoredSelection = true
+                    await viewer.connect(service: service, hand: selected)
+                }
             }
         }
         catch { if !Task.isCancelled { discoveryError = error.localizedDescription; discoveryLoaded = true } }

@@ -169,7 +169,7 @@ public final class RemoteSignaling: RemoteSignalingTransport {
     private var renewal: Task<Void, Never>?
     private var watchdog: Task<Void, Never>?
     private var sender: Task<Void, Never>?
-    private var queuedMessages = 0
+    private var outgoing = RemoteSendQueue()
     private var closed = false
     private var publishing = false
 
@@ -215,18 +215,21 @@ public final class RemoteSignaling: RemoteSignalingTransport {
 
     public func send(_ message: RemoteMessage) {
         guard let socket, !closed else { return }
-        guard queuedMessages < 128 else { close(error: RemoteError.unavailable); return }
-        queuedMessages += 1
-        let preceding = sender
+        guard outgoing.append(message, limit: sender == nil ? 128 : 127) else {
+            close(error: RemoteError.unavailable); return
+        }
+        guard sender == nil else { return }
+        // One drain owns socket ordering. Pending pointer motion can collapse
+        // while a write is suspended without dropping keys, buttons or release.
         sender = Task { [weak self] in
-            await preceding?.value
             guard let self else { return }
-            defer { queuedMessages -= 1 }
-            guard !closed, !Task.isCancelled else { return }
+            defer { sender = nil }
             do {
-                let data = try JSONEncoder().encode(message)
-                guard data.count <= (message.type == "agent_result" ? 750_000 : 70_000) else { throw RemoteError.invalidMessage }
-                try await socket.send(.string(String(decoding: data, as: UTF8.self)))
+                while !closed, !Task.isCancelled, let message = outgoing.popFirst() {
+                    let data = try JSONEncoder().encode(message)
+                    guard data.count <= (message.type == "agent_result" ? 750_000 : 70_000) else { throw RemoteError.invalidMessage }
+                    try await socket.send(.string(String(decoding: data, as: UTF8.self)))
+                }
             } catch { close(error: error) }
         }
     }
@@ -238,6 +241,7 @@ public final class RemoteSignaling: RemoteSignalingTransport {
                                  code: socket?.closeCode.rawValue ?? 0, reason: socket?.closeReason)
         }
         reader?.cancel(); renewal?.cancel(); watchdog?.cancel(); sender?.cancel()
+        outgoing = RemoteSendQueue()
         socket?.cancel(with: .goingAway, reason: nil); socket = nil
         onClose(failure)
     }
