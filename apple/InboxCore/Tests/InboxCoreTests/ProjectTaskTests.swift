@@ -22,27 +22,27 @@ final class ProjectTaskTests: XCTestCase {
 
     func testCanonicalProjectsOverrideStaleLocalNamesWithoutChangingExecutionLinks() async throws {
         let fixture = try HTTPFixture { _ in
-            FixtureReply(body: #"{"data":["nano","dj","life","old","child"],"summaries":{"nano":{"title":"Old title","project_root_id":"nano","project_name":"Nanocodex"},"dj":{"title":"Music","project_root_id":"dj","project_name":"DJBooth"},"life":{"title":"Life","project_root_id":"life","project_name":"Personal Life"},"old":{"title":"Old project","project_root_id":"nano","project_name":"Nanocodex"},"child":{"title":"Task","project_root_id":"nano","project_name":"Nanocodex","parent_agent_id":"old","origin_turn_id":"request-1","project_turn_id":"project:fix"}}}"#)
+            FixtureReply(body: #"{"data":["alpha","beta","gamma","old","child"],"summaries":{"alpha":{"title":"Old title","project_root_id":"alpha","project_name":"Project Alpha"},"beta":{"title":"Beta","project_root_id":"beta","project_name":"Project Beta"},"gamma":{"title":"Gamma","project_root_id":"gamma","project_name":"Project Gamma"},"old":{"title":"Old project","project_root_id":"alpha","project_name":"Project Alpha"},"child":{"title":"Task","project_root_id":"alpha","project_name":"Project Alpha","parent_agent_id":"old","origin_turn_id":"request-1","project_turn_id":"project:fix"}}}"#)
         }
         defer { fixture.close() }
         let client = ManagedClient(credential: try AccountCredential(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
         defer { client.close() }
         let cards = try await client.list()
         let index = InboxProjectIndex(cards: cards, savedProjects: [
-            InboxProject(id: "saved-nano", name: "Stale Nanocodex", primaryAgentID: "nano"),
-            InboxProject(id: "saved-dj", name: "Stale Music", primaryAgentID: "dj"),
+            InboxProject(id: "saved-alpha", name: "Stale Alpha", primaryAgentID: "alpha"),
+            InboxProject(id: "saved-beta", name: "Stale Beta", primaryAgentID: "beta"),
             InboxProject(id: "saved-old", name: "Obsolete project", primaryAgentID: "old")
         ])
         XCTAssertEqual(index.projects.count, 3)
-        XCTAssertEqual(Set(index.projects.map(\.name)), ["Nanocodex", "DJBooth", "Personal Life"])
-        XCTAssertEqual(index.projects.first?.id, "saved-nano")
-        XCTAssertEqual(index.projects.first?.agentIDs, ["nano", "old", "child"])
-        XCTAssertEqual(index.cardsByID["nano"]?.projectName, "Nanocodex")
-        XCTAssertEqual(index.cardsByID["child"]?.projectName, "Nanocodex")
+        XCTAssertEqual(Set(index.projects.map(\.name)), ["Project Alpha", "Project Beta", "Project Gamma"])
+        XCTAssertEqual(index.projects.first?.id, "saved-alpha")
+        XCTAssertEqual(index.projects.first?.agentIDs, ["alpha", "old", "child"])
+        XCTAssertEqual(index.cardsByID["alpha"]?.projectName, "Project Alpha")
+        XCTAssertEqual(index.cardsByID["child"]?.projectName, "Project Alpha")
         let children = index.children(parentAgentID: "old", originTurnID: "request-1")
         XCTAssertEqual(children.map(\.id), ["child"])
         XCTAssertEqual(children.first?.projectTurnID, "project:fix")
-        XCTAssertTrue(index.children(parentAgentID: "nano", originTurnID: "request-1").isEmpty)
+        XCTAssertTrue(index.children(parentAgentID: "alpha", originTurnID: "request-1").isEmpty)
     }
 
     func testTaskIdentityAndTerminalOutcomeDoNotDependOnPartialHistory() throws {

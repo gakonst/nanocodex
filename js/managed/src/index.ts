@@ -1,4 +1,3 @@
-import { migrationPath, migrationAuthorized } from "./conversation-project-migration";
 import { ProjectThreadRuns, projectCompletionInput, type ProjectThreadRun } from "./project-thread-runs";
 import { projectThreadTools, spawnPersistentProjectThread, retainProjectSpawn, type ProjectThread } from "./project-threads";
 import { downloadPath, downloadBrainFile, downloadHandFile, fileDownloadFailure, FileDownloadError } from "./file-download";
@@ -1624,20 +1623,6 @@ async function managedFetchRoute(
       }
       return env.NANOCODEX_USERS.getByName(principal.userId).fetch(`https://account.internal${url.pathname.slice(3)}${url.search}`, {
         method: request.method, body: request.body, headers: { "content-type": "application/json" },
-      });
-    }
-    if (url.pathname === migrationPath) {
-      const principal = await authenticate(request, env, url);
-      if (!principal) return json({ error: "unauthorized" }, { status: 401 });
-      if (!migrationAuthorized(principal)) return json({ error: "forbidden" }, { status: 403 });
-      if (url.search) return json({ error: "invalid_request" }, { status: 400 });
-      if (request.method !== "GET" && request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405 });
-      if (request.method === "POST") {
-        const failure = requireSameOriginMutation(request, url, principal);
-        if (failure) return failure;
-      }
-      return env.NANOCODEX_USERS.getByName(principal.userId).fetch("https://user.internal/conversation-project-migration-20260918", {
-        method: request.method, headers: { "content-type": "application/json" }, body: request.body,
       });
     }
     if (request.method === "GET" && url.pathname === "/v1/agents") {

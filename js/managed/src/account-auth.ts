@@ -1,4 +1,4 @@
-import { initializeConversationProjects, conversationProjectMigration } from "./conversation-project-migration";
+import { initializeConversationProjects } from "./conversation-projects";
 import { initializeProjectThreads, projectThreadRegistry } from "./project-threads";
 import { recordHandTiming } from "./hand-timing";
 import { configurationCatalog } from "./agent-configuration";
@@ -1755,7 +1755,6 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname === "/conversation-project-migration-20260918") return conversationProjectMigration(request, this.ctx.storage);
     if (/^\/(agent-definitions|environment-templates)(?:\/|$)/.test(url.pathname)) {
       return configurationCatalog(request, this.ctx.storage);
     }

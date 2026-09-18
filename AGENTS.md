@@ -13,3 +13,6 @@
   their dependencies from a clean checkout. See [README.md](README.md) for setup.
 - Verify changed behavior in the relevant runtime. Prefer focused tests at
   policy and protocol boundaries and end-to-end evidence for product journeys.
+- Use synthetic identities and project data in fixtures and examples. Keep real
+  account IDs, private project inventories, and one-off personal migration plans
+  outside tracked source; pass operational data through private runtime inputs.
