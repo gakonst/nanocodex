@@ -145,6 +145,7 @@ public final class ManagedClient: @unchecked Sendable {
                              updatedAt: summary["updated_at"].number, turnCount: Int(summary["turn_count"].number),
                              mayHaveScheduledJobs: summary["may_have_scheduled_jobs"] != .bool(false))
             card.projectRootID = summary["project_root_id"].string.isEmpty ? nil : summary["project_root_id"].string
+            card.projectName = summary["project_name"].string.isEmpty ? nil : summary["project_name"].string
             card.parentAgentID = summary["parent_agent_id"].string.isEmpty ? nil : summary["parent_agent_id"].string
             card.originTurnID = summary["origin_turn_id"].string.isEmpty ? nil : summary["origin_turn_id"].string
             card.projectTurnID = summary["project_turn_id"].string.isEmpty ? nil : summary["project_turn_id"].string

@@ -1,3 +1,4 @@
+import { initializeConversationProjects, conversationProjectMigration } from "./conversation-project-migration";
 import { initializeProjectThreads, projectThreadRegistry } from "./project-threads";
 import { recordHandTiming } from "./hand-timing";
 import { configurationCatalog } from "./agent-configuration";
@@ -276,6 +277,7 @@ export type AgentSummary = Readonly<{
   turnCount: number;
   mayHaveScheduledJobs: boolean;
   projectRootId?: string;
+  projectName?: string;
   parentAgentId?: string;
   originTurnId?: string;
   projectTitle?: string;
@@ -290,7 +292,7 @@ type AgentRegistryRow = Readonly<{
   turn_count: number;
   deleted_at: number | null;
   cron_candidate: number | null;
-  project_root_id?: string; parent_agent_id?: string; origin_turn_id?: string; project_title?: string; project_turn_id?: string;
+  project_name?: string; project_root_id?: string; parent_agent_id?: string; origin_turn_id?: string; project_title?: string; project_turn_id?: string;
 }>;
 
 export async function routeAccountRequest(
@@ -1742,6 +1744,7 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
         ON agent_registry (created_at, id) WHERE deleted_at IS NULL;
     `);
     initializeProjectThreads(ctx.storage);
+    initializeConversationProjects(ctx.storage);
     // Existing agents stay candidates until their first schedule read. New
     // registrations supply their actual presence; omitted legacy values stay unknown.
     const columns = new Set(ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(agent_registry)").toArray().map(({ name }) => name));
@@ -1752,6 +1755,7 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === "/conversation-project-migration-20260918") return conversationProjectMigration(request, this.ctx.storage);
     if (/^\/(agent-definitions|environment-templates)(?:\/|$)/.test(url.pathname)) {
       return configurationCatalog(request, this.ctx.storage);
     }
@@ -1849,9 +1853,11 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
     if (url.pathname === "/agents") {
       if (request.method === "GET") {
         return json(this.ctx.storage.sql.exec<AgentRegistryRow>(
-          `SELECT a.id, a.title, a.created_at, a.updated_at, a.turn_count, a.deleted_at, a.cron_candidate,
-                  p.project_root_id, p.parent_agent_id, p.origin_turn_id, p.title AS project_title, p.turn_id AS project_turn_id
+          `SELECT a.id, CASE WHEN c.agent_id=c.project_root_id THEN c.project_name ELSE a.title END AS title, a.created_at, a.updated_at, a.turn_count, a.deleted_at, a.cron_candidate,
+                  COALESCE(c.project_root_id,inherited.project_root_id,p.project_root_id) AS project_root_id, COALESCE(c.project_name,inherited.project_name) AS project_name, p.parent_agent_id, p.origin_turn_id, p.title AS project_title, p.turn_id AS project_turn_id
            FROM agent_registry a LEFT JOIN project_threads p ON p.agent_id=a.id
+           LEFT JOIN conversation_projects c ON c.agent_id=a.id
+           LEFT JOIN conversation_projects inherited ON inherited.agent_id=p.project_root_id
            WHERE a.deleted_at IS NULL
            ORDER BY a.created_at, a.id`,
         ).toArray().map(agentSummary));
@@ -1951,6 +1957,7 @@ function agentSummary(row: AgentRegistryRow): AgentSummary {
     updatedAt: row.updated_at,
     turnCount: row.turn_count,
     mayHaveScheduledJobs: row.cron_candidate !== 0,
+    ...(row.project_name ? { projectName: row.project_name } : {}),
     ...(row.project_root_id ? { projectRootId: row.project_root_id, parentAgentId: row.parent_agent_id,
       originTurnId: row.origin_turn_id, projectTitle: row.project_title, projectTurnId: row.project_turn_id } : {}),
   };

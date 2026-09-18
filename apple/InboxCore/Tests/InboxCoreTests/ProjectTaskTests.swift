@@ -11,12 +11,38 @@ final class ProjectTaskTests: XCTestCase {
         let client = ManagedClient(credential: try AccountCredential(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
         defer { client.close() }
         let cards = try await client.list()
+        XCTAssertNil(cards[0].projectName)
         XCTAssertNil(cards[0].projectRootID)
         XCTAssertEqual(cards[1].title, "Fix sign-in")
         XCTAssertEqual(cards[1].projectRootID, "master")
         XCTAssertEqual(cards[1].parentAgentID, "master")
         XCTAssertEqual(cards[1].originTurnID, "request-1")
         XCTAssertEqual(cards[1].projectTurnID, "project:fix")
+    }
+
+    func testCanonicalProjectsOverrideStaleLocalNamesWithoutChangingExecutionLinks() async throws {
+        let fixture = try HTTPFixture { _ in
+            FixtureReply(body: #"{"data":["nano","dj","life","old","child"],"summaries":{"nano":{"title":"Old title","project_root_id":"nano","project_name":"Nanocodex"},"dj":{"title":"Music","project_root_id":"dj","project_name":"DJBooth"},"life":{"title":"Life","project_root_id":"life","project_name":"Personal Life"},"old":{"title":"Old project","project_root_id":"nano","project_name":"Nanocodex"},"child":{"title":"Task","project_root_id":"nano","project_name":"Nanocodex","parent_agent_id":"old","origin_turn_id":"request-1","project_turn_id":"project:fix"}}}"#)
+        }
+        defer { fixture.close() }
+        let client = ManagedClient(credential: try AccountCredential(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
+        defer { client.close() }
+        let cards = try await client.list()
+        let index = InboxProjectIndex(cards: cards, savedProjects: [
+            InboxProject(id: "saved-nano", name: "Stale Nanocodex", primaryAgentID: "nano"),
+            InboxProject(id: "saved-dj", name: "Stale Music", primaryAgentID: "dj"),
+            InboxProject(id: "saved-old", name: "Obsolete project", primaryAgentID: "old")
+        ])
+        XCTAssertEqual(index.projects.count, 3)
+        XCTAssertEqual(Set(index.projects.map(\.name)), ["Nanocodex", "DJBooth", "Personal Life"])
+        XCTAssertEqual(index.projects.first?.id, "saved-nano")
+        XCTAssertEqual(index.projects.first?.agentIDs, ["nano", "old", "child"])
+        XCTAssertEqual(index.cardsByID["nano"]?.projectName, "Nanocodex")
+        XCTAssertEqual(index.cardsByID["child"]?.projectName, "Nanocodex")
+        let children = index.children(parentAgentID: "old", originTurnID: "request-1")
+        XCTAssertEqual(children.map(\.id), ["child"])
+        XCTAssertEqual(children.first?.projectTurnID, "project:fix")
+        XCTAssertTrue(index.children(parentAgentID: "nano", originTurnID: "request-1").isEmpty)
     }
 
     func testTaskIdentityAndTerminalOutcomeDoNotDependOnPartialHistory() throws {

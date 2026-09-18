@@ -1153,6 +1153,7 @@ final class InboxModel: ObservableObject {
                 var card = retained[summary.id] ?? summary
                 card.title = summary.title; card.updatedAt = max(card.updatedAt, summary.updatedAt); card.turnCount = summary.turnCount
                 card.mayHaveScheduledJobs = summary.mayHaveScheduledJobs
+                card.projectName = summary.projectName
                 card.projectRootID = summary.projectRootID; card.parentAgentID = summary.parentAgentID; card.originTurnID = summary.originTurnID; card.projectTurnID = summary.projectTurnID
                 return card
             } + created

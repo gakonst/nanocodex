@@ -24,7 +24,8 @@ public struct InboxProjectIndex {
     private let links: [String: [String: [AgentCard]]]
 
     public init(cards: [AgentCard], savedProjects: [InboxProject]) {
-        cardsByID = Dictionary(cards.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        let cardsByID = Dictionary(cards.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        self.cardsByID = cardsByID
         let available = Set(cardsByID.keys)
         var members: [String: [String]] = [:]
         var links: [String: [String: [AgentCard]]] = [:]
@@ -35,15 +36,19 @@ public struct InboxProjectIndex {
             }
         }
         self.links = links
-        let saved = savedProjects.filter { available.contains($0.primaryAgentID) }.map { project in
-            InboxProject(id: project.id, name: project.name, primaryAgentID: project.primaryAgentID,
+        let saved = savedProjects.filter { project in
+            guard let card = cardsByID[project.primaryAgentID] else { return false }
+            return card.projectRootID == nil || card.projectRootID == card.id
+                || !available.contains(card.projectRootID!)
+        }.map { project in
+            InboxProject(id: project.id, name: cardsByID[project.primaryAgentID]?.projectName ?? project.name, primaryAgentID: project.primaryAgentID,
                          agentIDs: [project.primaryAgentID] + (members[project.primaryAgentID] ?? []))
         }
         let assigned = Set(saved.flatMap(\.agentIDs))
         projects = saved + cards.filter { !assigned.contains($0.id)
             && ($0.projectRootID == nil || !available.contains($0.projectRootID!) || $0.projectRootID == $0.id)
         }.sorted(by: AgentCard.mostRecentFirst).map {
-            InboxProject(id: "project-" + $0.id, name: $0.title, primaryAgentID: $0.id,
+            InboxProject(id: "project-" + $0.id, name: $0.projectName ?? $0.title, primaryAgentID: $0.id,
                          agentIDs: [$0.id] + (members[$0.id] ?? []))
         }
     }
