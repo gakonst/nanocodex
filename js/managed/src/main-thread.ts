@@ -86,6 +86,25 @@ export function retainMainRoute(storage: DurableObjectStorage, input: { project_
     "SELECT creation_json FROM main_route_creations WHERE id=?", input.id).toArray()[0]!.creation_json };
 }
 
+/** Recover pre-binding routes from the durable admission outbox without reviving work. */
+export function mainRouteCoordinator(storage: DurableObjectStorage, routeId: string): string | undefined {
+  storage.sql.exec("CREATE TABLE IF NOT EXISTS main_route_coordinators (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL)");
+  const saved = storage.sql.exec<{ agent_id: string }>("SELECT agent_id FROM main_route_coordinators WHERE id=?", routeId).toArray()[0];
+  if (saved) return saved.agent_id;
+  if (!storage.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='project_thread_runs'").toArray().length) return;
+  const previous = storage.sql.exec<{ agent_id: string }>(
+    "SELECT DISTINCT agent_id FROM project_thread_runs WHERE turn_id=?", `main-route:${routeId}`).toArray();
+  if (previous.length > 1) throw new Error("project route already spans coordinator identities; use a new route id");
+  return previous[0]?.agent_id;
+}
+
+/** Freeze the resolved identity before admission, including cancelled/retired route retries. */
+export function bindMainRouteCoordinator(storage: DurableObjectStorage, routeId: string, agentId: string): void {
+  const previous = mainRouteCoordinator(storage, routeId);
+  if (previous && previous !== agentId) throw new Error("project route coordinator changed; use a new route id");
+  storage.sql.exec("INSERT OR IGNORE INTO main_route_coordinators(id,agent_id) VALUES (?,?)", routeId, agentId);
+}
+
 /** One immutable creation payload per project generation, across route IDs and retries. */
 export function retainMainCoordinatorCreation(storage: DurableObjectStorage, projectId: string, creation: string, generation = 0): string {
   if (!Number.isSafeInteger(generation) || generation < 0) throw new Error("invalid canonical generation");

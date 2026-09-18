@@ -1,7 +1,7 @@
 import { migrationPath, migrationAuthorized } from "./conversation-project-migration";
 import { canonicalRoleInstruction, type CanonicalRole } from "./startup-context";
 import { MainThreadCompletions } from "./main-thread-completions";
-import { canonicalRoleResponse, mainThreadRequest, mainThreadTools, retainMainRoute, retainMainCoordinatorCreation, type CanonicalProject } from "./main-thread";
+import { canonicalRoleResponse, mainThreadRequest, mainThreadTools, retainMainRoute, mainRouteCoordinator, bindMainRouteCoordinator, retainMainCoordinatorCreation, type CanonicalProject } from "./main-thread";
 import { ProjectThreadRuns, projectCompletionInput, type ProjectThreadRun } from "./project-thread-runs";
 import { projectThreadTools, spawnPersistentProjectThread, retainProjectSpawn, type ProjectThread } from "./project-threads";
 import { downloadPath, downloadBrainFile, downloadHandFile, fileDownloadFailure, FileDownloadError } from "./file-download";
@@ -5258,6 +5258,9 @@ export class DurableAgentSession extends DurableComputerSession {
         const plan = retainMainRoute(this.ctx.storage, input,
           JSON.stringify({ settings: this.#settings(), configuration }));
         let project = projects.find(row => row.id === input.project_id);
+        const retainedCoordinator = mainRouteCoordinator(this.ctx.storage, input.id);
+        if (retainedCoordinator && retainedCoordinator !== project?.coordinator_agent_id)
+          throw new Error("project route coordinator changed; use a new route id");
         if (!project) {
           const response = await mainThreadRequest(new Request(new URL(`/v1/projects/${input.project_id}`, session.public_origin), {
             method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: input.name }),
@@ -5280,6 +5283,7 @@ export class DurableAgentSession extends DurableComputerSession {
           if (!response.ok) throw new Error(`project creation failed: ${response.status}; retry the same id`);
           project = await response.json<CanonicalProject>();
         }
+        bindMainRouteCoordinator(this.ctx.storage, input.id, project.coordinator_agent_id);
         const turnId = `main-route:${input.id}`;
         await this.#admitProjectRun(project.coordinator_agent_id, turnId, project.name, input.input, this.#authorizationForToolContext(context));
         return { ...project, turn_id: turnId, status: "accepted" };

@@ -1,6 +1,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { mainThreadRequest } from "../src/main-thread";
+import { ProjectThreadRuns } from "../src/project-thread-runs";
+import { mainThreadRequest, retainMainRoute, mainRouteCoordinator, bindMainRouteCoordinator } from "../src/main-thread";
 
 const users = () => (env as unknown as { NANOCODEX_USERS: DurableObjectNamespace }).NANOCODEX_USERS;
 const sessions = () => (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace }).NANOCODEX_SESSIONS;
@@ -114,6 +115,41 @@ describe("canonical conversation deletion and recreation", () => {
     expect(await (await f.registry("/canonical-generations/main")).json()).toEqual({ generation: 1 });
     const next = (await (await f.ensure("/main-thread")).json<{ agent_id: string }>()).agent_id;
     expect(next).not.toBe(first);
+  });
+
+  it.each(["bound", "legacy-outbox"])("rejects old %s route IDs across coordinator recreation while fresh work is admitted", async mode => {
+    const f = await fixture();
+    const input = { project_id: "research", name: "Research", input: "Original work", id: "old-route" };
+    const first = (await (await f.ensure("/projects/research")).json<{ coordinator_agent_id: string }>()).coordinator_agent_id;
+    await runInDurableObject(f.account, async (_, state) => {
+      retainMainRoute(state.storage, input);
+      if (mode === "bound") bindMainRouteCoordinator(state.storage, input.id, first);
+      const runs = new ProjectThreadRuns(state.storage);
+      runs.put({ id: "old-run", agent_id: first, turn_id: `main-route:${input.id}`, title: "Research", input: input.input,
+        request_hash: "old-hash", authorization_json: "{}", authorization_epoch: 1 });
+      // Retired/cancelled work must never be admitted again on another coordinator.
+      runs.finish("old-run", "retired");
+    });
+    expect((await f.remove(first)).status).toBe(204);
+    const replacement = (await (await f.ensure("/projects/research")).json<{ coordinator_agent_id: string }>()).coordinator_agent_id;
+    expect(replacement).not.toBe(first);
+    await runInDurableObject(f.account, async (_, state) => {
+      expect(mainRouteCoordinator(state.storage, input.id)).toBe(first);
+      expect(() => bindMainRouteCoordinator(state.storage, input.id, replacement)).toThrow("new route id");
+      const runs = new ProjectThreadRuns(state.storage);
+      expect(runs.latest(replacement)).toBeUndefined();
+      expect(runs.get("old-run")?.state).toBe("retired");
+      const fresh = { ...input, id: "fresh-route", input: "Newly authorized work" };
+      retainMainRoute(state.storage, fresh);
+      bindMainRouteCoordinator(state.storage, fresh.id, replacement);
+      runs.put({ id: "new-run", agent_id: replacement, turn_id: `main-route:${fresh.id}`, title: "Research", input: fresh.input,
+        request_hash: "new-hash", authorization_json: "{}", authorization_epoch: 1 });
+      bindMainRouteCoordinator(state.storage, fresh.id, replacement); // Same-generation retry.
+      expect(mainRouteCoordinator(state.storage, fresh.id)).toBe(replacement);
+      expect(runs.latest(replacement)?.input).toBe(fresh.input);
+      expect(state.storage.sql.exec("SELECT id FROM project_thread_runs").toArray()).toHaveLength(2);
+    });
+    expect((await (await f.ensure("/projects/research")).json<{ coordinator_agent_id: string }>()).coordinator_agent_id).toBe(replacement);
   });
 
   it("leaves generations untouched when ordinary conversations are deleted", async () => {

@@ -108,3 +108,11 @@ later settings after an ambiguous creation response. Existing coordinators are
 reused without configuration updates. Direct UI project creation keeps its default
 configuration semantics. Creation uses the current checked route principal; no
 capabilities or authorization are copied into the creation snapshot.
+
+A route ID is also durably bound to its resolved coordinator before admission.
+After deletion/recreation, retrying that route ID fails and requires a fresh route ID;
+it cannot re-execute completed, cancelled, or retired work on the replacement.
+Older admitted routes recover this binding from their durable project-run records.
+Default UI ensure remains free to recreate canonical identities. Coordinator creation
+snapshots remain immutable per project and generation, shared across route IDs within
+that generation; a fresh route in a new generation may inherit updated Main settings.
