@@ -1,5 +1,6 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { projectThreadRegistry } from "../src/project-threads";
 import { mainThreadRequest } from "../src/main-thread";
 import { initializeMainThreadRegistry, mainThreadRegistry } from "../src/main-thread-registry";
 
@@ -46,6 +47,12 @@ describe("account main and canonical project registry", () => {
       { id: `project-${a}`, name: "Migrated", coordinator_agent_id: a },
     ] });
     expect(snapshot()).toEqual(before);
+    // Navigation membership never grants execution delegation scope.
+    for (const agent of [a, b]) {
+      const execution = await projectThreadRegistry(new Request(`https://user.internal/project-threads/${agent}`), storage);
+      expect(await execution.json()).toEqual({ project_root_id: agent, data: [] });
+    }
+
     expect(await (await mainThreadRegistry(request("/projects"), storage)).json()).toEqual({ data: [] });
     const put = (coordinator?: string) => mainThreadRequest(new Request(`https://x/v1/projects/project-${a}`, {
       method: "PUT", body: JSON.stringify({ name: "Renamed", ...(coordinator ? { coordinator_agent_id: coordinator } : {}) }),
