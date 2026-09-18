@@ -961,3 +961,13 @@ html[data-theme="light"] .chat-workspace {
     animation-duration: 0.01ms !important;
   }
 }
+
+.agent-project-navigation {
+  margin-top: 20px;
+  max-height: 30vh;
+  overflow-y: auto;
+}
+.agent-project-navigation button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}

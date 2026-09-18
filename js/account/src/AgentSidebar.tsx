@@ -17,7 +17,9 @@ import {
   useState,
   type RefObject,
 } from "react";
-import { Link, useLocation } from "react-router";
+import { Link, useLocation, useNavigate } from "react-router";
+import { MainThreadNavigation } from "./MainThreadNavigation";
+import { useAccountSession } from "./AccountSession";
 import { AgentSearchDialog } from "./AgentSearchDialog";
 import type { ManagedConversation } from "./managedAgentRuntime";
 import { useModalBoundary } from "./modalBoundary";
@@ -25,6 +27,7 @@ import {
   connectDemoUrl,
   demoNavigation,
   gitNavigation,
+  pathForAgent,
   pathForSurface,
   primaryNavigation,
 } from "./navigation";
@@ -65,6 +68,8 @@ export function AgentSidebar({
   selectedId?: string;
   triggerRef: RefObject<HTMLButtonElement | null>;
 }) {
+  const account = useAccountSession();
+  const navigate = useNavigate();
   const [searchOpen, setSearchOpen] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
@@ -154,6 +159,7 @@ export function AgentSidebar({
             <PanelLeftClose />
           </button>
         </div>
+        <MainThreadNavigation key={account.account?.id ?? "anonymous"} accountId={account.account?.id} selectedId={landing ? undefined : selectedId} onSelect={(id) => { onClose(); void navigate(pathForAgent(id)); }} onConnect={() => { onClose(); void navigate("/connect"); }} />
         <nav className="agent-navigation-primary" aria-label="Chat navigation">
           <button type="button" onClick={onCreate} disabled={pending}>
             <SquarePen />
