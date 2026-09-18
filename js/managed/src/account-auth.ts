@@ -1,4 +1,6 @@
 import { initializeConversationProjects, conversationProjectMigration } from "./conversation-project-migration";
+import type { DurableAgentSession } from "./index";
+import { initializeMainThreadRegistry, mainThreadRegistry, mainThreadMembershipGuard } from "./main-thread-registry";
 import { initializeProjectThreads, projectThreadRegistry } from "./project-threads";
 import { recordHandTiming } from "./hand-timing";
 import { configurationCatalog } from "./agent-configuration";
@@ -69,6 +71,7 @@ export function isUserId(value: unknown): value is string {
 export const NonceStorage = Kv.NonceStorage;
 
 export interface AccountAuthEnv {
+  NANOCODEX_SESSIONS?: DurableObjectNamespace<DurableAgentSession>;
   NANOCODEX_PERFORMANCE_TRACE?: string;
   NANOCODEX_ACCESS_SECRET?: string;
   ENVIRONMENT?: string;
@@ -930,6 +933,7 @@ export async function attachAgent(
   agentId: string,
   timeoutMs = DEFAULT_OWNERSHIP_IO_TIMEOUT_MS,
   hasCronTriggers?: boolean,
+  teamId?: string,
 ): Promise<void> {
   await fetchResponseWithDeadline(
     env.NANOCODEX_USERS.getByName(userId),
@@ -937,7 +941,7 @@ export async function attachAgent(
     {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agentId, hasCronTriggers }),
+      body: JSON.stringify({ agentId, hasCronTriggers, teamId }),
     },
     timeoutMs,
     "agent attachment",
@@ -1745,6 +1749,7 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
     `);
     initializeProjectThreads(ctx.storage);
     initializeConversationProjects(ctx.storage);
+    initializeMainThreadRegistry(ctx.storage);
     // Existing agents stay candidates until their first schedule read. New
     // registrations supply their actual presence; omitted legacy values stay unknown.
     const columns = new Set(ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(agent_registry)").toArray().map(({ name }) => name));
@@ -1760,7 +1765,19 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
       return configurationCatalog(request, this.ctx.storage);
     }
     if (/^\/project-threads\/[0-9a-f-]{36}$/.test(url.pathname)) {
-      return projectThreadRegistry(request, this.ctx.storage);
+      return this.ctx.blockConcurrencyWhile(async () => {
+        const conflict = await mainThreadMembershipGuard(request, this.ctx.storage);
+        if (conflict) return conflict;
+        return projectThreadRegistry(request, this.ctx.storage);
+      });
+    }
+    if (url.pathname === "/main-thread" || url.pathname === "/projects" || url.pathname.startsWith("/projects/")) {
+      return this.ctx.blockConcurrencyWhile(() => mainThreadRegistry(request, this.ctx.storage,
+        this.env.NANOCODEX_SESSIONS ? async (agentId, teamId) => {
+          const account = await this.ctx.storage.get<UserRecord>("account");
+          if (!isUserRecord(account)) return false;
+          return this.env.NANOCODEX_SESSIONS!.getByName(agentId).mainThreadIdentity(account.id, teamId);
+        } : undefined));
     }
     if (url.pathname === "/authorization" && request.method === "GET") {
       const account = await this.ctx.storage.get<UserRecord>("account");
@@ -1863,29 +1880,34 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
         ).toArray().map(agentSummary));
       }
       if (request.method === "POST") {
-        const body = await request.json<{ agentId?: unknown; hasCronTriggers?: unknown }>();
+        const body = await request.json<{ agentId?: unknown; hasCronTriggers?: unknown; teamId?: unknown }>();
         const agentId = typeof body.agentId === "string" ? body.agentId : "";
         if (!/^[0-9a-f-]{36}$/.test(agentId)
-          || (body.hasCronTriggers !== undefined && typeof body.hasCronTriggers !== "boolean")) {
+          || (body.hasCronTriggers !== undefined && typeof body.hasCronTriggers !== "boolean")
+          || (body.teamId !== undefined && (typeof body.teamId !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(body.teamId)))) {
           return json({ error: "invalid_agent" }, { status: 400 });
         }
-        const existing = this.ctx.storage.sql.exec<{ deleted_at: number | null }>(
-          "SELECT deleted_at FROM agent_registry WHERE id = ?",
+        const existing = this.ctx.storage.sql.exec<{ deleted_at: number | null; team_id: string | null }>(
+          "SELECT deleted_at, team_id FROM agent_registry WHERE id = ?",
           agentId,
         ).toArray()[0];
         if (existing?.deleted_at !== null && existing !== undefined) {
           return json({ error: "agent_deleted" }, { status: 410 });
         }
+        if (existing && existing.team_id !== null && body.teamId !== undefined && existing.team_id !== body.teamId) {
+          return json({ error: "agent_team_conflict" }, { status: 409 });
+        }
         if (!existing) {
           const now = Date.now();
           this.ctx.storage.sql.exec(
             `INSERT INTO agent_registry
-               (id, title, created_at, updated_at, turn_count, deleted_at, cron_candidate)
-             VALUES (?, '', ?, ?, 0, NULL, ?)`,
+               (id, title, created_at, updated_at, turn_count, deleted_at, cron_candidate, team_id)
+             VALUES (?, '', ?, ?, 0, NULL, ?, ?)`,
             agentId,
             now,
             now,
             typeof body.hasCronTriggers === "boolean" ? Number(body.hasCronTriggers) : null,
+            typeof body.teamId === "string" ? body.teamId : null,
           );
         } else if (body.hasCronTriggers === true) {
           this.ctx.storage.sql.exec("UPDATE agent_registry SET cron_candidate = 1 WHERE id = ?", agentId);
