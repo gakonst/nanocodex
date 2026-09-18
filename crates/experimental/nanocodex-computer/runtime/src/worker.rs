@@ -3,7 +3,7 @@
 //! Cancellation is cooperative around provider calls and preemptive for JS CPU.
 use crate::{
     Error, Result,
-    runtime::{Host, HostOptions, ProviderControl},
+    runtime::{Host, HostOptions, ProviderControl, ProviderResponse},
 };
 use serde_json::Value;
 use std::{
@@ -112,7 +112,7 @@ impl Worker {
                             if host.is_none() {
                                 let output = send.clone();
                                 let interrupted = cancelled.clone();
-                                host = Some(Host::with_controlled_dispatch(
+                                host = Some(Host::with_async_dispatch(
                                     move |method, args, control| {
                                         if interrupted.load(Ordering::Acquire) {
                                             return Err(Error::new(-32800, "Evaluation cancelled"));
@@ -128,24 +128,22 @@ impl Worker {
                                             .map_err(|_| {
                                                 Error::action("Service owner disconnected")
                                             })?;
-                                        loop {
-                                            match receive.recv_timeout(Duration::from_millis(20)) {
-                                                Ok(result) => return result,
-                                                Err(mpsc::RecvTimeoutError::Timeout) => {
-                                                    if interrupted.load(Ordering::Acquire) {
-                                                        return Err(Error::new(
-                                                            -32800,
-                                                            "Evaluation cancelled",
-                                                        ));
-                                                    }
-                                                }
-                                                Err(_) => {
-                                                    return Err(Error::action(
-                                                        "Service reply disconnected",
-                                                    ));
-                                                }
+                                        let interrupted = interrupted.clone();
+                                        Ok(ProviderResponse::pending(move || {
+                                            if interrupted.load(Ordering::Acquire) {
+                                                return Some(Err(Error::new(
+                                                    -32800,
+                                                    "Evaluation cancelled",
+                                                )));
                                             }
-                                        }
+                                            match receive.try_recv() {
+                                                Ok(result) => Some(result),
+                                                Err(mpsc::TryRecvError::Empty) => None,
+                                                Err(mpsc::TryRecvError::Disconnected) => Some(Err(
+                                                    Error::action("Service reply disconnected"),
+                                                )),
+                                            }
+                                        }))
                                     },
                                     cancelled.clone(),
                                     options.clone(),
@@ -218,15 +216,22 @@ impl Worker {
         Ok(self.next)
     }
     pub fn event(&mut self, timeout: Duration) -> Result<Option<Event>> {
-        match self.events.recv_timeout(timeout) {
-            Ok(event) => {
-                if matches!(&event, Event::Done { .. }) {
-                    self.active = false;
+        let started = std::time::Instant::now();
+        loop {
+            match self
+                .events
+                .recv_timeout(timeout.saturating_sub(started.elapsed()))
+            {
+                Ok(Event::Call { .. }) if self.cancelled() => continue,
+                Ok(event) => {
+                    if matches!(&event, Event::Done { .. }) {
+                        self.active = false;
+                    }
+                    return Ok(Some(event));
                 }
-                Ok(Some(event))
+                Err(mpsc::RecvTimeoutError::Timeout) => return Ok(None),
+                Err(_) => return Err(Error::action("Runtime worker disconnected")),
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
-            Err(_) => Err(Error::action("Runtime worker disconnected")),
         }
     }
     pub fn set_request_meta(&mut self, value: Option<Value>) -> Result<()> {

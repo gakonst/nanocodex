@@ -657,7 +657,9 @@ impl Engine {
     ) -> Result<Value> {
         if method == "sky.app_policy" {
             let app = self.desktop.app_policy_target(string(args, "app")?)?;
-            let binding = if app.window_id.is_none() && string(args, "app")?.parse::<i32>().is_ok()
+            let binding = if self.desktop.sky_target() == "mac"
+                && app.window_id.is_none()
+                && string(args, "app")?.parse::<i32>().is_ok()
             {
                 app.pid.to_string()
             } else {
@@ -1144,6 +1146,131 @@ impl Engine {
         }
         result
     }
+    /// Parent-only admission for the restricted native subprocess transport.
+    /// Only explicit window bindings qualify; all other providers retain their
+    /// existing facade and authorization path.
+    pub fn prepare_window_lane(
+        &mut self,
+        method: &str,
+        args: &Value,
+        control: &crate::runtime::ProviderControl,
+    ) -> Result<Option<WindowLaneCall>> {
+        if method != "sky.execute" || !self.desktop.app_interface() || self.desktop.synthetic() {
+            return Ok(None);
+        }
+        let native = args["method"].as_str().unwrap_or("");
+        if !window_lane_method(native) {
+            return Ok(None);
+        }
+        let Some(params) = args["args"].as_array().and_then(|a| a.first()) else {
+            return Ok(None);
+        };
+        let Some(identifier) = params["app"].as_str() else {
+            return Ok(None);
+        };
+        let Some(target) = self.desktop.window_lane_binding(identifier)? else {
+            return Ok(None);
+        };
+        control.validate()?;
+        if let Some(validity) = control.native_execution_validity() {
+            validity.validate()?;
+        }
+        if !self.sky_setup()["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m == native)
+        {
+            return Err(Error::unsupported("Native window method unavailable"));
+        }
+        let lease = args["guardianLease"].as_str().map(str::to_owned);
+        if self.guardian_monitor.is_some() {
+            self.refresh_guardian()?;
+            let token = lease
+                .as_deref()
+                .ok_or_else(|| Error::new(-32003, "A control lease is required"))?;
+            self.guardian.authorize(&self.owner, token)?;
+            if self.active_lease.as_deref() != Some(token) {
+                self.browsers.cancel_all_raw_waits();
+            }
+            self.active_lease = Some(token.into());
+        }
+        self.approvals.authorize_app(&target.path)?;
+        // Seed only process metadata; app() still checks policy and cached
+        // identity without invoking a blocking initial AX bind in this parent.
+        self.apps.entry(identifier.into()).or_insert(target);
+        let app = self.app(identifier)?;
+        let key = self.desktop.session_key(&app);
+        let mut params = params.clone();
+        params["app"] = json!(key);
+        Ok(Some(WindowLaneCall {
+            key,
+            app,
+            scope: self.kernel_scope.clone(),
+            method: native.into(),
+            params,
+            lease,
+        }))
+    }
+    pub fn validate_window_lane(
+        &mut self,
+        call: &WindowLaneCall,
+        control: &crate::runtime::ProviderControl,
+    ) -> Result<()> {
+        control.validate()?;
+        if let Some(validity) = control.native_execution_validity() {
+            validity.validate()?;
+        }
+        self.approvals.authorize_app(&call.app.path)?;
+        if self.guardian_monitor.is_some() {
+            let lease = call
+                .lease
+                .as_deref()
+                .ok_or_else(|| Error::new(-32003, "A control lease is required"))?;
+            if self.active_lease.as_deref() != Some(lease) {
+                return Err(Error::new(-32003, "Native lane lease ended"));
+            }
+            self.guardian.authorize(&self.owner, lease)?;
+        }
+        Ok(())
+    }
+    /// Restricted child entrypoint. No facade, browser, host, audio, display or
+    /// policy APIs are reachable. The fixed binding is established by the
+    /// private pipe bootstrap and compared on every request before native work.
+    pub fn execute_window_lane(
+        &mut self,
+        bound: &App,
+        scope: &str,
+        method: &str,
+        params: &Value,
+    ) -> Result<Value> {
+        if !window_lane_method(method)
+            || params["app"].as_str() != Some(self.desktop.session_key(bound).as_str())
+        {
+            return Err(Error::new(-32003, "Request escapes native window lane"));
+        }
+        let current = self
+            .desktop
+            .window_lane_binding(&self.desktop.session_key(bound))?
+            .ok_or_else(|| Error::new(-32003, "Native lane requires an exact backend binding"))?;
+        if current.pid != bound.pid
+            || current.id != bound.id
+            || current.path != bound.path
+            || current.window_id != bound.window_id
+        {
+            return Err(Error::new(
+                -32003,
+                "Native lane process/window identity changed",
+            ));
+        }
+        if !self.desktop.validate_app(bound)? {
+            return Err(Error::action("Native window process ended"));
+        }
+        self.kernel_scope = scope.into();
+        self.apps
+            .insert(self.desktop.session_key(bound), bound.clone());
+        self.execute_sky_window(method, params)
+    }
     fn sky_execute(&mut self, request: &Value) -> Result<Value> {
         let method = string(request, "method")?;
         let arguments = request["args"]
@@ -1214,6 +1341,9 @@ impl Engine {
         }
         let target = self.desktop.app_policy_target(string(&params, "app")?)?;
         self.approvals.authorize_app(&target.path)?;
+        self.execute_sky_window(method, &params)
+    }
+    fn execute_sky_window(&mut self, method: &str, params: &Value) -> Result<Value> {
         if method == "get_app_state" {
             let mut capture = params.clone();
             capture["screenshot"] = json!(
@@ -1418,4 +1548,215 @@ fn drag_modifiers(args: &Value) -> Result<Vec<String>> {
         result.push(modifier);
     }
     Ok(result)
+}
+
+/// Non-secret, parent-authorized description of one exact-window operation.
+#[derive(Clone)]
+pub struct WindowLaneCall {
+    pub key: String,
+    pub app: App,
+    pub scope: String,
+    pub method: String,
+    pub params: Value,
+    pub lease: Option<String>,
+}
+fn window_lane_method(method: &str) -> bool {
+    matches!(
+        method,
+        "get_app_state"
+            | "click"
+            | "drag"
+            | "paste"
+            | "perform_secondary_action"
+            | "press_key"
+            | "scroll"
+            | "select_text"
+            | "set_value"
+            | "type_text"
+    )
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod window_lane_tests {
+    use super::*;
+    use crate::runtime::ProviderControl;
+    struct WindowDesktop;
+    fn bound() -> App {
+        App {
+            window_id: Some(42),
+            id: "org.owned".into(),
+            name: "Owned".into(),
+            path: "/Owned.app".into(),
+            pid: 123,
+        }
+    }
+    impl Desktop for WindowDesktop {
+        fn window_lane_binding(&mut self, identifier: &str) -> Result<Option<App>> {
+            Ok((identifier == "123#window=42").then(bound))
+        }
+        fn apps(&mut self) -> Result<Vec<App>> {
+            Ok(vec![bound()])
+        }
+        fn bind(&mut self, _: &str) -> Result<App> {
+            Ok(bound())
+        }
+        fn app_policy_target(&mut self, _: &str) -> Result<App> {
+            Ok(bound())
+        }
+        fn validate_app(&mut self, _: &App) -> Result<bool> {
+            Ok(true)
+        }
+        fn session_key(&self, app: &App) -> String {
+            format!("{}#window={}", app.pid, app.window_id.unwrap())
+        }
+        fn snapshot(&mut self, _: &App) -> Result<Node> {
+            Err(Error::action("native side effect reached"))
+        }
+        fn action(&mut self, _: &App, _: Action) -> Result<()> {
+            Err(Error::action("native side effect reached"))
+        }
+        fn capabilities(&self) -> Vec<&'static str> {
+            vec![]
+        }
+    }
+    fn request() -> Value {
+        json!({"method":"get_app_state","args":[{"app":"123#window=42"}]})
+    }
+    fn approve(engine: &mut Engine) {
+        engine.security.authorize_native_control();
+        engine.approvals.policy(bound(), &engine.security);
+        engine.prepare_elicitation(&json!({"meta":{"connector_id":"computer-use","tool_name":"get_app_state","tool_params":{"app":"org.owned"}}})).unwrap();
+    }
+    #[test]
+    fn lane_admission_preserves_approval_policy_and_facade_boundaries() {
+        let mut engine = Engine::new(Box::new(WindowDesktop));
+        let control = ProviderControl::new(|_| Ok(()));
+        assert!(
+            engine
+                .prepare_window_lane("sky.execute", &request(), &control)
+                .is_err()
+        );
+        approve(&mut engine);
+        let call = engine
+            .prepare_window_lane("sky.execute", &request(), &control)
+            .unwrap()
+            .unwrap();
+        assert_eq!(call.app.window_id, Some(42));
+        assert_eq!(call.params["app"], "123#window=42");
+        assert!(
+            engine
+                .prepare_window_lane("get_app_state", &request(), &control)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            engine
+                .execute_from_js("get_app_state", &json!({"app":"123#window=42"}))
+                .is_err()
+        );
+        engine.security = crate::security::Security::new(
+            serde_json::from_value(json!({"allowed_apps":["forbidden"]})).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            engine
+                .prepare_window_lane("sky.execute", &request(), &control)
+                .is_err()
+        );
+    }
+    #[test]
+    fn expired_execution_never_enters_native_lane() {
+        let mut engine = Engine::new(Box::new(WindowDesktop));
+        approve(&mut engine);
+        let control = ProviderControl::new_with_execution_check(
+            |_| Ok(()),
+            Some(std::sync::Arc::new(|| Err(Error::new(-32800, "expired")))),
+        );
+        assert_eq!(
+            engine
+                .prepare_window_lane("sky.execute", &request(), &control)
+                .err()
+                .unwrap()
+                .message,
+            "expired"
+        );
+    }
+    #[test]
+    fn child_entrypoint_cannot_escape_fixed_window_or_native_method_allowlist() {
+        let mut engine = Engine::new(Box::new(WindowDesktop));
+        for method in [
+            "browser.navigate",
+            "host/turn",
+            "get_desktop_screenshot",
+            "list_apps",
+            "start_audio_recording",
+        ] {
+            assert_eq!(
+                engine
+                    .execute_window_lane(&bound(), "scope", method, &json!({"app":"123#window=42"}))
+                    .unwrap_err()
+                    .code,
+                -32003
+            );
+        }
+        assert_eq!(
+            engine
+                .execute_window_lane(&bound(), "scope", "click", &json!({"app":"123#window=43"}))
+                .unwrap_err()
+                .code,
+            -32003
+        );
+    }
+}
+
+#[cfg(test)]
+mod exact_linux_policy_tests {
+    use super::*;
+    struct LinuxWindow;
+    impl Desktop for LinuxWindow {
+        fn apps(&mut self) -> Result<Vec<App>> {
+            Ok(vec![self.bind("123")?])
+        }
+        fn bind(&mut self, _: &str) -> Result<App> {
+            Ok(App {
+                pid: 123,
+                window_id: None,
+                id: "hyprland:123:456:0x789:10".into(),
+                name: "Owned".into(),
+                path: "/owned/app".into(),
+            })
+        }
+        fn app_policy_target(&mut self, value: &str) -> Result<App> {
+            self.bind(value)
+        }
+        fn sky_target(&self) -> &'static str {
+            "linux"
+        }
+        fn app_interface(&self) -> bool {
+            true
+        }
+        fn session_key(&self, app: &App) -> String {
+            app.id.clone()
+        }
+        fn snapshot(&mut self, _: &App) -> Result<Node> {
+            Err(Error::unsupported("unused"))
+        }
+        fn action(&mut self, _: &App, _: Action) -> Result<()> {
+            Err(Error::unsupported("unused"))
+        }
+        fn capabilities(&self) -> Vec<&'static str> {
+            vec![]
+        }
+    }
+    #[test]
+    fn numeric_linux_app_policy_retains_exact_window_identity() {
+        let mut engine = Engine::new(Box::new(LinuxWindow));
+        let policy = engine
+            .execute("sky.app_policy", &json!({"app":"123"}))
+            .unwrap();
+        assert_eq!(
+            policy["target"]["bindingIdentifier"],
+            "hyprland:123:456:0x789:10"
+        );
+    }
 }

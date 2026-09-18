@@ -46,6 +46,7 @@ fn peer(fd: i32) -> Result<i32> {
     Ok(cred.pid)
 }
 fn output(command: &mut Command, limit: u64) -> Result<Vec<u8>> {
+    super::check_native_cancellation()?;
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -62,6 +63,11 @@ fn output(command: &mut Command, limit: u64) -> Result<Vec<u8>> {
     });
     let deadline = Instant::now() + Duration::from_secs(5);
     let status = loop {
+        if let Err(error) = super::check_native_cancellation() {
+            let _ = child.kill();
+            let _ = child.wait();
+            break Err(error);
+        }
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
@@ -210,6 +216,7 @@ impl Connection {
         Self::accepted(response).map(|_| true)
     }
     fn send(&mut self, message: &str) -> Result<()> {
+        super::check_native_cancellation()?;
         let sent = unsafe {
             libc::send(
                 self.fd.as_raw_fd(),
@@ -237,6 +244,25 @@ impl Connection {
         Ok(response)
     }
     fn receive_value(&mut self) -> Result<Value> {
+        // Poll in short bounded intervals so revocation closes the owned socket
+        // promptly, releasing any held plugin input. Never resend a command.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            super::check_native_cancellation()?;
+            let mut poll = libc::pollfd {
+                fd: self.fd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ready = unsafe { libc::poll(&mut poll, 1, 10) };
+            if ready > 0 {
+                break;
+            }
+            if ready < 0 || Instant::now() >= deadline {
+                return Err(failure("input receipt missing; outcome unknown, no retry"));
+            }
+        }
+        super::check_native_cancellation()?;
         let mut buffer = [0u8; 16384];
         let n = unsafe {
             libc::recv(
@@ -286,7 +312,12 @@ impl Hyprland {
         let display = if display.is_absolute() {
             display
         } else {
-            if display.components().count() != 1 {
+            if display.components().count() != 1
+                || !matches!(
+                    display.components().next(),
+                    Some(std::path::Component::Normal(_))
+                )
+            {
                 return Err(failure("invalid Wayland display"));
             }
             runtime.join(display)
@@ -357,6 +388,10 @@ impl Hyprland {
         points: &[[f64; 2]],
     ) -> Result<()> {
         let connection_id = (self.visual_scope.clone(), app.id.clone());
+        if let Err(error) = super::check_native_cancellation() {
+            self.connections.remove(&connection_id);
+            return Err(error);
+        }
         let current = match self.checked(app) {
             Ok(current) => current,
             Err(error) => {
@@ -381,6 +416,7 @@ impl Hyprland {
             let mut lane = 0;
             let mut capacity = 1;
             while lane < capacity {
+                super::check_native_cancellation()?;
                 let socket = if lane == 0 {
                     "cua-input-v3.sock".into()
                 } else {
@@ -558,6 +594,16 @@ impl Desktop for Hyprland {
         Ok(())
     }
 
+    fn window_lane_binding(&mut self, identifier: &str) -> Result<Option<App>> {
+        if !identifier.starts_with("hyprland:") {
+            return Ok(None);
+        }
+        self.apps()?
+            .into_iter()
+            .find(|app| app.id == identifier)
+            .map(Some)
+            .ok_or_else(|| failure("exact target window is unavailable"))
+    }
     fn session_key(&self, app: &App) -> String {
         app.id.clone()
     }
@@ -655,6 +701,25 @@ impl Desktop for Hyprland {
         self.observed.remove(&app.id);
     }
     fn action(&mut self, app: &App, action: Action) -> Result<()> {
+        let result = self.perform_action(app, action);
+        if result.is_err() {
+            self.connections
+                .remove(&(self.visual_scope.clone(), app.id.clone()));
+        }
+        result
+    }
+    fn capabilities(&self) -> Vec<&'static str> {
+        vec!["background-app-input", "get_screenshot"]
+    }
+    fn end_session(&mut self, _: &str) -> Result<()> {
+        self.connections.clear();
+        self.observed.clear();
+        Ok(())
+    }
+}
+impl Hyprland {
+    fn perform_action(&mut self, app: &App, action: Action) -> Result<()> {
+        super::check_native_cancellation()?;
         match action {
             Action::Click {
                 target: Target::Point { point },
@@ -744,20 +809,80 @@ impl Desktop for Hyprland {
             )),
         }
     }
-    fn capabilities(&self) -> Vec<&'static str> {
-        vec!["background-app-input", "get_screenshot"]
-    }
-    fn end_session(&mut self, _: &str) -> Result<()> {
-        // Desktop belongs to one Engine; its opaque owner is not an app ID.
-        // Ending that engine releases every target it owns, never another Engine.
-        self.connections.clear();
-        self.observed.clear();
-        Ok(())
-    }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn revoked_delivery_sends_nothing_and_wait_is_interruptible() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let mut pair = [-1; 2];
+        assert_eq!(
+            unsafe {
+                libc::socketpair(
+                    libc::AF_UNIX,
+                    libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                    0,
+                    pair.as_mut_ptr(),
+                )
+            },
+            0
+        );
+        let mut connection = Connection {
+            fd: unsafe { OwnedFd::from_raw_fd(pair[0]) },
+            sequence: 0,
+            drag_options: true,
+        };
+        let peer = unsafe { OwnedFd::from_raw_fd(pair[1]) };
+        let cancelled = Arc::new(AtomicBool::new(true));
+        super::super::set_native_cancellation(Some(cancelled.clone()));
+        assert_eq!(
+            connection.send("KEY 1 token 1 17 0").unwrap_err().code,
+            -32800
+        );
+        let mut byte = 0u8;
+        assert_eq!(
+            unsafe {
+                libc::recv(
+                    peer.as_raw_fd(),
+                    (&mut byte as *mut u8).cast(),
+                    1,
+                    libc::MSG_DONTWAIT,
+                )
+            },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        cancelled.store(false, Ordering::Release);
+        let revoke = cancelled.clone();
+        let thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(25));
+            revoke.store(true, Ordering::Release);
+        });
+        let start = Instant::now();
+        assert_eq!(connection.receive_value().unwrap_err().code, -32800);
+        assert!(start.elapsed() < Duration::from_millis(500));
+        thread.join().unwrap();
+        super::super::set_native_cancellation(None);
+    }
+    #[test]
+    fn revoked_helper_does_not_launch() {
+        use std::sync::{Arc, atomic::AtomicBool};
+        super::super::set_native_cancellation(Some(Arc::new(AtomicBool::new(true))));
+        assert_eq!(
+            output(&mut Command::new("/nonexistent-revoked-helper"), 10)
+                .unwrap_err()
+                .code,
+            -32800
+        );
+        super::super::set_native_cancellation(None);
+    }
     #[test]
     fn legacy_two_lane_capacity_and_bounded_new_capacity() {
         assert_eq!(
@@ -914,4 +1039,22 @@ mod tests {
         assert!(chord("ctrl+ctrl+a").is_err());
         assert!(chord("hyper+a").is_err());
     }
+}
+
+/// Validate compositor endpoints before transferring only this explicit context.
+pub(super) fn window_lane_environment() -> Result<Vec<(std::ffi::OsString, std::ffi::OsString)>> {
+    if env("NANOCODEX_COMPUTER_BACKGROUND")? != "hyprland" {
+        return Err(failure("unsupported background backend"));
+    }
+    let _validated = Hyprland::from_environment()?;
+    [
+        "NANOCODEX_COMPUTER_BACKGROUND",
+        "XDG_RUNTIME_DIR",
+        "WAYLAND_DISPLAY",
+        "HYPRLAND_INSTANCE_SIGNATURE",
+        "NANOCODEX_HYPRLAND_CAPTURE",
+    ]
+    .into_iter()
+    .map(|name| Ok((name.into(), env(name)?.into())))
+    .collect()
 }

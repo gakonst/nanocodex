@@ -227,7 +227,8 @@ fn response_metadata_and_timeout_suspension_are_cell_scoped() {
     let result = host
         .evaluate(
             "let ownedApp=await cua.getApp('fixture');42",
-            Duration::from_millis(30),
+            // Native operation time is charged; only elicitation is suspended.
+            Duration::from_secs(1),
         )
         .unwrap();
     assert_eq!(result["value"], 42, "{result}");

@@ -16,6 +16,7 @@ mod drain_tests;
 mod execution_tests;
 #[path = "runtime_control.rs"]
 mod provider_control;
+pub(crate) use provider_control::ProviderLifetime;
 pub use provider_control::{ExecutionValidity, ProviderControl, ProviderSuspension};
 #[path = "runtime_drain.rs"]
 mod drain;
@@ -55,7 +56,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-type Dispatch = Rc<RefCell<Box<dyn FnMut(&str, &Value, ProviderControl) -> Result<Value>>>>;
+pub use rpc::ProviderResponse;
+type Dispatch =
+    Rc<RefCell<Box<dyn FnMut(&str, &Value, ProviderControl) -> Result<ProviderResponse>>>>;
 type PendingRpc = Rc<RefCell<rpc::Queue<Persistent<Function<'static>>>>>;
 type Timers = Rc<RefCell<BTreeMap<u32, Timer>>>;
 struct Timer {
@@ -179,6 +182,22 @@ impl Host {
     /// Trusted dispatch with a per-call human approval deadline capability.
     pub fn with_controlled_dispatch(
         dispatch: impl FnMut(&str, &Value, ProviderControl) -> Result<Value> + 'static,
+        cancellation: Arc<AtomicBool>,
+        options: HostOptions,
+    ) -> Result<Self> {
+        let mut dispatch = dispatch;
+        Self::with_async_dispatch(
+            move |method, args, control| {
+                Ok(ProviderResponse::ready(dispatch(method, args, control)))
+            },
+            cancellation,
+            options,
+        )
+    }
+    /// Admit provider work without blocking the JavaScript checkpoint thread.
+    /// Pending response pollers must return promptly and never execute JavaScript.
+    pub fn with_async_dispatch(
+        dispatch: impl FnMut(&str, &Value, ProviderControl) -> Result<ProviderResponse> + 'static,
         cancellation: Arc<AtomicBool>,
         options: HostOptions,
     ) -> Result<Self> {
@@ -400,6 +419,14 @@ fn validate_quickjs_execution(
     suspended: &Mutex<(u32, Option<Instant>)>,
     cancelled: &AtomicBool,
 ) -> Result<()> {
+    validate_quickjs_clock(deadline, suspended, cancelled, false)
+}
+fn validate_quickjs_clock(
+    deadline: &Mutex<Instant>,
+    suspended: &Mutex<(u32, Option<Instant>)>,
+    cancelled: &AtomicBool,
+    allow_suspended: bool,
+) -> Result<()> {
     let ended = || Error::new(-32800, "Evaluation cancelled or timed out");
     if cancelled.load(Ordering::Acquire) {
         return Err(ended());
@@ -409,7 +436,7 @@ fn validate_quickjs_execution(
         // clock after both locks; a pre-lock timestamp could admit expiry.
         let state = suspended.lock().unwrap();
         let limit = deadline.lock().unwrap();
-        if state.0 != 0 || Instant::now() >= *limit {
+        if (!allow_suspended && state.0 != 0) || (state.0 == 0 && Instant::now() >= *limit) {
             return Err(ended());
         }
     }
@@ -420,7 +447,7 @@ fn validate_quickjs_execution(
 }
 impl QuickJsHost {
     pub fn with_dispatch_options(
-        dispatch: impl FnMut(&str, &Value, ProviderControl) -> Result<Value> + 'static,
+        dispatch: impl FnMut(&str, &Value, ProviderControl) -> Result<ProviderResponse> + 'static,
         cancellation: Arc<AtomicBool>,
         options: HostOptions,
     ) -> Result<Self> {
@@ -759,8 +786,16 @@ impl QuickJsHost {
     }
 
     fn check_reply_execution(&self, ctx: &Ctx<'_>) -> rquickjs::Result<()> {
-        validate_quickjs_execution(&self.deadline, &self.suspended, &self.cancellation)
-            .map_err(|error| Exception::throw_message(ctx, &error.message))
+        // JavaScript settlement requires a running, metered clock.
+        let state = self.suspended.lock().unwrap();
+        let limit = self.deadline.lock().unwrap();
+        if self.cancellation.load(Ordering::Acquire) || state.0 > 0 || Instant::now() >= *limit {
+            return Err(Exception::throw_message(
+                ctx,
+                "Evaluation cancelled or timed out",
+            ));
+        }
+        Ok(())
     }
     fn app_state_response(
         &self,
@@ -799,108 +834,134 @@ impl QuickJsHost {
         Ok(helper_response(formatted))
     }
     fn dispatch_queued_rpc(&self, ctx: &Ctx<'_>) -> rquickjs::Result<bool> {
-        let Some(call) = self.pending_rpc.borrow_mut().pop() else {
-            return Ok(false);
-        };
-        if !self.active.get() || self.tasks.poisoned.get() || call.context.id != self.cell_id.get()
-        {
-            return Err(Exception::throw_message(
-                ctx,
-                "node_repl exec context not found",
-            ));
-        }
-        let activation_model =
-            crate::browser_activation::Model::from_task_metadata(&call.context.metadata);
-        let _context = self.tasks.scope(call.context);
-        let deadline = self.deadline.clone();
-        let suspended = self.suspended.clone();
-        let cancelled = self.cancellation.clone();
-        let execution_deadline = self.deadline.clone();
-        let execution_suspended = self.suspended.clone();
-        let execution_cancelled = self.cancellation.clone();
-        let control = ProviderControl::new_with_activation_model(
-            move |start| {
-                let mut state = suspended.lock().unwrap();
-                let mut limit = deadline.lock().unwrap();
-                if start {
-                    if cancelled.load(Ordering::Acquire)
-                        || (state.0 == 0 && Instant::now() >= *limit)
-                    {
-                        return Err(Error::new(-32800, "Evaluation cancelled or timed out"));
+        let queued = self.pending_rpc.borrow_mut().pop();
+        if let Some(call) = queued {
+            if !self.active.get()
+                || self.tasks.poisoned.get()
+                || call.context.id != self.cell_id.get()
+            {
+                return Err(Exception::throw_message(
+                    ctx,
+                    "node_repl exec context not found",
+                ));
+            }
+            let activation_model =
+                crate::browser_activation::Model::from_task_metadata(&call.context.metadata);
+            let _context = self.tasks.scope(call.context.clone());
+            let deadline = self.deadline.clone();
+            let suspended = self.suspended.clone();
+            let cancelled = self.cancellation.clone();
+            let execution_deadline = self.deadline.clone();
+            let execution_suspended = self.suspended.clone();
+            let execution_cancelled = self.cancellation.clone();
+            let native_deadline = self.deadline.clone();
+            let native_suspended = self.suspended.clone();
+            let native_cancelled = self.cancellation.clone();
+            let control = ProviderControl::new_with_activation_model(
+                move |start| {
+                    let mut state = suspended.lock().unwrap();
+                    let mut limit = deadline.lock().unwrap();
+                    if start {
+                        if cancelled.load(Ordering::Acquire)
+                            || (state.0 == 0 && Instant::now() >= *limit)
+                        {
+                            return Err(Error::new(-32800, "Evaluation cancelled or timed out"));
+                        }
+                        if state.0 == 0 {
+                            state.1 = Some(Instant::now());
+                        }
+                        state.0 = state
+                            .0
+                            .checked_add(1)
+                            .ok_or_else(|| Error::action("Timeout suspension depth exceeded"))?;
+                    } else if state.0 > 0 {
+                        state.0 -= 1;
+                        if state.0 == 0 {
+                            let began = state.1.take().unwrap();
+                            *limit = limit.checked_add(began.elapsed()).ok_or_else(|| {
+                                Error::action("Timeout suspension exceeded the clock range")
+                            })?;
+                        }
                     }
-                    if state.0 == 0 {
-                        state.1 = Some(Instant::now());
-                    }
-                    state.0 = state
-                        .0
-                        .checked_add(1)
-                        .ok_or_else(|| Error::action("Timeout suspension depth exceeded"))?;
-                } else if state.0 > 0 {
-                    state.0 -= 1;
-                    if state.0 == 0 {
-                        let began = state.1.take().unwrap();
-                        *limit = limit.checked_add(began.elapsed()).ok_or_else(|| {
-                            Error::action("Timeout suspension exceeded the clock range")
-                        })?;
-                    }
-                }
-                Ok(())
-            },
-            Some(Arc::new(move || {
-                validate_quickjs_execution(
-                    &execution_deadline,
-                    &execution_suspended,
-                    &execution_cancelled,
-                )
-            })),
-            activation_model,
-        );
-        if self.pending_rpc.borrow().is_empty()
+                    Ok(())
+                },
+                Some(Arc::new(move || {
+                    validate_quickjs_execution(
+                        &execution_deadline,
+                        &execution_suspended,
+                        &execution_cancelled,
+                    )
+                })),
+                activation_model,
+            )
+            .with_native_execution_check(move || {
+                validate_quickjs_clock(&native_deadline, &native_suspended, &native_cancelled, true)
+            });
+            if self.pending_rpc.borrow().is_empty()
             // settle_promise just observed execute_pending_job() == false.
             && self.microtasks.is_empty()
             // Any future timer may become runnable inside the slice. Without
             // native ownership/deadline proof for it, keep all that time charged.
             && self.timers.borrow().is_empty()
-        {
-            control
-                .set_drain_proof(self.drain.registry.borrow().proof(call.request))
-                .map_err(|e| Exception::throw_message(ctx, &e.message))?;
-        }
-        let lifetime = control.lifetime();
-        let result = if self.tasks.poisoned.get() {
-            Err(Error::action("Asynchronous context nesting exceeded"))
-        } else {
-            let suspended = if call.suspend {
+            {
+                control
+                    .set_drain_proof(self.drain.registry.borrow().proof(call.request))
+                    .map_err(|e| Exception::throw_message(ctx, &e.message))?;
+            }
+            let guard = if call.suspend {
                 Some(control.suspend())
             } else {
                 None
             };
-            match suspended {
-                Some(Err(error)) => Err(error),
+            let (response, guard) = match guard {
+                Some(Err(error)) => (ProviderResponse::ready(Err(error)), None),
                 guard => {
-                    let result =
-                        self.dispatch.borrow_mut()(&call.method, &call.input, control.clone());
-                    guard
-                        .map(|guard| guard.and_then(|guard| guard.resume().map(|_| ())))
-                        .transpose()
-                        .and(result)
+                    let response =
+                        self.dispatch.borrow_mut()(&call.method, &call.input, control.clone())
+                            .unwrap_or_else(|error| ProviderResponse::ready(Err(error)));
+                    (response, guard.and_then(|guard| guard.ok()))
                 }
-            }
-        };
-        self.drain
-            .registry
-            .borrow_mut()
-            .replied(call.request, control.continuation());
-        self.drain.collect();
-        lifetime
-            .finish()
-            .map_err(|error| Exception::throw_message(ctx, &error.message))?;
-        if self.interrupted() {
-            return Err(Exception::throw_message(
-                ctx,
-                "Evaluation cancelled or timed out",
-            ));
+            };
+            self.pending_rpc
+                .borrow_mut()
+                .admit(call, control, response, guard);
+            return Ok(true);
         }
+        let completed = self.pending_rpc.borrow_mut().poll();
+        if let Some((active, result)) = completed {
+            let rpc::Active {
+                call,
+                control,
+                lifetime,
+                guard,
+                ..
+            } = active;
+            let _context = self.tasks.scope(call.context.clone());
+            let result = guard.map(|guard| guard.resume()).transpose().and(result);
+            self.drain
+                .registry
+                .borrow_mut()
+                .replied(call.request, control.continuation());
+            self.drain.collect();
+            lifetime
+                .finish()
+                .map_err(|error| Exception::throw_message(ctx, &error.message))?;
+            if self.interrupted() {
+                return Err(Exception::throw_message(
+                    ctx,
+                    "Evaluation cancelled or timed out",
+                ));
+            }
+            self.pending_rpc.borrow_mut().completed(call, result);
+            return Ok(true);
+        }
+        if self.suspended.lock().unwrap().0 > 0 {
+            return Ok(false);
+        }
+        let Some((call, result)) = self.pending_rpc.borrow_mut().take_ready() else {
+            return Ok(false);
+        };
+        let _context = self.tasks.scope(call.context.clone());
         self.check_reply_execution(ctx)?;
         let encoded = self.app_state_response(ctx, &call.method, &call.input, result)?;
         self.check_reply_execution(ctx)?;
@@ -928,6 +989,13 @@ impl QuickJsHost {
             }
             if let Some(failure) = self.tasks.failure.borrow().clone() {
                 return Err(Exception::throw_message(ctx, &failure));
+            }
+            // Native polls must progress (and release guards) while JS is parked.
+            if self.suspended.lock().unwrap().0 > 0 {
+                if !self.dispatch_queued_rpc(ctx)? {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                continue;
             }
             if ctx.execute_pending_job() {
                 continue;

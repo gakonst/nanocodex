@@ -235,7 +235,9 @@
     const cell = cellId();
     if (suspensionCell !== cell) { suspensionCell = cell; suspensionDepth = 0; }
     suspensionDepth++;
-    try { return await operation(); } finally { if (suspensionCell === cell) suspensionDepth--; }
+    // Capture authority only during this trusted synchronous RPC enqueue.
+    // Keeping this depth across await would grant sibling calls suspension.
+    try { return operation(); } finally { if (suspensionCell === cell) suspensionDepth--; }
   };
   const bridge = {
     cwd: config.cwd, env: freezeObject({}), homeDir: config.homeDir, tmpDir: config.tmpDir,

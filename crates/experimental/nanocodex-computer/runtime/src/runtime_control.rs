@@ -21,23 +21,28 @@ struct Shared {
     live: AtomicBool,
     state: Mutex<State>,
     execution_check: Option<Arc<dyn Fn() -> Result<()> + Send + Sync>>,
+    native_execution_check: Option<Arc<dyn Fn() -> Result<()> + Send + Sync>>,
     activation_model: crate::browser_activation::Model,
 }
 /// A read-only native execution probe, not authority to act or suspend time.
 /// Only a runtime-installed validator can provide this capability. Its clone
 /// remains tied to the originating provider call's existing lifetime.
 #[derive(Clone)]
-pub struct ExecutionValidity(Arc<Shared>);
+pub struct ExecutionValidity(Arc<Shared>, bool);
 impl ExecutionValidity {
     pub fn validate(&self) -> Result<()> {
         if !self.0.live.load(Ordering::Acquire) {
             return Err(Error::action("Provider call is no longer active"));
         }
-        let check = self
-            .0
-            .execution_check
-            .as_ref()
-            .ok_or_else(|| Error::action("Native execution validation is unavailable"))?;
+        let check = if self.1 {
+            self.0
+                .native_execution_check
+                .as_ref()
+                .or(self.0.execution_check.as_ref())
+        } else {
+            self.0.execution_check.as_ref()
+        }
+        .ok_or_else(|| Error::action("Native execution validation is unavailable"))?;
         // Never hold the suspension/proof mutex across a native validator.
         let result = check();
         if !self.0.live.load(Ordering::Acquire) {
@@ -71,6 +76,7 @@ impl ProviderControl {
         Self(Arc::new(Shared {
             live: AtomicBool::new(true),
             execution_check,
+            native_execution_check: None,
             activation_model,
             state: Mutex::new(State {
                 depth: 0,
@@ -86,7 +92,22 @@ impl ProviderControl {
     }
     pub fn execution_validity(&self) -> Option<ExecutionValidity> {
         (self.is_active() && self.0.execution_check.is_some())
-            .then(|| ExecutionValidity(self.0.clone()))
+            .then(|| ExecutionValidity(self.0.clone(), false))
+    }
+    /// Native lanes may progress while another call waits for approval. This
+    /// capability stays Rust-only and preserves cancellation and call ownership.
+    pub(crate) fn native_execution_validity(&self) -> Option<ExecutionValidity> {
+        (self.is_active() && self.0.execution_check.is_some())
+            .then(|| ExecutionValidity(self.0.clone(), true))
+    }
+    pub(crate) fn with_native_execution_check(
+        mut self,
+        check: impl Fn() -> Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        Arc::get_mut(&mut self.0)
+            .expect("new provider control")
+            .native_execution_check = Some(Arc::new(check));
+        self
     }
     pub(crate) fn set_drain_proof(&self, proof: Option<super::DrainProof>) -> Result<()> {
         self.validate()?;

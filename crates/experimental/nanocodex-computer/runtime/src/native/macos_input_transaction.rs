@@ -48,6 +48,7 @@ impl Transaction {
     fn lock(file: File, timeout: Duration) -> Result<Self> {
         let started = Instant::now();
         loop {
+            crate::native::check_native_cancellation()?;
             if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
                 return Ok(Self(file));
             }

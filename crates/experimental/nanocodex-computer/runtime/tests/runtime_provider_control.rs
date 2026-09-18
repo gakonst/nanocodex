@@ -286,3 +286,120 @@ fn stopped_child_during_trusted_suspension_is_bounded_and_recoverable() {
         }
     }
 }
+
+#[test]
+fn same_worker_second_provider_reply_runs_js_before_first_release() {
+    for runtime in backends() {
+        let mut worker = worker(runtime);
+        worker.start(
+            "const order=[];await Promise.all([agent.browsers.get('held').then(()=>order.push('held')),agent.browsers.get('fast').then(async()=>{order.push('fast');await agent.browsers.get('release')})]);order",
+            Duration::from_secs(10),
+        ).unwrap();
+        let mut held = None;
+        let mut seen_fast = false;
+        let mut released = false;
+        loop {
+            match worker
+                .event(Duration::from_secs(12))
+                .unwrap()
+                .expect("bounded worker progress")
+            {
+                Event::Call {
+                    method,
+                    args,
+                    reply,
+                    control,
+                } => {
+                    assert_eq!(method, "browser.info");
+                    match args["browser"].as_str().unwrap() {
+                        "held" => {
+                            assert!(held.is_none());
+                            // Ordinary pending work keeps a metered clock.
+                            // A human approval pause must not run arbitrary JS.
+                            held = Some((reply, control));
+                        }
+                        "fast" => {
+                            assert!(held.is_some(), "first provider remains held");
+                            seen_fast = true;
+                            // Approval control is routed by request ID even
+                            // while an earlier provider reply remains held.
+                            control.suspend().unwrap().resume().unwrap();
+                            reply.send(Ok(json!({"id":"fast","type":"cdp"}))).unwrap();
+                        }
+                        "release" => {
+                            // This call can only originate after B's reply has
+                            // settled its JS continuation in the same kernel.
+                            assert!(seen_fast);
+                            let (first, control) = held.take().unwrap();
+                            assert!(control.is_active());
+                            control.execution_validity().unwrap().validate().unwrap();
+                            reply
+                                .send(Ok(json!({"id":"release","type":"cdp"})))
+                                .unwrap();
+                            first.send(Ok(json!({"id":"held","type":"cdp"}))).unwrap();
+                            released = true;
+                        }
+                        other => panic!("unexpected browser {other}"),
+                    }
+                }
+                Event::Done { result, .. } => {
+                    let result = result.unwrap();
+                    assert!(released, "{runtime:?}: {result}");
+                    assert_eq!(
+                        result["value"],
+                        json!(["fast", "held"]),
+                        "{runtime:?}: {result}"
+                    );
+                    break;
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn cancelled_pending_worker_reply_cannot_poison_next_kernel() {
+    for runtime in backends() {
+        let mut worker = worker(runtime);
+        worker
+            .start(
+                "await agent.browsers.get('cancelled')",
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        let (control, late_reply) = match worker.event(Duration::from_secs(5)).unwrap().unwrap() {
+            Event::Call { reply, control, .. } => (control, reply),
+            _ => panic!("expected held call"),
+        };
+        worker.cancel();
+        assert!(done(&mut worker).get("error").is_some());
+        assert!(!control.is_active());
+        // Model a provider finishing after cancellation. A disconnected receiver
+        // is correct; the old reply must never become a new cell's response.
+        let _ = late_reply.send(Ok(json!({"id":"cancelled","type":"cdp"})));
+        worker
+            .start(
+                "await agent.browsers.get('fresh'); 42",
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        loop {
+            match worker.event(Duration::from_secs(5)).unwrap().unwrap() {
+                Event::Call { method, reply, .. } => {
+                    let response = if method == "sky.setup" {
+                        json!({"target":"mac"})
+                    } else {
+                        assert_eq!(method, "browser.info");
+                        json!({"id":"fresh","type":"cdp"})
+                    };
+                    reply.send(Ok(response)).unwrap();
+                }
+                Event::Done { result, .. } => {
+                    let result = result.unwrap();
+                    assert_eq!(result["value"], 42, "{runtime:?}: {result}");
+                    break;
+                }
+            }
+        }
+    }
+}

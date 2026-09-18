@@ -6,7 +6,7 @@ use crate::{Error, Result};
 #[path = "screenshot_macos.rs"]
 pub(crate) mod macos;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Encoding {
     Jpeg { quality: Option<f64> },
     Png,

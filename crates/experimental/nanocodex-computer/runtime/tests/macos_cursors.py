@@ -19,8 +19,19 @@ for index in range(2):
 subprocess.run(['swiftc',str(tests/'fixtures/macos_cursor_probe.swift'),'-o',str(root/'probe')],check=True)
 children=[]
 report={}
+owned_companion_pids=set()
 def probe(pid):
-    return json.loads(subprocess.check_output([str(root/'probe'),str(pid)],text=True))
+    # Native cursor panels now belong to persistent per-window children. Keep
+    # observed child IDs through reset so orphaned panels cannot escape checks.
+    if pid:
+        owned_companion_pids.add(pid)
+        found=subprocess.run(['pgrep','-P',str(pid)],capture_output=True,text=True)
+        assert found.returncode in (0,1), found.stderr
+        owned_companion_pids.update(int(value) for value in found.stdout.split())
+    pids=sorted(owned_companion_pids) if pid else [0]
+    result=json.loads(subprocess.check_output([str(root/'probe'),*map(str,pids)],text=True))
+    result['companion_pids']=pids
+    return result
 try:
     before=probe(0); report['before']=before
     fixtures=[]
@@ -79,7 +90,7 @@ try:
     report['unchanged_foreground']=all(state['front']==before['front'] for state in [report['visible'],report['faded']])
     report['unchanged_cursor']=all(state['cursor']==before['cursor'] for state in [report['visible'],report['faded']])
     for state in [report['visible'],report['faded']]:
-        assert state['front'] not in [proc.pid]+[f[0] for f in fixtures], 'agent activated owned target or overlay'
+        assert state['front'] not in list(owned_companion_pids)+[f[0] for f in fixtures], 'agent activated owned target or overlay'
     assert len(report['visible']['windows'])>=2, 'two virtual cursor windows not visible'
     assert len(report['faded']['windows'])==0, 'virtual cursor did not expire while idle'
     js('await target0.getScreenshot({emit:false}); await target1.getScreenshot({emit:false});')

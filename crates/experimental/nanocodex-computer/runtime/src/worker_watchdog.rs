@@ -167,6 +167,17 @@ impl Observer {
         ticket: u64,
         read_now: impl FnOnce() -> Instant,
     ) -> Result<()> {
+        self.validate_clock(ticket, read_now, false)
+    }
+    pub fn validate_native_execution(&self, ticket: u64) -> Result<()> {
+        self.validate_clock(ticket, Instant::now, true)
+    }
+    fn validate_clock(
+        &self,
+        ticket: u64,
+        read_now: impl FnOnce() -> Instant,
+        allow_suspended: bool,
+    ) -> Result<()> {
         let ended = || Error::new(-32800, "Runtime execution is no longer valid");
         if self.0.cancel.load(Ordering::Acquire) || self.0.reason.load(Ordering::Acquire) != 0 {
             return Err(ended());
@@ -181,8 +192,8 @@ impl Observer {
                 || !clock.started
                 || clock.ticket != Some(ticket)
                 || clock.cancelled_at.is_some()
-                || clock.suspended != 0
-                || now >= clock.deadline
+                || (!allow_suspended && clock.suspended != 0)
+                || (clock.suspended == 0 && now >= clock.deadline)
                 || now.saturating_duration_since(clock.heartbeat) >= HEARTBEAT_LIMIT
             {
                 return Err(ended());

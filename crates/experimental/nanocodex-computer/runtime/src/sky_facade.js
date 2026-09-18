@@ -47,7 +47,7 @@ globalThis.__skyreComputerFacade = ({rpc, bytes, getNodeRepl = () => globalThis.
   const withAppPolicy = async (method, raw, operation) => {
     responseMeta(null);
     const input=appInput(raw);
-    const elicit=callback("createElicitation"), suspended=callback("withSuspendedTimeout");
+    const elicit=callback("createElicitation");
     const policy=await rpc("sky.app_policy",{app:input.app});
     const target=policy.target;
     responseMeta(target.bundleIdentifier);
@@ -62,7 +62,9 @@ globalThis.__skyreComputerFacade = ({rpc, bytes, getNodeRepl = () => globalThis.
       tool_params_display:[{name:"app",display_name:"App",value:target.displayName}],
     }});
     if (approval.action !== "accept") throw new Error("Computer Use was not approved to use " + target.displayName);
-    return suspended(()=>operation(appInput(input,target.bindingIdentifier ?? target.appPath)));
+    // Only the trusted approval wait receives timeout credit. Native work
+    // remains charged and retains a valid execution probe.
+    return operation(appInput(input,target.bindingIdentifier ?? target.appPath));
   };
   const audioApproval = async () => {
     const approval=await callback("createElicitation")({message:"Allow Computer Use to record computer audio?",meta:{

@@ -2,7 +2,7 @@
 //! This contains process-fatal engine errors; it is not a filesystem sandbox.
 use crate::{
     Error, Result,
-    runtime::{Host, HostOptions, ProviderControl, RuntimeBackend},
+    runtime::{Host, HostOptions, ProviderControl, ProviderResponse, RuntimeBackend},
     worker::{Command, Event},
 };
 use serde::{Deserialize, Serialize};
@@ -177,7 +177,10 @@ impl Process {
         let watchdog = crate::worker_watchdog::Watchdog::new(child.clone(), cancel.clone());
         watchdog.arm(None, Duration::from_secs(10))?;
         let observer = watchdog.observer();
-        let (send, output) = mpsc::sync_channel(1);
+        // Keep all bounded admitted calls readable while a provider lifetime
+        // synchronously waits for its suspension acknowledgement. A one-frame
+        // queue can strand that acknowledgement behind a later Call frame.
+        let (send, output) = mpsc::sync_channel(512);
         let suspension_acks = Arc::new(Mutex::new(
             BTreeMap::<u64, mpsc::SyncSender<Result<Value>>>::new(),
         ));
@@ -274,7 +277,41 @@ impl Process {
             },
         )?;
         let mut cancelling = None;
+        let mut pending: Vec<(
+            u64,
+            Receiver<Result<Value>>,
+            ProviderControl,
+            crate::runtime::ProviderLifetime,
+        )> = Vec::new();
         loop {
+            let mut index = 0;
+            while index < pending.len() {
+                let result = if cancel.load(Ordering::Acquire) || self.watchdog.reason() != 0 {
+                    Some(Err(Error::new(-32800, "Evaluation cancelled")))
+                } else {
+                    match pending[index].1.try_recv() {
+                        Ok(result) => Some(result),
+                        Err(mpsc::TryRecvError::Empty) => None,
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            Some(Err(Error::action("Service reply disconnected")))
+                        }
+                    }
+                };
+                if let Some(result) = result {
+                    let (id, _, control, lifetime) = pending.remove(index);
+                    lifetime.finish()?;
+                    write_frame(
+                        &mut *self.input.lock().unwrap(),
+                        &Frame::Reply {
+                            id,
+                            result: result.map_err(Failure::from),
+                            continuation: control.continuation(),
+                        },
+                    )?;
+                } else {
+                    index += 1;
+                }
+            }
             if cancel.load(Ordering::Acquire) {
                 if cancelling.is_none() {
                     cancelling = Some(Instant::now());
@@ -319,6 +356,7 @@ impl Process {
                     let counter = self.next_control.clone();
                     let cancelled = cancel.clone();
                     let execution_observer = self.watchdog.observer();
+                    let native_observer = self.watchdog.observer();
                     let control = ProviderControl::new_with_activation_model(
                         move |start| {
                             if start && cancelled.load(Ordering::Acquire) {
@@ -365,43 +403,25 @@ impl Process {
                             execution_observer.validate_execution(ticket)
                         })),
                         activation_model,
-                    );
+                    )
+                    .with_native_execution_check(move || {
+                        native_observer.validate_native_execution(ticket)
+                    });
                     control.set_drain_proof(drain_proof)?;
                     let lifetime = control.lifetime();
-                    let result = if cancel.load(Ordering::Acquire) {
-                        Err(Error::new(-32800, "Evaluation cancelled"))
-                    } else {
-                        let (reply, receive) = mpsc::sync_channel(1);
-                        events
-                            .send(Event::Call {
-                                method,
-                                args,
-                                reply,
-                                control: control.clone(),
-                            })
-                            .map_err(|_| Error::action("Service owner disconnected"))?;
-                        loop {
-                            match receive.recv_timeout(Duration::from_millis(5)) {
-                                Ok(result) => break result,
-                                Err(mpsc::RecvTimeoutError::Timeout)
-                                    if !cancel.load(Ordering::Acquire)
-                                        && self.watchdog.reason() == 0 => {}
-                                Err(mpsc::RecvTimeoutError::Timeout) => {
-                                    break Err(Error::new(-32800, "Evaluation cancelled"));
-                                }
-                                Err(_) => break Err(Error::action("Service reply disconnected")),
-                            }
-                        }
-                    };
-                    lifetime.finish()?;
-                    write_frame(
-                        &mut *self.input.lock().unwrap(),
-                        &Frame::Reply {
-                            id,
-                            result: result.map_err(Failure::from),
-                            continuation: control.continuation(),
-                        },
-                    )?;
+                    if pending.len() >= 256 || pending.iter().any(|call| call.0 == id) {
+                        return Err(Error::action("Invalid or excessive pending runtime RPC"));
+                    }
+                    let (reply, receive) = mpsc::sync_channel(1);
+                    events
+                        .send(Event::Call {
+                            method,
+                            args,
+                            reply,
+                            control: control.clone(),
+                        })
+                        .map_err(|_| Error::action("Service owner disconnected"))?;
+                    pending.push((id, receive, control, lifetime));
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Ok(Err(error)) => {
@@ -643,6 +663,66 @@ impl Drop for Heartbeat {
         }
     }
 }
+// The child event loop owns routing. A poll drains all available frames so a
+// held first request never prevents a later reply or approval acknowledgement.
+struct ChildResponses {
+    responses: Receiver<Frame>,
+    calls: BTreeMap<u64, (ProviderControl, Option<Result<Value>>)>,
+    writer: Arc<Mutex<std::io::Stdout>>,
+}
+impl ChildResponses {
+    fn pump(&mut self) -> Result<()> {
+        loop {
+            match self.responses.try_recv() {
+                Ok(Frame::CallSuspension {
+                    id,
+                    control_id,
+                    start,
+                }) => {
+                    let result = self
+                        .calls
+                        .get(&id)
+                        .ok_or_else(|| Error::action("Unknown runtime provider call"))
+                        .and_then(|(control, _)| control.change(start))
+                        .map(|_| Value::Null)
+                        .map_err(Failure::from);
+                    write_frame(
+                        &mut *self.writer.lock().unwrap(),
+                        &Frame::CallSuspended { control_id, result },
+                    )?;
+                }
+                Ok(Frame::Reply {
+                    id,
+                    result,
+                    continuation,
+                }) => {
+                    let (control, ready) = self
+                        .calls
+                        .get_mut(&id)
+                        .ok_or_else(|| Error::action("Unknown runtime provider reply"))?;
+                    if ready.is_some() {
+                        return Err(Error::action("Duplicate runtime provider reply"));
+                    }
+                    if let Some(id) = continuation {
+                        control.bind_continuation(id)?;
+                    }
+                    *ready = Some(result.map_err(Error::from));
+                }
+                Err(mpsc::TryRecvError::Empty) => return Ok(()),
+                _ => return Err(Error::action("Runtime service reply disconnected")),
+            }
+        }
+    }
+}
+struct ChildCall {
+    id: u64,
+    responses: std::rc::Rc<std::cell::RefCell<ChildResponses>>,
+}
+impl Drop for ChildCall {
+    fn drop(&mut self) {
+        self.responses.borrow_mut().calls.remove(&self.id);
+    }
+}
 /// Dedicated child entrypoint. It has no Engine, desktop, browser or approval state.
 pub fn run_child() -> Result<()> {
     let mut stdin = std::io::stdin();
@@ -656,7 +736,7 @@ pub fn run_child() -> Result<()> {
     let writer = Arc::new(Mutex::new(std::io::stdout()));
     let cancel = Arc::new(AtomicBool::new(false));
     let (commands, receive) = mpsc::sync_channel(1);
-    let (replies, responses) = mpsc::sync_channel(1);
+    let (replies, responses) = mpsc::sync_channel(512);
     let interrupted = cancel.clone();
     thread::spawn(move || {
         while let Ok(frame) = read_frame(&mut stdin) {
@@ -683,7 +763,11 @@ pub fn run_child() -> Result<()> {
     });
     let heartbeat = Heartbeat::new(writer.clone());
     let mut options = options;
-    let responses = std::rc::Rc::new(responses);
+    let responses = std::rc::Rc::new(std::cell::RefCell::new(ChildResponses {
+        responses,
+        calls: BTreeMap::new(),
+        writer: writer.clone(),
+    }));
     let mut host = None;
     write_frame(&mut *writer.lock().unwrap(), &Frame::Ready {})?;
     while let Ok(frame) = receive.recv() {
@@ -702,7 +786,7 @@ pub fn run_child() -> Result<()> {
                         let responses = responses.clone();
                         let cancelled = cancel.clone();
                         let mut next = 0u64;
-                        host = Some(Host::with_controlled_dispatch(
+                        host = Some(Host::with_async_dispatch(
                             move |method, args, control| {
                                 if cancelled.load(Ordering::Acquire) {
                                     return Err(Error::new(-32800, "Evaluation cancelled"));
@@ -710,6 +794,11 @@ pub fn run_child() -> Result<()> {
                                 next = next
                                     .checked_add(1)
                                     .ok_or_else(|| Error::action("Runtime RPC counter overflow"))?;
+                                if responses.borrow().calls.len() >= 256 {
+                                    return Err(Error::action(
+                                        "Pending runtime RPC limit exceeded",
+                                    ));
+                                }
                                 write_frame(
                                     &mut *rpc_writer.lock().unwrap(),
                                     &Frame::Call {
@@ -720,44 +809,29 @@ pub fn run_child() -> Result<()> {
                                         activation_model: control.activation_model()?.clone(),
                                     },
                                 )?;
-                                loop {
-                                    match responses.recv_timeout(Duration::from_millis(5)) {
-                                        Ok(Frame::CallSuspension {
-                                            id,
-                                            control_id,
-                                            start,
-                                        }) if id == next => {
-                                            let result = control
-                                                .change(start)
-                                                .map(|_| Value::Null)
-                                                .map_err(Failure::from);
-                                            write_frame(
-                                                &mut *rpc_writer.lock().unwrap(),
-                                                &Frame::CallSuspended { control_id, result },
-                                            )?;
-                                        }
-                                        Ok(Frame::Reply {
-                                            id,
-                                            result,
-                                            continuation,
-                                        }) if id == next => {
-                                            if let Some(id) = continuation {
-                                                control.bind_continuation(id)?;
-                                            }
-                                            return result.map_err(Error::from);
-                                        }
-                                        Err(mpsc::RecvTimeoutError::Timeout)
-                                            if !cancelled.load(Ordering::Acquire) => {}
-                                        Err(mpsc::RecvTimeoutError::Timeout) => {
-                                            return Err(Error::new(-32800, "Evaluation cancelled"));
-                                        }
-                                        _ => {
-                                            return Err(Error::action(
-                                                "Runtime service reply disconnected",
-                                            ));
-                                        }
+                                responses.borrow_mut().calls.insert(next, (control, None));
+                                let call = ChildCall {
+                                    id: next,
+                                    responses: responses.clone(),
+                                };
+                                let cancelled = cancelled.clone();
+                                Ok(ProviderResponse::pending(move || {
+                                    if cancelled.load(Ordering::Acquire) {
+                                        return Some(Err(Error::new(
+                                            -32800,
+                                            "Evaluation cancelled",
+                                        )));
                                     }
-                                }
+                                    let mut responses = call.responses.borrow_mut();
+                                    if let Err(error) = responses.pump() {
+                                        cancelled.store(true, Ordering::Release);
+                                        return Some(Err(error));
+                                    }
+                                    responses
+                                        .calls
+                                        .get_mut(&call.id)
+                                        .and_then(|(_, result)| result.take())
+                                }))
                             },
                             cancel.clone(),
                             options.clone(),

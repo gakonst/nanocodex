@@ -121,6 +121,11 @@ pub trait Desktop {
             "Explicit native windows are unavailable",
         ))
     }
+    /// Return an exact native target eligible for an isolated subprocess lane.
+    /// Implicit app names and executable paths must not select a lane.
+    fn window_lane_binding(&mut self, _identifier: &str) -> Result<Option<App>> {
+        Ok(None)
+    }
     /// Stable window binding, separate from executable-based policy authorization.
     fn session_key(&self, app: &App) -> String {
         app.path.clone()
@@ -364,3 +369,50 @@ mod window_binding_tests {
         assert!(window_binding("#window=42").is_err());
     }
 }
+
+// Worker cancellation is installed only on the native owning thread. A private
+// pipe reader can revoke it without ever touching AppKit or native state.
+thread_local! {
+    static NATIVE_DEADLINE: std::cell::RefCell<Option<(std::time::Instant, std::sync::Arc<std::sync::atomic::AtomicU64>)>> = const { std::cell::RefCell::new(None) };
+    static NATIVE_CANCELLATION: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> = const { std::cell::RefCell::new(None) };
+}
+pub fn set_native_cancellation(cancelled: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>) {
+    NATIVE_CANCELLATION.with(|slot| *slot.borrow_mut() = cancelled);
+}
+pub fn set_native_execution_deadline(
+    start: std::time::Instant,
+    deadline: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) {
+    NATIVE_DEADLINE.with(|slot| *slot.borrow_mut() = Some((start, deadline)));
+}
+pub fn check_native_cancellation() -> Result<()> {
+    if NATIVE_DEADLINE.with(|slot| {
+        slot.borrow().as_ref().is_some_and(|(start, deadline)| {
+            start.elapsed().as_millis()
+                >= u128::from(deadline.load(std::sync::atomic::Ordering::Acquire))
+        })
+    }) {
+        return Err(Error::new(-32800, "Native window admission expired"));
+    }
+    if NATIVE_CANCELLATION.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|cancelled| cancelled.load(std::sync::atomic::Ordering::Acquire))
+    }) {
+        Err(Error::new(-32800, "Native window call revoked"))
+    } else {
+        Ok(())
+    }
+}
+
+/// Minimal backend context inherited by native subprocess lanes.
+pub fn window_lane_environment() -> Result<Vec<(std::ffi::OsString, std::ffi::OsString)>> {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("NANOCODEX_COMPUTER_BACKGROUND").is_some() {
+        return linux_background::window_lane_environment();
+    }
+    Ok(Vec::new())
+}
+
+mod window_capture;
+pub use window_capture::{WindowCapture, set_window_capture_delegate, start_window_capture};

@@ -1495,6 +1495,7 @@ impl MacDesktop {
         Self::require_background_pid(app.pid)
     }
     fn require_background_pid(pid: i32) -> Result<()> {
+        super::check_native_cancellation()?;
         let running = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
             .filter(|running| !running.isTerminated())
             .ok_or_else(|| Error::action("Application terminated"))?;
@@ -1551,6 +1552,13 @@ impl MacDesktop {
     }
 }
 impl Desktop for MacDesktop {
+    fn window_lane_binding(&mut self, identifier: &str) -> Result<Option<App>> {
+        if super::window_binding(identifier)?.is_some() {
+            self.app_policy_target(identifier).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
     fn app_windows(&mut self, app: &App) -> Result<serde_json::Value> {
         let windows = self.application(app)?.elements_checked("AXWindows")?;
         Ok(serde_json::json!(windows.into_iter().filter_map(|window| {
@@ -1608,7 +1616,8 @@ impl Desktop for MacDesktop {
         if let Some((identifier, id)) = super::window_binding(identifier)? {
             let mut app = self.app_policy_target(identifier)?;
             app.window_id = Some(id);
-            self.root(&app)?;
+            // Policy/admission resolves process metadata only. AX/window work
+            // belongs to the exact-window lane and must not stall its parent.
             return Ok(app);
         }
         // NSWorkspace's process list can lag launch/exit notifications. An
@@ -1707,7 +1716,9 @@ impl Desktop for MacDesktop {
     }
     fn bind(&mut self, identifier: &str) -> Result<App> {
         if super::window_binding(identifier)?.is_some() {
-            return self.app_policy_target(identifier);
+            let app = self.app_policy_target(identifier)?;
+            self.root(&app)?;
+            return Ok(app);
         }
         if identifier.parse::<i32>().is_ok() {
             return self.app_policy_target(identifier);
@@ -3136,3 +3147,5 @@ mod attributed_tests {
         );
     }
 }
+
+pub use capture::start_capture as start_window_capture;

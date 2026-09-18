@@ -41,6 +41,11 @@ struct Control {
 }
 impl Control {
     fn validate_execution(&self) -> Result<()> {
+        self.validate_clock(false)
+    }
+    // The event loop must keep pumping approval acknowledgements while paused.
+    // Native action probes still use validate_execution and reject suspension.
+    fn validate_clock(&self, allow_suspended: bool) -> Result<()> {
         let ended = || Error::new(-32800, "Evaluation cancelled or timed out");
         if self.cancel.load(Ordering::Acquire) || self.reason.load(Ordering::Acquire) != 0 {
             return Err(ended());
@@ -50,10 +55,11 @@ impl Control {
             // The live native clock is authoritative, including prior explicit
             // suspension/resume. This probe never changes or credits that clock.
             if clock.stop
-                || clock.suspended != 0
-                || clock
-                    .deadline
-                    .is_none_or(|deadline| Instant::now() >= deadline)
+                || (!allow_suspended && clock.suspended != 0)
+                || (clock.suspended == 0
+                    && clock
+                        .deadline
+                        .is_none_or(|deadline| Instant::now() >= deadline))
             {
                 return Err(ended());
             }
@@ -147,7 +153,7 @@ impl Drop for Entry<'_> {
 }
 impl Host {
     pub fn with_dispatch_options(
-        dispatch: impl FnMut(&str, &Value, ProviderControl) -> Result<Value> + 'static,
+        dispatch: impl FnMut(&str, &Value, ProviderControl) -> Result<super::ProviderResponse> + 'static,
         cancel: Arc<AtomicBool>,
         options: HostOptions,
     ) -> Result<Self> {
@@ -562,6 +568,14 @@ impl Host {
                 loop {
                     check_execution(scope, &self.control)
                         .map_err(|_| Error::action("Background execution timed out"))?;
+                    // Poll native work without entering JS while any approval owns the clock.
+                    if self.control.clock.lock().unwrap().suspended > 0 {
+                        if !dispatch_queued_rpc(scope, &state, &self.control)? {
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                        continue;
+                    }
+                    check_js_execution(scope, &self.control)?;
                     scope.perform_microtask_checkpoint();
                     if state.borrow().tasks.poisoned.get() {
                         return Err(Error::action("Background task failed"));
@@ -678,7 +692,7 @@ fn check_execution(
     scope: &mut v8::PinnedRef<'_, v8::TryCatch<'_, '_, v8::HandleScope<'_>>>,
     control: &Control,
 ) -> Result<()> {
-    if control.validate_execution().is_err() {
+    if control.validate_clock(true).is_err() {
         control
             .reason
             .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
@@ -690,6 +704,13 @@ fn check_execution(
     } else {
         Ok(())
     }
+}
+fn check_js_execution(
+    scope: &mut v8::PinnedRef<'_, v8::TryCatch<'_, '_, v8::HandleScope<'_>>>,
+    control: &Control,
+) -> Result<()> {
+    control.validate_execution()?;
+    check_execution(scope, control)
 }
 fn app_state_response(
     scope: &mut v8::PinnedRef<'_, v8::TryCatch<'_, '_, v8::HandleScope<'_>>>,
@@ -725,7 +746,7 @@ fn app_state_response(
             None => {
                 let set = v8::Set::new(scope);
                 let owned = Rc::new(v8::Global::new(scope, set));
-                check_execution(scope, control)?;
+                check_js_execution(scope, control)?;
                 state.borrow_mut().instruction_keys = Some(owned.clone());
                 owned
             }
@@ -735,7 +756,7 @@ fn app_state_response(
         if set.has(scope, key.into()).ok_or_else(|| exception(scope))? {
             false
         } else {
-            check_execution(scope, control)?;
+            check_js_execution(scope, control)?;
             set.add(scope, key.into()).ok_or_else(|| exception(scope))?;
             true
         }
@@ -743,7 +764,7 @@ fn app_state_response(
         false
     };
     let formatted = plan.finish(prepend);
-    check_execution(scope, control)?;
+    check_js_execution(scope, control)?;
     Ok(helpers::helper_response(formatted))
 }
 fn dispatch_queued_rpc(
@@ -752,112 +773,138 @@ fn dispatch_queued_rpc(
     control: &Arc<Control>,
 ) -> Result<bool> {
     check_execution(scope, control)?;
-    let Some(call) = state.borrow_mut().pending_rpc.pop() else {
-        return Ok(false);
-    };
-    let tasks = state.borrow().tasks.clone();
-    if !state.borrow().active
-        || tasks.poisoned.get()
-        || control.cancel.load(Ordering::Acquire)
-        || control.reason.load(Ordering::Acquire) != 0
-        || call.context.id != state.borrow().cell
-    {
-        return Err(Error::action("node_repl exec context not found"));
-    }
-    let activation_model =
-        crate::browser_activation::Model::from_task_metadata(&call.context.metadata);
-    let _context = tasks.scope(call.context);
-    let runtime_control = control.clone();
-    let observer = state.borrow().timeout_observer.clone();
-    let execution_control = control.clone();
-    let provider = ProviderControl::new_with_activation_model(
-        move |start| {
-            let mut clock = runtime_control.clock.lock().unwrap();
-            let mut overflow = false;
-            if start {
-                if runtime_control.cancel.load(Ordering::Acquire)
-                    || runtime_control.reason.load(Ordering::Acquire) != 0
-                    || (clock.suspended == 0
-                        && clock
-                            .deadline
-                            .is_none_or(|deadline| Instant::now() >= deadline))
-                {
-                    return Err(Error::new(-32800, "Evaluation cancelled or timed out"));
-                }
-                if clock.suspended == 0 {
-                    clock.suspended_at = Some(Instant::now());
-                }
-                clock.suspended = clock
-                    .suspended
-                    .checked_add(1)
-                    .ok_or_else(|| Error::action("Timeout suspension depth exceeded"))?;
-            } else if clock.suspended > 0 {
-                clock.suspended -= 1;
-                if clock.suspended == 0
-                    && let (Some(began), Some(deadline)) =
-                        (clock.suspended_at.take(), clock.deadline)
-                {
-                    match deadline.checked_add(began.elapsed()) {
-                        Some(extended) => clock.deadline = Some(extended),
-                        None => overflow = true,
+    let queued = state.borrow_mut().pending_rpc.pop();
+    if let Some(call) = queued {
+        let tasks = state.borrow().tasks.clone();
+        if !state.borrow().active
+            || tasks.poisoned.get()
+            || control.cancel.load(Ordering::Acquire)
+            || control.reason.load(Ordering::Acquire) != 0
+            || call.context.id != state.borrow().cell
+        {
+            return Err(Error::action("node_repl exec context not found"));
+        }
+        let activation_model =
+            crate::browser_activation::Model::from_task_metadata(&call.context.metadata);
+        let _context = tasks.scope(call.context.clone());
+        let runtime_control = control.clone();
+        let observer = state.borrow().timeout_observer.clone();
+        let execution_control = control.clone();
+        let native_control = control.clone();
+        let provider = ProviderControl::new_with_activation_model(
+            move |start| {
+                let mut clock = runtime_control.clock.lock().unwrap();
+                let mut overflow = false;
+                if start {
+                    if runtime_control.cancel.load(Ordering::Acquire)
+                        || runtime_control.reason.load(Ordering::Acquire) != 0
+                        || (clock.suspended == 0
+                            && clock
+                                .deadline
+                                .is_none_or(|deadline| Instant::now() >= deadline))
+                    {
+                        return Err(Error::new(-32800, "Evaluation cancelled or timed out"));
+                    }
+                    if clock.suspended == 0 {
+                        clock.suspended_at = Some(Instant::now());
+                    }
+                    clock.suspended = clock
+                        .suspended
+                        .checked_add(1)
+                        .ok_or_else(|| Error::action("Timeout suspension depth exceeded"))?;
+                } else if clock.suspended > 0 {
+                    clock.suspended -= 1;
+                    if clock.suspended == 0
+                        && let (Some(began), Some(deadline)) =
+                            (clock.suspended_at.take(), clock.deadline)
+                    {
+                        match deadline.checked_add(began.elapsed()) {
+                            Some(extended) => clock.deadline = Some(extended),
+                            None => overflow = true,
+                        }
                     }
                 }
-            }
-            drop(clock);
-            runtime_control.wake.notify_all();
-            if let Some(observer) = &observer
-                && let Err(error) = observer(start)
+                drop(clock);
+                runtime_control.wake.notify_all();
+                if let Some(observer) = &observer
+                    && let Err(error) = observer(start)
+                {
+                    runtime_control.cancel.store(true, Ordering::Release);
+                    return Err(error);
+                }
+                if overflow {
+                    Err(Error::action("Timeout suspension exceeded the clock range"))
+                } else {
+                    Ok(())
+                }
+            },
+            Some(Arc::new(move || execution_control.validate_execution())),
+            activation_model,
+        )
+        .with_native_execution_check(move || native_control.validate_clock(true));
+        {
+            let state = state.borrow();
+            if state.pending_rpc.is_empty()
+                && state.microtasks.is_empty()
+                && state.timers.is_empty()
             {
-                runtime_control.cancel.store(true, Ordering::Release);
-                return Err(error);
+                provider.set_drain_proof(state.drain.proof(call.request))?;
             }
-            if overflow {
-                Err(Error::action("Timeout suspension exceeded the clock range"))
-            } else {
-                Ok(())
-            }
-        },
-        Some(Arc::new(move || execution_control.validate_execution())),
-        activation_model,
-    );
-    {
-        let state = state.borrow();
-        if state.pending_rpc.is_empty() && state.microtasks.is_empty() && state.timers.is_empty() {
-            provider.set_drain_proof(state.drain.proof(call.request))?;
         }
-    }
-    let lifetime = provider.lifetime();
-    let result = if tasks.poisoned.get() {
-        Err(Error::action("Asynchronous context nesting exceeded"))
-    } else {
-        let suspended = if call.suspend {
+        let guard = if call.suspend {
             Some(provider.suspend())
         } else {
             None
         };
-        match suspended {
-            Some(Err(error)) => Err(error),
+        let (response, guard) = match guard {
+            Some(Err(error)) => (super::ProviderResponse::ready(Err(error)), None),
             guard => {
                 let dispatch = state.borrow().dispatch.clone();
-                let result = dispatch.borrow_mut()(&call.method, &call.input, provider.clone());
-                guard
-                    .map(|guard| guard.and_then(|guard| guard.resume().map(|_| ())))
-                    .transpose()
-                    .and(result)
+                let response = dispatch.borrow_mut()(&call.method, &call.input, provider.clone())
+                    .unwrap_or_else(|error| super::ProviderResponse::ready(Err(error)));
+                (response, guard.and_then(|guard| guard.ok()))
             }
-        }
+        };
+        state
+            .borrow_mut()
+            .pending_rpc
+            .admit(call, provider, response, guard);
+        return Ok(true);
+    }
+    let completed = state.borrow_mut().pending_rpc.poll();
+    if let Some((active, result)) = completed {
+        let rpc::Active {
+            call,
+            control: provider,
+            lifetime,
+            guard,
+            ..
+        } = active;
+        let tasks = state.borrow().tasks.clone();
+        let _context = tasks.scope(call.context.clone());
+        let result = guard.map(|guard| guard.resume()).transpose().and(result);
+        state
+            .borrow_mut()
+            .drain
+            .replied(call.request, provider.continuation());
+        lifetime.finish()?;
+        state.borrow_mut().pending_rpc.completed(call, result);
+        return Ok(true);
+    }
+    if control.clock.lock().unwrap().suspended > 0 {
+        return Ok(false);
+    }
+    let Some((call, result)) = state.borrow_mut().pending_rpc.take_ready() else {
+        return Ok(false);
     };
-    state
-        .borrow_mut()
-        .drain
-        .replied(call.request, provider.continuation());
-    lifetime.finish()?;
-    check_execution(scope, control)?;
+    let tasks = state.borrow().tasks.clone();
+    let _context = tasks.scope(call.context.clone());
+    check_js_execution(scope, control)?;
     let text = app_state_response(scope, state, control, &call.method, &call.input, result)?;
-    check_execution(scope, control)?;
+    check_js_execution(scope, control)?;
     let text = v8::String::new(scope, &text).ok_or_else(|| exception(scope))?;
     let resolver = v8::Local::new(scope, call.resolver);
-    check_execution(scope, control)?;
+    check_js_execution(scope, control)?;
     resolver
         .resolve(scope, text.into())
         .ok_or_else(|| exception(scope))?;
@@ -874,6 +921,14 @@ fn settle_promise(
     promise.mark_as_handled();
     loop {
         check_execution(scope, control)?;
+        // Poll native work without entering JS while any approval owns the clock.
+        if control.clock.lock().unwrap().suspended > 0 {
+            if !dispatch_queued_rpc(scope, state, control)? {
+                thread::sleep(Duration::from_millis(1));
+            }
+            continue;
+        }
+        check_js_execution(scope, control)?;
         scope.perform_microtask_checkpoint();
         let failure = state.borrow().tasks.failure.borrow().clone();
         if let Some(message) = failure {
@@ -1071,7 +1126,9 @@ mod tests {
     #[test]
     fn v8_managed_heap_and_arraybuffer_exhaustion_recover() {
         let dispatch: Dispatch = Rc::new(RefCell::new(Box::new(|_, _, _| {
-            Ok(json!({"target":"mac"}))
+            Ok(super::super::ProviderResponse::ready(Ok(
+                json!({"target":"mac"}),
+            )))
         })));
         let mut host = Host::construct(
             dispatch,

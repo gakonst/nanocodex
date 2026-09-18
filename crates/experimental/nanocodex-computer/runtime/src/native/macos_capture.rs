@@ -10,16 +10,88 @@ pub(super) fn capture_window(
     geometry: screenshot::Geometry,
     encoding: screenshot::Encoding,
 ) -> Result<Image> {
+    let request = super::super::WindowCapture {
+        pid,
+        frame: ax_frame,
+        window_id,
+        pixels: geometry.pixels,
+        encoding,
+    };
+    if let Some(result) = super::super::window_capture::delegated_capture(&request) {
+        return result;
+    }
+    let receive = start_capture(request)?;
+    let start = Instant::now();
+    loop {
+        super::super::check_native_cancellation()?;
+        match receive.try_recv() {
+            Ok(result) => return result,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return Err(Error::action("Screenshot callback disconnected"));
+            }
+            _ => {}
+        }
+        if start.elapsed() > Duration::from_secs(10) {
+            return Err(Error::action("Screenshot timed out"));
+        }
+        pump(Duration::from_millis(10));
+    }
+}
+// A callback that macOS never invokes must retain its permit. Repeated timed-out
+// requests therefore cannot accumulate unbounded callback allocations.
+static INFLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+struct Permit(std::sync::atomic::AtomicBool);
+impl Permit {
+    fn complete(&self) {
+        // macOS can retain an already-invoked block. Release admission exactly
+        // once on completion, independently of that block's eventual lifetime.
+        if !self.0.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            INFLIGHT.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        }
+    }
+}
+impl Drop for Permit {
+    fn drop(&mut self) {
+        self.complete();
+    }
+}
+pub fn start_capture(
+    request: super::super::WindowCapture,
+) -> Result<std::sync::mpsc::Receiver<Result<Image>>> {
+    request.validate()?;
+    // CLI parents can reach SCK before any AppKit window discovery initializes
+    // their WindowServer connection. Initialize AppKit without activation.
+    // The direct owned-window test already initializes its connection and runs
+    // on the Rust test thread; it retains the original synchronous wrapper.
+    if let Some(main) = objc2::MainThreadMarker::new() {
+        let _application = objc2_app_kit::NSApplication::sharedApplication(main);
+    }
+    let super::super::WindowCapture {
+        pid,
+        frame: ax_frame,
+        window_id,
+        pixels,
+        encoding,
+    } = request;
     if !unsafe { CGPreflightScreenCaptureAccess() } {
         return Err(Error::new(
             -32003,
             "Grant Screen Recording permission to this executable or launching terminal",
         ));
     }
+    use std::sync::atomic::Ordering;
+    INFLIGHT
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            (n < 32).then_some(n + 1)
+        })
+        .map_err(|_| Error::action("Window capture callback limit reached"))?;
+    let permit = std::sync::Arc::new(Permit(std::sync::atomic::AtomicBool::new(false)));
     let (send, receive) = std::sync::mpsc::channel();
     let content_callback = RcBlock::new(
         move |content: *mut SCShareableContent, error: *mut NSError| {
+            let permit = permit.clone();
             let fail = |message: String| {
+                permit.complete();
                 let _ = send.send(Err(Error::action(message)));
             };
             // SAFETY: ScreenCaptureKit guarantees callback pointers for the duration
@@ -83,8 +155,8 @@ pub(super) fn capture_window(
                     return;
                 }
                 let config = SCStreamConfiguration::new();
-                config.setWidth(geometry.pixels[0]);
-                config.setHeight(geometry.pixels[1]);
+                config.setWidth(pixels[0]);
+                config.setHeight(pixels[1]);
                 config.setShowsCursor(false);
                 config.setIgnoreShadowsSingleWindow(true);
                 let sender = send.clone();
@@ -95,12 +167,9 @@ pub(super) fn capture_window(
                         } else if image.is_null() {
                             Err(Error::action("No screenshot image"))
                         } else {
-                            screenshot::macos::encode(
-                                image as *mut c_void,
-                                encoding,
-                                geometry.pixels,
-                            )
+                            screenshot::macos::encode(image as *mut c_void, encoding, pixels)
                         };
+                        permit.complete();
                         let _ = sender.send(result);
                     },
                 );
@@ -115,21 +184,9 @@ pub(super) fn capture_window(
     unsafe {
         SCShareableContent::getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler(true,false,&content_callback)
     };
-    let start = Instant::now();
-    loop {
-        match receive.try_recv() {
-            Ok(result) => return result,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                return Err(Error::action("Screenshot callback disconnected"));
-            }
-            _ => {}
-        }
-        if start.elapsed() > Duration::from_secs(10) {
-            return Err(Error::action("Screenshot timed out"));
-        }
-        pump(Duration::from_millis(10));
-    }
+    Ok(receive)
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
