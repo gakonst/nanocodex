@@ -330,7 +330,7 @@ describe("connector route compatibility", () => {
 
     expect(response?.status).toBe(200);
     const body = await response?.json() as { providers: Array<Record<string, unknown>> };
-    expect(body.providers.map(({ id }) => id)).toEqual(["github", "google", "slack", "x", "spotify", "soundcloud"]);
+    expect(body.providers.map(({ id }) => id)).toEqual(["github", "google", "slack", "x", "spotify", "soundcloud", "link"]);
     expect(body.providers.find(({ id }) => id === "google")?.capabilities).toEqual([
       { id: "gmail", name: "Gmail" },
       { id: "gcalendar", name: "Google Calendar" },

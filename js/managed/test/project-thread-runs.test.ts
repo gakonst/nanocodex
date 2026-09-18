@@ -33,6 +33,12 @@ function blockModel(session: DurableAgentSession, epoch = 1) {
   } } } });
 }
 async function setup(id: string) {
+  const owner = '11111111-1111-4111-8111-111111111111';
+  const registry = (env as unknown as { NANOCODEX_USERS: DurableObjectNamespace }).NANOCODEX_USERS.getByName(owner);
+  await runInDurableObject(registry, async (_, state) => {
+    // Project discovery validates the persisted account against live session identity.
+    await state.storage.put('account', { id: owner, organizationId: '22222222-2222-4222-8222-222222222222', persistent: true, createdAt: 1, lastAuthenticatedAt: 1 });
+  });
   const stub = sessions().getByName(id);
   fixtures.push(stub);
   await runInDurableObject(stub, async (session, state) => {
