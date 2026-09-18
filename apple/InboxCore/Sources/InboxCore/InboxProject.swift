@@ -23,24 +23,28 @@ public struct InboxProjectIndex {
     public let cardsByID: [String: AgentCard]
     private let links: [String: [String: [AgentCard]]]
 
-    public init(cards: [AgentCard], savedProjects: [InboxProject]) {
+    public init(cards: [AgentCard], savedProjects: [InboxProject], canonicalProjects: [InboxProject] = [], mainThreadID: String? = nil) {
+        // A local name always wins. Canonical references add navigation only;
+        // they never rewrite saved membership or assign existing conversations.
+        var coordinators = Set(savedProjects.map(\.primaryAgentID))
+        let savedProjects = savedProjects + canonicalProjects.filter { coordinators.insert($0.primaryAgentID).inserted }
         cardsByID = Dictionary(cards.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         let available = Set(cardsByID.keys)
         var members: [String: [String]] = [:]
         var links: [String: [String: [AgentCard]]] = [:]
         for card in cards {
-            if let root = card.projectRootID, root != card.id { members[root, default: []].append(card.id) }
+            if let root = card.projectRootID, root != card.id, card.id != mainThreadID { members[root, default: []].append(card.id) }
             if let parent = card.parentAgentID, let turn = card.originTurnID {
                 links[parent, default: [:]][turn, default: []].append(card)
             }
         }
         self.links = links
-        let saved = savedProjects.filter { available.contains($0.primaryAgentID) }.map { project in
+        let saved = savedProjects.filter { available.contains($0.primaryAgentID) && $0.primaryAgentID != mainThreadID }.map { project in
             InboxProject(id: project.id, name: project.name, primaryAgentID: project.primaryAgentID,
                          agentIDs: [project.primaryAgentID] + (members[project.primaryAgentID] ?? []))
         }
         let assigned = Set(saved.flatMap(\.agentIDs))
-        projects = saved + cards.filter { !assigned.contains($0.id)
+        projects = saved + cards.filter { $0.id != mainThreadID && !assigned.contains($0.id)
             && ($0.projectRootID == nil || !available.contains($0.projectRootID!) || $0.projectRootID == $0.id)
         }.sorted(by: AgentCard.mostRecentFirst).map {
             InboxProject(id: "project-" + $0.id, name: $0.title, primaryAgentID: $0.id,

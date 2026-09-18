@@ -4,7 +4,16 @@ A native SwiftUI app for iPhone and iPad. Projects organize persistent agent cha
 The mobile shell has a searchable project drawer, compact project header, blue user
 bubbles, unboxed replies, and a single rounded composer. A task pill opens a native
 Tasks/Agents sheet, and messages link to their task details. Project names
-are device-local and account-scoped. The master can spawn durable task threads; server
+for existing projects remain device-local and account-scoped. Main is the durable global
+chat, available from the drawer and empty state, with the same composer, drafts, and
+steering as every project coordinator and persistent task thread. New projects use
+canonical names and coordinator identities across devices. The project menu explicitly
+registers an existing coordinator with “Make project available across devices”; merely
+opening the app never migrates or reassigns existing conversations. Local names take
+precedence over canonical names for their existing coordinators. Canonical-only renames
+update the shared name; local project renames stay local. Failed new-project requests
+retain their ID across relaunch and can be retried from the drawer.
+The master can spawn durable task threads; server
 lineage groups those agents into the same project across devices. Existing queue and
 steering behavior remains, with explicit result-reading tools for the master.
 See [project-chat UX notes](../docs/ux/2026-09-17-project-chat.md) for behavior and scope.

@@ -226,12 +226,97 @@ final class InboxModel: ObservableObject {
     private var cachedProjectIndex: InboxProjectIndex?
     private var projectIndex: InboxProjectIndex {
         if let cachedProjectIndex { return cachedProjectIndex }
-        let index = InboxProjectIndex(cards: cards, savedProjects: savedProjects)
+        let index = InboxProjectIndex(cards: cards, savedProjects: savedProjects, canonicalProjects: canonicalProjects, mainThreadID: mainThreadID)
         cachedProjectIndex = index
         return index
     }
     private var projectTaskSummaryCache = ProjectTaskSummaryCache()
     @Published private var savedProjects: [InboxProject] = [] { didSet { cachedProjectIndex = nil } }
+    @Published private(set) var mainThreadID: String? { didSet { cachedProjectIndex = nil } }
+    @Published private(set) var canonicalProjects: [InboxProject] = [] { didSet { cachedProjectIndex = nil } }
+    @Published private(set) var openingMain = false
+    @Published private(set) var savingProject = false
+    @Published private(set) var pendingProjectName: String?
+    private var pendingProjectID: String?
+    private var navigationRevision = UUID()
+    var isMainThread: Bool { mainThreadID != nil && focused?.id == mainThreadID }
+
+    private func admitNavigationAgent(_ id: String, title: String) {
+        if !cards.contains(where: { $0.id == id }) {
+            var card = newConversationCard(id); card.title = title
+            cards.append(card); unlistedAgents.insert(id)
+        }
+    }
+    func openMainThread() {
+        guard connected, !openingMain else { return }
+        if let id = mainThreadID { select(id); return }
+        if isDemo {
+            mainThreadID = "demo-main-thread"
+            admitNavigationAgent("demo-main-thread", title: "Main")
+            select("demo-main-thread"); return
+        }
+        guard let client else { return }
+        let epoch = generation
+        openingMain = true; error = nil
+        let selectedID = focused?.id
+        Task {
+            defer { if generation == epoch { openingMain = false } }
+            do {
+                guard let id = try await client.mainThread(ensure: true), generation == epoch else { return }
+                navigationRevision = UUID()
+                mainThreadID = id; admitNavigationAgent(id, title: "Main")
+                if focused?.id == selectedID { select(id) }
+            } catch { if generation == epoch { self.error = error.localizedDescription } }
+        }
+    }
+    private func refreshNavigation() async {
+        guard let client else { return }
+        let epoch = generation, revision = navigationRevision
+        do {
+            async let main = client.mainThread(ensure: false)
+            async let projects = client.canonicalProjects()
+            let (id, references) = try await (main, projects)
+            guard generation == epoch, navigationRevision == revision else { return }
+            mainThreadID = id; canonicalProjects = references
+            if let id { admitNavigationAgent(id, title: "Main") }
+            for project in references { admitNavigationAgent(project.primaryAgentID, title: project.name) }
+        } catch { /* Older servers keep local navigation available. Writes surface errors. */ }
+    }
+    var canRegisterFocusedProject: Bool {
+        guard let project = focusedProject, !project.primaryAgentID.hasPrefix("draft-") else { return false }
+        return !canonicalProjects.contains { $0.primaryAgentID == project.primaryAgentID }
+    }
+    func registerFocusedProject() {
+        guard canRegisterFocusedProject, let project = focusedProject else { return }
+        saveCanonicalProject(id: project.id, name: project.name, coordinator: project.primaryAgentID, selectOnSuccess: false)
+    }
+    func retryProjectCreation() {
+        guard let id = pendingProjectID, let name = pendingProjectName else { return }
+        saveCanonicalProject(id: id, name: name, coordinator: nil, selectOnSuccess: true)
+    }
+    private func saveCanonicalProject(id: String, name: String, coordinator: String?, selectOnSuccess: Bool) {
+        guard let client, !savingProject else { return }
+        let epoch = generation
+        savingProject = true; error = nil
+        let selectedID = focused?.id
+        Task {
+            defer { if generation == epoch { savingProject = false } }
+            do {
+                await preferences.flush()
+                guard generation == epoch else { return }
+                let project = try await client.registerProject(id: id, name: name, coordinatorAgentID: coordinator)
+                guard generation == epoch else { return }
+                navigationRevision = UUID()
+                canonicalProjects.removeAll { $0.id == project.id }; canonicalProjects.append(project)
+                admitNavigationAgent(project.primaryAgentID, title: project.name)
+                if selectOnSuccess {
+                    pendingProjectID = nil; pendingProjectName = nil
+                    persistPendingProject()
+                    if focused?.id == selectedID { select(project.primaryAgentID) }
+                }
+            } catch { if generation == epoch { self.error = error.localizedDescription } }
+        }
+    }
     func card(agentID: String) -> AgentCard? { projectIndex.cardsByID[agentID] }
     func childAgents(parentAgentID: String, originTurnID: String) -> [AgentCard] {
         projectIndex.children(parentAgentID: parentAgentID, originTurnID: originTurnID)
@@ -305,15 +390,31 @@ final class InboxModel: ObservableObject {
     }
     func createProject(name: String) {
         guard connected else { return }
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name.utf16.count <= 160, !savingProject else { return }
+        if !isDemo {
+            guard pendingProjectID == nil else {
+                error = "A project is still being created. Open the project drawer to retry it."
+                return
+            }
+            let id = UUID().uuidString
+            pendingProjectID = id; pendingProjectName = name
+            persistPendingProject()
+            saveCanonicalProject(id: id, name: name, coordinator: nil, selectOnSuccess: true)
+            return
+        }
         newAgent()
         guard let id = focused?.id else { return }
-        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         savedProjects.append(InboxProject(id: UUID().uuidString, name: name.isEmpty ? "New project" : name, primaryAgentID: id))
         persistProjects()
     }
     func renameProject(_ id: String, name: String) {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, var project = projects.first(where: { $0.id == id }) else { return }
+        guard !name.isEmpty, name.utf16.count <= 160, var project = projects.first(where: { $0.id == id }) else { return }
+        if canonicalProjects.contains(where: { $0.id == id }), !savedProjects.contains(where: { $0.id == id }) {
+            saveCanonicalProject(id: id, name: name, coordinator: project.primaryAgentID, selectOnSuccess: false)
+            return
+        }
         project.name = name
         savedProjects.removeAll { $0.id == id }; savedProjects.append(project)
         persistProjects()
@@ -329,7 +430,17 @@ final class InboxModel: ObservableObject {
         let key = "inbox.threadScreens." + scope
         preferences.enqueue { $0.set(data, forKey: key) }
     }
+    private func persistPendingProject() {
+        guard !scope.isEmpty else { return }
+        let key = "inbox.pendingCanonicalProject." + scope
+        let value = pendingProjectID.flatMap { id in pendingProjectName.map { ["id": id, "name": $0] } }
+        preferences.enqueue { defaults in
+            if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+        }
+    }
     private func restoreProjects() {
+        let pendingProject = UserDefaults.standard.dictionary(forKey: "inbox.pendingCanonicalProject." + scope) as? [String: String]
+        pendingProjectID = pendingProject?["id"]; pendingProjectName = pendingProject?["name"]
         threadScreens = UserDefaults.standard.data(forKey: "inbox.threadScreens." + scope)
             .flatMap { try? JSONDecoder().decode([String: RemoteScreenSelection].self, from: $0) } ?? [:]
         taskCache.removeAll(); projectTaskSummaryCache.removeAll()
@@ -931,6 +1042,9 @@ final class InboxModel: ObservableObject {
         try await client.disconnectMcpConnection(connectionID: connectionID)
     }
     private func reset() {
+        navigationRevision = UUID()
+        mainThreadID = nil; canonicalProjects = []; openingMain = false; savingProject = false
+        pendingProjectID = nil; pendingProjectName = nil
         agentNotificationUpdate?.cancel(); agentNotificationUpdate = nil
         stopOverview()
         overviewTranscripts = [:]; taskCache.removeAll(); projectTaskSummaryCache.removeAll(); tabHistories = [:]; recentTabs = []; tabOrder = []
@@ -1157,6 +1271,8 @@ final class InboxModel: ObservableObject {
                 return card
             } + created
             if cards != merged { cards = merged }
+            await refreshNavigation()
+            guard generation == epoch else { return }
             reconcile()
             // Keep state coverage for running work, but fetch older history only
             // when the user opens the conversation or reveals its overview.
