@@ -7,6 +7,11 @@ on:
     paths: ['Cargo.toml', 'Cargo.lock', 'bin/nanocodex/src/nanocodex2/**', 'bin/nanocodex/nanocodex2/**', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/nanocodex-voice-protocol/**', 'crates/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml']
 permissions:
   contents: read
+# Explicit bash enables GitHub Actions' -e -o pipefail invocation, including
+# the xcodebuild | tee | grep evidence pipeline below.
+defaults:
+  run:
+    shell: bash
 concurrency:
   group: apple-inbox-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
@@ -23,6 +28,13 @@ jobs:
         with:
           toolchain: "1.97"
           targets: wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          key: apple-macos
+          workspaces: |
+            . -> target
+            crates/experimental/nanocodex-computer/runtime -> target
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
         with:
           tool: wasm-bindgen-cli@0.2.126
@@ -99,6 +111,10 @@ jobs:
         with:
           toolchain: "1.97"
           targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          key: apple-inbox
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Build shared Rust voice core
         run: bash apple/NanocodexVoice/scripts/build-core.sh
       - name: Protocol and inbox policy
@@ -155,6 +171,10 @@ jobs:
         with:
           toolchain: "1.97"
           targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          key: apple-sdk27
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Build shared Rust voice core
         run: bash apple/NanocodexVoice/scripts/build-core.sh
       - name: Build iOS 27 App Intents

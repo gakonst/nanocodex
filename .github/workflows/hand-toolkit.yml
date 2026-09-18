@@ -27,10 +27,17 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Build VM toolkit
-        env:
-          DOCKERFILE: ${{ matrix.dockerfile }}
-        run: docker build -t nanocodex-vm:toolkit --build-context computer-source=crates/experimental/nanocodex-computer/runtime -f "crates/nanocodex-vm/image/$DOCKERFILE" crates/nanocodex-vm/image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: crates/nanocodex-vm/image
+          file: crates/nanocodex-vm/image/${{ matrix.dockerfile }}
+          build-contexts: computer-source=crates/experimental/nanocodex-computer/runtime
+          load: true
+          tags: nanocodex-vm:toolkit
+          cache-from: type=gha,scope=vm-toolkit-${{ matrix.runner }}-${{ matrix.dockerfile }}
+          cache-to: type=gha,scope=vm-toolkit-${{ matrix.runner }}-${{ matrix.dockerfile }},mode=max,ignore-error=true,timeout=3m
       - name: Exercise offline toolkit
         run: docker run --rm --network none --entrypoint env nanocodex-vm:toolkit -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/root sh -lc nanocodex-check-hand-toolkit
       - name: Package and validate the 16 GiB ext4 template

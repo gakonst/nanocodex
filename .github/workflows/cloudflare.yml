@@ -97,6 +97,8 @@ jobs:
       - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
         with:
           tool: wasm-bindgen-cli@0.2.126
+      - name: Test Wrangler image cache boundary
+        run: node --test scripts/cloudflare/wrangler-docker.test.mjs
       - name: Install deployment packages
         run: pnpm install --frozen-lockfile
       - name: Install Astra trial package
@@ -121,8 +123,20 @@ jobs:
         run: npx wrangler deploy --dry-run --config wrangler.broker.jsonc
       - name: Validate X Worker
         run: pnpm --filter @nanocodex/x-api run build
+      # Wrangler invokes plain `docker build`; the CLI override adds GHA cache
+      # import/export to the actual build and preserves its loaded image for push.
+      - name: Set up managed image builder
+        if: steps.managed-container.outputs.rollout != 'none'
+        id: managed-builder
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Expose BuildKit cache runtime
+        if: steps.managed-container.outputs.rollout != 'none'
+        uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
       - name: Validate managed Worker
         working-directory: js/managed
+        env:
+          WRANGLER_DOCKER_BIN: ${{ github.workspace }}/scripts/cloudflare/wrangler-docker.mjs
+          BUILDX_BUILDER: ${{ steps.managed-builder.outputs.name }}
         run: npx wrangler deploy --dry-run --config wrangler.jsonc --containers-rollout "${{ steps.managed-container.outputs.rollout }}"
       - name: Upload Connect dialog preview version
         working-directory: js/connect-dialog
@@ -202,6 +216,8 @@ jobs:
       - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
         with:
           tool: wasm-bindgen-cli@0.2.126
+      - name: Test Wrangler image cache boundary
+        run: node --test scripts/cloudflare/wrangler-docker.test.mjs
       - name: Install deployment packages
         run: pnpm install --frozen-lockfile
       - name: Install Astra trial package
@@ -224,8 +240,20 @@ jobs:
         run: npx wrangler deploy --config wrangler.broker.jsonc --message "$DEPLOY_MESSAGE"
       - name: Deploy X Worker
         run: pnpm deploy:x
+      # Wrangler invokes plain `docker build`; the CLI override adds GHA cache
+      # import/export to the actual build and preserves its loaded image for push.
+      - name: Set up managed image builder
+        if: steps.managed-container.outputs.rollout != 'none'
+        id: managed-builder
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Expose BuildKit cache runtime
+        if: steps.managed-container.outputs.rollout != 'none'
+        uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
       - name: Deploy managed agent service
         working-directory: js/managed
+        env:
+          WRANGLER_DOCKER_BIN: ${{ github.workspace }}/scripts/cloudflare/wrangler-docker.mjs
+          BUILDX_BUILDER: ${{ steps.managed-builder.outputs.name }}
         run: npx wrangler deploy --config wrangler.jsonc --containers-rollout "${{ steps.managed-container.outputs.rollout }}" --message "$DEPLOY_MESSAGE"
       - name: Deploy agent email service
         run: pnpm deploy:email

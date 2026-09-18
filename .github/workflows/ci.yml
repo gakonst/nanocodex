@@ -9,9 +9,13 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # CI needs assertions, not multi-gigabyte debugger and incremental artifacts.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_INCREMENTAL: 0
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -30,6 +34,7 @@ jobs:
           toolchain: "1.97"
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
           # These jobs use the same Rust version and native build profiles.
           # rust-cache still separates runner image, OS, architecture and compiler inputs.
           shared-key: native-ci
@@ -61,6 +66,7 @@ jobs:
           toolchain: "1.97"
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
           # These jobs use the same Rust version and native build profiles.
           # rust-cache still separates runner image, OS, architecture and compiler inputs.
           shared-key: native-ci
@@ -83,7 +89,8 @@ jobs:
       - name: Run real CLI/app sharing against a local account server
         shell: bash
         run: |
-          export NANOCODEX_DEVICE_TEST_BINARY="$(node -p 'require("node:path").resolve("target/debug/nanocodex2" + (process.platform === "win32" ? ".exe" : ""))')"
+          NANOCODEX_DEVICE_TEST_BINARY="$(node -p 'require("node:path").resolve("target/debug/nanocodex2" + (process.platform === "win32" ? ".exe" : ""))')"
+          export NANOCODEX_DEVICE_TEST_BINARY
           node --test js/desktop-runtime/test/device-hand.integration.test.mjs
 
   voice-native:
@@ -101,6 +108,7 @@ jobs:
           toolchain: "1.97"
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
           workspaces: third_party/codex-voice
       - name: Install native SDK
         run: brew install gstreamer
@@ -151,6 +159,7 @@ jobs:
           python-version: "3.12"
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
           # These jobs use the same Rust version and native build profiles.
           # rust-cache still separates runner image, OS, architecture and compiler inputs.
           shared-key: native-ci
@@ -216,6 +225,7 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
           cache-on-failure: true
       - run: cargo fmt --all -- --check
       - name: Check Linux Hand installation boundaries
@@ -262,6 +272,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
           cache-on-failure: true
       - run: sudo apt-get update && sudo apt-get install --yes musl-tools
       - name: Check the guest-only target matrix
@@ -276,14 +287,25 @@ jobs:
           --bin nanocodex-vm-guest --no-default-features
           --features guest-runtime --target ${{ matrix.target }}
 
-      - name: Build the Docker Hand image
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Prepare Docker Hand build context
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
-          context=$(mktemp -d)
-          trap 'rm -rf "$context"' EXIT
-          cp target/${{ matrix.target }}/debug/nanocodex-vm-guest "$context/"
+          context="$RUNNER_TEMP/hand-context"
+          mkdir -p "$context"
+          cp "target/$TARGET/debug/nanocodex-vm-guest" "$context/"
           cp crates/nanocodex-vm/image/Dockerfile.hand "$context/Dockerfile"
           cp -R crates/nanocodex-vm/image/toolkit "$context/toolkit"
-          docker build --tag nanocodex-hand:ci --build-context computer-source=crates/experimental/nanocodex-computer/runtime "$context"
+      - name: Build the Docker Hand image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ runner.temp }}/hand-context
+          build-contexts: computer-source=crates/experimental/nanocodex-computer/runtime
+          load: true
+          tags: nanocodex-hand:ci
+          cache-from: type=gha,scope=ci-hand-${{ matrix.arch }}
+          cache-to: type=gha,scope=ci-hand-${{ matrix.arch }},mode=max,ignore-error=true,timeout=3m
       - name: Exercise offline toolkit with a read-only root and unprivileged user
         run: >-
           docker run --rm --network none --read-only --user 1000:1000
@@ -348,6 +370,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
           cache-on-failure: true
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -443,6 +466,7 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
           cache-on-failure: true
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -546,13 +570,16 @@ jobs:
   ci-success:
     name: ci success
     if: always()
-    needs: [test, quality, vm-guest, policy, bindings, python, apps, codeql]
+    needs: [test, shared-hands, voice-native, windows-hand, quality, vm-guest, policy, bindings, python, apps, codeql]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every CI job
         env:
           TEST: ${{ needs.test.result }}
+          SHARED_HANDS: ${{ needs.shared-hands.result }}
+          VOICE_NATIVE: ${{ needs.voice-native.result }}
+          WINDOWS_HAND: ${{ needs.windows-hand.result }}
           QUALITY: ${{ needs.quality.result }}
           VM_GUEST: ${{ needs.vm-guest.result }}
           POLICY: ${{ needs.policy.result }}
@@ -562,6 +589,9 @@ jobs:
           CODEQL: ${{ needs.codeql.result }}
         run: |
           test "$TEST" = success
+          test "$SHARED_HANDS" = success
+          test "$VOICE_NATIVE" = success
+          test "$WINDOWS_HAND" = success
           test "$QUALITY" = success
           test "$VM_GUEST" = success
           test "$POLICY" = success
