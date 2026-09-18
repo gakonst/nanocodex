@@ -49,3 +49,18 @@ The initial mobile adoption uses the shared roster policy and unstyled list cont
 ## DJ Booth adoption
 
 After the component is validated, DJ Booth can supply its dark sidebar, music-specific empty state and message/composer views. Its current `MusicAgentConversation` and `MusicAgentView` have their own history/pending logic; migrate that behavior into the shared store rather than layering another transcript cache over it. Login, consent and music tool registration stay with DJ Booth. The server project grant extension above is required for the full named-project sidebar, beyond the existing grant's single conversation.
+
+
+## Native Nanocodex presentation
+
+`NanocodexChatUI` is the optional styled layer. Its message and activity views are
+extracted from the mobile app, and both hosts consume the same `NanocodexUI`
+composer shell, native editor, expanding editor, send/stop button and navigation
+primitives. The unstyled package has no dependency on the styled layer.
+
+`NanocodexProjectConversationContent` binds that presentation to the project store.
+Host slots own voice, upload, account/project/task actions and authenticated media
+previews. This does not expand the transport’s authorization or migrate the
+mobile app’s existing advanced state model. The Debug gallery demonstrates the
+actual Nanocodex presentation in light and dark mode rather than an approximate
+DJ Booth theme.

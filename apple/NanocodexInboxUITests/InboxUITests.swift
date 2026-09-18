@@ -2243,8 +2243,10 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(action.label, "Queue message")
         XCTAssertFalse(app.buttons["Stop turn"].exists)
         XCTAssertEqual(action.frame.midX, actionX, accuracy: 1)
-        composer(app).typeKey("a", modifierFlags: .command)
-        composer(app).typeText(XCUIKeyboardKey.delete.rawValue)
+        // Exercise clearing the draft directly. Simulator Cmd-A delivery can
+        // leave the selection unchanged and delete just the final character.
+        composer(app).typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "Keep going".count))
+        XCTAssertEqual(composer(app).value as? String, "")
         XCTAssertEqual(action.label, "Stop turn")
         XCTAssertTrue(app.keyboards.firstMatch.exists, "Clearing the draft keeps the keyboard open")
         capture(app, "composer-stop-on-right")

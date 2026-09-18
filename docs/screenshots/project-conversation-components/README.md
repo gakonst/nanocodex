@@ -1,54 +1,83 @@
 # Project conversation component evidence
 
-All media use explicit simulator fixtures. They show real SwiftUI interaction
-with the shared component or the existing mobile project model; they do not
-claim a live model response or a completed DJ Booth integration.
+All media use simulator fixtures. They show real SwiftUI interaction; no capture
+claims a live model response, project authorization flow or completed DJ Booth
+application integration.
 
-The Debug-only component gallery consumes `NanocodexChat` and
-`ProjectConversationStore` through their public APIs. The same store stays alive
-when switching between bare SwiftUI views and an illustrative DJ Booth theme.
+The **Nanocodex** presentation consumes the same composer, message, activity,
+palette and navigation primitives as the mobile app. `NanocodexChatUI` supplies the
+styled project content; `NanocodexChat` remains unstyled. Full-screen captures hide
+the gallery picker. Attachment, voice and account actions remain host-owned; the
+gallery supplies fixture controls.
 
-The existing mobile capture covers the current project drawer, child selection,
-search, separate drafts, Tasks and Agents. The shared primitive is used for the
-child conversation list; the existing mobile model still owns its transcript.
+## Native Nanocodex presentation
 
-## Project navigation
+[Watch native composer, sidebar, attachments, expansion, bounded pending input and reply](nanocodex-native.mp4)
 
-[Watch project navigation, search, drafts and activity](project-navigation.mp4)
+[Watch dark-mode presentation, composer and sidebar](nanocodex-dark.mp4)
 
-| Expanded project sidebar | Child conversation | Tasks | Agents |
-| --- | --- | --- | --- |
-| ![Project sidebar](project-sidebar.png) | ![Child conversation](project-child.png) | ![Tasks](project-tasks.png) | ![Agents](project-agents.png) |
-
-Recorded from `testExpandableProjectThreadsPreserveDraftsAndSearch`, which passed.
-A separate subsequent simulator launch stalled and was cancelled; that stalled
-launch is excluded from the clip. This clip includes the complete passing test,
-with a short margin on either end. The video is resized and H.264-compressed for
-review; screenshots are extracted from the same recording.
-
-## Unstyled and custom presentations
-
-[Watch styling, conversation switching, independent drafts and a completed reply](component-styling.mp4)
-
-| Bare SwiftUI | Custom presentation | Custom sidebar |
+| Light | Dark | Native composer |
 | --- | --- | --- |
-| ![Unstyled](component-unstyled.png) | ![Custom presentation](component-custom-style.png) | ![Custom sidebar](component-custom-sidebar.png) |
+| ![Light](nanocodex-light.png) | ![Dark](nanocodex-dark.png) | ![Composer](nanocodex-composer.png) |
+
+| Sidebar | Dark composer | Dark sidebar |
+| --- | --- | --- |
+| ![Sidebar](nanocodex-sidebar.png) | ![Dark composer](nanocodex-dark-composer.png) | ![Dark sidebar](nanocodex-dark-sidebar.png) |
+
+| Attachment menu | Expanded composer | Long pending input |
+| --- | --- | --- |
+| ![Attachments](nanocodex-attachments.png) | ![Expanded editor](nanocodex-expanded-composer.png) | ![Bounded pending message](nanocodex-long-pending.png) |
+
+| Live turn | Stopped turn | Completed reply |
+| --- | --- | --- |
+| ![Live turn](nanocodex-live.png) | ![Stopped](nanocodex-stopped.png) | ![Completed reply](nanocodex-completed-reply.png) |
+
+## Unstyled and Nanocodex presentations share state
+
+[Watch switching presentation, conversations, independent drafts and a completed reply](component-styling.mp4)
+
+| Bare SwiftUI | Nanocodex presentation | Nanocodex sidebar |
+| --- | --- | --- |
+| ![Unstyled](component-unstyled.png) | ![Nanocodex](component-custom-style.png) | ![Sidebar](component-custom-sidebar.png) |
 
 | Separate conversation draft | Completed reply |
 | --- | --- |
 | ![Independent draft](component-independent-draft.png) | ![Completed reply](component-completed-reply.png) |
 
-## History, retry and stop
+[Watch older/latest history, interrupted send, explicit retry and stop](component-recovery.mp4)
 
-[Watch older/latest history, an interrupted send, explicit retry and stopping a turn](component-recovery.mp4)
-
-| Older history | Pending input and retry | Live turn | Stopped turn |
+| Older history | Pending retry | Live turn | Stopped turn |
 | --- | --- | --- | --- |
-| ![Older history](component-older-history.png) | ![Pending retry](component-pending-retry.png) | ![Live turn](component-live-turn.png) | ![Stopped turn](component-stopped-turn.png) |
+| ![Older history](component-older-history.png) | ![Retry](component-pending-retry.png) | ![Live](component-live-turn.png) | ![Stopped](component-stopped-turn.png) |
 
-The gallery screenshots are XCTest attachments. Videos show the same final
-`ComponentGalleryUITests` run on an iPhone 16 simulator (iOS 18.2), trimmed to each
-workflow and resized/compressed for review. Both tests pass. The fixture transport
-simulates a lost connection before acceptance and reuses the pending command on
-explicit retry; the core transport/store tests separately verify request identity,
-replay ordering and server-grant boundaries.
+## Mobile regression captures
+
+[Watch project navigation, search, drafts, Tasks and Agents](project-navigation.mp4)
+
+| Project sidebar | Child conversation | Tasks | Agents |
+| --- | --- | --- | --- |
+| ![Sidebar](project-sidebar.png) | ![Child](project-child.png) | ![Tasks](project-tasks.png) | ![Agents](project-agents.png) |
+
+[Watch compact activity, timeline and tool detail](mobile-activity.mp4)
+
+| Activity | Timeline | Tool detail |
+| --- | --- | --- |
+| ![Activity](mobile-activity.png) | ![Timeline](mobile-activity-timeline.png) | ![Tool detail](mobile-activity-details.png) |
+
+[Watch five-line composer expansion and draft preservation](mobile-composer.mp4) ·
+[Watch send/stop behavior](mobile-send-stop.mp4)
+
+| Composer overflow | Send/stop control |
+| --- | --- |
+| ![Composer](mobile-composer-overflow.png) | ![Stop](mobile-composer-stop.png) |
+
+Screenshots are XCTest attachments from iPhone 16 / iOS 18.2 simulator runs.
+Videos show the same passing test executions, trimmed by test timestamps and
+resized/H.264 compressed for review. The eight selected checks cover four
+component gallery flows and four existing mobile regressions. Seven passed in
+the combined final run; send/stop is captured from its isolated final rerun after
+making draft clearing deterministic. The simulator had ignored Cmd-A, leaving
+text in the field, so that test now uses backspaces and asserts an empty draft
+before checking the Stop state. The native gallery also checks that
+long pending input leaves navigation and the editor accessible and that a reply
+after a long message is visible at the latest position.

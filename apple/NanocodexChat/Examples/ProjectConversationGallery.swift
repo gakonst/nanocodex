@@ -2,16 +2,24 @@
 import SwiftUI
 import InboxCore
 import NanocodexChat
+import NanocodexChatUI
+import NanocodexUI
+import NanocodexVoice
 
 /// Executable consumer example, hosted by the app only with --component-gallery.
 /// All account, conversation and response data in this gallery are fixtures.
 @MainActor struct ProjectConversationGallery: View {
     @StateObject private var transport: GalleryConversationTransport
     @StateObject private var store: ProjectConversationStore
-    @State private var appearance = "Unstyled"
+    @State private var appearance = ProcessInfo.processInfo.arguments.contains("--component-native-style") ? "Nanocodex" : "Unstyled"
+    @StateObject private var voiceSession = VoiceSession()
+    @State private var showAttachments = false
+    @State private var hostNotice: String?
+    @State private var showTasks = false
+    private var nativeOnly: Bool { ProcessInfo.processInfo.arguments.contains("--component-native-style") }
     @State private var showsConversations = false
     @FocusState private var composerFocused: Bool
-    private var custom: Bool { appearance == "DJ Booth style" }
+    private var custom: Bool { appearance == "Nanocodex" }
 
     init() {
         let transport = GalleryConversationTransport()
@@ -21,48 +29,112 @@ import NanocodexChat
 
     var body: some View {
         ProjectConversationView(store: store) { state in
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Component gallery · fixture data").font(.caption).foregroundStyle(.secondary)
-                Picker("Presentation", selection: $appearance) {
-                    Text("Unstyled").tag("Unstyled")
-                    Text("DJ Booth style").tag("DJ Booth style")
-                }.pickerStyle(.segmented).accessibilityIdentifier("gallery-style")
-                HStack {
-                    Button { showsConversations = true } label: { Label("Conversations", systemImage: "sidebar.left") }
-                        .accessibilityIdentifier("gallery-conversations")
-                    Spacer()
-                    Menu {
-                        Button("Interrupt next send") { transport.failNextSend = true }
-                    } label: { Image(systemName: "ellipsis.circle") }
-                    .accessibilityIdentifier("gallery-scenarios")
+            VStack(spacing: 0) {
+                if !nativeOnly {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Component gallery · fixture data").font(.caption).foregroundStyle(.secondary)
+                        Picker("Presentation", selection: $appearance) {
+                            Text("Unstyled").tag("Unstyled")
+                            Text("Nanocodex").tag("Nanocodex")
+                        }.pickerStyle(.segmented).accessibilityIdentifier("gallery-style")
+                    }.padding(16)
                 }
-                Text(state.cards.first { $0.id == state.selection }?.title ?? "Choose a conversation")
-                    .font(custom ? .title2.bold() : .headline)
-                transcript(state)
-                if transport.failNextSend { Text("Next send will be interrupted").font(.caption).accessibilityIdentifier("gallery-interruption-armed") }
-                if let error = state.error { Text(error).font(.caption).foregroundStyle(.secondary) }
-                if state.isLoading { ProgressView("Loading conversation") }
-                pending(state)
-                composer(state)
+                if custom {
+                    NanocodexProjectConversationContent(store: state, projectTitle: "DJ Booth", identifierPrefix: "gallery") {
+                        Button { showAttachments = true } label: {
+                            ChatComposerControlLabel { Image(systemName: "plus") }
+                        }.accessibilityLabel("Add attachments").accessibilityIdentifier("add-attachments")
+                    } voice: {
+                        NanocodexVoiceControl(session: voiceSession) {
+                            throw NSError(domain: "ComponentGallery", code: 1, userInfo: [NSLocalizedDescriptionKey: "Voice requires a host-provided account connection. This gallery uses fixture data."])
+                        }
+                    } actions: {
+                        Button { hostNotice = "Create a project through the host app." } label: {
+                            Image(systemName: "square.and.pencil").frame(width: 44, height: 44)
+                        }.accessibilityLabel("New project")
+                        scenarios
+                    } drawerFooter: {
+                        HStack {
+                            Button { hostNotice = "Create a project through the host app." } label: {
+                                Label("New project", systemImage: "square.and.pencil").padding(12)
+                            }.background(NanocodexConversationPalette.userMessage, in: Capsule())
+                            Spacer()
+                            Button { hostNotice = "Account settings belong to the host app." } label: {
+                                Image(systemName: "gearshape").frame(width: 44, height: 44)
+                            }.accessibilityLabel("Account settings")
+                        }
+                    } tasks: {
+                        Button { showTasks = true } label: {
+                            HStack(spacing: 6) { Image(systemName: "circle.dotted"); Text("0 tasks") }
+                                .font(.caption.weight(.medium)).padding(.horizontal, 12).padding(.vertical, 7)
+                                .background(ChatPalette.userBubble, in: Capsule()).frame(minHeight: 44)
+                        }.buttonStyle(.plain)
+                    } media: { _ in EmptyView() }
+                } else {
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack {
+                            Button { showsConversations = true } label: { Label("Conversations", systemImage: "sidebar.left") }
+                                .accessibilityIdentifier("gallery-conversations")
+                            Spacer(); scenarios
+                        }
+                        Text(state.cards.first { $0.id == state.selection }?.title ?? "Choose a conversation").font(.headline)
+                        transcript(state)
+                        if transport.failNextSend { Text("Next send will be interrupted").font(.caption).accessibilityIdentifier("gallery-interruption-armed") }
+                        if let error = state.error { Text(error).font(.caption).foregroundStyle(.secondary) }
+                        if state.isLoading { ProgressView("Loading conversation") }
+                        pending(state)
+                        composer(state)
+                    }.padding(20).background(Color(uiColor: .systemBackground))
+                        .sheet(isPresented: $showsConversations) { sidebar(state) }
+                }
             }
-            .padding(20)
-            .background(custom ? Color(red: 0.07, green: 0.08, blue: 0.09) : Color(uiColor: .systemBackground))
-            .tint(custom ? .orange : .accentColor)
-            .preferredColorScheme(custom ? .dark : .light)
-            .sheet(isPresented: $showsConversations) { sidebar(state) }
         }
         .task { await store.select("booth") }
+        .preferredColorScheme(ProcessInfo.processInfo.arguments.contains("--component-dark") ? .dark : nil)
+        .sheet(isPresented: $showAttachments) {
+            NavigationStack {
+                List {
+                    Section {
+                        attachmentOption("Photos & Videos", icon: "photo.on.rectangle")
+                        attachmentOption("Camera", icon: "camera")
+                        attachmentOption("Files", icon: "folder")
+                    }
+                    Section { attachmentOption("Context from other apps", icon: "tray.full") }
+                }.navigationTitle("Add to conversation").navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showAttachments = false } } }
+            }.tint(.primary).presentationDetents([.medium, .large]).presentationDragIndicator(.visible).presentationCornerRadius(30)
+        }
+        .sheet(isPresented: $showTasks) {
+            NavigationStack { Text("No tasks yet").foregroundStyle(.secondary).navigationTitle("Tasks")
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showTasks = false } } }
+            }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible).presentationCornerRadius(28)
+        }
+        .alert("Fixture gallery", isPresented: Binding(get: { hostNotice != nil }, set: { if !$0 { hostNotice = nil } })) {
+            Button("OK") { hostNotice = nil }
+        } message: { Text(hostNotice ?? "") }
+    }
+
+    private var scenarios: some View {
+        Menu {
+            Button("Interrupt next send") { transport.failNextSend = true }
+        } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
+            .accessibilityIdentifier("gallery-scenarios")
+    }
+    private func attachmentOption(_ title: String, icon: String) -> some View {
+        Button { showAttachments = false; hostNotice = "Attachments require a host-provided upload handler. This gallery uses fixture data." } label: {
+            Label(title, systemImage: icon).frame(minHeight: 32)
+        }
     }
 
     private func transcript(_ state: ProjectConversationStore) -> some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: custom ? 18 : 12) {
+            LazyVStack(alignment: .leading, spacing: 12) {
                 if state.hasOlder {
                     Button("Earlier messages") { Task { await state.loadOlder() } }
                         .disabled(state.isLoadingOlder).accessibilityIdentifier("gallery-earlier")
                 }
                 ConversationTranscriptContent(items: state.items) { row in
-                    GalleryConversationMessage(row: row, custom: custom)
+                    GalleryConversationMessage(row: row)
                 } activity: { item in
                     DisclosureGroup(item.isRunning ? "Working" : "Activity") {
                         ForEach(item.activity) { row in Text(row.text).font(.caption) }
@@ -85,7 +157,7 @@ import NanocodexChat
                     Button("Retry same message") { Task { await state.retryPending(for: id) } }
                         .accessibilityIdentifier("gallery-retry")
                 } else { Text(item.isSending ? "Sending…" : "Waiting for transcript…").font(.caption) }
-            }.padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: custom ? 16 : 4))
+            }.padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
         }
     }
 
@@ -118,28 +190,26 @@ import NanocodexChat
                             }
                             Spacer()
                             if state.selection == card.id { Image(systemName: "checkmark") }
-                        }.padding(.vertical, custom ? 10 : 2)
+                        }.padding(.vertical, 2)
                     }.accessibilityIdentifier("gallery-row:" + card.id)
                 } empty: { Text("No conversations") }
             }
             .navigationTitle("DJ Booth")
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { showsConversations = false } } }
-        }.tint(custom ? .orange : .accentColor).preferredColorScheme(custom ? .dark : .light)
+        }.tint(.accentColor)
     }
 }
 
 private struct GalleryConversationMessage: View {
     let row: TranscriptRow
-    let custom: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(row.role == "You" ? "You" : "Booth").font(.caption).foregroundStyle(.secondary)
             Text(row.text).textSelection(.enabled)
         }
-        .padding(custom ? 14 : 0)
+        .padding(0)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(custom ? (row.role == "You" ? Color.orange.opacity(0.18) : Color.white.opacity(0.06)) : .clear,
-                    in: RoundedRectangle(cornerRadius: 16))
+
     }
 }
 
