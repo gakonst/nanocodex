@@ -4,14 +4,15 @@ A native SwiftUI app for iPhone and iPad. Projects organize persistent agent cha
 The mobile shell has a searchable project drawer, compact project header, blue user
 bubbles, unboxed replies, and a single rounded composer. A task pill opens a native
 Tasks/Agents sheet, and messages link to their task details. Project names
-for existing projects remain device-local and account-scoped. Main is the durable global
+for existing projects remain device-local and account-scoped. Main Thread is the durable global
 chat, available from the drawer and empty state, with the same composer, drafts, and
 steering as every project coordinator and persistent task thread. New projects use
 canonical names and coordinator identities across devices. The project menu explicitly
 registers an existing coordinator with “Make project available across devices”; merely
 opening the app never migrates or reassigns existing conversations. Local names take
 precedence over canonical names for their existing coordinators. Canonical-only renames
-update the shared name; local project renames stay local. Failed new-project requests
+update the shared name; “Rename local alias” explicitly changes only the device name,
+including after registering an existing coordinator. Failed new-project requests
 retain their ID across relaunch and can be retried from the drawer.
 The master can spawn durable task threads; server
 lineage groups those agents into the same project across devices. Existing queue and

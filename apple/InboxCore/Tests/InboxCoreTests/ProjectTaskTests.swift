@@ -34,6 +34,33 @@ final class ProjectTaskTests: XCTestCase {
         XCTAssertEqual(saved[0].agentIDs, ["root", "legacy"])
     }
 
+    func testMainExcludedAsSavedAndCanonicalRootAndDuplicateCanonicalRootsCoalesce() {
+        let main = AgentCard(id: "main", title: "Arbitrary title")
+        let root = AgentCard(id: "root", title: "Root")
+        var child = AgentCard(id: "child", title: "Child")
+        child.projectRootID = "root"
+        let references = [
+            InboxProject(id: "main-canonical", name: "Main reference", primaryAgentID: "main"),
+            InboxProject(id: "canonical-first", name: "First", primaryAgentID: "root"),
+            InboxProject(id: "canonical-second", name: "Second", primaryAgentID: "root")
+        ]
+        let savedMain = InboxProject(id: "main-saved", name: "Saved main", primaryAgentID: "main")
+        let index = InboxProjectIndex(cards: [main, root, child], savedProjects: [savedMain],
+                                      canonicalProjects: references, mainThreadID: "main")
+        XCTAssertEqual(index.projects.count, 1)
+        XCTAssertEqual(index.projects.first?.primaryAgentID, "root")
+        XCTAssertEqual(index.projects.first?.agentIDs, ["root", "child"])
+        XCTAssertFalse(index.projects.contains { $0.agentIDs.contains("main") })
+        XCTAssertEqual(index.cardsByID["main"], main, "Main remains available as a conversation")
+
+        let savedRoot = InboxProject(id: "local", name: "Local name", primaryAgentID: "root")
+        let localIndex = InboxProjectIndex(cards: [main, root, child], savedProjects: [savedMain, savedRoot],
+                                           canonicalProjects: references, mainThreadID: "main")
+        XCTAssertEqual(localIndex.projects.map(\.id), ["local"])
+        XCTAssertEqual(localIndex.projects.first?.name, "Local name")
+        XCTAssertEqual(localIndex.projects.first?.agentIDs, ["root", "child"])
+    }
+
     func testCanonicalProjectIncludesOnlyServerDeclaredMembers() {
         let root = AgentCard(id: "root", title: "Root")
         var child = AgentCard(id: "child", title: "Child")

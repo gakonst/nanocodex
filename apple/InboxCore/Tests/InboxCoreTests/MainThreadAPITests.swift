@@ -63,6 +63,28 @@ final class MainThreadAPITests: XCTestCase {
         } catch APIError.invalidResponse {} catch { XCTFail("Unexpected error: \(error)") }
     }
 
+    func testExistingCoordinatorRejectionDoesNotRetryOrCreateReplacement() async throws {
+        for status in [403, 404, 409, 503] {
+            var requests: [FixtureRequest] = []
+            let fixture = try HTTPFixture { request in
+                requests.append(request)
+                XCTAssertEqual(request.method, "PUT")
+                XCTAssertEqual(request.path, "/v1/projects/existing")
+                XCTAssertEqual(request.json["coordinator_agent_id"] as? String, "legacy-root")
+                return FixtureReply(status: status)
+            }
+            defer { fixture.close() }
+            let client = ManagedClient(credential: try AccountCredential(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
+            defer { client.close() }
+            do {
+                _ = try await client.registerProject(id: "existing", name: "Existing", coordinatorAgentID: "legacy-root")
+                XCTFail("Registration must preserve the service's ownership rejection")
+            } catch APIError.http(let code) { XCTAssertEqual(code, status) }
+            catch { XCTFail("Unexpected error: \(error)") }
+            XCTAssertEqual(requests.count, 1, "Never retry registration with a replacement coordinator")
+        }
+    }
+
     func testMalformedResponsesAndHTTPFailuresAreNotTreatedAsAbsence() async throws {
         for reply in [FixtureReply(body: "{}"), FixtureReply(body: #"{"agent_id":"../invalid"}"#),
                       FixtureReply(status: 503), FixtureReply(body: #"{"agent_id":false}"#)] {

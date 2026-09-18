@@ -90,13 +90,19 @@ struct InboxView: View {
                 .presentationDragIndicator(.visible)
                 .presentationCornerRadius(28)
         }
-        .alert(renamingProject == nil ? "New project" : "Rename project", isPresented: $showProjectName) {
-            TextField("Project name", text: $projectName)
+        .alert(renamingProject.map { model.projectRenameIsLocal($0) ? "Rename local alias" : "Rename project" } ?? "New project", isPresented: $showProjectName) {
+            TextField(renamingProject.map { model.projectRenameIsLocal($0) } == true ? "Local alias" : "Project name", text: $projectName)
             Button("Cancel", role: .cancel) {}
             Button("Save") {
                 if let id = renamingProject { model.renameProject(id, name: projectName) }
                 else { model.createProject(name: projectName); setConversationsVisible(false) }
             }.disabled(projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || projectName.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count > 160 || model.savingProject)
+        } message: {
+            if let id = renamingProject {
+                Text(model.projectRenameIsLocal(id)
+                     ? "This changes the name on this device only. The shared project name stays the same."
+                     : "This updates the project name across devices.")
+            }
         }
         .sheet(isPresented: $showSettings) {
             NavigationStack {
@@ -318,7 +324,7 @@ struct InboxView: View {
                         if card?.isRunning == true {
                             Circle().fill(Ink.running).frame(width: 6, height: 6).accessibilityHidden(true)
                         }
-                        Text(model.isMainThread ? "Main" : model.focusedProject?.name ?? card?.title ?? "New project")
+                        Text(model.isMainThread ? "Main Thread" : model.focusedProject?.name ?? card?.title ?? "New project")
                             .font(.subheadline.weight(.semibold)).lineLimit(1)
                     }
                     Text(model.isMainThread ? "Across all your projects" : card?.id == model.focusedProject?.primaryAgentID
@@ -329,7 +335,7 @@ struct InboxView: View {
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 .contentShape(Rectangle())
             }
-            .accessibilityLabel(card?.title ?? "New conversation")
+            .accessibilityLabel(model.isMainThread ? "Main Thread" : card?.title ?? "New conversation")
             .accessibilityValue(card?.status ?? "")
             .accessibilityAddTraits(.isSelected)
             .accessibilityIdentifier("conversation-title:" + (card?.id ?? "empty"))
@@ -352,7 +358,7 @@ struct InboxView: View {
                 renamingProject = model.focusedProject?.id
                 projectName = model.focusedProject?.name ?? ""
                 showProjectName = true
-            } label: { Label("Rename project", systemImage: "pencil") }
+            } label: { Label(model.focusedProject.map { model.projectRenameIsLocal($0.id) } == true ? "Rename local alias" : "Rename project", systemImage: "pencil") }
             .disabled(model.focusedProject == nil || model.savingProject)
             if model.canRegisterFocusedProject {
                 Button { model.registerFocusedProject() } label: {
@@ -419,9 +425,9 @@ struct InboxView: View {
     private var emptyState: some View {
         VStack(spacing: 18) {
             Image(systemName: "bubble.left.and.bubble.right").font(.system(size: 46, weight: .ultraLight)).foregroundStyle(Ink.accent)
-            Text("Start with Main").font(.title2.weight(.medium))
+            Text("Start with Main Thread").font(.title2.weight(.medium))
             Text("Plan across your projects, or open a project for focused work.").font(.subheadline).foregroundStyle(Ink.muted).multilineTextAlignment(.center)
-            Button(model.openingMain ? "Opening Main…" : "Open Main") { model.openMainThread() }
+            Button(model.openingMain ? "Opening Main Thread…" : "Open Main Thread") { model.openMainThread() }
                 .disabled(model.openingMain).accessibilityIdentifier("empty-open-main")
             Button("New project") { beginProject() }.buttonStyle(.borderedProminent).foregroundStyle(Ink.background)
             Button("Context from other apps") { model.showContext = true }
@@ -539,7 +545,7 @@ private struct ConversationDrawer: View {
                 HStack(spacing: 12) {
                     Image(systemName: "sparkle")
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Main").font(.headline)
+                        Text("Main Thread").font(.headline)
                         Text("Across all your projects").font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
