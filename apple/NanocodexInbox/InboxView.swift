@@ -506,7 +506,7 @@ private struct ConversationDrawer: View {
     @State private var query = ""
     @State private var childRosters: [String: ConversationRoster] = [:]
 
-    private func children(in project: InboxProject) -> [AgentCard] {
+    private func childCards(in project: InboxProject) -> [AgentCard] {
         let cards = model.cards.filter { project.agentIDs.contains($0.id) && $0.id != project.primaryAgentID }
         return (childRosters[project.id] ?? ConversationRoster(cards: cards)).visible(in: cards, matching: "")
     }
@@ -521,7 +521,6 @@ private struct ConversationDrawer: View {
         }
         childRosters = next
     }
-
 
     private func matches(_ project: InboxProject) -> Bool {
         query.isEmpty || project.name.localizedCaseInsensitiveContains(query)
@@ -550,7 +549,7 @@ private struct ConversationDrawer: View {
             ScrollView {
                 LazyVStack(spacing: 4) {
                     ForEach(model.projects.filter(matches)) { project in
-                        let children = children(in: project)
+                        let children = childCards(in: project)
                         let expanded = expandedProjects.contains(project.id) || !query.isEmpty
                         HStack(spacing: 0) {
                             Button { select(project.primaryAgentID) } label: {
