@@ -6,6 +6,9 @@ on:
   push:
     branches: [master]
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 5 * * *"
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,10 +18,28 @@ env:
   CARGO_INCREMENTAL: 0
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Select affected native checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      native: ${{ steps.select.outputs.native }}
+      voice: ${{ steps.select.outputs.voice }}
+      python: ${{ steps.select.outputs.python }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: select
+        run: node scripts/ci/select-jobs.mjs
+
   test:
     name: test Rust 1.97
     runs-on: ubuntu-latest
@@ -46,6 +67,8 @@ jobs:
       - run: cargo test --workspace --locked
 
   shared-hands:
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     name: shared computer Hand (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -94,6 +117,8 @@ jobs:
           node --test js/desktop-runtime/test/device-hand.integration.test.mjs js/desktop-runtime/test/device-hand-shutdown.test.mjs
 
   voice-native:
+    needs: changes
+    if: needs.changes.outputs.voice == 'true'
     name: native voice and relocated runtime
     runs-on: macos-15
     timeout-minutes: 30
@@ -129,6 +154,8 @@ jobs:
           NANOCODEX_TEST_VOICE_RUNTIME: ${{ github.workspace }}/target/debug/nanocodex-resources/voice
 
   windows-hand:
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     name: Windows Hand and installer
     runs-on: windows-2025
     timeout-minutes: 45
@@ -252,6 +279,8 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   vm-guest:
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     name: static Linux guest and Docker Hand (${{ matrix.arch }})
     strategy:
       fail-fast: false
@@ -502,6 +531,8 @@ jobs:
           NANOCODEX_TEST_BROWSER="$browser" node --test js/nanocodex-computer/test/browser.test.mjs
 
   python:
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
     name: Python ${{ matrix.python }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -626,12 +657,16 @@ jobs:
     # Report failed prerequisites, but do not keep a cancelled workflow holding
     # its concurrency slot while this final job waits for a runner.
     if: always() && !cancelled()
-    needs: [test, shared-hands, voice-native, windows-hand, quality, vm-guest, policy, wasm-build, bindings, python, apps, codeql]
+    needs: [changes, test, shared-hands, voice-native, windows-hand, quality, vm-guest, policy, wasm-build, bindings, python, apps, codeql]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require every CI job
+      - name: Require every applicable CI job
         env:
+          CHANGES: ${{ needs.changes.result }}
+          NATIVE_REQUIRED: ${{ needs.changes.outputs.native }}
+          VOICE_REQUIRED: ${{ needs.changes.outputs.voice }}
+          PYTHON_REQUIRED: ${{ needs.changes.outputs.python }}
           TEST: ${{ needs.test.result }}
           SHARED_HANDS: ${{ needs.shared-hands.result }}
           VOICE_NATIVE: ${{ needs.voice-native.result }}
@@ -645,15 +680,24 @@ jobs:
           APPS: ${{ needs.apps.result }}
           CODEQL: ${{ needs.codeql.result }}
         run: |
+          # Missing/invalid selection must fail, never silently waive coverage.
+          test "$CHANGES" = success
+          require_selected() {
+            case "$1" in
+              true) test "$2" = success ;;
+              false) test "$2" = skipped ;;
+              *) return 1 ;;
+            esac
+          }
           test "$TEST" = success
-          test "$SHARED_HANDS" = success
-          test "$VOICE_NATIVE" = success
-          test "$WINDOWS_HAND" = success
+          require_selected "$NATIVE_REQUIRED" "$SHARED_HANDS"
+          require_selected "$VOICE_REQUIRED" "$VOICE_NATIVE"
+          require_selected "$NATIVE_REQUIRED" "$WINDOWS_HAND"
           test "$QUALITY" = success
-          test "$VM_GUEST" = success
+          require_selected "$NATIVE_REQUIRED" "$VM_GUEST"
           test "$POLICY" = success
           test "$WASM_BUILD" = success
           test "$BINDINGS" = success
-          test "$PYTHON" = success
+          require_selected "$PYTHON_REQUIRED" "$PYTHON"
           test "$APPS" = success
           test "$CODEQL" = success
