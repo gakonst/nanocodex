@@ -11,7 +11,7 @@ const safeError = error => String(error?.message ?? error).replace(/ncx_live_[A-
 const send = value => process.stdout.write(`${JSON.stringify(value)}\n`);
 const methods = new Set([
   "state", "connect", "disconnect", "refresh", "refreshAccountHands", "openThread", "closeThread", "older",
-  "createThread", "prompt", "queuePrompt", "steer", "cancel", "settings", "saveLayout", "saveHand",
+  "openMainThread", "listProjects", "createThread", "prompt", "queuePrompt", "steer", "cancel", "settings", "saveLayout", "saveHand",
   "startHand", "stopHand", "removeHand", "prepareFolderHand", "prepareDefaultHand", "setDefaultHandEnabled",
   "startSignIn", "verifySignIn", "completeSignIn", "cancelSignIn",
 ]);

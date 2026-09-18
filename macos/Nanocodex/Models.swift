@@ -77,6 +77,14 @@ struct AgentThread: Codable, Identifiable, Equatable, Sendable {
     var updatedAt: Double
     var turnCount: Int
 }
+struct DesktopProject: Codable, Identifiable, Equatable, Sendable {
+    var id: String
+    var name: String
+    var coordinator_agent_id: String?
+}
+struct DesktopProjectList: Decodable, Sendable {
+    var data: [DesktopProject]
+}
 struct WorkspaceTab: Codable, Identifiable, Equatable, Sendable {
     var id = UUID().uuidString
     var threadId: String?

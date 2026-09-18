@@ -5,6 +5,101 @@ import NanocodexRemote
 
 final class ProtocolTests: XCTestCase {
     @MainActor
+    func testMainThreadReusesDurableAgentAndPreservesDrafts() async throws {
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-main-entry-fixture")
+        defer { model.shutdown() }
+        model.state = try Self.connectedState.decode(DesktopState.self)
+        model.tabs = [WorkspaceTab(id: "existing", threadId: "durable-main", draft: "Steer this work"),
+                      WorkspaceTab(id: "other", threadId: "other-agent", draft: "Keep this draft")]
+        model.activeTabID = "other"
+        var resolutions = 0
+        model.runtime.requestOverride = { method, _ in
+            if method == "openMainThread" {
+                resolutions += 1
+                return try .encoded(AgentThread(id: "durable-main", title: "Main Thread", updatedAt: 0, turnCount: 2))
+            }
+            return .null
+        }
+        await model.openMainThread()
+        await model.openMainThread()
+        XCTAssertEqual(resolutions, 2, "Resolve backend identity on each navigation")
+        XCTAssertEqual(model.tabs.count, 2)
+        XCTAssertEqual(model.activeTabID, "existing")
+        XCTAssertEqual(model.tab("existing")?.draft, "Steer this work")
+        XCTAssertEqual(model.tab("other")?.draft, "Keep this draft")
+        XCTAssertFalse(model.openingMainThread)
+        model.runtime.requestOverride = { method, _ in
+            if method == "openMainThread" { throw NSError(domain: "fixture", code: 503) }
+            return .null
+        }
+        await model.openMainThread()
+        XCTAssertEqual(model.tabs.count, 2, "Failure must not create a local Main Thread")
+        XCTAssertNotNil(model.error)
+        XCTAssertFalse(model.openingMainThread)
+    }
+
+    @MainActor
+    func testMainThreadLateResponseCannotCrossAccount() async throws {
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-main-account-fixture")
+        defer { model.shutdown() }
+        model.state = try Self.connectedState.decode(DesktopState.self)
+        var resolve: CheckedContinuation<JSONValue, Never>?
+        model.runtime.requestOverride = { method, _ in
+            if method == "openMainThread" {
+                return await withCheckedContinuation { resolve = $0 }
+            }
+            if method == "disconnect" { return .object(["connected": .bool(false), "baseUrl": .string("https://example.invalid"), "threads": .array([]), "hands": .array([]), "defaults": .object([:]), "platform": .string("darwin"), "version": .string("0.1.0")]) }
+            return .null
+        }
+        let opening = Task { await model.openMainThread() }
+        while resolve == nil { await Task.yield() }
+        await model.disconnect()
+        resolve?.resume(returning: try .encoded(AgentThread(id: "previous-account", title: "Main Thread", updatedAt: 0, turnCount: 0)))
+        await opening.value
+        XCTAssertFalse(model.tabs.contains { $0.threadId == "previous-account" })
+        XCTAssertFalse(model.openingMainThread)
+    }
+
+    @MainActor
+    func testProjectNavigationRetainsCoordinatorAndRendersPicker() async throws {
+        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-project-entry-fixture")
+        defer { model.shutdown() }
+        model.state = try Self.connectedState.decode(DesktopState.self)
+        let project = DesktopProject(id: "project", name: "Desktop", coordinator_agent_id: "coordinator")
+        model.runtime.requestOverride = { method, _ in
+            if method == "listProjects" { return .object(["data": .array([try .encoded(project)])]) }
+            return .null
+        }
+        await model.refreshProjects()
+        XCTAssertEqual(model.projects, [project])
+        model.openProject(project)
+        let tabID = model.activeTabID
+        model.tabs[model.tabs.firstIndex(where: { $0.id == tabID })!].draft = "Direct coordinator steering"
+        model.openProject(project)
+        XCTAssertEqual(model.activeTabID, tabID)
+        XCTAssertEqual(model.activeTab?.threadId, "coordinator")
+        XCTAssertEqual(model.activeTab?.draft, "Direct coordinator steering")
+        let count = model.tabs.count
+        model.openProject(DesktopProject(id: "empty", name: "Unassigned", coordinator_agent_id: nil))
+        XCTAssertEqual(model.tabs.count, count)
+        let host = NSHostingView(rootView: ProjectsView().environmentObject(model))
+        host.frame = NSRect(x: 0, y: 0, width: 480, height: 400)
+        let window = EvidenceWindow(contentRect: NSRect(x: -2000, y: -2000, width: 480, height: 400), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host
+        window.orderBack(nil)
+        defer { window.close() }
+        try await Task.sleep(for: .milliseconds(150))
+        host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+        let evidence = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let url = evidence.appendingPathComponent("main-thread-project-picker.png")
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: url)
+        let attachment = XCTAttachment(contentsOfFile: url); attachment.lifetime = .keepAlways; add(attachment)
+    }
+
+    @MainActor
     func testKeyboardLookupVisitsEachAncestorOnce() {
         final class CountingView: NSView {
             var reads = 0
@@ -2099,7 +2194,13 @@ final class ProtocolTests: XCTestCase {
         await model.cancelPending(second.id)
         XCTAssertEqual(model.pending.last?.id, third.id)
         XCTAssertEqual(model.pending.last?.predecessor, first.id, "Cancelling a queued message reconnects its successor")
-        model.persistLayout(); try await Task.sleep(for: .milliseconds(400))
+        model.persistLayout()
+        // Persistence encodes on a background task after its debounce. Wait for
+        // the acknowledged value rather than assuming 50 ms of scheduling slack.
+        let saveDeadline = Date().addingTimeInterval(5)
+        while (try? saved.decode(TabLayout.self).pendingMessages) != model.pending, Date() < saveDeadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
         let layout = try saved.decode(TabLayout.self)
         XCTAssertEqual(layout.pendingMessages, model.pending)
         let restored = AppModel(runtimeDirectory: "/tmp/nanocodex-isolated-steering-restored")

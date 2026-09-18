@@ -418,6 +418,34 @@ export class DesktopRuntime extends EventEmitter {
     return pending.promise;
   }
 
+  async openMainThread() {
+    const generation = this.#generation;
+    // Creation and identity reuse belong to the account backend, including
+    // concurrent callers and later devices opening the same Main Thread.
+    const { agent_id } = await this.request("/v1/main-thread", {
+      method: "PUT", body: JSON.stringify({}),
+    });
+    this.#sameAccount(generation);
+    if (typeof agent_id !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(agent_id)) throw new Error("Invalid Main Thread response.");
+    const existing = this.#state.threads.find(thread => thread.id === agent_id);
+    if (existing) return { ...existing };
+    const thread = { id: agent_id, title: "Main Thread", updatedAt: 0, turnCount: 0 };
+    this.#state.threads.unshift(thread);
+    this.#emit();
+    return { ...thread };
+  }
+
+  async listProjects() {
+    const { data } = await this.request("/v1/projects");
+    if (!Array.isArray(data) || data.some(project => !project
+      || typeof project.id !== "string" || !project.id
+      || typeof project.name !== "string"
+      || typeof project.coordinator_agent_id !== "string" || !project.coordinator_agent_id)) {
+      throw new Error("Invalid projects response.");
+    }
+    return { data: data.map(({ id, name, coordinator_agent_id }) => ({ id, name, coordinator_agent_id })) };
+  }
+
   async createThread(settings = DEFAULT_SETTINGS) {
     this.#requireConnection();
     validateSettings(settings);

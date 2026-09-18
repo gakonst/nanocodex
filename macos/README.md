@@ -133,6 +133,20 @@ shortcuts, including browser zoom, belong to the remote screen while it has
 keyboard focus. The keyboard button exposes text entry and special keys.
 Disconnected screens show a reconnect action directly over the preview.
 
+## Main Thread and projects
+
+**Main Thread** in the window toolbar opens the account's durable global chat.
+Each click resolves its identity through `PUT /v1/main-thread` and reuses an
+already open tab. The backend creates the thread on first use; errors remain
+visible and never create a local replacement. Existing conversations are not
+migrated. Main Thread retains the ordinary composer, queue, Stop, and Steer now
+controls, so it remains directly accessible while delegated work continues.
+
+**Projects** opens a refreshable list from `GET /v1/projects`. Select a project
+to open its coordinator in the same workspace, retaining any existing draft.
+An empty list and fetch errors appear in the picker; Refresh retries the lookup.
+Project creation and organization remain available through Main Thread.
+
 ## Browser tabs and agent panes
 
 The desktop supports horizontal browser tabs and a resizable native sidebar.
