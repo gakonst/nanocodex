@@ -6,6 +6,26 @@ final class InboxUITests: XCTestCase {
     }
     override func setUp() { super.setUp(); continueAfterFailure = false }
 
+    func testMainThreadKeepsIndependentDraftAndProjectNavigation() {
+        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString, "NANOCODEX_DEMO_PROJECT_TASKS": "1"])
+        switchConversation(app, id: "inbox")
+        composer(app).tap(); composer(app).typeText("Project draft")
+        app.buttons["conversation-drawer-open"].tap()
+        capture(app, "main-entry-drawer")
+        app.buttons["main-thread-entry"].tap()
+        XCTAssertTrue(app.buttons["conversation-title:demo-main-thread"].waitForExistence(timeout: 5))
+        XCTAssertNotEqual(composer(app).value as? String, "Project draft")
+        composer(app).tap(); composer(app).typeText("Plan across projects")
+        capture(app, "main-thread-chat")
+        app.buttons["conversation-drawer-open"].tap()
+        XCTAssertFalse(app.buttons["conversation-row:demo-main-thread"].exists)
+        app.buttons["conversation-row:inbox"].tap()
+        XCTAssertEqual(composer(app).value as? String, "Project draft")
+        app.buttons["conversation-drawer-open"].tap()
+        app.buttons["main-thread-entry"].tap()
+        XCTAssertEqual(composer(app).value as? String, "Plan across projects")
+    }
+
     func testProjectTasksAndAgentsPreserveDraft() {
         let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString, "NANOCODEX_DEMO_PROJECT_TASKS": "1"])
         switchConversation(app, id: "inbox")
