@@ -2261,3 +2261,57 @@ test("managed clients freeze and send explicit Hand attribution separately from 
   assert.equal(captured.get("authorization"), `Bearer ${apiKey}`);
   await assert.rejects(Agent.list({ baseUrl: origin, apiKey, requestOrigin: { client: "desktop", user_id: "forged" } }), /invalid request origin/);
 });
+
+
+test("Main Thread ensures a durable identity through the authenticated account endpoint", async () => {
+  const requests = [];
+  const options = { baseUrl: origin, apiKey, fetch: async (input, init) => {
+    const request = new Request(input, init);
+    requests.push(request);
+    assert.equal(new URL(request.url).pathname, "/v1/main-thread");
+    assert.equal(request.method, "PUT");
+    assert.equal(request.headers.get("authorization"), `Bearer ${apiKey}`);
+    return Response.json({ agent_id: agentId });
+  } };
+  const first = await Agent.mainThread(options);
+  const second = await Agent.mainThread(options);
+  assert.equal(first.id, agentId);
+  assert.equal(second.id, first.id);
+  assert.equal(first.type, "managed");
+  assert.equal(typeof first.turn.prompt, "function");
+  assert.equal(requests.length, 2);
+});
+
+test("Main Thread does not hide authorization errors or retry ambiguous mutations", async () => {
+  let calls = 0;
+  await assert.rejects(Agent.mainThread({ baseUrl: origin, fetch: async () => {
+    calls += 1;
+    return Response.json({ error: "forbidden" }, { status: 403 });
+  } }), error => error instanceof ManagedError && error.status === 403);
+  assert.equal(calls, 1);
+  await assert.rejects(Agent.mainThread({ baseUrl: origin, fetch: async () => Response.json({ agent_id: "invalid/id" }) }));
+});
+
+
+test("canonical project API preserves stable ids and explicit coordinator registration", async () => {
+  const row = { id: "compiler", name: "Compiler", coordinator_agent_id: agentId };
+  const requests = [];
+  const options = { baseUrl: origin, fetch: async (input, init) => {
+    const request = new Request(input, init);
+    requests.push({ path: new URL(request.url).pathname, method: request.method,
+      body: request.method === "PUT" ? await request.json() : undefined });
+    return Response.json(request.method === "PUT" ? row : { data: [row] });
+  } };
+  const listed = await Agent.projects.list(options);
+  assert.deepEqual(listed, [row]);
+  assert.equal(Object.isFrozen(listed), true);
+  assert.equal(Object.isFrozen(listed[0]), true);
+  assert.deepEqual(await Agent.projects.put("compiler", { name: "Compiler", coordinator_agent_id: agentId }, options), row);
+  assert.deepEqual(requests[1], { path: "/v1/projects/compiler", method: "PUT", body: { name: "Compiler", coordinator_agent_id: agentId } });
+  for (const input of [{ name: "" }, { name: "X", team_id: "other" }, { name: "X", coordinator_agent_id: "../other" }]) {
+    await assert.rejects(Agent.projects.put("compiler", input, options), TypeError);
+  }
+  await assert.rejects(Agent.projects.put("../other", { name: "X" }, options), TypeError);
+  assert.equal(requests.length, 2);
+  await assert.rejects(Agent.projects.list({ baseUrl: origin, fetch: async () => Response.json({ data: [{}] }) }), ManagedError);
+});

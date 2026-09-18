@@ -185,6 +185,46 @@ function templateCatalog(kind) {
 export const definitions = templateCatalog("agent-definitions");
 export const environments = templateCatalog("environment-templates");
 
+/** Ensure the authenticated account/team's durable Main Thread and open its normal chat handle. */
+export async function mainThread(options = {}) {
+  const client = managedClient(options);
+  const receipt = await client.json("/v1/main-thread", { method: "PUT" });
+  const id = requiredString(receipt, "agent_id");
+  validateAgentId(id);
+  return agentHandle(client, id);
+}
+
+function canonicalProject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || typeof value.id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(value.id)
+      || typeof value.name !== "string" || !value.name.trim() || value.name.length > 160
+      || typeof value.coordinator_agent_id !== "string" || !TURN_ID.test(value.coordinator_agent_id)) {
+    throw new ManagedError("invalid_response", "managed project is malformed");
+  }
+  return Object.freeze({ id: value.id, name: value.name, coordinator_agent_id: value.coordinator_agent_id });
+}
+
+/** Canonical projects are scoped by the server to the authenticated account and team. */
+export const projects = Object.freeze({
+  async list(options = {}) {
+    const body = await managedClient(options).json("/v1/projects");
+    if (!body || !Array.isArray(body.data)) throw new ManagedError("invalid_response", "managed project list is malformed");
+    return Object.freeze(body.data.map(canonicalProject));
+  },
+  async put(id, project, options = {}) {
+    templateId(id);
+    if (!project || typeof project !== "object" || Array.isArray(project)
+        || Object.keys(project).some(key => !["name", "coordinator_agent_id"].includes(key))
+        || typeof project.name !== "string" || !project.name.trim() || project.name.trim().length > 160
+        || (project.coordinator_agent_id !== undefined && (typeof project.coordinator_agent_id !== "string" || !UUID.test(project.coordinator_agent_id)))) {
+      throw new TypeError("invalid managed project");
+    }
+    return canonicalProject(await managedClient(options).json(`/v1/projects/${id}`, {
+      method: "PUT", body: JSON.stringify(project),
+    }));
+  },
+});
+
 /** List handles for every managed agent owned by the authenticated account. */
 export async function list(options = {}) {
   const client = managedClient(options);

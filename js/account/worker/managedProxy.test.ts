@@ -245,3 +245,24 @@ test("cloud phone controls and signed callbacks reach managed authentication", (
   for (const path of ["", "internal/secrets", "calls/invalid", `media/${id}`])
     assert.equal(isManagedRoutePath(`/v1/phone/bridge/${path}`), false);
 });
+
+
+test("Main Thread and canonical projects preserve the authenticated managed boundary", async () => {
+  for (const path of ["/v1/main-thread", "/v1/projects", "/v1/projects/my-project_1"]) {
+    assert.equal(isManagedRoutePath(path), true, path);
+    const request = new Request(`https://nanocodex.localhost${path}`, {
+      method: "PUT", headers: { authorization: "Bearer account-test", "content-type": "application/json" },
+      body: JSON.stringify({ name: "Project" }),
+    });
+    let forwarded: Request | undefined;
+    const response = await routeManaged(request, { NANOCODEX_BACKEND: {
+      fetch(candidate: Request) { forwarded = candidate; return Promise.resolve(Response.json({ ok: true })); },
+      connect() { throw new Error("unused"); },
+    } }, new URL(request.url));
+    assert.equal(forwarded, request);
+    assert.equal(response?.status, 200);
+  }
+  for (const path of ["/v1/main-thread/", "/v1/main-thread/other", "/v1/projects/", "/v1/projects/x/members", "/v1/projects/" + "x".repeat(65)]) {
+    assert.equal(isManagedRoutePath(path), false, path);
+  }
+});

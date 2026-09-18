@@ -30,6 +30,14 @@ async function checkManaged() {
   Agent.findThreads;
   // @ts-expect-error thread terminology was replaced by sessions.
   Agent.readThread;
+  const main: ManagedAgent = await Agent.mainThread({ apiKey });
+  void main;
+  const projects = await Agent.projects.list({ apiKey });
+  const project = await Agent.projects.put("compiler", { name: "Compiler" }, { apiKey });
+  const coordinator: string = project.coordinator_agent_id;
+  void [projects, coordinator];
+  // @ts-expect-error project ownership comes exclusively from authentication.
+  await Agent.projects.put("compiler", { name: "Compiler", team_id: "other" });
   const created: ManagedAgent = await Agent.create();
   await Agent.create({ idempotencyKey: "create:job-42" });
   // @ts-expect-error creation keys must be strings.
