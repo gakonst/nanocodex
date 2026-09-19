@@ -521,7 +521,7 @@ dependencies = [
 
 [[package]]
 name = "codex-process-hardening"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "libc",
  "pretty_assertions",
@@ -2000,7 +2000,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-voice-host"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "codex-process-hardening",
@@ -2025,7 +2025,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-voice-native"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "futures",
@@ -2036,7 +2036,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-webrtc-voice-host"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "codex-process-hardening",

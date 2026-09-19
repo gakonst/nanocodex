@@ -5,20 +5,11 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.3](https://github.com/gakonst/nanocodex/releases/tag/v0.6.3) - 2026-09-19
-
-### Miscellaneous Tasks
-
-- Prepare corrected release 0.6.3
-
-### Testing
-
-- [cli] Isolate durable replay fixtures from desktop setup ([#417](https://github.com/gakonst/nanocodex/issues/417))
-
-## [0.6.2](https://github.com/gakonst/nanocodex/releases/tag/v0.6.2) - 2026-09-19
+## [0.6.4](https://github.com/gakonst/nanocodex/releases/tag/v0.6.4) - 2026-09-19
 
 ### Bug Fixes
 
+- [code-mode] Preserve QuickJS helpers through production minification ([#419](https://github.com/gakonst/nanocodex/issues/419))
 - [ci] Validate Codex parity imports and bounded declarations ([#415](https://github.com/gakonst/nanocodex/issues/415))
 - [ios] Quiet progress notifications and clear stale Island activities
 - [cua] Canonicalize lane identities for journal recovery
@@ -177,6 +168,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Miscellaneous Tasks
 
+- Prepare release 0.6.4 with minified QuickJS fix
+- Prepare corrected release 0.6.3 ([#418](https://github.com/gakonst/nanocodex/issues/418))
 - Prepare release 0.6.2 ([#416](https://github.com/gakonst/nanocodex/issues/416))
 - Select expensive native checks by changed inputs ([#389](https://github.com/gakonst/nanocodex/issues/389))
 - Release cancelled runs and isolate real-time audio cadence checks ([#387](https://github.com/gakonst/nanocodex/issues/387))
@@ -333,6 +326,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 
+- [cli] Isolate durable replay fixtures from desktop setup ([#417](https://github.com/gakonst/nanocodex/issues/417))
 - Verify request arrival in incomplete-download fixture ([#388](https://github.com/gakonst/nanocodex/issues/388))
 - [architecture] Record managed voice protocol dependency
 - [connectors] Cover Stripe Link browser authorization ([#352](https://github.com/gakonst/nanocodex/issues/352))

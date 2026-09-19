@@ -5693,7 +5693,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "nanocodex-agent",
  "nanocodex-durability",
@@ -5707,7 +5707,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-agent"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5735,7 +5735,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-bin"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -5810,7 +5810,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-browser"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5844,7 +5844,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-cli-auth"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "clap",
  "fs2",
@@ -5863,7 +5863,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-computer"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5875,7 +5875,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-durability"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "eyre",
  "nanocodex-agent",
@@ -5896,7 +5896,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-egress"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "async-trait",
  "axum",
@@ -5918,7 +5918,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-eval"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "arcbox-ext4",
  "axum",
@@ -5956,7 +5956,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-eval-adapters"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "base64 0.22.1",
  "csv",
@@ -5978,7 +5978,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-examples"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "base64 0.22.1",
  "dotenvy",
@@ -6006,7 +6006,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-exe-dev"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "axum",
  "chrono",
@@ -6026,7 +6026,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-hand"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "base64 0.22.1",
  "block2",
@@ -6050,7 +6050,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-managed"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "axum",
  "futures-util",
@@ -6074,7 +6074,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-oai-api"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6109,7 +6109,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-observability"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "clap",
  "opentelemetry",
@@ -6128,7 +6128,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-phone"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "base64 0.22.1",
  "nanocodex-managed",
@@ -6142,7 +6142,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-python"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "nanocodex",
  "pyo3",
@@ -6153,7 +6153,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-subagents"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -6173,7 +6173,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-tools"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6212,7 +6212,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-tools-macros"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -6222,7 +6222,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-vm"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "arcbox-ext4",
  "async-trait",
@@ -6262,7 +6262,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-voice"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "cpal",
  "futures-util",
@@ -6279,7 +6279,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-voice-ffi"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "nanocodex-voice-protocol",
  "serde_json",
@@ -6287,7 +6287,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-voice-native"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "ctor",
@@ -6302,7 +6302,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-voice-protocol"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -6310,7 +6310,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-wasm"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "futures-util",
  "js-sys",
@@ -6326,7 +6326,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex2-bin"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "arboard",
@@ -6389,7 +6389,7 @@ dependencies = [
 
 [[package]]
 name = "nanousd"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "alloy-primitives",
  "reqwest",
@@ -6402,7 +6402,7 @@ dependencies = [
 
 [[package]]
 name = "nanousd-api"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "alloy",
  "alloy-primitives",

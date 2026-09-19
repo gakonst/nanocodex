@@ -1,6 +1,6 @@
 {
   "name": "nanocodex-vite",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Vite, Cloudflare, WASM, ChatGPT development, and OAuth relay integration for Nanocodex",
   "type": "module",
   "exports": {
@@ -45,7 +45,7 @@
   },
   "peerDependencies": {
     "@cloudflare/vite-plugin": ">=1.54.2",
-    "nanocodex": "^0.6.3",
+    "nanocodex": "^0.6.4",
     "vite": ">=6.1.0"
   },
   "peerDependenciesMeta": {
