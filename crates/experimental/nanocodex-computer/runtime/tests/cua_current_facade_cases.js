@@ -6,7 +6,7 @@
   globalThis.nodeRepl = repl;
   const readDocumentation = async name => {reads.push(name);return 'doc:' + name;};
   let nativeFailure, browserFailure, userFailure = false, captures = true;
-  const computer = {target:'mac',list_apps:async()=>{if(nativeFailure)throw nativeFailure;return [{id:'fixture.app'}];},
+  const computer = {target:'mac',list_apps:async()=>{if(nativeFailure)throw nativeFailure;return computer.target==='linux'?[{id:'fixture.app',name:'Fixture',windows:[]}]:[{id:'fixture.app'}];},
     get_app_state:async args=>{native.push(args);return {app:'fixture.app',text:'fixture state',screenshot:captures?{url:'data:image/png;base64,AQI='}:null,screenshotError:{message:'private backend error',code:42}};},
     drag:async args=>native.push(args),get_desktop_screenshot:async()=>{throw Error('must stay internal');},list_app_windows:async()=>[]};
   const browser = id => ({browserId:id,documentation:async()=> 'browser:' + id,

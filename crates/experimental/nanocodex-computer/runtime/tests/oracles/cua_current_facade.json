@@ -235,6 +235,10 @@
     },
     {
       "app": "fixture.app"
+    },
+    {
+      "app": "Fixture",
+      "disableDiff": true
     }
   ],
   "images": [
@@ -253,7 +257,14 @@
     "state": "fixture state"
   },
   "linux": {
-    "apps": [],
+    "apps": [
+      {
+        "id": "fixture.app",
+        "displayName": "Fixture",
+        "isRunning": false,
+        "windows": []
+      }
+    ],
     "browsers": [
       {
         "id": "one",
@@ -364,8 +375,5 @@
       "Native apps: UnreachableCaseError: unknown"
     ]
   },
-  "platformErrors": [
-    "Native app bindings are unavailable for linux.",
-    "Native app bindings are unavailable for linux."
-  ]
+  "platformErrors": []
 }

@@ -25,14 +25,11 @@ export interface Target {
   getAXState(options?: StateOptions): Promise<string>;
   getScreenshot(options?: ObservationOptions): Promise<Uint8Array>;
   getAXStateAndScreenshot(options?: StateOptions): Promise<StateAndScreenshot>;
-  paste(text: string, options?: PasteOptions): Promise<void>;
   click(target: number | Vec2, options?: CuaClickOptions): Promise<void>;
   drag(from: Vec2, to: Vec2): Promise<void>;
-  pressKey(key: string): Promise<void>;
   scroll(target: number | Vec2, direction: Direction, pages?: number): Promise<void>;
   selectText(elementIndex: number, text: string, options?: SelectTextOptions): Promise<void>;
   setValue(elementIndex: number, value: string): Promise<void>;
-  typeText(text: string): Promise<void>;
   performSecondaryAction(elementIndex: number, action: string): Promise<void>;
 }
 
@@ -42,8 +39,16 @@ export type AppInfo = {
   lastUsedDate?: string;
   useCount?: number;
   isRunning?: boolean;
+  windows?: WindowInfo[];
 };
-export interface App extends Target {}
+export interface WindowInfo { id: number; app: string; title?: string; }
+export type AppReference = string | { windowId: number };
+export interface App extends Target {
+  scroll(target: number | Vec2, direction: Direction, distance?: number | { pixels: number }): Promise<void>;
+  paste(text: string, options?: PasteOptions): Promise<void>;
+  pressKey(key: string): Promise<void>;
+  typeText(text: string): Promise<void>;
+}
 
 export type BrowserInfo = {
   id: string;
@@ -63,12 +68,30 @@ export type BrowserState = BrowserInfo & { tabs: BrowserTabInfo[] };
 export type ComputerState = { apps: AppInfo[]; browsers: BrowserState[]; errors?: string[] };
 export type TabInfo = BrowserTabInfo & { browserId: string };
 export type BrowserOptions = { browser?: string };
-export type GetBrowserOptions = { id?: string; url?: string };
+export type GetBrowserOptions = { id?: string; extensionInstanceId?: string; url?: string };
+export type TabReference = string | { mention: string } | { url: string };
 export type CreateBrowserTabOptions = { visible?: boolean; sessionName?: string };
 
-export interface Browser extends BrowserApiBrowser {}
-export interface BrowserProvider extends BrowserApiBrowsers {}
-export interface Tab extends BrowserApiTab, Target {}
+export interface Browser extends BrowserApiBrowser {
+  tabs: Omit<BrowserApiBrowser["tabs"], "get" | "new" | "selected"> & {
+    get(id: string): Promise<Tab>;
+    new(): Promise<Tab>;
+    selected(): Promise<Tab | undefined>;
+  };
+  user: Omit<BrowserApiBrowser["user"], "claimTab"> & {
+    claimTab(tab: Parameters<BrowserApiBrowser["user"]["claimTab"]>[0]): Promise<Tab>;
+  };
+}
+export interface BrowserProvider extends BrowserApiBrowsers {
+  get(id: string): Promise<Browser>;
+  getDefault(): Promise<Browser>;
+  getForUrl(url: string): Promise<Browser>;
+}
+export interface Tab extends BrowserApiTab, Target {
+  paste(elementIndex: number | null, text: string, options?: PasteOptions): Promise<void>;
+  pressKey(elementIndex: number | null, key: string): Promise<void>;
+  typeText(elementIndex: number | null, text: string): Promise<void>;
+}
 
 export type Screenshot = {
   bytes: Uint8Array;
@@ -94,7 +117,8 @@ export interface Cua {
   getState?(options?: ObservationOptions): Promise<ComputerState>;
   browsers?: BrowserProvider;
   computer?: Computer;
-  getApp?(app: string): Promise<App>;
+  getApp?(target: AppReference): Promise<App>;
+  listWindows?(options?: ObservationOptions): Promise<WindowInfo[]>;
   listApps?(options?: ObservationOptions): Promise<AppInfo[]>;
   getBrowser?(options?: GetBrowserOptions): Promise<Browser>;
   createBrowserTab?(
@@ -102,7 +126,7 @@ export interface Cua {
     url?: string,
     options?: CreateBrowserTabOptions,
   ): Promise<Tab>;
-  getTab?(id: string, options?: BrowserOptions): Promise<Tab>;
+  getTab?(reference: TabReference, options?: BrowserOptions): Promise<Tab>;
   listBrowsers?(options?: ObservationOptions): Promise<BrowserInfo[]>;
   listTabs?(options?: BrowserOptions & ObservationOptions): Promise<TabInfo[]>;
 }

@@ -60,8 +60,8 @@
   async function emitState(value, options) {
     if (options?.emit !== false) await globalThis.nodeRepl?.write?.(value, 'cua.state');
   }
-  async function emitImage(value, options) {
-    if (options?.emit !== false) await globalThis.nodeRepl?.emitImage?.({bytes:value,mimeType:'image/png'});
+  async function emitImage(value, options, mimeType = 'image/png') {
+    if (options?.emit !== false) await globalThis.nodeRepl?.emitImage?.({bytes:value,mimeType});
   }
   function nativeTarget(computer, app) {
     const stateArgs = options => options?.disableDiffing === undefined ? {app} : {app,disableDiff:options.disableDiffing};
@@ -97,6 +97,7 @@
       drag(from,to) { return computer.drag({app,from_x:from[0],from_y:from[1],to_x:to[0],to_y:to[1]}); },
       pressKey(key) { return computer.press_key({app,key}); },
       scroll(value,direction,pages) {
+        if (typeof pages === 'object') throw new Error('macOS scroll accepts pages, not pixels.');
         return computer.scroll({app,...(Array.isArray(value) ? {x:value[0],y:value[1]} : {element_index:value}),direction,...(pages === undefined ? {} : {pages})});
       },
       selectText(elementIndex,text,options) {
@@ -109,6 +110,96 @@
       typeText(text) { return computer.type_text({app,text}); },
       performSecondaryAction(elementIndex,action) { return computer.perform_secondary_action({app,element_index:elementIndex,action}); }
     };
+  }
+  function windowId(reference, platform) {
+    if (typeof reference !== 'object' || reference === null || !Number.isSafeInteger(reference.windowId) || reference.windowId <= 0)
+      throw new Error(platform + ' getApp requires { windowId } from listApps() or listWindows().');
+    return reference.windowId;
+  }
+  function singleScreenshot(screenshots,id) {
+    if (screenshots.length > 1) throw new Error('Window ' + id + ' has multiple screenshot regions; a single screenshot is unavailable.');
+    return screenshots[0];
+  }
+  function pixels(value) {
+    if (!Number.isFinite(value) || value <= 0) throw new Error('pixels must be a positive finite number.');
+    return value;
+  }
+  function textPaste(options,platform) {
+    if (options?.format !== undefined && options.format !== 'text') throw new Error(platform + ' paste supports only text format.');
+  }
+  function windowsState(state) {
+    const ax = state.accessibility;
+    if (ax === null) return 'Accessibility state unavailable for window ' + state.window.id + '.';
+    const parts = [ax.tree];
+    if (ax.focused_element !== undefined) parts.push('Focused element: ' + ax.focused_element);
+    if (ax.selected_text !== undefined) parts.push('Selected text: ' + ax.selected_text);
+    if (ax.selected_elements !== undefined) parts.push('Selected elements:\n' + ax.selected_elements.join('\n'));
+    if (ax.document_text !== undefined) parts.push('Document text:\n' + ax.document_text);
+    return parts.join('\n\n');
+  }
+  function windowTarget(computer, initialWindow, platform) {
+    let window = initialWindow, screenshotId;
+    const linux = platform === 'linux';
+    async function capture(text, screenshot, options) {
+      if (!linux && screenshot && options?.emit === false) throw new Error('Windows screenshots are displayed by Sky; emit: false is unavailable.');
+      screenshotId = undefined;
+      const state = await computer.get_window_state({window,...(linux ? {} : {include_text:text}),include_screenshot:screenshot});
+      window = state.window;
+      if (!linux && state.screenshots.length === 1) screenshotId = state.screenshots[0]?.id;
+      return state;
+    }
+    const stateText = state => linux ? 'Accessibility source: ' + state.ax_tree_source + '\n' + state.ax_tree.to_string() : windowsState(state);
+    const point = value => Array.isArray(value) ? {x:value[0],y:value[1],...(!linux && screenshotId !== undefined ? {screenshotId} : {})} : linux ? {element_id:String(value)} : {element_index:value};
+    return {
+      async getAXState(options) {const state=stateText(await capture(true,false,options));await emitState(state,options);return state;},
+      async getScreenshot(options) {
+        const shot=singleScreenshot((await capture(false,true,options)).screenshots,window.id);
+        if (shot === undefined) throw new Error('Screenshot unavailable for window ' + window.id + '.');
+        if (linux) {await emitImage(shot.bytes,options,'image/jpeg');return shot.bytes;}
+        return imageFromUrl(shot.url);
+      },
+      async getAXStateAndScreenshot(options) {
+        const captured=await capture(true,true,options),state=stateText(captured);await emitState(state,options);
+        const shot=singleScreenshot(captured.screenshots,window.id);
+        if (shot === undefined) return {state};
+        const screenshot=linux ? shot.bytes : await imageFromUrl(shot.url);
+        if (linux) await emitImage(screenshot,options,'image/jpeg');
+        return {state,screenshot};
+      },
+      click(value,options) {return computer.click({window,...point(value),...(options?.mouseButton===undefined?{}:{mouse_button:options.mouseButton}),...(options?.clickCount===undefined?{}:{click_count:options.clickCount})});},
+      drag(from,to) {return computer.drag({window,...(linux?{path:[{x:from[0],y:from[1]},{x:to[0],y:to[1]}]}:{from_x:from[0],from_y:from[1],to_x:to[0],to_y:to[1],...(screenshotId===undefined?{}:{screenshotId})})});},
+      scroll(value,direction,distance) {
+        if (linux) {
+          if (typeof distance === 'number') throw new Error('Linux scroll accepts { pixels }, not pages.');
+          return computer.scroll({window,direction,...point(value),...(distance===undefined?{}:{pixels:pixels(distance.pixels)})});
+        }
+        if (!Array.isArray(value) || typeof distance !== 'object') throw new Error('Windows scroll requires a point and a { pixels } distance.');
+        const amount=pixels(distance.pixels);let scrollX=0,scrollY=0;
+        switch(direction) {case 'u':case 'up':scrollY=-amount;break;case 'd':case 'down':scrollY=amount;break;case 'l':case 'left':scrollX=-amount;break;case 'r':case 'right':scrollX=amount;break;default:throw new Error('Unknown scroll direction: ' + direction + '.');}
+        return computer.scroll({window,...point(value),scrollX,scrollY});
+      },
+      async selectText() {throw new Error('selectText is unavailable on ' + (linux?'Linux':'Windows') + '.');},
+      setValue(index,value) {if(linux)return Promise.reject(new Error('setValue is unavailable on Linux; use click, pressKey, and typeText.'));return computer.set_value({window,element_index:index,value});},
+      paste(text,options) {textPaste(options,linux?'Linux':'Windows');return computer.type_text({window,text});},
+      pressKey(key) {return computer.press_key({window,key});},
+      typeText(text) {return computer.type_text({window,text});},
+      performSecondaryAction(index,action) {return computer.perform_secondary_action({window,...(linux?{element_id:String(index)}:{element_index:index}),action});}
+    };
+  }
+  function parseTabMention(value) {
+    const url=URL.parse(value);
+    if(url?.protocol!=='plugin:' || url.host!=='openai-bundled' || !['browser','chrome','chrome-dev','chrome-internal'].includes(url.username) || url.password || (url.pathname!=='' && url.pathname!=='/') || url.hash) throw new Error('Invalid tab mention URL.');
+    const fields=Object.fromEntries(url.searchParams),{mention,source,browserId,tabId,title,url:tabUrl}=fields;
+    const kind=url.username==='browser' ? source ?? 'iab' : 'extension';
+    if(mention!=='tab-v1' || url.searchParams.size!==Object.keys(fields).length || !['iab','extension'].includes(kind) || !browserId?.trim() || !tabId?.trim() || title===undefined || tabUrl===undefined) throw new Error('Invalid tab mention fields.');
+    return {source:kind,browserId,tabId,title,url:tabUrl};
+  }
+  async function getApps(computer) {
+    switch(computer.target) {
+      case 'mac':case 'windows':return computer.list_apps();
+      case 'linux':return (await computer.list_apps()).map(({id,name,windows})=>({id,displayName:name,isRunning:windows.length>0,windows}));
+      default:{const error=new Error(computer.target);error.name='UnreachableCaseError';throw error;}
+    }
   }
   const normalizeUrl = value => value === undefined || URL.canParse(value) ? value : 'https://' + value;
   const packagedDocumentation = name => {
@@ -193,12 +284,7 @@
       async getState(options) {
         const appPromise = (async () => {
           if (computer === undefined) return [];
-          const target = computer.target;
-          switch (target) {
-            case 'windows': case 'mac': return computer.list_apps();
-            case 'linux': return [];
-            default: {const error = new Error(target);error.name = 'UnreachableCaseError';throw error;}
-          }
+          return getApps(computer);
         })();
         const browserPromise = (async () => {
           if (browsers === undefined) return [];
@@ -246,8 +332,16 @@
       Object.assign(result,{
         browsers,
         async getBrowser(options) {
+          let id=options?.id;
+          if(options?.extensionInstanceId!==undefined) {
+            if(id!==undefined) throw new Error('Specify either id or extensionInstanceId, not both.');
+            const matches=(await browsers.list()).filter(info=>info.type==='extension' && info.metadata?.extensionInstanceId===options.extensionInstanceId);
+            if(matches.length===0) throw new Error('The Chrome instance is unavailable.');
+            if(matches.length!==1) throw new Error('Multiple browsers match the Chrome instance: ' + JSON.stringify(matches));
+            id=matches[0].id;
+          }
           const url = normalizeUrl(options?.url);
-          const browser = await choose({browser:options?.id},url);
+          const browser = await choose({browser:id},url);
           await emit(undefined,{browser});
           return browser;
         },
@@ -264,17 +358,44 @@
           if (normalized !== undefined) await tab.goto(normalized);
           return displayInitial(tab,browser);
         },
-        async getTab(id,options) {
-          if (!id) throw new Error('getTab requires a tab id');
-          const browser = await choose(options);
-          const tabs = await browser.tabs.list();
-          const existing = tabs.find(tab => tab.id === id || tab.providerTabId === id);
-          if (existing !== undefined) return displayInitial(await browser.tabs.get(existing.id),browser);
-          if (browser.user?.openTabs !== undefined && browser.user.claimTab !== undefined) {
-            const user = (await browser.user.openTabs()).find(tab => tab.id === id || tab.providerTabId === id);
-            if (user !== undefined) return displayInitial(await (tabs.some(tab => tab.id === user.id) ? browser.tabs.get(user.id) : browser.user.claimTab(user)),browser);
+        async getTab(reference,options) {
+          let browser,controlled,matches;
+          async function matching(predicate) {
+            const direct=controlled.filter(predicate);
+            if(direct.length) return direct;
+            const user=await browser.user?.openTabs?.() ?? [];
+            const providerIds=new Map(user.map(tab=>[tab.id,tab.providerTabId]));
+            return [...new Map([...user,...controlled.map(tab=>({...tab,providerTabId:tab.providerTabId??providerIds.get(tab.id)}))].map(tab=>[tab.id,tab])).values()].filter(predicate);
           }
-          throw new Error('Tab not found: ' + id + ' in browser ' + browser.browserId);
+          if(typeof reference==='string') {
+            if(reference==='') throw new Error('getTab requires a tab reference');
+            browser=await choose(options);controlled=await browser.tabs.list();
+            matches=await matching(tab=>tab.id===reference || tab.providerTabId===reference);
+          } else if('mention' in reference) {
+            const mention=parseTabMention(reference.mention);
+            const infos=(await browsers.list()).filter(info=>info.type===mention.source && (mention.source==='iab' || info.metadata?.extensionInstanceId===mention.browserId));
+            if(infos.length!==1) throw new Error(infos.length===0?"The browser/profile referenced by the tab mention is unavailable.":"Multiple browsers match the tab mention's browser/profile: " + JSON.stringify(infos));
+            browser=await choose({browser:infos[0].id});
+            if(options?.browser!==undefined && (await browsers.get(options.browser)).browserId!==browser.browserId) throw new Error("The requested browser does not match the tab mention's browser/profile.");
+            controlled=await browser.tabs.list();matches=await matching(tab=>tab.providerTabId===mention.tabId);
+            if(matches[0]!==undefined && (matches[0].title!==mention.title || matches[0].url!==mention.url)) throw new Error("Stale tab mention: the tab's title or URL has changed.");
+          } else {
+            if(!URL.canParse(reference.url)) throw new Error('getTab requires an absolute URL.');
+            if(!options?.browser) throw new Error('getTab({ url }) requires an explicit browser.');
+            browser=await choose(options);controlled=await browser.tabs.list();
+            const user=await browser.user?.openTabs?.() ?? [];
+            matches=[...new Map([...user,...controlled].map(tab=>[tab.id,tab])).values()].filter(tab=>tab.url===reference.url);
+          }
+          const match=matches[0];
+          if(match===undefined) throw new Error('Tab not found in browser ' + browser.browserId + '.');
+          if(matches.length!==1) throw new Error('Multiple tabs match the reference in browser ' + browser.browserId + ': ' + JSON.stringify(matches.map(tab=>({...tab,browserId:browser.browserId}))));
+          let tab;
+          if(controlled.some(item=>item.id===match.id)) tab=await browser.tabs.get(match.id);
+          else {
+            if(browser.user?.claimTab===undefined) throw new Error('Tab ' + match.id + ' cannot be claimed in browser ' + browser.browserId + '.');
+            tab=await browser.user.claimTab(match);
+          }
+          return displayInitial(tab,browser);
         },
         async listBrowsers(options) { const list = await browsers.list();await emit(list,options);return list; },
         async listTabs(options) {
@@ -291,20 +412,28 @@
         }
       });
     }
-    if (computer !== undefined) Object.assign(result,{
-      computer,
-      async getApp(identifier) {
-        if (computer.target !== 'mac') throw new Error('Native app bindings are unavailable for ' + computer.target + '.');
-        const state = await computer.get_app_state({app:identifier,disableDiff:true});
-        const app = nativeTarget(computer,state.app);
-        await emit(state.text);
-        return app;
-      },
-      async listApps(options) {
-        if (computer.target !== 'mac') throw new Error('Native app bindings are unavailable for ' + computer.target + '.');
-        const apps = await computer.list_apps();await emit(apps,options);return apps;
-      }
-    });
+    if (computer !== undefined) {
+      Object.assign(result,{computer,async listApps(options) {const apps=await getApps(computer);await emit(apps,options);return apps;}});
+      const platform=computer.target;
+      if(platform==='mac') Object.assign(result,{
+        async getApp(identifier) {
+          if(typeof identifier!=='string') throw new Error('macOS getApp requires an app name, path, or bundle ID.');
+          const state=await computer.get_app_state({app:identifier,disableDiff:true});
+          const app=nativeTarget(computer,state.app);await emit(state.text);return app;
+        }
+      });
+      else if(platform==='linux' || platform==='windows') Object.assign(result,{
+        async getApp(reference) {
+          const id=windowId(reference,platform);
+          const window=platform==='linux' ? (await computer.list_windows()).find(window=>window.id===id) : await computer.get_window({id});
+          if(platform==='linux' && window===undefined) throw new Error('Window ' + id + ' is unavailable.');
+          const app=windowTarget(computer,window,platform),state=await app.getAXState({disableDiffing:true,emit:false});
+          await emit(state);return app;
+        },
+        async listWindows(options) {const windows=await computer.list_windows();await emit(windows,options);return windows;}
+      });
+      else {const error=new Error(platform);error.name='UnreachableCaseError';throw error;}
+    }
     return result;
   }
   // Testable dependency boundary; production supplies only Rust-backed adapters.

@@ -16,7 +16,7 @@
     "test:parity": "cargo test --locked --manifest-path ../../crates/experimental/nanocodex-computer/runtime/Cargo.toml -- --test-threads=4",
     "generate:api": "node scripts/generate-browser-api.mjs",
     "test": "node scripts/generate-browser-api.mjs --check && node --test test/*.test.mjs",
-    "typecheck": "tsc --noEmit --module nodenext --moduleResolution nodenext index.d.mts contract.d.mts api.d.mts browser-api.d.mts"
+    "typecheck": "tsc --noEmit --module nodenext --moduleResolution nodenext index.d.mts contract.d.mts api.d.mts browser-api.d.mts test/current-api.types.mts"
   },
   "dependencies": { "nanocodex-tools": "workspace:*" },
   "devDependencies": { "typescript": "5.9.3", "@types/node": "^24.0.0" },

@@ -334,11 +334,12 @@ globalThis.__skyreBrowserFacade = ({rpc, target, bytes, emitImage, emitBrowserDo
       async write(mode='state',options){const result=await ax.get(mode,options);const display=value=>console.log({type:'value',value:value.length<=100000?value:value.slice(0,100000)+'[truncated '+(value.length-100000)+' chars]'});if(mode==='state')display(result);else if(mode==='screenshot')await emitImage(result);else{display(result.state);if(result.screenshot!==undefined)await emitImage(result.screenshot);}},
       async click(value,options){return axAction('click',{target:value,mouse_button:options?.mouseButton,click_count:options?.clickCount});},
       async drag(from,to){return axAction('drag',{from,to});},
-      async pressKey(key){return axAction('press_key',{key});},
+      async paste(elementIndex,text,options){return axAction('paste',{element_index:elementIndex,text,format:options?.format});},
+      async pressKey(elementIndex,key){return axAction('press_key',{element_index:elementIndex,key});},
       async scroll(value,direction,pages){return axAction('scroll',{target:value,direction,pages});},
       async selectText(elementIndex,text,options){return axAction('select_text',{element_index:elementIndex,text,prefix:options?.prefix,suffix:options?.suffix,selection_type:options?.selectionType});},
       async setValue(elementIndex,value){return axAction('set_value',{element_index:elementIndex,value});},
-      async typeText(text){return axAction('type_text',{text});},
+      async typeText(elementIndex,text){return axAction('type_text',{element_index:elementIndex,text});},
       async performSecondaryAction(elementIndex,action){return axAction('perform_secondary_action',{element_index:elementIndex,action});}
     },'AXAPI',metadata);
     const clipboard=api({async read(){return (await call('clipboard_read')).map(item=>({presentationStyle:item.presentationStyle,entries:item.entries.map(entry=>({mimeType:entry.mimeType,text:entry.text,base64:entry.base64}))}));},async readText(){return call('clipboard_read_text');},async write(items){if(!Array.isArray(items)||items.length===0)throw new Error('tab.clipboard.write requires at least one clipboard item');await call('clipboard_write',{items:items.map(item=>({presentationStyle:item.presentationStyle,entries:item.entries.map(entry=>({mimeType:entry.mimeType,text:entry.text,base64:entry.base64}))}))});},async writeText(text){if(text==null)throw new Error('tab.clipboard.writeText requires text');await call('clipboard_write_text',{text});}},'TabClipboardAPI',metadata);
@@ -410,18 +411,19 @@ globalThis.__skyreBrowserFacade = ({rpc, target, bytes, emitImage, emitBrowserDo
     }});
     providerValues.add(publicTab);
     decoratorTargets.set(publicTab,decorated);decoratorViews.set(decorated,publicTab);
+    function inputIndex(index) {if(index!==null && (!Number.isInteger(index)||index<0)) throw new Error('Browser input requires an element index from the latest AX snapshot, or null to use current focus.');}
     Object.assign(publicTab,{
       getAXState(options){return(async()=>{const value=await publicTab.ax.get('state',options?.disableDiffing===undefined?undefined:{disableDiffing:options.disableDiffing});await writeState(value,options);return value;})();},
       getScreenshot(options){return(async()=>{const value=await publicTab.ax.get('screenshot');await writeImage(value,options);return value;})();},
       getAXStateAndScreenshot(options){return(async()=>{const value=await publicTab.ax.get('both',options?.disableDiffing===undefined?undefined:{disableDiffing:options.disableDiffing});await writeState(value.state,options);if(value.screenshot!==undefined)await writeImage(value.screenshot,options);return value;})();},
-      paste(text,options){return(async()=>{const clipboard=publicTab.clipboard,format=options?.format??'text';if(format==='text'&&clipboard?.writeText!==undefined)await clipboard.writeText(text);else if(clipboard?.write!==undefined)await clipboard.write([{entries:format==='html'?[{mimeType:'text/html',text},{mimeType:'text/plain',text}]:[{mimeType:'text/plain',text}]}]);else if(format==='text')return publicTab.ax.typeText(text);else throw new Error('Browser clipboard does not support '+format+' paste.');await publicTab.ax.pressKey('Ctrl+v');})();},
+      paste(index,text,options){return(async()=>{inputIndex(index);await publicTab.ax.paste(index,text,options);})();},
       click:(value,options)=>publicTab.ax.click(value,options),
       drag:(from,to)=>publicTab.ax.drag(from,to),
-      pressKey:key=>publicTab.ax.pressKey(key),
+      pressKey:(index,key)=>{inputIndex(index);return publicTab.ax.pressKey(index,key);},
       scroll:(value,direction,pages)=>publicTab.ax.scroll(value,direction,pages),
       selectText:(index,text,options)=>publicTab.ax.selectText(index,text,options),
       setValue:(index,value)=>publicTab.ax.setValue(index,value),
-      typeText:text=>publicTab.ax.typeText(text),
+      typeText:(index,text)=>{inputIndex(index);return publicTab.ax.typeText(index,text);},
       performSecondaryAction:(index,action)=>publicTab.ax.performSecondaryAction(index,action)
     });
     return publicTab;

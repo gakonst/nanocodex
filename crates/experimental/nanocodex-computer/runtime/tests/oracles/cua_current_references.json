@@ -1,0 +1,326 @@
+[
+  {
+    "id": "extension",
+    "value": "chrome-one",
+    "calls": [
+      [
+        "list"
+      ],
+      [
+        "get",
+        "chrome-one"
+      ]
+    ]
+  },
+  {
+    "id": "extension-conflict",
+    "error": "Specify either id or extensionInstanceId, not both.",
+    "calls": []
+  },
+  {
+    "id": "extension-missing",
+    "error": "The Chrome instance is unavailable.",
+    "calls": [
+      [
+        "list"
+      ]
+    ]
+  },
+  {
+    "id": "extension-ambiguous",
+    "error": "Multiple browsers match the Chrome instance: [{\"id\":\"chrome-one\",\"type\":\"extension\",\"metadata\":{\"extensionInstanceId\":\"instance-one\"}},{\"id\":\"duplicate\",\"type\":\"extension\",\"metadata\":{\"extensionInstanceId\":\"instance-one\"}}]",
+    "calls": [
+      [
+        "list"
+      ]
+    ]
+  },
+  {
+    "id": "owned-id",
+    "value": "owned",
+    "calls": [
+      [
+        "get",
+        "chrome-one"
+      ],
+      [
+        "tab",
+        "owned"
+      ],
+      [
+        "state",
+        "owned",
+        {
+          "disableDiffing": true,
+          "emit": false
+        }
+      ]
+    ]
+  },
+  {
+    "id": "provider-id-enriched",
+    "value": "owned",
+    "calls": [
+      [
+        "get",
+        "chrome-one"
+      ],
+      [
+        "user"
+      ],
+      [
+        "tab",
+        "owned"
+      ],
+      [
+        "state",
+        "owned",
+        {
+          "disableDiffing": true,
+          "emit": false
+        }
+      ]
+    ]
+  },
+  {
+    "id": "user-claim",
+    "value": "user",
+    "calls": [
+      [
+        "get",
+        "chrome-one"
+      ],
+      [
+        "user"
+      ],
+      [
+        "claim",
+        {
+          "id": "user",
+          "providerTabId": "native-user",
+          "title": "User",
+          "url": "https://fixture.test/user"
+        }
+      ],
+      [
+        "state",
+        "user",
+        {
+          "disableDiffing": true,
+          "emit": false
+        }
+      ]
+    ]
+  },
+  {
+    "id": "unclaimable",
+    "error": "Tab user cannot be claimed in browser chrome-one.",
+    "calls": [
+      [
+        "get",
+        "chrome-one"
+      ],
+      [
+        "user"
+      ]
+    ]
+  },
+  {
+    "id": "missing",
+    "error": "Tab not found in browser chrome-one.",
+    "calls": [
+      [
+        "get",
+        "chrome-one"
+      ],
+      [
+        "user"
+      ]
+    ]
+  },
+  {
+    "id": "empty",
+    "error": "getTab requires a tab reference",
+    "calls": []
+  },
+  {
+    "id": "url",
+    "value": "owned",
+    "calls": [
+      [
+        "get",
+        "chrome-one"
+      ],
+      [
+        "user"
+      ],
+      [
+        "tab",
+        "owned"
+      ],
+      [
+        "state",
+        "owned",
+        {
+          "disableDiffing": true,
+          "emit": false
+        }
+      ]
+    ]
+  },
+  {
+    "id": "url-needs-browser",
+    "error": "getTab({ url }) requires an explicit browser.",
+    "calls": []
+  },
+  {
+    "id": "url-relative",
+    "error": "getTab requires an absolute URL.",
+    "calls": []
+  },
+  {
+    "id": "url-ambiguous",
+    "error": "Multiple tabs match the reference in browser chrome-one: [{\"id\":\"owned\",\"title\":\"Owned\",\"url\":\"https://fixture.test/owned\",\"browserId\":\"chrome-one\"},{\"id\":\"duplicate\",\"url\":\"https://fixture.test/owned\",\"browserId\":\"chrome-one\"}]",
+    "calls": [
+      [
+        "get",
+        "chrome-one"
+      ],
+      [
+        "user"
+      ]
+    ]
+  },
+  {
+    "id": "mention",
+    "value": "owned",
+    "calls": [
+      [
+        "list"
+      ],
+      [
+        "get",
+        "chrome-one"
+      ],
+      [
+        "user"
+      ],
+      [
+        "tab",
+        "owned"
+      ],
+      [
+        "state",
+        "owned",
+        {
+          "disableDiffing": true,
+          "emit": false
+        }
+      ]
+    ]
+  },
+  {
+    "id": "mention-browser-mismatch",
+    "error": "The requested browser does not match the tab mention's browser/profile.",
+    "calls": [
+      [
+        "list"
+      ],
+      [
+        "get",
+        "chrome-one"
+      ],
+      [
+        "get",
+        "other"
+      ]
+    ]
+  },
+  {
+    "id": "mention-stale",
+    "error": "Stale tab mention: the tab's title or URL has changed.",
+    "calls": [
+      [
+        "list"
+      ],
+      [
+        "get",
+        "chrome-one"
+      ],
+      [
+        "user"
+      ]
+    ]
+  },
+  {
+    "id": "mention-missing-profile",
+    "error": "The browser/profile referenced by the tab mention is unavailable.",
+    "calls": [
+      [
+        "list"
+      ]
+    ]
+  },
+  {
+    "id": "mention-invalid-url",
+    "error": "Invalid tab mention URL.",
+    "calls": []
+  },
+  {
+    "id": "mention-invalid-fields",
+    "error": "Invalid tab mention fields.",
+    "calls": []
+  },
+  {
+    "id": "mention-duplicate-field",
+    "error": "Invalid tab mention fields.",
+    "calls": []
+  },
+  {
+    "id": "iab-mention",
+    "value": "owned",
+    "calls": [
+      [
+        "list"
+      ],
+      [
+        "get",
+        "iab"
+      ],
+      [
+        "user"
+      ],
+      [
+        "tab",
+        "owned"
+      ],
+      [
+        "state",
+        "owned",
+        {
+          "disableDiffing": true,
+          "emit": false
+        }
+      ]
+    ]
+  },
+  {
+    "id": "mention-ambiguous-browser",
+    "error": "Multiple browsers match the tab mention's browser/profile: [{\"id\":\"chrome-one\",\"type\":\"extension\",\"metadata\":{\"extensionInstanceId\":\"instance-one\"}},{\"id\":\"duplicate\",\"type\":\"extension\",\"metadata\":{\"extensionInstanceId\":\"instance-one\"}}]",
+    "calls": [
+      [
+        "list"
+      ]
+    ]
+  },
+  {
+    "id": "ambiguous-provider-id",
+    "error": "Multiple tabs match the reference in browser chrome-one: [{\"id\":\"owned\",\"title\":\"Owned\",\"url\":\"https://fixture.test/owned\",\"providerTabId\":\"native-owned\",\"browserId\":\"chrome-one\"},{\"id\":\"duplicate\",\"providerTabId\":\"native-owned\",\"title\":\"Owned\",\"url\":\"https://fixture.test/owned\",\"browserId\":\"chrome-one\"}]",
+    "calls": [
+      [
+        "get",
+        "chrome-one"
+      ]
+    ]
+  }
+]

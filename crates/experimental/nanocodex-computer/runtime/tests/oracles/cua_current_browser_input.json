@@ -1,0 +1,259 @@
+[
+  {
+    "name": "paste",
+    "args": [
+      null,
+      "text"
+    ],
+    "calls": [
+      [
+        "paste",
+        null,
+        "text",
+        null
+      ]
+    ]
+  },
+  {
+    "name": "paste",
+    "args": [
+      0,
+      "text"
+    ],
+    "calls": [
+      [
+        "paste",
+        0,
+        "text",
+        null
+      ]
+    ]
+  },
+  {
+    "name": "paste",
+    "args": [
+      42,
+      "text"
+    ],
+    "calls": [
+      [
+        "paste",
+        42,
+        "text",
+        null
+      ]
+    ]
+  },
+  {
+    "name": "paste",
+    "args": [
+      -1,
+      "text"
+    ],
+    "error": "Browser input requires an element index from the latest AX snapshot, or null to use current focus.",
+    "calls": []
+  },
+  {
+    "name": "paste",
+    "args": [
+      1.5,
+      "text"
+    ],
+    "error": "Browser input requires an element index from the latest AX snapshot, or null to use current focus.",
+    "calls": []
+  },
+  {
+    "name": "paste",
+    "args": [
+      "text",
+      "text"
+    ],
+    "error": "Browser input requires an element index from the latest AX snapshot, or null to use current focus.",
+    "calls": []
+  },
+  {
+    "name": "paste",
+    "args": [
+      null,
+      "text"
+    ],
+    "error": "Browser input requires an element index from the latest AX snapshot, or null to use current focus.",
+    "calls": []
+  },
+  {
+    "name": "pressKey",
+    "args": [
+      null,
+      "Return"
+    ],
+    "calls": [
+      [
+        "pressKey",
+        null,
+        "Return"
+      ]
+    ]
+  },
+  {
+    "name": "pressKey",
+    "args": [
+      0,
+      "Return"
+    ],
+    "calls": [
+      [
+        "pressKey",
+        0,
+        "Return"
+      ]
+    ]
+  },
+  {
+    "name": "pressKey",
+    "args": [
+      42,
+      "Return"
+    ],
+    "calls": [
+      [
+        "pressKey",
+        42,
+        "Return"
+      ]
+    ]
+  },
+  {
+    "name": "pressKey",
+    "args": [
+      -1,
+      "Return"
+    ],
+    "error": "Browser input requires an element index from the latest AX snapshot, or null to use current focus.",
+    "calls": []
+  },
+  {
+    "name": "pressKey",
+    "args": [
+      1.5,
+      "Return"
+    ],
+    "error": "Browser input requires an element index from the latest AX snapshot, or null to use current focus.",
+    "calls": []
+  },
+  {
+    "name": "pressKey",
+    "args": [
+      "text",
+      "Return"
+    ],
+    "error": "Browser input requires an element index from the latest AX snapshot, or null to use current focus.",
+    "calls": []
+  },
+  {
+    "name": "pressKey",
+    "args": [
+      null,
+      "Return"
+    ],
+    "error": "Browser input requires an element index from the latest AX snapshot, or null to use current focus.",
+    "calls": []
+  },
+  {
+    "name": "typeText",
+    "args": [
+      null,
+      "text"
+    ],
+    "calls": [
+      [
+        "typeText",
+        null,
+        "text"
+      ]
+    ]
+  },
+  {
+    "name": "typeText",
+    "args": [
+      0,
+      "text"
+    ],
+    "calls": [
+      [
+        "typeText",
+        0,
+        "text"
+      ]
+    ]
+  },
+  {
+    "name": "typeText",
+    "args": [
+      42,
+      "text"
+    ],
+    "calls": [
+      [
+        "typeText",
+        42,
+        "text"
+      ]
+    ]
+  },
+  {
+    "name": "typeText",
+    "args": [
+      -1,
+      "text"
+    ],
+    "error": "Browser input requires an element index from the latest AX snapshot, or null to use current focus.",
+    "calls": []
+  },
+  {
+    "name": "typeText",
+    "args": [
+      1.5,
+      "text"
+    ],
+    "error": "Browser input requires an element index from the latest AX snapshot, or null to use current focus.",
+    "calls": []
+  },
+  {
+    "name": "typeText",
+    "args": [
+      "text",
+      "text"
+    ],
+    "error": "Browser input requires an element index from the latest AX snapshot, or null to use current focus.",
+    "calls": []
+  },
+  {
+    "name": "typeText",
+    "args": [
+      null,
+      "text"
+    ],
+    "error": "Browser input requires an element index from the latest AX snapshot, or null to use current focus.",
+    "calls": []
+  },
+  {
+    "name": "paste",
+    "args": [
+      3,
+      "<b>text</b>",
+      {
+        "format": "html"
+      }
+    ],
+    "calls": [
+      [
+        "paste",
+        3,
+        "<b>text</b>",
+        {
+          "format": "html"
+        }
+      ]
+    ]
+  }
+]

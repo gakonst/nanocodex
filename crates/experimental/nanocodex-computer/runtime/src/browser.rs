@@ -1729,19 +1729,39 @@ impl Browsers {
                     .map(|(_, event)| event)
                     .collect::<Vec<_>>()
             )),
-            "type_text" | "paste" => {
+            "type_text" | "paste" | "press_key" => {
                 if method == "paste" && args.get("format").is_some_and(|f| f != "text") {
                     return Err(Error::unsupported(
                         "CDP paste currently supports plain text",
                     ));
                 }
-                b.tab(
-                    tab,
-                    "Input.insertText",
-                    json!({"text":string(args,"text")?}),
-                )
+                // Validate input before changing focus. A null index explicitly
+                // uses the current focus; an index must resolve in the latest AX
+                // revision and must never silently fall back to another target.
+                let input = string(args, if method == "press_key" { "key" } else { "text" })?;
+                if method == "press_key" {
+                    crate::keys::cdp_key(input)?;
+                }
+                if args.get("element_index").is_some_and(|index| !index.is_null()) {
+                    let root = b.snapshot(tab)?;
+                    let target = self.revisions.resolve(&key, index(args)?, root, false)?;
+                    let started = std::time::Instant::now();
+                    let focused = b.call_element(
+                        tab,
+                        &target,
+                        include_str!("browser_ax_focus.js"),
+                        vec![json!(method != "press_key")],
+                    )?;
+                    if focused != true || started.elapsed() > std::time::Duration::from_millis(250) {
+                        return Err(Error::action("Browser input target could not be focused within 250 ms"));
+                    }
+                }
+                if method == "press_key" {
+                    b.key(tab, input)
+                } else {
+                    b.tab(tab, "Input.insertText", json!({"text":input}))
+                }
             }
-            "press_key" => b.key(tab, string(args, "key")?),
             "set_value" | "select_text" | "click" | "scroll" => {
                 let node = if args.get("element_index").is_some() {
                     let root = b.snapshot(tab)?;

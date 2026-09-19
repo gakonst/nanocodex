@@ -11,7 +11,7 @@ const installed = process.argv.slice(2).find(value=>!value.startsWith('--')) ?? 
 const sourceRoot = path.join(installed,'dist/lib/js/oai_js_cua/src');
 const cases = await fs.readFile(path.join(here,'cua_current_facade_cases.js'),'utf8');
 async function capture(reference, script = cases) {
-  const context = vm.createContext({URL,TextEncoder,Uint8Array,Buffer,console});
+  const context = vm.createContext({URL,URLSearchParams,TextEncoder,Uint8Array,Buffer,console});
   if(reference) {
     const modules = new Map();
     const synthetic = (names,values) => new vm.SyntheticModule(names,function(){names.forEach((name,i)=>this.setExport(name,values[i]));},{context});
@@ -21,21 +21,26 @@ async function capture(reference, script = cases) {
       if(modules.has(filename))return modules.get(filename);
       const module = new vm.SourceTextModule(await fs.readFile(filename,'utf8'),{context,identifier:filename,
         importModuleDynamically:async specifier=>{
-          const module = specifier.endsWith('browser-client.js') ? synthetic(['setupBrowserRuntime'],[()=>({browsers:context.config.browsers})])
+          const module = specifier.endsWith('browser-client.js') ? synthetic(['setupBrowserRuntime'],[options=>{context.__testDecorateTab=options.decorateTab;return {browsers:context.config.browsers};}])
             : specifier.endsWith('sky_js/src/index.js') ? synthetic(['sky'],[context.config.computer])
             : (()=>{throw Error('Unexpected dynamic import: '+specifier);})();
           await module.link(()=>{throw Error('Unexpected synthetic dependency');});await module.evaluate();return module;
         }});
       modules.set(filename,module);
-      await module.link((specifier,importer)=>specifier==='./documentation.js'?doc:load(path.resolve(path.dirname(importer.identifier),specifier)));
       return module;
     }
     const module = await load(path.join(sourceRoot,'tinysky_alt/create_tinysky_alt.js'));
+    await module.link((specifier,importer)=>specifier==='./documentation.js'?doc:load(path.resolve(path.dirname(importer.identifier),specifier)));
     await module.evaluate();
     context.__testCreateCUA = config => {context.config=config;return module.namespace.create_tinysky_alt({browser:config.browsers!==undefined,computer:config.computer!==undefined});};
   } else {
     vm.runInContext(await fs.readFile(path.join(here,'../src/facade.js'),'utf8'),context);
     context.__testCreateCUA = context.__skyreCreateCUA;
+    vm.runInContext(await fs.readFile(path.join(here,'../src/browser_facade.js'),'utf8'),context);
+    vm.runInContext(`globalThis.__testDecorateTab = source => {
+      const tab=__skyreBrowserFacade({rpc:async()=>{throw Error('Unexpected browser provider call');}}).tab('fixture',source.id);
+      Object.assign(tab.ax,source.ax);return tab;
+    };`,context);
   }
   return JSON.parse(JSON.stringify(await vm.runInContext(script,context)));
 }
@@ -45,6 +50,16 @@ assert.deepEqual(actual,reference);
 if(process.argv.includes('--write-oracle'))await fs.writeFile(path.join(here,'oracles/cua_current_facade.json'),JSON.stringify(reference,null,2)+'\n');
 else assert.deepEqual(JSON.parse(await fs.readFile(path.join(here,'oracles/cua_current_facade.json'),'utf8')),reference,'Regenerate current facade oracle using --write-oracle');
 console.log('Installed CUA factory and compatibility facade match all inert scenarios.');
+
+for (const kind of ['references','windows','browser_input']) {
+ const script=await fs.readFile(path.join(here,`cua_current_${kind}_cases.js`),'utf8');
+ const reference=await capture(true,script),actual=await capture(false,script);
+ assert.deepEqual(actual,reference,kind);
+ const oracle=path.join(here,`oracles/cua_current_${kind}.json`);
+ if(process.argv.includes('--write-oracle'))await fs.writeFile(oracle,JSON.stringify(reference,null,2)+'\n');
+ else assert.deepEqual(JSON.parse(await fs.readFile(oracle,'utf8')),reference,kind+' oracle');
+ console.log('Installed CUA '+kind+' and compatibility facade match.');
+}
 
 // Current globals eagerly creates cua without exporting setupCUA. The following
 // cases compose the retained pre-bootstrap compatibility seam with the actual

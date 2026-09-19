@@ -1,7 +1,7 @@
 # CUA API reference and compatibility
 
 The CUA reference is the provider installed with ChatGPT, inspected on September
-18, 2026: `@oai/cua` 0.2.4, `@oai/cua-repl` 0.1.0, `@oai/sky` 0.6.32, and
+19, 2026: `@oai/cua` 0.2.5, `@oai/cua-repl` 0.1.0, `@oai/sky` 0.7.1, and
 `@oai/browser-desktop` 0.1.1. The provider is separate from `codex-rs`.
 
 `runtime/src/cua_provider_provenance.json` in the experimental computer package
@@ -22,8 +22,16 @@ The same screenshot method is available on a bound tab. `{emit: false}` returns
 image bytes without displaying them; the ordinary call emits an image as well as
 returning the bytes. `getAXStateAndScreenshot()` returns and displays accessibility
 state followed by the screenshot when one is available. The provider has no
-public top-level `cua.getScreenshot()` or `cua.listWindows()` method. `getApp`
-takes one target string, and native `drag` takes two points.
+public top-level `cua.getScreenshot()` method. On Linux and Windows it now
+exposes `cua.listWindows()` and accepts `getApp({windowId})`. On macOS `getApp`
+accepts an app name, path, or bundle ID; native `drag` takes two points.
+
+The 0.2.5 facade also accepts tab mention and exact-URL references, browser
+extension-instance selection, and targeted tab keyboard input. Tab `paste`,
+`pressKey`, and `typeText` take an element index (or `null` for current focus)
+as their first argument. Native app keyboard methods retain their one-target
+form. These differences are checked against the actual installed factory using
+inert providers, then exercised in QuickJS and the browser transport tests.
 
 The updated provider also exposes `rewriteDocumentation()` and reports partial
 inventory failures through `State.errors`. Its tool description instructs the
@@ -37,7 +45,7 @@ QuickJS remains the execution engine. API and contract conformance do not imply
 that QuickJS implements every Node behavior, that every OS backend is identical,
 or that the embedded browser implements every upstream DOM behavior. Provider
 updates are pinned and reviewed; a package version alone is insufficient because
-the installed CUA 0.2.4 source differs from the earlier 0.2.4 snapshot.
+earlier installations shipped different source under the same CUA 0.2.4 version.
 
 To verify an installed reference without running any provider or UI operation:
 

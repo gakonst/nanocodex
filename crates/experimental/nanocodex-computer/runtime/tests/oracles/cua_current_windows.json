@@ -1,0 +1,772 @@
+[
+  {
+    "platform": "linux",
+    "keys": [
+      "computer",
+      "getApp",
+      "getState",
+      "listApps",
+      "listWindows",
+      "rewriteDocumentation"
+    ],
+    "apps": [
+      {
+        "id": "fixture",
+        "displayName": "Fixture",
+        "isRunning": true,
+        "windows": [
+          {
+            "id": 7
+          }
+        ]
+      },
+      {
+        "id": "stopped",
+        "displayName": "Stopped",
+        "isRunning": false,
+        "windows": []
+      }
+    ],
+    "windows": [
+      {
+        "id": 7,
+        "title": "Fixture"
+      }
+    ],
+    "values": [
+      "Accessibility source: fixture\nFixture tree",
+      [
+        1,
+        2
+      ],
+      {
+        "state": "Accessibility source: fixture\nFixture tree",
+        "screenshot": [
+          1,
+          2
+        ]
+      },
+      "Accessibility source: fixture\nFixture tree",
+      {
+        "state": "Accessibility source: fixture\nFixture tree"
+      }
+    ],
+    "errors": [
+      [
+        "bad-reference",
+        "linux getApp requires { windowId } from listApps() or listWindows()."
+      ],
+      [
+        "bad-reference",
+        "linux getApp requires { windowId } from listApps() or listWindows()."
+      ],
+      [
+        "bad-reference",
+        "linux getApp requires { windowId } from listApps() or listWindows()."
+      ],
+      [
+        "bad-reference",
+        "linux getApp requires { windowId } from listApps() or listWindows()."
+      ],
+      [
+        "bad-reference",
+        "linux getApp requires { windowId } from listApps() or listWindows()."
+      ],
+      [
+        "missing-window",
+        "Window 9 is unavailable."
+      ],
+      [
+        "bad-scroll-distance",
+        "Linux scroll accepts { pixels }, not pages."
+      ],
+      [
+        "zero-pixels",
+        "pixels must be a positive finite number."
+      ],
+      [
+        "infinite-pixels",
+        "pixels must be a positive finite number."
+      ],
+      [
+        "selectText",
+        "selectText is unavailable on Linux."
+      ],
+      [
+        "setValue",
+        "setValue is unavailable on Linux; use click, pressKey, and typeText."
+      ],
+      [
+        "html-paste",
+        "Linux paste supports only text format."
+      ],
+      [
+        "no-screenshot",
+        "Screenshot unavailable for window 7."
+      ],
+      [
+        "multi-screenshot",
+        "Window 7 has multiple screenshot regions; a single screenshot is unavailable."
+      ],
+      [
+        "multi-both",
+        "Window 7 has multiple screenshot regions; a single screenshot is unavailable."
+      ]
+    ],
+    "calls": [
+      [
+        "get_window_state",
+        {
+          "window": {
+            "id": 7,
+            "title": "Fixture"
+          },
+          "include_screenshot": false
+        }
+      ],
+      [
+        "get_window_state",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 1"
+          },
+          "include_screenshot": false
+        }
+      ],
+      [
+        "get_window_state",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 2"
+          },
+          "include_screenshot": true
+        }
+      ],
+      [
+        "click",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "x": 10,
+          "y": 20,
+          "mouse_button": "right",
+          "click_count": 2
+        }
+      ],
+      [
+        "click",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "element_id": "3"
+        }
+      ],
+      [
+        "drag",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "path": [
+            {
+              "x": 1,
+              "y": 2
+            },
+            {
+              "x": 3,
+              "y": 4
+            }
+          ]
+        }
+      ],
+      [
+        "scroll",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "direction": "up",
+          "x": 5,
+          "y": 6,
+          "pixels": 12
+        }
+      ],
+      [
+        "scroll",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "direction": "d",
+          "x": 5,
+          "y": 6,
+          "pixels": 12
+        }
+      ],
+      [
+        "scroll",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "direction": "left",
+          "x": 5,
+          "y": 6,
+          "pixels": 12
+        }
+      ],
+      [
+        "scroll",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "direction": "r",
+          "x": 5,
+          "y": 6,
+          "pixels": 12
+        }
+      ],
+      [
+        "scroll",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "direction": "down",
+          "element_id": "3"
+        }
+      ],
+      [
+        "type_text",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "text": "paste"
+        }
+      ],
+      [
+        "type_text",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "text": "plain"
+        }
+      ],
+      [
+        "press_key",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "key": "Ctrl+A"
+        }
+      ],
+      [
+        "type_text",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "text": "typed"
+        }
+      ],
+      [
+        "perform_secondary_action",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "element_id": "2",
+          "action": "expand"
+        }
+      ],
+      [
+        "get_window_state",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "include_screenshot": true
+        }
+      ],
+      [
+        "get_window_state",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 4"
+          },
+          "include_screenshot": false
+        }
+      ],
+      [
+        "click",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 5"
+          },
+          "x": 10,
+          "y": 20
+        }
+      ],
+      [
+        "get_window_state",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 5"
+          },
+          "include_screenshot": true
+        }
+      ],
+      [
+        "get_window_state",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 6"
+          },
+          "include_screenshot": true
+        }
+      ],
+      [
+        "get_window_state",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 7"
+          },
+          "include_screenshot": true
+        }
+      ],
+      [
+        "get_window_state",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 8"
+          },
+          "include_screenshot": true
+        }
+      ]
+    ]
+  },
+  {
+    "platform": "windows",
+    "keys": [
+      "computer",
+      "getApp",
+      "getState",
+      "listApps",
+      "listWindows",
+      "rewriteDocumentation"
+    ],
+    "apps": [
+      {
+        "id": "fixture",
+        "name": "Fixture",
+        "windows": [
+          {
+            "id": 7
+          }
+        ]
+      },
+      {
+        "id": "stopped",
+        "name": "Stopped",
+        "windows": []
+      }
+    ],
+    "windows": [
+      {
+        "id": 7,
+        "title": "Fixture"
+      }
+    ],
+    "values": [
+      "Fixture tree\n\nFocused element: 4\n\nSelected text: selected\n\nSelected elements:\none\ntwo\n\nDocument text:\ndocument",
+      [
+        1,
+        2
+      ],
+      {
+        "state": "Fixture tree\n\nFocused element: 4\n\nSelected text: selected\n\nSelected elements:\none\ntwo\n\nDocument text:\ndocument",
+        "screenshot": [
+          1,
+          2
+        ]
+      },
+      "Accessibility state unavailable for window 7.",
+      {
+        "state": "Accessibility state unavailable for window 7."
+      }
+    ],
+    "errors": [
+      [
+        "bad-reference",
+        "windows getApp requires { windowId } from listApps() or listWindows()."
+      ],
+      [
+        "bad-reference",
+        "windows getApp requires { windowId } from listApps() or listWindows()."
+      ],
+      [
+        "bad-reference",
+        "windows getApp requires { windowId } from listApps() or listWindows()."
+      ],
+      [
+        "bad-reference",
+        "windows getApp requires { windowId } from listApps() or listWindows()."
+      ],
+      [
+        "bad-reference",
+        "windows getApp requires { windowId } from listApps() or listWindows()."
+      ],
+      [
+        "bad-scroll-distance",
+        "Windows scroll requires a point and a { pixels } distance."
+      ],
+      [
+        "zero-pixels",
+        "pixels must be a positive finite number."
+      ],
+      [
+        "infinite-pixels",
+        "pixels must be a positive finite number."
+      ],
+      [
+        "scroll-needs-point",
+        "Windows scroll requires a point and a { pixels } distance."
+      ],
+      [
+        "scroll-direction",
+        "Unknown scroll direction: diagonal."
+      ],
+      [
+        "screenshot-emit-false",
+        "Windows screenshots are displayed by Sky; emit: false is unavailable."
+      ],
+      [
+        "both-emit-false",
+        "Windows screenshots are displayed by Sky; emit: false is unavailable."
+      ],
+      [
+        "selectText",
+        "selectText is unavailable on Windows."
+      ],
+      [
+        "html-paste",
+        "Windows paste supports only text format."
+      ],
+      [
+        "no-screenshot",
+        "Screenshot unavailable for window 7."
+      ],
+      [
+        "multi-screenshot",
+        "Window 7 has multiple screenshot regions; a single screenshot is unavailable."
+      ],
+      [
+        "multi-both",
+        "Window 7 has multiple screenshot regions; a single screenshot is unavailable."
+      ]
+    ],
+    "calls": [
+      [
+        "get_window",
+        {
+          "id": 7
+        }
+      ],
+      [
+        "get_window_state",
+        {
+          "window": {
+            "id": 7,
+            "title": "Fixture"
+          },
+          "include_text": true,
+          "include_screenshot": false
+        }
+      ],
+      [
+        "get_window_state",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 1"
+          },
+          "include_text": true,
+          "include_screenshot": false
+        }
+      ],
+      [
+        "get_window_state",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 2"
+          },
+          "include_text": false,
+          "include_screenshot": true
+        }
+      ],
+      [
+        "click",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "x": 10,
+          "y": 20,
+          "screenshotId": 100,
+          "mouse_button": "right",
+          "click_count": 2
+        }
+      ],
+      [
+        "click",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "element_index": 3
+        }
+      ],
+      [
+        "drag",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "from_x": 1,
+          "from_y": 2,
+          "to_x": 3,
+          "to_y": 4,
+          "screenshotId": 100
+        }
+      ],
+      [
+        "scroll",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "x": 5,
+          "y": 6,
+          "scrollX": 0,
+          "scrollY": -12,
+          "screenshotId": 100
+        }
+      ],
+      [
+        "scroll",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "x": 5,
+          "y": 6,
+          "scrollX": 0,
+          "scrollY": 12,
+          "screenshotId": 100
+        }
+      ],
+      [
+        "scroll",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "x": 5,
+          "y": 6,
+          "scrollX": -12,
+          "scrollY": 0,
+          "screenshotId": 100
+        }
+      ],
+      [
+        "scroll",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "x": 5,
+          "y": 6,
+          "scrollX": 12,
+          "scrollY": 0,
+          "screenshotId": 100
+        }
+      ],
+      [
+        "set_value",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "element_index": 1,
+          "value": "value"
+        }
+      ],
+      [
+        "type_text",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "text": "paste"
+        }
+      ],
+      [
+        "type_text",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "text": "plain"
+        }
+      ],
+      [
+        "press_key",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "key": "Ctrl+A"
+        }
+      ],
+      [
+        "type_text",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "text": "typed"
+        }
+      ],
+      [
+        "perform_secondary_action",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "element_index": 2,
+          "action": "expand"
+        }
+      ],
+      [
+        "get_window_state",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 3"
+          },
+          "include_text": true,
+          "include_screenshot": true
+        }
+      ],
+      [
+        "get_window_state",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 4"
+          },
+          "include_text": true,
+          "include_screenshot": false
+        }
+      ],
+      [
+        "click",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 5"
+          },
+          "x": 10,
+          "y": 20,
+          "screenshotId": 100
+        }
+      ],
+      [
+        "get_window_state",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 5"
+          },
+          "include_text": true,
+          "include_screenshot": true
+        }
+      ],
+      [
+        "get_window_state",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 6"
+          },
+          "include_text": false,
+          "include_screenshot": true
+        }
+      ],
+      [
+        "get_window_state",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 7"
+          },
+          "include_text": false,
+          "include_screenshot": true
+        }
+      ],
+      [
+        "get_window_state",
+        {
+          "window": {
+            "id": 7,
+            "title": "Refreshed 8"
+          },
+          "include_text": true,
+          "include_screenshot": true
+        }
+      ]
+    ]
+  }
+]
