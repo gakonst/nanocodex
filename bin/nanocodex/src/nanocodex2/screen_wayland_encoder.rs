@@ -3,6 +3,7 @@
 use nix::libc;
 use std::{
     io::{self, Write},
+    os::fd::AsFd,
     process::Stdio,
     time::Duration,
 };
@@ -281,11 +282,9 @@ pub(crate) async fn run(original: Vec<String>) -> Result<()> {
     let (metadata, _) = tokio::select! {result=listener.accept()=>result?,result=child.wait()=>{return Err(format!("encoder exited before metadata: {result:?}").into());}};
     // File writes bypass Rust stdout buffering. Each syscall contains a complete
     // <=PIPE_BUF record; never resume a short record across encoder restarts.
-    let fd = nix::unistd::dup(io::stdout())?;
-    nix::fcntl::fcntl(
-        &fd,
-        nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
-    )?;
+    // Clone atomically with CLOEXEC so another thread cannot inherit the pipe
+    // between a dup and a separate flag update.
+    let fd = io::stdout().as_fd().try_clone_to_owned()?;
     let mut stdout = std::fs::File::from(fd);
     let result = forward(metadata, video, &mut stdout).await;
     if result.is_err() {
