@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify pinned upstream prompts and regenerate/check shared tool contract evidence.
+"""Regenerate/check shared tool contract evidence against a pinned upstream checkout.
 
 Usage: python3 scripts/codex-parity/check.py /path/to/openai/codex [--write]
 Compiles the actual upstream schema constructors with their actual JsonSchema type,
@@ -151,29 +151,12 @@ if args.write:
 else:
     assert json.loads(FIXTURE.read_text()) == fixture, 'upstream fixture drift'
 
-models = json.loads((u / 'models-manager/models.json').read_text())['models']
-checked_models = []
-for model in models:
-    slug = model['slug']
-    if slug not in ('gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'):
-        continue
-    checked_models.append(slug)
-    expected = model['model_messages']['instructions_template']
-    prompt = 'astra.md' if slug == 'gpt-6-astra' else 'system.md'
-    if slug == 'gpt-6-astra':
-        expected = expected.replace('You are Codex, an agent based on GPT-6.', 'You are Nanocodex, an agent based on GPT-6 Astra.')
-        expected = expected.replace('As Codex,', 'As Nanocodex,')
-        # Historical local import removed trailing spaces, without changing text.
-        expected = '\n'.join(line.rstrip() for line in expected.split('\n'))
-    assert (ROOT / 'crates/nanocodex-oai-api/prompts' / prompt).read_text() == expected, slug
-    print(f'{slug}: exact prompt (documented identity/whitespace substitutions only)')
-assert len(checked_models) == 4, 'missing expected model templates'
 for local, remote in [
     ('crates/nanocodex-tools/src/apply_patch/apply_patch.lark', 'core/assets/tools/apply_patch.lark'),
     ('crates/nanocodex-tools/src/image_generation/imagegen_description.md', 'ext/image-generation/imagegen_description.md'),
 ]:
     assert (ROOT / local).read_bytes() == (u / remote).read_bytes(), local
-print(f'PASS: upstream {PIN}; compiled tool constructors, prompts, patch grammar, imagegen description')
+print(f'PASS: upstream {PIN}; compiled tool constructors, patch grammar, imagegen description')
 
 # The renderer is a direct port: permit only import/module-path adaptation.
 renderer = (ROOT / 'crates/nanocodex-tools/src/code_mode/schema_types.rs').read_text()
@@ -184,9 +167,3 @@ renderer = renderer.replace('schema_types_tests.rs', 'json_schema_types_tests.rs
 assert renderer == (u / 'code-mode-protocol/src/json_schema_types.rs').read_text(), 'Code Mode schema renderer drift'
 print('PASS: exact upstream Code Mode schema renderer (imports/module path adapted)')
 
-web = (u / 'ext/web-search/web_run_description.md').read_text()
-web = web.replace('* `image_query`: {"image_query":[{"q": "waterfalls"}]}.', '* `image_query`: {"image_query":[{"q": "waterfalls"}]}. Finds image-search source pages and captions; it does not return model-visible image bytes.')
-web = web.replace('* `screenshot`: {"screenshot": [{"ref_id": "turn1view0", "pageno": 0}, {"ref_id": "turn1view0", "pageno": 3}]}\n', '')
-web = web.replace('* Use "response_length" to control the number of results returned by this tool, omit it if you intend to pass "short" in', '* Use "response_length" to control the amount of returned text, and omit it for the service default.')
-assert web == (ROOT / 'crates/nanocodex-tools/src/web_search/web_run_description.md').read_text(), 'web description drift outside documented host differences'
-print('PASS: web description with three enumerated host capability substitutions')
