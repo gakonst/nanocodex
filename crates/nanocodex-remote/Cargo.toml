@@ -16,6 +16,10 @@ tracing.workspace = true
 uuid.workspace = true
 url.workspace = true
 libc.workspace = true
+reqwest.workspace = true
+tokio-tungstenite.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
 webrtc.workspace = true
 opusic-c.workspace = true
 
