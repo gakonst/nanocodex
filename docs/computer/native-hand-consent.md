@@ -29,7 +29,7 @@ scope, the terminal also offers `accept-session REQUEST-ID {}`. Only this
 explicit choice returns `_meta.persist = "session"` and remembers the response.
 Reuse requires the same live provider process, conversation, and complete form
 parameters except the call correlation fields `_meta.progressToken` and
-`_meta.tool_call_id`. The connector, tool name, exact tool
+`_meta.tool_call_id`, plus transport `_meta.x-codex-turn-metadata`. The connector, tool name, exact tool
 parameters, displayed scope, schema, and risk metadata must all remain identical.
 Different operations can therefore require separate decisions. Reset/restart
 expires the permission. No `always` permission is offered or stored on disk.
