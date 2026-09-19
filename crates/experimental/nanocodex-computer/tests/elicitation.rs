@@ -29,8 +29,12 @@ fn params() -> Value {
 }
 
 fn config(mode: &str, params: Value) -> ComputerConfig {
-    let request =
-        json!({"jsonrpc":"2.0","id":"approval-0","method":"elicitation/create","params":params});
+    let method = if mode == "alias" {
+        "openai/elicitation/create"
+    } else {
+        "elicitation/create"
+    };
+    let request = json!({"jsonrpc":"2.0","id":"approval-0","method":method,"params":params});
     // The process echoes the actual initialize request and elicitation response
     // inside structuredContent, keeping assertions on the wire contract.
     let after_request = match mode {
@@ -332,4 +336,170 @@ async fn call_completion_drops_pending_host_ui() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn codex_alias_uses_the_same_form_handler_and_validation() {
+    for mode in ["form", "url"] {
+        let mut params = params();
+        params["mode"] = json!(mode);
+        let response = ComputerElicitationResponse {
+            action: ComputerElicitationAction::Accept,
+            content: Some(json!({})),
+            meta: Some(json!({"receipt":"explicit-host-choice"})),
+        };
+        let host = host(Some(response.clone()));
+        let mut config = config("alias", params.clone());
+        config.elicitation_handler = Some(host.clone());
+        let tools = ComputerTools::connect(config).await.unwrap();
+        let wire = invoke(&tools).await.unwrap();
+        if mode == "form" {
+            assert_eq!(host.seen.lock().unwrap()[0].params, params);
+            assert_eq!(
+                wire["answer"]["result"],
+                serde_json::to_value(response).unwrap()
+            );
+        } else {
+            assert!(host.seen.lock().unwrap().is_empty());
+            assert_eq!(wire["answer"]["error"]["code"], -32602);
+        }
+    }
+}
+
+/// An opt-in live fixture policy, deliberately not a general approval handler.
+#[derive(Debug, Default)]
+struct NativeFixtureHost {
+    accepted: Mutex<Vec<ComputerElicitationRequest>>,
+}
+#[async_trait]
+impl ComputerElicitationHandler for NativeFixtureHost {
+    async fn elicit(
+        &self,
+        request: ComputerElicitationRequest,
+    ) -> Result<ComputerElicitationResponse, ToolError> {
+        let meta = &request.params["_meta"];
+        let allowed = meta["connector_id"] == "computer-use"
+            && meta["riskLevel"] == "low"
+            && meta["tool_name"] == "get_app_state"
+            && meta["tool_params"]["app"] == "com.nanocodex.CuaProviderFixture"
+            && request.context.as_ref().is_some_and(|context| {
+                context.session_id == "00000000-0000-4000-8000-000000000013"
+                    && matches!(
+                        context.call_id.as_str(),
+                        "rust-native-fixture-bind" | "rust-native-fixture-screenshot"
+                    )
+            });
+        eprintln!(
+            "native fixture host: tool={} allowed={allowed}",
+            meta["tool_name"]
+        );
+        if allowed {
+            self.accepted.lock().unwrap().push(request);
+        }
+        Ok(ComputerElicitationResponse {
+            action: if allowed {
+                ComputerElicitationAction::Accept
+            } else {
+                ComputerElicitationAction::Decline
+            },
+            content: None,
+            // Never select persistent permission, including "always".
+            meta: None,
+        })
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires NANOCODEX_TEST_EXTERNAL_COMPUTER and NANOCODEX_TEST_NATIVE_FIXTURE_APP pointing to an owned running CUA Provider Fixture"]
+async fn installed_external_provider_native_fixture_screenshot_through_host_callback() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use nanocodex_oai_api::tools::{ToolOutputBody, ToolOutputContent};
+    let (Some(executable), Some(app)) = (
+        std::env::var_os("NANOCODEX_TEST_EXTERNAL_COMPUTER"),
+        std::env::var_os("NANOCODEX_TEST_NATIVE_FIXTURE_APP"),
+    ) else {
+        eprintln!(
+            "Skipping live fixture: both external provider and owned fixture app must be explicitly configured"
+        );
+        return;
+    };
+    let host = Arc::new(NativeFixtureHost::default());
+    let mut config = ComputerConfig::mcp(executable);
+    config.elicitation_handler = Some(host.clone());
+    config.elicitation_timeout = Duration::from_secs(10);
+    let tools = tokio::time::timeout(Duration::from_secs(45), ComputerTools::connect(config))
+        .await
+        .expect("provider discovery timed out")
+        .expect("provider discovery failed");
+    let binding = format!(
+        "var nativeFixtureApp = await cua.getApp({});",
+        serde_json::to_string(&app.to_string_lossy()).unwrap()
+    );
+    let model =
+        std::env::var("NANOCODEX_TEST_CUA_MODEL").unwrap_or_else(|_| "fixture-model".into());
+    let mut captured = None;
+    for (code, call_id) in [
+        (binding.as_str(), "rust-native-fixture-bind"),
+        (
+            "await nativeFixtureApp.getScreenshot();",
+            "rust-native-fixture-screenshot",
+        ),
+    ] {
+        let input = ToolInput::Function(
+            serde_json::value::to_raw_value(&json!({"code":code,"timeout_ms":20000})).unwrap(),
+        );
+        let context = ToolContext::new(
+            &model,
+            "00000000-0000-4000-8000-000000000013",
+            call_id,
+            &[],
+            16000,
+        );
+        let result =
+            tokio::time::timeout(Duration::from_secs(45), tools.js().execute(input, context))
+                .await
+                .expect("fixture tool call timed out")
+                .expect("fixture transport failed");
+        assert!(
+            result.success,
+            "fixture tool failed: {}",
+            result.structured_result()
+        );
+        captured = Some(result);
+    }
+    assert!(
+        !host.accepted.lock().unwrap().is_empty(),
+        "live provider never invoked scoped host approval"
+    );
+    let captured = captured.unwrap();
+    let wire = captured.structured_result();
+    let image = wire["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "image")
+        .expect("provider did not return a screenshot");
+    let bytes = STANDARD.decode(image["data"].as_str().unwrap()).unwrap();
+    assert!(
+        bytes.starts_with(b"\x89PNG\r\n\x1a\n") || bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "invalid screenshot image signature"
+    );
+    let ToolOutputBody::Content(content) = &captured.output else {
+        panic!("expected model image content")
+    };
+    assert!(content.iter().any(|item| matches!(
+        item,
+        ToolOutputContent::InputImage {
+            detail: nanocodex_oai_api::ImageDetail::Original,
+            ..
+        }
+    )));
+    if let Some(path) = std::env::var_os("NANOCODEX_TEST_FIXTURE_SCREENSHOT") {
+        std::fs::write(path, &bytes).unwrap();
+    }
+    eprintln!(
+        "native fixture screenshot: {} bytes; model input_image with original detail; scoped host callback confirmed",
+        bytes.len()
+    );
+    // Dropping tools closes the provider transport, never the owned fixture app.
 }

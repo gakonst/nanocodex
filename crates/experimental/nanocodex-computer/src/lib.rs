@@ -765,7 +765,9 @@ impl Process {
                 } else if let Some(request_id) = value.get("id") {
                     let params = value.get("params").cloned().unwrap_or(Value::Null);
                     let handler = self.elicitation_handler.clone();
-                    if method != "elicitation/create" || handler.is_none() {
+                    if (method != "elicitation/create" && method != "openai/elicitation/create")
+                        || handler.is_none()
+                    {
                         self.send(json!({"jsonrpc":"2.0","id":request_id,"error":{"code":-32601,"message":"No host handler for this server request"}})).await?;
                         continue;
                     }

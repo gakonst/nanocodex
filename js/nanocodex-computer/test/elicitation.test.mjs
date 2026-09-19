@@ -157,3 +157,22 @@ for (const trigger of ["call completion", "provider disconnect"]) {
     if (trigger === "call completion") assert.deepEqual(await response(attachment), { completed: true });
   });
 }
+
+for (const mode of ["form", "url"]) {
+  test(`Codex openai/elicitation/create alias uses the same ${mode} validation`, async t => {
+    let seen;
+    const result = { action: "accept", content: {}, _meta: { receipt: "explicit-host-choice" } };
+    const requestParams = { ...params, mode };
+    const attachment = await connectComputerTools({ ...provider({ method: "openai/elicitation/create", requestParams }),
+      elicitationHandler: request => { seen = request; return result; } });
+    t.after(attachment.close);
+    const actual = await response(attachment);
+    if (mode === "form") {
+      assert.deepEqual(seen, requestParams);
+      assert.deepEqual(actual.response.result, result);
+    } else {
+      assert.equal(seen, undefined);
+      assert.equal(actual.response.error.code, -32602);
+    }
+  });
+}

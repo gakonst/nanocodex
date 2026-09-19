@@ -227,7 +227,7 @@ class ComputerProcess {
   }
   async serverRequest(request) {
     const reply = value => this.send({ jsonrpc: "2.0", id: request.id, ...value });
-    if (request.method !== "elicitation/create" || !this.elicitationHandler) {
+    if (!["elicitation/create", "openai/elicitation/create"].includes(request.method) || !this.elicitationHandler) {
       await reply({ error: { code: -32601, message: "No host form elicitation handler for this request" } });
       return;
     }

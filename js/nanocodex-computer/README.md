@@ -75,11 +75,11 @@ const computer = await connectComputerTools({
 ```
 
 Only a configured handler advertises MCP `elicitation.form`. The adapter accepts
-`elicitation/create` form requests (omitted `mode` also means form), forwards all
+`elicitation/create` and `openai/elicitation/create` form requests (omitted `mode` also means form), forwards all
 raw parameters including `_meta`, and preserves the host's response metadata.
 It never selects acceptance or persistence. Hosts must obtain the user's choice
 before returning `accept` or `_meta.persist`; provider metadata is presentation
-input, not authorization. URL requests and legacy extension methods are unsupported.
+input, not authorization. URL requests and other extension methods are unsupported.
 Without a handler, server requests receive a method-not-found error.
 
 Context contains the provider `requestId`, `signal`, and the active tool's

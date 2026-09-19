@@ -202,7 +202,9 @@ let computer = ComputerTools::connect(ComputerConfig::new("/usr/local/bin/nanoco
 
 For an external MCP provider, hosts can set `ComputerConfig.elicitation_handler`
 to an `Arc<dyn ComputerElicitationHandler>`. Only that configuration advertises
-`elicitation.form`. The host receives the form's original params (including all
+`elicitation.form`. Both `elicitation/create` and the Codex alias
+`openai/elicitation/create` route through the same form handler and validation.
+The host receives the form's original params (including all
 `_meta`), request ID, and the active conversation/call identity; discovery has no
 conversation identity. Return `ComputerElicitationResponse` with the user's
 `Accept`, `Decline`, or `Cancel` action, optional content, and optional response
