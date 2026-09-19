@@ -6,11 +6,11 @@ The circular and rectangular **Speak to Nanocodex** widgets invoke `StartLockedV
 
 Sign in and use the foreground recorder once to grant Microphone and Speech Recognition access. Choose English or Ελληνικά there; the choice is remembered. Live Activities must be enabled. Background intents never present permission prompts or silently open the app.
 
-Tap the widget/control to request capture in the app's background process. A compact Live Activity shows recording state and Finish/Cancel buttons. Pause after speaking to finish automatically. The Live Activity contains no transcript or account information. A final transcript starts a new cloud agent conversation; the activity reports Sent only after server admission. Recognition and network latency apply.
+Tap the widget/control to request capture in the app's background process. A compact Live Activity shows recording state and send-arrow and cancel icons. Capture continues until Send or Cancel; pauses never submit a task. Send stops audio and starts transcription of the recording. The Live Activity contains no transcript or account information. A final transcript starts a new cloud agent conversation; the activity reports Sent only after server admission. Recognition and network latency apply.
 
 The recording intent adopts `AudioRecordingIntent` and `LiveActivityIntent`, with `openAppWhenRun = false` and `authenticationPolicy = .alwaysAllowed`. The activity starts before microphone activation and remains present during capture. Background audio is declared. None of these settings circumvents iOS permission or device-lock rules: a denied background microphone start reports failure without opening the app. This flow requires a physical-device test on the target iOS version before claiming unlock-free operation.
 
-The coordinator owns the recorder independently of app scenes and limits recording to 60 seconds. After audio stops it requests a finite background completion allowance. Delivery uses the recording UUID as the persisted message ID and server idempotency key. Errors preserve account-scoped recovery text or the ordinary pending delivery entry. Cancellation before submission and stale callbacks cannot admit unfinished speech. Once submission starts, delivery may be unconfirmed after cancellation/timeout; retries must retain the same message ID.
+The coordinator owns the recorder independently of app scenes and refreshes recording activity freshness while capture continues. Before releasing the microphone it requests a finite background completion allowance. Delivery uses the recording UUID as the persisted message ID and server idempotency key. Errors preserve account-scoped recovery text or the ordinary pending delivery entry. Cancellation before submission and stale callbacks cannot admit unfinished speech. Once submission starts, delivery may be unconfirmed after cancellation/timeout; retries must retain the same message ID.
 
 ## Verification
 
@@ -20,7 +20,7 @@ Physical-device acceptance requires:
 
 - Pre-grant permissions while unlocked, then lock the phone and cover Face ID. Confirm the device remains locked before and after tapping the circular widget, rectangular widget, and Control Widget.
 - Repeat with the app suspended, terminated, and after reboot plus the first device unlock. Do not interpret a foreground-started recording continuing after lock as a successful cold start.
-- Verify the microphone indicator and Live Activity appear, Stop/Cancel work, and the app never comes to the foreground.
+- Verify the microphone indicator and Live Activity appear, Send/Cancel work, and the app never comes to the foreground.
 - English: “Create a new agent thread and explain what this app can do.” Greek: “Δημιούργησε ένα νέο νήμα και εξήγησε τι μπορεί να κάνει αυτή η εφαρμογή.” Verify the final transcript and exactly one thread/turn.
 - Test silent capture, concurrent taps, interrupted audio, a disconnected headset, denied permissions, disabled Live Activities, unavailable recognition, account switching, offline delivery, and app termination during delivery.
 - Verify unavailable capture fails visibly without opening the app. Verify recovery does not automatically resubmit, and retries preserve the original idempotency key.
@@ -29,3 +29,7 @@ Platform documentation:
 - https://developer.apple.com/documentation/appintents/audiorecordingintent
 - https://developer.apple.com/documentation/activitykit/displaying-live-data-with-live-activities
 - https://developer.apple.com/documentation/appintents/appintent/authenticationpolicy
+
+## Device permissions
+
+Settings → Device access requests Contacts, Location When In Use, and Photos individually. It displays limited/full contact and photo access, approximate/precise location, denial and restrictions, and refreshes after returning from iOS Settings. Merely granting permission does not enumerate or upload device data. Photo attachment via the existing system picker continues to work without library permission. These controls do not themselves expose new agent tools.

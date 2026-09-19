@@ -435,6 +435,11 @@ struct InboxView: View {
                     Text("Builds requested from Nanocodex are delivered through Apple's internal TestFlight channel. Turn on Automatic Updates there for hands-free installation after Apple finishes processing.").font(.caption).foregroundStyle(.secondary)
                 }
             }
+            Section {
+                NavigationLink { DevicePermissionsView() } label: {
+                    Label("Device access", systemImage: "hand.raised")
+                }.accessibilityIdentifier("settings-device-access")
+            }
             Section("Controls") {
                 Text("Open Conversations at the top to switch agents. The compose button creates a conversation. Back, Screens, and captured context are in the more menu.")
                 Text("The sidebar lists your conversations. Green identifies running agents. Drafts and reading positions stay with each conversation.").font(.caption)
