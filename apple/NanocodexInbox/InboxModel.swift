@@ -216,6 +216,22 @@ final class InboxModel: ObservableObject {
     }
     private var olderHistoryPrefetch: (id: String, before: Cursor, task: Task<(EventPage, [Int]), Error>)?
     private var seen: [String: String] = [:] { didSet { rosterRevision = UUID(); scheduleAgentNotifications() } }
+    var quickVoiceGeneration: UUID { generation }
+    // Keep retries on the same newly created conversation, including after ID remapping.
+    func sendQuickVoice(_ text: String, generation expected: UUID, targetID: inout String?) -> Bool {
+        guard connected, !isDemo, generation == expected else { return false }
+        if let id = targetID {
+            let resolved = createdAgentIDs[id] ?? id
+            guard cards.contains(where: { $0.id == resolved }) else { return false }
+            select(resolved)
+        } else {
+            newAgent()
+            targetID = focused?.id
+        }
+        guard targetID != nil else { return false }
+        draft = text
+        return send()
+    }
     private var scope = "" { didSet { restoreThreadScreens(); scheduleAgentNotifications() } }
     private lazy var agentNotifications = AgentNotificationController(open: { [weak self] url in self?.openAgentActivity(url) })
     private var agentNotificationUpdate: Task<Void, Never>?

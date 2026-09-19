@@ -5,7 +5,10 @@ import WidgetKit
 
 @main
 struct NanocodexWidgets: WidgetBundle {
-    var body: some Widget { AgentLiveActivity() }
+    var body: some Widget {
+        AgentLiveActivity()
+        VoiceTaskWidget()
+    }
 }
 
 struct AgentLiveActivity: Widget {
@@ -129,5 +132,62 @@ private struct AgentActivityRows: View {
                 .foregroundStyle(.white)
             }
         }
+    }
+}
+
+// Launches microphone capture in the foreground app after the system unlocks it.
+// No account information or dictated text is stored in the widget timeline.
+private struct VoiceTaskEntry: TimelineEntry {
+    let date: Date
+}
+
+private struct VoiceTaskProvider: TimelineProvider {
+    func placeholder(in context: Context) -> VoiceTaskEntry { VoiceTaskEntry(date: .now) }
+    func getSnapshot(in context: Context, completion: @escaping (VoiceTaskEntry) -> Void) {
+        completion(VoiceTaskEntry(date: .now))
+    }
+    func getTimeline(in context: Context, completion: @escaping (Timeline<VoiceTaskEntry>) -> Void) {
+        completion(Timeline(entries: [VoiceTaskEntry(date: .now)], policy: .never))
+    }
+}
+
+struct VoiceTaskWidget: Widget {
+    let kind = "NanocodexVoiceTask"
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: kind, provider: VoiceTaskProvider()) { _ in
+            VoiceTaskWidgetView()
+                .widgetURL(URL(string: "nanocodex://voice/new")!)
+                .containerBackground(for: .widget) { Color.clear }
+        }
+        .configurationDisplayName("Speak to Nanocodex")
+        .description("Speak in Greek or English to start a new agent thread.")
+        .supportedFamilies([.accessoryCircular, .accessoryRectangular, .accessoryInline])
+    }
+}
+
+private struct VoiceTaskWidgetView: View {
+    @Environment(\.widgetFamily) private var family
+    var body: some View {
+        Group {
+            switch family {
+            case .accessoryInline:
+                Label("Speak to Nanocodex", systemImage: "mic.fill")
+            case .accessoryRectangular:
+                HStack(spacing: 8) {
+                    Image(systemName: "mic.fill").font(.title2)
+                    VStack(alignment: .leading) {
+                        Text("Speak to Nanocodex").font(.headline)
+                        Text("New agent thread").font(.caption)
+                    }
+                }
+            default:
+                ZStack {
+                    AccessoryWidgetBackground()
+                    Image(systemName: "mic.fill").font(.title2)
+                }
+            }
+        }
+        .accessibilityLabel("Speak to Nanocodex")
+        .accessibilityHint("Opens voice capture to start a new agent thread in Greek or English")
     }
 }

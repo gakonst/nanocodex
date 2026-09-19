@@ -62,3 +62,22 @@ final class AgentNotificationUITests: XCTestCase {
         app.activate()
     }
 }
+
+extension AgentNotificationUITests {
+    func testVoiceWidgetLinkOpensRecorderWithoutSendingInDemo() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo"]
+        app.launchEnvironment["NANOCODEX_DEMO_PROFILE"] = "quick-voice-" + UUID().uuidString
+        app.launch()
+        XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 20))
+        app.open(URL(string: "nanocodex://voice/new")!)
+        XCTAssertTrue(app.staticTexts["New voice task"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.segmentedControls.buttons["English"].exists)
+        XCTAssertTrue(app.segmentedControls.buttons["Ελληνικά"].exists)
+        XCTAssertTrue(app.staticTexts["quickVoiceStatus"].label.contains("Sign in"))
+        XCTAssertFalse(app.buttons["Send in new conversation"].isEnabled)
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 10))
+    }
+}

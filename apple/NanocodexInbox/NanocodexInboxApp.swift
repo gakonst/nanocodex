@@ -4,6 +4,7 @@ import InboxCore
 @main
 struct NanocodexInboxApp: App {
     init() { InboxModel.shared.configureAgentNotifications() }
+    @State private var showQuickVoice = false
     @StateObject private var model = InboxModel.shared
     @Environment(\.scenePhase) private var scenePhase
     var body: some Scene {
@@ -31,7 +32,9 @@ struct NanocodexInboxApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
                     model.releaseInactiveHistory()
                 }
+                .sheet(isPresented: $showQuickVoice) { QuickVoiceView(model: model) }
                 .onOpenURL { url in
+                    if QuickVoiceInput.matches(url) { showQuickVoice = true; return }
                     if url.scheme == "nanocodex", url.host == "connect", ["/spotify", "/soundcloud"].contains(url.path), url.query == nil, url.fragment == nil {
                         model.musicConnectorToOpen = MusicLoopbackProvider(rawValue: String(url.path.dropFirst()))
                     } else { model.openAgentActivity(url) }
