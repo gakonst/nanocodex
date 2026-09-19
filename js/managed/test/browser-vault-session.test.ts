@@ -99,3 +99,38 @@ describe("private target attachment lifecycle", () => {
     await expect(cdp.attachTarget("two")).rejects.toThrow("disconnected");
   });
 });
+
+describe("private browser upgrade cancellation", () => {
+  it("keeps a retained socket alive past the handshake deadline and completed call cancellation", async () => {
+    vi.useFakeTimers();
+    const call = new AbortController();
+    let upgradeSignal: AbortSignal | undefined;
+    const socket = { accept() {}, addEventListener() {}, close: vi.fn() };
+    const browser = { fetch: vi.fn(async (_url: string, options: RequestInit) => {
+      upgradeSignal = options.signal as AbortSignal;
+      upgradeSignal.addEventListener("abort", () => socket.close());
+      return { webSocket: socket };
+    }) };
+    const cdp = await PrivateBrowserCdp.connect(browser as never, "browser", call.signal);
+    call.abort();
+    await vi.advanceTimersByTimeAsync(10_001);
+    expect(upgradeSignal!.aborted).toBe(false);
+    expect(socket.close).not.toHaveBeenCalled();
+    expect(cdp.closed).toBe(false);
+    cdp.close();
+  });
+  it("still cancels outstanding upgrades on timeout and caller abort", async () => {
+    vi.useFakeTimers();
+    for (const cancel of ["timeout", "caller"] as const) {
+      const call = new AbortController();
+      const browser = { fetch: vi.fn((_url: string, options: RequestInit) => new Promise((_resolve, reject) => {
+        options.signal!.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+      })) };
+      const pending = expect(PrivateBrowserCdp.connect(browser as never, "browser", call.signal)).rejects.toThrow("cancelled");
+      if (cancel === "caller") call.abort();
+      else await vi.advanceTimersByTimeAsync(10_000);
+      await pending;
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  });
+});

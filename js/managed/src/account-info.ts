@@ -23,6 +23,12 @@ type BrokerBinding = Readonly<{
 export type VaultEntry =
   | Readonly<{
       id: string;
+      kind: "api_key";
+      name: string;
+      created_at: number;
+    }>
+  | Readonly<{
+      id: string;
       kind: "login";
       name: string;
       created_at: number;
@@ -307,6 +313,10 @@ function vaultEntry(value: unknown): VaultEntry | undefined {
     name: value.name,
     created_at: value.created_at as number,
   };
+  if (value.kind === "api_key"
+    && exactKeys(value, ["id", "kind", "name", "created_at"])) {
+    return { ...common, kind: "api_key" };
+  }
   if (value.kind === "login"
     && exactKeys(value, ["id", "kind", "name", "created_at", "username", ...(value.browser_origin === undefined ? [] : ["browser_origin"])])
     && vaultText(value.username, 512)) {
