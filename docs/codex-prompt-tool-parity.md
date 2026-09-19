@@ -79,3 +79,19 @@ Future runtime changes need coordinated native, JS-host and QuickJS guest tests;
 changing only the prompt would misstate the implementation. Native runtime tests
 already cover wait, cancellation, output deltas, and image semantics. The new
 `js/nanocodex/test/code-mode-parity.test.mjs` adds 27 parser/helper regression cases.
+
+## Standalone web follow-up
+
+The native and JavaScript web schemas and descriptions now come from the pinned
+upstream source without host substitutions. `scripts/codex-parity/web.py` compiles
+the upstream command schema and verifies the Rust wire types and both public
+contracts. PDF screenshot operations and optional `sports.tool` are preserved.
+Both adapters accept empty commands, ignore unknown object fields, reject invalid
+operation types, and leave query limits to the provider, matching Codex parsing.
+The native adapter sends the complete operation batch as one request. The platform
+gateway preserves the caller's model, optional history, and output budget.
+
+Validation: eight native web tests, sixteen JavaScript tool tests, and two gateway
+request tests pass. This is contract and request parity; live provider capabilities,
+full JavaScript history propagation, and the other gaps above still require their
+own integration evidence before claiming end-to-end parity.

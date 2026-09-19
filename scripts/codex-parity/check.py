@@ -185,8 +185,5 @@ assert renderer == (u / 'code-mode-protocol/src/json_schema_types.rs').read_text
 print('PASS: exact upstream Code Mode schema renderer (imports/module path adapted)')
 
 web = (u / 'ext/web-search/web_run_description.md').read_text()
-web = web.replace('* `image_query`: {"image_query":[{"q": "waterfalls"}]}.', '* `image_query`: {"image_query":[{"q": "waterfalls"}]}. Finds image-search source pages and captions; it does not return model-visible image bytes.')
-web = web.replace('* `screenshot`: {"screenshot": [{"ref_id": "turn1view0", "pageno": 0}, {"ref_id": "turn1view0", "pageno": 3}]}\n', '')
-web = web.replace('* Use "response_length" to control the number of results returned by this tool, omit it if you intend to pass "short" in', '* Use "response_length" to control the amount of returned text, and omit it for the service default.')
-assert web == (ROOT / 'crates/nanocodex-tools/src/web_search/web_run_description.md').read_text(), 'web description drift outside documented host differences'
-print('PASS: web description with three enumerated host capability substitutions')
+assert web == (ROOT / 'crates/nanocodex-tools/src/web_search/web_run_description.md').read_text(), 'web description drift'
+print('PASS: exact upstream web description')

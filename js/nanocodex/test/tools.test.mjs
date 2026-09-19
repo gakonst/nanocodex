@@ -26,8 +26,13 @@ test("standard tool descriptions stay identical to the Rust-owned Codex contract
     readFile(new URL("../../../crates/nanocodex-tools/src/web_search/web_run_description.md", import.meta.url), "utf8"),
     readFile(new URL("../../../crates/nanocodex-tools/src/image_generation/imagegen_description.md", import.meta.url), "utf8"),
   ]);
-  assert.equal(web().description, webDescription.trimEnd());
+  assert.equal(web().description, webDescription);
   assert.equal(imageGeneration().description, imageDescription.trimEnd());
+});
+
+test("web definition uses the compiled pinned Codex schema", async () => {
+  const schema = JSON.parse(await readFile(new URL("../../../crates/nanocodex-tools/tests/fixtures/codex-parity/web.json", import.meta.url), "utf8"));
+  assert.deepEqual(web().parameters, schema);
 });
 
 test("web forwards the complete command object through a caller-owned host adapter", async () => {
@@ -74,21 +79,26 @@ test("web rejects host redirects without forwarding credentials", async () => {
   assert.equal(requests[0].init.redirect, "manual");
 });
 
-test("web repairs common non-array model argument shapes before host dispatch", async () => {
+test("web follows Codex command decoding without repairing or splitting requests", async () => {
   const bodies = [];
   const tool = web({
     url: "https://host.test/web",
     fetch: async (_url, init) => {
       bodies.push(JSON.parse(init.body));
-      return Response.json({ output: "ok" });
+      return Response.json({ output: "" });
     },
   });
-  await tool.handler({ commands: { search_query: { q: "nanocodex" } } }, context);
-  await tool.handler({ image_query: "rust wasm", open: "turn1search0" }, context);
-  assert.deepEqual(bodies.map(({ commands }) => commands), [
-    { search_query: [{ q: "nanocodex" }] },
-    { image_query: [{ q: "rust wasm" }], open: [{ ref_id: "turn1search0" }] },
-  ]);
+  await assert.rejects(() => tool.handler({ search_query: { q: "query" } }, context), /array/);
+  await assert.rejects(() => tool.handler({ image_query: "rust wasm" }, context), /array/);
+  await assert.rejects(() => tool.handler({ screenshot: [{ ref_id: "pdf", pageno: -1 }] }, context), /unsigned/);
+  const commands = {
+    screenshot: [{ ref_id: "pdf", pageno: 2 }],
+    sports: [{ tool: "sports", fn: "schedule", league: "nba" }, { fn: "standings", league: "nfl" }],
+    search_query: Array.from({ length: 5 }, (_, i) => ({ q: String(i) })),
+  };
+  assert.equal(await tool.handler(commands, context), "");
+  await tool.handler({ unknown: true, open: null }, context);
+  assert.deepEqual(bodies.map(({ commands }) => commands), [commands, {}]);
 });
 
 test("web and image generation default to the standard same-origin host routes", async () => {
