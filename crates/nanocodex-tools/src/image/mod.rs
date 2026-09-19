@@ -32,10 +32,11 @@ const DATA_URL_PREFIX: &str = "data:";
 const PROMPT_IMAGE_PATCH_SIZE: u32 = 32;
 const MAX_PROMPT_IMAGE_INPUT_BYTES: usize = 1024 * 1024 * 1024;
 // Pixel buffers expand independently of compressed file size. Keep ordinary
-// 12 MP RGB/RGBA photos usable in Workers, but reject larger decodes before
-// allocating their pixels. Native hosts retain the image crate's usual budget.
+// 12 MP RGB photos usable in Workers, but reject larger decodes before
+// allocating their pixels. RGBA needs more headroom for source/destination
+// buffers and serialized tool results. Native hosts retain the usual budget.
 #[cfg(target_family = "wasm")]
-const MAX_PROMPT_IMAGE_DECODE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_PROMPT_IMAGE_DECODE_BYTES: u64 = 40 * 1024 * 1024;
 #[cfg(not(target_family = "wasm"))]
 const MAX_PROMPT_IMAGE_DECODE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_IMAGE_CACHE_ENTRIES: usize = 32;

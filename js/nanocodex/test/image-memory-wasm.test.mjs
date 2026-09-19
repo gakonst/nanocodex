@@ -86,19 +86,25 @@ test("real WASM bounds image preparation and completes a normal 12 MP original-d
   const rejectedBytes = wasm.memory.buffer.byteLength;
   assert.ok(rejectedBytes < 32 * 1024 * 1024, `oversized image allocated ${rejectedBytes} WASM bytes`);
 
-  const preparedBytes = {};
-  for (const alpha of [false, true]) {
-    const color = alpha ? "rgba" : "rgb";
-    const output = await inspect(png(4032, 3024, 3_600_000, alpha));
-    assert.equal(output[0].type, "input_image");
-    const prepared = Buffer.from(output[0].image_url.split(",")[1], "base64");
-    assert.equal(prepared.readUInt32BE(16), 3669);
-    assert.equal(prepared.readUInt32BE(20), 2752);
-    assert.equal(prepared[25], alpha ? 6 : 2);
-    preparedBytes[color] = wasm.memory.buffer.byteLength;
-    assert.ok(preparedBytes[color] < 128 * 1024 * 1024,
-      `12 MP ${color} image allocated ${preparedBytes[color]} WASM bytes`);
-  }
+  const output = await inspect(png(4032, 3024, 3_600_000));
+  assert.equal(output[0].type, "input_image");
+  const prepared = Buffer.from(output[0].image_url.split(",")[1], "base64");
+  assert.equal(prepared.readUInt32BE(16), 3669);
+  assert.equal(prepared.readUInt32BE(20), 2752);
+  assert.equal(prepared[25], 2);
+  const preparedBytes = wasm.memory.buffer.byteLength;
+  assert.ok(preparedBytes < 128 * 1024 * 1024,
+    `12 MP RGB image allocated ${preparedBytes} WASM bytes`);
+
+  // The same dimensions in RGBA require a larger source pixel buffer. Reject
+  // before decoding, including after a previous image has grown the allocator.
+  const rgba = await inspect(png(4032, 3024, 3_600_000, true));
+  assert.deepEqual(rgba.map(item => item.type), ["input_text"]);
+  assert.match(rgba[0].text, /image content omitted/);
+  const rgbaRejectedBytes = wasm.memory.buffer.byteLength;
+  assert.equal(rgbaRejectedBytes, preparedBytes,
+    "over-budget RGBA decode must not grow WASM after the RGB image");
+
   // This guards WASM allocation, not the total Worker isolate working set.
-  t.diagnostic(JSON.stringify({ rejectedBytes, preparedBytes }));
+  t.diagnostic(JSON.stringify({ rejectedBytes, preparedBytes, rgbaRejectedBytes }));
 });
