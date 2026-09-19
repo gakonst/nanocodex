@@ -1,10 +1,24 @@
 {
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "code": { "type": "string", "description": "JavaScript to execute using the initialized CUA runtime." },
-    "title": { "type": "string", "description": "Short user-facing description of what the code does.", "minLength": 1 },
-    "timeout_ms": { "type": "integer", "description": "Optional caller-selected execution timeout in milliseconds. Omitted calls have no artificial deadline.", "minimum": 1 }
+    "code": {
+      "description": "JavaScript to execute using the initialized cua_repl runtime.",
+      "type": "string"
+    },
+    "timeout_ms": {
+      "description": "Optional execution timeout in milliseconds. Defaults to 30000 (30 seconds) when omitted.",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "title": {
+      "description": "Short user-facing description of what the code does.",
+      "maxLength": 80,
+      "minLength": 1,
+      "type": "string"
+    }
   },
-  "required": ["code"],
-  "additionalProperties": false
+  "required": [
+    "code"
+  ],
+  "type": "object"
 }
