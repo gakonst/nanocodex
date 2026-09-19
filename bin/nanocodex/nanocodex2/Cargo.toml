@@ -110,5 +110,16 @@ path = "../tests/account_auth.rs"
 name = "nanocodex2_tui_lifecycle"
 path = "../tests/nanocodex2_tui_lifecycle.rs"
 
-[lints]
-workspace = true
+# Native host boundaries below use narrowly scoped unsafe allowances, as in
+# nanocodex-hand. Cargo cannot override one inherited workspace lint, so retain
+# the remaining workspace lint settings explicitly here.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+missing-const-for-fn = "warn"
+use-self = "warn"
+redundant-clone = "warn"
+large-enum-variant = "allow"
+result-large-err = "allow"

@@ -84,8 +84,11 @@ trait Device: Send {
     fn write_state(&mut self, state: &GamepadState) -> io::Result<()>;
 }
 struct Uinput(File);
+// Keep the native boundary private to this module's fixed scalar uinput calls.
+#[allow(unsafe_code)]
 fn ioctl(file: &File, request: libc::c_ulong, value: i32) -> io::Result<()> {
-    // The requests are Linux uinput scalar ioctls, not pointer-bearing requests.
+    // SAFETY: all callers use Linux uinput scalar/no-argument ioctl constants,
+    // never pointer-bearing requests. The borrowed File keeps the fd alive.
     if unsafe { libc::ioctl(file.as_raw_fd(), request, value) } < 0 {
         Err(io::Error::last_os_error())
     } else {

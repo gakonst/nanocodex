@@ -30,6 +30,8 @@ mod screen_audio;
 mod screen_broadcast;
 #[cfg(target_os = "linux")]
 mod screen_gamepad;
+#[cfg(target_os = "linux")]
+mod screen_host;
 mod screen_ice;
 #[cfg(target_os = "macos")]
 mod screen_macos;
@@ -125,6 +127,16 @@ enum Command {
     #[cfg(target_os = "linux")]
     #[command(name = "__hand-desktop", hide = true)]
     HandDesktop(screen_native::DesktopCommand),
+    /// Share an existing Wayland session through the shared Rust publisher.
+    #[cfg(target_os = "linux")]
+    #[command(name = "wayland-host", hide = true)]
+    WaylandHost(screen_host::HostCommand),
+    #[cfg(target_os = "linux")]
+    #[command(name = "desktop-host", hide = true)]
+    DesktopHost(screen_host::HostCommand),
+    #[cfg(target_os = "linux")]
+    #[command(name = "server-host", hide = true)]
+    ServerHost(screen_host::HostCommand),
     /// Serve a bounded pool of on-demand libkrun VM hands.
     Host(Host),
     /// Create a managed agent and print its receipt as JSON.
@@ -548,15 +560,54 @@ fn try_main() -> Result<(), ManagedError> {
             .map_err(|e| ManagedError::Configuration(e.to_string()));
     }
     let cli = Cli::parse();
+    #[cfg(target_os = "linux")]
+    let (cli, prepared) = {
+        let mut cli = cli;
+        let host = match cli.command.take() {
+            Some(Command::WaylandHost(args)) => Some(args.prepare(screen_host::Mode::Wayland)?),
+            Some(Command::DesktopHost(args)) => Some(args.prepare(screen_host::Mode::Desktop)?),
+            Some(Command::ServerHost(args)) => Some(args.prepare(screen_host::Mode::Server)?),
+            other => {
+                cli.command = other;
+                None
+            }
+        };
+        let prepared = if let Some((prepared, environment)) = host {
+            // SAFETY: only standalone process startup reaches this point. No
+            // Tokio, capture, audio, or provider threads have been started yet.
+            for (key, value) in environment {
+                #[allow(unsafe_code)]
+                unsafe {
+                    std::env::set_var(key, value);
+                }
+            }
+            Some(prepared)
+        } else {
+            None
+        };
+        (cli, prepared)
+    };
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| ManagedError::Configuration(format!("failed to start Tokio: {error}")))?
-        .block_on(run(cli))
+        .block_on(async move {
+            #[cfg(target_os = "linux")]
+            if let Some(prepared) = prepared {
+                return screen_host::serve(prepared).await;
+            }
+            run(cli).await
+        })
 }
 
 async fn run(cli: Cli) -> Result<(), ManagedError> {
     let command = match cli.command {
+        #[cfg(target_os = "linux")]
+        Some(Command::WaylandHost(_) | Command::DesktopHost(_) | Command::ServerHost(_)) => {
+            return Err(ManagedError::Configuration(
+                "standalone host must initialize before runtime startup".into(),
+            ));
+        }
         Some(Command::Computer(command)) => {
             return command.run().await.map_err(ManagedError::Configuration);
         }
@@ -684,6 +735,10 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         ),
         Some(Command::Cancel(command)) => {
             write_json(&client.cancel(&command.agent_id, &command.turn_id).await?)
+        }
+        #[cfg(target_os = "linux")]
+        Some(Command::WaylandHost(_) | Command::DesktopHost(_) | Command::ServerHost(_)) => {
+            unreachable!("handled before runtime startup")
         }
         Some(Command::VmRunConfig(_)) => unreachable!("handled before managed client setup"),
         Some(Command::VmCloneImage { .. }) => unreachable!("handled before managed client setup"),

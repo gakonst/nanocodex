@@ -3,7 +3,6 @@
 use nix::libc;
 use std::{
     io::{self, Write},
-    os::fd::{AsRawFd, FromRawFd},
     process::Stdio,
     time::Duration,
 };
@@ -167,13 +166,17 @@ async fn forward<M: tokio::io::AsyncRead + Unpin, V: tokio::io::AsyncRead + Unpi
 // Waymote replaces helpers with SIGKILL during resize. The encoder must not
 // retain inherited stdout and mix old frames into its replacement's stream.
 fn parent_bound(command: &mut tokio::process::Command) -> &mut tokio::process::Command {
-    let parent = unsafe { libc::getpid() };
+    let parent = nix::unistd::getpid();
+    // SAFETY: this post-fork hook only performs Linux prctl/getppid/_exit
+    // syscalls and errno reads; it never allocates or takes a lock. The parent
+    // check closes the race where the parent exits before PDEATHSIG is armed.
+    #[allow(unsafe_code)]
     unsafe {
         command.pre_exec(move || {
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) < 0 {
                 return Err(io::Error::last_os_error());
             }
-            if libc::getppid() != parent {
+            if nix::unistd::getppid() != parent {
                 libc::_exit(1);
             }
             Ok(())
@@ -278,11 +281,12 @@ pub(crate) async fn run(original: Vec<String>) -> Result<()> {
     let (metadata, _) = tokio::select! {result=listener.accept()=>result?,result=child.wait()=>{return Err(format!("encoder exited before metadata: {result:?}").into());}};
     // File writes bypass Rust stdout buffering. Each syscall contains a complete
     // <=PIPE_BUF record; never resume a short record across encoder restarts.
-    let fd = unsafe { libc::fcntl(io::stdout().as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error().into());
-    }
-    let mut stdout = unsafe { std::fs::File::from_raw_fd(fd) };
+    let fd = nix::unistd::dup(io::stdout())?;
+    nix::fcntl::fcntl(
+        &fd,
+        nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
+    )?;
+    let mut stdout = std::fs::File::from(fd);
     let result = forward(metadata, video, &mut stdout).await;
     if result.is_err() {
         let _ = child.kill().await;

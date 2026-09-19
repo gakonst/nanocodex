@@ -7,7 +7,6 @@ use super::{
     screen_wayland_input::{Input, record},
 };
 use nanocodex_managed::ManagedError;
-use nix::libc;
 use serde_json::{Value, json};
 use std::{
     process::Stdio,
@@ -103,7 +102,7 @@ impl Platform {
         let (ready, mut readiness) = watch::channel(false);
         let running = state.clone();
         let worker = tokio::spawn(async move {
-            let _group = group;
+            let mut group = group;
             tokio::select! {
                 _=stopped.changed()=>{},
                 result=frames::read(reader,|frame| {
@@ -117,9 +116,7 @@ impl Platform {
             let _ = running.release().await;
             running.input.lock().await.pipe.take();
             // Kill the process group before waiting: helpers may otherwise keep pipes open.
-            unsafe {
-                libc::kill(-_group.0, libc::SIGKILL);
-            }
+            group.kill();
             let _ = child.wait().await;
         });
         let platform = Self {
@@ -235,11 +232,21 @@ impl Drop for Platform {
     }
 }
 struct ProcessGroup(i32);
+impl ProcessGroup {
+    fn kill(&mut self) {
+        if self.0 > 0 {
+            let _ = nix::sys::signal::killpg(
+                nix::unistd::Pid::from_raw(self.0),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+            // Disarm before waiting/reaping so Drop cannot signal a reused PID.
+            self.0 = 0;
+        }
+    }
+}
 impl Drop for ProcessGroup {
     fn drop(&mut self) {
-        unsafe {
-            libc::kill(-self.0, libc::SIGKILL);
-        }
+        self.kill();
     }
 }
 impl State {
