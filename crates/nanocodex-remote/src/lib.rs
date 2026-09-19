@@ -1,8 +1,9 @@
-//! Reusable Hand publisher core, independent of account credentials and OS APIs.
+//! Reusable Hand publisher core, independent of managed-host and OS APIs.
 //!
 //! Platform adapters supply encoded video and speaker PCM through [`CaptureSource`].
-//! The core owns media tasks, WebRTC peers and input ordering. Host authentication,
-//! reconnection, capture permission and native input injection stay with the caller.
+//! Hosts supply checked credentials, capture permission and native input injection.
+//! The core owns media, input lease policy, authenticated signaling, reconnection
+//! and publisher lifecycle.
 pub mod audio;
 pub mod capture;
 pub mod frames;
@@ -15,3 +16,6 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 
 pub mod preparation;
 pub mod target;
+
+pub mod runtime;
+mod tls;
