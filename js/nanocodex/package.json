@@ -192,6 +192,7 @@
   "devDependencies": {
     "@jitl/quickjs-wasmfile-release-asyncify": "0.32.0",
     "binaryen": "132.0.0",
+    "esbuild": "0.28.1",
     "hyparquet-writer": "0.16.6",
     "pkg-pr-new": "0.0.79",
     "quickjs-emscripten-core": "0.32.0",
