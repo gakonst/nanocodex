@@ -387,31 +387,31 @@ final class InboxUITests: XCTestCase {
         capture(app, "same-turn-image-after-history")
     }
 
-    func testSameTurnHistoryKeepsExpandedActivityVisible() {
+    func testSameTurnHistoryKeepsExpandedToolVisible() {
         let app = startupFixture(historyWindow: true, historyMedia: true, historyDelay: 12000)
         let conversation = app.scrollViews["conversation"]
         XCTAssertTrue(conversation.waitForExistence(timeout: 15))
         XCTAssertTrue(conversation.staticTexts["Completed image review."].waitForExistence(timeout: 15))
         let loading = app.descendants(matching: .any)["loading-older"].firstMatch
-        let disclosure = conversation.buttons["activity-disclosure"]
+        let cards = conversation.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "tool-disclosure-"))
         for _ in 0..<8 {
-            if loading.exists && disclosure.isHittable { break }
+            if loading.exists && cards.allElementsBoundByIndex.contains(where: { $0.isHittable }) { break }
             conversation.swipeDown()
         }
         XCTAssertTrue(loading.exists)
-        XCTAssertTrue(disclosure.isHittable)
-        disclosure.tap()
-        let timeline = conversation.scrollViews["activity-timeline"]
-        XCTAssertTrue(timeline.waitForExistence(timeout: 3), app.debugDescription)
-        let steps = timeline.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "activity-step-"))
-        let step = steps.allElementsBoundByIndex.first { $0.isHittable }!
+        guard let step = cards.allElementsBoundByIndex.first(where: { $0.isHittable }) else {
+            return XCTFail("Expected an inline tool card")
+        }
+        step.tap()
         let id = step.identifier, screenY = step.frame.minY
-        capture(app, "same-turn-activity-before-history")
+        XCTAssertEqual(step.value as? String, "Expanded")
+        capture(app, "same-turn-tool-before-history")
         gone(loading, timeout: 20)
-        let retained = timeline.buttons[id]
-        XCTAssertTrue(retained.isHittable, "The expanded Activity stays under the reader while earlier media arrives")
+        let retained = conversation.buttons[id]
+        XCTAssertTrue(retained.isHittable, "The expanded tool stays under the reader while earlier media arrives")
+        XCTAssertEqual(retained.value as? String, "Expanded")
         XCTAssertEqual(retained.frame.minY, screenY, accuracy: 4)
-        capture(app, "same-turn-activity-after-history")
+        capture(app, "same-turn-tool-after-history")
     }
 
     func testStartupRejectsUnauthorizedRoster() {
@@ -659,67 +659,34 @@ final class InboxUITests: XCTestCase {
             title.tap()
             let conversation = app.scrollViews["conversation"]
             try require(conversation.waitForExistence(timeout: 5), "The conversation did not open")
-            let group = app.otherElements["message-activity-" + turnID]
-            let activity = group.buttons["activity-disclosure"]
-            for _ in 0..<10 {
-                if activity.exists && activity.isHittable { break }
-                conversation.swipeDown()
-            }
-            try require(activity.waitForExistence(timeout: 10) && activity.isHittable, "The turn's Activity did not appear")
-            activity.tap()
-            let timeline = group.scrollViews["activity-timeline"]
-            try require(timeline.waitForExistence(timeout: 5), "Activity did not expand")
             for _ in 0..<30 {
                 if command(commandText).exists && command(commandText).isHittable { break }
-                timeline.swipeUp()
+                conversation.swipeDown()
             }
+            try require(command(commandText).isHittable, "The inline command card did not appear")
+            try require(command(commandText).identifier.contains(turnID), "The command belongs to the requested turn")
         }
         func command(_ text: String) -> XCUIElement {
-            app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Run command,' AND label CONTAINS %@", text)).firstMatch
+            app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'tool-disclosure-' AND label CONTAINS %@", text)).firstMatch
         }
         func revealOutput(_ predicate: NSPredicate, command: XCUIElement) throws {
-            let detailID = command.identifier.replacingOccurrences(of: "activity-step-", with: "activity-detail-")
-            let detail = app.scrollViews[detailID]
-            let turnID = command.identifier.replacingOccurrences(of: "activity-step-", with: "").components(separatedBy: "::")[0]
-            let group = app.otherElements["message-activity-" + turnID]
-            let timeline = group.scrollViews["activity-timeline"]
+            let detailID = command.identifier.replacingOccurrences(of: "tool-disclosure-", with: "tool-detail-")
+            let detail = app.descendants(matching: .any).matching(identifier: detailID).firstMatch
             let conversation = app.scrollViews["conversation"]
             try require(detail.waitForExistence(timeout: 5), "Command details did not expand")
-            // Drag the outer margin, then the timeline margin, so nested scroll views
-            // cannot forward a gesture to the conversation and hide the result.
-            func drag(x: CGFloat, from: CGFloat, to: CGFloat) {
-                let origin = app.coordinate(withNormalizedOffset: .zero)
-                origin.withOffset(CGVector(dx: x, dy: from)).press(forDuration: 0.01,
-                    thenDragTo: origin.withOffset(CGVector(dx: x, dy: to)))
-            }
-            for _ in 0..<6 {
-                let top = timeline.frame.minY
-                let target = max(conversation.frame.minY + 110, 180)
-                if abs(top - target) < 30 { break }
-                let start = app.frame.midY
-                drag(x: 8, from: start, to: start + max(-250, min(250, target - top)))
-            }
-            for _ in 0..<8 {
-                let viewport = timeline.frame.intersection(conversation.frame).intersection(app.frame)
-                let delta = detail.frame.maxY - viewport.maxY + 8
-                if delta <= 12 && detail.frame.minY >= viewport.minY { break }
-                let movement = delta > 0 ? -min(180, delta) : min(180, viewport.minY - detail.frame.minY)
-                drag(x: timeline.frame.minX + 12, from: viewport.midY, to: viewport.midY + movement)
-            }
             let output = detail.staticTexts.matching(predicate).firstMatch
             try require(output.waitForExistence(timeout: 5), "The command result did not contain the expected output")
             func visibleTail() -> Bool {
-                let viewport = detail.frame.intersection(timeline.frame).intersection(conversation.frame).intersection(app.frame)
+                let viewport = conversation.frame.intersection(app.frame)
                 return !viewport.isNull && output.frame.maxY > viewport.minY && output.frame.maxY <= viewport.maxY + 4
             }
             for _ in 0..<40 {
                 if visibleTail() { break }
-                let viewport = detail.frame.intersection(timeline.frame).intersection(conversation.frame).intersection(app.frame)
-                try require(viewport.height > 50, "The command detail viewport was not visible")
-                drag(x: viewport.midX, from: viewport.maxY - 15, to: viewport.minY + 15)
+                conversation.swipeUp()
             }
-            try require(visibleTail(), "The command output tail was not visible")
+            try require(visibleTail(), "The command output tail was not visible in the main conversation scroll")
         }
+
         try openThread(turnID: successTurnID, commandText: "E12_START")
         let success = command("E12_START")
         try require(success.waitForExistence(timeout: 90), "The command card did not appear")
@@ -2111,35 +2078,47 @@ final class InboxUITests: XCTestCase {
         capture(app, "voice-05-ended-durable-chat")
         XCTAssertFalse(app.alerts.firstMatch.exists, "Transcript fixtures never request microphone access")
     }
-    func testReadableToolActivityAndUnlabelledReplies() {
+    func testInlineToolsPreserveReasoningAndCommentarySequence() {
         let app = launch(["NANOCODEX_DEMO_MANY_TOOLS": "1"]); selectInbox(app)
-
-        XCTAssertTrue(app.scrollViews["conversation"].waitForExistence(timeout: 5))
         let conversation = app.scrollViews["conversation"]
-        XCTAssertFalse(conversation.staticTexts["nanocodex"].exists)
-        XCTAssertFalse(conversation.staticTexts["exec_command"].exists)
-        XCTAssertFalse(conversation.staticTexts["Run command"].exists)
-        XCTAssertEqual(conversation.buttons.matching(identifier: "activity-disclosure").count, 1)
-        XCTAssertTrue(conversation.staticTexts["Build the agent inbox"].isHittable)
-        XCTAssertFalse(conversation.staticTexts["Checking the remaining steps."].exists)
-        XCTAssertFalse(conversation.staticTexts["Thinking"].exists)
-        XCTAssertFalse(conversation.staticTexts["Working"].exists)
-        XCTAssertEqual(conversation.buttons["activity-disclosure"].label, "Activity")
-        capture(app, "10-readable-activity")
-        conversation.buttons["activity-disclosure"].tap()
-        let step = conversation.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "activity-step-tool-")).firstMatch
-        XCTAssertTrue(step.waitForExistence(timeout: 3))
-        XCTAssertFalse(conversation.staticTexts["Command"].exists, "Tool payloads need a second disclosure")
-        capture(app, "11-activity-timeline")
-        step.tap()
-        XCTAssertTrue(conversation.staticTexts.matching(identifier: "Command").firstMatch.waitForExistence(timeout: 3))
-        XCTAssertTrue(conversation.staticTexts.matching(identifier: "Exit code").firstMatch.exists)
-        XCTAssertTrue(conversation.staticTexts.matching(identifier: "swift test --package-path apple/InboxCore").firstMatch.exists)
-        capture(app, "11-activity-details")
-        for _ in 0..<5 { if conversation.buttons["activity-disclosure"].isHittable { break }; conversation.swipeDown() }
-        conversation.buttons["activity-disclosure"].tap()
-        XCTAssertFalse(conversation.staticTexts.matching(identifier: "Run command").firstMatch.exists)
-        XCTAssertTrue(conversation.staticTexts["Build the agent inbox"].isHittable)
+        XCTAssertTrue(conversation.waitForExistence(timeout: 5))
+        XCTAssertFalse(conversation.buttons["activity-disclosure"].exists)
+        XCTAssertFalse(conversation.scrollViews["activity-timeline"].exists)
+        let tools = conversation.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "tool-disclosure-tool-"))
+        XCTAssertEqual(tools.count, 3)
+        for tool in tools.allElementsBoundByIndex {
+            XCTAssertEqual(tool.value as? String, "Collapsed")
+        }
+        let reasoning = conversation.staticTexts["Checking the reconnect boundary before changing the implementation."]
+        let commentary = conversation.staticTexts["Checking the remaining steps."]
+        let laterReasoning = conversation.staticTexts["The checks agree. Preparing a concise answer."]
+        for _ in 0..<6 { if reasoning.isHittable { break }; conversation.swipeDown() }
+        XCTAssertTrue(reasoning.isHittable)
+        XCTAssertTrue(commentary.exists)
+        XCTAssertTrue(laterReasoning.exists)
+        let first = tools.element(boundBy: 0)
+        let second = tools.element(boundBy: 1)
+        let third = tools.element(boundBy: 2)
+        XCTAssertLessThan(reasoning.frame.minY, first.frame.minY)
+        XCTAssertLessThan(first.frame.minY, commentary.frame.minY)
+        XCTAssertLessThan(commentary.frame.minY, second.frame.minY)
+        XCTAssertLessThan(second.frame.minY, laterReasoning.frame.minY)
+        XCTAssertLessThan(laterReasoning.frame.minY, third.frame.minY)
+        XCTAssertFalse(conversation.staticTexts["Command"].exists)
+        capture(app, "10-inline-sequence")
+        let cardY = first.frame.minY
+        first.tap()
+        XCTAssertTrue(conversation.staticTexts["Command"].waitForExistence(timeout: 3))
+        XCTAssertEqual(first.frame.minY, cardY, accuracy: 4, "Expanding details keeps the tapped card in place")
+        XCTAssertTrue(conversation.staticTexts["Exit code"].exists)
+        XCTAssertEqual(second.value as? String, "Collapsed", "Each tool expands independently")
+        XCTAssertEqual(third.value as? String, "Collapsed")
+        capture(app, "11-inline-tool-details")
+        for _ in 0..<5 { if first.isHittable { break }; conversation.swipeDown() }
+        first.tap()
+        gone(conversation.staticTexts["Command"])
+        XCTAssertEqual(first.value as? String, "Collapsed")
+        XCTAssertTrue(commentary.exists, "Collapsing a tool preserves inline commentary")
     }
     func testSendButtonBecomesStopOnlyForAnEmptyRunningDraft() {
         let app = launch(); selectInbox(app)
@@ -2286,11 +2265,11 @@ final class InboxUITests: XCTestCase {
         capture(app, "native-media-restores-draft")
     }
 
-    func testGeneratedAttachmentsStayVisibleWhileInternalToolOutputStaysInActivity() {
+    func testGeneratedAttachmentsStayVisibleWhileToolDetailsAreCollapsed() {
         func assertNoInternalOutput(_ scope: XCUIElement, file: StaticString = #filePath, line: UInt = #line) {
             for marker in ["INTERNAL_MEMORY_RECORD", "INTERNAL_COMMAND_OUTPUT", "INTERNAL_WAIT_OUTPUT", "Script completed", "\"memories\""] {
                 XCTAssertFalse(scope.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", marker)).firstMatch.exists,
-                               "Internal tool output escaped Activity: " + marker, file: file, line: line)
+                               "Internal tool output escaped collapsed card: " + marker, file: file, line: line)
             }
         }
         let app = launch(["NANOCODEX_DEMO_GENERATED_OUTPUTS": "1"])
@@ -2303,7 +2282,7 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(conversation.waitForExistence(timeout: 5))
         XCTAssertTrue(conversation.staticTexts["Generated chart"].waitForExistence(timeout: 10))
         XCTAssertTrue(conversation.staticTexts["The three bars are ready to review."].exists)
-        XCTAssertTrue((conversation.buttons["activity-disclosure"].value as? String ?? "").contains("Collapsed"))
+        XCTAssertFalse(conversation.buttons["activity-disclosure"].exists)
         assertNoInternalOutput(conversation)
         let images = conversation.descendants(matching: .any).matching(identifier: "generated-image-loaded")
         XCTAssertEqual(images.count, 1, "Inner MCP and outer exec results share one visible image")
@@ -2320,16 +2299,14 @@ final class InboxUITests: XCTestCase {
         XCTAssertFalse(conversation.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "UklGR")).firstMatch.exists)
         assertNoInternalOutput(conversation)
         capture(app, "generated-output-audio-and-file")
-        let activity = conversation.buttons["activity-disclosure"]
-        for _ in 0..<6 { if activity.isHittable { break }; conversation.swipeDown() }
-        activity.tap()
-        let memory = conversation.buttons["activity-step-generated-turn::tool:memory"]
-        XCTAssertTrue(memory.waitForExistence(timeout: 5))
+        let memory = conversation.buttons["tool-disclosure-generated-turn::tool:memory"]
+        for _ in 0..<10 { if memory.isHittable { break }; conversation.swipeDown() }
+        XCTAssertTrue(memory.isHittable)
         memory.tap()
         XCTAssertTrue(conversation.staticTexts["INTERNAL_MEMORY_RECORD"].waitForExistence(timeout: 5), "Tool details remain available when explicitly opened")
-        capture(app, "memory-details-in-activity")
-        for _ in 0..<6 { if activity.isHittable { break }; conversation.swipeDown() }
-        activity.tap()
+        capture(app, "memory-inline-details")
+        for _ in 0..<6 { if memory.isHittable { break }; conversation.swipeDown() }
+        memory.tap()
         assertNoInternalOutput(conversation)
     }
 
@@ -2338,9 +2315,8 @@ final class InboxUITests: XCTestCase {
 
         let conversation = app.scrollViews["conversation"]
         XCTAssertTrue(conversation.waitForExistence(timeout: 5))
-        conversation.buttons["activity-disclosure"].tap()
-        conversation.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "activity-step-thinking-")).firstMatch.tap()
-        let detail = conversation.scrollViews.matching(NSPredicate(format: "identifier BEGINSWITH %@", "activity-detail-thinking-")).firstMatch
+        XCTAssertFalse(conversation.buttons["activity-disclosure"].exists)
+        let detail = conversation
         XCTAssertTrue(detail.staticTexts["Reasoning check"].waitForExistence(timeout: 5))
         XCTAssertTrue(detail.staticTexts["Check both paths and answer before continuing."].exists)
         XCTAssertTrue(detail.staticTexts["Preserve the draft"].exists)
@@ -2457,10 +2433,10 @@ final class InboxUITests: XCTestCase {
 
         XCTAssertTrue(app.scrollViews["conversation"].waitForExistence(timeout: 5))
         let conversation = app.scrollViews["conversation"]
-        XCTAssertEqual(conversation.buttons["activity-disclosure"].label, "Activity")
-        XCTAssertTrue((conversation.buttons["activity-disclosure"].value as? String ?? "").contains("1 failed"), "Failed calls stay discoverable without opening activity")
-        conversation.buttons["activity-disclosure"].tap()
-        conversation.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "activity-step-tool-")).firstMatch.tap()
+        let tool = conversation.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "tool-disclosure-tool-")).firstMatch
+        XCTAssertTrue(tool.waitForExistence(timeout: 5))
+        XCTAssertTrue(tool.label.contains("Failed"), "Failed calls stay discoverable on their collapsed card")
+        tool.tap()
         let failure = conversation.staticTexts["The browser disconnected. Reconnect it and try again."]
         let visible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: failure)
         XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed)

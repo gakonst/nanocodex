@@ -2,7 +2,7 @@ import XCTest
 @testable import InboxCore
 
 final class ProtocolTests: XCTestCase {
-    func testActivityCoalescesPhasesAndSubagentsWithoutHidingAnswers() throws {
+    func testFeedPreservesPhasesSubagentsAndChronology() throws {
         func output(_ cursor: String, _ type: String, _ text: String, phase: String? = nil, agent: String? = nil) throws -> AgentEvent {
             var payload: [String: JSON] = ["text": .string(text)]
             if let phase { payload["phase"] = .string(phase); payload["item_id"] = .string(phase) }
@@ -15,9 +15,9 @@ final class ProtocolTests: XCTestCase {
                       try output("3", "assistant.delta", "Checking sources.", phase: "commentary"),
                       try output("4", "assistant.delta", "A helper update.", agent: "helper")]
         let live = ConversationItem.group(transcript(events), activeTurns: ["t"])
-        XCTAssertEqual(live.count, 2)
+        XCTAssertEqual(live.count, 4)
         let groupID = try XCTUnwrap(live.last?.id)
-        XCTAssertEqual(live.last?.activity.count, 3)
+        XCTAssertEqual(live.compactMap(\.message).map(\.role), ["You", "Thinking", "Agent", "Agent"])
         XCTAssertEqual(live.last?.isRunning, true)
         // A queued acceptance must not split the first response or absorb its work.
         events.append(try event("5", "turn_accepted", ["turn_id": .string("next:turn"), "input": .string("Follow up")]))
@@ -27,11 +27,59 @@ final class ProtocolTests: XCTestCase {
         let rows = transcript(events)
         let grouped = ConversationItem.group(rows)
         XCTAssertEqual(grouped.map(\.id).filter { $0 == groupID }.count, 1)
-        XCTAssertEqual(grouped.compactMap(\.message).map(\.text), ["Find the answer", "The answer", "Follow up"])
+        XCTAssertEqual(grouped.compactMap(\.message).map(\.text), ["Find the answer", "Compare sources.", "Checking sources.", "A helper update.", "Follow up", "The answer"])
         XCTAssertFalse(grouped.contains(where: \.isRunning))
         XCTAssertEqual(rows.filter { $0.phase == "commentary" }.map(\.text), ["Checking sources."])
         XCTAssertEqual(try JSONDecoder().decode([TranscriptRow].self, from: JSONEncoder().encode(rows)), rows)
         XCTAssertEqual(ConversationItem.group([.init(id: "legacy", role: "Agent", text: "An untagged answer")]).first?.message?.text, "An untagged answer")
+    }
+
+    func testDistinctModelCallsDoNotMergeCommentaryAcrossTools() throws {
+        func delta(_ cursor: String, _ call: Double, _ text: String) throws -> AgentEvent {
+            try event(cursor, "event", ["event": .object(["type": .string("assistant.delta"), "payload": .object([
+                "text": .string(text), "phase": .string("commentary"), "model_call_index": .number(call)])])])
+        }
+        let events = try [delta("1", 0, "Before"),
+            event("2", "event", ["event": .object(["type": .string("tool.call"), "payload": .object(["call_id": .string("c"), "tool": .string("read")])])]),
+            delta("3", 1, "After"), delta("4", 1, " tool")]
+        let rows = transcript(events)
+        XCTAssertEqual(rows.map(\.role), ["Agent", "Tool", "Agent"])
+        XCTAssertEqual(rows.map(\.text), ["Before", rows[1].text, "After tool"])
+        XCTAssertEqual(rows.last?.cursor?.rawValue, "3")
+    }
+
+    func testUnidentifiedCommentaryRestartsAfterToolCall() throws {
+        func inner(_ cursor: String, _ type: String, _ payload: JSON) throws -> AgentEvent {
+            try event(cursor, "event", ["event": .object(["type": .string(type), "payload": payload])])
+        }
+        let rows = try transcript([
+            inner("1", "assistant.delta", .object(["text": .string("Before"), "phase": .string("commentary")])),
+            inner("2", "tool.call", .object(["call_id": .string("c"), "tool": .string("read")])),
+            inner("3", "assistant.delta", .object(["text": .string("After"), "phase": .string("commentary")]))])
+        XCTAssertEqual(rows.map(\.role), ["Agent", "Tool", "Agent"])
+        XCTAssertEqual(rows.first?.text, "Before")
+        XCTAssertFalse(rows[0].running)
+        XCTAssertEqual(rows.last?.text, "After")
+    }
+
+    func testReasoningRestartsAfterToolsAndSteeringNoiseIsOmitted() throws {
+        func inner(_ cursor: String, _ type: String, _ payload: JSON) throws -> AgentEvent {
+            try event(cursor, "event", ["event": .object(["type": .string(type), "payload": payload])])
+        }
+        let events = try [
+            inner("1", "reasoning.summary.delta", .object(["text": .string("Before")])),
+            inner("2", "tool.call", .object(["call_id": .string("one"), "tool": .string("read")])),
+            inner("3", "reasoning.summary.delta", .object(["text": .string("After")])),
+            inner("4", "run.steered", .object([:])),
+            inner("5", "tool.result", .object(["call_id": .string("one"), "tool": .string("read"), "result": .string("Done")]))
+        ]
+        let live = transcript(Array(events.prefix(3)))
+        let finished = transcript(events + events)
+        XCTAssertEqual(finished.map(\.role), ["Thinking", "Tool", "Thinking"])
+        XCTAssertEqual(finished.map(\.id), live.map(\.id))
+        XCTAssertEqual(finished.filter { $0.role == "Thinking" }.map(\.text), ["Before", "After"])
+        XCTAssertFalse(finished[0].running)
+        XCTAssertFalse(finished[1].running)
     }
 
     func testStreamedAnswerSurvivesInterleavedEventsAndFinalization() throws {
@@ -57,7 +105,7 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(try answer().id, identity)
         XCTAssertEqual(try answer().text, "Hello world")
         let terminalOnly = events + [try event("40", "turn_completed", ["final_message": .string("Hello world!")])]
-        XCTAssertEqual(ConversationItem.group(transcript(terminalOnly)).compactMap(\.message).map(\.text), ["Hello world!"])
+        XCTAssertEqual(ConversationItem.group(transcript(terminalOnly)).compactMap(\.message).map(\.text), ["Hello world!", "Helper"])
         try receive(4, "assistant.delta", " update", agent: "helper")
         try receive(5, "assistant.message", "Hello world!")
         XCTAssertEqual(try answer().text, "Hello world!")
@@ -65,7 +113,7 @@ final class ProtocolTests: XCTestCase {
         try receive(6, "assistant.message", "Helper update", agent: "helper")
         events.append(try event("7", "turn_completed", ["final_message": .string("Hello world!")]))
         let answers = ConversationItem.group(transcript(events + events)).compactMap(\.message)
-        XCTAssertEqual(answers.map(\.text), ["Hello world!"])
+        XCTAssertEqual(answers.map(\.text), ["Hello world!", "Helper update"])
         XCTAssertEqual(answers.first?.id, identity)
     }
 

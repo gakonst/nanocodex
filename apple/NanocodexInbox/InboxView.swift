@@ -1319,12 +1319,8 @@ private struct ConversationMessageContent: View, Equatable {
             if row.role == "You" { Spacer(minLength: 44) }
             VStack(alignment: .leading, spacing: 10) {
                 if row.role == "Thinking" {
-                    DisclosureGroup {
-                        ChatMarkdown(text: row.text)
-                    } label: {
-                        if row.running { ProgressView().controlSize(.mini).accessibilityLabel("Thinking") }
-                        else { Text("Thought process") }
-                    }.font(.system(size: 13)).foregroundStyle(Ink.muted)
+                    ChatMarkdown(text: row.text, compact: true)
+                        .foregroundStyle(Ink.muted)
                 } else if row.role == "You", let content = ContextPrompt.separate(row.text) {
                     Text(content.request).font(.body).lineSpacing(3).textSelection(.enabled)
                     DisclosureGroup("Captured context (\(content.captures.count))") {
@@ -1412,11 +1408,11 @@ private struct ConversationRenderedItem: Identifiable, Equatable {
     var message: TranscriptRow? { content?.message }
     static func project(_ groups: [ConversationItem], outputs: [String: [ChatGeneratedOutput]]) -> [Self] {
         var result: [Self] = []
+        var seenByTurn: [String: Set<String>] = [:]
         for group in groups {
             result.append(Self(id: group.id, content: group))
-            var seen = Set<String>()
             for row in group.activity {
-                for output in outputs[row.id] ?? [] where seen.insert(output.id).inserted {
+                for output in outputs[row.id] ?? [] where seenByTurn[row.turnID ?? row.id, default: []].insert(output.id).inserted {
                     result.append(Self(id: group.id + ":output:" + output.id, output: output, sourceRowID: row.id))
                 }
             }
@@ -1506,23 +1502,8 @@ private struct ConversationContentView: View {
         let visible = rowGeometry.frames.filter { revision.itemsByID[$0.key] != nil && $0.value.maxY > 0 && $0.value.minY < viewport.size.height }
         let sourceRows = visible.keys.compactMap { revision.itemsByID[$0]?.sourceRowID }
         model.protectHistoryRows(Set(visible.keys).union(sourceRows))
-        // Collapsed Activity labels are not media reading anchors. Expanded
-        // timelines retain the visible step when earlier work arrives.
-        let stable = visible.filter {
-            guard let item = revision.itemsByID[$0.key] else { return false }
-            return item.output != nil || item.message != nil || rowGeometry.expandedActivity.contains(item.id)
-        }
-        guard let first = (stable.isEmpty ? visible : stable).min(by: { $0.value.minY < $1.value.minY }) else { return }
-        if rowGeometry.expandedActivity.contains(first.key),
-           let group = revision.itemsByID[first.key]?.content,
-           let timeline = rowGeometry.frames[first.key + ":timeline"],
-           let child = group.activity.compactMap({ row -> (String, CGRect)? in
-               guard let frame = rowGeometry.frames[row.id], frame.intersects(timeline),
-                     frame.maxY > 0, frame.minY < viewport.size.height else { return nil }
-               return (row.id, frame)
-           }).min(by: { $0.1.minY < $1.1.minY }) {
-            historyRestore = (first.key, child.1.minY, child.0)
-        } else { historyRestore = (first.key, first.value.minY, nil) }
+        guard let first = visible.min(by: { $0.value.minY < $1.value.minY }) else { return }
+        historyRestore = (first.key, first.value.minY, nil)
     }
     private func loadHistory(_ direction: HistoryDirection, in viewport: GeometryProxy) {
         guard model.focusedConversationIdentity == identity, pendingReadingRestore == nil,
@@ -1629,14 +1610,17 @@ private struct ConversationContentView: View {
                                         .padding(.bottom, 12)
                                 }
                             }
-                            ConversationActivityView(item: content, onExpansion: { expanded in
-                                if expanded { rowGeometry.expandedActivity.insert(content.id) }
-                                else {
-                                    rowGeometry.expandedActivity.remove(content.id)
-                                    if pendingReadingRestore?.rowID == content.id { pendingReadingRestore = nil }
+                            ForEach(content.activity) { row in
+                                ConversationToolCard(row: row, live: content.isRunning) {
+                                    // Opening details is a reading action. Keep the
+                                    // tapped card in place instead of following the bottom.
+                                    followsLatest = false
+                                    pendingReadingRestore = rowGeometry.frames[item.id].map {
+                                        .init(atLatest: false, rowID: item.id, offsetY: $0.minY)
+                                    }
+                                    if historyRequestInFlight { rememberHistoryPosition(in: viewport) }
                                 }
-                                if historyRequestInFlight { rememberHistoryPosition(in: viewport) }
-                            }, onInteraction: { pendingReadingRestore = nil })
+                            }
                         }
                         }.id(item.id)
                             .background(GeometryReader { geometry in
@@ -1835,7 +1819,7 @@ private struct InboxGeneratedOutputView: View, Equatable {
                 let captured = results
                 let parsed = await Task.detached(priority: .utility) {
                     // This also applies to replayed rows that used to opt exec
-                    // output into chat. Tool text belongs inside Activity.
+                    // output into chat. Tool text belongs inside its disclosure.
                     var seen = Set<String>()
                     return captured.flatMap { ChatGeneratedOutput.parse(results: $0) }
                         .filter { seen.insert($0.id).inserted }
@@ -1850,7 +1834,6 @@ private struct InboxGeneratedOutputView: View, Equatable {
 // pixel must not invalidate the conversation's SwiftUI body.
 private final class ConversationRowGeometry {
     var frames: [String: CGRect] = [:]
-    var expandedActivity = Set<String>()
     var historyRestore: (id: String, offsetY: CGFloat, childID: String?)?
 }
 
@@ -1868,145 +1851,46 @@ private struct ConversationContentPosition: Equatable {
     var isMeasured = false
 }
 
-private struct ConversationActivityView: View {
-    let item: ConversationItem
-    var onExpansion: (Bool) -> Void = { _ in }
-    var onInteraction: () -> Void = {}
+private struct ConversationToolCard: View {
+    let row: TranscriptRow
+    let live: Bool
+    var onToggle: () -> Void
     @State private var expanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var visibleStep: String?
-    private var failures: Int { item.activity.filter { $0.tool?.status == "Failed" }.count }
-    private var headline: String {
-        guard item.isRunning else { return "Activity" }
-        let current = item.activity.last(where: \.running) ?? item.activity.last
-        return current?.tool?.title ?? (current?.role == "Thinking" ? "Thinking" : "Working")
-    }
-    private var summary: String {
-        let calls = item.activity.filter { $0.tool != nil }.count
-        let thoughts = item.activity.filter { $0.role == "Thinking" }.count
-        var parts: [String] = []
-        if thoughts > 0 { parts.append("Reasoning") }
-        if calls > 0 { parts.append("\(calls) tool call\(calls == 1 ? "" : "s")") }
-        if parts.isEmpty { parts.append(item.activity.isEmpty ? "Getting started" : "\(item.activity.count) steps") }
-        return parts.joined(separator: " · ")
+    private var failed: Bool { row.tool?.status == "Failed" }
+    private var status: String {
+        if live { return "Running" }
+        if row.running || row.tool?.status == "Running" { return "Interrupted" }
+        return row.tool?.status ?? "Completed"
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                let opening = !expanded
-                if opening && visibleStep == nil { visibleStep = item.activity.first?.id }
-                // Register the reading anchor before expansion publishes geometry.
-                onExpansion(opening)
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { expanded = opening }
+                onToggle()
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { expanded.toggle() }
             } label: {
-                HStack(spacing: 10) {
-                    Group {
-                        if item.isRunning { ProgressView().controlSize(.small) }
-                        else { Image(systemName: failures > 0 ? "exclamationmark.circle" : "checkmark.circle") }
-                    }.frame(width: 20).foregroundStyle(failures > 0 ? Color.orange : Ink.muted)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(headline).font(.subheadline.weight(.medium)).foregroundStyle(Ink.text)
-                        Text(summary).font(.caption).foregroundStyle(Ink.muted)
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                    if failures > 0 {
-                        Text("\(failures) failed").font(.caption.weight(.medium)).foregroundStyle(.orange)
+                HStack(spacing: 8) {
+                    if live { ProgressView().controlSize(.mini) }
+                    else { Image(systemName: failed ? "exclamationmark.circle" : "terminal") }
+                    Text(row.tool?.title ?? row.text).fontWeight(.medium).lineLimit(1)
+                    if let subject = row.tool?.subject, !subject.isEmpty {
+                        Text(subject).foregroundStyle(Ink.muted).lineLimit(1).truncationMode(.middle)
                     }
-                    if !item.activity.isEmpty {
-                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                            .font(.caption.weight(.semibold)).foregroundStyle(Ink.muted)
-                    }
-                }.frame(minHeight: 44).contentShape(Rectangle())
-            }.buttonStyle(.plain).disabled(item.activity.isEmpty)
-                .accessibilityIdentifier("activity-disclosure")
-                .accessibilityLabel("Activity")
-                .accessibilityValue("\(expanded ? "Expanded" : "Collapsed"), \(headline), \(summary), \(failures) failed")
-                .accessibilityHint(item.activity.isEmpty ? "Waiting for activity" : "Show or hide thinking and tool calls")
-            if expanded && !item.activity.isEmpty {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(item.activity) { row in
-                            ConversationActivityStep(row: row, live: item.isRunning && row.running)
-                                .id(row.id)
-                                .background(GeometryReader { geometry in
-                                    Color.clear.preference(key: ConversationRowFrames.self,
-                                        value: [row.id: geometry.frame(in: .named("conversation-viewport"))])
-                                })
-                        }
-                    }.scrollTargetLayout().padding(.top, 8)
-                }.scrollPosition(id: $visibleStep, anchor: .top)
-                    .frame(maxHeight: 300).fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("activity-timeline")
-                    .background(GeometryReader { geometry in
-                        Color.clear.preference(key: ConversationRowFrames.self,
-                            value: [item.id + ":timeline": geometry.frame(in: .named("conversation-viewport"))])
-                    })
-                    .onScrollPhaseChange { _, phase in
-                        if phase == .tracking || phase == .interacting { onInteraction() }
-                    }
-            }
-        }.padding(.horizontal, 12).padding(.vertical, 6)
-            .background(Ink.surface, in: RoundedRectangle(cornerRadius: 16))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .contain).accessibilityIdentifier("activity-group")
-    }
-}
-
-private struct ConversationActivityStep: View {
-    let row: TranscriptRow
-    let live: Bool
-    @State private var expanded = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    private var failed: Bool { row.tool?.status == "Failed" }
-    private var title: String { row.tool?.title ?? (row.role == "Thinking" ? "Thinking" : "Progress update") }
-    private var subject: String {
-        if let subject = row.tool?.subject { return subject }
-        // A bounded plain preview avoids parsing a growing Markdown document on every token.
-        let firstLine = row.text.prefix(180).split(whereSeparator: \.isNewline).first ?? ""
-        return firstLine.trimmingCharacters(in: CharacterSet(charactersIn: "#*` _"))
-    }
-    private var status: String {
-        if failed { return "Failed" }
-        if live { return "Running" }
-        if row.tool?.status == "Stopped" { return "Stopped" }
-        // A past turn can retain an unfinished tool. Don't claim it completed.
-        if row.running || row.tool?.status == "Running" { return "Interrupted" }
-        return "Completed"
-    }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { expanded.toggle() } } label: {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: failed ? "exclamationmark.circle.fill" : row.role == "Tool" ? "terminal" : "text.alignleft")
-                        .font(.subheadline).foregroundStyle(failed ? Color.orange : Ink.muted)
-                        .frame(width: 20).padding(.top, 3)
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(title).font(.subheadline.weight(.medium)).foregroundStyle(Ink.text)
-                            Spacer(minLength: 4)
-                            if live { ProgressView().controlSize(.mini) }
-                            Text(status).font(.caption2).foregroundStyle(failed ? Color.orange : Ink.muted)
-                        }
-                        if !subject.isEmpty { Text(subject).font(.caption).foregroundStyle(Ink.muted).lineLimit(2).multilineTextAlignment(.leading) }
-                    }
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.caption2.weight(.semibold)).foregroundStyle(Ink.muted).padding(.top, 4)
-                }.padding(.vertical, 10).frame(minHeight: 44).contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityIdentifier("activity-step-" + row.id)
+                    Spacer(minLength: 0)
+                    Text(status).font(.caption2).foregroundStyle(failed ? Color.orange : Ink.muted).lineLimit(1).fixedSize()
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2)
+                }.font(.caption).foregroundStyle(Ink.text)
+                    .frame(minHeight: 44).contentShape(Rectangle())
+            }.buttonStyle(.plain)
+                .accessibilityIdentifier("tool-disclosure-" + row.id)
                 .accessibilityValue(expanded ? "Expanded" : "Collapsed")
             if expanded {
-                ScrollView {
-                    Group {
-                        if row.tool != nil { ToolActivityView(row: row) }
-                        else if row.role == "Thinking" { ChatMarkdown(text: row.text) }
-                        else { Text(row.text).font(.body).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-                    }.padding(12)
-                }.frame(maxHeight: 240).fixedSize(horizontal: false, vertical: true)
-                    .background(Ink.background, in: RoundedRectangle(cornerRadius: 12))
-                    .accessibilityIdentifier("activity-detail-" + row.id)
-                    .padding(.bottom, 10)
+                ToolActivityView(row: row).padding(.vertical, 12)
+                    .accessibilityIdentifier("tool-detail-" + row.id)
             }
-            Divider().opacity(0.4)
-        }.accessibilityElement(children: .contain)
+        }.padding(.horizontal, 12)
+            .background(Ink.surface, in: RoundedRectangle(cornerRadius: 12))
+            .accessibilityElement(children: .contain)
     }
 }
 

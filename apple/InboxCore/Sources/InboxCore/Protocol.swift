@@ -129,6 +129,7 @@ public struct TranscriptRow: Identifiable, Codable, Equatable, Sendable {
     public var agentID: String?
     public var phase: String?
     public var itemID: String?
+    public var modelCallID: String?
     /// Cursor that admitted this row; retained while streamed content changes.
     public var cursor: Cursor?
     public init(id: String, role: String, text: String, detail: String = "", running: Bool = false, tool: ToolPresentation? = nil, images: [String]? = nil) {
@@ -207,22 +208,34 @@ public struct TranscriptProjection: Sendable {
                 }
                 finish(turn, cancelled: envelope.type == "turn_cancelled")
             } else if envelope.type == "turn_failed" || envelope.type == "turn_cancelled" {
-                rows.append(.init(id: id, role: "Status", text: envelope.type == "turn_cancelled" ? "Stopped." : (d["error"].string.isEmpty ? "This turn failed. Open its activity for details." : d["error"].string)))
+                rows.append(.init(id: id, role: "Status", text: envelope.type == "turn_cancelled" ? "Stopped." : (d["error"].string.isEmpty ? "This turn failed." : d["error"].string)))
                 finish(turn, cancelled: envelope.type == "turn_cancelled")
             } else if envelope.type == "event" {
                 let event = d["event"], p = event["payload"], type = event["type"].string
                 let role = type == "reasoning.summary.delta" ? "Thinking" : "Agent"
                 let phase = p["phase"].string.isEmpty ? nil : p["phase"].string
                 let itemID = p["item_id"].string.isEmpty ? nil : p["item_id"].string
+                if ["assistant.delta", "assistant.message", "tool.call", "tool.result", "run.started", "run.completed", "run.failed"].contains(type) {
+                    if let previous = lastStreamRow.removeValue(forKey: .init(turn: turn, agent: agent, role: "Thinking")) {
+                        rows[previous].running = false
+                    }
+                }
+                if type == "tool.call", let previous = lastStreamRow[.init(turn: turn, agent: agent, role: "Agent")],
+                   rows[previous].itemID == nil, rows[previous].modelCallID == nil {
+                    rows[previous].running = false
+                    lastStreamRow.removeValue(forKey: .init(turn: turn, agent: agent, role: "Agent"))
+                }
+                let modelCallID = p["model_call_index"] == .null ? nil : p["model_call_index"].pretty
                 switch type {
                 case "assistant.delta", "reasoning.summary.delta":
                     if let last = lastStreamRow[.init(turn: turn, agent: agent, role: role)], rows[last].running,
-                       rows[last].phase == phase, rows[last].itemID == itemID {
+                       rows[last].phase == phase, rows[last].itemID == itemID, rows[last].modelCallID == modelCallID {
                         rows[last].text += p["text"].string
                     } else { rows.append(.init(id: id, role: role, text: p["text"].string, running: true)) }
                 case "assistant.message":
                     if let last = lastStreamRow[.init(turn: turn, agent: agent, role: "Agent")], rows[last].running,
-                       (phase == nil || rows[last].phase == phase), (itemID == nil || rows[last].itemID == itemID) {
+                       (phase == nil || rows[last].phase == phase), (itemID == nil || rows[last].itemID == itemID),
+                       (modelCallID == nil || rows[last].modelCallID == modelCallID) {
                         if !p["text"].string.isEmpty { rows[last].text = p["text"].string }
                         rows[last].running = false
                     } else { rows.append(.init(id: id, role: "Agent", text: p["text"].string)) }
@@ -235,7 +248,6 @@ public struct TranscriptProjection: Sendable {
                     if p["tool"].string == "write_stdin",
                        let index = terminalSessions[agent + ":" + p["arguments"]["session_id"].pretty] {
                         terminalPolls[prefix + ":tool:" + p["call_id"].string] = index
-                        if p["arguments"]["chars"].string.isEmpty { continue }
                     }
                     let tool = ToolPresentation(name: p["tool"].string, arguments: p["arguments"], metadata: p["metadata"])
                     rows.append(.init(id: prefix + ":tool:" + p["call_id"].string, role: "Tool", text: tool.title, running: true, tool: tool))
@@ -281,11 +293,22 @@ public struct TranscriptProjection: Sendable {
                             rows.append(.init(id: toolID, role: "Tool", text: result.title, running: result.status == "Running", tool: result))
                         }
                     }
-                case "run.steered": rows.append(.init(id: id, role: "Status", text: "Direction updated"))
+                case "run.steered": break
                 case "run.error": rows.append(.init(id: id, role: "Status", text: p["message"].string))
                 default: break
                 }
-                for index in firstNewRow..<rows.count { rows[index].phase = phase; rows[index].itemID = itemID }
+                // A poll invocation ends with its response, even if the process
+                // it observes continues. The original command tracks that process.
+                if type == "tool.result", p["tool"].string == "write_stdin",
+                   let index = toolRows[prefix + ":tool:" + p["call_id"].string]
+                    ?? rows.indices.last(where: { rows[$0].id == prefix + ":tool:" + p["call_id"].string }),
+                   rows[index].tool?.status == "Running" {
+                    rows[index].tool?.status = "Completed"
+                    rows[index].running = false
+                }
+                for index in firstNewRow..<rows.count {
+                    rows[index].phase = phase; rows[index].itemID = itemID; rows[index].modelCallID = modelCallID
+                }
             }
             for index in firstNewRow..<rows.count {
                 rows[index].cursor = envelope.cursor

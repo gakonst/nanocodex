@@ -16,7 +16,7 @@ final class ToolPresentationTests: XCTestCase {
             event("6", 57000, "tool.call", poll),
             event("7", 58000, "tool.result", .object(["call_id": .string("p"), "tool": .string("write_stdin"), "status": .string("failed"), "structured_result": .string("unknown or stale namespace process session")]))
         ])
-        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.count, 2)
         XCTAssertEqual(rows[0].tool?.status, "Failed")
         XCTAssertTrue(rows[0].tool!.output.contains { $0.label == "Output" && $0.value == "START\nunknown or stale namespace process session" })
         XCTAssertTrue(rows[0].tool!.output.contains { $0.label == "Elapsed (seconds)" && $0.value == "57" })
@@ -36,7 +36,10 @@ final class ToolPresentationTests: XCTestCase {
         XCTAssertEqual(running[0].tool?.status, "Running")
         XCTAssertFalse(running[0].tool!.output.contains { $0.label == "Elapsed (seconds)" || $0.label == "Wall time seconds" })
         let finished = transcript(events)
-        XCTAssertEqual(finished.count, 1)
+        XCTAssertEqual(finished.count, 2)
+        XCTAssertEqual(finished[1].id, "t::tool:poll")
+        XCTAssertEqual(finished[1].tool?.status, "Completed")
+        XCTAssertTrue(finished[1].tool!.output.contains { $0.label == "Output" && $0.value == "13 tests passed" })
         XCTAssertEqual(finished[0].tool?.status, "Completed")
         XCTAssertTrue(finished[0].tool!.output.contains { $0.label == "Elapsed (seconds)" && $0.value == "112.089" })
         XCTAssertFalse(finished[0].tool!.output.contains { $0.label == "Wall time seconds" })
@@ -52,15 +55,17 @@ final class ToolPresentationTests: XCTestCase {
             event("3", "tool.call", .object(["call_id": .string("poll"), "tool": .string("write_stdin"), "arguments": .object(["session_id": .number(42)])]), turn: "next"),
         ]
         let running = transcript(start)
-        XCTAssertEqual(running.count, 1)
+        XCTAssertEqual(running.count, 2)
         XCTAssertTrue(running[0].running)
         XCTAssertEqual(running[0].tool?.status, "Running")
         let pending = try event("4", "tool.result", .object(["call_id": .string("poll"), "tool": .string("write_stdin"), "status": .string("completed"), "structured_result": .object(["session_id": .number(42), "output": .string("Compiling second\n")])]), turn: "next")
         XCTAssertEqual(transcript(start + [pending])[0].tool?.status, "Running")
+        XCTAssertEqual(transcript(start + [pending])[1].tool?.status, "Completed")
+        XCTAssertFalse(transcript(start + [pending])[1].running)
         for code in [0.0, 101.0] {
             let finished = try event("4", "tool.result", .object(["call_id": .string("poll"), "tool": .string("write_stdin"), "status": .string("completed"), "structured_result": .object(["exit_code": .number(code), "output": .string("Final result\n")])]), turn: "next")
             let rows = transcript(start + [finished])
-            XCTAssertEqual(rows.count, 1)
+            XCTAssertEqual(rows.count, 2)
             XCTAssertFalse(rows[0].running)
             XCTAssertEqual(rows[0].tool?.status, code == 0 ? "Completed" : "Failed")
             XCTAssertTrue(rows[0].tool!.output.contains { $0.label == "Output" && $0.value == "Compiling first\nFinal result\n" })
@@ -80,7 +85,7 @@ final class ToolPresentationTests: XCTestCase {
             event("4", "tool.result", .object(["call_id": .string("p"), "tool": .string("write_stdin"), "structured_result": .object(["exit_code": .number(0), "output": .string(final)])])),
         ]
         let rows = transcript(events)
-        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.count, 2)
         XCTAssertEqual(rows.first?.tool?.output.first { $0.label == "Output" }?.value, original + final)
     }
 

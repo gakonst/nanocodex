@@ -47,16 +47,17 @@ a background actor with a bounded cache; streamed changes coalesce for 32 ms,
 and cancelled parses cannot replace newer content. The
 `ChatMarkdownParse` Points of Interest signpost measures actual parsing work.
 
-Generated attachments appear directly in conversations, outside
-collapsed Activity. Tool text, memory payloads, and command diagnostics stay
-inside Activity; only assistant replies supply conversation text. The shared
+Commentary and reasoning summaries appear inline in chronological order. Each
+tool call has a compact single-line card with expandable input and result details.
+Generated attachments appear directly after their originating tool card.
+Tool text, memory payloads, and command diagnostics stay inside that disclosure. The shared
 `ChatGeneratedOutput` parser combines raw and structured tool results, including
 emitted `input_text`/`input_image` blocks and MCP images, audio, video, and resources.
 Its default attachment-only policy applies to nested content blocks and resource
 previews too. Images use bounded, cached thumbnails; audio/video have native
 playback controls; provided files can be opened or shared. Embedded text resources
 retain a complete downloadable file. HTML and SVG remain files. Unsupported
-device-local resource identities show an unavailable message, and Activity hides
+device-local resource identities show an unavailable message, and tool details hide
 embedded binary data. Result parsing and image decoding stay outside view bodies,
 and repeated inner/outer tool outputs share a stable content identity.
 
@@ -170,8 +171,7 @@ transcript and upward pulls do not switch agents or create conversations.
 Streamed responses follow the bottom while you are reading the latest output. Scrolling
 back pauses following and preserves your reading position. A small circular down-arrow
 above the composer returns to the latest messages and resumes following, including
-when newer history must first load. Working activity appears as a compact inline
-indicator; details expand when activity is available. Scheduled jobs and Settings use full-page
+when newer history must first load. Each tool call appears as a compact inline card with expandable details. Scheduled jobs and Settings use full-page
 navigation with a Back button. Agent updates refresh automatically without a
 refresh button.
 
@@ -625,9 +625,9 @@ scope and never connects to the account service. Use `ChatMarkdownParse` Points
 of Interest with Time Profiler to inspect actual parsing during this journey;
 simulator metrics do not represent physical-device input latency.
 
-Thinking, tool calls, explicit progress commentary, and subagent updates share one compact **Activity** card per turn. While running, the header identifies the current action with a native spinner. A quiet reasoning/tool-count summary remains after completion; failed-call counts stay visible even when collapsed. Expand once for a bounded timeline with per-step state and subject, then expand a step for rich thinking, inputs, and results. Content is created only when expanded, and text previews are bounded without Markdown parsing. Final answers, generated attachments, and errors remain outside Activity. Commands retain code formatting and structured results use readable fields. Explicit accessibility expansion values accompany the controls; opening activity preserves the reader's position when older history arrives.
+Thinking summaries, progress commentary, subagent updates, and final answers remain visible inline in chronological order. Each tool call occupies its own compact, single-line card showing its action, subject, and state. Tap a card to expand its inputs and results in the main conversation scroll. Commands retain code formatting and structured results use readable fields. Generated attachments and secure Vault forms remain visible outside the tool disclosure. Cards keep their identities when results arrive, and explicit accessibility expansion values accompany each control.
 
-Images and videos open in native Quick Look, including original uploads, draft attachments, and generated media. Original files download only when opened; the conversation uses bounded thumbnails with stable loading heights. Generated media has independent, stable transcript rows; it is projected with its history page so earlier outputs within the same turn cannot arrive as a second layout insertion. Scrolling toward earlier messages prefetches one cursor-bound page within two viewports of the top, without inserting it or moving the reader. Crossing the load boundary reuses that request and presents the page without the live-stream batching delay. Geometry updates reuse an item index and only recalculate history retention when the visible selection changes. Reconnect controls do not change the transcript viewport, and history insertions cannot reverse the inferred swipe direction. One history insertion consumes the direct scroll direction that triggered it; deceleration and bounce-back do not establish a new paging direction. Expanded Activity retains the visible tool step while earlier work arrives, even when the timeline changes height. Legacy sampled video frames stay grouped inside one attachment and open as a native preview collection. Attachment descriptors, echoed user history, and image-inspection results do not become generated replies. Remote screens use UIScrollView/AppKit magnification: pinch to zoom, pan locally while watching, or use two fingers to pan a magnified screen while controlling its pointer with one finger.
+Images and videos open in native Quick Look, including original uploads, draft attachments, and generated media. Original files download only when opened; the conversation uses bounded thumbnails with stable loading heights. Generated media has independent, stable transcript rows; it is projected with its history page so earlier outputs within the same turn cannot arrive as a second layout insertion. Scrolling toward earlier messages prefetches one cursor-bound page within two viewports of the top, without inserting it or moving the reader. Crossing the load boundary reuses that request and presents the page without the live-stream batching delay. Geometry updates reuse an item index and only recalculate history retention when the visible selection changes. Reconnect controls do not change the transcript viewport, and history insertions cannot reverse the inferred swipe direction. One history insertion consumes the direct scroll direction that triggered it; deceleration and bounce-back do not establish a new paging direction. Expanded tool cards retain their reading position while earlier work arrives. Legacy sampled video frames stay grouped inside one attachment and open as a native preview collection. Attachment descriptors, echoed user history, and image-inspection results do not become generated replies. Remote screens use UIScrollView/AppKit magnification: pinch to zoom, pan locally while watching, or use two fingers to pan a magnified screen while controlling its pointer with one finger.
 
 The focused media journey is `InboxUITests/testNativeMediaPreviewZoomPlaybackAndDraftRestoration`. The screen fixture journey is `RemoteScreenLifecycleUITests/testScreenCardZoomDismissalAndDraftRestoration`; start `NanocodexInboxUITests/fixtures/remote-screen.mjs` and pass `TEST_RUNNER_NANOCODEX_SCREEN_FIXTURE=1` to xcodebuild.
 
