@@ -196,7 +196,11 @@ export function createComputerTools(options) {
         session.process.context = context;
         const result = await session.process.rpc("tools/call", {
           name, arguments: value,
-          _meta: { "x-codex-turn-metadata": { thread_id: id, call_id: context.callId, model: context.model } },
+          _meta: { "x-codex-turn-metadata": {
+            session_id: id,
+            ...(context.turnId == null ? {} : { turn_id: context.turnId }),
+            thread_id: id, call_id: context.callId, model: context.model,
+          } },
         });
         operation.throwIfAborted();
         const content = outputContent(result);

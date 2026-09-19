@@ -289,6 +289,7 @@ pub(crate) enum SessionListKind {
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum RootEffect {
+    Reload,
     Bug(String),
     Screen,
     Zoom,
@@ -1075,7 +1076,7 @@ impl RootNode {
                     && !self.composer.component().has_images()
                     && matches!(
                         self.composer.component().draft().split_whitespace().next(),
-                        Some("/voice" | "/screen" | "/zoom")
+                        Some("/voice" | "/screen" | "/zoom" | "/reload")
                     )
                 {
                     let mut update = self
@@ -1794,6 +1795,10 @@ impl RootNode {
             Some(ActionsEffect::Trigger(Action::Bug)) => {
                 self.overlay = None;
                 return self.apply_settings_command(SettingsCommand::Bug(String::new()));
+            }
+            Some(ActionsEffect::Trigger(Action::Reload)) => {
+                self.overlay = None;
+                return self.apply_settings_command(SettingsCommand::Reload);
             }
             Some(ActionsEffect::Trigger(Action::Screen)) => {
                 self.overlay = None;
@@ -2680,6 +2685,10 @@ impl RootNode {
                 } else {
                     RootEffect::Zoom
                 }],
+                render: RenderRequest::Immediate,
+            },
+            SettingsCommand::Reload => ComponentUpdate {
+                effects: vec![RootEffect::Reload],
                 render: RenderRequest::Immediate,
             },
             SettingsCommand::Voice(command) => ComponentUpdate {

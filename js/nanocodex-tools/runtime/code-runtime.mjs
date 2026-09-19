@@ -51,7 +51,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     return router.resolve(name);
   }
 
-  async function executeTool(name, encodedInput, sessionId = "default", callId = "tool", model = "unknown") {
+  async function executeTool(name, encodedInput, sessionId = "default", callId = "tool", model = "unknown", turnId) {
     let input;
     try {
       input = JSON.parse(encodedInput);
@@ -69,6 +69,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         parentCallId: "",
         callId,
         model,
+        ...(turnId == null ? {} : { turnId }),
         signal: controller.signal,
         subagent: subagentBindingsBySession.get(sessionId)?.descriptor,
       });
@@ -86,7 +87,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     }
   }
 
-  async function executeCode(source, sessionId = "default", parentCallId = "exec", model = "unknown", observer, cell) {
+  async function executeCode(source, sessionId = "default", parentCallId = "exec", model = "unknown", observer, cell, turnId) {
     if (typeof model === "function" && observer === undefined) {
       observer = model;
       model = "unknown";
@@ -182,6 +183,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
             parentCallId,
             callId,
             model,
+            ...(turnId == null ? {} : { turnId }),
             signal: controller.signal,
             subagent: subagentBindingsBySession.get(sessionId)?.descriptor,
           });
@@ -360,7 +362,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     }
   }
 
-  function executeCodeObserved(source, sessionId = "default", parentCallId = "exec", model = "unknown") {
+  function executeCodeObserved(source, sessionId = "default", parentCallId = "exec", model = "unknown", turnId) {
     return observeOperation(sessionId, parentCallId, (observation) => {
       const options = parseExec(source);
       const cell = {
@@ -376,7 +378,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         if (cell.observation) cell.observation.push(encoded);
         else cell.updates.push(encoded);
         if (update.type === "nested_call_completed") cell.completedCalls.push(update.call);
-      }, cell).then((result) => {
+      }, cell, turnId).then((result) => {
         const completed = JSON.parse(result);
         if (!completed.success && typeof completed.output === "string") {
           cell.content.push({ type: "input_text", text: completed.output.split("Output:\n").slice(1).join("Output:\n") || completed.output });

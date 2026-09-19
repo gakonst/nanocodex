@@ -154,7 +154,8 @@ async fn catalog_call_result_and_drain_use_exact_frames() {
         let mut socket = accept(&listener).await;
         let catalog = recv_json(&mut socket).await;
         assert_eq!(catalog["type"], "catalog");
-        assert_eq!(catalog.as_object().unwrap().len(), 4);
+        assert_eq!(catalog.as_object().unwrap().len(), 5);
+        assert_eq!(catalog["capabilities"], json!(["turn_metadata"]));
         assert_eq!(catalog["tools"][0]["definition"]["name"], "echo");
         assert_eq!(catalog["attachment_id"], "machine-1");
         assert_eq!(
@@ -441,4 +442,72 @@ fn machine_metadata(id: &str, workspace: &str) -> AttachmentMetadata {
         )
         .unwrap(),
     )
+}
+
+struct TurnIdentityTool;
+
+#[async_trait]
+impl Tool for TurnIdentityTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::function(
+            "turn_identity",
+            "returns invocation identity",
+            json!({"type":"object"}),
+        )
+    }
+    async fn execute(&self, _input: ToolInput, context: ToolContext<'_>) -> ToolResult {
+        Ok(ToolOutput::json(
+            &json!({"turn_id":context.turn_id(), "call_id":context.call_id(), "session_id":context.session_id()}),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn native_attachment_preserves_turn_identity_through_prepared_runtime() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("ws://{}/tools", listener.local_addr().unwrap());
+    let (completed_tx, completed_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let mut socket = ready(&listener).await;
+        for (id, turn) in [
+            ("one", Some("session-1:7")),
+            ("two", Some("session-1:7")),
+            ("three", Some("session-1:8")),
+            ("legacy", None),
+        ] {
+            let mut frame = call(id, "turn_identity");
+            if let Some(turn) = turn {
+                frame["turn_id"] = json!(turn);
+            }
+            send_json(&mut socket, frame).await;
+            let result = recv_json(&mut socket).await;
+            assert_eq!(result["outcome"]["status"], "completed");
+            let output = &result["outcome"]["output"];
+            let identity: Value = serde_json::from_str(output["output"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                identity,
+                json!({"session_id":"session-1", "call_id":id, "turn_id":turn})
+            );
+            send_json(&mut socket, json!({"type":"ack", "call_id":id})).await;
+        }
+        completed_tx.send(()).unwrap();
+        assert_eq!(recv_json(&mut socket).await, json!({"type":"drain"}));
+        send_json(&mut socket, json!({"type":"draining"})).await;
+    });
+    let tools = Tools::builder()
+        .without_defaults()
+        .tool(TurnIdentityTool)
+        .build()
+        .unwrap();
+    let (attachment, _) = tools
+        .attach(AttachmentTarget::new(endpoint, "bearer").unwrap())
+        .connect()
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), completed_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    attachment.detach().await.unwrap();
+    server.await.unwrap();
 }

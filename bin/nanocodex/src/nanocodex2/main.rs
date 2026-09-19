@@ -8,6 +8,8 @@
 
 #[path = "../computer.rs"]
 mod computer;
+#[cfg(unix)]
+mod computer_elicitation;
 #[allow(dead_code)]
 mod config;
 mod control;
@@ -23,6 +25,7 @@ mod host;
 mod installation;
 mod native_hand;
 mod observation_providers;
+mod reload;
 mod screen_audio;
 mod screen_broadcast;
 mod screen_ice;

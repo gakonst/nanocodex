@@ -165,6 +165,8 @@ pub struct ComputerElicitationContext {
 /// Provider text and persistence suggestions are untrusted UI data, not consent.
 #[derive(Clone, Debug)]
 pub struct ComputerElicitationRequest {
+    /// Opaque process lifetime. A session permission must never outlive or cross it.
+    pub provider_session: std::sync::Weak<()>,
     pub id: Value,
     pub params: Value,
     /// Absent during initial provider discovery.
@@ -423,6 +425,7 @@ struct LocalComputer {
 
 struct SessionRequest {
     session: String,
+    turn_id: Option<String>,
     call_id: String,
     model: String,
     name: String,
@@ -457,6 +460,7 @@ impl ComputerExecutor for LocalComputer {
         self.dispatch
             .send(SessionRequest {
                 session,
+                turn_id: context.turn_id().map(str::to_owned),
                 call_id: context.call_id().to_owned(),
                 model: context.model().to_owned(),
                 name: name.into(),
@@ -497,6 +501,17 @@ async fn route_sessions(
     }
 }
 
+// Keep legacy fields for existing companions; missing host context remains
+// absent rather than fabricating a turn from a per-call identifier.
+fn turn_metadata(session: &str, turn: Option<&str>, call: &str, model: &str) -> Value {
+    let mut metadata =
+        json!({"session_id":session,"thread_id":session,"call_id":call,"model":model});
+    if let Some(turn) = turn.filter(|turn| !turn.trim().is_empty()) {
+        metadata["turn_id"] = json!(turn);
+    }
+    metadata
+}
+
 async fn run_session(
     config: ComputerConfig,
     session: String,
@@ -506,6 +521,7 @@ async fn run_session(
     let mut interrupted = false;
     while let Some(request) = requests.recv().await {
         let SessionRequest {
+            turn_id,
             call_id,
             model,
             name,
@@ -543,7 +559,7 @@ async fn run_session(
                 model: model.clone(),
             });
             let value = process.rpc("tools/call", json!({"name":name,"arguments":arguments,
-                "_meta":{"x-codex-turn-metadata":{"thread_id":session,"call_id":call_id,"model":model}}})).await?;
+                "_meta":{"x-codex-turn-metadata":turn_metadata(&session, turn_id.as_deref(), &call_id, &model)}})).await?;
             let output = output(value)?;
             Ok::<_, ToolError>((process, output))
         };
@@ -578,6 +594,7 @@ async fn run_session(
 }
 
 struct Process {
+    elicitation_session: Arc<()>,
     _child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
@@ -656,6 +673,7 @@ impl Process {
         let input = child.stdin.take().ok_or("CUA stdin unavailable")?;
         let output = BufReader::new(child.stdout.take().ok_or("CUA stdout unavailable")?);
         let mut process = Self {
+            elicitation_session: Arc::new(()),
             _child: child,
             input,
             output,
@@ -812,6 +830,7 @@ impl Process {
                         );
                     }
                     let request = ComputerElicitationRequest {
+                        provider_session: Arc::downgrade(&self.elicitation_session),
                         id: request_id.clone(),
                         params,
                         context: self.elicitation_context.clone(),
@@ -912,6 +931,25 @@ pub fn output(value: Value) -> ToolResult {
 #[cfg(test)]
 mod provider_contract_tests {
     use super::*;
+
+    #[test]
+    fn metadata_uses_host_turn_identity_instead_of_call_identity() {
+        for call in ["call-a", "call-b"] {
+            assert_eq!(
+                turn_metadata("session", Some("session:7"), call, "fixture"),
+                json!({"session_id":"session", "thread_id":"session", "turn_id":"session:7", "call_id":call, "model":"fixture"})
+            );
+        }
+        assert!(
+            turn_metadata("session", None, "call-a", "fixture")
+                .get("turn_id")
+                .is_none()
+        );
+        assert_eq!(
+            turn_metadata("session", Some("session:8"), "call-c", "fixture")["turn_id"],
+            "session:8"
+        );
+    }
 
     #[test]
     fn model_visibility_matches_pinned_codex_catalog_filter() {

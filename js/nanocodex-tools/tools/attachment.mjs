@@ -218,6 +218,7 @@ function createClient(endpoint, transport, options, admission, machines, attachm
     state.catalogSent = true;
     send(socket, {
       type: "catalog",
+      capabilities: ["turn_metadata"],
       tools: state.catalog,
       ...(state.machines.length === 0 ? {} : { machines: state.machines }),
       ...(state.attachmentId === undefined ? {} : { attachment_id: state.attachmentId }),
@@ -304,6 +305,7 @@ function createClient(endpoint, transport, options, admission, machines, attachm
       value = await Promise.race([
         admission.invoke(frame.name, frame.input, {
           sessionId: frame.session_id,
+          ...(frame.turn_id === undefined ? {} : { turnId: frame.turn_id }),
           parentCallId: "",
           callId,
           model: frame.model,
@@ -529,6 +531,7 @@ function parseFrame(encoded) {
   exactKeys(frame, keys);
   if (frame.type === "call") {
     requiredIdentifier(frame.session_id, "session_id"); requiredIdentifier(frame.call_id, "call_id");
+    if (frame.turn_id !== undefined && (typeof frame.turn_id !== "string" || !frame.turn_id || utf8ByteLength(frame.turn_id) > 256)) throw new TypeError("turn_id must be 1-256 UTF-8 bytes");
     requiredIdentifier(frame.model, "model"); requiredIdentifier(frame.name, "name");
     if (typeof frame.input !== "string" && (!frame.input || typeof frame.input !== "object" || Array.isArray(frame.input))) throw new Error("call input must be an object or string");
     positiveInteger(frame.output_token_budget, "output_token_budget");
@@ -557,7 +560,7 @@ function exactKeys(value, allowed) { for (const key of Object.keys(value)) if (!
 function snapshot(value) { return value === undefined ? null : JSON.parse(JSON.stringify(value)); }
 function decode(value) { if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return new TextDecoder().decode(value); return String(value); }
 function errorMessage(error) { return error && (error.stack || error.message) || String(error); }
-function callIdentity(frame) { return JSON.stringify([frame.session_id, frame.call_id, frame.model, frame.name, frame.input, frame.output_token_budget, frame.output_byte_budget, frame.deadline_at]); }
+function callIdentity(frame) { return JSON.stringify([frame.session_id, frame.turn_id ?? null, frame.call_id, frame.model, frame.name, frame.input, frame.output_token_budget, frame.output_byte_budget, frame.deadline_at]); }
 function attachmentEndpoint(target) {
   const raw = typeof target === "object" && !(target instanceof URL) ? target.endpoint : target;
   let url; try { url = new URL(raw); } catch { throw new TypeError("tool attachment target must be a valid WebSocket URL"); }
@@ -587,7 +590,7 @@ function randomNonce() {
 
 const DO_KEYS = Object.freeze({
   ready: ["type"],
-  call: ["type", "session_id", "call_id", "model", "name", "input", "output_token_budget", "output_byte_budget", "deadline_at"],
+  call: ["type", "session_id", "turn_id", "call_id", "model", "name", "input", "output_token_budget", "output_byte_budget", "deadline_at"],
   cancel: ["type", "call_id"],
   ack: ["type", "call_id"],
   pong: ["type", "nonce"],

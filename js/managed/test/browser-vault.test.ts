@@ -53,3 +53,20 @@ describe("private browser Vault boundary", () => {
     await expect(cdp.send("Target.getTargets")).rejects.toThrow("Private browser disconnected");
   });
 });
+
+describe("ambiguous Vault fill outcomes", () => {
+  it.each(["transport", "exception"])("requires inspection after %s failure without replaying credentials", async failure => {
+    const cdp = fixture(), send = cdp.send;
+    cdp.send = vi.fn(async (method, params) => {
+      if (method !== "Runtime.callFunctionOn") return send(method, params);
+      if (failure === "transport") throw new Error("sensitive provider details");
+      return { exceptionDetails: { text: "sensitive provider details" } } as any;
+    });
+    const result = await fillBrowserVault({ cdp, sessionId: "browser",
+      request: parseBrowserVaultRequest({ ...base, password_selector: "#password" }),
+      resolve: async () => ({ username: "fake", password: "synthetic-password" }), quarantine: async () => {} });
+    expect(result).toEqual({ status: "outcome_unknown", next_action: "inspect_before_retry" });
+    expect(cdp.send.mock.calls.filter(([method]) => method === "Runtime.callFunctionOn")).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain("sensitive");
+  });
+});

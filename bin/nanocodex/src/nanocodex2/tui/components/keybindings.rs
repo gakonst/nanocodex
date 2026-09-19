@@ -19,7 +19,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 const FOOTER: [(&str, &str); 2] = [("↑↓", "scroll"), ("esc", "close")];
-const BINDINGS: [(&str, &str); 31] = [
+const BINDINGS: [(&str, &str); 32] = [
     ("ctrl+x", "mute · unmute microphone while voice is active"),
     ("ctrl+s", "change reasoning effort"),
     ("ctrl+d", "select model · before first prompt"),
@@ -49,6 +49,10 @@ const BINDINGS: [(&str, &str); 31] = [
     ("ctrl+h/d", "delete previous · next character"),
     ("↑/↓ · ctrl+p/n", "move lines · prompt history at edge"),
     ("tab / shift+tab", "cycle panes · otherwise focus queue"),
+    (
+        "/reload",
+        "restart local terminals in their current threads",
+    ),
     ("/screen", "select a Hand and watch its live screen"),
     ("/zoom", "expand focused pane · restore split layout"),
     ("/", "open actions · empty prompt only"),

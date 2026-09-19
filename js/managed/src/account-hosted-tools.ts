@@ -59,6 +59,7 @@ type InvocationRequest = Readonly<{
   name: string;
   input: unknown;
   session_id: string;
+  turn_id?: string;
   call_id: string;
   model?: string;
   machine_id?: string;
@@ -76,6 +77,7 @@ type InvocationResult = Readonly<{
 
 type InvocationContext = Readonly<{
   sessionId: string;
+  turnId?: string;
   callId: string;
   model?: string;
   signal?: AbortSignal;
@@ -269,6 +271,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       const resolvedAt = performance.now();
       const result = await tool.handler(invocation.input, {
         sessionId: invocation.session_id,
+        ...(invocation.turn_id === undefined ? {} : { turnId: invocation.turn_id }),
         callId: invocation.call_id,
         model: invocation.model,
         signal: request.signal,
@@ -560,6 +563,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
           name,
           input,
           session_id: context.sessionId,
+          ...(context.turnId === undefined ? {} : { turn_id: context.turnId }),
           call_id: context.callId,
           model: context.model,
           ...(machineId === undefined ? {} : { machine_id: machineId }),

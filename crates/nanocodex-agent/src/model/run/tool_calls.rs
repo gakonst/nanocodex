@@ -199,6 +199,7 @@ where
         call_index: u32,
         calls: Vec<CodeCall>,
         history: Option<Arc<Vec<ResponseItem>>>,
+        turn_id: String,
     ) -> Result<()> {
         self.active_tool_batch_started_at = Some(Instant::now());
         let mut prepared = Vec::with_capacity(calls.len());
@@ -223,6 +224,7 @@ where
                 let events = events.clone();
                 let tool_call_indices = tool_call_indices.clone();
                 let session_id = session_id.clone();
+                let turn_id = turn_id.clone();
                 let host_context = host_context.clone();
                 let execution_steps = execution_steps.clone();
                 async move {
@@ -264,6 +266,7 @@ where
                                     call,
                                     history,
                                     &session_id,
+                                    &turn_id,
                                     model,
                                     host_context.as_deref(),
                                     started_at,
@@ -286,6 +289,7 @@ where
                                     call,
                                     history,
                                     &session_id,
+                                    &turn_id,
                                     model,
                                     host_context.as_deref(),
                                     started_at,
@@ -549,6 +553,7 @@ where
         call: CodeCall,
         history: Option<Arc<Vec<ResponseItem>>>,
         session_id: &str,
+        turn_id: &str,
         model: Model,
         host_context: Option<&str>,
         started_at: Instant,
@@ -592,7 +597,8 @@ where
                 &[],
                 DEFAULT_TOOL_OUTPUT_TOKENS,
             )
-            .with_host_context(host_context);
+            .with_host_context(host_context)
+            .with_turn_id(Some(turn_id));
             let mut execution = match call.kind {
                 CodeCallKind::Function => match RawValue::from_string(call.input.clone()) {
                     Ok(input) => tools
@@ -658,7 +664,8 @@ where
                 search_history,
                 DEFAULT_TOOL_OUTPUT_TOKENS,
             )
-            .with_host_context(host_context);
+            .with_host_context(host_context)
+            .with_turn_id(Some(turn_id));
             let execution = match RawValue::from_string(call.input.clone()) {
                 Ok(input) => tools
                     .execute_tool("tool_search", ToolInput::Function(input), context)
@@ -698,7 +705,8 @@ where
                 metadata: execution.metadata,
             });
         }
-        let owned_context = owned_code_context(&call, history, session_id, model, host_context)?;
+        let owned_context =
+            owned_code_context(&call, history, session_id, turn_id, model, host_context)?;
         let context = ToolContext::new(
             model.as_str(),
             session_id,
@@ -706,7 +714,8 @@ where
             &[],
             DEFAULT_TOOL_OUTPUT_TOKENS,
         )
-        .with_host_context(host_context);
+        .with_host_context(host_context)
+        .with_turn_id(Some(turn_id));
         let mut observer = NestedToolEventObserver {
             events,
             tool_call_indices,

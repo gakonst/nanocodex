@@ -71,6 +71,7 @@ export type HostedToolCallOutcome =
 export type HostedToolsHostFrame =
   | {
       type: "catalog";
+      capabilities?: string[];
       tools: HostedToolCatalogEntry[];
       machines?: HostedMachine[];
       attachment_id?: string;
@@ -91,6 +92,7 @@ export type HostedToolsManagedFrame =
   | {
       type: "call";
       session_id: string;
+      turn_id?: string;
       call_id: string;
       model: string;
       name: string;
@@ -180,11 +182,23 @@ export function parseHostedToolsFrame(encoded: string): HostedToolsFrame {
 function parseCatalog(
   frame: Record<string, unknown>,
 ): Extract<HostedToolsHostFrame, { type: "catalog" }> {
-  exactKeys(frame, ["type", "tools", "machines", "attachment_id"]);
+  exactKeys(frame, ["type", "tools", "machines", "attachment_id", "capabilities"]);
   if (!Array.isArray(frame.tools)) {
     throw new HostedToolsProtocolError(
       "invalid_catalog",
       "tools must be an array",
+    );
+  }
+  const capabilities = frame.capabilities;
+  if (capabilities !== undefined && (
+    !Array.isArray(capabilities)
+    || capabilities.length > 16
+    || capabilities.some((value) => typeof value !== "string" || !IDENTIFIER.test(value))
+    || new Set(capabilities).size !== capabilities.length
+  )) {
+    throw new HostedToolsProtocolError(
+      "invalid_catalog",
+      "capabilities must contain at most 16 unique identifiers",
     );
   }
   const tools = frame.tools.map((entry, index) => catalogEntry(entry, index));
@@ -218,6 +232,7 @@ function parseCatalog(
   return {
     type: "catalog",
     tools,
+    ...(capabilities === undefined ? {} : { capabilities: capabilities as string[] }),
     ...(machines === undefined ? {} : { machines }),
     ...(attachmentId === undefined ? {} : { attachment_id: attachmentId }),
   };
@@ -254,7 +269,7 @@ function parsePing(frame: Record<string, unknown>): Extract<HostedToolsHostFrame
 
 function parseCall(frame: Record<string, unknown>): Extract<HostedToolsManagedFrame, { type: "call" }> {
   exactKeys(frame, [
-    "type", "session_id", "call_id", "model", "name", "input", "output_token_budget",
+    "type", "session_id", "turn_id", "call_id", "model", "name", "input", "output_token_budget",
     "output_byte_budget", "deadline_at",
   ]);
   const input = typeof frame.input === "string"
@@ -263,6 +278,7 @@ function parseCall(frame: Record<string, unknown>): Extract<HostedToolsManagedFr
   return {
     type: "call",
     session_id: identifier(frame.session_id, "session_id"),
+    ...(frame.turn_id === undefined ? {} : { turn_id: boundedText(frame.turn_id, 1, 256, "turn_id") }),
     call_id: identifier(frame.call_id, "call_id"),
     model: identifier(frame.model, "model"),
     name: toolName(frame.name),

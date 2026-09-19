@@ -73,6 +73,7 @@ export type HostedToolsCallRow = {
   call_id: string;
   session_id: string;
   source_call_id: string;
+  turn_id?: string | null;
   host_id: string;
   lease_id: string;
   generation: number;
@@ -102,6 +103,7 @@ type HostedToolsSocketAttachment = {
   leaseId?: string;
   generation?: number;
   active?: true;
+  turnMetadata?: true;
   draining?: true;
   machines?: readonly HostedMachine[];
 };
@@ -136,6 +138,7 @@ export type HostedToolsProviderDefinition = Readonly<HostedToolCatalogEntry>;
 export type HostedToolsInvokeRequest = Readonly<{
   sessionId: string;
   callId: string;
+  turnId?: string;
   model: string;
   input: Record<string, unknown> | string;
   outputTokenBudget: number;
@@ -195,7 +198,7 @@ export type HostedToolsCodeTool = Readonly<{
 
 export type HostedToolsInvocationContext = Readonly<
   Pick<ToolContext, "sessionId" | "callId">
-  & Partial<Pick<ToolContext, "parentCallId" | "model" | "signal" | "subagent">>
+  & Partial<Pick<ToolContext, "parentCallId" | "turnId" | "model" | "signal" | "subagent">>
 >;
 
 export type HostedToolsAuthorizationContext = Pick<ToolContext, "sessionId" | "subagent">;
@@ -887,6 +890,7 @@ export class HostedToolsBrokerCore {
       {
         ...candidate,
         active: true,
+        ...(frame.capabilities?.includes("turn_metadata") ? { turnMetadata: true as const } : {}),
         ...(frame.machines === undefined ? {} : { machines: frame.machines }),
       } satisfies HostedToolsSocketAttachment,
     );
@@ -1048,6 +1052,7 @@ export class HostedToolsBrokerCore {
         const outcome = await prepared.invoke({
           sessionId: context.sessionId,
           callId: context.callId,
+          ...(context.turnId === undefined ? {} : { turnId: context.turnId }),
           model: context.model ?? "unknown",
           input: input as Record<string, unknown> | string,
           outputTokenBudget: 10_000,
@@ -1099,6 +1104,7 @@ export class HostedToolsBrokerCore {
       call = parseHostedToolsManagedFrame(JSON.stringify({
         type: "call",
         session_id: request.sessionId,
+        ...(request.turnId === undefined ? {} : { turn_id: request.turnId }),
         call_id: transportCallId,
         model: request.model,
         name: binding.wireName,
@@ -1115,6 +1121,7 @@ export class HostedToolsBrokerCore {
       call_id: call.call_id,
       session_id: call.session_id,
       source_call_id: request.callId,
+      turn_id: call.turn_id ?? null,
       host_id: hostId,
       lease_id: pinnedLeaseId,
       generation,
@@ -1479,6 +1486,13 @@ export class HostedToolsBrokerCore {
   }
 
   #send(socket: HostedToolsSocket, frame: HostedToolsManagedFrame): void {
+    // Retain full identity in the ledger, but preserve the legacy wire shape
+    // until this exact socket generation advertises metadata support.
+    if (frame.type === "call" && this.#attachment(socket)?.turnMetadata !== true) {
+      const { turn_id: _turnId, ...legacy } = frame;
+      socket.send(JSON.stringify(legacy));
+      return;
+    }
     socket.send(JSON.stringify(frame));
   }
 
@@ -1689,6 +1703,7 @@ function sameImmutableCall(left: HostedToolsCallRow, right: HostedToolsCallRow):
   return left.call_id === right.call_id
     && left.session_id === right.session_id
     && left.source_call_id === right.source_call_id
+    && (left.turn_id ?? null) === (right.turn_id ?? null)
     && left.host_id === right.host_id
     && left.lease_id === right.lease_id
     && left.generation === right.generation

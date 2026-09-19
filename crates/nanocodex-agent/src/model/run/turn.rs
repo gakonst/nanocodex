@@ -925,6 +925,7 @@ where
                 call_index,
                 code_calls,
                 history,
+                session.factory.profile().turn_id(),
             )
             .await?;
             let compacted = self

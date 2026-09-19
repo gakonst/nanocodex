@@ -30,6 +30,7 @@ test("attachment publishes one exact catalog and exchanges ready, call, result, 
   await waitFor(() => socket.frames().length === 1);
   assert.deepEqual(socket.frames()[0], {
     type: "catalog",
+    capabilities: ["turn_metadata"],
     tools: [{
       provider: "javascript",
       remote_name: "echo",
@@ -47,9 +48,10 @@ test("attachment publishes one exact catalog and exchanges ready, call, result, 
   });
   socket.receive({ type: "ready" });
   const client = await connecting;
-  socket.receive(callFrame({ value: "hello" }));
+  socket.receive({ ...callFrame({ value: "hello" }), turn_id: "session:1:7" });
   await waitFor(() => socket.frames().some(({ type }) => type === "result"));
   assert.equal(context.model, "gpt-5.6-sol");
+  assert.equal(context.turnId, "session:1:7");
   assert.deepEqual(lastFrame(socket, "result"), {
     type: "result",
     call_id: "call:1",
@@ -106,6 +108,7 @@ test("Tools publishes its non-secret user-machine snapshot with each attachment"
   await waitFor(() => socket.frames().length === 1);
   assert.deepEqual(socket.frames()[0], {
     type: "catalog",
+    capabilities: ["turn_metadata"],
     tools: [],
     attachment_id: "laptop",
     machines: [{

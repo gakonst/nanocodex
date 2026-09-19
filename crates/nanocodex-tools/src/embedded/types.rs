@@ -16,6 +16,7 @@ pub struct OwnedToolContext {
     pub(crate) model: String,
     pub(crate) session_id: String,
     pub(crate) call_id: String,
+    pub(crate) turn_id: Option<Arc<str>>,
     pub(crate) history: Arc<Vec<ResponseItem>>,
     pub(crate) output_token_budget: usize,
     pub(crate) host_context: Option<Arc<str>>,
@@ -35,6 +36,7 @@ impl OwnedToolContext {
             model: model.into(),
             session_id: session_id.into(),
             call_id: call_id.into(),
+            turn_id: None,
             history,
             output_token_budget,
             host_context: None,
@@ -52,6 +54,7 @@ impl OwnedToolContext {
             context.output_token_budget(),
         )
         .with_host_context(context.host_context().map(Arc::from))
+        .with_turn_id(context.turn_id().map(Arc::from))
     }
 
     /// Borrows this owned state as the standard tool invocation context.
@@ -65,6 +68,14 @@ impl OwnedToolContext {
             self.output_token_budget,
         )
         .with_host_context(self.host_context.as_deref())
+        .with_turn_id(self.turn_id.as_deref())
+    }
+
+    /// Retains the originating logical turn across asynchronous tool calls.
+    #[must_use]
+    pub fn with_turn_id(mut self, turn_id: Option<Arc<str>>) -> Self {
+        self.turn_id = turn_id;
+        self
     }
 
     /// Attaches embedding-owned context to this owned invocation.

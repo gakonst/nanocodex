@@ -62,6 +62,12 @@ impl RequestProfile {
         &self.thread_id
     }
 
+    /// Returns the stable turn identity sent in provider request metadata.
+    #[must_use]
+    pub fn turn_id(&self) -> String {
+        format!("{}:{}", self.thread_id(), self.logical_turn)
+    }
+
     /// Uses a fresh thread identity while retaining the provider session.
     #[must_use]
     pub fn with_thread_id(mut self, thread_id: impl Into<String>) -> Self {
@@ -799,7 +805,7 @@ impl Serialize for SerializedTurnMetadata<'_> {
         let value = serde_json::to_string(&TurnMetadata {
             session_id: profile.session_id(),
             thread_id: profile.thread_id(),
-            turn_id: format!("{}:{}", profile.thread_id(), profile.logical_turn),
+            turn_id: profile.turn_id(),
             request_kind: self.request_kind,
             tool_namespaces_info: &profile.tool_namespaces_info,
         })
@@ -900,6 +906,37 @@ mod tests {
     use super::*;
     use crate::{ContentItem, MessageRole, Model, ReasoningMode, Thinking};
     use serde_json::json;
+
+    #[test]
+    fn tool_turn_identity_matches_provider_metadata() {
+        let config = ModelConfig {
+            auth: crate::OpenAiAuth::api_key("test-key"),
+            responses_transport: crate::ResponsesTransport::Https,
+            ..ModelConfig::default()
+        };
+        let profile = RequestProfile::new("session", "cache", Arc::from([]))
+            .with_thread_id("branch")
+            .with_logical_turn(7);
+        assert_eq!(profile.turn_id(), "branch:7");
+        let request = serde_json::to_value(ResponseCreate::warmup(
+            &config,
+            Model::Sol,
+            Thinking::Low,
+            false,
+            &profile,
+            None,
+        ))
+        .unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(
+            request["client_metadata"]["x-codex-turn-metadata"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(metadata["turn_id"], profile.turn_id());
+        assert_eq!(profile.clone().with_logical_turn(8).turn_id(), "branch:8");
+        assert_eq!(profile.turn_id(), "branch:7");
+    }
 
     #[test]
     fn prompt_cache_key_is_stable_across_the_session() {

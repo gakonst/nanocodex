@@ -41,6 +41,66 @@ type CallRow = NonNullable<ReturnType<HostedToolsBrokerPersistence["call"]>>;
 type CallState = CallRow["state"];
 
 describe("HostedToolsBroker socket-owned protocol", () => {
+  for (const capabilities of [undefined, [], ["turn_metadata"], ["future_capability"]]) {
+    it(`negotiates turn metadata per socket and retains it through hibernation: ${JSON.stringify(capabilities)}`, async () => {
+      const fixture = createFixture();
+      const host = fixture.socket();
+      await fixture.broker.message(host.webSocket, JSON.stringify({
+        type: "catalog", tools: [entry()], ...(capabilities === undefined ? {} : { capabilities }),
+      }));
+      expect(host.sent).toEqual([{ type: "ready" }]);
+      const expectsTurn = capabilities?.includes("turn_metadata") === true;
+      // These are the exact accepted fields of the strict pre-metadata native
+      // and JS executors. An extra field would disconnect either old client.
+      const legacyKeys = [
+        "type", "session_id", "call_id", "model", "name", "input",
+        "output_token_budget", "output_byte_budget", "deadline_at",
+      ];
+      async function call(broker: HostedToolsBroker, callId: string, turnId?: string) {
+        const tool = broker.provider().resolve("fixture__lookup")!;
+        const pending = tool.handler({}, {
+          sessionId: "session", callId, model: "fixture",
+          ...(turnId === undefined ? {} : { turnId }),
+        });
+        const frame = host.sent.filter((frame) => frame.type === "call").at(-1)!;
+        expect(Object.keys(frame).sort()).toEqual([
+          ...legacyKeys, ...(expectsTurn && turnId !== undefined ? ["turn_id"] : []),
+        ].sort());
+        expect(frame.turn_id).toBe(expectsTurn ? turnId : undefined);
+        expect(fixture.persistence.call(String(frame.call_id))?.turn_id).toBe(turnId ?? null);
+        await broker.message(host.webSocket, result(String(frame.call_id), "ok"));
+        await expect(pending).resolves.toMatchObject({ success: true, output: "ok" });
+        expect(host.closed).toBeUndefined();
+      }
+      await call(fixture.broker, "before-hibernation", "session:7");
+      const resumed = new HostedToolsBroker(fixture.context, {
+        persistence: fixture.persistence, now: () => NOW, resumeRetainedSockets: true,
+      });
+      await call(resumed, "same-turn", "session:7");
+      await call(resumed, "next-turn", "session:8");
+      await call(resumed, "without-turn-context");
+      resumed.close(host.webSocket, "test complete");
+    });
+  }
+
+  it("does not inherit metadata capability when a new executor reconnects as legacy", async () => {
+    const fixture = createFixture();
+    const modern = fixture.socket();
+    await fixture.broker.message(modern.webSocket, JSON.stringify({ type: "catalog", tools: [entry()], capabilities: ["turn_metadata"] }));
+    const legacy = fixture.socket();
+    await catalog(fixture.broker, legacy);
+    const pending = fixture.broker.provider().resolve("fixture__lookup")!.handler({}, {
+      sessionId: "session", callId: "after-reconnect", turnId: "session:9", model: "fixture",
+    });
+    const frame = legacy.sent.find((frame) => frame.type === "call")!;
+    expect(frame).toBeDefined();
+    expect(frame).not.toHaveProperty("turn_id");
+    expect(fixture.persistence.call(String(frame.call_id))?.turn_id).toBe("session:9");
+    await fixture.broker.message(legacy.webSocket, result(String(frame.call_id), "ok"));
+    await expect(pending).resolves.toMatchObject({ success: true });
+    expect(legacy.closed).toBeUndefined();
+  });
+
   it("publishes every discovered CUA contract on leased Hands without a fixed tool allowlist", async () => {
     const fixture = createFixture();
     const host = fixture.socket(undefined, undefined, undefined, "leased-vm", NOW + 10, "cua-route");

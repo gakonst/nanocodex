@@ -126,7 +126,7 @@ func TestGamepadOptInAndFailure(t *testing.T) {
 		t.Setenv("NANOCODEX_VIRTUAL_GAMEPAD", value)
 		g, err := configuredGamepad(open)
 		if err != nil || g.available() || calls != 0 {
-			t.Fatal("opened without explicit optin")
+			t.Fatal("opened without explicit opt-in")
 		}
 	}
 	t.Setenv("NANOCODEX_VIRTUAL_GAMEPAD", "1")

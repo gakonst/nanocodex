@@ -131,6 +131,17 @@ connection and delaying spoken tool results.
 
 ## Working in a running session
 
+On macOS and Linux, after installing a new binary at the same executable path,
+use `/reload` in any
+terminal to restart this user's reload-capable interactive nanocodex2 instances
+on the current machine. Each returns to its current managed thread in the same
+terminal and working directory. Accepted managed turns continue running; pending
+local operations finish before the client disconnects. This does not restart
+Hand services, VM helpers, or instances on other machines. Instances started with
+an older binary without reload support need one manual restart first.
+Reload restores the managed thread, not unsent drafts or the current pane layout.
+
+
 Use `/id` to open the agent ID popup. Press Enter to copy the full ID to the
 clipboard, or Esc to close it. Resume it later with `nanocodex2 attach AGENT_ID`.
 

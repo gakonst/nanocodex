@@ -327,6 +327,7 @@ const fn attachment_call_outcome_name(outcome: AttachmentCallOutcome) -> &'stati
 #[derive(Clone, PartialEq)]
 struct CallIdentity {
     session_id: Box<str>,
+    turn_id: Option<Box<str>>,
     call_id: Box<str>,
     model: Box<str>,
     name: Box<str>,
@@ -403,7 +404,8 @@ fn start_ready_calls(
                         task_identity.name.to_string(),
                         task_identity.input.clone(),
                         task_identity.output_token_budget as usize,
-                    );
+                    )
+                    .with_turn_id(task_identity.turn_id.as_deref().map(str::to_owned));
                     match tokio::time::timeout(duration, runtime.execute(call)).await {
                         Ok(Ok(output)) => match serde_json::to_value(output) {
                             Ok(output)
@@ -487,6 +489,7 @@ where
     if let Err(error) = send(
         &mut socket,
         &ExecutorFrame::Catalog {
+            capabilities: &["turn_metadata"],
             tools: &config.tools,
             machines: config
                 .metadata
@@ -595,9 +598,9 @@ where
                     Err(end) => break end,
                 };
                 match frame {
-                    RemoteFrame::Call { session_id, call_id, model, name, input, output_token_budget, output_byte_budget, deadline_at } => {
+                    RemoteFrame::Call { session_id, turn_id, call_id, model, name, input, output_token_budget, output_byte_budget, deadline_at } => {
                         if draining { break ConnectionEnd::Rejected("call received after drain barrier".into()); }
-                        let identity = CallIdentity { session_id:session_id.into(), call_id:call_id.clone().into(), model:model.into(), name:name.clone().into(), input:input.clone(), output_token_budget, output_byte_budget, deadline_at };
+                        let identity = CallIdentity { session_id:session_id.into(), turn_id:turn_id.map(Into::into), call_id:call_id.clone().into(), model:model.into(), name:name.clone().into(), input:input.clone(), output_token_budget, output_byte_budget, deadline_at };
                         if let Some(receipt) = receipts.get(call_id.as_str()) {
                             if receipt.identity != identity { break ConnectionEnd::Rejected("duplicate call changed immutable fields".into()); }
                             if let Err(error) = send_result(&mut socket, &call_id, &receipt.outcome).await { break ConnectionEnd::Failed(error); }

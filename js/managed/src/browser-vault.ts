@@ -69,12 +69,29 @@ export class PrivateBrowserCdp {
     socket.addEventListener("error", () => this.#reject());
   }
   static async connect(browser: BrowserBinding, sessionId: string, signal?: AbortSignal): Promise<PrivateBrowserCdp> {
-    const response = await browser.fetch(`https://localhost/v1/devtools/browser/${encodeURIComponent(sessionId)}`, {
-      headers: { Upgrade: "websocket" },
-      signal: AbortSignal.any([AbortSignal.timeout(10_000), ...(signal ? [signal] : [])]),
-    });
-    if (!response.webSocket) throw new Error("Private browser unavailable");
-    return new PrivateBrowserCdp(response.webSocket);
+    // Limit cancellation to the upgrade. Retained sockets must not inherit a
+    // completed tool call's signal or the handshake deadline: disconnecting
+    // discards the isolated world's private snapshot references.
+    signal?.throwIfAborted();
+    const handshake = new AbortController();
+    const abort = () => handshake.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    const timer = setTimeout(abort, 10_000);
+    try {
+      const response = await browser.fetch(`https://localhost/v1/devtools/browser/${encodeURIComponent(sessionId)}`, {
+        headers: { Upgrade: "websocket" }, signal: handshake.signal,
+      });
+      if (!response.webSocket) throw new Error("Private browser unavailable");
+      const cdp = new PrivateBrowserCdp(response.webSocket);
+      if (handshake.signal.aborted || signal?.aborted) {
+        cdp.close();
+        throw new Error("Private browser connection cancelled");
+      }
+      return cdp;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+    }
   }
   send(method: string, params: unknown = {}, sessionId?: string): Promise<any> {
     if (this.#closed) return Promise.reject(new Error("Private browser disconnected"));
@@ -244,7 +261,7 @@ export async function fillBrowserVault(options: {
   resolve: () => Promise<BrowserVaultLogin>;
   quarantine: (value: BrowserVaultQuarantine) => Promise<void>;
   signal?: AbortSignal;
-}): Promise<{ status: "submitted" | "filled"; submission?: "action_required" }> {
+}): Promise<{ status: "submitted" | "filled"; submission?: "action_required" } | { status: "outcome_unknown"; next_action: "inspect_before_retry" }> {
   try {
     const { cdp, request } = options;
     const checkAbort = () => { if (options.signal?.aborted) throw new Error(); };
@@ -266,15 +283,23 @@ export async function fillBrowserVault(options: {
     // Persist before any secret reaches the browser, including ambiguous failures.
     await options.quarantine({ sessionId: options.sessionId, targetId: request.target_id, loaderId: frame.loaderId, origin: request.expected_origin, vaultId: request.vault_id });
     checkAbort();
-    const result = await cdp.send("Runtime.callFunctionOn", {
-      executionContextId: world.executionContextId,
-      functionDeclaration: BROWSER_VAULT_FILL_FUNCTION,
-      arguments: [request.expected_origin, request.username_selector ?? null, request.password_selector ?? null, request.username_selector ? login.username : null, request.password_selector ? login.password : null, request.submit].map(value => ({ value })),
-      returnByValue: true,
-      silent: true,
-    }, sid);
-    if (!result?.exceptionDetails && result?.result?.value === "unsupported") return { status: "filled", submission: "action_required" };
-    if (result?.exceptionDetails || result?.result?.value !== true) throw new Error();
+    let result;
+    try {
+      result = await cdp.send("Runtime.callFunctionOn", {
+        executionContextId: world.executionContextId,
+        functionDeclaration: BROWSER_VAULT_FILL_FUNCTION,
+        arguments: [request.expected_origin, request.username_selector ?? null, request.password_selector ?? null, request.username_selector ? login.username : null, request.password_selector ? login.password : null, request.submit].map(value => ({ value })),
+        returnByValue: true,
+        silent: true,
+      }, sid);
+    } catch {
+      // Submission can navigate and destroy the execution context before CDP
+      // returns. Never claim failure or replay a possibly completed login.
+      return { status: "outcome_unknown", next_action: "inspect_before_retry" };
+    }
+    if (result?.exceptionDetails) return { status: "outcome_unknown", next_action: "inspect_before_retry" };
+    if (result?.result?.value === "unsupported") return { status: "filled", submission: "action_required" };
+    if (result?.result?.value !== true) throw new Error();
     return { status: request.submit ? "submitted" : "filled" };
   } catch { throw new Error("Vault login could not be filled safely"); }
 }

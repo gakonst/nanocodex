@@ -12,6 +12,7 @@ pub(crate) const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ExecutorFrame<'a> {
     Catalog {
+        capabilities: &'a [&'a str],
         tools: &'a Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         machines: Option<&'a [AttachmentMachine]>,
@@ -34,6 +35,8 @@ pub(crate) enum RemoteFrame {
     Ready {},
     Call {
         session_id: String,
+        #[serde(default, deserialize_with = "deserialize_turn_id")]
+        turn_id: Option<String>,
         call_id: String,
         model: String,
         name: String,
@@ -77,6 +80,7 @@ impl RemoteFrame {
             Self::Ready {} | Self::Draining {} => Ok(()),
             Self::Call {
                 session_id,
+                turn_id,
                 call_id,
                 model,
                 name,
@@ -86,6 +90,9 @@ impl RemoteFrame {
                 deadline_at,
             } => {
                 if !valid_identifier(session_id)
+                    || turn_id
+                        .as_ref()
+                        .is_some_and(|turn| turn.is_empty() || turn.len() > 256)
                     || !valid_identifier(call_id)
                     || !valid_identifier(model)
                     || !valid_tool_name(name)
@@ -114,6 +121,12 @@ impl RemoteFrame {
             }
         }
     }
+}
+
+fn deserialize_turn_id<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
 }
 
 const fn positive(value: u64) -> bool {
@@ -159,6 +172,20 @@ mod tests {
             RemoteFrame::parse(frame),
             Ok(RemoteFrame::Call { model, .. }) if model == "gpt-5.6-sol"
         ));
+        let mut with_turn: serde_json::Value = serde_json::from_str(frame).unwrap();
+        with_turn["turn_id"] = serde_json::json!("session:1:7");
+        assert!(
+            matches!(RemoteFrame::parse(&with_turn.to_string()), Ok(RemoteFrame::Call { turn_id: Some(turn), .. }) if turn == "session:1:7")
+        );
+        for invalid in [
+            serde_json::json!(""),
+            serde_json::json!("é".repeat(129)),
+            serde_json::json!(null),
+            serde_json::json!(7),
+        ] {
+            with_turn["turn_id"] = invalid;
+            assert!(RemoteFrame::parse(&with_turn.to_string()).is_err());
+        }
         assert!(RemoteFrame::parse(&frame.replace("\"model\":\"gpt-5.6-sol\",", "")).is_err());
     }
 }

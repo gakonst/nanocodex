@@ -110,7 +110,7 @@ describe("account Hosted Tools provider", () => {
     await runInDurableObject(namespace.getByName(crypto.randomUUID()), async (_instance, context) => {
       const persistence = new SqlHostedToolsPersistence(context.storage);
       persistence.initialize(Date.now());
-      const row = { call_id: "transport", session_id: "agent", source_call_id: "source", host_id: "host",
+      const row = { call_id: "transport", session_id: "agent", source_call_id: "source", turn_id: "agent:7", host_id: "host",
         lease_id: "lease", generation: 1, model: "fixture", name: "exec_command", input_json: "{}",
         output_token_budget: 100, output_byte_budget: 1024, deadline_at: Date.now() + 60_000,
         cancel_requested: 0, state: "admitted" as const, result_json: null, receipt_json: null };
@@ -397,6 +397,7 @@ describe("account Hosted Tools provider", () => {
     const ready = nextFrame(socket);
     socket.send(JSON.stringify({
       type: "catalog",
+      capabilities: ["turn_metadata"],
       tools: snapshot.tools.map(({ definition, route_token: _routeToken, ...entry }) => ({
         ...entry,
         definition: { ...definition, defer_loading: undefined },
@@ -433,13 +434,14 @@ describe("account Hosted Tools provider", () => {
           name: "fixture__lookup",
           input: {},
           session_id: sessionId,
+          turn_id: `${sessionId}:7`,
           call_id: callId,
           model: "fixture-model",
           route_token: durableBody.tools[0]!.route_token,
         }),
       });
       const frame = await call;
-      expect(frame).toMatchObject({ type: "call", session_id: sessionId });
+      expect(frame).toMatchObject({ type: "call", session_id: sessionId, turn_id: `${sessionId}:7` });
       socket.send(JSON.stringify({
         type: "result",
         call_id: frame.call_id,
@@ -467,6 +469,7 @@ describe("account Hosted Tools provider", () => {
     const successorReady = nextFrame(successor);
     successor.send(JSON.stringify({
       type: "catalog",
+      capabilities: ["turn_metadata"],
       tools: snapshot.tools.map(({ definition, route_token: _routeToken, ...entry }) => ({
         ...entry,
         definition: { ...definition, defer_loading: undefined },
@@ -525,6 +528,7 @@ describe("account Hosted Tools provider", () => {
     const [left, right] = await Promise.all([
       tool.handler({}, {
         sessionId: "agent-a",
+        turnId: "agent-a:7",
         callId: "call-a",
       }),
       tool.handler({}, {
@@ -536,6 +540,7 @@ describe("account Hosted Tools provider", () => {
     expect((left as Record<PropertyKey, unknown>)[TOOL_RESULT]).toBe(true);
     expect((right as Record<string, unknown>).value).toBe("agent-b");
     expect(calls.map((call) => call.session_id)).toEqual(["agent-a", "agent-b"]);
+    expect(calls.map((call) => call.turn_id)).toEqual(["agent-a:7", undefined]);
   });
 
   it("uses account-keyed objects and hides the catalog outside account-owned turns", async () => {

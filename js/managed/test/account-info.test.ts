@@ -198,6 +198,39 @@ function statuses() {
 }
 
 describe("managed accountInfo vault projection", () => {
+
+  it("preserves API-key and login metadata in live and retained account snapshots", async () => {
+    const vault = [
+      { id: "k".repeat(43), kind: "api_key", name: "Example API", created_at: 1 },
+      { id: LOGIN_ID, kind: "login", name: "Example login", created_at: 2,
+        username: "person", browser_origin: "https://example.com" },
+    ];
+    const result = await accountInfo({
+      fetch: async input => Response.json(
+        String(input).endsWith("/connectors") ? { connectors: {} } : { vault },
+      ),
+    }, "user", { enabled: true });
+    expect(result.vault).toEqual(vault);
+    expect(projectAccountInfo(result).vault).toEqual(vault);
+    expect(projectAccountInfo(result, []).vault).toEqual(vault);
+  });
+
+  it.each(["api_key", "value", "secret", "password"])(
+    "rejects unexpected %s fields on API-key metadata",
+    async field => {
+      const result = await accountInfo({
+        fetch: async input => Response.json(
+          String(input).endsWith("/connectors") ? { connectors: {} } : {
+            vault: [{ id: "k".repeat(43), kind: "api_key", name: "Example API",
+              created_at: 1, [field]: "synthetic-secret" }],
+          },
+        ),
+      }, "user", { enabled: true });
+      expect(result.vault).toEqual([]);
+      expect(JSON.stringify(result)).not.toContain("synthetic-secret");
+    },
+  );
+
   it("preserves approved login origins and rejects malformed origin metadata", async () => {
     for (const browser_origin of ["https://www.amazon.com", "http://www.amazon.com", "https://www.amazon.com/path"]) {
       const entry = { id: LOGIN_ID, kind: "login", name: "Amazon", created_at: 1, username: "person", browser_origin };

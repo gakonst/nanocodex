@@ -68,7 +68,7 @@ test("Codex optional nulls, long deadlines and current metadata survive the Node
   for (const timeout_ms of [null, 300_000, 2_147_483_648]) {
     const result = await js.handler({ code: "await new Promise(resolve=>setTimeout(resolve,20)); nodeRepl.write(JSON.stringify(nodeRepl.requestMeta));", title: null, timeout_ms }, context("metadata"));
     assert.equal(result.success, true);
-    assert.deepEqual(JSON.parse(result.output.at(-1).text)["x-codex-turn-metadata"], { thread_id: "metadata", call_id: "test", model: "gpt-6-astra" });
+    assert.deepEqual(JSON.parse(result.output.at(-1).text)["x-codex-turn-metadata"], { session_id: "metadata", thread_id: "metadata", call_id: "test", model: "gpt-6-astra" });
   }
 });
 

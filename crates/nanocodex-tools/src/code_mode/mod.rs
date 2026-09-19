@@ -1394,7 +1394,9 @@ async fn execute_nested_call(
         &call_id,
         context.history(),
         context.output_token_budget(),
-    );
+    )
+    .with_host_context(context.host_context())
+    .with_turn_id(context.turn_id());
     let execution = tools.execute_nested(&name, input.clone(), context).await;
     let duration_ns = u64::try_from(started_at.elapsed().as_nanos()).unwrap_or(u64::MAX);
     let value = execution.structured_result();

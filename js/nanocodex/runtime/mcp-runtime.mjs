@@ -396,7 +396,21 @@ async function callRemoteTool(entry, input, context) {
         : {}),
     };
     return entry.client.callTool(
-      { name: entry.remoteName, arguments: input ?? {} },
+      {
+        name: entry.remoteName,
+        arguments: input ?? {},
+        ...(context?.turnId == null ? {} : {
+          _meta: {
+            "x-codex-turn-metadata": {
+              session_id: context.sessionId,
+              thread_id: context.sessionId,
+              turn_id: context.turnId,
+              call_id: context.callId,
+              model: context.model,
+            },
+          },
+        }),
+      },
       undefined,
       options,
     );

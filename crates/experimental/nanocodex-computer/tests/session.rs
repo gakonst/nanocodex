@@ -85,7 +85,7 @@ async fn long_timeout_and_current_call_metadata_cross_the_rust_adapter() {
         let metadata: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(
             metadata["x-codex-turn-metadata"],
-            json!({"thread_id":"metadata-thread","call_id":call,"model":"owned-model"})
+            json!({"session_id":"metadata-thread","thread_id":"metadata-thread","call_id":call,"model":"owned-model"})
         );
     }
 }

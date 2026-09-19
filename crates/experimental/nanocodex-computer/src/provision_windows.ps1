@@ -1,6 +1,21 @@
 # Uses the same Store product and package identity as upstream codex/cli.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+# Get-FileHash is a module function and can be unavailable in a restricted
+# PowerShell host even when the core Utility cmdlets are present.
+function Get-Sha256FileHash([string]$LiteralPath) {
+    $stream = [IO.File]::OpenRead($LiteralPath)
+    try {
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try {
+            return [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $sha256.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
 $package = Get-AppxPackage -Name 'OpenAI.Codex' | Sort-Object Version -Descending | Select-Object -First 1
 if (-not $package -or $env:NANOCODEX_UPSTREAM_REFRESH -eq '1') {
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
@@ -49,7 +64,7 @@ $stage = $null
 try {
     $sourceNode = Join-Path $source 'cua_node\bin\node.exe'
     Copy-Item -LiteralPath $sourceNode -Destination $bootstrap
-    if ((Get-FileHash -LiteralPath $sourceNode -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $bootstrap -Algorithm SHA256).Hash) { throw 'Node bootstrap copy differs' }
+    if ((Get-Sha256FileHash $sourceNode) -ne (Get-Sha256FileHash $bootstrap)) { throw 'Node bootstrap copy differs' }
     $current = Join-Path $root 'provider.json'
     if ((Test-Path -LiteralPath $current -PathType Leaf) -and $env:NANOCODEX_UPSTREAM_REFRESH -ne '1') {
         $previous = Get-Content -LiteralPath $current -Raw | ConvertFrom-Json
