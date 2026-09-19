@@ -167,7 +167,8 @@ impl Publisher {
                     _ = &mut stopped => break,
                     changed = targets.changed() => {
                         if changed.is_err() { break; }
-                        if targets.borrow().endpoint() != target.endpoint() { broadcast.stop().await; }
+                        broadcast.stop().await;
+                        let _ = call(&backend, json!({"action":"release"}), Duration::from_secs(3)).await;
                         continue;
                     },
                     result = session(&target, &machine, &backend, video.as_ref(), audio.as_ref(), microphone_factory.clone(), dimensions, &capabilities, input_keepalive, require_video, &mut ready, &providers, &mut broadcast, &mut authorized_at) => result,
@@ -177,9 +178,9 @@ impl Publisher {
                     backend(json!({"action":"release"})),
                 )
                 .await;
-                if matches!(result, Err(SessionError::Unauthorized)) {
-                    broadcast.stop().await;
-                }
+                // The scoped request has been dropped; mutable ownership is back
+                // here before stopping any resources created during that request.
+                broadcast.stop().await;
                 if matches!(result, Err(SessionError::Replaced)) {
                     break;
                 }
@@ -348,6 +349,19 @@ impl Drop for OwnedJob {
         self.0.abort();
     }
 }
+// Joining cancellation prevents a preempted input future from racing native release.
+async fn cancel_job(job: &mut Option<OwnedJob>) -> bool {
+    let Some(mut job) = job.take() else {
+        return false;
+    };
+    job.0.abort();
+    let _ = (&mut job.0).await;
+    true
+}
+fn broadcast_failure(request: &Value, error: &str) -> Value {
+    json!({"type":"broadcast_result","viewer_id":request["viewer_id"],
+        "request_id":request["request_id"],"status":"failed","error":error})
+}
 async fn completed(job: &mut Option<OwnedJob>) -> Value {
     match job {
         Some(job) => (&mut job.0)
@@ -513,6 +527,11 @@ async fn session(
     let mut job = None;
     let mut frame = None;
     let mut request_id = String::new();
+    let broadcast_supported = broadcast.supported();
+    // The mutex lends mutable ownership to a single scoped future. Dropping the
+    // session cancels it before the publisher calls stop; no worker is detached.
+    let broadcast = tokio::sync::Mutex::new(broadcast);
+    let mut broadcast_job: Option<BoxFuture<'_, Result<Value, SessionError>>> = None;
     loop {
         tokio::select! {
             _ = tick.tick() => {
@@ -522,7 +541,12 @@ async fn session(
                     viewers.remove(&viewer);
                     send(&mut socket,json!({"type":"close_viewer","viewer_id":viewer})).await?;
                 }
-                if lease.expired() { release(&mut lease,backend,&mut socket).await?; }
+                if lease.expired() {
+                    if lease.owner().starts_with("agent:") && cancel_job(&mut job).await {
+                        send(&mut socket,json!({"type":"agent_result","request_id":std::mem::take(&mut request_id),"status":"cancelled"})).await?;
+                    }
+                    release(&mut lease,backend,&mut socket).await?;
+                }
                 if socket.microphone.active.is_some() && !socket.video.as_ref().is_some_and(|v| v.microphone_enabled(lease.owner())) {
                     if let Some(ack) = socket.microphone.stopped() { send(&mut socket, ack).await?; }
                 }
@@ -547,6 +571,13 @@ async fn session(
                         eprintln!("Hand video negotiation failed: {failure:?}");
                         send(&mut socket, json!({"type":"close_viewer","viewer_id":viewer})).await?;
                     }
+                }
+            },
+            result = async { match &mut broadcast_job { Some(job) => job.await, None => std::future::pending().await } } => {
+                broadcast_job = None;
+                let result = result?;
+                if viewers.contains(result["viewer_id"].as_str().unwrap_or("")) {
+                    send(&mut socket, result).await?;
                 }
             },
             result = completed(&mut job) => {
@@ -590,14 +621,26 @@ async fn session(
                         if !connection.is_empty(){return Err(SessionError::Closed);}
                         connection=value["connection_id"].as_str().filter(|s|!s.is_empty()).ok_or(SessionError::Closed)?.into();
                         let mut surface=json!({"id":"desktop","name":"Desktop","kind":if base.path().starts_with("/v1/vm-host-attachments/"){"vm"}else{"desktop"},"width":dimensions.0,"height":dimensions.1,"controllable":true,"agent_tools":true});
-                        surface["broadcast"]=json!(broadcast.supported());
+                        surface["broadcast"]=json!(broadcast_supported);
                         if socket.video.is_none(){surface["transport"]=json!("frames-v1");surface["frame_window"]=json!(6);}
                         send(&mut socket,json!({"type":"catalog","machine_id":machine.id(),"machine_name":machine.name(),"surfaces":[surface]})).await?;
                     },
                     "published"=>{tracing::info!(target: "nanocodex2", stage = "screen.published", machine_id = machine.id(), elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);generation=value["generation"].as_str().ok_or(SessionError::Closed)?.into();if let Some(ready)=ready.take(){let _=ready.send(());}},
                     "broadcast" if viewers.contains(viewer) && value["surface_id"] == "desktop" => {
-                        let result = broadcast.request(&value).await;
-                        send(&mut socket, result).await?;
+                        if broadcast_job.is_some() {
+                            send(&mut socket, broadcast_failure(&value, "busy")).await?;
+                        } else {
+                            let broadcast = &broadcast;
+                            broadcast_job = Some(Box::pin(async move {
+                                let mut broadcast = broadcast.lock().await;
+                                match tokio::time::timeout(Duration::from_secs(5), broadcast.request(&value)).await {
+                                    Ok(result) => Ok(result),
+                                    // Return ownership to the publisher for stop/cleanup.
+                                    // A timed-out start must not outlive this session.
+                                    Err(_) => Err(SessionError::Closed),
+                                }
+                            }));
+                        }
                     },
                     "renewed"=>*last_authorized=Instant::now(),
                     "pong"=>{},
@@ -658,7 +701,7 @@ async fn session(
                             "acquire" if data.get("generation").is_none()=>{
                                 // A human cancels an agent before receiving the input lease.
                                 if lease.owner().starts_with("agent:") || lease.expired() {
-                                    if job.take().is_some(){send(&mut socket,json!({"type":"agent_result","request_id":std::mem::take(&mut request_id),"status":"cancelled"})).await?;}
+                                    if cancel_job(&mut job).await{send(&mut socket,json!({"type":"agent_result","request_id":std::mem::take(&mut request_id),"status":"cancelled"})).await?;}
                                     release(&mut lease,backend,&mut socket).await?;
                                 }
                                 if lease.owner().is_empty(){release(&mut lease,backend,&mut socket).await?;socket.microphone.refreshed(Instant::now());lease.acquire(viewer);
@@ -696,9 +739,10 @@ async fn session(
                             if result["status"]!="ok" {release(&mut lease,backend,&mut socket).await?;}
                         }
                     },
-                    "agent_cancel"=>{if value["request_id"]==request_id && job.take().is_some(){release(&mut lease,backend,&mut socket).await?;send(&mut socket,json!({"type":"agent_result","request_id":std::mem::take(&mut request_id),"status":"cancelled"})).await?;}},
+                    "agent_cancel"=>{if value["request_id"]==request_id && cancel_job(&mut job).await{release(&mut lease,backend,&mut socket).await?;send(&mut socket,json!({"type":"agent_result","request_id":std::mem::take(&mut request_id),"status":"cancelled"})).await?;}},
                     "agent_call"=>{
                         let id=value["request_id"].as_str().unwrap_or("");let action=&value["input"];let now=now_ms();let deadline=value["deadline_at"].as_u64().unwrap_or(0);
+                        let job_deadline = tokio::time::Instant::now() + Duration::from_millis(deadline.saturating_sub(now).min(10_000));
                         let owner=format!("agent:{}",value["agent_id"].as_str().unwrap_or(""));
                         let status=if value["surface_id"]!="desktop" || value["generation"]!=generation || !valid_id(id) || !valid_id(value["agent_id"].as_str().unwrap_or("")) || deadline<=now || deadline>now+10_000 {Some("invalid")}
                         else if job.is_some() || (!lease.owner().is_empty() && !lease.expired() && action["action"]!="observe" && lease.owner()!=owner) {Some("busy")} else {None};
@@ -712,10 +756,23 @@ async fn session(
                         }
                         let providers = providers.clone();
                         let settle = !steps.is_empty();
+                        if settle {
+                            // Native release can await up to three seconds: recheck the
+                            // original deadline before acquiring or starting any input.
+                            release(&mut lease, backend, &mut socket).await?;
+                        }
+                        if tokio::time::Instant::now() >= job_deadline {
+                            send(&mut socket,json!({"type":"agent_result","request_id":id,"status":"cancelled"})).await?;
+                            continue;
+                        }
+                        if settle { lease.acquire(&owner); }
                         let backend=backend.clone();request_id=id.into();
                         job=Some(OwnedJob(tokio::spawn(async move{
-                            tokio::time::timeout(Duration::from_millis(deadline.saturating_sub(now_ms())),async{
-                                for (delay,input) in steps {if !delay.is_zero(){tokio::time::sleep(delay).await;}let result=call(&backend,json!({"action":"input","input":input}),Duration::from_secs(2)).await;if result["status"]!="ok"{return result;}}
+                            tokio::time::timeout_at(job_deadline,async{
+                                // Tokio polls the inner future before its timeout. Do not
+                                // inject when scheduling consumed the remaining budget.
+                                if tokio::time::Instant::now() >= job_deadline { return json!({"status":"cancelled"}); }
+                                for (delay,input) in steps {if !delay.is_zero(){tokio::time::sleep(delay).await;}if tokio::time::Instant::now() >= job_deadline {return json!({"status":"cancelled"});}let result=call(&backend,json!({"action":"input","input":input}),Duration::from_secs(2)).await;if result["status"]!="ok"{return result;}}
                                 if settle { tokio::time::sleep(Duration::from_millis(80)).await; }
                                 observe_agent(&backend, &providers, context, deadline).await
                             }).await.unwrap_or_else(|_|json!({"status":"cancelled"}))
@@ -879,6 +936,189 @@ fn steps(action: &Value) -> Result<Vec<(Duration, Value)>, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TestWire = tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>;
+    async fn wire_send(wire: &mut TestWire, value: Value) {
+        wire.send(Message::Text(value.to_string().into()))
+            .await
+            .unwrap();
+    }
+    async fn wire_read(wire: &mut TestWire) -> Value {
+        let message = tokio::time::timeout(Duration::from_secs(1), wire.next())
+            .await
+            .expect("session stopped processing messages")
+            .unwrap()
+            .unwrap();
+        serde_json::from_str(message.to_text().unwrap()).unwrap()
+    }
+    async fn test_session(backend: Backend, options: Options) -> (Publisher, TestWire) {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = PublisherTarget::from_attachment(
+            &format!(
+                "ws://{}/v1/account/tool-host",
+                listener.local_addr().unwrap()
+            ),
+            "test-token",
+        )
+        .unwrap();
+        let peer = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut wire = tokio_tungstenite::accept_async(stream).await.unwrap();
+            wire_send(&mut wire, json!({"type":"ready","connection_id":"test"})).await;
+            assert_eq!(wire_read(&mut wire).await["type"], "catalog");
+            wire_send(&mut wire, json!({"type":"published","generation":"g"})).await;
+            wire_send(
+                &mut wire,
+                json!({"type":"viewer","viewer_id":"v","surface_id":"desktop"}),
+            )
+            .await;
+            wire
+        });
+        let publisher = Publisher::start(
+            &target,
+            &Machine::new("test", "Test").unwrap(),
+            backend,
+            options,
+        )
+        .await
+        .unwrap();
+        (publisher, peer.await.unwrap())
+    }
+    #[tokio::test]
+    async fn human_takeover_cancels_agent_input_before_native_release_and_grant() {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        struct InputGuard(Arc<std::sync::Mutex<Vec<&'static str>>>);
+        impl Drop for InputGuard {
+            fn drop(&mut self) {
+                self.0.lock().unwrap().push("cancelled");
+            }
+        }
+        let backend: Backend = {
+            let events = events.clone();
+            let entered = entered.clone();
+            Arc::new(move |input| {
+                let events = events.clone();
+                let entered = entered.clone();
+                Box::pin(async move {
+                    if input["action"] == "input" {
+                        let _guard = InputGuard(events.clone());
+                        events.lock().unwrap().push("input");
+                        entered.notify_one();
+                        std::future::pending::<()>().await;
+                    }
+                    if input["action"] == "release" {
+                        events.lock().unwrap().push("release");
+                    }
+                    Ok(json!({"status":"ok","jpeg":"/9j/a","width":1,"height":1}))
+                })
+            })
+        };
+        let (publisher, mut wire) = test_session(backend, Options::default()).await;
+        wire_send(&mut wire, json!({"type":"agent_call","request_id":"r","agent_id":"a","surface_id":"desktop","generation":"g","deadline_at":now_ms()+9000,"input":{"action":"click","x":1,"y":1}})).await;
+        tokio::time::timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .unwrap();
+        wire_send(
+            &mut wire,
+            json!({"type":"control","viewer_id":"v","data":{"type":"acquire"}}),
+        )
+        .await;
+        let cancelled = wire_read(&mut wire).await;
+        assert_eq!(cancelled["type"], "agent_result");
+        assert_eq!(cancelled["request_id"], "r");
+        assert_eq!(cancelled["status"], "cancelled");
+        let grant = wire_read(&mut wire).await;
+        assert_eq!(grant["data"]["type"], "granted");
+        let recorded = events.lock().unwrap().clone();
+        let input = recorded.iter().position(|event| *event == "input").unwrap();
+        assert_eq!(
+            &recorded[input..input + 3],
+            &["input", "cancelled", "release"]
+        );
+        assert_eq!(
+            recorded.iter().filter(|event| **event == "input").count(),
+            1
+        );
+        publisher.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    async fn stalled_broadcast_allows_control_and_busy_reply_and_cancels_on_shutdown() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Stall {
+            entered: Arc<tokio::sync::Notify>,
+            dropped: Arc<AtomicBool>,
+            stopped: Arc<AtomicBool>,
+        }
+        struct RequestGuard(Arc<AtomicBool>);
+        impl Drop for RequestGuard {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        impl Broadcast for Stall {
+            fn supported(&self) -> bool {
+                true
+            }
+            fn request<'a>(&'a mut self, _: &'a Value) -> BoxFuture<'a, Value> {
+                Box::pin(async move {
+                    let _guard = RequestGuard(self.dropped.clone());
+                    self.entered.notify_one();
+                    std::future::pending().await
+                })
+            }
+            fn stop(&mut self) -> BoxFuture<'_, ()> {
+                Box::pin(async move {
+                    assert!(self.dropped.load(Ordering::SeqCst));
+                    self.stopped.store(true, Ordering::SeqCst);
+                })
+            }
+        }
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let options = Options {
+            broadcast: Box::new(Stall {
+                entered: entered.clone(),
+                dropped: dropped.clone(),
+                stopped: stopped.clone(),
+            }),
+            ..Options::default()
+        };
+        let backend: Backend = Arc::new(|_| {
+            Box::pin(async { Ok(json!({"status":"ok","jpeg":"/9j/a","width":1,"height":1})) })
+        });
+        let (publisher, mut wire) = test_session(backend, options).await;
+        wire_send(
+            &mut wire,
+            json!({"type":"broadcast","viewer_id":"v","surface_id":"desktop","request_id":"b1"}),
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .unwrap();
+        wire_send(
+            &mut wire,
+            json!({"type":"control","viewer_id":"v","data":{"type":"acquire"}}),
+        )
+        .await;
+        assert_eq!(wire_read(&mut wire).await["data"]["type"], "granted");
+        wire_send(
+            &mut wire,
+            json!({"type":"broadcast","viewer_id":"v","surface_id":"desktop","request_id":"b2"}),
+        )
+        .await;
+        let busy = wire_read(&mut wire).await;
+        assert_eq!(busy["request_id"], "b2");
+        assert_eq!(busy["error"], "busy");
+        assert!(!dropped.load(Ordering::SeqCst));
+        tokio::time::timeout(Duration::from_secs(1), publisher.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(dropped.load(Ordering::SeqCst));
+        assert!(stopped.load(Ordering::SeqCst));
+    }
     #[tokio::test]
     async fn replaced_host_finishes_and_releases_without_reclaiming() {
         let _ = rustls::crypto::ring::default_provider().install_default();
