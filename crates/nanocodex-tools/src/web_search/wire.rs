@@ -213,7 +213,6 @@ pub(super) struct SearchResponse {
     pub(super) results: Option<Vec<Value>>,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::SearchCommands;
@@ -233,9 +232,18 @@ mod tests {
 
     #[test]
     fn codex_commands_accept_empty_null_and_ignore_unknown_fields() {
-        let commands: SearchCommands = serde_json::from_value(json!({"unknown": true, "open": null})).unwrap();
+        let commands: SearchCommands =
+            serde_json::from_value(json!({"unknown": true, "open": null})).unwrap();
         assert_eq!(serde_json::to_value(commands).unwrap(), json!({}));
-        assert!(serde_json::from_value::<SearchCommands>(json!({"open": "https://example.com"})).is_err());
-        assert!(serde_json::from_value::<SearchCommands>(json!({"screenshot": [{"ref_id":"a", "pageno":-1}]})).is_err());
+        assert!(
+            serde_json::from_value::<SearchCommands>(json!({"open": "https://example.com"}))
+                .is_err()
+        );
+        assert!(
+            serde_json::from_value::<SearchCommands>(
+                json!({"screenshot": [{"ref_id":"a", "pageno":-1}]})
+            )
+            .is_err()
+        );
     }
 }

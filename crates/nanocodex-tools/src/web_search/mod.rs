@@ -259,8 +259,6 @@ fn response_too_large() -> RequestFailure {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use nanocodex_oai_api::tools::{ToolContext, ToolOutputBody};
@@ -295,9 +293,9 @@ mod tests {
 
     #[test]
     fn web_schema_matches_pinned_upstream_fixture() {
-        let expected: serde_json::Value = serde_json::from_str(include_str!(
-            "../../tests/fixtures/codex-parity/web.json"
-        )).unwrap();
+        let expected: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/codex-parity/web.json"))
+                .unwrap();
         assert_eq!(super::schema::commands_schema(), expected);
     }
 
