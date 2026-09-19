@@ -43,6 +43,7 @@ pub(super) struct ChildSession {
     pub(super) next_turn_token: u64,
     pub(super) active_turn_token: Option<u64>,
     pub(super) steering: bool,
+    pub(super) pending_steers: usize,
     pub(super) submitted_output: Option<Value>,
     pub(super) last_output: Option<Value>,
     pub(super) last_used: u64,
@@ -202,7 +203,6 @@ pub(super) struct DelegationChange {
 
 pub(super) struct TurnSteer {
     id: AgentId,
-    previous_token: u64,
     token: u64,
 }
 
@@ -257,6 +257,11 @@ impl RegistryState {
                 "submit_result used a stale or unknown turn_token",
             ));
         }
+        if session.pending_steers != 0 {
+            return Err(std::io::Error::other(
+                "queued steering must reach the model before submit_result; process the new instructions and retry",
+            ));
+        }
         if session.submitted_output.is_some() {
             return Err(std::io::Error::other(
                 "submit_result already accepted one result for this turn",
@@ -287,16 +292,13 @@ impl RegistryState {
         if !session.active || session.steering || session.submitted_output.is_some() {
             return None;
         }
-        let previous_token = session.active_turn_token?;
-        let token = session.next_turn_token.checked_add(1)?;
-        session.next_turn_token = token;
-        session.active_turn_token = Some(token);
+        // Steering is queued for a later model boundary in this same turn.
+        // Its in-flight response can still submit using the original prompt's
+        // token. Allocate a fresh token only when another turn starts.
+        let token = session.active_turn_token?;
         session.steering = true;
-        Some(TurnSteer {
-            id,
-            previous_token,
-            token,
-        })
+        session.pending_steers += 1;
+        Some(TurnSteer { id, token })
     }
 
     fn finish_turn_steer(&mut self, root_session_id: &str, steer: TurnSteer, committed: bool) {
@@ -311,9 +313,21 @@ impl RegistryState {
             return;
         }
         if !committed {
-            session.active_turn_token = Some(steer.previous_token);
+            session.pending_steers = session.pending_steers.saturating_sub(1);
         }
         session.steering = false;
+    }
+
+    fn steer_applied(&mut self, root_session_id: &str, id: AgentId, token: u64) {
+        if let Some(session) = self
+            .scopes
+            .get_mut(root_session_id)
+            .and_then(|scope| scope.sessions.get_mut(&id))
+            && session.active
+            && session.active_turn_token == Some(token)
+        {
+            session.pending_steers = session.pending_steers.saturating_sub(1);
+        }
     }
 
     fn reserve_for(&mut self, session_id: &str) -> std::io::Result<AgentReservation> {
@@ -1156,6 +1170,13 @@ impl Registry {
             .finish_turn_steer(root_session_id, steer, committed);
     }
 
+    pub(super) async fn steer_applied(&self, root_session_id: &str, id: AgentId, token: u64) {
+        self.state
+            .lock()
+            .await
+            .steer_applied(root_session_id, id, token);
+    }
+
     pub(super) async fn insert(
         self: &Arc<Self>,
         root_session_id: String,
@@ -1192,6 +1213,7 @@ impl Registry {
                 next_turn_token: 0,
                 active_turn_token: None,
                 steering: false,
+                pending_steers: 0,
                 submitted_output: None,
                 last_output: None,
                 last_used: 0,
@@ -1238,6 +1260,7 @@ impl Registry {
                 session.active_turn_token = Some(token);
                 session.active = true;
                 session.steering = false;
+                session.pending_steers = 0;
                 session.submitted_output = None;
                 session.last_used = last_used;
                 session.status = AgentStatus::Running;
@@ -1369,6 +1392,7 @@ impl Registry {
                 session.active = false;
                 session.active_turn_token = None;
                 session.steering = false;
+                session.pending_steers = 0;
                 session.submitted_output = None;
                 if session.evicted && !matches!(session.status, AgentStatus::Closing) {
                     None
@@ -1856,6 +1880,7 @@ fn restored_tombstone(descriptor: AgentDescriptor, host_context: Option<Arc<str>
         next_turn_token: 0,
         active_turn_token: None,
         steering: false,
+        pending_steers: 0,
         submitted_output: None,
         last_output: None,
         last_used: 0,
@@ -2007,6 +2032,68 @@ mod tests {
         time::timeout,
     };
     use tower::Service;
+
+    #[derive(Clone)]
+    struct ControlledService {
+        requests:
+            mpsc::UnboundedSender<(ResponsesAttempt, oneshot::Sender<ResponsesServiceResponse>)>,
+    }
+
+    impl Service<ResponsesAttempt> for ControlledService {
+        type Response = ResponsesServiceResponse;
+        type Error = ResponseError;
+        type Future =
+            futures_util::future::BoxFuture<'static, StdResult<Self::Response, Self::Error>>;
+
+        fn poll_ready(&mut self, _context: &mut Context<'_>) -> Poll<StdResult<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, request: ResponsesAttempt) -> Self::Future {
+            let (respond, response) = oneshot::channel();
+            self.requests.send((request, respond)).ok().unwrap();
+            Box::pin(async move { Ok(response.await.unwrap()) })
+        }
+    }
+
+    fn model_response(id: &str, output: Option<serde_json::Value>) -> ResponsesServiceResponse {
+        use nanocodex_oai_api::tower::{
+            CodeCall, CodeCallKind, GenerationOutput, ResponsePipelineStats, ResponsesOutput,
+        };
+        let mut output_items = Vec::new();
+        let mut code_calls = Vec::new();
+        if let Some(output) = output {
+            let input = json!({ "turn_token": 1, "output": output }).to_string();
+            output_items.push(
+                serde_json::from_value(json!({
+                    "type": "function_call",
+                    "call_id": id,
+                    "name": "submit_result",
+                    "arguments": input,
+                }))
+                .unwrap(),
+            );
+            code_calls.push(CodeCall {
+                call_id: id.to_owned(),
+                name: "submit_result".to_owned(),
+                namespace: None,
+                input,
+                kind: CodeCallKind::Function,
+            });
+        }
+        ResponsesServiceResponse::new(ResponsesOutput::Generation(GenerationOutput {
+            id: id.to_owned(),
+            status: "completed".to_owned(),
+            end_turn: Some(code_calls.is_empty()),
+            final_message: code_calls.is_empty().then(|| "Done.".to_owned()),
+            output_items,
+            code_calls,
+            usage: None,
+            time_to_first_event_ns: 0,
+            time_to_first_output_ns: None,
+            pipeline_stats: ResponsePipelineStats::default(),
+        }))
+    }
 
     #[derive(Clone)]
     struct PendingService {
@@ -2537,6 +2624,7 @@ mod tests {
             next_turn_token: 0,
             active_turn_token: None,
             steering: false,
+            pending_steers: 0,
             submitted_output: None,
             last_output: None,
             last_used: 0,
@@ -2665,7 +2753,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn steering_rotates_the_token_and_stops_after_submission() {
+    async fn steering_preserves_the_token_and_stops_after_submission() {
         let mut registry = RegistryState::default();
         let reservation = registry.reserve("main", None).unwrap();
         let mut session = test_session(reservation.id, "child-session", None);
@@ -2683,15 +2771,20 @@ mod tests {
             .unwrap();
 
         let steer = registry.begin_turn_steer("main", reservation.id).unwrap();
-        assert_eq!(steer.token(), 2);
+        assert_eq!(steer.token(), 1);
+        assert!(registry.begin_turn_steer("main", reservation.id).is_none());
+        let error = registry
+            .submit_result("child-session", 1, json!({ "report": "during admission" }))
+            .unwrap_err();
+        assert!(error.to_string().contains("being steered"));
         registry.finish_turn_steer("main", steer, true);
-        assert!(
-            registry
-                .submit_result("child-session", 1, json!({ "report": "stale" }))
-                .is_err()
-        );
+        registry.steer_applied("main", reservation.id, 1);
+        let error = registry
+            .submit_result("child-session", 2, json!({ "report": "unknown token" }))
+            .unwrap_err();
+        assert!(error.to_string().contains("stale or unknown"));
         registry
-            .submit_result("child-session", 2, json!({ "report": "current" }))
+            .submit_result("child-session", 1, json!({ "report": "current" }))
             .unwrap();
 
         assert!(registry.begin_turn_steer("main", reservation.id).is_none());
@@ -3187,6 +3280,248 @@ mod tests {
             .unwrap();
 
         assert_eq!(receipt.disposition, MessageDisposition::Steered);
+        registry.close_all("main").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn urgent_delegation_rejects_in_flight_result_and_completes_with_revised_output() {
+        use nanocodex_oai_api::{responses::WarmupResponse, tower::ResponsesOutput};
+        use nanocodex_tools::Tools;
+
+        let (registry, _control, _updates) = super::channel(32);
+        let (requests, mut observed) = mpsc::unbounded_channel();
+        let openai = OpenAi::builder("test-key")
+            .service(move || ControlledService {
+                requests: requests.clone(),
+            })
+            .build()
+            .unwrap();
+        let tool_registry = Arc::clone(&registry);
+        let (agent, events) = Nanocodex::builder(openai)
+            .tools_factory(move |parent| {
+                crate::install_tools(
+                    Tools::builder().without_defaults().build()?,
+                    parent,
+                    Arc::clone(&tool_registry),
+                )
+            })
+            .build()
+            .unwrap();
+        let reservation = registry.reserve("main").await.unwrap();
+        let target = reservation.id;
+        insert_runtime_session(&registry, &reservation, None, agent, events).await;
+        registry
+            .launch_initial_turn(
+                "main",
+                target,
+                "Report the original result.".to_owned(),
+                registry.reserve_turn().unwrap(),
+            )
+            .await
+            .unwrap();
+        let (_, respond) = timeout(Duration::from_secs(5), observed.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        respond
+            .send(ResponsesServiceResponse::new(ResponsesOutput::Warmup(
+                WarmupResponse {
+                    id: "warmup".to_owned(),
+                    usage: None,
+                },
+            )))
+            .ok()
+            .unwrap();
+        let (_, respond) = timeout(Duration::from_secs(5), observed.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let correction = "Replace the original task: report corrected result.";
+        let receipt = registry
+            .send_message(
+                "main",
+                target,
+                MessagePriority::Urgent,
+                MessagePurpose::Delegate,
+                None,
+                correction.to_owned(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt.disposition, MessageDisposition::Steered);
+        // The original provider response was generated before the correction.
+        respond
+            .send(model_response(
+                "old-result",
+                Some(json!({"report": "original"})),
+            ))
+            .ok()
+            .unwrap();
+        let (revised, respond) = timeout(Duration::from_secs(5), observed.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let revised_input =
+            serde_json::to_string(&revised.input_items().collect::<Vec<_>>()).unwrap();
+        drop(revised);
+        assert!(revised_input.contains(correction));
+        respond
+            .send(model_response(
+                "revised-result",
+                Some(json!({"report": "corrected"})),
+            ))
+            .ok()
+            .unwrap();
+        let (_, respond) = timeout(Duration::from_secs(5), observed.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        respond.send(model_response("finished", None)).ok().unwrap();
+        let (results, timed_out) = registry
+            .wait("main", &[target], Duration::from_secs(5))
+            .await
+            .unwrap();
+        registry.close_all("main").await.unwrap();
+        assert!(!timed_out);
+        assert_eq!(
+            results[0].status,
+            AgentStatus::Completed {
+                output: json!({"report": "corrected"})
+            }
+        );
+        assert!(revised_input.contains("queued steering"));
+    }
+
+    #[tokio::test]
+    async fn running_child_does_not_retain_the_consumed_event_mirror() {
+        let (registry, _control, mut updates) = super::channel(32);
+        let called = Arc::new(Notify::new());
+        let (target, _) =
+            insert_pending_runtime_session(&registry, "main", None, Arc::clone(&called)).await;
+        registry
+            .launch_initial_turn(
+                "main",
+                target,
+                "Keep working.".to_owned(),
+                registry.reserve_turn().unwrap(),
+            )
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(5), called.notified())
+            .await
+            .unwrap();
+        let payload = timeout(Duration::from_secs(5), async {
+            loop {
+                let update = updates.recv().await.unwrap();
+                if let AgentUpdate::Event { event, .. } = update.update
+                    && matches!(
+                        event.kind,
+                        nanocodex_agent::events::AgentEventKind::ModelWarmupStarted
+                            | nanocodex_agent::events::AgentEventKind::ModelCallStarted
+                    )
+                {
+                    break Arc::downgrade(&event.payload);
+                }
+            }
+        })
+        .await
+        .unwrap();
+        // The model is still pending. Consuming the forwarded event must free
+        // its body now, rather than retaining it until the whole turn finishes.
+        let released = timeout(Duration::from_secs(5), async {
+            while payload.strong_count() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        registry.close_all("main").await.unwrap();
+        assert!(
+            released.is_ok(),
+            "the unpolled per-turn event mirror retained the payload"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_urgent_messages_preserve_the_in_flight_turn_token() {
+        let (registry, _control, _updates) = super::channel(32);
+        let target_called = Arc::new(Notify::new());
+        let (target, target_session) =
+            insert_pending_runtime_session(&registry, "main", None, Arc::clone(&target_called))
+                .await;
+        registry
+            .launch_initial_turn(
+                "main",
+                target,
+                "Report the investigation result.".to_owned(),
+                registry.reserve_turn().unwrap(),
+            )
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(5), target_called.notified())
+            .await
+            .unwrap();
+        let token = registry.state.lock().await.scopes["main"].sessions[&target]
+            .active_turn_token
+            .unwrap();
+
+        // The model request is still in flight. Neither queued message can have
+        // reached its next model boundary, so it only knows the initial token.
+        for message in ["Report what you found.", "Include the relevant evidence."] {
+            let receipt = registry
+                .send_message(
+                    "main",
+                    target,
+                    MessagePriority::Urgent,
+                    MessagePurpose::Coordinate,
+                    None,
+                    message.to_owned(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(receipt.disposition, MessageDisposition::Steered);
+        }
+        let error = registry
+            .submit_result(&target_session, token, json!({ "report": "done" }))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("queued steering"));
+        assert_eq!(
+            registry.state.lock().await.scopes["main"].sessions[&target].active_turn_token,
+            Some(token)
+        );
+
+        // The same token must still be rejected once this actual turn ends.
+        registry.interrupt("main", target).await.unwrap();
+        let error = registry
+            .submit_result(&target_session, token, json!({ "report": "late" }))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("active subagent turn"));
+        registry
+            .launch_initial_turn(
+                "main",
+                target,
+                "Start a separate investigation.".to_owned(),
+                registry.reserve_turn().unwrap(),
+            )
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(5), target_called.notified())
+            .await
+            .unwrap();
+        let next_token = registry.state.lock().await.scopes["main"].sessions[&target]
+            .active_turn_token
+            .unwrap();
+        assert_eq!(next_token, token + 1);
+        let error = registry
+            .submit_result(&target_session, token, json!({ "report": "previous turn" }))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("stale or unknown"));
+        registry
+            .submit_result(&target_session, next_token, json!({ "report": "new turn" }))
+            .await
+            .unwrap();
         registry.close_all("main").await.unwrap();
     }
 

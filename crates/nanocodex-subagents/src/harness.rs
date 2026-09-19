@@ -9,8 +9,10 @@ use super::{
     platform::{self, Task, TaskError},
     runtime::{DelegationChange, Registry, completion_instructions},
 };
+use futures_util::{Stream, future::poll_fn};
+use nanocodex_agent::events::AgentEventKind;
 use nanocodex_agent::{Nanocodex, NanocodexError, Result as AgentResult, TurnControl, TurnResult};
-use std::{collections::VecDeque, sync::Weak};
+use std::{collections::VecDeque, future::Future, pin::Pin, sync::Weak, task::Poll};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::Instrument;
 
@@ -557,7 +559,35 @@ impl Harness {
             }
         };
         let control = turn.control();
-        let result = platform::spawn(turn);
+        let root_session_id = self.root_session_id.clone();
+        let id = self.id;
+        let registry = self.registry.clone();
+        let result = platform::spawn(async move {
+            let mut turn = turn;
+            loop {
+                // Turn's event receiver is independent of its Future. Drain it
+                // while awaiting completion, and apply steering barriers only
+                // from this exact turn's events.
+                let next = poll_fn(|cx| {
+                    if let Poll::Ready(Some(event)) = Pin::new(&mut turn).poll_next(cx) {
+                        return Poll::Ready(Ok(event));
+                    }
+                    Pin::new(&mut turn).poll(cx).map(Err)
+                })
+                .await;
+                match next {
+                    Ok(event) if event.kind == AgentEventKind::RunSteered => {
+                        if let Some(registry) = registry.upgrade() {
+                            registry
+                                .steer_applied(&root_session_id, id, turn_token)
+                                .await;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(result) => return result,
+                }
+            }
+        });
         self.active = Some(ActiveTurn {
             control,
             result,

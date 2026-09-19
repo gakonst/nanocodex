@@ -35,6 +35,7 @@ impl QueueId {
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum QueueEffect {
     Blur,
+    Discard { id: QueueId },
     Edit { id: QueueId, prompt: Submission },
     Steer { id: QueueId, prompt: Submission },
 }
@@ -132,6 +133,16 @@ impl MessageQueue {
         prompt
     }
 
+    pub(super) fn is_unconfirmed_steer(&self, id: QueueId) -> bool {
+        self.items.iter().any(|item| {
+            item.id == id
+                && matches!(
+                    item.state,
+                    QueueItemState::UnconfirmedSteer | QueueItemState::EditingUnconfirmed
+                )
+        })
+    }
+
     pub(super) fn finish_edit(&mut self, id: QueueId, prompt: impl Into<Submission>) -> bool {
         let Some(index) = self.items.iter().position(|item| item.id == id) else {
             return false;
@@ -212,8 +223,8 @@ impl MessageQueue {
     }
 
     pub(super) fn steer_admitted(&mut self, id: QueueId) -> Option<(QueueId, Submission)> {
-        // Only this request's HTTP acknowledgement confirms admission. Shared
-        // run.steered events do not identify the submitting client or instruction.
+        // This request's HTTP acknowledgement or correlated durable receipt confirms
+        // admission. Generic run.steered telemetry cannot identify the input.
         let text = self.remove_id(id).map(|prompt| (id, prompt));
         self.sync_steering_wave();
         text
@@ -354,7 +365,17 @@ impl MessageQueue {
             KeyCode::Up => self.move_selection(false),
             KeyCode::Down => self.move_selection(true),
             KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => {
-                self.remove_selected().is_some()
+                let Some((_, item)) = self.remove_selected() else {
+                    return ComponentUpdate::none();
+                };
+                return ComponentUpdate {
+                    effects: if item.state == QueueItemState::UnconfirmedSteer {
+                        vec![QueueEffect::Discard { id: item.id }]
+                    } else {
+                        Vec::new()
+                    },
+                    render: RenderRequest::Immediate,
+                };
             }
             KeyCode::Char('e') => {
                 let Some(item) = self.items.get_mut(self.selected) else {

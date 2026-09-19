@@ -52,8 +52,8 @@ export function watchManagedAgentFamilyEvents(
     listener: InternalEventListener,
   ) => () => void;
   onEvent((event, _encodedLength, _encodedEvent, agentId) => {
-    // Full provider frames remain telemetry. In particular api.event repeats
-    // requests and cumulative bodies already represented by normalized events.
+    // Managed agents disable raw API events at their Rust producer before
+    // serialization. Keep this guard for older or external event sources.
     if (REPLAY_EVENTS.has(event.type)) {
       listeners.replay(event, agentId);
       return;

@@ -272,6 +272,29 @@ impl ManagedSessionState {
         )
     }
 
+    /// Whether the saved usage covers every retained item, including local input.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn context_usage_is_estimate(&self) -> bool {
+        self.context.token_usage_is_estimate
+    }
+
+    /// Restores accounting for unchanged durable history. Image repairs retain
+    /// their newly computed baseline instead of reinstalling stale usage.
+    #[doc(hidden)]
+    pub fn restore_context_usage(
+        &mut self,
+        usage: Option<&Usage>,
+        server_reasoning_included: bool,
+        is_estimate: bool,
+    ) {
+        self.observe_server_reasoning(server_reasoning_included);
+        if self.history_revision == 0 {
+            self.context.update_token_info(usage);
+            self.context.token_usage_is_estimate = usage.is_some() && is_estimate;
+        }
+    }
+
     /// Records usage from the most recent completed provider operation.
     pub fn update_token_info(&mut self, usage: Option<&Usage>) {
         self.context.update_token_info(usage);

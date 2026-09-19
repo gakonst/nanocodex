@@ -730,6 +730,7 @@ impl AgentEventPublisher {
 #[cfg(feature = "client")]
 pub struct EventSink {
     publisher: AgentEventPublisher,
+    raw_api_events: bool,
 }
 
 #[cfg(feature = "client")]
@@ -738,7 +739,7 @@ impl EventSink {
     #[must_use]
     pub fn channel(request_id: String) -> (Self, AgentEvents) {
         let (publisher, events) = AgentEventPublisher::channel(request_id);
-        (Self { publisher }, events)
+        (Self::from_publisher(publisher), events)
     }
 
     /// Returns the stable request/session identity attached to emitted events.
@@ -755,7 +756,13 @@ impl EventSink {
     #[must_use]
     pub fn mirrored_channel(&self) -> (Self, AgentEvents) {
         let (publisher, events) = self.publisher.mirrored_channel();
-        (Self { publisher }, events)
+        (
+            Self {
+                publisher,
+                raw_api_events: self.raw_api_events,
+            },
+            events,
+        )
     }
 
     /// Emits an event when a receiver is present and otherwise discards it.
@@ -792,7 +799,9 @@ impl EventSink {
         payload: P,
         source_received_ns: Option<u64>,
     ) -> Result<u64, EventError> {
-        if self.publisher.channel.receivers_are_closed() {
+        if (kind == AgentEventKind::ApiEvent && !self.raw_api_events)
+            || self.publisher.channel.receivers_are_closed()
+        {
             let seq = self.publisher.channel.allocate_sequence()?;
             self.publisher.channel.record_local_terminal(kind);
             return Ok(seq);
@@ -822,7 +831,19 @@ impl EventSink {
     #[doc(hidden)]
     #[must_use]
     pub const fn from_publisher(publisher: AgentEventPublisher) -> Self {
-        Self { publisher }
+        Self {
+            publisher,
+            raw_api_events: true,
+        }
+    }
+
+    /// Selects whether raw API payloads are serialized and published.
+    /// Normalized output and progress events are unaffected.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn with_raw_api_events(mut self, enabled: bool) -> Self {
+        self.raw_api_events = enabled;
+        self
     }
 
     /// Returns the backend-neutral canonical publisher used by this emitter.
@@ -897,6 +918,48 @@ mod tests {
                 .emit_with_sequence(AgentEventKind::ApiEvent, MustNotSerialize)
                 .unwrap(),
             1
+        );
+    }
+
+    #[cfg(feature = "client")]
+    #[test]
+    fn disabled_raw_events_skip_serialization_with_live_and_mirrored_receivers() {
+        struct MustNotSerialize;
+        impl Serialize for MustNotSerialize {
+            fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                panic!("disabled raw API events must not serialize payloads")
+            }
+        }
+        let (sink, mut receiver) = EventSink::channel("filtered".into());
+        let sink = sink.with_raw_api_events(false);
+        let (mirror, mut mirrored) = sink.mirrored_channel();
+        assert_eq!(
+            mirror
+                .emit_with_sequence(AgentEventKind::ApiEvent, MustNotSerialize)
+                .unwrap(),
+            1
+        );
+        assert!(receiver.receiver.try_recv().is_err());
+        assert!(mirrored.receiver.try_recv().is_err());
+        mirror
+            .emit(AgentEventKind::ModelConnectionCompleted, json!({}))
+            .unwrap();
+        for receiver in [&mut receiver, &mut mirrored] {
+            let event = receiver.receiver.try_recv().unwrap().event;
+            assert_eq!(event.kind, AgentEventKind::ModelConnectionCompleted);
+            assert_eq!(event.seq, 2);
+        }
+        // Existing SDK sinks still publish raw events by default.
+        let (default_sink, mut default_receiver) = EventSink::channel("default".into());
+        default_sink
+            .emit(AgentEventKind::ApiEvent, json!({"direction":"outbound"}))
+            .unwrap();
+        assert_eq!(
+            default_receiver.receiver.try_recv().unwrap().event.kind,
+            AgentEventKind::ApiEvent
         );
     }
 

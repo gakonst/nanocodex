@@ -756,6 +756,10 @@ impl Service<ResponsesAttempt> for ResponsesService {
 
     fn call(&mut self, mut request: ResponsesAttempt) -> Self::Future {
         request.limit_attempts(self.max_attempts);
+        request.observer.events = request
+            .observer
+            .events
+            .with_raw_api_events(self.config.raw_api_events);
         let service = self.clone();
         let parent = tracing::Span::current();
         Box::pin(async move {

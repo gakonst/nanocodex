@@ -34,11 +34,13 @@ export type DurableEventTail<Message> = Readonly<{
 }>;
 
 type Subscriber = {
+  abort: () => void;
   after: string;
   closed: boolean;
   dirty: boolean;
   keepalive?: ReturnType<typeof setInterval>;
   running: boolean;
+  removeAbortListener?: () => void;
   page: (after: string, limit: number) => Promise<DurableEvent<{ type: string }>[]>;
   tail: Promise<void>;
   writer: WritableStreamDefaultWriter<Uint8Array>;
@@ -309,8 +311,12 @@ export class DurableEventLog<Message extends { type: string }> {
       );
     }
 
-    const body = new TransformStream<Uint8Array, Uint8Array>();
+    let controller!: TransformStreamDefaultController<Uint8Array>;
+    const body = new TransformStream<Uint8Array, Uint8Array>({
+      start(value) { controller = value; },
+    });
     const subscriber: Subscriber = {
+      abort: () => controller.error(new Error("Event stream canceled")),
       after: cursor,
       closed: false,
       dirty: false,
@@ -333,10 +339,12 @@ export class DurableEventLog<Message extends { type: string }> {
       this.#enqueueComment(subscriber, sseEncoder.encode(": keepalive\n\n"));
     }, KEEPALIVE_MS);
     const close = () => this.#close(subscriber);
-    signal?.addEventListener("abort", close, { once: true });
+    const abort = () => this.#close(subscriber, true);
+    subscriber.removeAbortListener = () => signal?.removeEventListener("abort", abort);
+    signal?.addEventListener("abort", abort, { once: true });
     void subscriber.writer.closed.then(close, close);
     void subscriber.tail.catch(close);
-    if (signal?.aborted) close();
+    if (signal?.aborted) abort();
 
     return new Response(body.readable, {
       headers: {
@@ -349,7 +357,7 @@ export class DurableEventLog<Message extends { type: string }> {
   }
 
   clear(): void {
-    for (const subscriber of this.#subscribers) this.#close(subscriber);
+    for (const subscriber of this.#subscribers) this.#close(subscriber, true);
     this.#storage.sql.exec("DELETE FROM managed_event_chunks");
     this.#storage.sql.exec("DELETE FROM managed_events");
     this.#storage.sql.exec(
@@ -396,12 +404,18 @@ export class DurableEventLog<Message extends { type: string }> {
     void subscriber.tail.catch(() => this.#close(subscriber));
   }
 
-  #close(subscriber: Subscriber): void {
+  #close(subscriber: Subscriber, cancelled = false): void {
     if (subscriber.closed) return;
     subscriber.closed = true;
     if (subscriber.keepalive !== undefined) clearInterval(subscriber.keepalive);
     this.#subscribers.delete(subscriber);
-    void subscriber.writer.close().catch(() => {});
+    subscriber.removeAbortListener?.();
+    subscriber.removeAbortListener = undefined;
+    // close() waits behind a backpressured write, retaining its history page
+    // after the subscriber slot is freed. Cancellation must interrupt that write.
+    if (cancelled) subscriber.abort();
+    const finished = cancelled ? subscriber.writer.abort() : subscriber.writer.close();
+    void finished.catch(() => {});
   }
 }
 

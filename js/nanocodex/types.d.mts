@@ -25,6 +25,8 @@ export type AgentOptions = {
   model?: Model | undefined;
   reasoningMode?: ReasoningMode | undefined;
   fastMode?: boolean | undefined;
+  /** Emit full raw API request/response events. Defaults to true. */
+  rawApiEvents?: boolean | undefined;
   sessionId?: string | undefined;
   thinking?: Thinking | undefined;
   workspace?: string | undefined;

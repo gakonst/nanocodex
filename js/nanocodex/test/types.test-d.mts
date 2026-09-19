@@ -370,6 +370,7 @@ async function check() {
     thinking: "high",
     additionalInstructions: "Use the caller's workspace.",
     fastMode: false,
+    rawApiEvents: false,
     workspace: nodeWorkspace.root,
     tools: [...Subagents.create({ maxConcurrency: 8 })],
   });

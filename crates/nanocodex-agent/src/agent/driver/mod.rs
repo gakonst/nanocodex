@@ -1120,7 +1120,19 @@ where
             let execution_steps = execution_turn.steps();
             let steer_rx: SteerQueue = Arc::new(tokio::sync::Mutex::new(VecDeque::new()));
             let steers = Arc::downgrade(&steer_rx);
-            let mut accepted_steers = Vec::new();
+            let mut accepted_steers = retained_steers
+                .iter()
+                .filter(|steer| steer.model_call_index.is_none())
+                .map(|steer| {
+                    (
+                        steer.message_id.clone(),
+                        SteerReceipt {
+                            durable_index: steer.durable_index,
+                            delivery: Arc::clone(&steer.delivery),
+                        },
+                    )
+                })
+                .collect();
             let mut steer_ids = std::collections::HashSet::new();
             let model_call_index = Arc::new(tokio::sync::Mutex::new(1_u32));
             let (cancel, cancel_rx) = oneshot::channel();
@@ -1259,7 +1271,7 @@ where
                                     drop(result.send(Err(NanocodexError::TurnNotSteerable)));
                                     continue;
                                 }
-                                if !steer_ids.insert(id.clone()) {
+                                if !execution_turn.supports_steer_receipts() && !steer_ids.insert(id.clone()) {
                                     drop(result.send(Err(NanocodexError::InvalidRequest("steer identity was already used in this turn".into()))));
                                     continue;
                                 }
@@ -1810,13 +1822,19 @@ async fn accept_turn_steer(
         }
     }
     *accepted = pending;
-    if accepted.len() >= STEER_CAPACITY {
+    let capacity_available = accepted.len() < STEER_CAPACITY;
+    if !capacity_available && (id.is_none() || !execution_turn.supports_steer_receipts()) {
         return Err(NanocodexError::SteerQueueFull);
     }
     // Holding the boundary lock through persistence makes acceptance linearize
     // before either this model-call drain or the following one.
     let call_index = model_call_index.lock().await;
-    let steer = execution_turn.accept_steer(prompt, *call_index).await?;
+    let Some(steer) = execution_turn
+        .accept_steer(prompt, id.clone(), *call_index, capacity_available)
+        .await?
+    else {
+        return Ok(());
+    };
     accepted.push((
         id,
         SteerReceipt {

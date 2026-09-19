@@ -83,6 +83,9 @@ pub struct ExecutionSteer {
     pub input_json: String,
 }
 
+/// Optional caller identity paired with a retained steering input.
+pub type IdentifiedExecutionSteer = (Option<String>, ExecutionSteer);
+
 /// Serializable result retained at a completed agent boundary.
 #[derive(Clone, Deserialize, Serialize)]
 pub struct ExecutionOutput {
@@ -182,12 +185,50 @@ pub trait ExecutionPolicy: Send + Sync {
         })
     }
 
+    /// Whether identified steering acceptance atomically retains replay receipts.
+    fn supports_steer_receipts(&self) -> bool {
+        false
+    }
+
+    /// Atomically retains caller identity with input. `None` replays a prior acceptance.
+    /// Policies without receipt support retain their existing acceptance behavior.
+    fn accept_identified_steer<'a>(
+        &'a self,
+        operation_id: String,
+        _message_id: String,
+        accepted_after_model_call_index: u32,
+        input_json: String,
+        capacity_available: bool,
+    ) -> ExecutionFuture<'a, Result<Option<u32>>> {
+        Box::pin(async move {
+            if !capacity_available {
+                return Err(NanocodexError::SteerQueueFull);
+            }
+            self.accept_steer(operation_id, accepted_after_model_call_index, input_json)
+                .await
+                .map(Some)
+        })
+    }
+
     /// Returns steering inputs retained for the current operation attempt.
     fn retained_steers<'a>(
         &'a self,
         _operation_id: String,
     ) -> ExecutionFuture<'a, Result<Vec<ExecutionSteer>>> {
         Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// Returns optional caller identities alongside retained steering inputs.
+    /// Existing policies keep their original uncorrelated return type.
+    fn retained_identified_steers<'a>(
+        &'a self,
+        operation_id: String,
+    ) -> ExecutionFuture<'a, Result<Vec<IdentifiedExecutionSteer>>> {
+        Box::pin(async move {
+            self.retained_steers(operation_id)
+                .await
+                .map(|steers| steers.into_iter().map(|steer| (None, steer)).collect())
+        })
     }
 
     /// Durably removes the latest unbound steering input.
@@ -350,6 +391,31 @@ pub trait ExecutionPolicy: Send + Sync {
             })
         })
     }
+    /// Whether identified steering acceptance atomically retains replay receipts.
+    fn supports_steer_receipts(&self) -> bool {
+        false
+    }
+
+    /// Atomically retains caller identity with input. `None` replays a prior acceptance.
+    /// Policies without receipt support retain their existing acceptance behavior.
+    fn accept_identified_steer<'a>(
+        &'a self,
+        operation_id: String,
+        _message_id: String,
+        accepted_after_model_call_index: u32,
+        input_json: String,
+        capacity_available: bool,
+    ) -> ExecutionFuture<'a, Result<Option<u32>>> {
+        Box::pin(async move {
+            if !capacity_available {
+                return Err(NanocodexError::SteerQueueFull);
+            }
+            self.accept_steer(operation_id, accepted_after_model_call_index, input_json)
+                .await
+                .map(Some)
+        })
+    }
+
     /// Returns steering inputs retained for the current operation attempt.
     fn retained_steers<'a>(
         &'a self,
@@ -357,6 +423,19 @@ pub trait ExecutionPolicy: Send + Sync {
     ) -> ExecutionFuture<'a, Result<Vec<ExecutionSteer>>> {
         Box::pin(async { Ok(Vec::new()) })
     }
+    /// Returns optional caller identities alongside retained steering inputs.
+    /// Existing policies keep their original uncorrelated return type.
+    fn retained_identified_steers<'a>(
+        &'a self,
+        operation_id: String,
+    ) -> ExecutionFuture<'a, Result<Vec<IdentifiedExecutionSteer>>> {
+        Box::pin(async move {
+            self.retained_steers(operation_id)
+                .await
+                .map(|steers| steers.into_iter().map(|steer| (None, steer)).collect())
+        })
+    }
+
     /// Durably removes the latest unbound steering input.
     fn withdraw_steer<'a>(
         &'a self,
@@ -812,6 +891,7 @@ pub(crate) struct ExecutionSteps {
 
 #[derive(Clone)]
 pub(crate) struct QueuedSteer {
+    pub(crate) message_id: Option<String>,
     pub(crate) delivery: Arc<tokio::sync::Mutex<SteerDelivery>>,
     pub(crate) durable_index: Option<u32>,
     pub(crate) accepted_after_model_call_index: u32,
@@ -965,11 +1045,12 @@ impl ExecutionTurn {
             return Ok(Vec::new());
         };
         policy
-            .retained_steers(operation_id.clone())
+            .retained_identified_steers(operation_id.clone())
             .await?
             .into_iter()
-            .map(|steer| {
+            .map(|(message_id, steer)| {
                 Ok(QueuedSteer {
+                    message_id,
                     delivery: Arc::new(tokio::sync::Mutex::new(SteerDelivery::Pending)),
                     durable_index: Some(steer.index),
                     accepted_after_model_call_index: steer.accepted_after_model_call_index,
@@ -994,12 +1075,35 @@ impl ExecutionTurn {
         Ok(true)
     }
 
+    pub(crate) fn supports_steer_receipts(&self) -> bool {
+        self.policy
+            .as_ref()
+            .is_some_and(|policy| policy.supports_steer_receipts())
+    }
+
     pub(crate) async fn accept_steer(
         &self,
         prompt: nanocodex_oai_api::Prompt,
+        message_id: Option<String>,
         accepted_after_model_call_index: u32,
-    ) -> Result<QueuedSteer> {
+        capacity_available: bool,
+    ) -> Result<Option<QueuedSteer>> {
         let durable_index = match (&self.policy, &self.operation_id) {
+            (Some(policy), Some(operation_id)) if message_id.is_some() => {
+                let index = policy
+                    .accept_identified_steer(
+                        operation_id.clone(),
+                        message_id.clone().unwrap(),
+                        accepted_after_model_call_index,
+                        encode(&prompt)?,
+                        capacity_available,
+                    )
+                    .await?;
+                let Some(index) = index else {
+                    return Ok(None);
+                };
+                Some(index)
+            }
             (Some(policy), Some(operation_id)) => Some(
                 policy
                     .accept_steer(
@@ -1011,13 +1115,14 @@ impl ExecutionTurn {
             ),
             _ => None,
         };
-        Ok(QueuedSteer {
+        Ok(Some(QueuedSteer {
+            message_id,
             delivery: Arc::new(tokio::sync::Mutex::new(SteerDelivery::Pending)),
             durable_index,
             accepted_after_model_call_index,
             model_call_index: None,
             prompt,
-        })
+        }))
     }
 
     pub(crate) fn completed(mut self, final_message: String, usage: TurnUsage) -> Self {

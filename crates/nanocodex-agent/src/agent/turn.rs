@@ -142,6 +142,8 @@ impl TurnControl {
     }
 
     /// Admits input with a caller-owned identity unique within this turn.
+    /// Receipt-capable execution policies replay the same identity and input
+    /// without adding a second instruction, including after recovery.
     ///
     /// # Errors
     /// Returns admission errors or an error if identified steering is unsupported.

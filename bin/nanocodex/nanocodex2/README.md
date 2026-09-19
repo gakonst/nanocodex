@@ -160,10 +160,13 @@ not application at a model boundary. Shared steering telemetry can originate
 from another client and is never used to confirm a local instruction.
 Steering takes effect at the next model step, so a running tool can finish its
 current call first. Accepted steering is never automatically retried. If an
-acknowledgement is lost, the instruction stays visible as **delivery unknown**,
-including after the turn finishes. Select it to explicitly edit/retry or dismiss
+acknowledgement is lost, the terminal checks the server's durable receipt for that
+turn, message ID, and payload fingerprint, including after reconnect or turn
+completion. A matching receipt confirms **steering accepted** without sending the instruction again.
+If the server has no matching receipt (including older servers), the instruction
+stays visible as **delivery unknown**. Select it to explicitly edit/retry or dismiss
 it; cancelling the editor preserves its unknown status. Further steering waits
-until that turn ends, then known-unsent follow-ups continue in order. This avoids
+until receipt confirmation or the turn ends, then known-unsent follow-ups continue in order. This avoids
 duplicating potentially delivered instructions across clients.
 Queued follow-ups also run when an agent resumed with `attach` finishes work
 that started in another client.

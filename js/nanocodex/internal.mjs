@@ -316,6 +316,7 @@ export function toWasmConfig(options = {}) {
   copy(config, "reasoning_mode", options.reasoningMode);
   copy(config, "fast_mode", options.fastMode);
   copy(config, "websocket_warmup", options.websocketWarmup);
+  copy(config, "raw_api_events", options.rawApiEvents);
   copy(config, "websocket_url", options.websocketUrl);
   copy(config, "api_base_url", options.apiBaseUrl);
   copy(config, "instructions", options.instructions);
