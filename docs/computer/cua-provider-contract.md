@@ -13,13 +13,14 @@ The upstream CUA surface is an MCP provider, not a built-in `computer` tool:
 - `codex-rs/app-server/tests/suite/v2/guardian_v2.rs` exercises CUA `js`,
   `js_reset`, and `js_add_node_module_dir` as provider tools.
 
-This checkout's bundled companion owns its API documentation and schemas. Its
-fixture tests prove that our Rust and JavaScript adapters preserve its contract;
-they do not prove that it implements every API of a separately installed OpenAI
-CUA provider.
+The bundled companion pins the installed CUA 0.2.5 declarations, documentation,
+and source provenance. Factory comparisons and fixture tests cover defined API
+behavior; they do not prove complete native-provider equivalence. The external
+provider path instead executes the installed provider's own unmodified runtime;
+see [the current release and live verification](upstream-provider.md).
 
 Native CLI and desktop registration now perform MCP initialize and paginated
-`tools/list` before advertising the CUA pair. Provider descriptions are retained
+`tools/list` before advertising model-visible CUA tools. Provider descriptions are retained
 verbatim. Session processes rediscover the catalog before dispatch and reject
 catalog changes. External commands use the explicit MCP transport mode without
 adding bundled-companion flags. Unsupported schemas fail with a generic MCP
@@ -36,6 +37,13 @@ relay retain these original declarations before adding any public route aliases.
 
 A screen publisher alone does not implement CUA. Screen-only Mac, Windows,
 Linux and phone publications remain unsupported by this path. Their hardware,
-video, viewer and internal input services remain intact. Generic MCP registration
-is required for a provider with other schemas or additional tools, including
-`js_add_node_module_dir`; this two-tool attachment does not advertise those.
+video, viewer and internal input services remain intact. Both adapters discover the full provider catalog, including
+`js_add_node_module_dir`. `_meta.ui.visibility` controls model exposure; the
+hidden `turn_ended` lifecycle hook remains available only to trusted host code.
+
+Both adapters support form elicitation through an optional host callback,
+including Codex's `openai/elicitation/create` alias. They advertise that
+capability only when a handler exists, preserve request and response metadata,
+and cancel pending forms on timeout, cancellation, call completion, or closure.
+The library callback does not automatically add a desktop or remote Hand
+approval UI, and the adapters never manufacture persistent consent.

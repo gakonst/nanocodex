@@ -215,7 +215,10 @@ fn indexed_keyboard_input_focuses_the_resolved_ax_node_before_dispatch() {
             ("Runtime.releaseObject", json!({})),
         ];
         if method == "press_key" {
-            script.extend([("Input.dispatchKeyEvent", json!({})), ("Input.dispatchKeyEvent", json!({}))]);
+            script.extend([
+                ("Input.dispatchKeyEvent", json!({})),
+                ("Input.dispatchKeyEvent", json!({})),
+            ]);
         } else {
             script.push(("Input.insertText", json!({})));
         }
@@ -223,10 +226,18 @@ fn indexed_keyboard_input_focuses_the_resolved_ax_node_before_dispatch() {
         let mut browser = Browsers::default();
         browser.register("owned", &endpoint).unwrap();
         browser.execute("snapshot", &json!({"tab":"tab"})).unwrap();
-        browser.execute(method, &json!({"tab":"tab","element_index":1,"text":"owned","key":"Return"})).unwrap();
+        browser
+            .execute(
+                method,
+                &json!({"tab":"tab","element_index":1,"text":"owned","key":"Return"}),
+            )
+            .unwrap();
         let requests = join.join().unwrap();
         assert_eq!(requests[5]["params"]["backendNodeId"], 42);
-        assert_eq!(requests[6]["params"]["arguments"], json!([{"value":method != "press_key"}]));
+        assert_eq!(
+            requests[6]["params"]["arguments"],
+            json!([{"value":method != "press_key"}])
+        );
     }
 }
 
@@ -239,16 +250,29 @@ fn failed_indexed_focus_never_sends_input_and_null_keeps_current_focus() {
         ("Accessibility.getFullAXTree", ax()),
         ("Accessibility.getFullAXTree", ax()),
         ("DOM.resolveNode", json!({"object":{"objectId":"input"}})),
-        ("Runtime.callFunctionOn", json!({"exceptionDetails":{"text":"Browser input target is not editable"}})),
+        (
+            "Runtime.callFunctionOn",
+            json!({"exceptionDetails":{"text":"Browser input target is not editable"}}),
+        ),
         ("Runtime.releaseObject", json!({})),
         ("Input.insertText", json!({})),
     ]);
     let mut browser = Browsers::default();
     browser.register("owned", &endpoint).unwrap();
     browser.execute("snapshot", &json!({"tab":"tab"})).unwrap();
-    let error = browser.execute("type_text", &json!({"tab":"tab","element_index":1,"text":"must not type"})).unwrap_err();
+    let error = browser
+        .execute(
+            "type_text",
+            &json!({"tab":"tab","element_index":1,"text":"must not type"}),
+        )
+        .unwrap_err();
     assert!(error.message.contains("not editable"));
-    browser.execute("type_text", &json!({"tab":"tab","element_index":null,"text":"explicit current focus"})).unwrap();
+    browser
+        .execute(
+            "type_text",
+            &json!({"tab":"tab","element_index":null,"text":"explicit current focus"}),
+        )
+        .unwrap();
     let requests = join.join().unwrap();
     assert_eq!(requests[8]["params"]["text"], "explicit current focus");
 }

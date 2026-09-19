@@ -65,8 +65,22 @@ so native helper discovery cannot select that stale installation.
 
 The provider exposes `js`, `js_add_node_module_dir`, and `js_reset` to the model;
 `turn_ended` is a hidden host lifecycle hook. Screenshot and input operations
-also require the provider's MCP form elicitation channel. An embedding host must
-supply a real authorization decision; a successful inventory call alone does
-not establish that these operations work. OS permissions and provider app
-policies remain enforced. This local probe does not mean the parity branch has
-been deployed to every Nanocodex host.
+also require the provider's MCP form elicitation channel. The Rust and JavaScript
+attachments successfully bound an owned test app and returned an original-detail
+PNG screenshot as model image content. The JavaScript attachment also clicked
+the observed button and read back the counter changing from zero to one. The test host authorized only that
+fixture's low-risk state and click requests, declined all other apps and
+operations, and granted no persistent approval. Process evidence showed the
+copied Sky service and signed bundled Codex app-server running with no ChatGPT
+GUI process.
+
+An embedding host must supply its own genuine authorization decisions through
+`elicitationHandler`; no handler means no form capability is advertised. OS
+permissions and provider app policies remain enforced. The library callback
+does not by itself add an approval UI to the desktop app or remote Hand. This
+local probe does not mean the parity branch has been deployed to every
+Nanocodex host.
+
+Verification also passed 13 Rust elicitation tests (including the live provider
+screenshot), 21 JavaScript elicitation tests, 425 companion parity tests, exact
+installed source/catalog checks, and the public API declaration typecheck.

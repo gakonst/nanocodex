@@ -1742,7 +1742,10 @@ impl Browsers {
                 if method == "press_key" {
                     crate::keys::cdp_key(input)?;
                 }
-                if args.get("element_index").is_some_and(|index| !index.is_null()) {
+                if args
+                    .get("element_index")
+                    .is_some_and(|index| !index.is_null())
+                {
                     let root = b.snapshot(tab)?;
                     let target = self.revisions.resolve(&key, index(args)?, root, false)?;
                     let started = std::time::Instant::now();
@@ -1752,8 +1755,11 @@ impl Browsers {
                         include_str!("browser_ax_focus.js"),
                         vec![json!(method != "press_key")],
                     )?;
-                    if focused != true || started.elapsed() > std::time::Duration::from_millis(250) {
-                        return Err(Error::action("Browser input target could not be focused within 250 ms"));
+                    if focused != true || started.elapsed() > std::time::Duration::from_millis(250)
+                    {
+                        return Err(Error::action(
+                            "Browser input target could not be focused within 250 ms",
+                        ));
                     }
                 }
                 if method == "press_key" {
