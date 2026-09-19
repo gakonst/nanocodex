@@ -6155,6 +6155,7 @@ dependencies = [
 name = "nanocodex-remote"
 version = "0.6.4"
 dependencies = [
+ "async-trait",
  "futures-util",
  "libc",
  "opusic-c",

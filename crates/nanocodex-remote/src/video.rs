@@ -29,7 +29,12 @@ use webrtc::{
 };
 
 use crate::Result;
+use crate::audio_duplex::{Microphone, SinkFactory};
 pub use crate::capture::{Capture, CaptureSource as VideoSource, Task};
+use webrtc::rtp_transceiver::{
+    RTCRtpTransceiverInit, rtp_codec::RTPCodecType,
+    rtp_transceiver_direction::RTCRtpTransceiverDirection,
+};
 
 /// Bounded incremental Annex-B parser. Never decode/re-encode agent JPEGs.
 #[derive(Default)]
@@ -159,6 +164,7 @@ impl Drop for Connection {
     }
 }
 struct Peer {
+    microphone: Arc<Microphone>,
     _connection: Connection,
     control: Arc<RTCDataChannel>,
     _rtcp: Vec<Task>,
@@ -173,6 +179,7 @@ struct Peer {
 }
 impl Drop for Peer {
     fn drop(&mut self) {
+        self.microphone.revoke();
         self.active.store(false, Ordering::Release);
     }
 }
@@ -184,6 +191,7 @@ struct Motion {
 pub struct Video {
     track: Arc<TrackLocalStaticSample>,
     audio: Option<crate::audio::Audio>,
+    microphone_factory: Option<SinkFactory>,
     peers: HashMap<String, Peer>,
     preparing: crate::preparation::Preparations<Result<(Peer, Value)>>,
     events: mpsc::Sender<Event>,
@@ -194,6 +202,13 @@ pub struct Video {
 }
 impl Video {
     pub async fn start(source: &VideoSource, audio_source: Option<&VideoSource>) -> Result<Self> {
+        Self::start_with_microphone(source, audio_source, None).await
+    }
+    pub async fn start_with_microphone(
+        source: &VideoSource,
+        audio_source: Option<&VideoSource>,
+        microphone_factory: Option<SinkFactory>,
+    ) -> Result<Self> {
         let mut capture = tokio::time::timeout(Duration::from_secs(8), source()).await??;
         let track = Arc::new(TrackLocalStaticSample::new(
             RTCRtpCodecCapability {
@@ -266,6 +281,7 @@ impl Video {
         Ok(Self {
             track,
             audio,
+            microphone_factory,
             peers: HashMap::new(),
             preparing: crate::preparation::Preparations::new(),
             events,
@@ -311,6 +327,25 @@ impl Video {
                     }
                 }
             }
+        }
+    }
+    pub fn microphone_available(&self) -> bool {
+        self.microphone_factory.is_some()
+    }
+    /// Caller must validate the current control lease and explicit opt-in.
+    pub fn set_microphone(&self, viewer: &str, enabled: bool, lease_remaining: Duration) -> bool {
+        self.peers
+            .get(viewer)
+            .is_some_and(|p| p.microphone.set_enabled(enabled, lease_remaining))
+    }
+    pub fn renew_microphone(&self, viewer: &str, lease_remaining: Duration) {
+        if let Some(peer) = self.peers.get(viewer) {
+            peer.microphone.renew(lease_remaining);
+        }
+    }
+    pub fn revoke_microphone(&self, viewer: &str) {
+        if let Some(peer) = self.peers.get(viewer) {
+            peer.microphone.revoke();
         }
     }
     pub fn failed(&self) -> bool {
@@ -362,6 +397,7 @@ impl Video {
         let builder = PeerBuilder {
             track: self.track.clone(),
             audio: self.audio.as_ref().map(|a| a.track.clone()),
+            microphone_factory: self.microphone_factory.clone(),
             motion: self.motion.clone(),
             failed: self.failed.clone(),
         };
@@ -383,6 +419,7 @@ impl Video {
 struct PeerBuilder {
     track: Arc<TrackLocalStaticSample>,
     audio: Option<Arc<TrackLocalStaticSample>>,
+    microphone_factory: Option<SinkFactory>,
     motion: Arc<Motion>,
     failed: Arc<AtomicBool>,
 }
@@ -446,16 +483,41 @@ impl PeerBuilder {
             .await?,
         );
         let owned = Connection(connection.clone());
+        let microphone = Arc::new(Microphone::install(&connection, self.microphone_factory));
         let sender = connection.add_track(self.track.clone()).await?;
         let rtcp = Task(tokio::spawn(async move {
             while sender.read_rtcp().await.is_ok() {}
         }));
         let mut rtcp = vec![rtcp];
         if let Some(audio) = &self.audio {
-            let sender = connection.add_track(audio.clone()).await?;
+            let transceiver = connection
+                .add_transceiver_from_track(
+                    audio.clone(),
+                    Some(RTCRtpTransceiverInit {
+                        direction: if microphone.available() {
+                            RTCRtpTransceiverDirection::Sendrecv
+                        } else {
+                            RTCRtpTransceiverDirection::Sendonly
+                        },
+                        send_encodings: Vec::new(),
+                    }),
+                )
+                .await?;
+            let sender = transceiver.sender().await;
             rtcp.push(Task(tokio::spawn(async move {
                 while sender.read_rtcp().await.is_ok() {}
             })));
+        }
+        if self.audio.is_none() && microphone.available() {
+            connection
+                .add_transceiver_from_kind(
+                    RTPCodecType::Audio,
+                    Some(RTCRtpTransceiverInit {
+                        direction: RTCRtpTransceiverDirection::Recvonly,
+                        send_encodings: Vec::new(),
+                    }),
+                )
+                .await?;
         }
         let control = connection
             .create_data_channel("remote-control-v1", None)
@@ -553,7 +615,18 @@ impl PeerBuilder {
         let events = peer_events.clone();
         let failed = self.failed.clone();
         let viewer = id.to_owned();
+        let revoke_microphone = Arc::downgrade(&microphone);
         connection.on_peer_connection_state_change(Box::new(move |state| {
+            if matches!(
+                state,
+                RTCPeerConnectionState::Failed
+                    | RTCPeerConnectionState::Closed
+                    | RTCPeerConnectionState::Disconnected
+            ) {
+                if let Some(microphone) = revoke_microphone.upgrade() {
+                    microphone.revoke();
+                }
+            }
             if matches!(
                 state,
                 RTCPeerConnectionState::Failed
@@ -624,6 +697,7 @@ impl PeerBuilder {
             }
         }));
         let peer = Peer {
+            microphone,
             _connection: owned,
             control,
             _rtcp: rtcp,

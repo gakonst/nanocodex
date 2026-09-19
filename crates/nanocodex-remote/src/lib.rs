@@ -5,6 +5,7 @@
 //! The core owns media, input lease policy, authenticated signaling, reconnection
 //! and publisher lifecycle.
 pub mod audio;
+pub mod audio_duplex;
 pub mod capture;
 pub mod frames;
 pub mod ice;
