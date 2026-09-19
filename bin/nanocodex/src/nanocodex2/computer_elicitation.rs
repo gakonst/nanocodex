@@ -78,11 +78,10 @@ impl Scope {
             return None;
         }
         let mut params = request.params.clone();
-        // This transport correlation token is not part of the permission scope.
-        params
-            .get_mut("_meta")?
-            .as_object_mut()?
-            .remove("progressToken");
+        // Transport correlation changes on every call; it is not permission scope.
+        let meta = params.get_mut("_meta")?.as_object_mut()?;
+        meta.remove("progressToken");
+        meta.remove("tool_call_id");
         Some(Self {
             process: request.provider_session.clone(),
             session: session.clone(),
@@ -500,9 +499,10 @@ mod tests {
             call_id: "call-a".into(),
             model: "fixture".into(),
         });
-        request.params["_meta"] = json!({"persist":["session"],"connector_id":"computer-use","tool_name":"get_app_state","tool_params":{"app":"example.editor"},"progressToken":1});
+        request.params["_meta"] = json!({"persist":["session"],"connector_id":"computer-use","tool_name":"get_app_state","tool_params":{"app":"example.editor"},"progressToken":1,"tool_call_id":"call-a"});
         let first = Scope::from_request(&request).unwrap();
         request.params["_meta"]["progressToken"] = json!(2);
+        request.params["_meta"]["tool_call_id"] = json!("call-b");
         request.context.as_mut().unwrap().call_id = "call-b".into();
         assert!(first.matches(&Scope::from_request(&request).unwrap()));
         for (field, value) in [
