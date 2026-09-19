@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { namedTool } from "nanocodex-tools/named-tool";
 import { toolResult } from "nanocodex-tools/runtime/code-runtime";
-import { CUA_JS_NAME, CUA_RESET_NAME, CUA_DESCRIPTION, CUA_PARAMETERS, CUA_RESET_DESCRIPTION, CUA_RESET_PARAMETERS, validateInput } from "./contract.mjs";
+import { CUA_DESCRIPTION, CUA_PARAMETERS, CUA_RESET_DESCRIPTION, CUA_RESET_PARAMETERS, validateInput } from "./contract.mjs";
 
 /** Discover only the trusted installed companion; no app or browser is started. */
 export async function discoverComputer({ binary } = {}) {
@@ -31,12 +31,13 @@ export async function discoverComputer({ binary } = {}) {
 /** Discover the provider's actual MCP declarations before publishing tools. */
 export async function connectComputerTools(options) {
   if (!options?.executable) throw new TypeError("A trusted CUA executable is required");
-  const process = new ComputerProcess(options.executable, launchArguments(options), options.environment ?? {}, options.transport === "mcp");
+  options = { ...options, transport: options.transport ?? (process.env.NANOCODEX_COMPUTER_TRANSPORT === "mcp" ? "mcp" : undefined) };
+  const providerProcess = new ComputerProcess(options.executable, launchArguments(options), options.environment ?? {}, options.transport === "mcp");
   try {
-    await process.initialize();
-    const definitions = await process.discover();
+    await providerProcess.initialize();
+    const definitions = await providerProcess.discover();
     return createComputerTools({ ...options, definitions });
-  } finally { process.close(); }
+  } finally { providerProcess.close(); }
 }
 
 function launchArguments({ args = [], transport }) {
@@ -51,11 +52,12 @@ function launchArguments({ args = [], transport }) {
 /** A native attachment owns the executable/configuration, each conversation a JS scope. */
 export function createComputerTools({ executable, args = [], environment = {}, desktopRuntime, transport, definitions }) {
   if (!executable) throw new TypeError("A trusted CUA executable is required");
+  if (transport === "mcp" && definitions === undefined) throw new TypeError("External MCP providers require connectComputerTools discovery or a trusted catalog");
   const launchArgs = launchArguments({ args, transport });
-  const catalog = definitions ?? [
+  const catalog = validateCatalog(definitions ?? [
     { name: "js", description: CUA_DESCRIPTION, inputSchema: CUA_PARAMETERS },
     { name: "js_reset", description: CUA_RESET_DESCRIPTION, inputSchema: CUA_RESET_PARAMETERS },
-  ];
+  ]);
   const sessions = new Map();
   let disposed = false;
   const releaseSession = id => {
@@ -65,8 +67,9 @@ export function createComputerTools({ executable, args = [], environment = {}, d
     session?.process?.close();
   };
   const close = async () => { disposed = true; for (const id of sessions.keys()) releaseSession(id); };
-  const invoke = (reset, input, context) => {
-    const value = validateInput(input, reset);
+  const invoke = (name, input, context) => {
+    const reset = name === "js_reset";
+    const value = definitions === undefined ? validateInput(input, reset) : input;
     const id = context.sessionId;
     if (!id) throw new Error("CUA requires a conversation identity");
     if (disposed) throw new Error("CUA attachment is closed");
@@ -86,7 +89,7 @@ export function createComputerTools({ executable, args = [], environment = {}, d
       const deadline = new AbortController();
       const operation = AbortSignal.any([signal, deadline.signal]);
       const abort = () => { session.process?.close(operation.reason); session.process = undefined; session.interrupted = true; };
-      const cancelTimeout = value.timeout_ms === undefined
+      const cancelTimeout = transport === "mcp" || !Number.isSafeInteger(value?.timeout_ms) || value.timeout_ms < 1
         ? () => {}
         : scheduleDeadline(() => deadline.abort(new Error("CUA runtime timed out; call cua_repl.js_reset before continuing")), value.timeout_ms + 5_000);
       operation.addEventListener("abort", abort, { once: true });
@@ -108,7 +111,7 @@ export function createComputerTools({ executable, args = [], environment = {}, d
           if (canonical(discovered) !== canonical(catalog)) throw new Error("CUA provider catalog changed; reconnect the attachment before invoking it");
         }
         const result = await session.process.rpc("tools/call", {
-          name: reset ? "js_reset" : "js", arguments: value,
+          name, arguments: value,
           _meta: { "x-codex-turn-metadata": { thread_id: id, call_id: context.callId, model: context.model } },
         });
         operation.throwIfAborted();
@@ -127,12 +130,18 @@ export function createComputerTools({ executable, args = [], environment = {}, d
     // still checks the signal and session identity before touching its process.
     return interruptible(result, signal);
   };
+  const allTools = catalog.map(tool => namedTool(`mcp__cua_repl__${tool.name}`, {
+      description: tool.description ?? "", parameters: tool.inputSchema,
+      ...(tool.outputSchema === undefined ? {} : { outputSchema: tool.outputSchema }),
+      providerDefinition: tool,
+      supportsParallelToolCalls: true,
+      handler: (input, context) => invoke(tool.name, input, context), releaseSession, dispose: close,
+    }));
   return Object.freeze({
     close,
-    tools: [
-      namedTool(CUA_JS_NAME, { description: catalog[0].description, parameters: catalog[0].inputSchema, supportsParallelToolCalls: true, handler: (input, context) => invoke(false, input, context), releaseSession, dispose: close }),
-      namedTool(CUA_RESET_NAME, { description: catalog[1].description, parameters: catalog[1].inputSchema, supportsParallelToolCalls: true, handler: (input, context) => invoke(true, input, context), releaseSession, dispose: close }),
-    ],
+    definitions: catalog,
+    tools: allTools.filter((_, index) => modelVisible(catalog[index])),
+    tool: name => allTools.find(tool => tool.name === name || tool.name === `mcp__cua_repl__${name}`),
   });
 }
 
@@ -201,15 +210,9 @@ class ComputerProcess {
       if (cursor !== undefined && (typeof cursor !== "string" || !cursor || cursors.has(cursor))) throw new Error("CUA provider returned an invalid or repeated tools/list cursor");
       cursors.add(cursor);
     } while (cursor !== undefined);
-    return ["js", "js_reset"].map((name, index) => {
-      const matches = tools.filter(tool => tool.name === name);
-      if (matches.length !== 1 || typeof matches[0].description !== "string") throw new Error(`CUA provider must publish exactly one ${name} tool with its description`);
-      const tool = matches[0];
-      const expected = index === 0 ? CUA_PARAMETERS : CUA_RESET_PARAMETERS;
-      if (canonical(tool.inputSchema) !== canonical(expected)) throw new Error(`CUA provider ${name} schema is unsupported by this attachment; configure the provider through generic MCP instead`);
-      return { name, description: tool.description, inputSchema: tool.inputSchema };
-    });
+    return validateCatalog(tools);
   }
+
   send(value) {
     if (this.closed) throw this.closed;
     const data = JSON.stringify(value) + "\n";
@@ -296,4 +299,20 @@ function canonical(value) {
     return item && typeof item === "object" && !Array.isArray(item)
       ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item;
   });
+}
+
+function validateCatalog(tools) {
+  const names = new Set();
+  for (const tool of tools) {
+    if (typeof tool?.name !== "string" || !tool.name || names.has(tool.name)) throw new Error("CUA provider tool names must be non-empty and unique");
+    if (tool.description !== undefined && typeof tool.description !== "string") throw new Error("CUA provider tool description must be a string");
+    if (!tool.inputSchema || typeof tool.inputSchema !== "object" || Array.isArray(tool.inputSchema)) throw new Error("CUA provider tool inputSchema must be a JSON schema object");
+    names.add(tool.name);
+  }
+  return structuredClone(tools);
+}
+
+function modelVisible(tool) {
+  const visibility = tool._meta?.ui?.visibility;
+  return !Array.isArray(visibility) || visibility.includes("model");
 }

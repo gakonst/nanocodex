@@ -1,5 +1,5 @@
 import type { ToolMap } from "nanocodex";
-import { CUA_JS_NAME, CUA_RESET_NAME, CUA_PARAMETERS, CUA_RESET_PARAMETERS, validateInput } from "nanocodex-computer/contract";
+import { CUA_JS_NAME, CUA_RESET_NAME } from "nanocodex-computer/contract";
 import {
   createNamespaceManifest,
   createNamespaceScope,
@@ -143,11 +143,10 @@ export function createNamespaceExecutionRuntime(
         if (!hand?.cua || !hand.cuaReset) throw new Error(`namespace mount ${route.mount.root} has no CUA runtime; screen-only Hands are unsupported by cua_repl`);
         const definitions = [hand.cua, hand.cuaReset].map((tool, index) => {
           const name = index === 0 ? CUA_JS_NAME : CUA_RESET_NAME;
-          const expected = index === 0 ? CUA_PARAMETERS : CUA_RESET_PARAMETERS;
           const definition = tool.definition;
           if (!definition || typeof definition.description !== "string"
-            || canonical(definition.parameters) !== canonical(expected)) {
-            throw new Error(`Hand ${hand.root} has no supported discovered ${name} contract; reconnect its CUA provider or configure it through generic MCP`);
+            || !definition.parameters || typeof definition.parameters !== "object") {
+            throw new Error(`Hand ${hand.root} has no discovered ${name} contract; reconnect its CUA provider`);
           }
           return { name, description: definition.description, parameters: definition.parameters };
         });
@@ -158,9 +157,8 @@ export function createNamespaceExecutionRuntime(
     },
     [CUA_JS_NAME]: {
       description: "Execute JavaScript with the selected Hand’s CUA MCP provider. Before the first call, use select_computer and follow its returned provider description exactly. Available JavaScript APIs belong to that provider.",
-      parameters: CUA_PARAMETERS,
+      parameters: { type: "object", additionalProperties: true },
       handler: async (input, context) => {
-        validateInput(input);
         const hand = computer(context);
         if (!hand.cua) throw new Error(`Hand ${hand.root} has no cua_repl provider`);
         return hand.cua.handler(input, context);
@@ -168,9 +166,8 @@ export function createNamespaceExecutionRuntime(
     },
     [CUA_RESET_NAME]: {
       description: "Invoke js_reset on the selected Hand’s CUA MCP provider. Call select_computer first and follow the exact reset description it returns.",
-      parameters: CUA_RESET_PARAMETERS,
+      parameters: { type: "object", additionalProperties: true },
       handler: async (input, context) => {
-        validateInput(input, true);
         const hand = computer(context);
         if (!hand.cuaReset) throw new Error(`Hand ${hand.root} has no cua_repl provider to reset`);
         return hand.cuaReset.handler(input, context);
@@ -456,9 +453,4 @@ function stableHash(value: string): string {
     hash = BigInt.asUintN(64, hash * 0x100000001b3n);
   }
   return hash.toString(16).padStart(16, "0");
-}
-
-function canonical(value: unknown): string | undefined {
-  return JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
-    ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
 }

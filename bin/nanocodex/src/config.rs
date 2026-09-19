@@ -451,7 +451,9 @@ impl AgentArgs {
             let computer = nanocodex_computer::ComputerTools::connect(config)
                 .await
                 .map_err(|error| eyre!(error.to_string()))?;
-            tools = tools.add(computer.js()).add(computer.reset());
+            for tool in computer.tools() {
+                tools = tools.add(tool);
+            }
         }
         if let Some(managed_memory) = &managed_memory {
             tools = managed_memory.install(tools);

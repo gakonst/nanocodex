@@ -36,7 +36,7 @@ fn validates_code_and_timeout_at_the_transport_boundary() {
     }
     let defaults: ComputerRequest =
         serde_json::from_value(json!({"code":"1","title":null,"timeout_ms":null})).unwrap();
-    assert_eq!(defaults.timeout_ms, 9_007_199_254_740_991);
+    assert_eq!(defaults.timeout_ms, 30_000);
     for timeout_ms in [0, 9_007_199_254_740_992, u64::MAX] {
         assert!(
             ComputerRequest {

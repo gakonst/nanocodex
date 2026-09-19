@@ -1004,7 +1004,9 @@ async fn open_workspace_agent_with_settings(
         let computer = nanocodex_computer::ComputerTools::connect(config)
             .await
             .map_err(|error| ManagedError::Configuration(error.to_string()))?;
-        tools = tools.add(computer.js()).add(computer.reset());
+        for tool in computer.tools() {
+            tools = tools.add(tool);
+        }
     }
     let tools = tools
         .build()

@@ -44,7 +44,7 @@ describe("cwd-root namespace execution", () => {
     expect(screen).not.toHaveBeenCalled();
   });
 
-  it("returns the discovered provider instructions and rejects missing or incompatible contracts", async () => {
+  it("returns discovered provider instructions and accepts provider-owned schemas", async () => {
     const handler = vi.fn();
     let description = "Provider-native initialization: await desktop.connect()";
     let supported = true;
@@ -65,8 +65,8 @@ describe("cwd-root namespace execution", () => {
     ] });
     expect(runtime.tools[CUA_JS_NAME]!.description).not.toContain("cua.getApp");
     supported = false;
-    await expect(runtime.tools.select_computer!.handler({ workdir: "/native" }, context({ parentCallId: "new" })))
-      .rejects.toThrow("no supported discovered");
+    const changed = await runtime.tools.select_computer!.handler({ workdir: "/native" }, context({ parentCallId: "new" }));
+    expect(changed).toMatchObject({ definitions: [{ parameters: { type: "object", properties: { invented: { type: "string" } } } }, { parameters: { type: "object", properties: { invented: { type: "string" } } } }] });
     expect(handler).not.toHaveBeenCalled();
   });
 
@@ -97,15 +97,16 @@ describe("cwd-root namespace execution", () => {
     );
     runtime.capture(context());
     current = replacement;
-    expect(runtime.tools[CUA_JS_NAME]!.parameters).toEqual(CUA_PARAMETERS);
-    expect(runtime.tools[CUA_RESET_NAME]!.parameters).toEqual(CUA_RESET_PARAMETERS);
+    expect(runtime.tools[CUA_JS_NAME]!.parameters).toEqual({ type: "object", additionalProperties: true });
+    expect(runtime.tools[CUA_RESET_NAME]!.parameters).toEqual({ type: "object", additionalProperties: true });
     await runtime.tools.select_computer!.handler({ workdir: "/vm" }, context());
     await runtime.tools[CUA_JS_NAME]!.handler({ code: "await cua.getState();" }, context({ parentCallId: "next-cell" }));
     expect(original).toHaveBeenCalledWith({ code: "await cua.getState();" }, expect.objectContaining({ sessionId: "root-session" }));
     expect(replacement).not.toHaveBeenCalled();
     await runtime.tools[CUA_RESET_NAME]!.handler({}, context({ parentCallId: "reset-cell" }));
     expect(original).toHaveBeenLastCalledWith({}, expect.anything());
-    await expect(runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/vm", code: "1" }, context())).rejects.toThrow("Unknown CUA argument");
+    await runtime.tools[CUA_JS_NAME]!.handler({ provider_argument: "custom", code: "1" }, context());
+    expect(original).toHaveBeenLastCalledWith({ provider_argument: "custom", code: "1" }, expect.anything());
     await expect(runtime.tools.select_computer!.handler({ workdir: "/brain" }, context())).rejects.toThrow("no CUA runtime");
     await runtime.tools[CUA_JS_NAME]!.releaseSession?.("root-session");
     await runtime.tools.select_computer!.handler({ workdir: "/vm" }, context({ parentCallId: "new-session-cell" }));

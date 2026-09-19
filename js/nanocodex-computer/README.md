@@ -39,9 +39,18 @@ for OS requirements, CDP setup, release packaging and validation commands.
 `connectComputerTools` discovers MCP descriptions and schemas before publishing
 an attachment, then checks each conversation process against that catalog.
 Use `transport: "mcp"` with an external provider's exact executable and args;
-companion-specific flags are not added in that mode. This attachment supports
-the bundled argument schemas and rejects other schemas explicitly; use generic
-MCP registration for a provider with different tools or arguments.
+companion-specific flags are not added in that mode. Every discovered tool is
+routed with its provider-owned schema and arguments, without imposing the bundled
+companion contract. Optional MCP metadata is preserved in `definitions` and each
+tool's `providerDefinition`. Tools whose `_meta.ui.visibility` excludes `model`
+are omitted from `tools`; trusted hosts can invoke them through `tool(name)`.
+
+For an installed external launch wrapper, set `NANOCODEX_COMPUTER` to its absolute
+path and `NANOCODEX_COMPUTER_TRANSPORT=mcp`. Native discovery and JavaScript desktop
+attachments use that wrapper without companion flags. Programmatic native callers
+can instead use `ComputerConfig::mcp(executable)`, set `args` and `environment`, and
+await `ComputerTools::connect`; JavaScript callers pass the same trusted options
+to `connectComputerTools`. External provider timeouts remain provider-owned.
 
 Managed `select_computer` returns the selected provider's exact declarations.
 Read those before calling CUA. Screen-only Mac, Windows, Linux and phone hosts

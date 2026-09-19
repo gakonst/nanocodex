@@ -325,7 +325,9 @@ pub(super) async fn run_observed(
         let computer = nanocodex_computer::ComputerTools::connect(config)
             .await
             .map_err(|error| ManagedError::Configuration(error.to_string()))?;
-        tools = tools.add(computer.js()).add(computer.reset());
+        for tool in computer.tools() {
+            tools = tools.add(tool);
+        }
     }
     if let Some(browser) = browser {
         tools = tools.tool(BrowserExecuteTool::from_browser(browser));
