@@ -34,6 +34,10 @@ struct NanocodexInboxApp: App {
                 }
                 .sheet(isPresented: $showQuickVoice) { QuickVoiceView(model: model) }
                 .onOpenURL { url in
+                    if url.scheme == "nanocodex", url.host == "voice", url.path == "/recovery", url.query == nil, url.fragment == nil {
+                        Task { await model.openLockedVoiceRecovery() }
+                        return
+                    }
                     if QuickVoiceInput.matches(url) { showQuickVoice = true; return }
                     if url.scheme == "nanocodex", url.host == "connect", ["/spotify", "/soundcloud"].contains(url.path), url.query == nil, url.fragment == nil {
                         model.musicConnectorToOpen = MusicLoopbackProvider(rawValue: String(url.path.dropFirst()))
