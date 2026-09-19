@@ -83,3 +83,13 @@ test("matches Codex visibility semantics before emitting the account hosted cata
   assert.deepEqual(hostedAppToolCatalog(attachment.tools).map(entry => entry.definition.name).sort(), [...visible].sort());
   for (const definition of definitions) assert(attachment.tool(definition.name), "trusted lifecycle lookup retains hidden catalog entries");
 });
+
+
+test("explicit discovery catalogs remain pinned including hidden tool metadata", async t => {
+  const { options, catalog } = provider();
+  const changed = structuredClone(catalog);
+  changed.find(tool => tool.name === "turn_ended")._meta.ui.visibility = ["app"];
+  const attachment = createComputerTools({ ...options, definitions: changed });
+  t.after(attachment.close);
+  await assert.rejects(attachment.tool("js").handler({ source: "unchanged visible schema" }, context), /catalog changed/);
+});

@@ -108,7 +108,18 @@ export function createComputerTools({ executable, args = [], environment = {}, d
           session.process = new ComputerProcess(executable, launchArgs, { ...environment, ...desktopEnvironment }, transport === "mcp");
           await session.process.initialize();
           const discovered = await session.process.discover();
-          if (canonical(discovered) !== canonical(catalog)) throw new Error("CUA provider catalog changed; reconnect the attachment before invoking it");
+          // The legacy synchronous constructor declares only its bundled tools.
+          // Verify every declared field exactly, allowing additional provider tools
+          // and metadata. Discovery-based attachments pin the complete catalog,
+          // including hidden lifecycle definitions and their optional metadata.
+          const matches = definitions === undefined
+            ? catalog.every(expected => {
+                const actual = discovered.find(tool => tool.name === expected.name);
+                return actual && modelVisible(actual) && Object.entries(expected)
+                  .every(([key, value]) => canonical(actual[key]) === canonical(value));
+              })
+            : canonical(discovered) === canonical(catalog);
+          if (!matches) throw new Error("CUA provider catalog changed; reconnect the attachment before invoking it");
         }
         const result = await session.process.rpc("tools/call", {
           name, arguments: value,

@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";
-import { createComputerTools } from "../index.mjs";
+import { connectComputerTools } from "../index.mjs";
 import { CUA_JS_NAME, CUA_RESET_NAME, CUA_PARAMETERS, CUA_RESET_PARAMETERS, CUA_DESCRIPTION, CUA_RESET_DESCRIPTION } from "../contract.mjs";
 
 test("Codex cua_repl MCP names, schemas, state and image blocks cross stdio unchanged", { timeout: 15_000 }, async t => {
@@ -32,19 +32,23 @@ test("Codex cua_repl MCP names, schemas, state and image blocks cross stdio unch
   assert.equal(initialized.protocolVersion, "2025-03-26");
   child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
   const catalog = await rpc("tools/list", {});
-  assert.deepEqual(catalog.tools.map(tool => tool.name), ["js", "js_reset"]);
-  assert.deepEqual(catalog.tools[0].inputSchema, CUA_PARAMETERS);
-  assert.deepEqual(catalog.tools[1].inputSchema, CUA_RESET_PARAMETERS);
-  assert.equal(catalog.tools[0].description, CUA_DESCRIPTION);
-  assert.equal(catalog.tools[1].description, CUA_RESET_DESCRIPTION);
+  assert.deepEqual(catalog.tools.map(tool => tool.name), ["js", "js_add_node_module_dir", "js_reset", "turn_ended"]);
+  const js = catalog.tools.find(tool => tool.name === "js");
+  const resetTool = catalog.tools.find(tool => tool.name === "js_reset");
+  assert.deepEqual(js.inputSchema, CUA_PARAMETERS);
+  assert.deepEqual(resetTool.inputSchema, CUA_RESET_PARAMETERS);
+  assert.equal(js.description, CUA_DESCRIPTION);
+  assert.equal(resetTool.description, CUA_RESET_DESCRIPTION);
+  assert.deepEqual(catalog.tools.find(tool => tool.name === "turn_ended")._meta.ui.visibility, []);
   assert.equal(await readFile(new URL("../../../crates/experimental/nanocodex-computer/src/description.md", import.meta.url), "utf8"), CUA_DESCRIPTION);
   assert.equal(await readFile(new URL("../../../crates/experimental/nanocodex-computer/src/reset_description.md", import.meta.url), "utf8"), CUA_RESET_DESCRIPTION);
   const rustSchema = JSON.parse(await readFile(new URL("../../../crates/experimental/nanocodex-computer/src/js-schema.json", import.meta.url), "utf8"));
   assert.deepEqual(rustSchema, CUA_PARAMETERS);
-  const adapter = createComputerTools({ executable, args: ["--fixture"] });
+  const adapter = await connectComputerTools({ executable, args: ["--fixture"] });
   t.after(adapter.close);
-  assert.deepEqual(adapter.tools.map(tool => tool.name), [CUA_JS_NAME, CUA_RESET_NAME]);
-  assert.deepEqual(adapter.tools.map(tool => tool.name), catalog.tools.map(tool => `mcp__cua_repl__${tool.name}`));
+  assert.deepEqual(adapter.definitions, catalog.tools);
+  assert.deepEqual(adapter.tools.map(tool => tool.name), [CUA_JS_NAME, "mcp__cua_repl__js_add_node_module_dir", CUA_RESET_NAME]);
+  assert(adapter.tool("turn_ended"), "hidden hook remains available to trusted callers");
 
   const call = (name, args) => rpc("tools/call", { name, arguments: args });
   assert.equal((await call("js", { code: "let app = await cua.getApp('fixture://native');", title: "Select fixture" })).isError, false);
