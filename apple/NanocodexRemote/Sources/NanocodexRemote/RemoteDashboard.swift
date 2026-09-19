@@ -186,7 +186,9 @@ public struct RemoteDashboard: View {
                     .overlay(alignment: .top) {
                         if immersive && viewer.connected && !viewer.controlling {
                             HStack {
-                                Text(viewer.status + " · ⌘⇧Esc returns to workspace").font(.caption)
+                                Text(viewer.status + " · Control released").font(.caption)
+                                Button("All screens") { viewer.close(); restoredSelection = true }
+                                if let onClose { Button("Workspace", action: onClose) }
                                 Button("Take control") { viewer.takeControl() }.disabled(viewer.hand?.controllable != true)
                             }.padding(8).background(.regularMaterial, in: Capsule()).padding(8)
                         }
@@ -273,7 +275,10 @@ public struct RemoteDashboard: View {
 #else
                     TextField("Find a screen", text: $screenQuery).textFieldStyle(.roundedBorder)
                         .accessibilityIdentifier("remote-screen-search")
-                    List(filteredHands, id: \.identity) { hand in screenRow(hand) }
+                    RemoteScreenOverview(service: service, hands: filteredHands, active: scenePhase == .active) { hand in
+                        restoredSelection = true
+                        Task { await viewer.connect(service: service, hand: hand) }
+                    }
                     if filteredHands.isEmpty { Text("No matching screens").font(.caption).foregroundStyle(.secondary) }
 #endif
                 }

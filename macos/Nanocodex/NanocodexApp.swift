@@ -102,8 +102,10 @@ struct NanocodexApp: App {
             }
             CommandGroup(after: .toolbar) {
                 Button("Enter / Exit Full Screen") { NSApp.keyWindow?.toggleFullScreen(nil) }
+                Button("Release Remote Control") {
+                    NSApp.sendAction(#selector(MacRemoteCanvas.releaseRemoteControl(_:)), to: nil, from: nil)
+                }.keyboardShortcut(.escape, modifiers: [.command, .shift])
                 Button("Return to Workspace") { model.exitScreenFocus() }
-                    .keyboardShortcut(.escape, modifiers: [.command, .shift])
                 Button("Choose Remote Screen…") { model.screenPickerRequest += 1; model.showingScreens = true }
                 Divider()
                 Button("Zoom In") { model.changeZoom(1) }.keyboardShortcut("+", modifiers: .command).disabled(model.workspaceZoom >= 1.5)

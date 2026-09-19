@@ -220,8 +220,9 @@ final class RemoteKeyboardCaptureTests: XCTestCase {
         var exited = false
         canvas.onExit = { exited = true }
         canvas.keyDown(with: try key(53, down: true, flags: [.command, .shift]))
-        XCTAssertTrue(exited)
-        XCTAssertFalse(viewer.controlling, "Exit releases immediately, before SwiftUI updates visibility")
+        XCTAssertFalse(exited, "Release leaves the selected screen visible")
+        XCTAssertNotNil(viewer.hand, "Release keeps the screen selected")
+        XCTAssertFalse(viewer.controlling, "Release is immediate, before SwiftUI updates visibility")
         XCTAssertEqual(socket.inputs.last?.kind, .releaseAll)
         XCTAssertFalse(socket.inputs.contains { $0.key == 41 }, "The exit chord must never reach the host")
         let release = socket.messages.last { if case .control(let message) = $0.data { return message.type == .release }; return false }

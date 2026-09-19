@@ -166,7 +166,7 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
         updateKeyboardNotice()
     }
     private func updateKeyboardNotice() {
-        let warning = keyboard.unavailableReason + " System shortcuts may stay on this Mac. Command–Shift–Escape returns to the workspace."
+        let warning = keyboard.unavailableReason + " System shortcuts may stay on this Mac. Command–Shift–Escape releases control and keeps this screen open."
         let diagnostic = "PID=\(ProcessInfo.processInfo.processIdentifier); bundle=\(Bundle.main.bundleURL.path)\n"
             + keyboard.diagnostic + "\napp active=\(NSApp.isActive); key window=\(window?.isKeyWindow == true); canvas first responder=\(window?.firstResponder === self)\n"
             + "relative pointer supported=\(viewer?.relativePointer == true); pointer captured=\(cursor.locked); connected=\(viewer?.connected == true); " + (viewer?.inputDiagnostic ?? "viewer detached")
@@ -248,13 +248,15 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
         guard window?.firstResponder === self, viewer?.controlling == true else { return false }
         keyDown(with: event); return true
     }
+    @objc public func releaseRemoteControl(_ sender: Any?) {
+        releaseKeys(); keyboard.stop()
+        cursor.update(hidden: false)
+        viewer?.releaseControl()
+    }
     public override func keyDown(with event: NSEvent) {
         guard viewer?.controlling == true else { return }
         if RemoteModifierState.isExit(keyCode: event.keyCode, flags: event.modifierFlags) {
-            releaseKeys(); keyboard.stop()
-            cursor.update(hidden: false)
-            viewer?.releaseControl()
-            onExit?()
+            releaseRemoteControl(nil)
             return
         }
         synchronizeModifiers(event)
