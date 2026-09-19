@@ -18,6 +18,23 @@ final class MessageQueueProjectionCacheTests: XCTestCase {
         XCTAssertTrue(otherWindow.rows.isEmpty)
     }
 
+    func testPendingDirectSteeringShowsUnconfirmedOrRejectedErrorWithoutDuplicateMessage() {
+        for phase: SteeringTransfer.Phase in [.unconfirmed, .ready] {
+            var transfer = SteeringTransfer(agentID: "agent", sourceTurnID: "local", targetTurnID: "running", direct: true, sourceInput: "Keep my correction")
+            transfer.phase = phase
+            transfer.error = "Delivery could not be confirmed"
+            var pending = PendingMessage(agentID: "agent", input: "Keep my correction", predecessor: "", id: "local")
+            pending.phase = .starting
+            var cache = MessageQueueProjectionCache()
+            let result = cache.presentation(agentID: "agent", events: [], rows: [], pending: [pending], steeringTransfers: [transfer], activeTurns: ["running"], isDemo: false)
+            let messages = result.rows.filter { $0.turnID == "local" }
+            XCTAssertEqual(messages.count, 1)
+            XCTAssertEqual(messages.first?.role, "You")
+            XCTAssertEqual(messages.first?.detail, transfer.error)
+            XCTAssertEqual(result.messages.filter { $0.id == "local" }.count, 1)
+        }
+    }
+
     func testConsumedDirectSteeringKeepsMessageAndDisplaysWithdrawalError() {
         var transfer = SteeringTransfer(agentID: "agent", sourceTurnID: "local", targetTurnID: "running", direct: true, sourceInput: "Keep the small example")
         transfer.wasAccepted = true

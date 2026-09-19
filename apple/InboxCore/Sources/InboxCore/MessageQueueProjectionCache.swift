@@ -81,12 +81,11 @@ public struct MessageQueueProjectionCache: Sendable {
             let left = lhs.element.sourceCursor ?? .zero, right = rhs.element.sourceCursor ?? .zero
             return left == right ? lhs.offset < rhs.offset : left < right
         }.map(\.element)
-        for transfer in chronological where (transfer.wasAccepted || transfer.phase == .withdrawn || transfer.phase == .unconfirmed)
-            && visibleTurns.contains(transfer.targetTurnID)
-            && !pendingIDs.contains(transfer.id) {
+        for transfer in chronological where (transfer.wasAccepted || transfer.phase == .withdrawn || transfer.phase == .unconfirmed || transfer.error != nil)
+            && (visibleTurns.contains(transfer.targetTurnID) || pendingIDs.contains(transfer.id)) {
             guard let input = transfer.sourceInput,
                   !displayed.contains(where: { $0.turnID == transfer.id || $0.id == transfer.id || $0.id == transfer.id + ":user" }) else { continue }
-            if let anchor = transfer.sourceCursor {
+            if !pendingIDs.contains(transfer.id), let anchor = transfer.sourceCursor {
                 if let first = windowFirst, anchor < first { continue }
                 if let last = windowLast, anchor > last { continue }
             }
@@ -99,7 +98,7 @@ public struct MessageQueueProjectionCache: Sendable {
             row.detail = transfer.error ?? (transfer.phase == .withdrawing ? transfer.title : "")
             if transfer.phase == .withdrawn {
                 row.role = "Status"; row.text = "Steering withdrawn: " + row.text
-            } else if !transfer.wasAccepted {
+            } else if !transfer.wasAccepted, !pendingIDs.contains(transfer.id) {
                 row.role = "Status"; row.text = "Steering delivery unconfirmed: " + row.text
             }
             row.cursor = transfer.sourceCursor

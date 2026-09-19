@@ -237,14 +237,27 @@ final class InboxModel: ObservableObject {
             self.updateAgentNotifications()
         }
     }
+    private var agentNotificationPreparation: Task<Void, Never>?
     private func updateAgentNotifications() {
         guard connected || !restoringAccount else { return }
-        let threads = AgentThreadNotification.make(cards: cards,
-            seen: seen.compactMapValues { Cursor(rawValue: $0) }, deferred: deferred, pending: pending)
+        agentNotificationPreparation?.cancel()
+        let snapshot = cards, seenSnapshot = seen, deferredSnapshot = deferred, pendingSnapshot = pending
+        let epoch = generation, accountScope = scope
         // Existing demo journeys do not create system UI unless explicitly requested.
         let enabled = !isDemo || ProcessInfo.processInfo.environment["NANOCODEX_DEMO_ACTIVITY"] == "1"
-        agentNotifications.update(account: connected && enabled ? scope : "", threads: threads,
-            unchecked: Set(cards.filter { !$0.checked }.map(\.id)), foreground: isActive)
+        let account = connected && enabled ? scope : ""
+        let worker = Task.detached(priority: .utility) {
+            let threads = AgentThreadNotification.make(cards: snapshot,
+                seen: seenSnapshot.compactMapValues { Cursor(rawValue: $0) }, deferred: deferredSnapshot, pending: pendingSnapshot)
+            return (threads, Set(snapshot.filter { !$0.checked }.map(\.id)))
+        }
+        agentNotificationPreparation = Task { [weak self] in
+            let prepared = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
+            guard let self, !Task.isCancelled, self.generation == epoch, self.scope == accountScope else { return }
+            self.agentNotifications.update(account: account, threads: prepared.0,
+                unchecked: prepared.1, foreground: self.isActive)
+            self.agentNotificationPreparation = nil
+        }
     }
     func configureAgentNotifications() { _ = agentNotifications }
     func openAgentActivity(_ url: URL) {

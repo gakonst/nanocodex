@@ -1379,6 +1379,11 @@ private struct ConversationMessageContent: View, Equatable {
                         Button("Cancel") { model.cancelPending(delivery.id) }.accessibilityLabel("Cancel message")
                     }.font(.caption).disabled(!canRetry)
                 }
+                if let transfer = steering, transfer.direct == true, transfer.error != nil, transfer.canResume {
+                    Button("Retry sending") { model.steerNow(transfer.id) }
+                        .font(.caption).accessibilityIdentifier("retry-steering")
+                        .disabled(!model.connected)
+                }
                 if let transfer = steering, canWithdraw, (transfer.wasAccepted || transfer.phase == .unconfirmed), transfer.phase != .withdrawn {
                     Button(transfer.phase == .withdrawing ? "Withdrawing…" : "Withdraw steering") { model.withdrawSteering(transfer.id) }
                         .font(.caption).accessibilityIdentifier("withdraw-steering")
@@ -2003,6 +2008,21 @@ private struct ConversationToolCard: View {
     @State private var expanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var failed: Bool { row.tool?.status == "Failed" }
+    private var title: String { row.tool?.title ?? row.text }
+    private var subject: String { row.tool?.subject ?? "" }
+    private var symbol: String {
+        let family = title.lowercased()
+        if family.contains("vault") { return "lock.shield" }
+        if family.contains("agent") || family.contains("delegate") { return "person.2" }
+        if family.contains("search") { return "magnifyingglass" }
+        if family.contains("browser") || family.contains("page") || family.contains("web") { return "globe" }
+        if family.contains("image") || family.contains("capture") { return "photo" }
+        if family.contains("file") || family.contains("patch") { return "doc.text" }
+        if family.contains("computer") || family.contains("machine") { return "desktopcomputer" }
+        if family.contains("account") || family.contains("connect") { return "person.crop.circle" }
+        if family.contains("command") || family.contains("code") || family.contains("process") { return "terminal" }
+        return "gearshape"
+    }
     private var status: String {
         if live { return "Running" }
         if row.running || row.tool?.status == "Running" { return "Interrupted" }
@@ -2015,21 +2035,34 @@ private struct ConversationToolCard: View {
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { expanded.toggle() }
             } label: {
                 HStack(spacing: 8) {
-                    if live { ProgressView().controlSize(.mini) }
-                    else { Image(systemName: failed ? "exclamationmark.circle" : "terminal") }
-                    Text(row.tool?.title ?? row.text).fontWeight(.medium).lineLimit(1)
-                    if let subject = row.tool?.subject, !subject.isEmpty {
-                        Text(subject).foregroundStyle(Ink.muted).lineLimit(1).truncationMode(.middle)
+                    Group {
+                        if live { ProgressView().controlSize(.mini) }
+                        else {
+                            Image(systemName: failed ? "exclamationmark.circle.fill" : symbol)
+                                .foregroundStyle(failed ? Color.orange : Ink.muted)
+                        }
+                    }.frame(width: 18).accessibilityHidden(true)
+                    Text(title).fontWeight(.medium).lineLimit(1)
+                    if !subject.isEmpty {
+                        Text(subject).foregroundStyle(Ink.text).lineLimit(1).truncationMode(.middle)
                     }
                     Spacer(minLength: 0)
-                    Text(status).font(.caption2).foregroundStyle(failed ? Color.orange : Ink.muted).lineLimit(1).fixedSize()
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2)
-                }.font(.caption).foregroundStyle(Ink.text)
+                    if status != "Completed" {
+                        Text(status).font(.caption2).foregroundStyle(failed ? Color.orange : Ink.muted)
+                            .lineLimit(1).fixedSize()
+                    }
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.caption2.weight(.semibold)).foregroundStyle(Ink.muted)
+                        .accessibilityHidden(true)
+                }.font(.caption).foregroundStyle(Ink.muted)
                     .frame(minHeight: 44).contentShape(Rectangle())
             }.buttonStyle(.plain)
                 .accessibilityIdentifier("tool-disclosure-" + row.id)
+                .accessibilityLabel([title, subject, status].filter { !$0.isEmpty }.joined(separator: ", "))
                 .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+                .accessibilityHint(expanded ? "Hide input and results" : "Show input and results")
             if expanded {
+                Divider()
                 ToolActivityView(row: row).padding(.vertical, 12)
                     .accessibilityIdentifier("tool-detail-" + row.id)
             }
@@ -2055,11 +2088,12 @@ private struct ToolActivityView: View {
     }
     private func fields(_ values: [ToolField], heading: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(heading).font(.system(size: 12, weight: .semibold)).foregroundStyle(Ink.muted)
+            Text(heading).font(.caption.weight(.semibold)).foregroundStyle(Ink.muted)
+                .accessibilityAddTraits(.isHeader)
             ForEach(Array(values.enumerated()), id: \.offset) { _, field in
                 VStack(alignment: .leading, spacing: 3) {
-                    if field.label != heading { Text(field.label).font(.system(size: 12)).foregroundStyle(Ink.muted) }
-                    Text(field.value).font(.system(size: 14, design: field.code ? .monospaced : .default))
+                    if field.label != heading { Text(field.label).font(.caption).foregroundStyle(Ink.muted) }
+                    Text(field.value).font(field.code ? .system(.footnote, design: .monospaced) : .subheadline)
                         .foregroundStyle(Ink.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
             }
