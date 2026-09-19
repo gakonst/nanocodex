@@ -2104,13 +2104,17 @@ private struct ConversationToolCard: View {
                             statusIndicator
                             disclosure
                         }
-                        ChatCodeText(source: source, language: "javascript")
-                            .font(.system(.footnote, design: .monospaced))
-                            .foregroundStyle(Ink.text)
-                            .multilineTextAlignment(.leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .accessibilityIdentifier("code-mode-source-" + row.id)
+                        if !expanded {
+                            ChatCodeText(source: source, language: "javascript")
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(Ink.text)
+                                .multilineTextAlignment(.leading)
+                                .lineLimit(3)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .accessibilityIdentifier("code-mode-preview-" + row.id)
+                            Text("Show code and results")
+                                .font(.caption2).foregroundStyle(Ink.muted)
+                        }
                     } else {
                         HStack(spacing: 8) {
                             Image(systemName: symbol).foregroundStyle(Color.accentColor)
@@ -2144,6 +2148,33 @@ private struct ConversationToolCard: View {
                     }
                 }
             if expanded {
+                if let source = codeModeSource {
+                    Divider()
+                    HStack {
+                        Text("JavaScript").font(.caption2.monospaced()).foregroundStyle(Ink.muted)
+                        Spacer()
+                        Button {
+                            UIPasteboard.general.string = source
+                        } label: {
+                            Label("Copy code", systemImage: "doc.on.doc")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("code-mode-copy-" + row.id)
+                    }
+                    ScrollView(.horizontal) {
+                        ChatCodeText(source: source, language: "javascript")
+                            .font(.system(.footnote, design: .monospaced))
+                            .foregroundStyle(Ink.text)
+                            .lineSpacing(4)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: true, vertical: true)
+                            .padding(.bottom, 12)
+                            .accessibilityIdentifier("code-mode-source-" + row.id)
+                    }
+                    .accessibilityIdentifier("code-mode-scroll-" + row.id)
+                }
                 Divider()
                 ToolActivityView(row: row, hidesCommand: command != nil, hidesCode: codeModeSource != nil).padding(.vertical, 12)
                     .accessibilityIdentifier("tool-detail-" + row.id)

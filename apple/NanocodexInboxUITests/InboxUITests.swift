@@ -2494,19 +2494,19 @@ final class InboxUITests: XCTestCase {
         text(result.output);
         """
         XCTAssertGreaterThan(expectedSource.count, 140)
-        let source = card.descendants(matching: .any)["code-mode-source-demo-code-mode-card"]
-        XCTAssertTrue(source.exists, "The collapsed card exposes the complete JavaScript")
-        XCTAssertTrue(source.isHittable, "The source is visible before expanding details")
-        XCTAssertEqual(source.label, expectedSource, "JavaScript preserves every character and newline")
+        let preview = card.descendants(matching: .any)["code-mode-preview-demo-code-mode-card"]
+        XCTAssertTrue(preview.isHittable, "Collapsed cards show a compact preview")
+        XCTAssertLessThan(preview.frame.height, 65, "Preview stays within three caption lines")
         XCTAssertTrue(card.staticTexts["Code Mode"].exists)
         XCTAssertFalse(conversation.staticTexts["Run code"].exists)
-        XCTAssertFalse(card.buttons["Copy code"].exists, "Copy is available through the context menu")
-        capture(app, "code-mode-card-full-source")
-        card.press(forDuration: 1)
-        let copy = app.buttons["Copy code"]
-        XCTAssertTrue(copy.waitForExistence(timeout: 5))
-        copy.tap()
+        capture(app, "code-mode-card-compact-preview")
         card.tap()
+        let source = conversation.descendants(matching: .any)["code-mode-source-demo-code-mode-card"]
+        XCTAssertTrue(source.waitForExistence(timeout: 5))
+        XCTAssertEqual(source.label, expectedSource, "Expanded source preserves every character and newline")
+        let copy = conversation.buttons["code-mode-copy-demo-code-mode-card"]
+        XCTAssertTrue(copy.isHittable, "Copy is directly accessible outside the disclosure button")
+        copy.tap()
         let detail = conversation.descendants(matching: .any)["tool-detail-demo-code-mode-card"]
         XCTAssertTrue(detail.waitForExistence(timeout: 5))
         XCTAssertFalse(detail.staticTexts["Code"].exists, "Expanded details do not repeat the Code input")
