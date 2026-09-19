@@ -338,6 +338,12 @@ impl Video {
             .get(viewer)
             .is_some_and(|p| p.microphone.set_enabled(enabled, lease_remaining))
     }
+    /// Poll alongside the lease timer; transition to false must notify the viewer.
+    pub fn microphone_enabled(&self, viewer: &str) -> bool {
+        self.peers
+            .get(viewer)
+            .is_some_and(|p| p.microphone.enabled())
+    }
     pub fn renew_microphone(&self, viewer: &str, lease_remaining: Duration) {
         if let Some(peer) = self.peers.get(viewer) {
             peer.microphone.renew(lease_remaining);

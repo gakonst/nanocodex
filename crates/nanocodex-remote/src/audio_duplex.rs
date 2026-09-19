@@ -44,6 +44,7 @@ impl Drop for Task {
 pub struct Microphone {
     permission: watch::Sender<Permission>,
     available: bool,
+    failed: Arc<AtomicBool>,
     tasks: Arc<Mutex<Vec<Task>>>,
 }
 impl Microphone {
@@ -53,11 +54,14 @@ impl Microphone {
         let owned = tasks.clone();
         let available = factory.is_some();
         let claimed = Arc::new(AtomicBool::new(false));
+        let failed = Arc::new(AtomicBool::new(false));
+        let receiver_failed = failed.clone();
         connection.on_track(Box::new(move |track, _, _| {
             let factory = factory.clone();
             let updates = updates.clone();
             let owned = owned.clone();
             let claimed = claimed.clone();
+            let failed = receiver_failed.clone();
             Box::pin(async move {
                 let codec = track.codec();
                 if track.kind() != RTPCodecType::Audio
@@ -73,7 +77,7 @@ impl Microphone {
                 let Some(factory) = factory else {
                     return;
                 };
-                if claimed.swap(true, Ordering::AcqRel) {
+                if failed.load(Ordering::Acquire) || claimed.swap(true, Ordering::AcqRel) {
                     return;
                 }
                 let (packets, incoming) = mpsc::channel(3);
@@ -106,7 +110,8 @@ impl Microphone {
                             }
                         }
                         let _release = Release(claimed);
-                        if let Err(error) = receive(incoming, updates, factory).await {
+                        if let Err(error) = receive_report(incoming, updates, factory, failed).await
+                        {
                             tracing::warn!(%error, "remote microphone stopped");
                         }
                     })));
@@ -115,14 +120,23 @@ impl Microphone {
         Self {
             permission,
             available,
+            failed,
             tasks,
         }
     }
     pub fn available(&self) -> bool {
         self.available
     }
+    /// False after expiry, revoke, transport EOF or any decoder/sink failure.
+    /// A failed receiver requires a fresh peer; opt-in cannot resurrect it.
+    pub fn enabled(&self) -> bool {
+        !self.failed.load(Ordering::Acquire) && self.permission.borrow().active()
+    }
     pub fn set_enabled(&self, enabled: bool, lease_remaining: Duration) -> bool {
-        let enabled = enabled && self.available && !lease_remaining.is_zero();
+        let enabled = enabled
+            && self.available
+            && !self.failed.load(Ordering::Acquire)
+            && !lease_remaining.is_zero();
         self.permission.send_modify(|p| {
             p.epoch = p.epoch.wrapping_add(1);
             p.since = enabled.then(Instant::now);
@@ -134,7 +148,7 @@ impl Microphone {
     }
     pub fn renew(&self, lease_remaining: Duration) {
         self.permission.send_modify(|p| {
-            if p.active() {
+            if !self.failed.load(Ordering::Acquire) && p.active() {
                 p.deadline = Some(Instant::now() + lease_remaining.min(Duration::from_secs(10)));
             }
         });
@@ -148,6 +162,17 @@ impl Drop for Microphone {
         self.revoke();
         self.tasks.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
+}
+
+async fn receive_report(
+    packets: mpsc::Receiver<(Instant, Vec<u8>)>,
+    permission: watch::Receiver<Permission>,
+    factory: SinkFactory,
+    failed: Arc<AtomicBool>,
+) -> Result<()> {
+    let result = receive(packets, permission, factory).await;
+    failed.store(true, Ordering::Release);
+    result
 }
 
 async fn receive(
