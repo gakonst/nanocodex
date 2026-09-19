@@ -297,6 +297,12 @@ public final class RemoteViewer: ObservableObject {
             peer.onAudioAvailability = { [weak self] available in
                 guard let self, epoch == attempt else { return }; supportsSpeakers = available
             }
+            peer.onMicrophoneStopped = { [weak self] in
+                guard let self, epoch == attempt else { return }
+                let wasRequested = microphoneRequest != nil || microphoneEnabled || microphonePending
+                stopMicrophone(notifyHost: true)
+                if wasRequested { microphoneError = "Microphone stopped because the audio device changed or was interrupted." }
+            }
             peer.onVideoTrack = { [weak self] track in
                 guard let self, epoch == attempt else { return }
                 if let frameProbe { self.track?.remove(frameProbe) }
