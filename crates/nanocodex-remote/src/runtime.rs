@@ -129,6 +129,7 @@ impl Publisher {
             require_video,
         } = options;
         endpoint(target)?;
+        crate::tls::ensure_crypto_provider();
         let started = Instant::now();
         let first =
             tokio::time::timeout(Duration::from_secs(8), backend(json!({"action":"observe"})))
@@ -951,7 +952,6 @@ mod tests {
         serde_json::from_str(message.to_text().unwrap()).unwrap()
     }
     async fn test_session(backend: Backend, options: Options) -> (Publisher, TestWire) {
-        let _ = rustls::crypto::ring::default_provider().install_default();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let target = PublisherTarget::from_attachment(
             &format!(
@@ -1121,7 +1121,6 @@ mod tests {
     }
     #[tokio::test]
     async fn replaced_host_finishes_and_releases_without_reclaiming() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1249,7 +1248,6 @@ mod tests {
     }
     #[tokio::test]
     async fn frame_window_streams_only_credited_frames_and_stops_on_disconnect() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
         use std::sync::atomic::{AtomicUsize, Ordering};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let target = PublisherTarget::from_attachment(

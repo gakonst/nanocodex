@@ -60,11 +60,17 @@ pub async fn native_client_config() -> io::Result<Arc<ClientConfig>> {
     Ok(config)
 }
 
-fn load() -> io::Result<ClientConfig> {
-    let began = Instant::now();
+// HTTP-only loopback publishers also construct reqwest clients. Initialize the
+// provider independently of native-root loading and preserve explicit providers.
+pub(crate) fn ensure_crypto_provider() {
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         let _ = rustls::crypto::ring::default_provider().install_default();
     }
+}
+
+fn load() -> io::Result<ClientConfig> {
+    let began = Instant::now();
+    ensure_crypto_provider();
     let loaded = rustls_native_certs::load_native_certs();
     let mut roots = RootCertStore::empty();
     let (added, rejected) = roots.add_parsable_certificates(loaded.certs);
