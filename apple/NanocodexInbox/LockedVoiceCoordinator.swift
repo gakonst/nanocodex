@@ -15,7 +15,7 @@ final class LockedVoiceCoordinator {
         var errorDescription: String? {
             switch self {
             case .alreadyRecording: "A voice task is already in progress. Finish or cancel it first."
-            case .unavailable: "Lock Screen recording is unavailable. Open the app to record."
+            case .unavailable: "Recording could not start. Try again from the Lock Screen."
             case .permissions: "Open the app and allow Microphone and Speech Recognition before recording from the Lock Screen."
             case .account: "Sign in in the app before recording from the Lock Screen."
             case .staleCapture: "This voice recording has already ended."
@@ -79,7 +79,7 @@ final class LockedVoiceCoordinator {
         }
         current.recorder.onError = { [weak self, weak current] _ in
             guard let self, let current, self.capture === current else { return }
-            self.end(current, phase: "failed", preserve: true)
+            self.end(current, phase: self.failurePhase(current), preserve: true)
         }
         current.recorder.onFinal = { [weak self, weak current] text in
             guard let self, let current, self.capture === current else { return }
@@ -99,7 +99,7 @@ final class LockedVoiceCoordinator {
         })
         await current.recorder.start(locale: language, permissions: .alreadyGranted)
         guard capture === current, current.recorder.recording else {
-            if capture === current { end(current, phase: "failed", preserve: true) }
+            if capture === current { end(current, phase: failurePhase(current), preserve: true) }
             throw CaptureError.unavailable
         }
         // Network restoration starts only after audio is running, and never opens UI.
@@ -138,15 +138,16 @@ final class LockedVoiceCoordinator {
         current.maximum?.cancel()
         current.background = UIApplication.shared.beginBackgroundTask(withName: "Finish locked voice task") { [weak self, weak current] in
             Task { @MainActor in
-                guard let self, let current, self.capture === current else { return }
+                guard let self, let current else { return }
                 self.releaseBackground(current)
-                self.end(current, phase: "failed", preserve: true)
+                guard self.capture === current else { return }
+                self.end(current, phase: self.failurePhase(current), preserve: true)
             }
         }
         current.completionDeadline = Task { [weak self, weak current] in
             do { try await Task.sleep(for: .seconds(25)) } catch { return }
             guard let self, let current, self.capture === current else { return }
-            self.end(current, phase: "failed", preserve: true)
+            self.end(current, phase: self.failurePhase(current), preserve: true)
         }
     }
 
@@ -167,13 +168,21 @@ final class LockedVoiceCoordinator {
                 self.end(current, phase: "sent", preserve: false)
             } catch {
                 guard self.capture === current else { return }
-                self.end(current, phase: "failed", preserve: true)
+                self.end(current, phase: self.failurePhase(current), preserve: true)
             }
         }
     }
 
+    private func failurePhase(_ current: Capture) -> String {
+        switch current.phase {
+        case "sending": "deliveryFailed"
+        case "transcribing": "transcriptionFailed"
+        default: "recordingFailed"
+        }
+    }
+
     private func content(_ current: Capture, phase: String) -> ActivityContent<LockedVoiceActivityAttributes.ContentState> {
-        ActivityContent(state: .init(phase: phase, language: current.language), staleDate: Date().addingTimeInterval(90))
+        ActivityContent(state: .init(phase: phase, language: current.language), staleDate: ["preparing", "listening", "transcribing", "sending"].contains(phase) ? Date().addingTimeInterval(90) : nil)
     }
 
     private func update(_ current: Capture, phase: String) {

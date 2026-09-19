@@ -83,7 +83,11 @@ final class QuickVoiceRecorder: ObservableObject {
                     guard let self, self.gate.accepts(token) else { return }
                     if let text { self.transcript = text }
                     // Errors and interruptions never submit a partial transcript.
-                    if let error { self.fail(error.localizedDescription); return }
+                    if let error {
+                        let failure = error as NSError
+                        self.log.error("Speech failed: domain=\(failure.domain, privacy: .public) code=\(failure.code)")
+                        self.fail(error.localizedDescription); return
+                    }
                     if let text, let input = self.gate.completed(text, token: token, isFinal: final) {
                         self.stop()
                         self.status = "Starting task…"
@@ -115,8 +119,7 @@ final class QuickVoiceRecorder: ObservableObject {
         recording = false
         status = "Finishing transcription…"
         onStatus?("transcribing")
-        releaseMicrophone()
-        request?.endAudio()
+        releaseMicrophone(endAudio: true)
         // Wait for the recognizer's final result; never send the last partial on timeout.
         armDeadline(seconds: 5, token: gate.token) {
             self.fail("Transcription did not finish. Your words are preserved; edit and send or try again.")
@@ -140,15 +143,17 @@ final class QuickVoiceRecorder: ObservableObject {
         if Self.audioOwner === self { Self.audioOwner = nil }
     }
 
-    private func releaseMicrophone() {
+    private func releaseMicrophone(endAudio: Bool = false) {
         let hadAudio = tapped
+        // Reserve completion time before relinquishing background audio execution.
+        if hadAudio { onAudioEnded?() }
         engine.stop()
         if tapped { engine.inputNode.removeTap(onBus: 0); tapped = false }
+        if endAudio { request?.endAudio() }
         if sessionActive {
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             sessionActive = false
         }
-        if hadAudio { onAudioEnded?() }
     }
 
     private func armDeadline(seconds: Double, token: UUID, action: @escaping @MainActor () -> Void) {

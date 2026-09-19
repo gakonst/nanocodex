@@ -214,9 +214,9 @@ struct LockedVoiceActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: LockedVoiceActivityAttributes.self) { context in
             HStack(spacing: 12) {
-                Image(systemName: symbol(context.isStale ? "failed" : context.state.phase)).font(.title2)
+                Image(systemName: symbol(displayPhase(context))).font(.title2)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(headline(context.isStale ? "failed" : context.state.phase)).font(.headline)
+                    Text(headline(displayPhase(context))).font(.headline)
                     Text(context.state.language == "el-GR" ? "Ελληνικά" : "English")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -230,25 +230,25 @@ struct LockedVoiceActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Image(systemName: symbol(context.isStale ? "failed" : context.state.phase))
+                    Image(systemName: symbol(displayPhase(context)))
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    Text(headline(context.isStale ? "failed" : context.state.phase)).font(.headline)
+                    Text(headline(displayPhase(context))).font(.headline)
                 }
                 DynamicIslandExpandedRegion(.bottom) { controls(context) }
             } compactLeading: {
-                Image(systemName: symbol(context.isStale ? "failed" : context.state.phase))
+                Image(systemName: symbol(displayPhase(context)))
             } compactTrailing: {
-                Text(context.isStale ? "Open" : context.state.phase == "sent" ? "Sent" : "Voice").font(.caption2)
+                Text(displayPhase(context) == "sent" ? "Sent" : context.isStale ? "Ended" : "Voice").font(.caption2)
             } minimal: {
-                Image(systemName: symbol(context.isStale ? "failed" : context.state.phase))
+                Image(systemName: symbol(displayPhase(context)))
             }
         }
     }
 
     @ViewBuilder private func controls(_ context: ActivityViewContext<LockedVoiceActivityAttributes>) -> some View {
         if context.isStale {
-            Link("Open", destination: URL(string: "nanocodex://voice/recovery")!)
+            EmptyView()
         } else if ["preparing", "listening", "transcribing"].contains(context.state.phase) {
             HStack {
                 Button(intent: CancelLockedVoiceIntent(captureID: context.attributes.captureID)) {
@@ -260,9 +260,15 @@ struct LockedVoiceActivity: Widget {
                     }
                 }
             }.buttonStyle(.bordered)
-        } else if context.state.phase == "failed" {
-            Link("Open", destination: URL(string: "nanocodex://voice/recovery")!)
+        } else if ["recordingFailed", "transcriptionFailed"].contains(context.state.phase) {
+            Button("Record again", intent: StartLockedVoiceIntent()).buttonStyle(.bordered)
         }
+    }
+
+    private func displayPhase(_ context: ActivityViewContext<LockedVoiceActivityAttributes>) -> String {
+        let phase = context.state.phase
+        let active = ["preparing", "listening", "transcribing", "sending"].contains(phase)
+        return context.isStale && active ? "expired" : phase
     }
 
     private func headline(_ phase: String) -> String {
@@ -273,13 +279,17 @@ struct LockedVoiceActivity: Widget {
         case "sending": "Sending…"
         case "sent": "Task sent"
         case "cancelled": "Cancelled"
-        default: "Open Nanocodex to continue"
+        case "recordingFailed": "Recording stopped"
+        case "transcriptionFailed": "Transcription unfinished"
+        case "deliveryFailed": "Delivery unconfirmed"
+        case "expired": "Status unavailable"
+        default: "Voice task ended"
         }
     }
     private func symbol(_ phase: String) -> String {
         switch phase {
         case "sent": "checkmark.circle.fill"
-        case "failed": "exclamationmark.circle"
+        case "failed", "recordingFailed", "transcriptionFailed", "deliveryFailed", "expired": "exclamationmark.circle"
         case "cancelled": "xmark.circle"
         default: "mic.fill"
         }
