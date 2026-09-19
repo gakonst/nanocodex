@@ -79,6 +79,10 @@
     "./x": {
       "types": "./tools/x.d.mts",
       "import": "./tools/x.mjs"
+    },
+    "./extensions": {
+      "types": "./tools/extensions.d.mts",
+      "import": "./tools/extensions.mjs"
     }
   },
   "files": [
