@@ -322,15 +322,15 @@ impl ContextManager {
     }
 
     fn items_after_last_model_generated_tokens(&self) -> u64 {
-        let mut tokens = 0_u64;
+        let mut tokens = None::<u64>;
         for item in &self.items {
             if is_model_generated_item(item) {
-                tokens = 0;
-            } else {
-                tokens = tokens.saturating_add(compaction::estimate_item_tokens(item));
+                tokens = Some(0);
+            } else if let Some(tokens) = &mut tokens {
+                *tokens = tokens.saturating_add(compaction::estimate_item_tokens(item));
             }
         }
-        tokens
+        tokens.unwrap_or_default()
     }
 
     fn non_last_reasoning_tokens(&self) -> u64 {
@@ -564,8 +564,7 @@ const fn is_model_generated_item(item: &ResponseItem) -> bool {
         ResponseItem::Message {
             role: MessageRole::Assistant,
             ..
-        } | ResponseItem::AgentMessage { .. }
-            | ResponseItem::Reasoning { .. }
+        } | ResponseItem::Reasoning { .. }
             | ResponseItem::LocalShellCall { .. }
             | ResponseItem::FunctionCall { .. }
             | ResponseItem::ToolSearchCall { .. }
@@ -578,7 +577,69 @@ const fn is_model_generated_item(item: &ResponseItem) -> bool {
 }
 
 fn is_user_turn_boundary(item: &ResponseItem) -> bool {
-    item.is_user_message() && !is_contextual_user_message(item)
+    match item {
+        ResponseItem::AgentMessage { .. } => true,
+        ResponseItem::Message {
+            role: MessageRole::Assistant,
+            content,
+            ..
+        } => is_inter_agent_instruction_content(content),
+        _ => item.is_user_message() && !is_contextual_user_message(item),
+    }
+}
+
+// Older Codex histories encode inter-agent instructions as a single JSON text
+// block in an assistant message. Recognize the envelope, not arbitrary JSON.
+fn is_inter_agent_instruction_content(content: &[ContentItem]) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Instruction {
+        author: String,
+        recipient: String,
+        #[serde(default)]
+        other_recipients: Vec<String>,
+        #[serde(rename = "content")]
+        _content: String,
+        #[serde(rename = "trigger_turn")]
+        _trigger_turn: bool,
+        #[serde(rename = "id")]
+        _id: Option<String>,
+        #[serde(rename = "encrypted_content")]
+        _encrypted_content: Option<String>,
+        #[serde(rename = "internal_chat_message_metadata_passthrough")]
+        _metadata: Option<InstructionMetadata>,
+    }
+    #[derive(serde::Deserialize)]
+    struct InstructionMetadata {
+        #[serde(rename = "turn_id")]
+        _turn_id: Option<String>,
+        #[serde(rename = "create_time")]
+        _create_time: Option<serde_json::Number>,
+    }
+    fn valid_agent_path(path: &str) -> bool {
+        if matches!(path, "/root" | "/morpheus") {
+            return true;
+        }
+        path.strip_prefix("/root/").is_some_and(|suffix| {
+            suffix.split('/').all(|segment| {
+                !segment.is_empty()
+                    && segment != "root"
+                    && segment
+                        .chars()
+                        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+            })
+        })
+    }
+    let [ContentItem::InputText { text } | ContentItem::OutputText { text, .. }] = content else {
+        return false;
+    };
+    serde_json::from_str::<Instruction>(text).is_ok_and(|instruction| {
+        valid_agent_path(&instruction.author)
+            && valid_agent_path(&instruction.recipient)
+            && instruction
+                .other_recipients
+                .iter()
+                .all(|path| valid_agent_path(path))
+    })
 }
 
 #[must_use]
@@ -698,6 +759,82 @@ fn truncate_output_content(items: &mut Vec<FunctionOutputContent>, token_limit: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_counts_incoming_agent_instructions_and_preceding_local_tail() {
+        let reasoning: ResponseItem = serde_json::from_value(serde_json::json!({
+            "type": "reasoning", "summary": [], "encrypted_content": "x".repeat(1200)
+        }))
+        .unwrap();
+        let agent: ResponseItem = serde_json::from_value(serde_json::json!({
+            "type": "agent_message", "author": "/root/peer", "recipient": "/root",
+            "content": [{"type": "input_text", "text": "Continue with the new task"}]
+        }))
+        .unwrap();
+        let local = ResponseItem::message(
+            MessageRole::Developer,
+            [ContentItem::InputText {
+                text: "additional local context".into(),
+            }],
+        );
+        let expected_tail =
+            compaction::estimate_item_tokens(&local) + compaction::estimate_item_tokens(&agent);
+        let prior_reasoning = compaction::estimate_item_tokens(&reasoning);
+        assert!(prior_reasoning > 0);
+        let mut context = ContextManager::new(vec![reasoning, local, agent]);
+        context.update_token_info(Some(&Usage {
+            total_tokens: 100,
+            ..Usage::default()
+        }));
+        assert_eq!(context.active_context_tokens(true), 100 + expected_tail);
+        assert_eq!(
+            context.active_context_tokens(false),
+            100 + expected_tail + prior_reasoning
+        );
+    }
+
+    #[test]
+    fn usage_without_model_items_does_not_add_the_entire_history_again() {
+        let mut context = ContextManager::new(vec![message("initial input")]);
+        assert_eq!(context.active_context_tokens(true), 0);
+        context.replace_and_recompute(vec![message("restored input")], &[]);
+        let estimated = context.last_token_usage.as_ref().unwrap().total_tokens;
+        assert!(estimated > 0);
+        assert_eq!(context.active_context_tokens(true), estimated);
+        assert_eq!(context.active_context_tokens(false), estimated);
+    }
+
+    #[test]
+    fn usage_legacy_agent_instruction_starts_a_reasoning_boundary() {
+        let reasoning: ResponseItem = serde_json::from_value(serde_json::json!({
+            "type": "reasoning", "summary": [], "encrypted_content": "x".repeat(1200)
+        }))
+        .unwrap();
+        let prior_reasoning = compaction::estimate_item_tokens(&reasoning);
+        let envelope = serde_json::json!({
+            "author": "/root/peer", "recipient": "/root", "content": "new task",
+            "trigger_turn": true
+        });
+        let instruction = ResponseItem::message(
+            MessageRole::Assistant,
+            [ContentItem::InputText {
+                text: envelope.to_string().into(),
+            }],
+        );
+        let mut context = ContextManager::new(vec![reasoning, instruction]);
+        context.update_token_info(Some(&Usage {
+            total_tokens: 100,
+            ..Usage::default()
+        }));
+        assert_eq!(context.active_context_tokens(false), 100 + prior_reasoning);
+        assert_eq!(context.active_context_tokens(true), 100);
+        for text in ["ordinary assistant output".to_owned(), "{}".to_owned(),
+            serde_json::json!({"author":"relative", "recipient":"/root", "content":"x", "trigger_turn":true}).to_string()] {
+            let item = ResponseItem::message(MessageRole::Assistant,
+                [ContentItem::InputText { text: text.into() }]);
+            assert!(!is_user_turn_boundary(&item));
+        }
+    }
 
     #[test]
     fn complete_prompt_reuses_the_history_without_repair() {

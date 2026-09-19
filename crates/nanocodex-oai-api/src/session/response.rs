@@ -546,7 +546,7 @@ where
     if reinject_canonical_context {
         candidate.append(session.canonical_context.iter().cloned());
     }
-    candidate.append(input.items);
+    candidate.append_client(input.items);
     let (prompt_history, prompt_repaired) = candidate.prompt_history_with_repair();
     let previous_response_id = if prompt_repaired {
         None
@@ -692,8 +692,8 @@ where
         Arc::clone(&session.transport_stats),
     )
     .for_logical_turn(turn.logical_turn);
-    let mut history = session.state.prompt_history();
-    compaction::trim_tool_outputs_to_fit_context_window(
+    let (mut history, prompt_repaired) = session.state.prompt_history_with_repair();
+    let rewritten = compaction::trim_tool_outputs_to_fit_context_window(
         &mut history,
         session.profile.prefix(),
         session.context_window_tokens,
@@ -702,8 +702,15 @@ where
         call_index,
         history.clone(),
         history,
-        session.state.delta_start(),
-        session.state.previous_response_id(),
+        if rewritten == 0 && !prompt_repaired {
+            session.state.delta_start()
+        } else {
+            0
+        },
+        session
+            .state
+            .previous_response_id()
+            .filter(|_| rewritten == 0 && !prompt_repaired),
         compaction::trigger(),
         session.model,
         session.thinking,

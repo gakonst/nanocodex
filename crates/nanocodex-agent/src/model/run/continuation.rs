@@ -7,6 +7,8 @@ struct CurrentExecution {
     phase: ExecutionPhase,
     workspace: String,
     canonical_context: ResponseItem,
+    #[serde(default)]
+    client_authored: std::collections::BTreeSet<String>,
     context_baseline: ContextBaseline,
     context_usage: Option<Usage>,
     server_reasoning_included: bool,
@@ -95,6 +97,10 @@ where
         };
         session
             .conversation
+            .managed
+            .restore_client_authored(saved.client_authored);
+        session
+            .conversation
             .update_token_info(saved.context_usage.as_ref());
         session
             .conversation
@@ -171,6 +177,7 @@ where
             phase,
             workspace: session.workspace.clone(),
             canonical_context: (*session.conversation.canonical_context).clone(),
+            client_authored: session.conversation.managed.client_authored().clone(),
             context_baseline: session.context.baseline(),
             context_usage: session.conversation.managed.context_usage().0.cloned(),
             server_reasoning_included: session.conversation.managed.context_usage().1,

@@ -126,12 +126,19 @@ where
         if !self.force_compaction && active_context_tokens < auto_compact_token_limit {
             return Ok(false);
         }
-        let previous_response_id = conversation.previous_response_id();
+        let (history, prompt_repaired) = conversation.prompt_history_with_repair();
+        let previous_response_id = conversation
+            .previous_response_id()
+            .filter(|_| !prompt_repaired);
         let (item, _usage, server_reasoning_included) = self
             .perform_compaction(
                 after_model_call_index,
-                conversation.prompt_history(),
-                conversation.delta_start(),
+                history,
+                if prompt_repaired {
+                    0
+                } else {
+                    conversation.delta_start()
+                },
                 previous_response_id,
                 active_context_tokens,
                 auto_compact_token_limit,
@@ -355,7 +362,7 @@ where
         let fast_mode = self.fast_mode;
         let trigger = compaction::trigger();
         let mut history = history;
-        compaction::trim_tool_outputs_to_fit_context_window(
+        let rewritten = compaction::trim_tool_outputs_to_fit_context_window(
             &mut history,
             factory.profile().prefix(),
             self.config.context_window_tokens,
@@ -375,8 +382,8 @@ where
             after_model_call_index,
             history.clone(),
             history.clone(),
-            incremental_start,
-            previous_response_id,
+            if rewritten == 0 { incremental_start } else { 0 },
+            previous_response_id.filter(|_| rewritten == 0),
             trigger,
             model,
             thinking,

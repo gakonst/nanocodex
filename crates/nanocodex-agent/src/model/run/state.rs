@@ -108,6 +108,10 @@ impl ConversationState {
         self.managed.append(items);
     }
 
+    pub(super) fn append_client(&mut self, items: impl IntoIterator<Item = ResponseItem>) {
+        self.managed.append_client(items);
+    }
+
     pub(super) fn update_token_info(&mut self, usage: Option<&Usage>) {
         self.managed.update_token_info(usage);
     }
@@ -118,10 +122,6 @@ impl ConversationState {
 
     pub(super) fn active_context_tokens(&self) -> u64 {
         self.managed.active_context_tokens()
-    }
-
-    pub(super) fn prompt_history(&self) -> nanocodex_oai_api::responses::ResponseHistory {
-        self.managed.prompt_history()
     }
 
     pub(super) fn prompt_history_with_repair(

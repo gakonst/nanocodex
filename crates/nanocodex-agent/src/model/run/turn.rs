@@ -86,12 +86,17 @@ where
             self.config.context_window_tokens,
         )
         .unwrap_or(self.config.context_window_tokens);
+        let (history, prompt_repaired) = session.conversation.prompt_history_with_repair();
         let compacted = {
             let compaction = self.perform_compaction(
                 self.stats.model_calls,
-                session.conversation.prompt_history(),
-                session.conversation.delta_start(),
-                previous_response_id.as_deref(),
+                history,
+                if prompt_repaired {
+                    0
+                } else {
+                    session.conversation.delta_start()
+                },
+                previous_response_id.as_deref().filter(|_| !prompt_repaired),
                 active_context_tokens,
                 auto_compact_token_limit,
                 &session.factory,
@@ -519,11 +524,20 @@ where
                 self.context_source.execution_environment(),
             );
             let mut history = task_input(&task, user_content, &context_snapshot);
-            if !self.pending_developer_messages.is_empty() {
-                history.splice(2..2, self.pending_developer_messages.drain(..));
+            let mut pending = std::mem::take(&mut self.pending_developer_messages);
+            for item in &mut pending {
+                assign_missing_response_item_id(item);
             }
+            let client_authored = pending
+                .iter()
+                .filter_map(|item| item.id().map(ToString::to_string))
+                .collect();
+            history.splice(2..2, pending);
             context.establish(context_snapshot);
-            let conversation = ConversationState::new(history)?;
+            let mut conversation = ConversationState::new(history)?;
+            conversation
+                .managed
+                .restore_client_authored(client_authored);
             let mut session = ModelSessionState {
                 workspace,
                 tools,

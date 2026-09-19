@@ -80,6 +80,7 @@ impl DurableSession {
             materialized.workspace,
             materialized.base_instructions,
             materialized.history,
+            materialized.client_authored,
             materialized.context_baseline,
         )
         .map_err(io::Error::other)?;
@@ -374,6 +375,7 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
     let mut history = Vec::new();
     let mut transcript = Vec::new();
     let mut context_baseline = None;
+    let mut client_authored = std::collections::BTreeSet::new();
     let mut model = Model::Sol;
     for (index, line) in BufReader::new(File::open(path)?).lines().enumerate() {
         let line = line?;
@@ -464,6 +466,10 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
                 }
             }
             Some("world_state") => {
+                if let Some(ids) = value["payload"]["state"].get("nanocodex_client_authored") {
+                    client_authored =
+                        serde_json::from_value(ids.clone()).map_err(io::Error::other)?;
+                }
                 if let Some(state) = value["payload"]["state"].get("nanocodex_context") {
                     context_baseline =
                         Some(serde_json::from_value(state.clone()).map_err(|error| {
@@ -514,6 +520,7 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
         history,
         transcript,
         context_baseline,
+        client_authored,
     })
 }
 
@@ -525,6 +532,7 @@ struct MaterializedRollout {
     history: Vec<ResponseItem>,
     transcript: Vec<RolloutTranscriptItem>,
     context_baseline: Option<ContextBaseline>,
+    client_authored: std::collections::BTreeSet<String>,
 }
 
 pub(in crate::rollout) fn visible_rollout_event(

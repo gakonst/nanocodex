@@ -412,13 +412,10 @@ where
         .await?;
         match received.event {
             ServerEvent::OutputItemDone { item } => done_items.push(item),
-            ServerEvent::Completed { mut response } => {
-                let output_items = if response.output.is_empty() {
-                    done_items
-                } else {
-                    std::mem::take(&mut response.output)
-                };
-                let mut compactions = output_items
+            ServerEvent::Completed { response } => {
+                // Pinned Codex counts streamed output_item.done compactions only.
+                // The completion envelope must not replace or manufacture them.
+                let mut compactions = done_items
                     .into_iter()
                     .filter(|item| matches!(item, ResponseItem::Compaction { .. }));
                 let item = compactions.next();

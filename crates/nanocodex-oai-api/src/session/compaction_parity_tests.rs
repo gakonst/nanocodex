@@ -17,23 +17,27 @@ fn summary() -> ResponseItem {
 #[test]
 fn canonical_context_precedes_latest_input_even_with_later_developer_messages() {
     let user = message(MessageRole::User, "latest task");
-    let developer = message(MessageRole::Developer, "client state after user");
+    let mut developer = message(MessageRole::Developer, "client state after user");
+    developer.set_id(Some("client-dev".into()));
+    let provenance = BTreeSet::from(["client-dev".to_owned()]);
     let context = message(MessageRole::Developer, "fresh canonical context");
     let history = vec![user.clone(), developer.clone()];
     assert_eq!(
-        serde_json::to_value(install_history(
+        serde_json::to_value(install_history_with_provenance(
             &history,
             std::slice::from_ref(&context),
-            summary()
+            summary(),
+            &provenance
         ))
         .unwrap(),
         serde_json::to_value(vec![context.clone(), user, developer.clone(), summary()]).unwrap(),
     );
     assert_eq!(
-        serde_json::to_value(install_history(
+        serde_json::to_value(install_history_with_provenance(
             std::slice::from_ref(&developer),
             std::slice::from_ref(&context),
-            summary()
+            summary(),
+            &provenance
         ))
         .unwrap(),
         serde_json::to_value(vec![developer, context, summary()]).unwrap(),
@@ -121,9 +125,11 @@ fn many_retained_images_respect_the_compaction_budget() {
 }
 
 #[test]
-fn retained_developer_messages_charge_serialized_overhead() {
-    let developer = message(MessageRole::Developer, &"x".repeat(400));
-    let retained = truncate_retained_messages(vec![developer], 50);
+fn retained_client_developer_messages_charge_model_visible_content() {
+    let mut developer = message(MessageRole::Developer, &"x".repeat(400));
+    developer.set_id(Some("client-dev".into()));
+    let provenance = BTreeSet::from(["client-dev".to_owned()]);
+    let retained = truncate_retained_messages_with_provenance(vec![developer], 50, &provenance);
     assert_eq!(retained.len(), 1);
     assert!(estimate_item_tokens(&retained[0]) <= 50);
 }
@@ -176,4 +182,52 @@ fn resize_notice_survives_only_with_its_retained_source() {
         .unwrap(),
         serde_json::to_value(vec![user, user_notice, summary()]).unwrap(),
     );
+}
+
+#[test]
+fn trimming_uses_ninety_five_percent_but_auto_trigger_uses_ninety_percent() {
+    let raw_window = 1_000;
+    assert_eq!(
+        auto_compact_token_limit("gpt-6-astra", raw_window),
+        Some(900)
+    );
+    for (tokens, rewritten) in [(950, 0), (951, 1)] {
+        let mut history = ResponseHistory::new(vec![ResponseItem::custom_tool_output(
+            "call".to_owned(),
+            None,
+            FunctionOutputBody::Text("x".repeat(tokens * 4 - 4).into_boxed_str()),
+        )]);
+        assert_eq!(
+            estimate_item_tokens(history.iter().next().unwrap()),
+            tokens as u64
+        );
+        assert_eq!(
+            trim_tool_outputs_to_fit_context_window(&mut history, &[], raw_window),
+            rewritten
+        );
+    }
+}
+
+#[test]
+fn developer_retention_uses_provenance_even_when_client_text_looks_like_harness_context() {
+    let harness = message(MessageRole::Developer, "arbitrary generated context");
+    let mut client = message(
+        MessageRole::Developer,
+        "<image_resize_notice>client instructions</image_resize_notice>",
+    );
+    client.set_id(Some("explicit-client".into()));
+    let ids = BTreeSet::from(["explicit-client".to_owned()]);
+    let history = vec![harness, client.clone()];
+    assert_eq!(
+        serde_json::to_value(install_history_with_provenance(
+            &history,
+            &[],
+            summary(),
+            &ids
+        ))
+        .unwrap(),
+        serde_json::to_value(vec![client, summary()]).unwrap()
+    );
+    // An old snapshot without provenance is not migrated by guessing from text.
+    assert_eq!(install_history(&history, &[], summary()).len(), 1);
 }
