@@ -290,3 +290,49 @@ async fn discovers_an_external_mcp_command_before_publishing_its_tools() {
             .success
     );
 }
+
+#[tokio::test]
+#[ignore = "requires NANOCODEX_TEST_EXTERNAL_COMPUTER pointing to an installed external MCP launcher"]
+async fn installed_external_provider_discovery_preserves_catalog_and_hides_lifecycle_hook() {
+    let Some(executable) = std::env::var_os("NANOCODEX_TEST_EXTERNAL_COMPUTER") else {
+        // The bundled runtime's --include-ignored suite needs no external install.
+        eprintln!("Skipping installed-provider smoke: NANOCODEX_TEST_EXTERNAL_COMPUTER is unset");
+        return;
+    };
+    // Discovery sends initialize/tools/list only. This does not claim native UI control.
+    let computer = tokio::time::timeout(
+        Duration::from_secs(45),
+        ComputerTools::connect(ComputerConfig::mcp(executable)),
+    )
+    .await
+    .expect("external provider discovery timed out")
+    .expect("external provider MCP discovery failed");
+    let names = computer
+        .tools()
+        .map(|tool| tool.definition().name().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        [
+            "mcp__cua_repl__js",
+            "mcp__cua_repl__js_add_node_module_dir",
+            "mcp__cua_repl__js_reset",
+        ]
+    );
+    let hidden = computer
+        .tool("turn_ended")
+        .expect("trusted lifecycle hook missing from the raw catalog");
+    assert!(!hidden.provider_definition().model_visible());
+    assert_eq!(
+        hidden.provider_definition().metadata["_meta"]["ui"]["visibility"],
+        json!([])
+    );
+    assert_eq!(computer.catalog().len(), 4);
+    assert!(computer.catalog().iter().all(|definition| {
+        definition.input_schema.is_object()
+            && definition
+                .description
+                .as_deref()
+                .is_some_and(|text| !text.is_empty())
+    }));
+}
