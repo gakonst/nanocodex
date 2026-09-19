@@ -1599,6 +1599,7 @@ private struct ConversationContentView: View {
     @Environment(\.conversationNavigationActive) private var navigationActive
     @State private var followsLatest = true
     @State private var isInteractingTranscript = false
+    @State private var isScrollGestureActive = false
     @State private var scrollsTowardLatest = false
     @State private var hasInitialPosition = false
     @State private var pendingReadingRestore: ConversationReadingPositions.Position?
@@ -1693,11 +1694,13 @@ private struct ConversationContentView: View {
         }
     }
     private func followLatest(using scroll: ScrollViewProxy) {
-        guard followsLatest, pendingReadingRestore == nil, !revision.preparing,
-              !model.needsLatestHistory, !isInteractingTranscript, !navigationActive else { return }
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { scroll.scrollTo("latest", anchor: .bottom) }
+        guard followsLatest, pendingReadingRestore == nil,
+              !model.needsLatestHistory, !isScrollGestureActive, !navigationActive else { return }
+        // Animate only the scroll offset, not the transcript's text or tool state.
+        // Initial positioning and accessibility Reduce Motion remain immediate.
+        withAnimation(hasInitialPosition && !reduceMotion ? .smooth(duration: 0.24) : nil) {
+            scroll.scrollTo("latest", anchor: .bottom)
+        }
     }
     var body: some View {
         ScrollViewReader { scroll in
@@ -1767,7 +1770,7 @@ private struct ConversationContentView: View {
                             return AnyView(ConversationMessageView(row: row, model: model, agentID: agentID)
                                 .accessibilityIdentifier("voice-transcript-" + transcript.speaker))
                         }) {
-                            if followsLatest { scroll.scrollTo("latest", anchor: .bottom) }
+                            followLatest(using: scroll)
                         }
                     }
                     Color.clear.frame(height: 1).id("latest")
@@ -1778,7 +1781,8 @@ private struct ConversationContentView: View {
             // must not intercept the header at accessibility text sizes.
             .contentShape(Rectangle())
             .defaultScrollAnchor(.top)
-            .defaultScrollAnchor(followsLatest ? .bottom : .top, for: .sizeChanges)
+            // Keep layout from snapping to the bottom before animated following runs.
+            .defaultScrollAnchor(.top, for: .sizeChanges)
             .defaultScrollAnchor(readingPositions.values[identity]?.atLatest == false ? .top : .bottom, for: .initialOffset)
             .scrollDismissesKeyboard(.interactively)
             .scrollBounceBehavior(.always, axes: .vertical)
@@ -1824,12 +1828,18 @@ private struct ConversationContentView: View {
             .onScrollPhaseChange { previous, phase in
                 if phase == .tracking { scrollsTowardLatest = false }
                 isInteractingTranscript = phase == .interacting
+                isScrollGestureActive = phase == .tracking || phase == .interacting || phase == .decelerating
                 // Horizontal drawer gestures can enter a scroll phase without
                 // moving the transcript. Only vertical input suspends following.
                 if phase == .idle, previous == .interacting || previous == .decelerating {
                     if !navigationActive, pendingReadingRestore == nil, historyContent.atLatest, !model.needsLatestHistory {
                         followsLatest = true
                     }
+                }
+                if phase == .idle, previous == .tracking || previous == .interacting || previous == .decelerating {
+                    // A stationary touch may defer the final arrival without
+                    // changing reading intent. Catch up when the finger lifts.
+                    followLatest(using: scroll)
                 }
             }
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentSize.height } action: { _, _ in
@@ -1839,7 +1849,8 @@ private struct ConversationContentView: View {
             }
             .onChange(of: revision.projectionRevision) { _, _ in
                 restoreHistoryPosition(using: scroll)
-                followLatest(using: scroll)
+                // Content-height observation follows after layout; issuing a second
+                // scroll here would retarget against the previous geometry.
                 updateHistoryPosition(in: viewport)
             }
             .onChange(of: navigationActive) { _, active in
@@ -1886,7 +1897,7 @@ private struct ConversationContentView: View {
             // during drawer navigation, expanding the button to the whole viewport.
             VStack {
                 Spacer(minLength: 0)
-                if historyContent.isMeasured, !model.threadLoading, model.needsLatestHistory || !historyContent.atLatest {
+                if historyContent.isMeasured, !model.threadLoading, model.needsLatestHistory || (!followsLatest && !historyContent.atLatest) {
                     Button {
                         historyDirection = nil
                         historyRestore = nil

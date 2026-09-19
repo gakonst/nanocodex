@@ -378,6 +378,28 @@ final class InboxModel: ObservableObject {
     func openThread() {
         pinnedThreadID = focused?.id
         #if DEBUG
+        if isDemo, ProcessInfo.processInfo.environment["NANOCODEX_DEMO_TOOL_ARRIVALS"] == "1", let id = focused?.id,
+           !rows.contains(where: { $0.id == "demo-tool-history-1" }) {
+            // Start beyond one viewport so every arrival exercises tail following.
+            rows = (1...20).map {
+                .init(id: "demo-tool-history-\($0)", role: "Agent", text: "Earlier synthetic progress note \($0).")
+            }
+            let epoch = generation
+            Task {
+                try? await Task.sleep(for: .seconds(3))
+                for index in 1...6 {
+                    guard !Task.isCancelled, generation == epoch, focused?.id == id else { return }
+                    var activity = ToolPresentation(name: "exec_command", arguments: .object([
+                        "cmd": .string("echo synthetic-tool-\(index)")
+                    ]))
+                    activity.finish(.object(["output": .string("Synthetic result \(index); no command was executed."),
+                                             "exit_code": .number(0)]))
+                    rows.append(.init(id: "demo-tool-arrival-\(index)", role: "Tool", text: activity.title, tool: activity))
+                    demoRows[id] = rows
+                    if index < 6 { try? await Task.sleep(for: .seconds(1)) }
+                }
+            }
+        }
         if isDemo, ProcessInfo.processInfo.environment["NANOCODEX_DEMO_STREAMING_GROWTH"] == "1", let id = focused?.id {
             let epoch = generation
             Task {

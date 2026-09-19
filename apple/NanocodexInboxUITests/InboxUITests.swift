@@ -2421,6 +2421,32 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed)
         capture(app, "12-activity-failure")
     }
+    func testSuccessiveToolCardsFollowTailWithoutFlashingJump() {
+        let app = launch(["NANOCODEX_DEMO_TOOL_ARRIVALS": "1",
+                          "NANOCODEX_DEMO_PROFILE": UUID().uuidString]); selectInbox(app)
+        let conversation = app.scrollViews["conversation"]
+        XCTAssertTrue(conversation.waitForExistence(timeout: 5))
+        let jump = app.buttons["latest-messages"]
+        let jumpAppeared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true"), object: jump)
+        jumpAppeared.isInverted = true
+        let arrivals = [1, 3, 6].map { index in
+            let card = conversation.buttons["tool-disclosure-demo-tool-arrival-\(index)"]
+            return XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                card.exists && card.isHittable
+                    && card.frame.minY >= conversation.frame.minY
+                    && card.frame.maxY <= self.composer(app).frame.minY
+            }, object: nil)
+        }
+        // Observe the button throughout the sequence, including a settling interval
+        // after the last arrival, rather than only checking its final absence.
+        XCTAssertEqual(XCTWaiter.wait(for: arrivals + [jumpAppeared], timeout: 10), .completed,
+                       "Successive individual tool cards must stay visible without offering a jump while following")
+        let latest = conversation.buttons["tool-disclosure-demo-tool-arrival-6"]
+        XCTAssertTrue(latest.isHittable, "The latest tool remains visible after all arrivals")
+        XCTAssertFalse(jump.exists)
+        capture(app, "successive-tool-cards-follow-tail")
+    }
+
     func testStreamingGrowthDoesNotMoveReaderInEarlierParagraphs() {
         let app = launch(["NANOCODEX_DEMO_STREAMING_GROWTH": "1"]); selectInbox(app)
         let conversation = app.scrollViews["conversation"]
