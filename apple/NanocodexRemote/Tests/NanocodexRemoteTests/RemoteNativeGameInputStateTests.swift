@@ -2,6 +2,47 @@ import XCTest
 @testable import NanocodexRemote
 
 final class RemoteNativeGameInputStateTests: XCTestCase {
+    func testDefaultShoulderAndMixedHints() {
+        var state = RemoteNativeGameInputState()
+        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("a"), "Jump")
+        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("b"), "Cancel")
+        XCTAssertEqual(RemoteNativeGameContext(input: state).rightAnalogHint, "LOOK")
+        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("dpadUp"), "Top-bar slot up")
+        state.button("leftShoulder", owner: "left", down: true)
+        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("a"), "Self")
+        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("dpadUp"), "Group")
+        state.button("rightShoulder", owner: "right", down: true)
+        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("a"), "—")
+        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("b"), "Bags")
+        XCTAssertEqual(RemoteNativeGameContext(input: state).rightAnalogHint, "ZOOM")
+        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("dpadLeft"), "Previous page")
+        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("leftStick"), "Center")
+        state.trigger("leftTrigger", down: true)
+        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("a"), "Modified")
+        XCTAssertEqual(RemoteNativeGameContext(input: state).rightAnalogHint, "RIGHT STICK")
+        state.button("leftShoulder", owner: "left", down: false)
+        state.button("rightShoulder", owner: "right", down: false)
+        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("a"), "Slot")
+        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeBankLabel, "LT · Left bar")
+        state.trigger("rightTrigger", down: true)
+        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeBankLabel, "LT + RT · Bottom bar")
+    }
+
+    func testHostileDefaultDoesNotInventDpadActions() {
+        var state = RemoteNativeGameInputState()
+        state.button("rightShoulder", owner: "right", down: true)
+        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("a"), "Last enemy")
+        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("dpadUp"), "—")
+    }
+
+    func testNativePresentationSurvivesLostLeaseOnlyForSameHand() {
+        XCTAssertTrue(RemoteNativeGameContext.presentsNative(capable: true, controlling: true, handID: "one", rememberedHandID: nil))
+        XCTAssertTrue(RemoteNativeGameContext.presentsNative(capable: false, controlling: false, handID: "one", rememberedHandID: "one"))
+        XCTAssertFalse(RemoteNativeGameContext.presentsNative(capable: false, controlling: true, handID: "one", rememberedHandID: "one"))
+        XCTAssertFalse(RemoteNativeGameContext.presentsNative(capable: false, controlling: false, handID: "two", rememberedHandID: "one"))
+        XCTAssertFalse(RemoteNativeGameContext.presentsNative(capable: false, controlling: false, handID: nil, rememberedHandID: nil))
+    }
+
     func testIndependentOwnersAndNeutralReset() {
         var state = RemoteNativeGameInputState()
         state.button("a", owner: "finger1", down: true)
@@ -115,27 +156,17 @@ final class RemoteNativeGameInputStateTests: XCTestCase {
     func testLandscapeControlsFitWithoutOverlapping() {
         // Safe-area content after the 44pt header, gaps and padding; includes SE.
         for size in [CGSize(width: 536, height: 218), CGSize(width: 552, height: 254), CGSize(width: 650, height: 254),
-                     CGSize(width: 734, height: 303), CGSize(width: 820, height: 343)] {
+                     CGSize(width: 734, height: 303), CGSize(width: 820, height: 343), CGSize(width: 1180, height: 700)] {
             let layout = RemoteNativeGameLayout(width: size.width, height: size.height)
             XCTAssertTrue(layout.fits)
-            var frames: [CGRect] = []
-            func append(_ center: CGPoint, _ side: CGFloat) {
-                frames.append(CGRect(x: center.x - side / 2, y: center.y - side / 2, width: side, height: side))
-            }
-            append(layout.leftStick, layout.stickSize)
-            append(layout.rightStick, layout.stickSize)
-            for center in [layout.dpad, layout.face] {
-                for offset in [CGPoint(x: 0, y: -46), CGPoint(x: 0, y: 46), CGPoint(x: -46, y: 0), CGPoint(x: 46, y: 0)] {
-                    append(CGPoint(x: center.x + offset.x, y: center.y + offset.y), layout.buttonSize)
-                }
-            }
-            for x in [CGFloat(34), 90, size.width - 34, size.width - 90, size.width / 2 - 30, size.width / 2 + 30] {
-                append(CGPoint(x: x, y: 24), layout.buttonSize)
-            }
-            append(CGPoint(x: 146, y: size.height - 22), layout.buttonSize)
-            append(CGPoint(x: size.width - 146, y: size.height - 22), layout.buttonSize)
+            let frames = layout.controlFrames
+            XCTAssertEqual(frames.count, 18) // Two sticks, fourteen buttons, two triggers.
+            XCTAssertEqual(layout.dpad.x, 188)
+            XCTAssertEqual(layout.width - layout.face.x, 188)
             let bounds = CGRect(origin: .zero, size: size)
             for (index, frame) in frames.enumerated() {
+                XCTAssertGreaterThanOrEqual(frame.width, 44)
+                XCTAssertGreaterThanOrEqual(frame.height, 44)
                 XCTAssertTrue(bounds.contains(frame), "\(size): control \(index) outside bounds")
                 for other in frames.dropFirst(index + 1) {
                     XCTAssertFalse(frame.intersects(other), "\(size): \(frame) overlaps \(other)")
@@ -143,5 +174,15 @@ final class RemoteNativeGameInputStateTests: XCTestCase {
             }
         }
         XCTAssertFalse(RemoteNativeGameLayout(width: 374, height: 650).fits)
+        XCTAssertFalse(RemoteNativeGameLayout(width: 535, height: 218).fits)
+        XCTAssertFalse(RemoteNativeGameLayout(width: 536, height: 217).fits)
+    }
+
+    func testWideLandscapeKeepsGameplayCenterOpen() {
+        let layout = RemoteNativeGameLayout(width: 820, height: 343)
+        let gameplay = CGRect(x: 264, y: 90, width: 292, height: 210)
+        for frame in layout.controlFrames {
+            XCTAssertFalse(frame.intersects(gameplay), "Control intrudes into central gameplay: \(frame)")
+        }
     }
 }

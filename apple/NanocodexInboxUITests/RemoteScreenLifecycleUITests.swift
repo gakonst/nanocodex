@@ -298,7 +298,9 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
         // Coordinate presses exercise UIKit touch handling, not accessibility actions.
         // XCTest's public coordinate API serializes gestures; simultaneous
         // independent trigger + face-button holds require a separate device test.
-        for name in ["a", "b", "x", "y", "leftTrigger", "rightTrigger"] {
+        for name in ["a", "b", "x", "y", "dpadUp", "dpadDown", "dpadLeft", "dpadRight",
+                     "leftShoulder", "rightShoulder", "leftStick", "rightStick", "back", "start",
+                     "leftTrigger", "rightTrigger"] {
             let control = app.descendants(matching: .any)["remote-gamepad-" + name].firstMatch
             try requireUI(control.waitForExistence(timeout: 5) && control.isHittable && app.frame.contains(control.frame),
                           "Native button must fit and be hittable: " + name, app: app)

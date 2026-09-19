@@ -766,3 +766,19 @@ running `RemoteScreenLifecycleUITests` with
 `TEST_RUNNER_NANOCODEX_SCREEN_FIXTURE=1`. Its native gamepad test checks touch
 states, neutral release, Stop, exit and background recovery; live game input
 requires a separate test on the configured desktop.
+
+The native controller is designed for landscape play. Its movement/camera thumb
+zones stay near the edges on larger displays, leaving the middle of the stream
+clear. iOS 26 uses native Liquid Glass in a shared effect container; older iOS
+versions use system material. Reduce Transparency uses opaque controls, and
+stick updates do not inherit layout animations. WoW hints describe default
+bindings, not a live reading of the game's configuration. The LT/RT indicator
+tracks the selected crossbar; spell assignments and customized bindings remain
+owned by the game. All controls keep at least 44-point touch targets.
+The default hints were checked against WoW Forever 1.60.1.69913's exported
+[face-button handlers](https://github.com/Gethe/wow-ui-source/blob/70ef1b2fd78061a73f886c4a1e79dc5b5cff6d5e/Interface/AddOns/Blizzard_GamepadActionBars/MainActionBarFrame.lua#L287-L409),
+[modifier legend](https://github.com/Gethe/wow-ui-source/blob/70ef1b2fd78061a73f886c4a1e79dc5b5cff6d5e/Interface/AddOns/Blizzard_Gamepad/UI/PersistentInputLegend/GamepadPersistentInputLegend.lua#L326-L403),
+and [crossbar selection](https://github.com/Gethe/wow-ui-source/blob/70ef1b2fd78061a73f886c4a1e79dc5b5cff6d5e/Interface/AddOns/Blizzard_GamepadActionBars/PageUnit.lua#L566-L617).
+Shoulder targeting, shoulder swapping/toggle settings, HUD focus and user
+rebinding can change the displayed default roles; the overlay always sends
+physical gamepad input and lets WoW resolve those settings.
