@@ -21,6 +21,7 @@ struct RemoteControlMessage: Codable, Sendable {
     enum Kind: String, Codable, Sendable { case acquire, granted, denied, renew, release, revoked }
     let type: Kind
     var generation: String?
+    var relativePointer: Bool?
 }
 
 // Hosts acknowledge release with `revoked`, including older hosts that omit a
@@ -90,7 +91,8 @@ struct RemoteViewerControl {
 public final class RemoteViewer: ObservableObject {
     @Published public private(set) var status = "Disconnected"
     @Published public private(set) var track: RTCVideoTrack?
-    @Published public private(set) var frame: CGImage?
+    @RemoteFramePublication public private(set) var frame: CGImage? = nil
+    @Published public private(set) var supportsRelativePointer = false
     @Published public private(set) var controlling = false
     @Published public private(set) var connected = false
     @Published public private(set) var hand: RemoteHand?
@@ -117,7 +119,12 @@ public final class RemoteViewer: ObservableObject {
     private var channelsReady = false
     private var frameTask: Task<Void, Never>?
     private var frameDeadline: Task<Void, Never>?
+    // Pending counts occupied credits, including received/decoding frames.
     private var framePending = 0
+    private var frameReceived = 0
+    private var frameQueue: [RemoteMessage] = []
+    private var frameDecodeTask: Task<Void, Never>?
+    var frameDecoder = RemoteFrameDecoder()
     private var frameRequestedAt: TimeInterval = 0
     private var frameWindow: Int { min(6, max(1, hand?.frameWindow ?? 1)) }
     private let diagnosticsEnabled = ProcessInfo.processInfo.environment["NANOCODEX_REMOTE_DIAGNOSTICS"] == "1"
@@ -336,7 +343,7 @@ public final class RemoteViewer: ObservableObject {
 
     public func releaseControl() {
         let release = control.release()
-        leaseRenewal?.cancel(); leaseRenewal = nil; controlling = false
+        leaseRenewal?.cancel(); leaseRenewal = nil; supportsRelativePointer = false; controlling = false
         if let release { sendControl(release) }
         if connected { status = "Watching" }
     }
@@ -344,6 +351,9 @@ public final class RemoteViewer: ObservableObject {
     public func input(kind: RemoteInput.Kind, x: Double? = nil, y: Double? = nil, button: Int? = nil,
                       down: Bool? = nil, key: UInt16? = nil, text: String? = nil, deltaX: Double? = nil, deltaY: Double? = nil) {
         guard controlling, let generation else { return }
+        let needsRelativePointer = kind == .relativeMove ||
+            ((kind == .button || kind == .scroll) && x == nil && y == nil)
+        guard !needsRelativePointer || supportsRelativePointer else { return }
         sequence += 1
         let event = RemoteInput(kind: kind, sequence: sequence, generation: generation, x: x, y: y,
             button: button, down: down, key: key, text: text, deltaX: deltaX, deltaY: deltaY)
@@ -374,12 +384,16 @@ public final class RemoteViewer: ObservableObject {
                 signaling?.send(relay)
             } else if let data = try? JSONEncoder().encode(release) { try? peer?.send(data) }
         }
-        control = RemoteViewerControl(); controlling = false
+        control = RemoteViewerControl(); supportsRelativePointer = false; controlling = false
         leaseRenewal?.cancel(); leaseRenewal = nil
         connectionSetup?.cancel(); connectionSetup = nil
         signalQueue?.cancel(); signalQueue = nil
         connectionDeadline?.cancel(); connectionDeadline = nil
         frameTask?.cancel(); frameTask = nil; frameDeadline?.cancel(); frameDeadline = nil; framePending = 0; frame = nil
+        frameReceived = 0; frameQueue.removeAll()
+        // Retain the cancelled task until its synchronous decoder returns.
+        // New epochs may enqueue, but cannot create another decode task yet.
+        frameDecodeTask?.cancel()
         let peer = self.peer, signaling = self.signaling
         if let frameProbe { track?.remove(frameProbe) }
         frameProbe = nil; diagnosticFirstFrame = nil
@@ -442,23 +456,9 @@ public final class RemoteViewer: ObservableObject {
                     if hand?.broadcast == true { broadcast(action: "status") }
                 case "broadcast_result": receiveBroadcast(message)
                 case "frame":
-                    guard framePending > 0 else { throw RemoteError.invalidMessage }
-                    frame = try RemoteFrame.decode(message); framePending -= 1
-                    if diagnosticsEnabled, diagnosticFirstFrame == nil, let frame {
-                        diagnosticFirstFrame = ["elapsed_ms": Int((ProcessInfo.processInfo.systemUptime - diagnosticStarted) * 1000),
-                            "width": frame.width, "height": frame.height]
-                        recordConnectionEvent("first frame decoded")
-                    }
-                    frameDeadline?.cancel(); frameDeadline = nil
-                    transportReady = true; channelsReady = true; updateReady()
-                    if frameWindow > 1 { requestFrame(attempt: attempt) }
-                    else {
-                        let delay = max(0, 1.0 / 30.0 - (ProcessInfo.processInfo.systemUptime - frameRequestedAt))
-                        frameTask = Task { [weak self] in
-                            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
-                            guard let self, epoch == attempt else { return }; requestFrame(attempt: attempt)
-                        }
-                    }
+                    guard framePending > frameReceived else { throw RemoteError.invalidMessage }
+                    frameReceived += 1; frameQueue.append(message)
+                    startFrameDecode()
                 case "control":
                     guard case .control(let control) = message.data else { throw RemoteError.invalidMessage }
                     receiveControl(try JSONEncoder().encode(control))
@@ -471,6 +471,49 @@ public final class RemoteViewer: ObservableObject {
             guard let self, epoch == attempt else { return }; fail(error ?? RemoteError.closed)
         }
         try signaling.connect(hand: hand)
+    }
+
+    private func startFrameDecode() {
+        guard frameDecodeTask == nil, !frameQueue.isEmpty else { return }
+        let attempt = epoch
+        frameDecodeTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                frameDecodeTask = nil
+                // A new epoch may have queued frames while ImageIO finished.
+                startFrameDecode()
+            }
+            while epoch == attempt, !Task.isCancelled, !frameQueue.isEmpty {
+                let message = frameQueue.removeFirst()
+                do {
+                    let image = try await frameDecoder.decode(message)
+                    guard epoch == attempt, !Task.isCancelled else { return }
+                    frameReceived -= 1; framePending -= 1
+                    frame = image
+                    // Frame subscribers may synchronously suspend the viewer.
+                    guard epoch == attempt, !Task.isCancelled else { return }
+                    if diagnosticsEnabled, diagnosticFirstFrame == nil {
+                        diagnosticFirstFrame = ["elapsed_ms": Int((ProcessInfo.processInfo.systemUptime - diagnosticStarted) * 1000),
+                            "width": image.width, "height": image.height]
+                        recordConnectionEvent("first frame decoded")
+                    }
+                    frameDeadline?.cancel(); frameDeadline = nil
+                    transportReady = true; channelsReady = true; updateReady()
+                    if frameWindow > 1 { requestFrame(attempt: attempt) }
+                    else {
+                        let delay = max(0, 1.0 / 30.0 - (ProcessInfo.processInfo.systemUptime - frameRequestedAt))
+                        frameTask = Task { [weak self] in
+                            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+                            guard let self, epoch == attempt, !Task.isCancelled else { return }
+                            requestFrame(attempt: attempt)
+                        }
+                    }
+                } catch {
+                    guard epoch == attempt, !Task.isCancelled else { return }
+                    fail(error); return
+                }
+            }
+        }
     }
 
     private func requestFrame(attempt: UUID) {
@@ -494,6 +537,13 @@ public final class RemoteViewer: ObservableObject {
         do {
             let previous = generation
             let reply = try control.receive(message)
+            // Only an accepted grant for the active lease can enable this.
+            // Ignored stale revocations must not alter a newer lease's capability.
+            if message.type == .granted, generation != nil {
+                supportsRelativePointer = message.relativePointer == true
+            } else if generation == nil {
+                supportsRelativePointer = false
+            }
             controlling = generation != nil
             if let generation, generation != previous {
                 sequence = 0; status = "You’re controlling"
@@ -1000,7 +1050,7 @@ public final class RemoteMacHost: ObservableObject {
                 if lease.owner != nil { try peer.send(JSONEncoder().encode(RemoteControlMessage(type: .denied))); return }
                 let generation = UUID().uuidString
                 input?.releaseAll(); try lease.acquire(owner: viewerID, generation: generation, now: now)
-                try peer.send(JSONEncoder().encode(RemoteControlMessage(type: .granted, generation: generation)))
+                try peer.send(JSONEncoder().encode(RemoteControlMessage(type: .granted, generation: generation, relativePointer: input is MacInput)))
             case .renew:
                 guard let generation = message.generation else { throw RemoteError.invalidMessage }
                 try lease.renew(owner: viewerID, generation: generation, now: now)

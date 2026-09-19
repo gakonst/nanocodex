@@ -104,14 +104,11 @@ struct InboxView: View {
             .presentationDragIndicator(.visible)
             .presentationCornerRadius(30)
         }
-        .sheet(isPresented: $showScreens) {
+        .fullScreenCover(isPresented: $showScreens) {
             if let service = model.remoteService {
                 NavigationStack {
                     RemoteDashboard(service: service, initialSelection: controlsScreen, onClose: { showScreens = false })
                 }
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-                .presentationCornerRadius(30)
             }
         }
         .sheet(isPresented: $model.showContext) { ContextInboxView(model: model).tint(Ink.accent) }
@@ -242,7 +239,7 @@ struct InboxView: View {
                         .padding(.horizontal, 12).padding(.bottom, 6)
                 }
             if let card = model.focused, let identity = model.focusedConversationIdentity,
-               screenThreads.contains(identity), let service = model.remoteService, !showScreens {
+               screenThreads.contains(identity), let service = model.remoteService {
                 RemoteThreadScreen(service: service,
                     selection: Binding(get: { model.screenSelection(agentID: card.id) },
                                        set: { model.selectScreen($0, agentID: card.id) }),

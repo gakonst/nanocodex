@@ -1,29 +1,44 @@
 import XCTest
 
 final class RemoteScreenLifecycleUITests: XCTestCase {
+    private enum FixtureFailure: Error { case requirement(String) }
+
     @MainActor
-    private func openScreenControls(_ app: XCUIApplication) {
-        let options = app.buttons["thread-screen-options"]
-        // Closing the controls sheet returns to the existing thread dock.
-        if !options.waitForExistence(timeout: 2) {
-            let menu = app.buttons["app-menu"]
-            XCTAssertTrue(menu.waitForExistence(timeout: 20))
-            menu.tap()
-            let screen = app.buttons["conversation-remote-screens"]
-            XCTAssertTrue(screen.waitForExistence(timeout: 5))
-            XCTAssertTrue(screen.isEnabled)
-            screen.tap()
+    private func requireUI(_ condition: Bool, _ message: String, app: XCUIApplication,
+                           file: StaticString = #filePath, line: UInt = #line) throws {
+        guard condition else {
+            let screenshot = XCTAttachment(screenshot: app.screenshot())
+            screenshot.name = "failure-" + message; screenshot.lifetime = .keepAlways; add(screenshot)
+            let tree = XCTAttachment(string: app.debugDescription)
+            tree.name = "failure-accessibility-tree"; tree.lifetime = .keepAlways; add(tree)
+            XCTFail(message, file: file, line: line)
+            throw FixtureFailure.requirement(message)
         }
-        XCTAssertTrue(options.waitForExistence(timeout: 10))
-        options.tap()
-        let controls = app.buttons["Screen controls"]
-        XCTAssertTrue(controls.waitForExistence(timeout: 5))
-        controls.tap()
-        XCTAssertTrue(app.buttons["close-screen-pane"].waitForExistence(timeout: 10))
     }
 
     @MainActor
-    func testScreenCardZoomDismissalAndDraftRestoration() throws {
+    private func openScreenControls(_ app: XCUIApplication) throws {
+        let options = app.buttons["thread-screen-options"]
+        // Closing the full-screen controls returns to the existing thread dock.
+        if !options.waitForExistence(timeout: 2) {
+            let menu = app.buttons["app-menu"]
+            try requireUI(menu.waitForExistence(timeout: 20), "App menu must exist", app: app)
+            menu.tap()
+            let screen = app.buttons["conversation-remote-screens"]
+            try requireUI(screen.waitForExistence(timeout: 5), "Screens menu item must exist", app: app)
+            try requireUI(screen.isEnabled, "Screens menu item must be enabled", app: app)
+            screen.tap()
+        }
+        try requireUI(options.waitForExistence(timeout: 10), "Thread screen options must exist", app: app)
+        options.tap()
+        let controls = app.buttons["Screen controls"]
+        try requireUI(controls.waitForExistence(timeout: 5), "Screen controls menu item must exist", app: app)
+        controls.tap()
+        try requireUI(app.buttons["close-screen-pane"].waitForExistence(timeout: 10), "Full-screen Done button must exist after presentation", app: app)
+    }
+
+    @MainActor
+    func testFullScreenZoomDoneAndDraftRestoration() throws {
         guard ProcessInfo.processInfo.environment["NANOCODEX_SCREEN_FIXTURE"] == "1" else {
             throw XCTSkip("Run fixtures/remote-screen.mjs on loopback port 18965")
         }
@@ -37,7 +52,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
         let composer = app.textFields["composer"].exists ? app.textFields["composer"] : app.textViews["composer"]
         let draft = "Keep my draft while I view a screen"
         composer.tap(); composer.typeText(draft)
-        openScreenControls(app)
+        try openScreenControls(app)
         let desktop = app.buttons["remote-screen:fixture:desktop"]
         XCTAssertTrue(desktop.waitForExistence(timeout: 10))
         XCTAssertFalse(app.descendants(matching: .any)["screen-pane-divider"].exists)
@@ -50,36 +65,169 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
         requireWatching()
         let canvas = app.descendants(matching: .any)["remote-canvas"].firstMatch
         XCTAssertTrue(canvas.exists)
-        let initialHeight = canvas.frame.height
-        // Drag the system sheet's navigation bar, outside the remote canvas.
-        let bar = app.navigationBars.firstMatch
-        let handle = bar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
-        handle.press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)))
-        let expanded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            canvas.frame.height > initialHeight + 80
-        }, object: canvas)
-        XCTAssertEqual(XCTWaiter.wait(for: [expanded], timeout: 5), .completed)
-        requireWatching()
+        // Controls occupy the full display; there are no sheet detents to resize.
+        XCTAssertGreaterThan(canvas.frame.height, app.frame.height * 0.6)
+        XCTAssertEqual(app.buttons["close-screen-pane"].label, "Done")
         canvas.pinch(withScale: 2, velocity: 1)
         let zoomed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             (canvas.value as? String ?? "").hasPrefix("Zoom ") && canvas.value as? String != "Zoom 100%"
         }, object: canvas)
         XCTAssertEqual(XCTWaiter.wait(for: [zoomed], timeout: 5), .completed)
         let evidence = XCTAttachment(screenshot: app.screenshot())
-        evidence.name = "native-screen-card-expanded-zoom"; evidence.lifetime = .keepAlways; add(evidence)
+        evidence.name = "native-screen-fullscreen-zoom"; evidence.lifetime = .keepAlways; add(evidence)
         app.buttons["Screens"].tap()
         XCTAssertTrue(desktop.waitForExistence(timeout: 10)); desktop.tap(); requireWatching()
         app.buttons["close-screen-pane"].tap()
         XCTAssertFalse(canvas.exists)
         XCTAssertEqual(composer.value as? String, draft)
-        openScreenControls(app); XCTAssertTrue(desktop.waitForExistence(timeout: 10)); desktop.tap(); requireWatching()
+        try openScreenControls(app); XCTAssertTrue(desktop.waitForExistence(timeout: 10)); desktop.tap(); requireWatching()
         let card = XCTAttachment(screenshot: app.screenshot())
-        card.name = "native-screen-card-medium"; card.lifetime = .keepAlways; add(card)
-        let dismissHandle = app.navigationBars.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
-        dismissHandle.press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)))
+        card.name = "native-screen-fullscreen-reopened"; card.lifetime = .keepAlways; add(card)
+        app.buttons["close-screen-pane"].tap()
         XCTAssertTrue(canvas.waitForNonExistence(timeout: 5))
         XCTAssertEqual(composer.value as? String, draft)
-        openScreenControls(app); XCTAssertTrue(desktop.waitForExistence(timeout: 10)); desktop.tap(); requireWatching()
+        try openScreenControls(app); XCTAssertTrue(desktop.waitForExistence(timeout: 10)); desktop.tap(); requireWatching()
+        app.buttons["close-screen-pane"].tap()
+    }
+
+    private struct FixtureLog: Decodable {
+        struct Event: Decodable {
+            struct Input: Decodable {
+                let kind: String
+                let key: Int?
+                let button: Int?
+                let down: Bool?
+                let deltaX: Double?
+                let deltaY: Double?
+            }
+            let type: String
+            let connection: String
+            let input: Input?
+        }
+        let cursor: Int
+        let events: [Event]
+    }
+
+    @MainActor
+    private func fixtureLog(after cursor: Int) async throws -> FixtureLog {
+        let url = URL(string: "http://127.0.0.1:18965/fixture/events?after=\(cursor)")!
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 3
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return try JSONDecoder().decode(FixtureLog.self, from: data)
+    }
+
+    @MainActor
+    private func requireFixtureEvents(after cursor: Int, _ description: String,
+                                      matching predicate: ([FixtureLog.Event]) -> Bool) async throws -> FixtureLog {
+        let deadline = Date().addingTimeInterval(5)
+        var log = try await fixtureLog(after: cursor)
+        while !predicate(log.events), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(100))
+            log = try await fixtureLog(after: cursor)
+        }
+        guard predicate(log.events) else {
+            let evidence = XCTAttachment(string: String(describing: log.events))
+            evidence.name = "fixture-events-at-failure"; evidence.lifetime = .keepAlways; add(evidence)
+            try requireUI(false, description, app: XCUIApplication())
+            throw FixtureFailure.requirement(description)
+        }
+        return log
+    }
+
+    @MainActor
+    func testSyntheticControllerInputReleasesExitAndBackground() async throws {
+        guard ProcessInfo.processInfo.environment["NANOCODEX_SCREEN_FIXTURE"] == "1" else {
+            throw XCTSkip("Run fixtures/remote-screen.mjs on loopback port 18965")
+        }
+        continueAfterFailure = false
+        let baseline = try await fixtureLog(after: 0).cursor
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo"]
+        app.launchEnvironment["NANOCODEX_DEMO_SCREENS"] = "1"
+        app.launchEnvironment["NANOCODEX_DEMO_PROFILE"] = "screen-controller-" + UUID().uuidString
+        app.launch()
+        defer { XCUIDevice.shared.orientation = .portrait }
+        try openScreenControls(app)
+        let controller = app.buttons["remote-screen:fixture:controller"]
+        try requireUI(controller.waitForExistence(timeout: 10), "Synthetic controller surface must exist", app: app); controller.tap()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let landscape = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.frame.width > app.frame.height
+        }, object: app)
+        await fulfillment(of: [landscape], timeout: 10)
+        try requireUI(app.frame.width > app.frame.height, "App must rotate to landscape", app: app)
+        let launchControls = app.buttons["remote-game-controls"]
+        try requireUI(launchControls.waitForExistence(timeout: 10), "Controller entry must exist", app: app)
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: launchControls)
+        await fulfillment(of: [enabled], timeout: 15)
+        try requireUI(launchControls.isEnabled, "Controller entry must be enabled", app: app)
+        launchControls.tap()
+        let acquired = try await requireFixtureEvents(after: baseline, "Controller entry must acquire a synthetic lease") {
+            $0.contains { $0.type == "acquire" }
+        }
+        let connection = try XCTUnwrap(acquired.events.first { $0.type == "acquire" }?.connection)
+        let joystick = app.descendants(matching: .any)["remote-game-joystick"].firstMatch
+        try requireUI(joystick.waitForExistence(timeout: 5), "Joystick must exist", app: app)
+        let visibleControls = ["remote-game-joystick", "remote-game-camera", "remote-game-stop", "remote-game-close"] +
+            ["space", "tab", "escape", "shift", "control", "1", "2", "3", "4", "5", "6"].map { "remote-game-key-" + $0 }
+        for identifier in visibleControls {
+            let control = app.descendants(matching: .any)[identifier].firstMatch
+            try requireUI(control.waitForExistence(timeout: 5), "Control must exist: " + identifier, app: app)
+            try requireUI(control.isHittable, "Landscape control must be hittable: " + identifier, app: app)
+            try requireUI(!control.frame.isEmpty, "Control frame must be nonempty: " + identifier, app: app)
+            try requireUI(app.frame.contains(control.frame), "Landscape control must fit on screen: " + identifier, app: app)
+        }
+        let center = joystick.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        center.press(forDuration: 0.1, thenDragTo: joystick.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1)))
+        let camera = app.descendants(matching: .any)["remote-game-camera"].firstMatch
+        try requireUI(camera.exists, "Camera pad must exist", app: app)
+        camera.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5))
+            .press(forDuration: 0.1, thenDragTo: camera.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5)))
+        app.buttons["remote-game-key-1"].press(forDuration: 0.2)
+        let inputLog = try await requireFixtureEvents(after: acquired.cursor, "Movement, camera and action must each send press and release") { events in
+            let inputs = events.filter { $0.connection == connection }.compactMap(\.input)
+            return [26, 30].allSatisfy { key in
+                inputs.contains { $0.kind == "key" && $0.key == key && $0.down == true } &&
+                inputs.contains { $0.kind == "key" && $0.key == key && $0.down == false }
+            } && [true, false].allSatisfy { down in
+                inputs.contains { $0.kind == "button" && $0.button == 1 && $0.down == down }
+            } && inputs.contains { $0.kind == "relativeMove" && (($0.deltaX ?? 0) != 0 || ($0.deltaY ?? 0) != 0) }
+        }
+        let landscapeEvidence = XCTAttachment(screenshot: app.screenshot())
+        landscapeEvidence.name = "synthetic-controller-landscape-after-input"
+        landscapeEvidence.lifetime = .keepAlways; add(landscapeEvidence)
+        app.buttons["remote-game-stop"].tap()
+        let stopped = try await requireFixtureEvents(after: inputLog.cursor, "Stop must release all held inputs") {
+            $0.contains { $0.input?.kind == "releaseAll" }
+        }
+        app.buttons["remote-game-key-1"].tap()
+        // A subsequent close is an ordered barrier: paused actions cannot be
+        // hidden by checking the event log before the transport has drained.
+        app.buttons["remote-game-close"].tap()
+        let exited = try await requireFixtureEvents(after: stopped.cursor, "Exit must release the control lease") {
+            $0.contains { $0.type == "release" }
+        }
+        XCTAssertFalse(exited.events.contains { $0.input?.kind == "key" && $0.input?.down == true })
+        try requireUI(app.buttons["Take control"].waitForExistence(timeout: 5), "Exit must restore Take control", app: app)
+        launchControls.tap()
+        let reacquired = try await requireFixtureEvents(after: exited.cursor, "Explicit controller reentry may acquire control") {
+            $0.contains { $0.type == "acquire" }
+        }
+        XCUIDevice.shared.press(.home)
+        try requireUI(app.wait(for: .runningBackground, timeout: 10), "App must enter background", app: app)
+        _ = try await requireFixtureEvents(after: reacquired.cursor, "Background must release the lease or close its synthetic transport") {
+            $0.contains { $0.type == "release" || $0.type == "disconnect" }
+        }
+        app.activate()
+        try requireUI(app.buttons["Take control"].waitForExistence(timeout: 15), "Foreground must require Take control", app: app)
+        // Controller UI survives but input authority must require an explicit tap.
+        let afterBackground = try await fixtureLog(after: reacquired.cursor)
+        XCTAssertFalse(afterBackground.events.contains { $0.type == "acquire" })
+        let evidence = XCTAttachment(screenshot: app.screenshot())
+        evidence.name = "synthetic-controller-after-background"; evidence.lifetime = .keepAlways; add(evidence)
+        app.buttons["remote-game-close"].tap()
         app.buttons["close-screen-pane"].tap()
     }
 
@@ -98,7 +246,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["NANOCODEX_REMOTE_DIAGNOSTICS"] = "1"
         app.launch()
-        openScreenControls(app)
+        try openScreenControls(app)
         let desktop = app.buttons["remote-screen:\(machine):desktop"]
         XCTAssertTrue(desktop.waitForExistence(timeout: 20)); desktop.tap()
         let status = app.staticTexts["remote-status"]
@@ -187,7 +335,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["NANOCODEX_REMOTE_DIAGNOSTICS"] = "1"
         app.launch()
-        openScreenControls(app)
+        try openScreenControls(app)
         let desktop = app.buttons["remote-screen:\(machine):\(surface)"]
         for sample in 1...3 {
             XCTAssertTrue(desktop.waitForExistence(timeout: 20)); desktop.tap()
@@ -252,7 +400,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
         // Use the saved account without changing its credentials, conversations,
         // drafts, or the remote machine. Each path destroys a live UIKit canvas.
         for cycle in 0..<4 {
-            openScreenControls(app)
+            try openScreenControls(app)
             XCTAssertTrue(desktop.waitForExistence(timeout: 20))
             desktop.tap()
             requireWatching()

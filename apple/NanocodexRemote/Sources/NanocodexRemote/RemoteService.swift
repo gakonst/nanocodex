@@ -159,11 +159,22 @@ public struct RemoteMessage: Codable, Sendable {
     func close(error: Error?)
 }
 
+/// One sequential parser per socket, outside the UI executor. Awaited by the
+/// receive loop so large frame envelopes cannot create an unbounded task queue.
+actor RemoteWireDecoder {
+    func decode(_ value: String, limit: Int) throws -> RemoteMessage {
+        try Task.checkCancellation()
+        guard value.utf8.count <= limit else { throw RemoteError.invalidMessage }
+        return try JSONDecoder().decode(RemoteMessage.self, from: Data(value.utf8))
+    }
+}
+
 @MainActor
 public final class RemoteSignaling: RemoteSignalingTransport {
     public var onMessage: (RemoteMessage) -> Void = { _ in }
     public var onClose: (Error?) -> Void = { _ in }
     private let service: RemoteService
+    private let decoder = RemoteWireDecoder()
     private var socket: URLSessionWebSocketTask?
     private var reader: Task<Void, Never>?
     private var renewal: Task<Void, Never>?
@@ -200,8 +211,9 @@ public final class RemoteSignaling: RemoteSignalingTransport {
                         socket = connection; connection.resume()
                         continue
                     }
-                    guard case .string(let value) = wire, value.utf8.count <= (hand?.transport == .frames ? 750_000 : 70_000) else { throw RemoteError.invalidMessage }
-                    let message = try JSONDecoder().decode(RemoteMessage.self, from: Data(value.utf8))
+                    guard case .string(let value) = wire else { throw RemoteError.invalidMessage }
+                    let message = try await decoder.decode(value, limit: hand?.transport == .frames ? 750_000 : 70_000)
+                    guard !closed, !Task.isCancelled else { return }
                     admitted = true
                     if message.type == "ready" {
                         guard let id = message.connectionID, id.count <= 128, renewal == nil else { throw RemoteError.invalidMessage }

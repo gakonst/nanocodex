@@ -27,6 +27,7 @@ public struct RemoteDashboard: View {
     @State private var discoveryError: String?
     @State private var text = ""
     @State private var showKeyboard = false
+    @State private var gameControls = false
     @State private var screenQuery = ""
     @State private var broadcastURL = ""
     @State private var broadcastPreset = "source"
@@ -167,7 +168,11 @@ public struct RemoteDashboard: View {
 #endif
             if viewer.hand != nil {
 
+                ZStack {
                 RemoteCanvas(viewer: viewer).accessibilityIdentifier("remote-canvas")
+#if os(iOS)
+                    .allowsHitTesting(!gameControls)
+#endif
                     .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
 #if os(macOS)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -185,6 +190,16 @@ public struct RemoteDashboard: View {
                             }.padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                         }
                     }
+#if os(iOS)
+                    if gameControls {
+                        RemoteGameControls(viewer: viewer) {
+                            viewer.releaseControl()
+                            gameControls = false
+                        }
+                    }
+#endif
+                }
+                if !gameControls {
                 HStack {
                     Text(viewer.status).font(.caption).foregroundStyle(.secondary)
                         .accessibilityValue(viewer.diagnosticPresentation)
@@ -204,6 +219,16 @@ public struct RemoteDashboard: View {
                     } else if viewer.hand?.controllable == true {
                         Button("Take control") { viewer.takeControl() }.disabled(!viewer.connected)
                     }
+                    if viewer.hand?.controllable == true, viewer.hand?.kind != .phone {
+                        Button {
+                            showKeyboard = false
+                            gameControls = true
+                            viewer.takeControl()
+                        } label: { Image(systemName: "gamecontroller") }
+                            .accessibilityLabel("WoW controls")
+                            .accessibilityIdentifier("remote-game-controls")
+                            .disabled(!viewer.connected)
+                    }
                     if viewer.controlling {
                         Button { showKeyboard.toggle() } label: { Image(systemName: "keyboard") }
                             .accessibilityLabel("Remote keyboard")
@@ -216,8 +241,9 @@ public struct RemoteDashboard: View {
 #if os(iOS)
                 .padding(.horizontal)
 #endif
-                if viewer.hand?.broadcast == true { broadcastControls }
-                if viewer.controlling && (!embedded || showKeyboard) {
+                }
+                if !gameControls && viewer.hand?.broadcast == true { broadcastControls }
+                if !gameControls && viewer.controlling && (!embedded || showKeyboard) {
                     VStack(spacing: 8) {
                         HStack {
                             TextField("Type on remote screen", text: $text).textFieldStyle(.roundedBorder).onSubmit(sendText)
@@ -342,7 +368,10 @@ public struct RemoteDashboard: View {
 #if os(macOS)
         .padding(embedded ? 8 : 16)
 #else
-        .padding(.bottom, 8)
+        .padding(.bottom, gameControls ? 0 : 8)
+        .background { if gameControls { Color.black.ignoresSafeArea() } }
+        .statusBarHidden(gameControls)
+        .toolbar(gameControls ? .hidden : .visible, for: .navigationBar)
         .navigationTitle(viewer.hand?.name ?? "Screens")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -375,6 +404,7 @@ public struct RemoteDashboard: View {
             if phase == .background { viewer.suspend() }
 #endif
         }
+        .onChange(of: viewer.hand?.identity) { _, _ in gameControls = false }
         .onChange(of: viewer.controlling) { _, controlling in if !controlling { text = ""; showKeyboard = false } }
         .onDisappear {
             viewer.close()

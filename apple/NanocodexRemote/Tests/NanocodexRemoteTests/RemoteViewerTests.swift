@@ -30,6 +30,30 @@ private final class RemoteHTTPFixture: URLProtocol {
     func close(error: Error?) { closed = true; onClose(error) }
 }
 
+private final class FrameDecodeGate: @unchecked Sendable {
+    let entered: XCTestExpectation
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var calls = 0
+    private var active = 0
+    private var maximum = 0
+    private var usedMain = false
+    init(entered: XCTestExpectation) { self.entered = entered }
+    var counts: (calls: Int, maximum: Int, usedMain: Bool) {
+        lock.withLock { (calls, maximum, usedMain) }
+    }
+    func decode(_ message: RemoteMessage) throws -> CGImage {
+        let first = lock.withLock {
+            calls += 1; active += 1; maximum = max(maximum, active)
+            usedMain = usedMain || Thread.isMainThread
+            return calls == 1
+        }
+        defer { lock.withLock { active -= 1 } }
+        if first { entered.fulfill(); _ = release.wait(timeout: .now() + 5) }
+        return try RemoteFrame.decode(message)
+    }
+}
+
 final class RemoteViewerTests: XCTestCase {
     @MainActor func testBroadcastStoppingBlocksMutationsAndPollsUntilStopped() async throws {
         let service = try service { _ in XCTFail("Frame transport must not fetch ICE") }
@@ -95,13 +119,264 @@ final class RemoteViewerTests: XCTestCase {
         XCTAssertTrue(CGImageDestinationFinalize(destination))
         var frame = RemoteMessage(type: "frame")
         frame.jpeg = (bytes as Data).base64EncodedString(); frame.width = 3; frame.height = 2
+        let decoded = expectation(description: "Six credits returned after worker decode")
+        decoded.expectedFulfillmentCount = 6
+        socket.onSend = { if $0.type == "frame_request" { decoded.fulfill() } }
         for _ in 0..<6 { socket.onMessage(frame) }
+        XCTAssertTrue(socket.messages.isEmpty, "Reception alone does not replenish credits")
+        await fulfillment(of: [decoded], timeout: 3)
         XCTAssertTrue(viewer.connected)
         XCTAssertEqual(socket.messages.filter { $0.type == "frame_request" }.map(\.count), [1, 1, 1, 1, 1, 1])
         let lateFrame = socket.onMessage
         viewer.suspend(); lateFrame(frame)
         XCTAssertNil(viewer.frame)
         XCTAssertEqual(socket.messages.filter { $0.type == "frame_request" }.count, 6)
+    }
+
+    @MainActor func testRelativePointerRequiresCurrentExplicitGrant() async throws {
+        let service = try service { _ in XCTFail("No ICE for frames") }
+        defer { service.close() }
+        var catalog = surface("pointer-capability")
+        catalog["transport"] = "frames-v1"; catalog["frame_window"] = 6
+        let hand = try JSONDecoder().decode(RemoteHand.self, from: JSONSerialization.data(withJSONObject: catalog))
+        let socket = ViewerSocket(), viewer = RemoteViewer()
+        socket.onConnect = { socket.onMessage(.init(type: "ready")) }
+        viewer.makeSignaling = { _ in socket }
+        defer { viewer.close() }
+        await viewer.connect(service: service, hand: hand)
+        let ready = expectation(description: "Decoded frame connects viewer")
+        socket.onSend = { if $0.type == "frame_request" { ready.fulfill() } }
+        socket.onMessage(try jpegFrame())
+        await fulfillment(of: [ready], timeout: 3)
+        socket.onSend = { _ in }
+        func deliver(_ control: RemoteControlMessage) {
+            var message = RemoteMessage(type: "control"); message.data = .control(control)
+            socket.onMessage(message)
+        }
+        func relativeInputs() {
+            viewer.input(kind: .relativeMove, deltaX: 2, deltaY: 3)
+            viewer.input(kind: .button, button: 2, down: true)
+            viewer.input(kind: .scroll, deltaX: 0, deltaY: 1)
+        }
+        XCTAssertFalse(viewer.supportsRelativePointer)
+        var changes = 0
+        let metadataObserver = viewer.objectWillChange.sink { changes += 1 }
+        defer { metadataObserver.cancel() }
+        // Absent capability is the deployed older-host wire format.
+        for capability: Bool? in [nil, false, true] {
+            viewer.takeControl()
+            let changesBeforeGrant = changes
+            let grant = RemoteControlMessage(type: .granted, generation: "lease", relativePointer: capability)
+            deliver(try JSONDecoder().decode(RemoteControlMessage.self, from: JSONEncoder().encode(grant)))
+            XCTAssertTrue(viewer.controlling)
+            XCTAssertGreaterThan(changes, changesBeforeGrant, "Control grants must update SwiftUI metadata observers")
+            XCTAssertEqual(viewer.supportsRelativePointer, capability == true)
+            let before = socket.messages.count
+            relativeInputs()
+            XCTAssertEqual(socket.messages.count - before, capability == true ? 3 : 0)
+            viewer.input(kind: .button, x: 0.5, y: 0.5, button: 0, down: true)
+            XCTAssertEqual(socket.messages.count - before, capability == true ? 4 : 1,
+                "Absolute pointer input stays compatible with older hosts")
+            deliver(.init(type: .revoked, generation: "stale"))
+            XCTAssertEqual(viewer.supportsRelativePointer, capability == true)
+            XCTAssertTrue(viewer.controlling)
+            deliver(.init(type: .revoked, generation: "lease"))
+            XCTAssertFalse(viewer.supportsRelativePointer)
+            XCTAssertFalse(viewer.controlling)
+            let revokedCount = socket.messages.count
+            relativeInputs()
+            XCTAssertEqual(socket.messages.count, revokedCount)
+        }
+        viewer.takeControl()
+        deliver(.init(type: .granted, generation: "release", relativePointer: true))
+        viewer.releaseControl()
+        XCTAssertFalse(viewer.supportsRelativePointer)
+        deliver(.init(type: .revoked))
+        viewer.takeControl()
+        viewer.releaseControl()
+        deliver(.init(type: .granted, generation: "cancelled", relativePointer: true))
+        XCTAssertFalse(viewer.supportsRelativePointer, "A cancelled acquire cannot enable pointer input")
+        deliver(.init(type: .revoked))
+        viewer.takeControl()
+        deliver(.init(type: .granted, generation: "disconnect", relativePointer: true))
+        XCTAssertTrue(viewer.supportsRelativePointer)
+        viewer.suspend()
+        XCTAssertFalse(viewer.supportsRelativePointer)
+    }
+
+    private func jpegFrame(width: Int = 3) throws -> RemoteMessage {
+        let context = try XCTUnwrap(CGContext(data: nil, width: width, height: 2, bitsPerComponent: 8,
+            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        let bytes = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(bytes, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        var message = RemoteMessage(type: "frame")
+        message.jpeg = (bytes as Data).base64EncodedString(); message.width = width; message.height = 2
+        return message
+    }
+
+    @MainActor func testFrameWorkerPublishesFIFOAndReturnsCreditAfterPublication() async throws {
+        let service = try service { _ in XCTFail("No ICE for frames") }
+        defer { service.close() }
+        var catalog = surface("fifo")
+        catalog["transport"] = "frames-v1"; catalog["frame_window"] = 6
+        let hand = try JSONDecoder().decode(RemoteHand.self, from: JSONSerialization.data(withJSONObject: catalog))
+        let socket = ViewerSocket(), viewer = RemoteViewer()
+        socket.onConnect = { socket.onMessage(.init(type: "ready")) }
+        viewer.makeSignaling = { _ in socket }
+        defer { viewer.close() }
+        await viewer.connect(service: service, hand: hand)
+        var widths: [Int] = []
+        let observer = viewer.$frame.sink { if let image = $0 { widths.append(image.width) } }
+        defer { observer.cancel() }
+        let completed = expectation(description: "FIFO batch returns six credits")
+        completed.expectedFulfillmentCount = 6
+        socket.onSend = { message in
+            guard message.type == "frame_request" else { return }
+            XCTAssertEqual(widths.count, socket.messages.count, "Publish each frame before returning its credit")
+            completed.fulfill()
+        }
+        for width in 1...6 { socket.onMessage(try jpegFrame(width: width)) }
+        await fulfillment(of: [completed], timeout: 3)
+        XCTAssertEqual(widths, [1, 2, 3, 4, 5, 6])
+        XCTAssertEqual(socket.messages.map(\.count), [1, 1, 1, 1, 1, 1])
+    }
+
+    @MainActor func testLegacyFrameRequestsKeepThirtyFPSPacing() async throws {
+        let service = try service { _ in XCTFail("No ICE for frames") }
+        defer { service.close() }
+        var catalog = surface("legacy-pacing")
+        catalog["transport"] = "frames-v1"
+        let hand = try JSONDecoder().decode(RemoteHand.self, from: JSONSerialization.data(withJSONObject: catalog))
+        let socket = ViewerSocket(), viewer = RemoteViewer()
+        socket.onConnect = { socket.onMessage(.init(type: "ready")) }
+        viewer.makeSignaling = { _ in socket }
+        defer { viewer.close() }
+        var requestedAt: [TimeInterval] = []
+        let completed = expectation(description: "Legacy request replenishes after pacing interval")
+        socket.onSend = { message in
+            guard message.type == "frame_request" else { return }
+            requestedAt.append(ProcessInfo.processInfo.systemUptime)
+            XCTAssertNil(message.count, "Legacy requests retain their original wire envelope")
+            if requestedAt.count == 2 { completed.fulfill() }
+        }
+        await viewer.connect(service: service, hand: hand)
+        XCTAssertEqual(requestedAt.count, 1)
+        socket.onMessage(try jpegFrame())
+        await fulfillment(of: [completed], timeout: 3)
+        XCTAssertEqual(requestedAt.count, 2)
+        if requestedAt.count == 2 {
+            XCTAssertGreaterThanOrEqual(requestedAt[1] - requestedAt[0], 1.0 / 30.0 - 0.002)
+        }
+    }
+
+    @MainActor func testSteadyFramesPublishWithoutInvalidatingSwiftUIViewer() async throws {
+        let service = try service { _ in XCTFail("No ICE for frames") }
+        defer { service.close() }
+        var catalog = surface("publication")
+        catalog["transport"] = "frames-v1"; catalog["frame_window"] = 6
+        let hand = try JSONDecoder().decode(RemoteHand.self, from: JSONSerialization.data(withJSONObject: catalog))
+        let socket = ViewerSocket(), viewer = RemoteViewer()
+        socket.onConnect = { socket.onMessage(.init(type: "ready")) }
+        viewer.makeSignaling = { _ in socket }
+        defer { viewer.close() }
+        await viewer.connect(service: service, hand: hand)
+        let frame = try jpegFrame()
+        let first = expectation(description: "First decoded frame finishes connection state changes")
+        socket.onSend = { if $0.type == "frame_request" { first.fulfill() } }
+        socket.onMessage(frame)
+        await fulfillment(of: [first], timeout: 3)
+        XCTAssertTrue(viewer.connected)
+
+        var invalidations = 0, publications = 0
+        let changes = viewer.objectWillChange.sink { invalidations += 1 }
+        // CurrentValueSubject immediately replays the existing frame; measure
+        // only subsequent emissions after the connection has settled.
+        let images = viewer.$frame.dropFirst().sink { if $0 != nil { publications += 1 } }
+        defer { changes.cancel(); images.cancel() }
+        let decoded = expectation(description: "Six steady frames decode and return credit")
+        decoded.expectedFulfillmentCount = 6
+        socket.onSend = { if $0.type == "frame_request" { decoded.fulfill() } }
+        for _ in 0..<6 { socket.onMessage(frame) }
+        await fulfillment(of: [decoded], timeout: 3)
+        XCTAssertEqual(publications, 6)
+        XCTAssertEqual(invalidations, 0, "Steady JPEG publication must not rebuild SwiftUI observers")
+        viewer.suspend()
+        XCTAssertGreaterThan(invalidations, 0, "Connection state must still invalidate SwiftUI")
+    }
+
+    @MainActor func testFrameWorkerBoundsCreditsAndRejectsUnsolicitedFrame() async throws {
+        let service = try service { _ in XCTFail("No ICE for frames") }
+        defer { service.close() }
+        var catalog = surface("bounded")
+        catalog["transport"] = "frames-v1"; catalog["frame_window"] = 6
+        let hand = try JSONDecoder().decode(RemoteHand.self, from: JSONSerialization.data(withJSONObject: catalog))
+        let socket = ViewerSocket(), viewer = RemoteViewer()
+        socket.onConnect = { socket.onMessage(.init(type: "ready")) }
+        viewer.makeSignaling = { _ in socket }
+        let entered = expectation(description: "Worker started")
+        let gate = FrameDecodeGate(entered: entered)
+        viewer.frameDecoder = RemoteFrameDecoder { try gate.decode($0) }
+        defer { gate.release.signal(); viewer.close() }
+        await viewer.connect(service: service, hand: hand)
+        let frame = try jpegFrame()
+        for _ in 0..<6 { socket.onMessage(frame) }
+        await fulfillment(of: [entered], timeout: 2)
+        XCTAssertEqual(gate.counts.calls, 1)
+        XCTAssertFalse(gate.counts.usedMain)
+        XCTAssertTrue(socket.messages.isEmpty)
+        socket.onMessage(frame)
+        XCTAssertTrue(socket.closed)
+        XCTAssertEqual(viewer.status, RemoteError.invalidMessage.localizedDescription)
+        XCTAssertNil(viewer.frame)
+    }
+
+    @MainActor func testFrameWorkerFencesSuspendReconnectAndStaleDecodeResults() async throws {
+        for invalidOldFrame in [false, true] {
+            let service = try service { _ in XCTFail("No ICE for frames") }
+            defer { service.close() }
+            var catalog = surface("epoch")
+            catalog["transport"] = "frames-v1"; catalog["frame_window"] = 6
+            let hand = try JSONDecoder().decode(RemoteHand.self, from: JSONSerialization.data(withJSONObject: catalog))
+            let old = ViewerSocket(), fresh = ViewerSocket(), viewer = RemoteViewer()
+            old.onConnect = { old.onMessage(.init(type: "ready")) }
+            fresh.onConnect = { fresh.onMessage(.init(type: "ready")) }
+            viewer.makeSignaling = { _ in old }
+            let gate = FrameDecodeGate(entered: expectation(description: "Old worker started"))
+            viewer.frameDecoder = RemoteFrameDecoder { try gate.decode($0) }
+            defer { gate.release.signal(); viewer.close() }
+            await viewer.connect(service: service, hand: hand)
+            // Both successful old images and old decode failures must be fenced.
+            old.onMessage(invalidOldFrame ? .init(type: "frame") : try jpegFrame())
+            await fulfillment(of: [gate.entered], timeout: 2)
+            let stale = old.onMessage
+            viewer.suspend()
+            viewer.makeSignaling = { _ in fresh }
+            await viewer.connect(service: service, hand: hand)
+            let frame = try jpegFrame()
+            var published = 0
+            let observer = viewer.$frame.sink { if $0 != nil { published += 1 } }
+            defer { observer.cancel() }
+            let completed = expectation(description: "Fresh epoch returns exactly six credits")
+            completed.expectedFulfillmentCount = 6
+            fresh.onSend = { if $0.type == "frame_request" { completed.fulfill() } }
+            for _ in 0..<6 { fresh.onMessage(frame) }
+            stale(frame)
+            XCTAssertNil(viewer.frame)
+            XCTAssertTrue(fresh.messages.isEmpty)
+            XCTAssertEqual(gate.counts.calls, 1)
+            gate.release.signal()
+            await fulfillment(of: [completed], timeout: 3)
+            XCTAssertTrue(viewer.connected)
+            XCTAssertFalse(fresh.closed)
+            XCTAssertNotNil(viewer.frame)
+            XCTAssertEqual(gate.counts.calls, 7)
+            XCTAssertEqual(gate.counts.maximum, 1)
+            XCTAssertFalse(gate.counts.usedMain)
+            XCTAssertTrue(old.messages.isEmpty)
+            XCTAssertEqual(published, 6, "The stale successful decode must not publish")
+        }
     }
 
     @MainActor func testNativeZoomKeepsScreenCoordinatesStable() {

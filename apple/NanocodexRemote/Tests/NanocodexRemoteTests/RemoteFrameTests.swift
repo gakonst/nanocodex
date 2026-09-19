@@ -31,6 +31,19 @@ final class RemoteFrameTests: XCTestCase {
         XCTAssertThrowsError(try RemoteFrame.decode(invalid))
     }
 
+    @MainActor func testDecoderRunsImageIOAwayFromMainActor() async throws {
+        let decoder = RemoteFrameDecoder { message in
+            XCTAssertFalse(Thread.isMainThread, "ImageIO must never decode on the UI thread")
+            return try RemoteFrame.decode(message)
+        }
+        let image = try await decoder.decode(message())
+        XCTAssertEqual(image.width, 3)
+        XCTAssertEqual(image.height, 2)
+        // Access the eagerly decoded backing pixels after crossing back to UI.
+        let pixels = try XCTUnwrap(image.dataProvider?.data)
+        XCTAssertGreaterThan(CFDataGetLength(pixels), 0)
+    }
+
     func testFramesCatalogIsExplicitAndRelayUsesTheExistingControlEnvelope() throws {
         let json = #"{"id":"desktop","machine_id":"cf:test","machine_name":"Sandbox","name":"Desktop","kind":"desktop","width":1600,"height":900,"controllable":true,"generation":"test","transport":"frames-v1"}"#
         let hand = try JSONDecoder().decode(RemoteHand.self, from: Data(json.utf8))

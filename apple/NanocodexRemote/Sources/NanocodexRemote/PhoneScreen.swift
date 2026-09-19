@@ -150,6 +150,7 @@ final class PhoneScreen: NSObject, RemoteCapture, URLSessionDataDelegate, @unche
         let point = CGPoint(x: (event.x ?? 0) * (size.width - 1), y: (event.y ?? 0) * (size.height - 1))
         switch event.kind {
         case .button:
+            guard event.x != nil, event.y != nil else { throw RemoteError.invalidMessage }
             if event.button == 1 {
                 if event.down == false { try enqueue("/wda/touchAndHold", ["x": point.x, "y": point.y, "duration": 0.6]) }
                 return
@@ -162,6 +163,7 @@ final class PhoneScreen: NSObject, RemoteCapture, URLSessionDataDelegate, @unche
                 else { try drag(from: origin, to: point) }
             }
         case .scroll:
+            guard event.x != nil, event.y != nil else { throw RemoteError.invalidMessage }
             let target = CGPoint(x: min(size.width - 12, max(12, point.x + (event.deltaX ?? 0))), y: min(size.height - 12, max(12, point.y + (event.deltaY ?? 0))))
             try drag(from: point, to: target)
         case .text: try enqueue("/wda/keys", ["value": [event.text!], "frequency": 120])
@@ -174,6 +176,7 @@ final class PhoneScreen: NSObject, RemoteCapture, URLSessionDataDelegate, @unche
             default: break
             }
         case .releaseAll: releaseAll()
+        case .relativeMove: throw RemoteError.invalidMessage // XCTest has no persistent mouse pointer.
         case .move: break // XCTest submits complete gestures when the pointer lifts.
         }
     }

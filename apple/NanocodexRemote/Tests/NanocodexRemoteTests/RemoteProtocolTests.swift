@@ -67,6 +67,64 @@ final class RemoteProtocolTests: XCTestCase {
         XCTAssertThrowsError(try RemoteInput.decode(Data(#"{"kind":"releaseAll","sequence":1,"generation":"lease-1","command":"open"}"#.utf8)))
     }
 
+    func testRelativeAndCoordinateFreeInputMatchesGoWireContract() throws {
+        let valid = [
+            #"{"kind":"relativeMove","deltaX":-12.5,"deltaY":4096}"#,
+            #"{"kind":"relativeMove","deltaX":-4096,"deltaY":0}"#,
+            #"{"kind":"button","button":2,"down":false}"#,
+            #"{"kind":"button","button":0,"down":true,"x":0,"y":1}"#,
+            #"{"kind":"scroll","deltaX":0,"deltaY":-4096}"#,
+            #"{"kind":"scroll","deltaX":0,"deltaY":1,"x":0,"y":1}"#,
+        ]
+        let invalid = [
+            #"{"kind":"relativeMove","deltaX":4097,"deltaY":0}"#,
+            #"{"kind":"relativeMove","deltaX":0,"deltaY":-4097}"#,
+            #"{"kind":"relativeMove","deltaX":1}"#,
+            #"{"kind":"relativeMove","deltaY":1}"#,
+            #"{"kind":"relativeMove","deltaX":1,"deltaY":0,"x":0.5,"y":0.5}"#,
+            #"{"kind":"relativeMove","deltaX":1,"deltaY":0,"x":0.5}"#,
+            #"{"kind":"relativeMove","deltaX":1,"deltaY":0,"button":0}"#,
+            #"{"kind":"relativeMove","deltaX":1,"deltaY":0,"down":false}"#,
+            #"{"kind":"relativeMove","deltaX":1,"deltaY":0,"key":4}"#,
+            #"{"kind":"relativeMove","deltaX":1,"deltaY":0,"text":"a"}"#,
+            #"{"kind":"relativeMove","deltaX":1,"deltaY":0,"extra":0}"#,
+            #"{"kind":"button","button":0,"down":true,"x":0.5}"#,
+            #"{"kind":"button","button":0,"down":true,"y":0.5}"#,
+            #"{"kind":"button","button":3,"down":true}"#,
+            #"{"kind":"button","button":0}"#,
+            #"{"kind":"button","button":0,"down":true,"deltaX":0}"#,
+            #"{"kind":"button","button":0,"down":true,"key":4}"#,
+            #"{"kind":"button","button":0,"down":true,"text":"a"}"#,
+            #"{"kind":"scroll","deltaX":0,"deltaY":1,"x":0.5}"#,
+        ]
+        func wire(_ fields: String) -> Data {
+            Data((String(fields.dropLast()) + #", "sequence":1,"generation":"g"}"#).utf8)
+        }
+        for fields in valid {
+            let decoded = try RemoteInput.decode(wire(fields))
+            XCTAssertEqual(try RemoteInput.decode(JSONEncoder().encode(decoded)), decoded, fields)
+        }
+        for fields in invalid { XCTAssertThrowsError(try RemoteInput.decode(wire(fields)), fields) }
+        for value in [Double.nan, .infinity, -.infinity] {
+            for axis in [\RemoteInput.deltaX, \RemoteInput.deltaY] {
+                var event = RemoteInput(kind: .relativeMove, sequence: 1, generation: "g", deltaX: 0, deltaY: 0)
+                event[keyPath: axis] = value
+                XCTAssertThrowsError(try event.validate())
+            }
+        }
+    }
+
+    func testRelativeMovementUsesReliableSequenceAndFencesLateAbsoluteMotion() throws {
+        var lease = RemoteControlLease()
+        try lease.acquire(owner: "a", generation: "g", now: 1)
+        XCTAssertTrue(try lease.accept(.init(kind: .move, sequence: 4, generation: "g", x: 0.5, y: 0.5), from: "a", now: 2))
+        XCTAssertTrue(try lease.accept(.init(kind: .relativeMove, sequence: 2, generation: "g", deltaX: 1, deltaY: 0), from: "a", now: 2))
+        XCTAssertFalse(try lease.accept(.init(kind: .relativeMove, sequence: 2, generation: "g", deltaX: 1, deltaY: 0), from: "a", now: 2))
+        XCTAssertTrue(try lease.accept(.init(kind: .relativeMove, sequence: 5, generation: "g", deltaX: 1, deltaY: 0), from: "a", now: 2))
+        XCTAssertFalse(try lease.accept(.init(kind: .move, sequence: 3, generation: "g", x: 0.5, y: 0.5), from: "a", now: 2))
+        XCTAssertTrue(try lease.accept(.init(kind: .button, sequence: 6, generation: "g", button: 0, down: true), from: "a", now: 2))
+    }
+
     func testControlGenerationAndDeadlineFenceInput() throws {
         var lease = RemoteControlLease()
         try lease.acquire(owner: "viewer-a", generation: "first", now: 1)

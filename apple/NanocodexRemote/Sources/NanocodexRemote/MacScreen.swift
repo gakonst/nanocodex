@@ -146,7 +146,10 @@ public final class MacInput {
 
     public init(bounds: CGRect, displayID: CGDirectDisplayID? = nil) throws {
         guard bounds.width > 0, bounds.height > 0, !bounds.isInfinite else { throw RemoteError.invalidMessage }
-        self.bounds = bounds; self.displayID = displayID; position = CGPoint(x: bounds.midX, y: bounds.midY)
+        self.bounds = bounds; self.displayID = displayID
+        let cursor = CGEvent(source: nil)?.location ?? CGPoint(x: bounds.midX, y: bounds.midY)
+        position = CGPoint(x: min(bounds.maxX - 1, max(bounds.minX, cursor.x)),
+                           y: min(bounds.maxY - 1, max(bounds.minY, cursor.y)))
     }
 
     public func apply(_ event: RemoteInput) throws {
@@ -157,10 +160,19 @@ public final class MacInput {
             position = CGPoint(x: bounds.minX + x * max(0, bounds.width - 1), y: bounds.minY + y * max(0, bounds.height - 1))
         }
         switch event.kind {
-        case .move:
+        case .move, .relativeMove:
+            var delta: CGPoint?
+            if event.kind == .relativeMove {
+                // Keep our own position: posted Quartz events may not have reached
+                // the system cursor when the next reliable delta arrives.
+                position = CGPoint(x: min(bounds.maxX - 1, max(bounds.minX, position.x + event.deltaX!)),
+                                   y: min(bounds.maxY - 1, max(bounds.minY, position.y + event.deltaY!)))
+                // Games consuming raw mouse deltas still need movement at an edge.
+                delta = CGPoint(x: event.deltaX!, y: event.deltaY!)
+            }
             let held = buttons.sorted().first
             mouse(type: held == 0 ? .leftMouseDragged : held == 1 ? .rightMouseDragged : held == 2 ? .otherMouseDragged : .mouseMoved,
-                  button: held ?? 0)
+                  button: held ?? 0, delta: delta)
         case .button:
             let button = event.button!, down = event.down!
             if down {
@@ -221,9 +233,13 @@ public final class MacInput {
         lastClick = nil; clickCounts.removeAll()
     }
 
-    private func mouse(type: CGEventType, button: Int) {
+    private func mouse(type: CGEventType, button: Int, delta: CGPoint? = nil) {
         let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: position,
                             mouseButton: button == 0 ? .left : button == 1 ? .right : .center)
+        if let delta {
+            event?.setDoubleValueField(.mouseEventDeltaX, value: delta.x)
+            event?.setDoubleValueField(.mouseEventDeltaY, value: delta.y)
+        }
         if [.leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp].contains(type) {
             event?.setIntegerValueField(.mouseEventClickState, value: clickCounts[button] ?? 1)
         }
