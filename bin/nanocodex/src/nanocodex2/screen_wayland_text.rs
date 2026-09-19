@@ -209,13 +209,19 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Forked helpers can briefly inherit another test's writable script FD.
+    // Serialize fixture writes and execs so ETXTBSY cannot mask delivery errors.
+    static FIXTURES: std::sync::Mutex<()> = std::sync::Mutex::new(());
     struct Fixture {
         dir: tempfile::TempDir,
+        _guard: std::sync::MutexGuard<'static, ()>,
     }
     impl Fixture {
         fn new() -> Self {
+            let guard = FIXTURES.lock().unwrap_or_else(|e| e.into_inner());
             Self {
                 dir: tempfile::tempdir().unwrap(),
+                _guard: guard,
             }
         }
         fn config(&self, x11: bool, display: bool, wtype: bool) -> Config {
@@ -355,22 +361,20 @@ mod tests {
         let f = Fixture::new();
         f.script("xdotool", "if [ \"$1\" = getwindowfocus ]; then echo 42; else /bin/dd bs=1 count=3 of=prefix 2>/dev/null; exit 7; fi");
         f.script("wtype", "echo called > fallback");
-        assert!(
-            type_with(&f.config(true, true, true), "世界🙂")
-                .await
-                .is_err()
-        );
+        let failure = type_with(&f.config(true, true, true), "世界🙂")
+            .await
+            .unwrap_err();
+        assert!(failure.to_string().contains("exit status: 7"), "{failure}");
         assert_eq!(f.log("prefix"), "世".as_bytes());
         f.absent("fallback");
         f.script(
             "wtype",
             "/bin/dd bs=1 count=3 of=prefix 2>/dev/null; exit 9",
         );
-        assert!(
-            type_with(&f.config(false, false, true), "界🙂")
-                .await
-                .is_err()
-        );
+        let failure = type_with(&f.config(false, false, true), "界🙂")
+            .await
+            .unwrap_err();
+        assert!(failure.to_string().contains("exit status: 9"), "{failure}");
         assert_eq!(f.log("prefix"), "界".as_bytes());
     }
     #[tokio::test]
