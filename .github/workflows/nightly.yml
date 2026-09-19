@@ -33,13 +33,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-14]
+        os: [ubuntu-22.04, macos-15]
         component: [cli, computer, voice]
         include:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             init-target: x86_64-unknown-linux-musl
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             init-target: aarch64-unknown-linux-musl
           - component: cli
