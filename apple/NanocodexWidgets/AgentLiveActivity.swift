@@ -256,7 +256,7 @@ struct LockedVoiceActivity: Widget {
                 }
                 if context.state.phase == "listening" {
                     Button(intent: FinishLockedVoiceIntent(captureID: context.attributes.captureID)) {
-                        Image(systemName: "stop.fill").accessibilityLabel("Finish and send")
+                        Image(systemName: "arrow.up").accessibilityLabel("Send recording")
                     }
                 }
             }.buttonStyle(.bordered)
@@ -274,7 +274,7 @@ struct LockedVoiceActivity: Widget {
     private func headline(_ phase: String) -> String {
         switch phase {
         case "preparing": "Getting ready…"
-        case "listening": "Listening…"
+        case "listening": "Recording…"
         case "transcribing": "Finishing…"
         case "sending": "Sending…"
         case "sent": "Task sent"

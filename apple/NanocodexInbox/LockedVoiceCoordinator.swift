@@ -29,12 +29,12 @@ final class LockedVoiceCoordinator {
         let account: String
         let generation: UUID?
         let language: String
-        let recorder = QuickVoiceRecorder()
+        let recorder = LockedAudioRecorder()
         var activity: Activity<LockedVoiceActivityAttributes>?
         var phase = "preparing"
         var restore: Task<Void, Error>?
         var delivery: Task<Void, Never>?
-        var maximum: Task<Void, Never>?
+        var heartbeat: Task<Void, Never>?
         var completionDeadline: Task<Void, Never>?
         var update: Task<Void, Never>?
         var background: UIBackgroundTaskIdentifier = .invalid
@@ -104,10 +104,12 @@ final class LockedVoiceCoordinator {
         }
         // Network restoration starts only after audio is running, and never opens UI.
         current.restore = Task { try await model.restoreLockedVoiceAccount(scope: account) }
-        current.maximum = Task { [weak self, weak current] in
-            do { try await Task.sleep(for: .seconds(60)) } catch { return }
-            guard let self, let current, self.capture === current else { return }
-            current.recorder.finish()
+        current.heartbeat = Task { [weak self, weak current] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                guard let self, let current, self.capture === current, current.phase == "listening" else { return }
+                self.update(current, phase: "listening")
+            }
         }
     }
 
@@ -135,7 +137,6 @@ final class LockedVoiceCoordinator {
 
     private func beginCompletion(_ current: Capture) {
         guard capture === current, current.background == .invalid else { return }
-        current.maximum?.cancel()
         current.background = UIApplication.shared.beginBackgroundTask(withName: "Finish locked voice task") { [weak self, weak current] in
             Task { @MainActor in
                 guard let self, let current else { return }
@@ -214,7 +215,8 @@ final class LockedVoiceCoordinator {
         current.recorder.onError = nil
         current.recorder.onStatus = nil
         current.recorder.stop()
-        current.maximum?.cancel(); current.completionDeadline?.cancel()
+        current.heartbeat?.cancel()
+        current.completionDeadline?.cancel()
         current.restore?.cancel(); current.delivery?.cancel()
         current.observations.removeAll()
         if preserve {
