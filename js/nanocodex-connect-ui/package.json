@@ -77,7 +77,7 @@
     "nanocodex-connect-protocol": "workspace:*"
   },
   "peerDependencies": {
-    "nanocodex": "^0.6.2",
+    "nanocodex": "^0.6.3",
     "react": ">=19.2.0"
   },
   "devDependencies": {

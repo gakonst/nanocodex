@@ -37,7 +37,7 @@ openai = [
 chrono = { workspace = true, optional = true }
 futures-util.workspace = true
 iana-time-zone = { workspace = true, optional = true }
-nanocodex-oai-api = { version = "0.6.2", path = "../nanocodex-oai-api", default-features = false, features = ["events"] }
+nanocodex-oai-api = { version = "0.6.3", path = "../nanocodex-oai-api", default-features = false, features = ["events"] }
 nanocodex-tools = { workspace = true, optional = true }
 serde.workspace = true
 serde_json = { workspace = true, optional = true }

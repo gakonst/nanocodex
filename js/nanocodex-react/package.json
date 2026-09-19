@@ -34,7 +34,7 @@
   },
   "peerDependencies": {
     "@tanstack/react-query": ">=5",
-    "nanocodex": "^0.6.2",
+    "nanocodex": "^0.6.3",
     "react": ">=18"
   },
   "devDependencies": {

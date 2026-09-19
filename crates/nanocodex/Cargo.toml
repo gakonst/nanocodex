@@ -32,10 +32,10 @@ tools = [
 workspace-tools = ["tools", "nanocodex-tools/workspace-runtime"]
 
 [dependencies]
-nanocodex-agent = { path = "../nanocodex-agent", version = "0.6.2", default-features = false }
+nanocodex-agent = { path = "../nanocodex-agent", version = "0.6.3", default-features = false }
 nanocodex-durability = { workspace = true, optional = true }
-nanocodex-oai-api = { path = "../nanocodex-oai-api", version = "0.6.2", default-features = false, features = ["events"] }
-nanocodex-tools = { path = "../nanocodex-tools", version = "0.6.2", default-features = false, optional = true }
+nanocodex-oai-api = { path = "../nanocodex-oai-api", version = "0.6.3", default-features = false, features = ["events"] }
+nanocodex-tools = { path = "../nanocodex-tools", version = "0.6.3", default-features = false, optional = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 nanocodex-managed = { workspace = true, optional = true }

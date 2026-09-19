@@ -1,6 +1,6 @@
 {
   "name": "nanocodex-tools",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Platform-neutral JavaScript tools for Nanocodex agents",
   "type": "module",
   "sideEffects": false,

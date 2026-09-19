@@ -3,14 +3,14 @@ members = ["voice-host", "webrtc-host", "process-hardening"]
 resolver = "2"
 
 [workspace.package]
-version = "0.6.2"
+version = "0.6.3"
 edition = "2024"
 license = "Apache-2.0"
 
 [workspace.dependencies]
 anyhow = "1"
 codex-process-hardening = { path = "process-hardening" }
-codex-realtime-webrtc = { package = "nanocodex-voice-native", path = "../../crates/nanocodex-voice-native", version = "0.6.2" }
+codex-realtime-webrtc = { package = "nanocodex-voice-native", path = "../../crates/nanocodex-voice-native", version = "0.6.3" }
 futures = "0.3"
 rand = "0.9"
 serde = { version = "1", features = ["derive"] }
