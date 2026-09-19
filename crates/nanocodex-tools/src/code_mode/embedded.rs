@@ -12,8 +12,10 @@ use std::{
 };
 
 use rquickjs::{
-    CatchResultExt, Context, Ctx, Exception, Function, Persistent, Promise, Runtime,
-    function::Func, promise::PromiseState,
+    CatchResultExt, Coerced, Context, Ctx, Exception, FromJs, Function, Persistent, Promise,
+    Runtime,
+    function::{Func, Rest},
+    promise::PromiseState,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -54,9 +56,9 @@ struct ExecutionState {
     execution_id: u64,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     pending_tools: HashMap<u64, (SavedFunction, SavedFunction)>,
-    pending_timeouts: HashMap<u32, PendingTimeout>,
+    pending_timeouts: HashMap<u64, PendingTimeout>,
     next_tool_id: u64,
-    next_timeout_id: u32,
+    next_timeout_id: u64,
 }
 
 struct PendingTimeout {
@@ -353,9 +355,20 @@ fn install_native_functions<'js>(
             "__nanocodexContent",
             Func::from(
                 move |ctx: Ctx<'js>, content_json: String| -> rquickjs::Result<()> {
-                    let content = serde_json::from_str(&content_json).map_err(|error| {
+                    let content: crate::ToolOutputContent = serde_json::from_str(&content_json).map_err(|error| {
                         Exception::throw_type(&ctx, &format!("invalid output content: {error}"))
                     })?;
+                    let content = match content {
+                        crate::ToolOutputContent::InputAudio { ref audio_url }
+                            if super::audio::wav_duration_seconds(audio_url)
+                                .is_some_and(|duration| duration < 0.025) =>
+                        {
+                            crate::ToolOutputContent::InputText {
+                                text: "Audio output omitted because the clip is shorter than 25 ms; use a longer clip.".to_owned(),
+                            }
+                        }
+                        content => content,
+                    };
                     let state = content_state.borrow();
                     let _ = state.event_tx.send(RuntimeEvent::Content {
                         cell_id: state.execution_id,
@@ -402,11 +415,21 @@ fn install_native_functions<'js>(
         .set(
             "__nanocodexSetTimeout",
             Func::from(
-                move |ctx: Ctx<'js>,
-                      callback: Function<'js>,
-                      delay_ms: i64|
-                      -> rquickjs::Result<u32> {
-                    let delay_ms = u64::try_from(delay_ms).unwrap_or_default();
+                move |ctx: Ctx<'js>, args: Rest<rquickjs::Value<'js>>| -> rquickjs::Result<u64> {
+                    let callback = args
+                        .first()
+                        .and_then(|value| value.as_function())
+                        .cloned()
+                        .ok_or_else(|| {
+                            throw_message(&ctx, "setTimeout expects a function callback")
+                        })?;
+                    let delay_ms = args
+                        .get(1)
+                        .cloned()
+                        .map(|value| Coerced::<f64>::from_js(&ctx, value))
+                        .transpose()?
+                        .map_or(0.0, |value| value.0);
+                    let delay_ms = normalize_delay_ms(delay_ms);
                     let mut state = timeout_state.borrow_mut();
                     let id = state.next_timeout_id;
                     state.next_timeout_id = state.next_timeout_id.saturating_add(1);
@@ -428,12 +451,33 @@ fn install_native_functions<'js>(
     globals
         .set(
             "__nanocodexClearTimeout",
-            Func::from(move |id: u32| {
-                clear_timeout_state
-                    .borrow_mut()
-                    .pending_timeouts
-                    .remove(&id);
-            }),
+            Func::from(
+                move |ctx: Ctx<'js>, args: Rest<rquickjs::Value<'js>>| -> rquickjs::Result<()> {
+                    let Some(value) = args
+                        .first()
+                        .filter(|value| !value.is_null() && !value.is_undefined())
+                    else {
+                        return Ok(());
+                    };
+                    let id = match Coerced::<f64>::from_js(&ctx, value.clone()) {
+                        Ok(id) => id.0,
+                        Err(_) => {
+                            let _ = ctx.catch();
+                            return Err(throw_message(
+                                &ctx,
+                                "clearTimeout expects a numeric timeout id",
+                            ));
+                        }
+                    };
+                    if id.is_finite() && id > 0.0 {
+                        clear_timeout_state
+                            .borrow_mut()
+                            .pending_timeouts
+                            .remove(&normalize_delay_ms(id));
+                    }
+                    Ok(())
+                },
+            ),
         )
         .catch(ctx)
         .map_err(|error| format!("failed to install QuickJS timer cleanup: {error}"))?;
@@ -542,7 +586,7 @@ fn resolve_tool(
 fn invoke_timeout(
     ctx: &Ctx<'_>,
     state: &Rc<RefCell<ExecutionState>>,
-    id: u32,
+    id: u64,
 ) -> Result<(), String> {
     let timeout = state.borrow_mut().pending_timeouts.remove(&id);
     let Some(timeout) = timeout else {
@@ -569,7 +613,7 @@ fn next_timeout_wait(state: &Rc<RefCell<ExecutionState>>) -> Option<Duration> {
         .map(|deadline| deadline.saturating_duration_since(now))
 }
 
-fn next_due_timeout(state: &Rc<RefCell<ExecutionState>>) -> Option<u32> {
+fn next_due_timeout(state: &Rc<RefCell<ExecutionState>>) -> Option<u64> {
     let now = Instant::now();
     state
         .borrow()
@@ -603,4 +647,19 @@ fn receive_command(
 
 fn drain_jobs(ctx: &Ctx<'_>) {
     while ctx.execute_pending_job() {}
+}
+
+fn normalize_delay_ms(value: f64) -> u64 {
+    if !value.is_finite() || value <= 0.0 {
+        0
+    } else {
+        value.trunc() as u64
+    }
+}
+
+fn throw_message(ctx: &Ctx<'_>, message: &str) -> rquickjs::Error {
+    match rquickjs::String::from_str(ctx.clone(), message) {
+        Ok(message) => ctx.throw(message.into_value()),
+        Err(error) => error,
+    }
 }

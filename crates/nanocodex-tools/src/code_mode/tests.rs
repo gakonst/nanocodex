@@ -2533,7 +2533,6 @@ fn test_live_cell(
         id,
         origin_call_id: "test-exec".into(),
         turn_id: AtomicU64::new(0),
-        output_token_budget: crate::contract::DEFAULT_TOOL_OUTPUT_TOKENS,
         observation: Arc::new(tokio::sync::Mutex::new(CellObservationState {
             updates,
             buffered: ObservationBuffer::default(),
@@ -2583,4 +2582,193 @@ fn temporary_workspace(label: &str) -> Result<PathBuf> {
     ));
     std::fs::create_dir_all(&path)?;
     Ok(path)
+}
+
+// These expected values are produced by executing the pinned upstream Rust/V8
+// implementation with scripts/codex-parity/native-behavior.py, not hand-written
+// copies of the algorithms under test.
+fn upstream_native_behavior() -> Value {
+    serde_json::from_str(include_str!("native-behavior.json")).unwrap()
+}
+
+#[test]
+fn wait_arguments_match_executed_upstream_parser() {
+    for case in upstream_native_behavior()["waits"].as_array().unwrap() {
+        let input = case["input"].as_str().unwrap();
+        let actual = match serde_json::from_str::<super::WaitArguments>(input) {
+            Ok(args) => serde_json::json!({"parsed": {
+                "yield_time_ms": args.yield_time_ms,
+                "max_tokens": args.max_tokens,
+                "terminate": args.terminate,
+            }}),
+            Err(error) => serde_json::json!({"error": error.to_string()}),
+        };
+        assert_eq!(actual, case["result"], "{input}");
+    }
+}
+
+#[tokio::test]
+async fn primitive_text_matches_executed_upstream_v8() -> Result<()> {
+    let workspace = temporary_workspace("upstream-v8-text")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    for case in upstream_native_behavior()["helpers"].as_array().unwrap() {
+        if case["kind"] != "text" {
+            continue;
+        }
+        let expression = case["expression"].as_str().unwrap();
+        let result = tools
+            .execute_code(&format!("text({expression});"), test_context(&history))
+            .await
+            .unwrap();
+        assert!(result.success, "{}", execution_output(&result));
+        assert_eq!(
+            emitted_text(&result)?,
+            case["result"]["item"]["text"].as_str().unwrap(),
+            "{expression}"
+        );
+    }
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn wait_budgets_are_fresh_allow_zero_and_apply_to_termination() -> Result<()> {
+    let workspace = temporary_workspace("upstream-wait-budgets")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let first = tools.execute_code(
+        "// @exec: {\"max_output_tokens\":0}\ntext('initial'); yield_control(); await new Promise(r => setTimeout(r, 20)); text('fresh wait budget');",
+        test_context(&history),
+    ).await.unwrap();
+    assert!(execution_output(&first).contains("Warning: truncated output"));
+    let waited = tools
+        .wait_for_code(
+            r#"{"cell_id":"1","yield_time_ms":1000}"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    assert!(execution_output(&waited).contains("fresh wait budget"));
+    assert!(!execution_output(&waited).contains("Warning: truncated output"));
+
+    let second = tools.execute_code(
+        "yield_control(); text('termination output'); await new Promise(r => setTimeout(r, 60000));",
+        test_context(&history),
+    ).await.unwrap();
+    assert!(execution_output(&second).contains("Script running"));
+    // Wait until the actor has published the text so this tests the termination
+    // budget, independently of whether the text raced the preceding yield.
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let terminated = tools
+        .wait_for_code(
+            r#"{"cell_id":"2","terminate":true,"max_tokens":0}"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    let output = execution_output(&terminated);
+    assert!(output.contains("Script terminated"), "{output}");
+    assert!(output.contains("Warning: truncated output"), "{output}");
+    assert!(!output.contains("termination output"), "{output}");
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_timers_coerce_optional_arguments_and_cancel_without_waiting() -> Result<()> {
+    let workspace = temporary_workspace("upstream-timer-coercion")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let execution = tools
+        .execute_code(
+            r#"
+clearTimeout(); clearTimeout(null); clearTimeout(undefined);
+clearTimeout(NaN); clearTimeout(Infinity); clearTimeout(-1);
+const cancelled = setTimeout(() => text('cancelled'), 10);
+clearTimeout(String(cancelled));
+await new Promise(resolve => setTimeout(resolve));
+await new Promise(resolve => setTimeout(resolve, '1.9'));
+await new Promise(resolve => setTimeout(resolve, -1));
+await new Promise(resolve => setTimeout(resolve, Infinity));
+try { setTimeout('bad'); } catch (e) { text(e); }
+try { clearTimeout(Symbol('bad')); } catch (e) { text(e); }
+text('done');
+"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    let output = execution_output(&execution);
+    assert!(execution.success, "{output}");
+    assert!(
+        output.contains("setTimeout expects a function callback"),
+        "{output}"
+    );
+    assert!(
+        output.contains("clearTimeout expects a numeric timeout id"),
+        "{output}"
+    );
+    assert!(output.contains("done"), "{output}");
+    assert!(!output.contains("cancelled"), "{output}");
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminated_store_writes_are_discarded_and_concurrent_snapshots_only_commit_writes()
+-> Result<()> {
+    let workspace = temporary_workspace("upstream-store-commit")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    tools
+        .execute_code("store('existing', 1);", test_context(&history))
+        .await
+        .unwrap();
+    let yielded = tools
+        .execute_code(
+            "store('cancelled', 2); yield_control(); await new Promise(r => setTimeout(r, 60000));",
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    assert!(execution_output(&yielded).contains("Script running"));
+    tools
+        .wait_for_code(
+            r#"{"cell_id":"2","terminate":true}"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    tools
+        .execute_code(
+            "yield_control(); await new Promise(r => setTimeout(r, 50)); store('first', 3);",
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    tools
+        .execute_code(
+            "store('existing', 4); store('second', 5);",
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    tools
+        .wait_for_code(
+            r#"{"cell_id":"3","yield_time_ms":1000}"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    let read = tools
+        .execute_code(
+            "text([load('cancelled'), load('existing'), load('first'), load('second')]);",
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    assert_eq!(emitted_text(&read)?, "[null,4,3,5]");
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
 }

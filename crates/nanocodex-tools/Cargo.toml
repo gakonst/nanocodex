@@ -56,6 +56,7 @@ native = [
     "dep:rquickjs",
     "dep:rmcp",
     "dep:sha1",
+    "dep:symphonia",
     "dep:tokio-util",
 ]
 
@@ -80,6 +81,7 @@ nanocodex-tools-macros = { workspace = true, optional = true }
 portable-pty = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 rquickjs = { workspace = true, optional = true }
+symphonia = { version = "0.6.0", default-features = false, features = ["isomp4", "mkv", "mp3", "ogg", "wav"], optional = true }
 rmcp = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }

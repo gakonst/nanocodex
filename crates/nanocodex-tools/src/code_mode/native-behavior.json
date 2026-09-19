@@ -1,0 +1,361 @@
+{
+  "helpers": [
+    {
+      "expression": "undefined",
+      "kind": "text",
+      "result": {
+        "item": {
+          "text": "undefined",
+          "type": "input_text"
+        }
+      }
+    },
+    {
+      "expression": "null",
+      "kind": "text",
+      "result": {
+        "item": {
+          "text": "null",
+          "type": "input_text"
+        }
+      }
+    },
+    {
+      "expression": "NaN",
+      "kind": "text",
+      "result": {
+        "item": {
+          "text": "NaN",
+          "type": "input_text"
+        }
+      }
+    },
+    {
+      "expression": "Infinity",
+      "kind": "text",
+      "result": {
+        "item": {
+          "text": "Infinity",
+          "type": "input_text"
+        }
+      }
+    },
+    {
+      "expression": "-0",
+      "kind": "text",
+      "result": {
+        "item": {
+          "text": "0",
+          "type": "input_text"
+        }
+      }
+    },
+    {
+      "expression": "42n",
+      "kind": "text",
+      "result": {
+        "item": {
+          "text": "42",
+          "type": "input_text"
+        }
+      }
+    },
+    {
+      "expression": "({x:undefined,n:NaN,a:[undefined,Infinity]})",
+      "kind": "text",
+      "result": {
+        "item": {
+          "text": "{\"n\":null,\"a\":[null,null]}",
+          "type": "input_text"
+        }
+      }
+    },
+    {
+      "expression": "({toJSON(){return 'converted'}})",
+      "kind": "text",
+      "result": {
+        "item": {
+          "text": "\"converted\"",
+          "type": "input_text"
+        }
+      }
+    },
+    {
+      "expression": "'data:garbage'",
+      "kind": "image",
+      "result": {
+        "item": {
+          "detail": "high",
+          "image_url": "data:garbage",
+          "type": "input_image"
+        }
+      }
+    },
+    {
+      "expression": "'DATA:image/png;base64,invalid'",
+      "kind": "image",
+      "result": {
+        "item": {
+          "detail": "high",
+          "image_url": "DATA:image/png;base64,invalid",
+          "type": "input_image"
+        }
+      }
+    },
+    {
+      "expression": "Object.create({image_url:'data:image/png;base64,a'})",
+      "kind": "image",
+      "result": {
+        "item": {
+          "detail": "high",
+          "image_url": "data:image/png;base64,a",
+          "type": "input_image"
+        }
+      }
+    },
+    {
+      "expression": "({image_url:undefined,type:'image',data:'a'})",
+      "kind": "image",
+      "result": {
+        "item": {
+          "detail": "high",
+          "image_url": "data:application/octet-stream;base64,a",
+          "type": "input_image"
+        }
+      }
+    },
+    {
+      "expression": "({type:'image',data:'a',mimeType:7,mime_type:'image/png'})",
+      "kind": "image",
+      "result": {
+        "item": {
+          "detail": "high",
+          "image_url": "data:application/octet-stream;base64,a",
+          "type": "input_image"
+        }
+      }
+    },
+    {
+      "expression": "({toJSON(){return {type:'image',data:'a'}}})",
+      "kind": "image",
+      "result": {
+        "item": {
+          "detail": "high",
+          "image_url": "data:application/octet-stream;base64,a",
+          "type": "input_image"
+        }
+      }
+    },
+    {
+      "expression": "({image_url:'data:image/png;base64,a',detail:'ORIGINAL'})",
+      "kind": "image",
+      "result": {
+        "item": {
+          "detail": "original",
+          "image_url": "data:image/png;base64,a",
+          "type": "input_image"
+        }
+      }
+    },
+    {
+      "expression": "({type:'image',data:'a',_meta:{'codex/imageDetail':'ORIGINAL'}})",
+      "kind": "image",
+      "result": {
+        "item": {
+          "detail": "high",
+          "image_url": "data:application/octet-stream;base64,a",
+          "type": "input_image"
+        }
+      }
+    },
+    {
+      "expression": "'https://example.invalid/a.png'",
+      "kind": "image",
+      "result": {
+        "error": "Tool call failed: remote image URLs are not supported in tool outputs. Pass a base64 data URI instead"
+      }
+    },
+    {
+      "expression": "'data:garbage'",
+      "kind": "audio",
+      "result": {
+        "item": {
+          "audio_url": "data:garbage",
+          "type": "input_audio"
+        }
+      }
+    },
+    {
+      "expression": "Object.create({audio_url:'data:audio/wav;base64,a'})",
+      "kind": "audio",
+      "result": {
+        "item": {
+          "audio_url": "data:audio/wav;base64,a",
+          "type": "input_audio"
+        }
+      }
+    },
+    {
+      "expression": "({audio_url:undefined,type:'audio',data:'a'})",
+      "kind": "audio",
+      "result": {
+        "item": {
+          "audio_url": "data:application/octet-stream;base64,a",
+          "type": "input_audio"
+        }
+      }
+    },
+    {
+      "expression": "({type:'audio',data:'a',mimeType:7,mime_type:'audio/wav'})",
+      "kind": "audio",
+      "result": {
+        "item": {
+          "audio_url": "data:application/octet-stream;base64,a",
+          "type": "input_audio"
+        }
+      }
+    }
+  ],
+  "truncations": [
+    {
+      "result": "…3 tokens truncated…",
+      "text": "abcdefghi",
+      "tokens": 0
+    },
+    {
+      "result": "ab…2 tokens truncated…hi",
+      "text": "abcdefghi",
+      "tokens": 1
+    },
+    {
+      "result": "abcd…1 tokens truncated…fghi",
+      "text": "abcdefghi",
+      "tokens": 2
+    },
+    {
+      "result": "abcdefghi",
+      "text": "abcdefghi",
+      "tokens": 3
+    },
+    {
+      "result": "abcdefghi",
+      "text": "abcdefghi",
+      "tokens": 100
+    },
+    {
+      "result": "…5 tokens truncated…",
+      "text": "🦀🦀🦀🦀🦀",
+      "tokens": 0
+    },
+    {
+      "result": "…4 tokens truncated…",
+      "text": "🦀🦀🦀🦀🦀",
+      "tokens": 1
+    },
+    {
+      "result": "🦀…3 tokens truncated…🦀",
+      "text": "🦀🦀🦀🦀🦀",
+      "tokens": 2
+    },
+    {
+      "result": "🦀…2 tokens truncated…🦀",
+      "text": "🦀🦀🦀🦀🦀",
+      "tokens": 3
+    },
+    {
+      "result": "🦀🦀🦀🦀🦀",
+      "text": "🦀🦀🦀🦀🦀",
+      "tokens": 100
+    },
+    {
+      "result": "…5 tokens truncated…",
+      "text": "é中🙂abc\nlast",
+      "tokens": 0
+    },
+    {
+      "result": "é…4 tokens truncated…st",
+      "text": "é中🙂abc\nlast",
+      "tokens": 1
+    },
+    {
+      "result": "é…3 tokens truncated…last",
+      "text": "é中🙂abc\nlast",
+      "tokens": 2
+    },
+    {
+      "result": "é中…2 tokens truncated…c\nlast",
+      "text": "é中🙂abc\nlast",
+      "tokens": 3
+    },
+    {
+      "result": "é中🙂abc\nlast",
+      "text": "é中🙂abc\nlast",
+      "tokens": 100
+    }
+  ],
+  "upstream": "36430b36881cf5c289cb48e671cfc9e8b542ae7b",
+  "waits": [
+    {
+      "input": "{\"cell_id\":\"1\"}",
+      "result": {
+        "parsed": {
+          "max_tokens": null,
+          "terminate": false,
+          "yield_time_ms": 10000
+        }
+      }
+    },
+    {
+      "input": "{\"cell_id\":\"1\",\"unknown\":1}",
+      "result": {
+        "parsed": {
+          "max_tokens": null,
+          "terminate": false,
+          "yield_time_ms": 10000
+        }
+      }
+    },
+    {
+      "input": "{\"cell_id\":\"1\",\"max_tokens\":null}",
+      "result": {
+        "parsed": {
+          "max_tokens": null,
+          "terminate": false,
+          "yield_time_ms": 10000
+        }
+      }
+    },
+    {
+      "input": "{\"cell_id\":\"1\",\"yield_time_ms\":null}",
+      "result": {
+        "error": "invalid type: null, expected u64 at line 1 column 35"
+      }
+    },
+    {
+      "input": "{\"cell_id\":\"1\",\"yield_time_ms\":18446744073709551615}",
+      "result": {
+        "parsed": {
+          "max_tokens": null,
+          "terminate": false,
+          "yield_time_ms": 18446744073709551615
+        }
+      }
+    },
+    {
+      "input": "{\"cell_id\":\"1\",\"max_tokens\":0,\"terminate\":true}",
+      "result": {
+        "parsed": {
+          "max_tokens": 0,
+          "terminate": true,
+          "yield_time_ms": 10000
+        }
+      }
+    },
+    {
+      "input": "{\"cell_id\":\"1\",\"terminate\":null}",
+      "result": {
+        "error": "invalid type: null, expected a boolean at line 1 column 31"
+      }
+    }
+  ]
+}
