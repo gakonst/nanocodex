@@ -6152,6 +6152,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocodex-remote"
+version = "0.6.4"
+dependencies = [
+ "futures-util",
+ "libc",
+ "opusic-c",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+ "webrtc",
+]
+
+[[package]]
 name = "nanocodex-subagents"
 version = "0.6.4"
 dependencies = [
@@ -6352,6 +6368,7 @@ dependencies = [
  "nanocodex-hand",
  "nanocodex-managed",
  "nanocodex-observability",
+ "nanocodex-remote",
  "nanocodex-subagents",
  "nanocodex-tools",
  "nanocodex-vm",
