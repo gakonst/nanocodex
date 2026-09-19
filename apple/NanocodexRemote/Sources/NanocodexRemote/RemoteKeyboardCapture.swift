@@ -83,6 +83,7 @@ private final class RemoteSystemKeyboardTap: RemoteKeyboardTap {
 /// only the dashboard's explicit exit/selection lifecycle releases immersion.
 final class RemoteKeyboardCapture {
     var isActive: () -> Bool = { false }
+    var capturesPointer: () -> Bool = { false }
     var handle: (NSEvent) -> Void = { _ in }
     var release: () -> Void = {}
     var statusChanged: () -> Void = {}
@@ -111,7 +112,7 @@ final class RemoteKeyboardCapture {
     private var observers: [NSObjectProtocol] = []
 
     private func makeTap() -> RemoteKeyboardTap? {
-        let mask = [CGEventType.keyDown, .keyUp, .flagsChanged].reduce(CGEventMask(0)) { $0 | (1 << $1.rawValue) }
+        let mask = [CGEventType.keyDown, .keyUp, .flagsChanged, .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp, .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel].reduce(CGEventMask(0)) { $0 | (1 << $1.rawValue) }
         guard let port = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap,
             options: .defaultTap, eventsOfInterest: mask, callback: { _, type, event, context in
                 guard let context else { return Unmanaged.passUnretained(event) }
@@ -122,7 +123,8 @@ final class RemoteKeyboardCapture {
                     capture.statusChanged()
                     return Unmanaged.passUnretained(event)
                 }
-                guard capture.isActive(), let key = NSEvent(cgEvent: event) else { return Unmanaged.passUnretained(event) }
+                let keyboardEvent = type == .keyDown || type == .keyUp || type == .flagsChanged
+                guard (keyboardEvent || capture.capturesPointer()), capture.isActive(), let key = NSEvent(cgEvent: event) else { return Unmanaged.passUnretained(event) }
                 capture.handle(key)
                 return nil
             }, userInfo: Unmanaged.passUnretained(self).toOpaque()) else { return nil }

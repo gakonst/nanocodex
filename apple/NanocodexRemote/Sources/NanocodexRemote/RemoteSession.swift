@@ -21,6 +21,7 @@ struct RemoteControlMessage: Codable, Sendable {
     enum Kind: String, Codable, Sendable { case acquire, granted, denied, renew, release, revoked }
     let type: Kind
     var generation: String?
+    var relativePointer: Bool? = nil
 }
 
 // Hosts acknowledge release with `revoked`, including older hosts that omit a
@@ -106,6 +107,7 @@ public final class RemoteViewer: ObservableObject {
     @Published public private(set) var status = "Disconnected"
     @Published public private(set) var track: RTCVideoTrack?
     @Published public private(set) var frame: CGImage?
+    @Published public private(set) var relativePointer = false
     @Published public private(set) var controlling = false
     @Published public private(set) var connected = false
     @Published public private(set) var hand: RemoteHand?
@@ -413,7 +415,7 @@ public final class RemoteViewer: ObservableObject {
                 signaling?.send(relay)
             } else if let data = try? JSONEncoder().encode(release) { try? peer?.send(data) }
         }
-        control = RemoteViewerControl(); controlling = false
+        control = RemoteViewerControl(); controlling = false; relativePointer = false
         leaseRenewal?.cancel(); leaseRenewal = nil
         connectionSetup?.cancel(); connectionSetup = nil
         signalQueue?.cancel(); signalQueue = nil
@@ -539,7 +541,9 @@ public final class RemoteViewer: ObservableObject {
                 if message.type == .denied, controlFocus.previous.immersive { _ = control.release() }
             }
             let reply = try control.receive(message)
+            if message.type == .granted { relativePointer = message.relativePointer == true }
             controlling = generation != nil
+            if !controlling { relativePointer = false }
             if let generation, generation != previous {
                 sequence = 0; status = "You’re controlling"
                 leaseRenewal?.cancel()

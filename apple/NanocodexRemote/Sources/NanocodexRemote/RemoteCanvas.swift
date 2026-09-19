@@ -84,11 +84,20 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
             guard let self else { return false }
             return NSApp.isActive && self.window?.isKeyWindow == true && self.window?.firstResponder === self && self.viewer?.controlling == true
         }
+        keyboard.capturesPointer = { [weak self] in self?.cursor.locked == true }
         keyboard.handle = { [weak self] event in
             switch event.type {
             case .keyDown: self?.keyDown(with: event)
             case .keyUp: self?.keyUp(with: event)
             case .flagsChanged: self?.flagsChanged(with: event)
+            case .leftMouseDown: self?.mouseDown(with: event)
+            case .leftMouseUp: self?.mouseUp(with: event)
+            case .rightMouseDown: self?.rightMouseDown(with: event)
+            case .rightMouseUp: self?.rightMouseUp(with: event)
+            case .otherMouseDown: self?.otherMouseDown(with: event)
+            case .otherMouseUp: self?.otherMouseUp(with: event)
+            case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged: self?.mouseMoved(with: event)
+            case .scrollWheel: self?.scrollWheel(with: event)
             default: break
             }
         }
@@ -140,7 +149,7 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
         if immersive, viewer?.controlling == true { window?.makeFirstResponder(self) }
     }
     private func updateCursorCapture() {
-        cursor.update(hidden: immersive && keyboard.isActive())
+        cursor.update(hidden: immersive && keyboard.isActive(), locked: viewer?.relativePointer == true && keyboard.capturesSystemShortcuts)
     }
     private func restoreImmersiveFocus() {
         guard immersive, viewer?.controlling == true, NSApp.isActive,
@@ -160,7 +169,7 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
         let warning = keyboard.unavailableReason + " System shortcuts may stay on this Mac. Command–Shift–Escape returns to the workspace."
         let diagnostic = "PID=\(ProcessInfo.processInfo.processIdentifier); bundle=\(Bundle.main.bundleURL.path)\n"
             + keyboard.diagnostic + "\napp active=\(NSApp.isActive); key window=\(window?.isKeyWindow == true); canvas first responder=\(window?.firstResponder === self)\n"
-            + "connected=\(viewer?.connected == true); " + (viewer?.inputDiagnostic ?? "viewer detached")
+            + "relative pointer supported=\(viewer?.relativePointer == true); pointer captured=\(cursor.locked); connected=\(viewer?.connected == true); " + (viewer?.inputDiagnostic ?? "viewer detached")
         keyboardNotice.stringValue = showInputDiagnostics ? diagnostic : warning
         keyboardNotice.setAccessibilityValue(showInputDiagnostics ? diagnostic : warning)
         keyboardNotice.isHidden = !showInputDiagnostics && (!immersive || viewer?.controlling != true || keyboard.capturesSystemShortcuts)
@@ -192,11 +201,13 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
         return CGPoint(x: min(1, max(0, (point.x - rect.minX) / rect.width)), y: min(1, max(0, (point.y - rect.minY) / rect.height)))
     }
     private func button(_ event: NSEvent, down: Bool, button: Int) {
-        guard viewer?.controlling == true, let point = point(event, clamp: !down && pointer.dragging) else { return }
+        guard viewer?.controlling == true else { return }
+        let position = cursor.locked ? nil : point(event, clamp: !down && pointer.dragging)
+        guard cursor.locked || position != nil else { return }
         if down { window?.makeFirstResponder(self) }
         synchronizeModifiers(event)
         pointer.button(button, down: down)
-        viewer?.input(kind: .button, x: point.x, y: point.y, button: button, down: down)
+        viewer?.input(kind: .button, x: position.map { Double($0.x) }, y: position.map { Double($0.y) }, button: button, down: down)
     }
     public override func mouseDown(with event: NSEvent) { button(event, down: true, button: 0) }
     public override func mouseUp(with event: NSEvent) { button(event, down: false, button: 0) }
@@ -205,7 +216,16 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
     public override func otherMouseDown(with event: NSEvent) { if event.buttonNumber == 2 { button(event, down: true, button: 2) } }
     public override func otherMouseUp(with event: NSEvent) { if event.buttonNumber == 2 { button(event, down: false, button: 2) } }
     public override func mouseMoved(with event: NSEvent) {
-        guard viewer?.controlling == true, let point = point(event, clamp: pointer.dragging) else { return }
+        guard viewer?.controlling == true else { return }
+        if cursor.locked {
+            // Relative motion stays on the ordered channel with button edges:
+            // replacing or dropping displacement would lose part of a drag.
+            if window?.firstResponder === self { synchronizeModifiers(event) }
+            let dx = min(4096, max(-4096, event.deltaX)), dy = min(4096, max(-4096, event.deltaY))
+            if dx != 0 || dy != 0 { viewer?.input(kind: .relativeMove, deltaX: dx, deltaY: dy) }
+            return
+        }
+        guard let point = point(event, clamp: pointer.dragging) else { return }
         // Hovering a nonimmersive canvas must not latch modifiers while a local
         // text field owns their key-up events.
         if window?.firstResponder === self { synchronizeModifiers(event) }
@@ -216,11 +236,12 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
     public override func otherMouseDragged(with event: NSEvent) { mouseMoved(with: event) }
     public override func scrollWheel(with event: NSEvent) {
         guard viewer?.controlling == true else { super.scrollWheel(with: event); return }
-        guard let point = point(event) else { return }
+        let position = cursor.locked ? nil : point(event)
+        guard cursor.locked || position != nil else { return }
         window?.makeFirstResponder(self)
         synchronizeModifiers(event)
         let scale: Double = event.hasPreciseScrollingDeltas ? 1 : 20
-        viewer?.input(kind: .scroll, x: point.x, y: point.y,
+        viewer?.input(kind: .scroll, x: position.map { Double($0.x) }, y: position.map { Double($0.y) },
             deltaX: min(4096, max(-4096, event.scrollingDeltaX * scale)), deltaY: min(4096, max(-4096, event.scrollingDeltaY * scale)))
     }
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {

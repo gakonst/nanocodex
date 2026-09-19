@@ -157,6 +157,7 @@ public final class MacInput {
             position = CGPoint(x: bounds.minX + x * max(0, bounds.width - 1), y: bounds.minY + y * max(0, bounds.height - 1))
         }
         switch event.kind {
+        case .relativeMove: throw RemoteError.invalidMessage // This host does not advertise relative-pointer support.
         case .move:
             let held = buttons.sorted().first
             mouse(type: held == 0 ? .leftMouseDragged : held == 1 ? .rightMouseDragged : held == 2 ? .otherMouseDragged : .mouseMoved,
