@@ -321,6 +321,8 @@ pub(super) async fn run_observed(
         .await
         .map_err(ManagedError::Configuration)?
     {
+        #[cfg(unix)]
+        super::computer_elicitation::configure(&mut config);
         if cfg!(target_os = "linux") && std::env::var_os("NANOCODEX_COMPUTER_BACKGROUND").is_none()
         {
             config.desktop_runtime = Some(state.directory.join("desktop"));

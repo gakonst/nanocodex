@@ -165,6 +165,8 @@ pub struct ComputerElicitationContext {
 /// Provider text and persistence suggestions are untrusted UI data, not consent.
 #[derive(Clone, Debug)]
 pub struct ComputerElicitationRequest {
+    /// Opaque process lifetime. A session permission must never outlive or cross it.
+    pub provider_session: std::sync::Weak<()>,
     pub id: Value,
     pub params: Value,
     /// Absent during initial provider discovery.
@@ -592,6 +594,7 @@ async fn run_session(
 }
 
 struct Process {
+    elicitation_session: Arc<()>,
     _child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
@@ -670,6 +673,7 @@ impl Process {
         let input = child.stdin.take().ok_or("CUA stdin unavailable")?;
         let output = BufReader::new(child.stdout.take().ok_or("CUA stdout unavailable")?);
         let mut process = Self {
+            elicitation_session: Arc::new(()),
             _child: child,
             input,
             output,
@@ -826,6 +830,7 @@ impl Process {
                         );
                     }
                     let request = ComputerElicitationRequest {
+                        provider_session: Arc::downgrade(&self.elicitation_session),
                         id: request_id.clone(),
                         params,
                         context: self.elicitation_context.clone(),

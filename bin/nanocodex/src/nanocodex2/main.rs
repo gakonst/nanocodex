@@ -8,6 +8,8 @@
 
 #[path = "../computer.rs"]
 mod computer;
+#[cfg(unix)]
+mod computer_elicitation;
 #[allow(dead_code)]
 mod config;
 mod control;
