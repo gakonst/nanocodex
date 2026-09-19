@@ -1,10 +1,25 @@
 # Computer-use compatibility
 
-This package targets the recovered September 6, 2026 CUA 0.2.4 / embedded Sky
-0.6.26 interface. The implementation and retained behavioral oracles came from
-the independent `sky-re-1000502/rebuild` research checkout. It does not implement
-every original service or the complete Node/DOM environment. Passing the tests
-below establishes the covered behavior, not complete product parity.
+The current public contract is pinned to official ChatGPT 26.915.31945 (9922),
+CUA 0.2.5, and Sky 0.7.1. The tool catalog was captured through MCP initialize
+and tools/list with both browser and computer enabled; no UI operation was used.
+The checked-in provider types and documentation are exact installed source
+copies, with hashes in `runtime/src/cua_provider_provenance.json`.
+
+The independent implementation and older behavioral oracles originated in the
+`sky-re-1000502/rebuild` research checkout. Historical audit results below describe
+their stated releases. The runtime does not implement every original service or
+the complete Node/DOM environment. Contract checks establish covered behavior,
+not complete product parity.
+
+Verify the current resources against a copied or installed provider:
+
+```sh
+python3 scripts/codex-parity/cua-provider.py --reference-root /path/to/cua_node/lib/node_modules/@oai
+```
+
+Pass `--catalog /path/to/tools-list.json` to also compare a freshly captured
+MCP tools/list response, including every tool schema and annotation.
 
 ## September 13 integration audit
 

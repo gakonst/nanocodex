@@ -13,7 +13,17 @@ await cua.getState();
 Use the first matching browser control option from the user's request:
 
 For a tab @-mention (`mention=tab-v1`):
-Call `cua.getState()` and find the tab whose `providerTabId`/`title`/`url` all match the mention’s decoded `tabId`/`title`/`url`. Then call `cua.getTab(tabId, { browser: browserId })`, using the id fields from that tab and its browser.
+Pass the complete `plugin://...` URL to get the referenced tab.
+
+```javascript
+let tab = await cua.getTab({ mention: tabMentionUrl });
+```
+
+For an existing tab identified by URL in browser context (including the current IAB tab):
+
+```javascript
+let tab = await cua.getTab({ url }, { browser: browserId });
+```
 
 Known tab ID (`tabId` or `providerTabId`) and browser (name or browser @-mention):
 
@@ -21,13 +31,13 @@ Known tab ID (`tabId` or `providerTabId`) and browser (name or browser @-mention
 let tab = await cua.getTab(tabId, { browser: browserId });
 ```
 
-Known URL and in-app browser (`@Browser`):
+To open a URL in the in-app browser (`@Browser`):
 
 ```javascript
 let tab = await cua.createBrowserTab("iab", url, { visible: boolean });
 ```
 
-Known URL and other named browser: pass its name directly; do not call `getBrowser` first.
+To open a URL in another named browser: pass its name directly; do not call `getBrowser` first.
 
 ```javascript
 let tab = await cua.createBrowserTab(browserName, url, browserOptions);

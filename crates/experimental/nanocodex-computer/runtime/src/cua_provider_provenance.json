@@ -1,9 +1,9 @@
 {
-  "reference": "Installed ChatGPT CUA provider, inspected 2026-09-18",
+  "reference": "Official installed ChatGPT 26.915.31945 (9922) CUA provider, inspected 2026-09-19",
   "packages": {
-    "cua": "0.2.4",
+    "cua": "0.2.5",
     "cua-repl": "0.1.0",
-    "sky": "0.6.32",
+    "sky": "0.7.1",
     "browser-desktop": "0.1.1"
   },
   "sources": [
@@ -13,7 +13,7 @@
     },
     {
       "path": "cua-repl/instructions/macos/browser.md",
-      "sha256": "80133996ea3234fc3e32c6fcb83dadbed162aed398a7603461ec88131edce3da"
+      "sha256": "59f010a2de5d86073278688faf3f5f18a6ed14f818671f6b4ed4aa4d64c98ccb"
     },
     {
       "path": "cua-repl/instructions/macos/computer.md",
@@ -29,7 +29,7 @@
     },
     {
       "path": "cua-repl/instructions/linux/browser.md",
-      "sha256": "80133996ea3234fc3e32c6fcb83dadbed162aed398a7603461ec88131edce3da"
+      "sha256": "59f010a2de5d86073278688faf3f5f18a6ed14f818671f6b4ed4aa4d64c98ccb"
     },
     {
       "path": "cua-repl/instructions/linux/computer.md",
@@ -45,7 +45,7 @@
     },
     {
       "path": "cua-repl/instructions/windows/browser.md",
-      "sha256": "80133996ea3234fc3e32c6fcb83dadbed162aed398a7603461ec88131edce3da"
+      "sha256": "59f010a2de5d86073278688faf3f5f18a6ed14f818671f6b4ed4aa4d64c98ccb"
     },
     {
       "path": "cua-repl/instructions/windows/computer.md",
@@ -81,11 +81,11 @@
     },
     {
       "path": "cua/docs/tinysky-alt-core-cua-repl.md",
-      "sha256": "67c0bd7f2d9ce350e3b7e6202505234a1defb980c14feaf75ed6bfe9d598de1a"
+      "sha256": "416ed1677ab06745ec6e6d8aa781a9e29e6f339c569f3202c49d267c029e6426"
     },
     {
       "path": "cua/docs/tinysky-alt-core-node-repl.md",
-      "sha256": "316015906e9a8d14ed95cb38fb7f67d82c01f567cfe9506ce770a495145605ce"
+      "sha256": "b195e918482cdc45fa1bc9888878440b81a78840ae574531e3127ecbf107a1d8"
     },
     {
       "path": "cua/docs/tinysky-alt-other-browser-apis.md",
@@ -93,11 +93,11 @@
     },
     {
       "path": "cua/dist/lib/js/oai_js_cua/src/tinysky_alt/types.d.ts",
-      "sha256": "c30af1ebd90f50e4c061ba558433e265a734eda2e4ba9132e38505735df53220"
+      "sha256": "d8230c9927d201283abef9098eca8ee1a06bf8c3b5c4e8cb756fd06d4f8960f7"
     },
     {
       "path": "cua/dist/lib/js/oai_js_cua/src/tinysky_alt/create_tinysky_alt.js",
-      "sha256": "d8c19eb3a82cfbd84ddc32625c05901fd3c7ad654db92e617ba1ab3bb16fdab4"
+      "sha256": "75b1fdf61d51ff9778a33cb02a75ab9e26cabc13fbdd53ed52131dd5f16cb8a7"
     },
     {
       "path": "cua/dist/lib/js/oai_js_cua/src/tinysky_alt/globals.js",
@@ -109,13 +109,15 @@
     },
     {
       "path": "cua/dist/lib/js/oai_js_cua/src/get_state.js",
-      "sha256": "6c234e87bbef5d35ee15f3b7dcde5f777991e622258ee069a43b0df3cf26592d"
+      "sha256": "313dba2ed35486b1cd3f5e74a5ef213805f30916b9c1070509bd35affaa050b7"
     }
   ],
-  "catalog_capture": "node_repl MCP initialize + tools/list, with launch.js-equivalent NODE_REPL_TOOL_OVERRIDES. No tool execution or UI access.",
-  "node_repl_sha256": "e6a6927c75d5d6a1126e6b6f5dcc46281b15572643df2f363c42bb1c4166cda9",
+  "catalog_capture": "Copied official provider cua-repl MCP initialize + tools/list, with browser,computer enabled. No tools/call or UI access.",
+  "node_repl_sha256": "65b2cd14b18d5b7c320b34826a51c12f844da696c5fe130110f59165b6082b37",
   "limits": [
     "Installed provider identity, not a guarantee about later provider releases.",
     "Facade and catalog conformance do not establish complete Node, browser DOM, or OS backend behavioral parity."
-  ]
+  ],
+  "node_version": "24.21.0",
+  "node_sha256": "77003340df32c420b4bc4a8b9bf29640880d2fcd8df5ccc796d87dc8679d9f00"
 }
