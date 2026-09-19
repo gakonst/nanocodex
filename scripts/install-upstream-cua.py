@@ -22,6 +22,8 @@ args = parser.parse_args()
 source = args.source_app.resolve() / 'Contents/Resources/cua_node'
 if not (source / 'manifest.json').is_file():
     parser.error('source app does not contain a CUA runtime manifest')
+if not (source / 'lib/node_modules/@oai/cua-repl/bin/cua-repl.mjs').is_file():
+    parser.error('legacy Sky-only runtimes are unsupported; update to the current ChatGPT desktop app')
 destination = args.destination.resolve()
 if destination == source or source in destination.parents:
     parser.error('destination must be outside the installed source runtime')
@@ -67,20 +69,16 @@ variables = {
     'NODE_REPL_TRUSTED_CODE_PATHS': str(modules),
 }
 # This selects the copied signed helper without changing its code or any OS
-# permission. An existing first-party host service may still be required.
+# permission. The matching signed service enforces its own host requirements.
 sky_apps = list((modules / '@oai/sky').glob('**/Codex Computer Use.app'))
 if len(sky_apps) == 1:
     variables['SKY_CUA_SERVICE_PATH'] = str(sky_apps[0])
     variables['NODE_REPL_UNTRUSTED_ENV_ALLOWLIST'] = 'SKY_CUA_SERVICE_PATH'
     if sys.platform == 'darwin':
         subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(sky_apps[0])], check=True)
-if provider.is_file():
-    variables.update(CUA_REPL_NODE_REPL_PATH=str(node_repl), CUA_REPL_ENABLED_SURFACES=args.surfaces)
-    command = [str(node), str(provider)]
-    kind = 'cua-repl'
-else:
-    command = [str(node_repl)]
-    kind = 'node-repl-with-sky'
+variables.update(CUA_REPL_NODE_REPL_PATH=str(node_repl), CUA_REPL_ENABLED_SURFACES=args.surfaces)
+command = [str(node), str(provider)]
+kind = 'cua-repl'
 launcher = destination / 'cua-provider'
 launcher.write_text('#!/bin/sh\nset -eu\n' +
                     'export PATH=' + shlex.quote(str(runtime / 'bin')) + ':"$PATH"\n' +
@@ -90,6 +88,8 @@ launcher.chmod(0o755)
 receipt = {
     'source': str(source), 'copy': str(runtime), 'exact_copy': True,
     'provider_kind': kind, 'launcher': str(launcher), 'files': files,
+    'runtime_manifest': json.loads((runtime / 'manifest.json').read_text()),
+    'package_versions': {name: json.loads((modules / '@oai' / name / 'package.json').read_text())['version'] for name in ['cua', 'cua-repl', 'sky']},
     'host_services': 'The provider can still require its installed app-server, OS grants, and native service. Copying does not replace or bypass these.',
 }
 (destination / 'copy-manifest.json').write_text(json.dumps(receipt, indent=2) + '\n')
