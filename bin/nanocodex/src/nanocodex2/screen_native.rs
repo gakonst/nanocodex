@@ -33,7 +33,9 @@ pub(crate) async fn serve_desktop(command: DesktopCommand) -> Result<(), Managed
 pub(crate) struct NativeScreen {
     publisher: Option<ScreenPublisher>,
     #[cfg(target_os = "linux")]
-    desktop: tokio::process::Child,
+    desktop: Option<tokio::process::Child>,
+    #[cfg(target_os = "linux")]
+    wayland: Option<super::screen_wayland::Platform>,
     #[cfg(target_os = "linux")]
     runtime: PathBuf,
 }
@@ -57,6 +59,9 @@ impl NativeScreen {
                         }
                         #[cfg(target_os = "windows")]
                         {
+                            if input["action"].as_str() == Some("capabilities") {
+                                return Ok(serde_json::json!({"status":"ok","relativePointer":true,"gamepad":false}));
+                            }
                             nanocodex_hand::request(input).map_err(configuration)
                         }
                     })
@@ -80,6 +85,28 @@ impl NativeScreen {
         }
         #[cfg(target_os = "linux")]
         {
+            if std::env::var("NANOCODEX_SCREEN_BACKEND").as_deref() == Ok("wayland")
+                || (std::env::var("NANOCODEX_SCREEN_BACKEND").is_err()
+                    && std::env::var_os("WAYLAND_DISPLAY").is_some())
+            {
+                let wayland = super::screen_wayland::Platform::start().await?;
+                let publisher = ScreenPublisher::start(
+                    target,
+                    machine,
+                    wayland.backend(),
+                    Some(wayland.video()),
+                    None,
+                    super::screen_audio::native_source(),
+                    super::observation_providers::Registry::local(),
+                )
+                .await?;
+                return Ok(Self {
+                    publisher: Some(publisher),
+                    desktop: None,
+                    wayland: Some(wayland),
+                    runtime: directory.join("desktop"),
+                });
+            }
             use std::time::{Duration, Instant};
             let runtime = directory.join("desktop");
             let mut command =
@@ -104,13 +131,21 @@ impl NativeScreen {
             let desktop = command.spawn().map_err(configuration)?;
             let mut screen = Self {
                 publisher: None,
-                desktop,
+                desktop: Some(desktop),
+                wayland: None,
                 runtime: runtime.clone(),
             };
             let ready = async {
                 let deadline = Instant::now() + Duration::from_secs(30);
                 loop {
-                    if screen.desktop.try_wait().map_err(configuration)?.is_some() {
+                    if screen
+                        .desktop
+                        .as_mut()
+                        .expect("desktop child")
+                        .try_wait()
+                        .map_err(configuration)?
+                        .is_some()
+                    {
                         return Err(configuration(
                             "Hand desktop failed to start; install Xvfb, openbox, xterm, and fonts",
                         ));
@@ -162,6 +197,17 @@ impl NativeScreen {
             ))
         }
     }
+    pub(crate) async fn refresh(&self, target: &AttachmentTarget) -> Result<(), ManagedError> {
+        match &self.publisher {
+            Some(publisher) => publisher.refresh(target).await,
+            None => Err(configuration("native screen publisher unavailable")),
+        }
+    }
+    pub(crate) fn is_finished(&self) -> bool {
+        self.publisher
+            .as_ref()
+            .is_none_or(ScreenPublisher::is_finished)
+    }
     pub(crate) async fn shutdown(mut self) -> Result<(), ManagedError> {
         let result = if let Some(publisher) = self.publisher.take() {
             publisher.shutdown().await
@@ -170,16 +216,21 @@ impl NativeScreen {
         };
         #[cfg(target_os = "linux")]
         {
-            let _ = desktop_request(
-                self.runtime.clone(),
-                serde_json::json!({"action":"shutdown"}),
-            )
-            .await;
-            if tokio::time::timeout(std::time::Duration::from_secs(5), self.desktop.wait())
-                .await
-                .is_err()
-            {
-                let _ = self.desktop.kill().await;
+            if let Some(wayland) = self.wayland.take() {
+                wayland.shutdown().await;
+            }
+            if let Some(mut desktop) = self.desktop.take() {
+                let _ = desktop_request(
+                    self.runtime.clone(),
+                    serde_json::json!({"action":"shutdown"}),
+                )
+                .await;
+                if tokio::time::timeout(std::time::Duration::from_secs(5), desktop.wait())
+                    .await
+                    .is_err()
+                {
+                    let _ = desktop.kill().await;
+                }
             }
         }
         result
