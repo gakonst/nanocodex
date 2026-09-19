@@ -28,6 +28,8 @@ mod observation_providers;
 mod reload;
 mod screen_audio;
 mod screen_broadcast;
+#[cfg(target_os = "linux")]
+mod screen_gamepad;
 mod screen_ice;
 #[cfg(target_os = "macos")]
 mod screen_macos;
@@ -35,6 +37,12 @@ mod screen_native;
 mod screen_publisher;
 mod screen_video;
 mod screen_video_frames;
+#[cfg(target_os = "linux")]
+mod screen_wayland;
+#[cfg(target_os = "linux")]
+mod screen_wayland_encoder;
+#[cfg(target_os = "linux")]
+mod screen_wayland_input;
 mod service;
 #[allow(dead_code)]
 mod skill;
@@ -529,6 +537,17 @@ fn main() -> ExitCode {
 
 fn try_main() -> Result<(), ManagedError> {
     let _ = dotenvy::dotenv();
+    #[cfg(target_os = "linux")]
+    if std::env::var(screen_wayland_encoder::HELPER_ENV).as_deref() == Ok("1") {
+        return tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| ManagedError::Configuration(e.to_string()))?
+            .block_on(screen_wayland_encoder::run(
+                std::env::args().skip(1).collect(),
+            ))
+            .map_err(|e| ManagedError::Configuration(e.to_string()));
+    }
     let cli = Cli::parse();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
