@@ -140,6 +140,50 @@ final class RemoteViewerTests: XCTestCase {
         XCTAssertEqual(socket.messages.filter { $0.type == "frame_request" }.count, 6)
     }
 
+    @MainActor func testFrameFallbackCannotEnableMicrophoneAndStaleAudioRepliesDoNotReacquireControl() async throws {
+        let service = try service { _ in XCTFail("No ICE for frames") }
+        defer { service.close() }
+        var catalog = surface("audio-capability")
+        catalog["transport"] = "frames-v1"
+        let hand = try JSONDecoder().decode(RemoteHand.self, from: JSONSerialization.data(withJSONObject: catalog))
+        let socket = ViewerSocket(), viewer = RemoteViewer()
+        socket.onConnect = { socket.onMessage(.init(type: "ready")) }
+        viewer.makeSignaling = { _ in socket }
+        defer { viewer.close() }
+        viewer.setSpeakersEnabled(false)
+        await viewer.connect(service: service, hand: hand)
+        let ready = expectation(description: "Frame fallback connected")
+        socket.onSend = { if $0.type == "frame_request" { ready.fulfill() } }
+        socket.onMessage(try jpegFrame())
+        await fulfillment(of: [ready], timeout: 3)
+        socket.onSend = { _ in }
+        func deliver(_ control: RemoteControlMessage) {
+            var message = RemoteMessage(type: "control"); message.data = .control(control)
+            socket.onMessage(message)
+        }
+        viewer.takeControl()
+        deliver(.init(type: .granted, generation: "audio-lease", microphone: true))
+        XCTAssertTrue(viewer.controlling)
+        XCTAssertFalse(viewer.supportsMicrophone, "A media-less fallback must ignore an unsupported audio grant")
+        XCTAssertFalse(viewer.supportsSpeakers)
+        let before = socket.messages.count
+        viewer.setMicrophoneEnabled(true)
+        XCTAssertEqual(socket.messages.count, before)
+        XCTAssertFalse(viewer.microphoneEnabled)
+        XCTAssertFalse(viewer.microphonePending)
+        deliver(.init(type: .microphone, generation: "old-lease", enabled: true, requestID: "late"))
+        XCTAssertTrue(viewer.connected)
+        XCTAssertFalse(viewer.microphoneEnabled)
+        viewer.releaseControl()
+        deliver(.init(type: .microphone, generation: "audio-lease", enabled: true, requestID: "late"))
+        XCTAssertFalse(viewer.controlling)
+        XCTAssertFalse(viewer.microphoneEnabled)
+        viewer.suspend()
+        XCTAssertFalse(viewer.supportsMicrophone)
+        XCTAssertFalse(viewer.supportsSpeakers)
+        XCTAssertFalse(viewer.speakersEnabled, "Playback mute preference persists while capture stops")
+    }
+
     @MainActor func testRelativePointerRequiresCurrentExplicitGrant() async throws {
         let service = try service { _ in XCTFail("No ICE for frames") }
         defer { service.close() }

@@ -18,11 +18,14 @@ final class RemoteFirstFrameProbe: NSObject, RTCVideoRenderer, @unchecked Sendab
 }
 
 struct RemoteControlMessage: Codable, Sendable {
-    enum Kind: String, Codable, Sendable { case acquire, granted, denied, renew, release, revoked }
+    enum Kind: String, Codable, Sendable { case acquire, granted, denied, renew, release, revoked, microphone }
     let type: Kind
     var generation: String?
     var relativePointer: Bool?
     var gamepad: Bool?
+    var microphone: Bool?
+    var enabled: Bool?
+    var requestID: String?
 }
 
 // Hosts acknowledge release with `revoked`, including older hosts that omit a
@@ -109,6 +112,15 @@ public final class RemoteViewer: ObservableObject {
     @RemoteFramePublication public private(set) var frame: CGImage? = nil
     @Published public private(set) var supportsRelativePointer = false
     @Published public private(set) var supportsGamepad = false
+    @Published public private(set) var supportsMicrophone = false
+    @Published public private(set) var microphoneEnabled = false
+    @Published public private(set) var microphonePending = false
+    @Published public private(set) var microphoneError: String?
+    @Published public private(set) var speakersEnabled = true
+    @Published public private(set) var supportsSpeakers = false
+    private var microphoneRequest: String?
+    private var microphoneTask: Task<Void, Never>?
+    private var microphoneDeadline: Task<Void, Never>?
     @Published public private(set) var controlling = false
     @Published public var captureMouse = false
     public var relativePointer: Bool { supportsRelativePointer }
@@ -266,6 +278,7 @@ public final class RemoteViewer: ObservableObject {
             let peer = try RemotePeer(publishing: false, ice: [])
             let signaling = makeSignaling(service)
             self.peer = peer; self.signaling = signaling
+            peer.setSpeakersEnabled(speakersEnabled)
             // The authenticated socket and TURN request are independent. Open
             // both now, but do not process SDP until credentials are installed.
             let setup = Task { [weak self, weak peer] in
@@ -280,6 +293,9 @@ public final class RemoteViewer: ObservableObject {
                 guard let self, epoch == attempt else { return }
                 if signal.type != .candidate { recordConnectionEvent("send \(signal.type.rawValue)") }
                 signaling?.send(.init(type: "signal", signal: signal))
+            }
+            peer.onAudioAvailability = { [weak self] available in
+                guard let self, epoch == attempt else { return }; supportsSpeakers = available
             }
             peer.onVideoTrack = { [weak self] track in
                 guard let self, epoch == attempt else { return }
@@ -356,12 +372,80 @@ public final class RemoteViewer: ObservableObject {
         }
     }
 
+    public func setSpeakersEnabled(_ enabled: Bool) {
+        speakersEnabled = enabled
+        peer?.setSpeakersEnabled(enabled)
+    }
+
+    /// Microphone capture starts only after an explicit click and a matching
+    /// acknowledgement from the current controlling host. It never resumes on reconnect.
+    public func setMicrophoneEnabled(_ enabled: Bool) {
+        guard enabled else { stopMicrophone(notifyHost: true); return }
+        guard connected, controlling, supportsMicrophone, let generation, peer != nil,
+              !microphoneEnabled, !microphonePending else { return }
+        let request = UUID().uuidString
+        microphoneRequest = request; microphonePending = true; microphoneError = nil
+        sendControl(.init(type: .microphone, generation: generation, enabled: true, requestID: request))
+        microphoneDeadline = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            guard let self, microphoneRequest == request else { return }
+            stopMicrophone(notifyHost: true)
+            microphoneError = "The remote microphone did not respond."
+        }
+    }
+
+    private func stopMicrophone(notifyHost: Bool) {
+        let wasRequested = microphoneRequest != nil || microphoneEnabled || microphonePending
+        microphoneRequest = nil
+        microphoneDeadline?.cancel(); microphoneDeadline = nil
+        microphoneTask?.cancel(); microphoneTask = nil
+        peer?.stopMicrophone()
+        microphoneEnabled = false; microphonePending = false; microphoneError = nil
+        // Cleanup must not recurse into detach when the channel is already closed.
+        if notifyHost, wasRequested, let generation, let peer,
+           let data = try? JSONEncoder().encode(RemoteControlMessage(type: .microphone,
+                generation: generation, enabled: false, requestID: UUID().uuidString)) {
+            try? peer.send(data)
+        }
+    }
+
+    private func receiveMicrophone(_ message: RemoteControlMessage) {
+        guard controlling, connected, supportsMicrophone, let generation,
+              message.generation == generation, let request = microphoneRequest,
+              message.requestID == request else { return }
+        guard let enabled = message.enabled else { fail(RemoteError.invalidMessage); return }
+        guard enabled, let peer else {
+            stopMicrophone(notifyHost: false)
+            microphoneError = "The remote microphone is unavailable."
+            return
+        }
+        guard microphonePending, microphoneTask == nil else { return }
+        microphoneDeadline?.cancel(); microphoneDeadline = nil
+        let attempt = epoch
+        microphoneTask = Task { [weak self, weak peer] in
+            guard let self, let peer else { return }
+            do {
+                try await peer.setMicrophoneEnabled(true)
+                guard !Task.isCancelled, epoch == attempt, self.generation == generation,
+                      microphoneRequest == request, controlling else { return }
+                microphoneEnabled = peer.microphoneEnabled
+                microphonePending = false; microphoneTask = nil
+            } catch {
+                guard epoch == attempt, microphoneRequest == request else { return }
+                stopMicrophone(notifyHost: true)
+                microphoneError = "Microphone access is unavailable. Check the app’s microphone permission."
+            }
+        }
+    }
+
     public func takeControl() {
         guard connected, hand?.controllable == true, !control.requested, !controlling else { return }
         if let request = control.acquire() { sendControl(request) }
     }
 
     public func releaseControl() {
+        stopMicrophone(notifyHost: true)
+        supportsMicrophone = false
         flushRelativeMotion()
         releaseGamepad()
         let release = control.release()
@@ -445,6 +529,8 @@ public final class RemoteViewer: ObservableObject {
     }
 
     private func detach() {
+        stopMicrophone(notifyHost: false)
+        supportsMicrophone = false; supportsSpeakers = false
         releaseGamepad()
         cancelRelativeMotion()
         broadcastTimer?.cancel(); broadcastTimer = nil; broadcastWaiting = false; broadcastRequest = nil
@@ -612,6 +698,7 @@ public final class RemoteViewer: ObservableObject {
     }
     private func receiveControl(_ data: Data) {
         guard let message = try? JSONDecoder().decode(RemoteControlMessage.self, from: data) else { fail(RemoteError.invalidMessage); return }
+        if message.type == .microphone { receiveMicrophone(message); return }
         do {
             let previous = generation
             let reply = try control.receive(message)
@@ -620,10 +707,13 @@ public final class RemoteViewer: ObservableObject {
             if message.type == .granted, generation != nil {
                 supportsRelativePointer = message.relativePointer == true
                 supportsGamepad = message.gamepad == true
+                supportsMicrophone = message.microphone == true && peer != nil
             } else if generation == nil {
                 supportsRelativePointer = false
                 supportsGamepad = false
+                supportsMicrophone = false
             }
+            if generation != previous || !supportsMicrophone { stopMicrophone(notifyHost: false) }
             if generation != previous || !supportsRelativePointer { cancelRelativeMotion() }
             if !supportsRelativePointer { captureMouse = false }
             controlling = generation != nil

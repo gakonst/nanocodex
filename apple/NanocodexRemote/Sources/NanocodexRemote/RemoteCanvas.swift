@@ -34,6 +34,8 @@ public final class MacRemoteViewport: NSView, NSWindowDelegate {
     private var fullscreenWindow: NSWindow?
     private let controlButton = NSButton(title: "Take Control", target: nil, action: nil)
     private let captureButton = NSButton(checkboxWithTitle: "Lock Mouse", target: nil, action: nil)
+    private let microphoneButton = NSButton(title: "Microphone Off", target: nil, action: nil)
+    private let speakersButton = NSButton(title: "Mute Sound", target: nil, action: nil)
     private let exitButton = NSButton(title: "Exit Full Screen  ⌃⌘F", target: nil, action: nil)
     private let hint = NSTextField(labelWithString: "⌘⇧Esc releases control")
     private weak var viewer: RemoteViewer?
@@ -64,9 +66,13 @@ public final class MacRemoteViewport: NSView, NSWindowDelegate {
         exitButton.target = self; exitButton.action = #selector(toggleRemoteFullScreen); exitButton.bezelStyle = .rounded
         exitButton.setAccessibilityIdentifier("remote-exit-fullscreen")
         exitButton.keyEquivalent = "f"; exitButton.keyEquivalentModifierMask = [.control, .command]
+        microphoneButton.target = self; microphoneButton.action = #selector(toggleMicrophone); microphoneButton.bezelStyle = .rounded
+        microphoneButton.setAccessibilityIdentifier("remote-fullscreen-microphone")
+        speakersButton.target = self; speakersButton.action = #selector(toggleSpeakers); speakersButton.bezelStyle = .rounded
+        speakersButton.setAccessibilityIdentifier("remote-fullscreen-speakers")
         hint.font = .systemFont(ofSize: 12); hint.textColor = .secondaryLabelColor
         let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        for view in [controlButton, captureButton, hint, spacer, exitButton] { toolbar.addArrangedSubview(view) }
+        for view in [controlButton, captureButton, hint, spacer, speakersButton, microphoneButton, exitButton] { toolbar.addArrangedSubview(view) }
         content.addSubview(toolbar); toolbar.isHidden = true
         canvas.toggleFullScreen = { [weak self] in self?.toggleRemoteFullScreen() }
         fullscreenObserver = NotificationCenter.default.addObserver(forName: .remoteToggleFullScreen, object: viewer, queue: .main) { [weak self] _ in
@@ -85,7 +91,21 @@ public final class MacRemoteViewport: NSView, NSWindowDelegate {
         controlButton.isEnabled = viewer.connected && viewer.hand?.controllable == true
         captureButton.isHidden = !viewer.controlling || !viewer.relativePointer
         captureButton.state = viewer.captureMouse ? .on : .off
+        microphoneButton.isHidden = !viewer.supportsMicrophone
+        microphoneButton.title = viewer.microphonePending ? "Cancel Microphone" : viewer.microphoneEnabled ? "Mute Microphone" : "Enable Microphone"
+        microphoneButton.isEnabled = viewer.controlling && viewer.connected
+        microphoneButton.toolTip = viewer.microphoneError ?? (viewer.microphoneEnabled ? "Your microphone is being sent to the remote computer." : "Microphone is off.")
+        speakersButton.title = viewer.speakersEnabled ? "Mute Sound" : "Enable Sound"
+        speakersButton.isEnabled = viewer.connected && viewer.supportsSpeakers
         hint.stringValue = viewer.controlling ? (viewer.captureMouse ? "Click screen to lock · ⌘⇧Esc releases" : "⌘⇧Esc releases control") : "View only"
+    }
+    @objc private func toggleMicrophone() {
+        guard let viewer else { return }
+        viewer.setMicrophoneEnabled(!viewer.microphoneEnabled && !viewer.microphonePending)
+    }
+    @objc private func toggleSpeakers() {
+        guard let viewer else { return }
+        viewer.setSpeakersEnabled(!viewer.speakersEnabled)
     }
     @objc private func toggleControl() {
         guard let viewer else { return }

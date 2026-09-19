@@ -125,6 +125,7 @@ public struct RemoteDashboard: View {
                     Label(viewer.controlling ? "Controlling" : "View only", systemImage: viewer.controlling ? "cursorarrow" : "eye")
                         .font(.caption).foregroundStyle(viewer.controlling ? Color.accentColor : Color.secondary)
                     Spacer(minLength: 0)
+                    audioControls
                     if viewer.controlling {
                         if viewer.relativePointer {
                             Toggle("Lock Mouse", isOn: $viewer.captureMouse)
@@ -151,6 +152,28 @@ public struct RemoteDashboard: View {
 #endif
     }
 #endif
+    private var audioControls: some View {
+        HStack(spacing: 8) {
+            Button { viewer.setSpeakersEnabled(!viewer.speakersEnabled) } label: {
+                Image(systemName: viewer.speakersEnabled ? "speaker.wave.2" : "speaker.slash")
+            }
+            .accessibilityLabel(viewer.speakersEnabled ? "Mute remote sound" : "Enable remote sound")
+            .accessibilityIdentifier("remote-speakers")
+            .disabled(!viewer.connected || !viewer.supportsSpeakers)
+            if viewer.supportsMicrophone {
+                Button { viewer.setMicrophoneEnabled(!viewer.microphoneEnabled && !viewer.microphonePending) } label: {
+                    Image(systemName: viewer.microphoneEnabled ? "mic.fill" : "mic.slash")
+                        .foregroundStyle(viewer.microphoneEnabled ? Color.red : Color.primary)
+                }
+                .accessibilityLabel(viewer.microphonePending ? "Cancel microphone" : viewer.microphoneEnabled ? "Mute microphone" : "Enable microphone")
+                .accessibilityValue(viewer.microphonePending ? "Connecting" : viewer.microphoneEnabled ? "On" : "Off")
+                .accessibilityIdentifier("remote-microphone")
+                .disabled(!viewer.connected || !viewer.controlling)
+            }
+            if let error = viewer.microphoneError { Text(error).font(.caption2).foregroundStyle(.red) }
+        }
+    }
+
     private var broadcastControls: some View {
         DisclosureGroup("Broadcast · " + viewer.broadcastStatus) {
             VStack(alignment: .leading, spacing: 8) {
@@ -232,6 +255,7 @@ public struct RemoteDashboard: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 #else
+                    audioControls
                     if viewer.controlling {
                         Button("Release control") { viewer.releaseControl() }
                     } else if viewer.hand?.controllable == true {

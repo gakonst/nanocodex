@@ -48,6 +48,7 @@ public final class RemotePeer: NSObject {
     public var onSignal: (RemoteSignal) -> Void = { _ in }
     public var onState: (RTCPeerConnectionState) -> Void = { _ in }
     public var onVideoTrack: (RTCVideoTrack) -> Void = { _ in }
+    public var onAudioAvailability: (Bool) -> Void = { _ in }
     public var onData: (Data, Bool) -> Void = { _, _ in }
     public var onChannelsReady: () -> Void = {}
     public private(set) var microphoneEnabled = false
@@ -306,6 +307,7 @@ public final class RemotePeer: NSObject {
         microphoneTransceiver = nil
         for track in remoteAudioTracks { track.isEnabled = false }
         remoteAudioTracks.removeAll()
+        onAudioAvailability(false)
         localVideoTrack?.isEnabled = false
         reliable?.delegate = nil; motion?.delegate = nil
         reliable?.close(); motion?.close(); reliable = nil; motion = nil
@@ -346,6 +348,7 @@ extension RemotePeer: RTCPeerConnectionDelegate, RTCDataChannelDelegate {
                 guard let self, !closed else { track.isEnabled = false; return }
                 track.isEnabled = speakersEnabled
                 remoteAudioTracks.append(track)
+                onAudioAvailability(true)
             }
         }
     }

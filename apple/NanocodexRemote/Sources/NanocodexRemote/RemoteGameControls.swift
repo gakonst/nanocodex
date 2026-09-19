@@ -487,6 +487,7 @@ private struct RemoteGameGlass<S: Shape>: ViewModifier {
             .accessibilityLabel(viewer.speakersEnabled ? "Mute speakers" : "Enable speakers")
             .accessibilityValue(viewer.speakersEnabled ? "On" : "Off")
             .accessibilityIdentifier("remote-speakers")
+            .disabled(!viewer.connected || !viewer.supportsSpeakers)
         }
         .buttonStyle(.plain)
     }
