@@ -446,7 +446,9 @@ impl AgentArgs {
             tools = tools.provider(browser.tool());
         }
         if configured_vm.is_none()
-            && let Some(config) = nanocodex_computer::ComputerConfig::discover()
+            && let Some(config) = nanocodex_computer::ComputerConfig::discover_or_install()
+                .await
+                .map_err(|error| eyre!(error))?
         {
             let computer = nanocodex_computer::ComputerTools::connect(config)
                 .await

@@ -147,6 +147,18 @@ Stop-HandService
 Protect-Directory $InstallDir "S-1-5-32-544" -PublicRead
 & $binary --version | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "nanocodex2.exe could not start" }
+# Install the official per-user OpenAI runtime before starting this user's Hand.
+# Explicit custom providers and disabled CUA retain their existing behavior.
+if ([string]::IsNullOrEmpty($env:NANOCODEX_COMPUTER)) {
+    & $binary computer setup --help *> $null
+    if ($LASTEXITCODE -eq 0) {
+        & $binary computer setup --refresh
+        if ($LASTEXITCODE -ne 0) { throw "OpenAI CUA setup failed; retry nanocodex2 computer setup before starting the Hand." }
+    } else {
+        Write-Warning "This older Nanocodex release does not support automatic upstream CUA setup."
+    }
+}
+
 $platform = & (Join-Path $InstallDir "nanocodex-computer.exe") call sky.setup
 if ($LASTEXITCODE -ne 0 -or ($platform | ConvertFrom-Json).target -ne "windows") { throw "Invalid Windows computer runtime" }
 New-Item -ItemType Directory -Force -Path $Workspace, $dataDir, $serviceLogDir | Out-Null

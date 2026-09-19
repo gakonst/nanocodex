@@ -6,6 +6,8 @@
     reason = "preserve the reviewed Tact component ownership while adapting its engine boundary"
 )]
 
+#[path = "../computer.rs"]
+mod computer;
 #[allow(dead_code)]
 mod config;
 mod control;
@@ -90,6 +92,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Install or refresh the upstream computer-use runtime.
+    Computer(computer::Computer),
     /// Sign in with an SMS code, or import an account API key from stdin.
     Login(nanocodex_cli_auth::Login),
     /// Verify the selected account credential without displaying secrets.
@@ -532,6 +536,9 @@ fn try_main() -> Result<(), ManagedError> {
 
 async fn run(cli: Cli) -> Result<(), ManagedError> {
     let command = match cli.command {
+        Some(Command::Computer(command)) => {
+            return command.run().await.map_err(ManagedError::Configuration);
+        }
         Some(Command::Login(command)) => return command.run().await.map_err(auth_error),
         Some(Command::Status(command)) => {
             return nanocodex_cli_auth::AccountCommand::Status(command)
@@ -608,6 +615,7 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         Some(Command::Attach(command)) => {
             attach_tui(&client, command.agent.map(|agent| agent.agent_id)).await
         }
+        Some(Command::Computer(_)) => unreachable!("handled before managed client setup"),
         Some(Command::DeviceHand(_)) => unreachable!("handled before managed client setup"),
         Some(Command::Hand(_)) => unreachable!("handled before managed client setup"),
         Some(Command::HandScreen(command)) => screen_native::serve(&client, command).await,
@@ -1000,7 +1008,10 @@ async fn open_workspace_agent_with_settings(
     let mut tools = Tools::builder()
         .without_defaults()
         .add(WorkspaceTools::new(&workspace));
-    if let Some(config) = nanocodex_computer::ComputerConfig::discover() {
+    if let Some(config) = nanocodex_computer::ComputerConfig::discover_or_install()
+        .await
+        .map_err(ManagedError::Configuration)?
+    {
         let computer = nanocodex_computer::ComputerTools::connect(config)
             .await
             .map_err(|error| ManagedError::Configuration(error.to_string()))?;

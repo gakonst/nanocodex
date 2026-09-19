@@ -1,81 +1,78 @@
-# Use an unmodified installed CUA provider
+# Installed upstream CUA runtime
 
-Nanocodex's native and JavaScript attachments can connect to an external CUA MCP
-command. They discover the provider's own tools, descriptions, schemas, metadata,
-and output schemas. Tools hidden by `_meta.ui.visibility` stay out of the model's
-catalog. No bundled-companion arguments are added to an external command.
-
-This mode delegates CUA to the provider's runtime and Sky implementation. Nanocodex
-Code Mode continues to use QuickJS. A provider can use its own Node runtime
-without changing the Code Mode engine.
-
-## Prepare a local copy
+Native Nanocodex, Nanocodex2, local Hands, and the JavaScript desktop runtime
+provision OpenAI's CUA provider automatically on macOS and Windows. They expose
+its actual MCP catalog, including descriptions, schemas, metadata, and visibility.
+Production Code Mode remains QuickJS; the provider uses its own bundled Node.
 
 ```sh
-python3 scripts/install-upstream-cua.py \
-  --source-app /Applications/ChatGPT.app \
-  --destination "$HOME/Nanocodex/upstream-cua"
+nanocodex2 computer setup           # provision once or verify/reuse the cache
+nanocodex2 computer setup --refresh # check/download the current upstream release
+# Both commands are also available as nanocodex computer setup.
 ```
 
-The installer copies the app's `cua_node` tree without editing it, verifies all
-file hashes and symlink targets, verifies the signed Sky app on macOS, and writes
-a launcher plus a copy manifest. Existing copies with different bytes are
-rejected. Binaries remain local; they are not vendored or redistributed by this
-repository. The launcher explicitly configures module and trusted-code paths to
-that copied package tree. It does not change OS grants or approval behavior.
+The native installers refresh the upstream runtime. Direct binary/source installs
+provision it on first CUA use. Older published CLIs that lack this command keep
+working with the installer, but require an updated Nanocodex release before this
+behavior becomes available. Installation does not launch the ChatGPT GUI or sign
+in to a ChatGPT account. OS permissions and provider access policies still apply.
 
-Legacy Sky-only bundles are rejected. Use the current unified ChatGPT desktop
-app, which also contains Codex. The copy manifest records the runtime manifest
-and CUA, CUA REPL, and Sky package versions. Keep these packages together; do not
-spoof a newer native protocol version or mix a client with an older Sky service.
+## Distribution
 
-Use the launcher explicitly:
+On macOS, setup uses the official architecture-specific desktop DMG URLs from
+[upstream's installer](https://github.com/openai/codex/blob/36430b36881cf5c289cb48e671cfc9e8b542ae7b/codex-rs/cli/src/desktop_app/mac.rs).
+First use can reuse a compatible installed ChatGPT/Codex app. Explicit refresh
+always downloads the current official release. The complete app is copied into
+Nanocodex's cache and verified before and after copying against Apple's signature
+chain, OpenAI team `2DC432GLL2`, and bundle identity `com.openai.codex`. This retains
+the signed Codex host, Node, node_repl, CUA packages, and Sky service together.
+The user's existing app is never replaced.
 
-```sh
-NANOCODEX_COMPUTER="$HOME/Nanocodex/upstream-cua/cua-provider" \
-NANOCODEX_COMPUTER_TRANSPORT=mcp nanocodex2
-```
+On Windows, setup obtains Store product `9PLM9XGG6VKS` through winget, as identified
+by [upstream's Windows installer](https://github.com/openai/codex/blob/36430b36881cf5c289cb48e671cfc9e8b542ae7b/codex-rs/cli/src/desktop_app/windows.rs).
+This installs the official ChatGPT/Codex desktop package for the current Windows
+user and accepts the standard Store/package installation agreements. Setup checks
+its Store signature, package family, and health. Store-owned executables cannot
+be launched directly by an unpackaged Hand, so setup copies the complete CUA tree,
+native host executables, and notices into a private cache. Every copied file is
+compared with its Store source using SHA-256. The matching bundled Node handles
+long Windows paths; no extra Node or Python installation is needed. Windows
+requires Microsoft App Installer/winget and Store access for initial download.
 
-Or attach it from JavaScript:
+Linux and Linux VM/container guests retain the existing Linux computer backend.
+This implementation has no verified official Linux Sky distribution; it does not
+try to run a macOS or Windows binary there. `computer setup` reports unsupported
+on other platforms.
 
-```js
-const computer = await connectComputerTools({
-  executable: "/absolute/path/upstream-cua/cua-provider",
-  transport: "mcp",
-});
-```
+## Selection and updates
 
-Use the discovered declarations rather than assuming the provider has a fixed
-pair of tools. In the inspected newer provider, `js`, `js_add_node_module_dir`,
-and `js_reset` are model-visible; `turn_ended` is a hidden host lifecycle hook.
+The cache lives under `${NANOCODEX_DIR:-$HOME/.nanocodex}/runtimes/openai-cua`
+(`USERPROFILE` is the Windows fallback). Version directories are immutable after
+installation. Only a complete verified runtime is selected; a failed download or
+copy preserves the previous selection. Old versions remain available to running
+processes. Cached corruption produces an actionable error rather than silently
+selecting a different backend. Run setup with `--refresh` to repair it.
 
-## Host approval integration
+The native and JS desktop hosts select the managed MCP provider automatically.
+An explicit `NANOCODEX_COMPUTER` still wins; `off`, `none`, or `0` disables CUA and
+its automatic download. Custom external MCP commands continue to use
+`NANOCODEX_COMPUTER_TRANSPORT=mcp`. No versions are spoofed and no provider binaries
+are committed to this repository or redistributed in Nanocodex release assets.
 
-The Rust and JavaScript libraries accept an embedding-owned form callback for
-`elicitation/create` and `openai/elicitation/create`. Only a configured callback
-advertises `elicitation.form`. It receives the original provider parameters and
-metadata; the host must obtain the user's choice and dismiss its UI on cancellation.
-The adapter never synthesizes acceptance or persistence. Without a callback,
-server approval requests receive an MCP error.
+The older `scripts/install-upstream-cua.py` remains an explicit development-only
+copy helper. Normal installations use the shared native provisioning command.
 
-The desktop app and remote Hand do not yet wire this callback to approval UI.
-Discovery and noninteractive provider operations can work, but operations requiring
-forms remain unavailable there. OS permissions and provider app policies still
-apply. See the [JavaScript adapter](../../js/nanocodex-computer/README.md) and
-[Rust adapter](../../crates/experimental/nanocodex-computer/README.md) for the callback API.
+## Approval integration and validation
 
-## Validation
+The adapters preserve upstream `elicitation/create` and
+`openai/elicitation/create` forms. Desktop and remote-Hand form approval UI is
+still separate work: installing a provider does not grant consent, and operations
+requiring an unwired form remain unavailable. See the native and JavaScript
+adapter READMEs for the embedding callback API.
 
-The adapter tests use synthetic stdio providers to check arbitrary catalogs,
-visibility, exact schemas, argument forwarding, and form cancellation. The bundled
-companion tests continue to use this checkout's existing catalog. Optional installed
-provider discovery uses only `initialize` and `tools/list`:
-
-```sh
-NANOCODEX_TEST_EXTERNAL_COMPUTER=/absolute/path/upstream-cua/cua-provider \
-  cargo test --locked -p nanocodex-computer \
-  installed_external_provider_discovery -- --ignored
-```
-
-This inventory check does not validate screenshots, input, host approval UI, or
-deployment. Provider binaries and their local copy manifest are not tracked.
+Validation covers installer invocation/opt-outs, exact command and environment
+forwarding, failed refresh recovery, corrupt cache detection, and desktop first
+start. A real macOS download and the Windows Store installation were exercised,
+and both installed providers returned `js`, `js_add_node_module_dir`, `js_reset`,
+and hidden `turn_ended` through MCP. Catalog discovery is not a claim of completed
+approval UI or a full screen/input acceptance test.

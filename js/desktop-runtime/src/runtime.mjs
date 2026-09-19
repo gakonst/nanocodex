@@ -10,7 +10,7 @@ import { Agent } from "nanocodex/managed";
 import { createTools } from "nanocodex/tools";
 import * as Workspace from "nanocodex/node/workspace";
 import { createNodeProcessTools } from "nanocodex-tools/node";
-import { connectComputerTools, discoverComputer } from "nanocodex-computer";
+import { connectComputerTools, ensureComputer } from "nanocodex-computer";
 import WebSocket from "ws";
 import { mergeAccountHands, restoredAccountHands } from "./account-hands.mjs";
 import { createVmTools, supportsLocalVms } from "./vm-tools.mjs";
@@ -781,6 +781,8 @@ export class DesktopRuntime extends EventEmitter {
     this.#log(hand, "This computer is connected. CLI and app share this Hand.");
   }
   async #startLocal(hand, resource) {
+    const computerExecutable = await ensureComputer({ binary: this.#state.defaults.deviceBinary || this.#state.defaults.binary });
+    resource.abort.signal.throwIfAborted();
     if (this.#state.defaults.deviceBinary && this.#isDefaultHand(hand.id)) return this.#startDevice(hand, resource);
     const processes = await createNodeProcessTools({ workspace: hand.workspace, onActivity: event => {
       if (event.type === "started") { hand.calls++; hand.activeCalls++; }
@@ -792,7 +794,6 @@ export class DesktopRuntime extends EventEmitter {
     const workspace = await Workspace.open({ path: hand.workspace, root: hand.workspace });
     resource.abort.signal.throwIfAborted();
     const vmTools = this.#localVmTools(hand, resource);
-    const computerExecutable = await discoverComputer({ binary: this.#state.defaults.binary });
     const computer = computerExecutable ? await connectComputerTools({ executable: computerExecutable,
       ...(process.platform === "linux" && !hand.agentId ? { desktopRuntime: join(this.#nativeScreenDirectory(hand), "desktop") } : {}) }) : undefined;
     if (computer) resource.add(computer.close);

@@ -1,5 +1,7 @@
 import type { NamedTool } from "nanocodex-tools";
 export type * from "./api.d.mts";
+/** Installs a missing managed provider through the trusted native CLI on supported platforms. */
+export function ensureComputer(options?: { binary?: string }): Promise<string | undefined>;
 export function discoverComputer(options?: { binary?: string }): Promise<string | undefined>;
 export type ComputerToolDefinition = Readonly<{
   name: string;

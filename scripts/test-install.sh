@@ -22,8 +22,8 @@ mkdir -p "$mock_bin"
 cat > "$mock_bin/uname" <<'EOF'
 #!/bin/sh
 case "${1-}" in
-  -s) printf '%s\n' Linux ;;
-  -m) printf '%s\n' x86_64 ;;
+  -s) printf '%s\n' "${TEST_INSTALL_OS:-Linux}" ;;
+  -m) printf '%s\n' "${TEST_INSTALL_ARCH:-x86_64}" ;;
   *) exit 2 ;;
 esac
 EOF
@@ -253,3 +253,46 @@ run_rejected_case voice-traversal
 run_rejected_case voice-link
 
 echo "installer verifies, installs and repairs voice alongside raw and gzip binary bundles"
+
+# macOS invokes the installed native setup helper with the same custom root.
+# These checksummed release fixtures are shell stubs; no upstream download occurs.
+run_mac_cua_case() {
+  local mode="$1" case_root="$temporary_root/mac-cua-$1"
+  local fixture="$case_root/fixture" install_root="$case_root/install with spaces"
+  local output status=0 setting="" helper_exit=0 help_exit=0
+  mkdir -p "$fixture" "$case_root/home"
+  printf '%s\n' '#!/bin/sh' 'exit 0' > "$fixture/nanocodex-aarch64-apple-darwin"
+  cat > "$fixture/nanocodex2-aarch64-apple-darwin" <<'HELPER'
+#!/bin/sh
+if [ "${3-}" = --help ]; then exit "${CUA_HELP_EXIT:-0}"; fi
+printf '%s\n' "$NANOCODEX_DIR" "$@" > "$CUA_SETUP_RECORD"
+exit "$CUA_SETUP_EXIT"
+HELPER
+  : > "$fixture/SHA256SUMS"
+  for name in nanocodex-aarch64-apple-darwin nanocodex2-aarch64-apple-darwin; do
+    printf '%s  %s\n' "$(sha256_file "$fixture/$name")" "$name" >> "$fixture/SHA256SUMS"
+  done
+  case "$mode" in off) setting=off ;; explicit) setting=/custom/provider ;; failure) helper_exit=1 ;; old) help_exit=2 ;; esac
+  output="$(PATH="$mock_bin:$PATH" HOME="$case_root/home" SHELL=/bin/bash \
+    TEST_INSTALL_OS=Darwin TEST_INSTALL_ARCH=arm64 NANOCODEX_DIR="$install_root" \
+    NANOCODEX_COMPUTER="$setting" NANOCODEX_INSTALL_FIXTURE="$fixture" \
+    CUA_SETUP_RECORD="$case_root/setup" CUA_SETUP_EXIT="$helper_exit" CUA_HELP_EXIT="$help_exit" \
+    bash "$workspace_root/install" 2>&1)" || status=$?
+  [[ -x "$install_root/current/nanocodex2" ]]
+  if [[ "$mode" == off || "$mode" == explicit || "$mode" == old ]]; then
+    [[ "$status" == 0 && ! -e "$case_root/setup" ]]
+  else
+    [[ "$(cat "$case_root/setup")" == "$install_root"$'\ncomputer\nsetup\n--refresh' ]]
+    if [[ "$mode" == failure ]]; then
+      [[ "$status" != 0 ]]
+      grep -Fq 'CLIs installed, but upstream CUA setup failed' <<<"$output"
+    else
+      [[ "$status" == 0 ]]
+    fi
+  fi
+}
+run_mac_cua_case success
+run_mac_cua_case failure
+run_mac_cua_case off
+run_mac_cua_case explicit
+run_mac_cua_case old

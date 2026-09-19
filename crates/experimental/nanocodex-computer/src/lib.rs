@@ -6,6 +6,8 @@
 //! process. Model arguments cannot choose an executable, inherit credentials,
 //! or change trusted runtime configuration.
 
+pub mod provision;
+
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use nanocodex_oai_api::{
@@ -85,10 +87,25 @@ impl ComputerConfig {
         config
     }
 
+    /// Provision the platform's upstream runtime on first use, then discover it.
+    /// Explicit provider settings (including off) never trigger installation.
+    pub async fn discover_or_install() -> Result<Option<Self>, String> {
+        if std::env::var_os("NANOCODEX_COMPUTER").is_none_or(|value| value.is_empty())
+            && cfg!(any(target_os = "macos", target_os = "windows"))
+        {
+            return provision::provision_upstream(false)
+                .await
+                .and_then(|receipt| provision::config_from_receipt(&receipt))
+                .map(Some);
+        }
+        Ok(Self::discover())
+    }
+
     /// Discover the installed companion. An explicit setting never silently
     /// falls back to a different executable.
     pub fn discover() -> Option<Self> {
-        if let Some(path) = std::env::var_os("NANOCODEX_COMPUTER") {
+        if let Some(path) = std::env::var_os("NANOCODEX_COMPUTER").filter(|value| !value.is_empty())
+        {
             if path == "off" || path == "none" || path == "0" {
                 return None;
             }
@@ -99,6 +116,11 @@ impl ComputerConfig {
                     Self::new(path)
                 },
             );
+        }
+        if let Some(path) = provision::managed_provider_path()
+            && path.is_file()
+        {
+            return Some(Self::mcp(path));
         }
         let name = if cfg!(windows) {
             "nanocodex-computer.exe"
@@ -756,11 +778,14 @@ impl Process {
             line.clear();
             if let Some(method) = value.get("method") {
                 if method == "notifications/cancelled" {
-                    if let Some(request_id) = value.pointer("/params/requestId") {
-                        if let Some(task) = pending.remove(&request_id.to_string()) {
-                            task.abort();
-                            self.send(json!({"jsonrpc":"2.0","id":request_id,"result":{"action":"cancel"}})).await?;
-                        }
+                    if let Some(request_id) = value.pointer("/params/requestId")
+                        && let Some(task) = pending.remove(&request_id.to_string())
+                    {
+                        task.abort();
+                        self.send(
+                            json!({"jsonrpc":"2.0","id":request_id,"result":{"action":"cancel"}}),
+                        )
+                        .await?;
                     }
                 } else if let Some(request_id) = value.get("id") {
                     let params = value.get("params").cloned().unwrap_or(Value::Null);

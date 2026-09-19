@@ -273,6 +273,24 @@ if [[ -f "$version_dir/nanocodex-computer" ]]; then
   ln -sfn ../current/nanocodex-computer "$bin_dir/nanocodex-computer"
 fi
 
+# Both CLIs and local Hands use the same per-user upstream runtime. The native
+# helper verifies OpenAI's signature and atomically activates the complete app.
+if [[ "$platform" == apple-darwin ]]; then
+  case "${NANOCODEX_COMPUTER:-}" in
+    off|none|0) ;;
+    *)
+      if [[ -z "${NANOCODEX_COMPUTER:-}" ]]; then
+        if ! "$version_dir/nanocodex2" computer setup --help >/dev/null 2>&1; then
+          echo "nanocodex: this release predates automatic upstream CUA setup; update to a release with 'computer setup' support." >&2
+        elif ! NANOCODEX_DIR="$install_root" "$version_dir/nanocodex2" computer setup --refresh; then
+          echo "nanocodex: CLIs installed, but upstream CUA setup failed. Retry: nanocodex2 computer setup" >&2
+          exit 1
+        fi
+      fi
+      ;;
+  esac
+fi
+
 shell_quote() {
   local quoted
   quoted="${1//\'/\'\"\'\"\'}"

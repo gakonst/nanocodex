@@ -122,6 +122,13 @@ files and repairs missing or corrupt resources before activating that release.
 For upgrades performed by an older updater, the CLI repairs its matching runtime
 automatically on first voice use.
 
+On macOS and Windows, current native CLIs and Hands automatically provision
+OpenAI's signed CUA runtime and select its upstream MCP tools. The macOS installer
+fetches the official app bundle; Windows uses its official Microsoft Store package.
+Linux keeps the Linux computer backend. Use `nanocodex2 computer setup --refresh`
+to update or repair the runtime, or `NANOCODEX_COMPUTER=off` to disable it.
+See [runtime installation and platform limits](docs/computer/upstream-provider.md).
+
 The CLI is a production consumer and a useful way to try the agent, not a
 process protocol that applications must adopt. See
 [`bin/nanocodex`](bin/nanocodex), the [examples index](examples/README.md), and

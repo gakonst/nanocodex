@@ -95,3 +95,12 @@ The current desktop app does not yet supply this callback: its JSONL bridge has
 no form-response action or native form presentation route. It therefore does not
 advertise this capability. Adding an adapter callback alone does not enable
 interactive approval in an installed desktop app.
+
+## Managed installation
+
+`ensureComputer({ binary })` uses the installed `nanocodex2` or `nanocodex` helper
+to provision OpenAI CUA on macOS and Windows, then returns the executable.
+`discoverComputer` remains read-only. `connectComputerTools` recognizes the
+managed runtime and uses its exact MCP command and environment automatically.
+Explicit provider settings and `off` take precedence; Linux retains companion
+discovery. See [installation details](../../docs/computer/upstream-provider.md).

@@ -1,18 +1,78 @@
-import { spawn } from "node:child_process";
-import { access, readFile } from "node:fs/promises";
-import { constants } from "node:fs";
-import { delimiter, dirname, join } from "node:path";
+import { execFile, spawn } from "node:child_process";
+import { access, readFile, stat } from "node:fs/promises";
+import { constants, readFileSync } from "node:fs";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { namedTool } from "nanocodex-tools/named-tool";
 import { toolResult } from "nanocodex-tools/runtime/code-runtime";
 import { CUA_DESCRIPTION, CUA_PARAMETERS, CUA_RESET_DESCRIPTION, CUA_RESET_PARAMETERS, validateInput } from "./contract.mjs";
 
-/** Discover only the trusted installed companion; no app or browser is started. */
+const runSetup = promisify(execFile);
+const preparations = new Map();
+const supportsManagedComputer = () => ["darwin", "win32"].includes(process.platform);
+const managedRoot = () => join(process.env.NANOCODEX_DIR || join(process.env.HOME || process.env.USERPROFILE || homedir(), ".nanocodex"), "runtimes", "openai-cua");
+function windowsProvider() {
+  if (process.platform !== "win32") return undefined;
+  let source;
+  try { source = readFileSync(join(managedRoot(), "provider.json"), "utf8"); }
+  catch (error) { if (error.code === "ENOENT") return undefined; throw error; }
+  if (source.length > 65536) throw new Error("Invalid managed CUA receipt; run nanocodex2 computer setup");
+  const value = JSON.parse(source);
+  if (value.status !== "installed" || value.transport !== "mcp" || typeof value.executable !== "string"
+    || !Array.isArray(value.args) || !value.args.every(arg => typeof arg === "string")
+    || !value.environment || typeof value.environment !== "object" || !Object.values(value.environment).every(v => typeof v === "string")) {
+    throw new Error("Invalid managed CUA receipt; run nanocodex2 computer setup");
+  }
+  return value;
+}
+const managedComputer = () => process.platform === "win32" ? windowsProvider()?.executable : join(managedRoot(), "current", "cua-provider");
+function managedOptions(options) {
+  const managed = windowsProvider();
+  if (!managed || resolve(options.executable) !== resolve(managed.executable)) return options;
+  return { ...options, args: options.args ?? managed.args, environment: { ...managed.environment, ...options.environment } };
+}
+async function executableExists(path) {
+  try { if (!path) return false; await access(path, constants.X_OK); return (await stat(path)).isFile(); } catch { return false; }
+}
+
+/** Provision the managed provider only when missing, using a trusted native CLI. */
+export async function ensureComputer({ binary } = {}) {
+  if (process.env.NANOCODEX_COMPUTER || !supportsManagedComputer()) return discoverComputer({ binary });
+  const executable = managedComputer();
+  if (await executableExists(executable)) return executable;
+  const retry = "Run nanocodex2 computer setup to retry, or set NANOCODEX_COMPUTER to an explicit provider (off disables CUA).";
+  if (!binary) throw new Error(`OpenAI CUA setup requires the installed Nanocodex native helper. Reinstall Nanocodex. ${retry}`);
+  const identity = JSON.stringify([resolve(binary), resolve(managedRoot())]);
+  if (preparations.has(identity)) return preparations.get(identity);
+  const preparation = (async () => {
+    try {
+      // Setup needs the selected install root, not account/model credentials.
+      const env = Object.fromEntries(["PATH", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "TMPDIR", "TEMP", "SystemRoot", "NANOCODEX_DIR", "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY"]
+        .filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
+      const { stdout } = await runSetup(binary, ["computer", "setup"], { env, windowsHide: true, timeout: 600_000, maxBuffer: 1024 * 1024 });
+      const receipt = JSON.parse(stdout);
+      const installed = managedComputer();
+      if (receipt.status !== "installed" || receipt.transport !== "mcp" || typeof receipt.executable !== "string"
+        || !installed || resolve(receipt.executable) !== resolve(installed) || !await executableExists(installed)) {
+        throw new Error(receipt.status === "unsupported" ? "The native helper does not support OpenAI CUA on this platform." : "The native helper did not publish the managed OpenAI CUA executable.");
+      }
+      return installed;
+    } catch (error) {
+      throw new Error(`OpenAI CUA setup failed: ${String(error.message).slice(0, 200)} ${retry}`, { cause: error });
+    }
+  })();
+  preparations.set(identity, preparation);
+  try { return await preparation; } finally { preparations.delete(identity); }
+}
+
+/** Read-only discovery of trusted installed providers; no app or browser starts. */
 export async function discoverComputer({ binary } = {}) {
   const explicit = process.env.NANOCODEX_COMPUTER;
   if (["off", "none", "0"].includes(explicit)) return undefined;
   if (explicit) return explicit;
+  if (supportsManagedComputer() && await executableExists(managedComputer())) return managedComputer();
   const name = process.platform === "win32" ? "nanocodex-computer.exe" : "nanocodex-computer";
   const candidates = [
     ...(binary ? [join(dirname(binary), name)] : []),
@@ -31,13 +91,20 @@ export async function discoverComputer({ binary } = {}) {
 /** Discover the provider's actual MCP declarations before publishing tools. */
 export async function connectComputerTools(options) {
   if (!options?.executable) throw new TypeError("A trusted CUA executable is required");
-  options = { ...options, transport: options.transport ?? (process.env.NANOCODEX_COMPUTER_TRANSPORT === "mcp" ? "mcp" : undefined) };
+  options = managedOptions(options);
+  options = { ...options, transport: computerTransport(options.executable, options.transport) };
   const providerProcess = new ComputerProcess(options.executable, launchArguments(options), options.environment ?? {}, options.transport === "mcp", options);
   try {
     await providerProcess.initialize();
     const definitions = await providerProcess.discover();
     return createComputerTools({ ...options, definitions });
   } finally { providerProcess.close(); }
+}
+
+function computerTransport(executable, transport) {
+  if (transport !== undefined) return transport;
+  if (process.env.NANOCODEX_COMPUTER_TRANSPORT !== undefined) return process.env.NANOCODEX_COMPUTER_TRANSPORT === "mcp" ? "mcp" : undefined;
+  return supportsManagedComputer() && managedComputer() && resolve(executable) === resolve(managedComputer()) ? "mcp" : undefined;
 }
 
 function launchArguments({ args = [], transport }) {
@@ -50,9 +117,12 @@ function launchArguments({ args = [], transport }) {
 }
 
 /** A native attachment owns the executable/configuration, each conversation a JS scope. */
-export function createComputerTools({ executable, args = [], environment = {}, desktopRuntime, transport, definitions, elicitationHandler, elicitationTimeoutMs = 300_000 }) {
+export function createComputerTools(options) {
+  const { executable, args = [], environment = {}, desktopRuntime, definitions, elicitationHandler, elicitationTimeoutMs = 300_000 } = managedOptions(options);
+  let { transport } = options;
   validateElicitationOptions({ elicitationHandler, elicitationTimeoutMs });
   if (!executable) throw new TypeError("A trusted CUA executable is required");
+  transport = computerTransport(executable, transport);
   if (transport === "mcp" && definitions === undefined) throw new TypeError("External MCP providers require connectComputerTools discovery or a trusted catalog");
   const launchArgs = launchArguments({ args, transport });
   const catalog = validateCatalog(definitions ?? [
