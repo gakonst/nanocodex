@@ -1,0 +1,233 @@
+use anyhow::Context;
+use codex_git_utils::GitBaselineDiff;
+use codex_git_utils::diff_since_latest_init;
+use codex_git_utils::ensure_git_baseline_repository;
+use codex_git_utils::reset_git_repository;
+use codex_protocol::MemoryVersion;
+#[cfg(windows)]
+use std::os::windows::fs::FileTypeExt;
+use std::path::Path;
+
+/// Prepares the memory directory for git-baseline diffing.
+///
+/// This keeps an existing usable `.git/` baseline intact. It initializes a new git baseline when the
+/// metadata is missing or unusable, and removes any stale generated `phase2_workspace_diff.md` file
+/// so that the next diff does not include a previous prompt artifact.
+pub async fn prepare_memory_workspace(root: &Path) -> anyhow::Result<()> {
+    crate::ensure_layout(root)
+        .await
+        .with_context(|| format!("prepare memory workspace {}", root.display()))?;
+    remove_workspace_diff(root).await?;
+    ensure_git_baseline_repository(root).await?;
+    Ok(())
+}
+
+/// Returns the current workspace diff after removing any stale generated diff artifact.
+///
+/// The removed file is only `phase2_workspace_diff.md`; memory artifacts and `.git/` metadata are
+/// left intact.
+pub async fn memory_workspace_diff(root: &Path) -> anyhow::Result<GitBaselineDiff> {
+    remove_workspace_diff(root).await?;
+    diff_since_latest_init(root).await
+}
+
+/// Writes `phase2_workspace_diff.md` with a bounded git-style diff from the current baseline.
+pub async fn write_workspace_diff(root: &Path, diff: &GitBaselineDiff) -> anyhow::Result<()> {
+    let path = root.join(crate::workspace_diff::FILENAME);
+    tokio::fs::write(&path, render_workspace_diff_file(diff))
+        .await
+        .with_context(|| format!("write memory workspace diff file {}", path.display()))
+}
+
+/// Marks the current memory root as the new baseline.
+///
+/// The generated diff file is removed before resetting the baseline so deleted memory content is
+/// not retained in the prompt artifact or in unreachable git objects.
+pub async fn reset_memory_workspace_baseline(root: &Path) -> anyhow::Result<()> {
+    remove_workspace_diff(root).await?;
+    reset_git_repository(root).await
+}
+
+/// Sums regular-file contents without reading them, excluding git metadata and symbolic links.
+pub(crate) async fn memory_storage_bytes(root: &Path) -> std::io::Result<u64> {
+    let mut paths = vec![root.to_path_buf()];
+    let mut bytes = 0_u64;
+    while let Some(path) = paths.pop() {
+        let metadata = tokio::fs::symlink_metadata(&path).await?;
+        if metadata.is_file() {
+            bytes = bytes.saturating_add(metadata.len());
+        } else if metadata.is_dir() {
+            let mut entries = tokio::fs::read_dir(&path).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                if entry.file_name() != ".git" {
+                    paths.push(entry.path());
+                }
+            }
+        }
+    }
+    Ok(bytes)
+}
+
+/// Verifies that a completed consolidation run left the required memory artifacts in place.
+pub async fn validate_consolidation_artifacts(root: &Path) -> anyhow::Result<()> {
+    validate_consolidation_artifacts_for_version(root, MemoryVersion::V1).await
+}
+
+pub(crate) async fn validate_consolidation_artifacts_for_version(
+    root: &Path,
+    version: MemoryVersion,
+) -> anyhow::Result<()> {
+    let removed_symlinks = remove_memory_symlinks(root).await?;
+    anyhow::ensure!(
+        removed_symlinks == 0,
+        "removed {removed_symlinks} symbolic links from consolidated memory workspace"
+    );
+
+    if version == MemoryVersion::V1 {
+        let memory_path = root.join("MEMORY.md");
+        let memory_metadata = tokio::fs::metadata(&memory_path).await.with_context(|| {
+            format!(
+                "read consolidated memory artifact {}",
+                memory_path.display()
+            )
+        })?;
+        anyhow::ensure!(
+            memory_metadata.is_file(),
+            "consolidated memory artifact is not a file: {}",
+            memory_path.display()
+        );
+    }
+
+    let summary_path = root.join("memory_summary.md");
+    let summary = tokio::fs::read_to_string(&summary_path)
+        .await
+        .with_context(|| format!("read memory summary artifact {}", summary_path.display()))?;
+    anyhow::ensure!(
+        summary.lines().next() == Some("v1"),
+        "memory summary artifact does not start with v1: {}",
+        summary_path.display()
+    );
+
+    if version == MemoryVersion::V2 {
+        anyhow::ensure!(is_valid_v2_summary(&summary), "invalid v2 memory summary");
+    }
+    Ok(())
+}
+
+/// Checks the artifact shared by the writer and the read-only readiness endpoint.
+pub fn is_valid_v2_summary(summary: &str) -> bool {
+    summary.lines().next() == Some("v1")
+        && summary.len() < 10_000
+        && [
+            "## User Profile",
+            "## User preferences",
+            "## General Tips",
+            "## What's in Memory",
+        ]
+        .iter()
+        .all(|heading| summary.lines().any(|line| line.trim() == *heading))
+}
+
+pub(crate) async fn remove_memory_symlinks(root: &Path) -> std::io::Result<usize> {
+    let mut directories = vec![root.to_path_buf()];
+    let mut removed = 0;
+
+    while let Some(directory) = directories.pop() {
+        let mut entries = tokio::fs::read_dir(directory).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let file_type = entry.file_type().await?;
+            if file_type.is_symlink() {
+                #[cfg(windows)]
+                if file_type.is_symlink_dir() {
+                    tokio::fs::remove_dir(&path).await?;
+                } else {
+                    tokio::fs::remove_file(&path).await?;
+                }
+                #[cfg(not(windows))]
+                tokio::fs::remove_file(&path).await?;
+
+                tracing::warn!(
+                    "removed symbolic link from memory workspace: {}",
+                    path.display()
+                );
+                removed += 1;
+            } else if file_type.is_dir() {
+                directories.push(path);
+            }
+        }
+    }
+
+    Ok(removed)
+}
+
+/// Removes the generated `phase2_workspace_diff.md` prompt artifact.
+///
+/// This does not remove `.git/`, reset the baseline, or delete memory content. It is used before
+/// diffing and before baseline reset so the generated diff file itself is not treated as memory
+/// workspace input.
+pub(super) async fn remove_workspace_diff(root: &Path) -> anyhow::Result<()> {
+    let path = root.join(crate::workspace_diff::FILENAME);
+    match tokio::fs::remove_file(&path).await {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err)
+            .with_context(|| format!("remove memory workspace diff file {}", path.display())),
+    }
+}
+
+fn render_workspace_diff_file(diff: &GitBaselineDiff) -> String {
+    let mut rendered = String::from(
+        "# Memory Workspace Diff\n\n\
+         Generated by Codex before Phase 2 memory consolidation. Read this file first and do not edit it.\n\n\
+         ## Status\n",
+    );
+
+    if !diff.has_changes() {
+        rendered.push_str("- none\n");
+        return rendered;
+    }
+
+    for change in &diff.changes {
+        rendered.push_str(&format!("- {} {}\n", change.status.label(), change.path));
+    }
+    rendered.push_str("\n## Diff\n\n```diff\n");
+    append_bounded_diff(&mut rendered, &diff.unified_diff);
+    rendered.push_str("```\n");
+    rendered
+}
+
+fn append_bounded_diff(rendered: &mut String, diff: &str) {
+    if diff.len() <= crate::workspace_diff::MAX_BYTES {
+        rendered.push_str(diff);
+        if !diff.ends_with('\n') {
+            rendered.push('\n');
+        }
+        return;
+    }
+
+    let boundary = previous_char_boundary(diff, crate::workspace_diff::MAX_BYTES);
+    rendered.push_str(&diff[..boundary]);
+    if !rendered.ends_with('\n') {
+        rendered.push('\n');
+    }
+    rendered.push_str(&format!(
+        "\n[workspace diff truncated at {} bytes]\n",
+        crate::workspace_diff::MAX_BYTES
+    ));
+}
+
+fn previous_char_boundary(value: &str, max_bytes: usize) -> usize {
+    if max_bytes >= value.len() {
+        return value.len();
+    }
+    let mut index = max_bytes;
+    while !value.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+#[cfg(test)]
+#[path = "workspace_tests.rs"]
+mod tests;

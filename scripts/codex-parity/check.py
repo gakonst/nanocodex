@@ -160,13 +160,8 @@ for model in models:
     checked_models.append(slug)
     expected = model['model_messages']['instructions_template']
     prompt = 'astra.md' if slug == 'gpt-6-astra' else 'system.md'
-    if slug == 'gpt-6-astra':
-        expected = expected.replace('You are Codex, an agent based on GPT-6.', 'You are Nanocodex, an agent based on GPT-6 Astra.')
-        expected = expected.replace('As Codex,', 'As Nanocodex,')
-        # Historical local import removed trailing spaces, without changing text.
-        expected = '\n'.join(line.rstrip() for line in expected.split('\n'))
     assert (ROOT / 'crates/nanocodex-oai-api/prompts' / prompt).read_text() == expected, slug
-    print(f'{slug}: exact prompt (documented identity/whitespace substitutions only)')
+    print(f'{slug}: exact prompt bytes (no substitutions)')
 assert len(checked_models) == 4, 'missing expected model templates'
 for local, remote in [
     ('crates/nanocodex-tools/src/apply_patch/apply_patch.lark', 'core/assets/tools/apply_patch.lark'),

@@ -6085,6 +6085,7 @@ dependencies = [
  "http",
  "image",
  "opusic-c",
+ "pretty_assertions",
  "reqwest",
  "rustls",
  "rustls-native-certs",

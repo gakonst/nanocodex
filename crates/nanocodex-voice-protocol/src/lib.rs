@@ -1,5 +1,10 @@
 //! Shared, transport-neutral Codex Realtime adapter policy.
 
+mod canonical_prompts;
+pub use canonical_prompts::{
+    CHATGPT_REALTIME_BACKEND_PROMPT_TEMPLATE, REALTIME_END_INSTRUCTIONS,
+    REALTIME_START_INSTRUCTIONS,
+};
 mod browser;
 mod browser_delivery;
 mod managed;
@@ -12,9 +17,6 @@ pub use managed::{
 };
 
 pub use transcript::project_transcript;
-
-/// Exact Codex Realtime side-agent instructions before user-name substitution.
-pub const CHATGPT_REALTIME_BACKEND_PROMPT_TEMPLATE: &str = include_str!("backend_prompt.md");
 
 pub use browser::{
     BrowserRealtimeCallResult, BrowserVoiceEffects, BrowserVoiceProtocol, BrowserVoiceUpdate,
@@ -29,26 +31,6 @@ pub use browser::{
 pub fn chatgpt_realtime_instructions(user_first_name: &str) -> String {
     CHATGPT_REALTIME_BACKEND_PROMPT_TEMPLATE.replace("{{ user_first_name }}", user_first_name)
 }
-
-/// Canonical developer marker appended when a Realtime conversation begins.
-pub const REALTIME_START_INSTRUCTIONS: &str = concat!(
-    "<realtime_conversation>\n\n",
-    "Realtime conversation started.\n\n",
-    "You are operating as a backend executor behind an intermediary. The user does not talk to you directly. Any response you produce will be consumed by the intermediary and may be summarized before the user sees it.\n\n",
-    "When invoked, you receive the latest conversation transcript and any relevant mode or metadata. The intermediary may invoke you even when backend help is not actually needed. Use the transcript to decide whether you should do work. If backend help is unnecessary, avoid verbose responses that add user-visible latency.\n\n",
-    "When user text is routed from realtime, treat it as a transcript. It may be unpunctuated or contain recognition errors.\n\n",
-    "- Keep responses concise and action-oriented. Your updates should help the intermediary respond to the user.\n\n",
-    "</realtime_conversation>"
-);
-
-/// Canonical developer marker appended when a Realtime conversation ends.
-pub const REALTIME_END_INSTRUCTIONS: &str = concat!(
-    "<realtime_conversation>\n\n",
-    "Realtime conversation ended.\n\n",
-    "Subsequent user input will return to typed text rather than transcript-style text. Do not assume recognition errors or missing punctuation once realtime has ended. Resume normal chat behavior.\n\n",
-    "Reason: inactive\n\n",
-    "</realtime_conversation>"
-);
 
 const REALTIME_SESSION_ENDED_HANDOFF_INSTRUCTION: &str = "The user just ended their realtime session. Here is the remaining handoff/transcript tail. You probably do not have to do anything; acknowledge the handoff unless the transcript itself asks for something.";
 const MAX_REALTIME_DELEGATION_FIELD_BYTES: usize = 4 * 1024;

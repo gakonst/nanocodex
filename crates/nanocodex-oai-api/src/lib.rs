@@ -8,6 +8,11 @@ compile_error!(
     "nanocodex-oai-api supports native targets and hosted wasm*-unknown-unknown targets; WASI is not yet supported"
 );
 
+/// Exact pinned upstream prompt assets.
+pub mod prompt_assets;
+/// Canonical prompt rendering from explicit runtime facts.
+pub mod prompts;
+
 /// Authentication sources and managed credential snapshots.
 #[cfg(feature = "client")]
 pub mod auth;

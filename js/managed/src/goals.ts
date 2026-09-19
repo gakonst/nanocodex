@@ -1,4 +1,5 @@
 import { GOAL_CONTINUATION_TEMPLATE } from "./goal-continuation";
+import { renderCodexTemplate } from "./codex-prompts";
 /** Persisted, session-local goal state. User controls and model tools are deliberately separate. */
 export type GoalStatus = "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete";
 export interface ThreadGoal {
@@ -114,7 +115,7 @@ export function goalContinuation(goal: ThreadGoal | null): string | null {
   if (!goal || goal.status !== "active") return null;
   const escaped = goal.objective.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
   const values: Record<string, string> = { objective: escaped, tokens_used: String(goal.tokensUsed),
-    token_budget: goal.tokenBudget === undefined ? "unlimited" : String(goal.tokenBudget),
-    remaining_tokens: goal.tokenBudget === undefined ? "unlimited" : String(Math.max(0, goal.tokenBudget - goal.tokensUsed)) };
-  return GOAL_CONTINUATION_TEMPLATE.replace(/{{ (objective|tokens_used|token_budget|remaining_tokens) }}/g, (_, key: string) => values[key]!);
+    token_budget: goal.tokenBudget === undefined ? "none" : String(goal.tokenBudget),
+    remaining_tokens: goal.tokenBudget === undefined ? "unbounded" : String(Math.max(0, goal.tokenBudget - goal.tokensUsed)) };
+  return renderCodexTemplate(GOAL_CONTINUATION_TEMPLATE, values);
 }

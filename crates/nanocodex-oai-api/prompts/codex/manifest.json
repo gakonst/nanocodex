@@ -1,0 +1,1971 @@
+{
+  "upstream": "36430b36881cf5c289cb48e671cfc9e8b542ae7b",
+  "source_roots": [
+    "prompts",
+    "collaboration-mode-templates",
+    "core/templates",
+    "core/assets",
+    "core/src/context",
+    "memories/read/src",
+    "memories/write/src",
+    "memories/write/templates",
+    "ext/goal/src",
+    "ext/goal/templates",
+    "ext/memories/src",
+    "ext/memories/templates",
+    "utils/template/src",
+    "context-fragments/src"
+  ],
+  "extra_sources": [
+    "models-manager/models.json",
+    "models-manager/prompt.md",
+    "models-manager/src/model_info.rs",
+    "models-manager/src/collaboration_mode_presets.rs",
+    "core/src/agents_md.rs",
+    "core/src/plugins/render.rs",
+    "ext/skills/src/render.rs",
+    "tui/assets/prompt_for_init_command.md"
+  ],
+  "sources": [
+    {
+      "path": "collaboration-mode-templates/BUILD.bazel",
+      "sha256": "d1960bc2c67152f3eefe658715cd35a2ff482c877c8172502621bdc970f113a7",
+      "bytes": 294,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "collaboration-mode-templates/Cargo.toml",
+      "sha256": "52aa162c5ba6085b0eead685bd21a15043150789fcd08000465c95db0044fef4",
+      "bytes": 255,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "collaboration-mode-templates/src/lib.rs",
+      "sha256": "8b57053e5464da481290ad6d88c1fd074f6fef75ded32361dc69a37336bef82b",
+      "bytes": 128,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "collaboration-mode-templates/templates/default.md",
+      "sha256": "1042cc643eb0147ca1039b19287c7462ceb297502f7f310d9664ac323a12feca",
+      "bytes": 1288,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "collaboration-mode-templates/templates/plan.md",
+      "sha256": "d6d46c2d460a9d91ada2167605a8dfc56efde6b2ab61e101444c736c6fd6960a",
+      "bytes": 9184,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "context-fragments/src/additional_context.rs",
+      "sha256": "2a837d023deec9416dff460789555b015892d3dc714a0888e1d1135cb1a5e760",
+      "bytes": 2829,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "context-fragments/src/annotated_content.rs",
+      "sha256": "b4975586b4e3211e44103013012b21609a48ba3436c69c22dbded2878271455c",
+      "bytes": 3019,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "context-fragments/src/answered_question.rs",
+      "sha256": "944d5fb5c4fe13c00f40933e1451e19b4de6d620336826ba2ae7a491545066d6",
+      "bytes": 1889,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "context-fragments/src/answered_question_tests.rs",
+      "sha256": "8a9b0b6d7d2397dd25a18a52cfe0ae0f344857b82db5e50b4df1b390b2e8486a",
+      "bytes": 702,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "context-fragments/src/fragment.rs",
+      "sha256": "b48f8533c5f4eb7e8f102c2ab86a9e436e1daae0669f6cb214b06c32365c5dff",
+      "bytes": 4470,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "context-fragments/src/lib.rs",
+      "sha256": "af2281a84d62524be3804838783bd4fa35960db0bc31b8e47093d27a1f4dd145",
+      "bytes": 529,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "context-fragments/src/recap_prompt.rs",
+      "sha256": "977b23ef6a5a2bdb2f67e8052c60750ee148bf7c102f7f75a64bdab5a0661f38",
+      "bytes": 3537,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "context-fragments/src/recap_prompt_tests.rs",
+      "sha256": "8df6eb04f5155a4eb699b1e9bf04d204f32a0b89fd4a9f9f6ea0a8d3b24ad1c3",
+      "bytes": 951,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/assets/agent/agent_names.txt",
+      "sha256": "f6ae12de892a2543bd109cd4da292e98f41c58ce29f0756f5e1eb8ef477e75f9",
+      "bytes": 766,
+      "availability": "custom-subagent exception pending root resolution; evidence only"
+    },
+    {
+      "path": "core/assets/agent/builtins/awaiter.toml",
+      "sha256": "0e760708892f50ae3c6bcc0080e10276c8ac40e6f98bdd4924c3094ba5693f69",
+      "bytes": 1213,
+      "availability": "custom-subagent exception pending root resolution; evidence only"
+    },
+    {
+      "path": "core/assets/agent/builtins/explorer.toml",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "availability": "custom-subagent exception pending root resolution; evidence only"
+    },
+    {
+      "path": "core/assets/consequential_tool_message_templates.json",
+      "sha256": "778718e316f0ca0cb00f086f4b56d2e45b5c0ccec92de4aa6bdf0f02482bf781",
+      "bytes": 25723,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/assets/tools/apply_patch.lark",
+      "sha256": "d6367f4826ed608c424b0a308f3d6163527df63c22513d089b91863552f8bfeb",
+      "bytes": 578,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/gpt-5.1-codex-max_prompt.md",
+      "sha256": "1b3dd697043a7f613c691a3721a450251626685b3e97ac3ad3d35ea62758a31e",
+      "bytes": 7589,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/gpt-5.2-codex_prompt.md",
+      "sha256": "1b3dd697043a7f613c691a3721a450251626685b3e97ac3ad3d35ea62758a31e",
+      "bytes": 7589,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/gpt_5_1_prompt.md",
+      "sha256": "b59d4cf7a17350eee7fe00c897bf7da7454672788317f23f54d2fb3d57af7bca",
+      "bytes": 24204,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/gpt_5_2_prompt.md",
+      "sha256": "415333a461404a790c981fb00a7b9dc73b1906d3f87133dc8afe7ed77e92bd67",
+      "bytes": 21652,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/gpt_5_codex_prompt.md",
+      "sha256": "42842be69650ae563d212695e8d3f3591534908fd8ca33b63f742daf41f88b65",
+      "bytes": 6647,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/agents_md.rs",
+      "sha256": "97427a870741b904a3f3c143f5990eaaa65b5bfa99ddac1808b2980052b5fc78",
+      "bytes": 20104,
+      "availability": "custom-subagent exception pending root resolution; evidence only"
+    },
+    {
+      "path": "core/src/context/approved_command_prefix_saved.rs",
+      "sha256": "5723d9d246f0f04639148d10a654add82e083447aa94ad0494a341805f1503de",
+      "bytes": 1056,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/apps_instructions.rs",
+      "sha256": "da51d991ef362af53733d086367243be891455b2ba6c715ac9053554b8191bf2",
+      "bytes": 1476,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/available_plugins_instructions.rs",
+      "sha256": "2f14e50282ba06716ee70ec724476e1654af610c4e653ba165eef0b85f1e9f00",
+      "bytes": 2064,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/base_instructions.rs",
+      "sha256": "d3c394eb1fc677328c973e0558007aca01fc9c1f819d3eedd0a442775972dc6c",
+      "bytes": 729,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/compaction_summary.rs",
+      "sha256": "f41b7f9529c70cb414227dff5e376385daa8d3ff4e85d00bd8a64c37e8dc9ff0",
+      "bytes": 802,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/contextual_user_message.rs",
+      "sha256": "01abdb933113f6c127ab914e9657c58f1b85bd53b44788c9cff494b81e665a08",
+      "bytes": 3696,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/contextual_user_message_tests.rs",
+      "sha256": "7953d0a6b8b2b6aeb307f8e14d8a359fbf0c9c9b01e08ed0a18bc895b4bb80d5",
+      "bytes": 5354,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/current_time_reminder.rs",
+      "sha256": "e2fd7e8af1481fa4866a8c5f2c9b2dc0653aa08d0eeb4192c52e934d2803549b",
+      "bytes": 1706,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/developer_instructions.rs",
+      "sha256": "65924b2320a5c0109e969cdee598d69ced087fe32bca282af13c793ed31f4836",
+      "bytes": 856,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/environment_context.rs",
+      "sha256": "05262c1748ede429d89a30ec3c1487a641638a97208d3aa03fb9badd4ee7a439",
+      "bytes": 8461,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/environments_instructions.rs",
+      "sha256": "08324667e4e1ba0425aa6797d3466e11c937b6766be64a1cdde009a95dd0d693",
+      "bytes": 1380,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/guardian_approved_action.rs",
+      "sha256": "d01282bb757e94567c33dac5ceb8b987a3ebbad5fdbff25cf1efa2366b93a121",
+      "bytes": 1324,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/guardian_budget_omission.rs",
+      "sha256": "44bdbd92c19f46a2e822b2787b466a81edf043ec5658476c60b15945d086d7df",
+      "bytes": 1121,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/guardian_context_mode.rs",
+      "sha256": "2de78e78b67115a00deeb0fa7a61158a605cee484d22c4e59b7f77c4fdd4926f",
+      "bytes": 1477,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/guardian_followup_review_reminder.rs",
+      "sha256": "15cf4ccb3b47a371b6dc6aa61d68b12e3664f2addc82eae56a3c18048fc9c837",
+      "bytes": 1053,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/guardian_node_repl_policy.rs",
+      "sha256": "e8a37293a60e52ddd0d4fabeddf9baec6735f9a2f6a2105cc5a293548ef538a4",
+      "bytes": 965,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/guardian_policy.rs",
+      "sha256": "7a8bee0e3261789268f2e1b391c62e892c874c120d61c38e79cebeaf312f22ac",
+      "bytes": 927,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/guardian_review_evidence.rs",
+      "sha256": "4551db337495bc0b9e2561424534e7497f04bea77a241fff394f70a6823fd267",
+      "bytes": 11789,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/guardian_sender_messages.rs",
+      "sha256": "c49989aeb959128f51fcd7f49a3e10c4f6a4fbc3d82c2732f95e5a8344c7a2fc",
+      "bytes": 2175,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/guardian_tool_descriptions.rs",
+      "sha256": "55d40c461825146f054951394059cd5849b90ad55437e16668b416e203394696",
+      "bytes": 1847,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/hook_additional_context.rs",
+      "sha256": "be670648feaf8b07afde43270407a936f4d79e7cf05e5f1f4aa8e81afae307af",
+      "bytes": 785,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/image_resize_notice.rs",
+      "sha256": "ab8523d446825faa86c117fd31e9c0e41bc874d4d6268990adbcbb0274e7d458",
+      "bytes": 2196,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/inter_agent_completion_message.rs",
+      "sha256": "088fe92cda9882606abbdb9afa8d6d4eff8b111c0bc5ac7a6636c2f095060f39",
+      "bytes": 1162,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/inter_agent_message.rs",
+      "sha256": "fef917e7b91923c8db94cdbf40d436b6bcb5ac7bf4ccb1ea4ba3867934cc8631",
+      "bytes": 1620,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/internal_model_context.rs",
+      "sha256": "f5cf87835ffad3de6a8ece56aa218ecd8d3444b9878e79fed88f620bcf110a3d",
+      "bytes": 4158,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/legacy_apply_patch_exec_command_warning.rs",
+      "sha256": "6198c619ff05df5a9dc3fdd3ea78035b24124d2ab4f6d70bfbeacf9ba1869ba3",
+      "bytes": 1016,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/legacy_model_mismatch_warning.rs",
+      "sha256": "9eba5d2fdde56ae5169565485357b6269d18fe2fac4038bc85e6aa38c88df379",
+      "bytes": 938,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/legacy_unified_exec_process_limit_warning.rs",
+      "sha256": "9a42ce8c54031b7e5b9eed59bafd5cfacdf2a7d3b6be12b4cf4fae8b37ca8950",
+      "bytes": 963,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/memory.rs",
+      "sha256": "9504a239e287bd680c10c0721c042592d5f20ce6fa9202c650ac1c8ff3f6f9f4",
+      "bytes": 1363,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/mod.rs",
+      "sha256": "965e6e4f5a5a9972d2fc1ecdba1400ca12170b432c05728ccf9cb8233678931e",
+      "bytes": 6001,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/model_switch_instructions.rs",
+      "sha256": "99230e5d0e491c597211b00e61b019617cf55a30d2c8dbbe522c6ae1eaf1a205",
+      "bytes": 1153,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/multi_agent_mode_instructions.rs",
+      "sha256": "2501a76640febe760e3629a53e758702bec560228b7cc052579ee10cb45139a9",
+      "bytes": 1762,
+      "availability": "custom-subagent exception pending root resolution; evidence only"
+    },
+    {
+      "path": "core/src/context/multi_agent_usage_hint.rs",
+      "sha256": "ae8828c954b364f5132a657d3f4e112f00b403936375ae78305ab8e2bd229e7c",
+      "bytes": 947,
+      "availability": "custom-subagent exception pending root resolution; evidence only"
+    },
+    {
+      "path": "core/src/context/network_rule_saved.rs",
+      "sha256": "036bdec27923009eb5aaef2222612d884ce50bb0e41b40621bc913365c71c08f",
+      "bytes": 1303,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/node_repl_review_evidence.rs",
+      "sha256": "0a8795b0e97e405305f09943f5be0d57aeb9955430b96a4e588df080f71bfeff",
+      "bytes": 11191,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/node_repl_review_evidence_tests.rs",
+      "sha256": "59e924575bdfd6a14bbb1f743cb34d44ad935a5772c619644d8564d785080ac2",
+      "bytes": 8093,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/plugin_instructions.rs",
+      "sha256": "02628417f74b54c2606591cb2906d2a6517302a24f882697b25101f439c48bbb",
+      "bytes": 772,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/realtime_delegation.rs",
+      "sha256": "58a6b5cfb7c19aed99431f855e440f1cc22e776b7faa264a40e06eff789780c9",
+      "bytes": 3019,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/realtime_end_instructions.rs",
+      "sha256": "bae14d05e5191d3eed5417af14cb05e0264004be3c9f36c20d442edf1b3c3201",
+      "bytes": 1372,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/realtime_start_instructions.rs",
+      "sha256": "0d93f87bdb20f4a3335cb73536c2971c1c17ef90796831c0d86cb22f9e968d9c",
+      "bytes": 951,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/realtime_start_with_instructions.rs",
+      "sha256": "07a87bcb0739dc0a8e788f5a5feba4ccf331cb4d994ff28b3ff3f7f4d08bd70d",
+      "bytes": 1125,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/recommended_plugins_instructions.rs",
+      "sha256": "d7eff621e5383989524debf67909ba81a91d5e010f04841dc07151cc38a4c7fe",
+      "bytes": 1536,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/rollout_budget.rs",
+      "sha256": "24cb86cff5a16f07f4770015042d7f2bad6fb9adbde767e58ac863a39e13df31",
+      "bytes": 840,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/subagent_notification.rs",
+      "sha256": "e4824dfe4e6602039fcd27626993985714936b1a6855daa07c221b73a40380d0",
+      "bytes": 1193,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/token_budget_context.rs",
+      "sha256": "decc825306b6e5b74ffe9df288cf4630acdb6baee83b49aadf46cff646a268cf",
+      "bytes": 6333,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/turn_aborted.rs",
+      "sha256": "d9450f4e3e0f7e6ed81b38dd5cad8e91f21e9fdfc0297778843bec0eefa858c1",
+      "bytes": 1358,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/unsupported_media.rs",
+      "sha256": "e42a0a8c430a6086a299301240bde271d84065e2ed7cf3f7cb8fa6d33067aa47",
+      "bytes": 1052,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/user_instructions.rs",
+      "sha256": "fd331f381cd81c788c50b951fb7f5641581cdd5593ff1cc92dd47428b42ea7b9",
+      "bytes": 936,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/user_shell_command.rs",
+      "sha256": "da53ea5b48e3bfce73130e8fa531eb08592838c740e15ed4fbe078acb9dc15da",
+      "bytes": 1382,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/user_verification_notice.rs",
+      "sha256": "0be9cf2a9515f22d99523ba6ec1f72ae2dcdc7baa0a9ce310fae14ed01dde825",
+      "bytes": 799,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/agents_md.rs",
+      "sha256": "199174af43c3ead167add60bcfd51573694b0ab41712231f3a8e4d97c646abc3",
+      "bytes": 2901,
+      "availability": "custom-subagent exception pending root resolution; evidence only"
+    },
+    {
+      "path": "core/src/context/world_state/agents_md_tests.rs",
+      "sha256": "a2cb55941c9369475844f60a4aa2f235554ef1baa941f5a8e0387a06525a8a31",
+      "bytes": 1071,
+      "availability": "custom-subagent exception pending root resolution; evidence only"
+    },
+    {
+      "path": "core/src/context/world_state/apps_instructions.rs",
+      "sha256": "3afe9b0a28e2941413ef716177069bfc41cd8cf2ddab9ebec21b8750e1db8351",
+      "bytes": 1454,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/apps_instructions_tests.rs",
+      "sha256": "e7fa301c81b700631daa34e21fa8441181c0172a05dab299076b000ee1825e70",
+      "bytes": 1907,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/collaboration_mode.rs",
+      "sha256": "410a07d0f60acf4adf7bedc7e365daaf1e70a706e9c9c5630bc6374f49c72224",
+      "bytes": 6183,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/collaboration_mode_tests.rs",
+      "sha256": "cf00e60a41e6b02d2113894a07f559a73d8c7ef97dc4a5b4212620d04006b557",
+      "bytes": 7855,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/compact_permissions.rs",
+      "sha256": "0584abd961cbd3e7805b57caa0e5cf54f17597c67d7013d7eafb9c91a225ae2d",
+      "bytes": 1926,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/compact_permissions_tests.rs",
+      "sha256": "5d24ee9e5c0e852bacbe3b70fa8bca538220ddce901adab37440793bd1787d9d",
+      "bytes": 1987,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/context_window_guidance.rs",
+      "sha256": "448c236a3b0b28ae86f0573f6585d0c1264cfb3dad89ec89aa24b38a5dc83d02",
+      "bytes": 2459,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/context_window_guidance_tests.rs",
+      "sha256": "68ec497bd70acd55d981e455993ec667cf4d6634ce69d1ce81d8f45297f0a31a",
+      "bytes": 3672,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/environment.rs",
+      "sha256": "76af9f375d42c840ce554b6f215d1603d481c60f9a417c1a7008e149b4625fd6",
+      "bytes": 19826,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/environment_render_tests.rs",
+      "sha256": "02fdee72eb10efc7c52751de2cdad1c6d842bc9618d37c242dcc84a1468c143e",
+      "bytes": 13835,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/environment_tests.rs",
+      "sha256": "4b41ac04265175cd91e15bb0bd49e21b85926882b47864173de25108428b91c1",
+      "bytes": 13799,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/environments_instructions.rs",
+      "sha256": "fa3fd03a189ee01d6d17e0d9e5b3367b7a95d0e4c46f23386a31fbc0cf2e83bc",
+      "bytes": 1519,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/environments_instructions_tests.rs",
+      "sha256": "f7aa33dd411322831c7d602ac3d61f60f337c1777586c970f7968d294d0aaa2c",
+      "bytes": 1863,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/managed_developer_instructions.rs",
+      "sha256": "7350efd0aaf4f42863e3bdd308038fa3e883fb87b8d8b018c63e1f4a7c3aa40d",
+      "bytes": 5417,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/managed_developer_instructions_tests.rs",
+      "sha256": "24d607061968a5fc952324ace2b7f074378ce6bcf9fe92786128588b8fcac8a8",
+      "bytes": 3472,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/mod.rs",
+      "sha256": "4653787b72fc2ca54aeec0f39cdb14ff5fc8118a90532efdce8898eb908d1503",
+      "bytes": 18962,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/model.rs",
+      "sha256": "a187af3bcf0a324e2f3fe9789b3921fbcbbd405e6237e179b42035c9b41a5ee6",
+      "bytes": 1958,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/model_tests.rs",
+      "sha256": "9e66da70d94a438e6ff55a19b61f16456a8fce7cae2e6aea06fb44356396f192",
+      "bytes": 1041,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/multi_agent_mode.rs",
+      "sha256": "29dd46c11cb6e51643c962425711ff359c0c327082ccda6bdc37cfd60ce13055",
+      "bytes": 3195,
+      "availability": "custom-subagent exception pending root resolution; evidence only"
+    },
+    {
+      "path": "core/src/context/world_state/multi_agent_mode_tests.rs",
+      "sha256": "e54bb16c35444011ba46119889ea0a52ad4922aac0825512c11a90b5156d0651",
+      "bytes": 5148,
+      "availability": "custom-subagent exception pending root resolution; evidence only"
+    },
+    {
+      "path": "core/src/context/world_state/multi_agent_usage_hint.rs",
+      "sha256": "a8c4a907ba256dbae87063ab0190b69556aa1436a522b5e6f844d4e1562ea607",
+      "bytes": 1720,
+      "availability": "custom-subagent exception pending root resolution; evidence only"
+    },
+    {
+      "path": "core/src/context/world_state/permissions.rs",
+      "sha256": "3890bce3e374d071ec0c83633207336b9b6dac524f74b1bb9265d47632b86ae4",
+      "bytes": 4524,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/permissions_tests.rs",
+      "sha256": "1fe05ff8f5d81265f02d861e7b3b4527ebe433738e5116a04f6e6c10da1b9337",
+      "bytes": 9649,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/persistent_mode.rs",
+      "sha256": "9c5bbab52c9341c5f86734c3cff2ef81581adb8af4ed8338dff9d85db635f7cf",
+      "bytes": 3940,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/persistent_mode_tests.rs",
+      "sha256": "da049e4638a4a49c118467855b6642df415682d2997e442d5137152f753292f2",
+      "bytes": 3084,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/plugins_instructions.rs",
+      "sha256": "3f0fdb21e9376d47ef33386db56124670442c939d3a0f672bb1681eedc5e757a",
+      "bytes": 1507,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/plugins_instructions_tests.rs",
+      "sha256": "c33b25b6821d8fc0bdd7388b12773d9d1f168585bfaecd24cbbb4236bbea0697",
+      "bytes": 1943,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/realtime.rs",
+      "sha256": "8202c36227b4a8e74edb225d2bfbda7a560e992abc86e1754bebf4b7b639f4d4",
+      "bytes": 3151,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/realtime_tests.rs",
+      "sha256": "a61649ba83fdf6d97cb8310d78a31c193c35118394f3bd6432af67ac16a5b072",
+      "bytes": 1554,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/snapshots/codex_core__context__world_state__agents_md__tests__snapshots.snap",
+      "sha256": "9531cd7f95244453e6eef6fa43382ae6217a207aca6b6203b60d8811bd64ec5f",
+      "bytes": 1388,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/snapshots/codex_core__context__world_state__apps_instructions__tests__snapshots.snap",
+      "sha256": "e625a11321b7e0147a9fec7ee182a06685f2572353305f7601d4860ee7e3c881",
+      "bytes": 1870,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/snapshots/codex_core__context__world_state__collaboration_mode__tests__snapshots.snap",
+      "sha256": "9503cd7bf49b24a031f187bcfffe6f21cd0a6dcc552e00180427978f8450712d",
+      "bytes": 1451,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/snapshots/codex_core__context__world_state__environment__tests__snapshots.snap",
+      "sha256": "c8965de248c366383deafc60e6799e4d36c2e371a98c4d8fa02acc855921eb99",
+      "bytes": 4377,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/snapshots/codex_core__context__world_state__environments_instructions__tests__snapshots.snap",
+      "sha256": "3263cc06e030da47d916999bfd39480fe381e7197768650df0fadc04d7929214",
+      "bytes": 1697,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/snapshots/codex_core__context__world_state__multi_agent_mode__tests__snapshots.snap",
+      "sha256": "eb4a89b0120e8643ec2e06e627e23d826a5e4a852876b619d297b466a6d83159",
+      "bytes": 2740,
+      "availability": "custom-subagent exception pending root resolution; evidence only"
+    },
+    {
+      "path": "core/src/context/world_state/snapshots/codex_core__context__world_state__permissions__tests__approved_prefix_is_rendered_without_reinjecting_permissions.snap",
+      "sha256": "4bf0e3c085e542dabee142bf1158e53be607f4617c760144f1bdbb322e75c8eb",
+      "bytes": 417,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/snapshots/codex_core__context__world_state__permissions__tests__snapshots.snap",
+      "sha256": "a9eda3db9120d352fc2e29dd4ec1fdf687e1b114726b8b16322b8f7181688d4b",
+      "bytes": 1613,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/snapshots/codex_core__context__world_state__plugins_instructions__tests__snapshots.snap",
+      "sha256": "9e7d1a89c0e9f339d28af5448a703e9015faeefc97de638272eee91b190740dd",
+      "bytes": 2609,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/snapshots/codex_core__context__world_state__realtime__tests__snapshots.snap",
+      "sha256": "ee2065fecd5379cfe6585afdb68364adf0afc337e8d9552330fdc6384bf8a086",
+      "bytes": 3757,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/test_support.rs",
+      "sha256": "c4d40381f646b5cbfba13cec342044c6f85ffb04e229c72942c72871522324ec",
+      "bytes": 3000,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/tools.rs",
+      "sha256": "4d2056ecb0956c06095b9ae817a28b29a2961d57a4c8a0d93579514902492bab",
+      "bytes": 6088,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/tools_tests.rs",
+      "sha256": "4ef59a4285d4bbd7b61bd8272ebd03084c84387fedb092362a5f1097d6eda013",
+      "bytes": 2854,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/context/world_state/world_state_tests.rs",
+      "sha256": "87afc1c8fddf7d23e5c40a033a6f536b6c1a5c3cc7978670d3c2b3668b6a530b",
+      "bytes": 9190,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/src/plugins/render.rs",
+      "sha256": "5b7d2766cbbf4f7c1bb5de2a63e5243605672f11536dcbe6a4154738a0b10d1d",
+      "bytes": 2981,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/templates/agents/orchestrator.md",
+      "sha256": "9268e8ae2b730dfc5cc16970ef303ec80e9859599fc8aa046883788de2a79502",
+      "bytes": 4972,
+      "availability": "custom-subagent exception pending root resolution; evidence only"
+    },
+    {
+      "path": "core/templates/collab/experimental_prompt.md",
+      "sha256": "6704ebc4ca8914c2ed0ff65706c1f8dd4f681a9ccec4ae7f9008a5f8e1d78cef",
+      "bytes": 1353,
+      "availability": "custom-subagent exception pending root resolution; evidence only"
+    },
+    {
+      "path": "core/templates/model_instructions/gpt-5.2-codex_instructions_template.md",
+      "sha256": "492a212d8a23be8b03c488177d8986f4db4ee54a34b2e8a60779e5e5c89a1b63",
+      "bytes": 7319,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/templates/personalities/gpt-5.2-codex_friendly.md",
+      "sha256": "c6d577a699d90df68a8f50ab30a956ac9250befd82fbc9000a824f44333a4394",
+      "bytes": 2068,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/templates/personalities/gpt-5.2-codex_pragmatic.md",
+      "sha256": "3c1e6e6507ac1a04d57f378e6535b78ea2793670f964cbce2cb6e0a7a3d6e7e0",
+      "bytes": 1851,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/templates/review/history_message_completed.md",
+      "sha256": "ba3815d1787697a682253f1c18d4618210732abb64263d633b903955ca838d53",
+      "bytes": 245,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/templates/review/history_message_interrupted.md",
+      "sha256": "034191c75f15338861ce0be2fcf28855833fc5f601b387cbc3c764032507dc86",
+      "bytes": 264,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/templates/search_tool/request_plugin_install_description.md",
+      "sha256": "e5acd502e83f3a6a9d20c53bcb521633a8df8c654ceb08da63db5aefb35e1f66",
+      "bytes": 2173,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "core/templates/search_tool/tool_description.md",
+      "sha256": "0e4029b9b5d23b400e76a0051b9df878f28153ae2de126a77b90b80b64cd3d6b",
+      "bytes": 554,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/goal/src/accounting.rs",
+      "sha256": "0718bca3566282c041199c8352e2185aecf5b1ffa630320461329afbc9ef8d3c",
+      "bytes": 23105,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/goal/src/analytics.rs",
+      "sha256": "e4671395469426f26f0b8629bcfacf53ad2a0e679c14e8ee8429b44d7ff22bce",
+      "bytes": 2430,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/goal/src/api.rs",
+      "sha256": "d70eaffbedf6299d0d89bdcd672ee12298e9554d9378275bf1fc624d08c16932",
+      "bytes": 13115,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/goal/src/events.rs",
+      "sha256": "f0fca7b052934aea92a3853f2cb63c63b1b03587f9943275ccbbf92d757c5d9e",
+      "bytes": 874,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/goal/src/extension.rs",
+      "sha256": "3533f2158e076ab8ba0ccb5eb8b102cb126e5cc08f1ab4357e399c2b757c0919",
+      "bytes": 22735,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/goal/src/lib.rs",
+      "sha256": "fa0a7632863b05c565318f88dd2ef985a08518c833c57e51e70bf4e976e6562f",
+      "bytes": 690,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/goal/src/metrics.rs",
+      "sha256": "c5792974f12e0ca22f385f10cc20ae06e3c99cd5fcfe8cb8963e55d9346ab441",
+      "bytes": 2931,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/goal/src/runtime.rs",
+      "sha256": "59a8c65a5b0d65bea5fab63d2eb3c4c17431d1c8eaf91891563e95657267f04c",
+      "bytes": 24248,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/goal/src/spec.rs",
+      "sha256": "db48400d291ecb642b0d1189c73eea81a412f4b13bc9f7d917dc0dbd3f7828ea",
+      "bytes": 4836,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/goal/src/steering.rs",
+      "sha256": "a12b72543511e3a2a5bbaac46afc5538bda6ef3a67009d9d3dddf201a8404049",
+      "bytes": 5004,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/goal/src/tool.rs",
+      "sha256": "37545f5780a66f79823b68cae86f2b6bc99879cf01725ce07e68f8dd37a4d5e0",
+      "bytes": 18763,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/goal/templates/goals/budget_limit.md",
+      "sha256": "ebac90ff1fc825baf3003875ea8a1e3de495f4a93bbf8fdd066b594595d358aa",
+      "bytes": 725,
+      "availability": "continuation consumed by managed JS; objective-update and budget-limit renderers exposed, dispatch not integrated"
+    },
+    {
+      "path": "ext/goal/templates/goals/continuation.md",
+      "sha256": "764b9c26b36013a21b687d74597e303be9bbf13776c359ec1fb185dbc0e7eac7",
+      "bytes": 6451,
+      "availability": "continuation consumed by managed JS; objective-update and budget-limit renderers exposed, dispatch not integrated"
+    },
+    {
+      "path": "ext/goal/templates/goals/objective_updated.md",
+      "sha256": "a9752da8f38e7a8f11f3cda0d8751894bd0c837cca61d697cdf46b55333b77d6",
+      "bytes": 692,
+      "availability": "continuation consumed by managed JS; objective-update and budget-limit renderers exposed, dispatch not integrated"
+    },
+    {
+      "path": "ext/memories/src/backend.rs",
+      "sha256": "34747c1758b650a9e8d0c65f2fa8ccd5712327f4c4e7896277a60586fce696b4",
+      "bytes": 5629,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/src/extension.rs",
+      "sha256": "d5f4e55a138a4479e9b6286bd08954a7438d2bfb516c5c8717626a2b38736873",
+      "bytes": 5925,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/src/lib.rs",
+      "sha256": "a6c7915326ad8420a70ec838d7cd40184967505734e2179923deb13b43c5b653",
+      "bytes": 784,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/src/local/ad_hoc_note.rs",
+      "sha256": "4bf2b4ebe79c7c1df3bc2381286b9d7800b41c9b8ee2d96d153609fc606de3c1",
+      "bytes": 4739,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/src/local/list.rs",
+      "sha256": "b6b8f241bd62941746aefa73362ef404d765342ed21d9704f9cfafc2395816dc",
+      "bytes": 2706,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/src/local/path.rs",
+      "sha256": "80831ef64919b66e1e8cfa5fd72899aa6843d744a051ad5f20bfa100d02f31b0",
+      "bytes": 2076,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/src/local/read.rs",
+      "sha256": "554d8e711497a64b00a09a1f1f1b80af97128eca540fb6bffae925fd1f2d1e58",
+      "bytes": 2827,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/src/local/search.rs",
+      "sha256": "e1c66711ad3ff5ac2ecc482f824a987ab86264bdb69ce859356a6330979b4f56",
+      "bytes": 11011,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/src/local.rs",
+      "sha256": "09cc1da1eec7ff20435d9fd706c31abb73f46f77caade9a5fa0b2f86393365b0",
+      "bytes": 3837,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/src/metrics.rs",
+      "sha256": "fd2b214266643ce6b8afe74055da2d81e610cad8df2d521f95b2e24999e9ec01",
+      "bytes": 1931,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/src/prompts.rs",
+      "sha256": "05fd1987748219a053074b9d3a6f79647875eda289f544e6047abafce7d470ab",
+      "bytes": 2275,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/src/prompts_tests.rs",
+      "sha256": "49dd40f0595aa9c743f89644b13f65f6cbfb52eabeaa8276278d5be5381125eb",
+      "bytes": 2446,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/src/schema.rs",
+      "sha256": "7ecc56831ea7780ff8d21806644aa785574e81716eb7194fc7a8d7dc55a414be",
+      "bytes": 1293,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/src/tests.rs",
+      "sha256": "a8d473cb31a04c43d412c3bdf7f96ffb23bc69010c8ae95f77d754f78b05c8f7",
+      "bytes": 20173,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/src/tools/ad_hoc_note.rs",
+      "sha256": "b1107010c398f20906d7de2238416a9ecdb6923f84a98ff90df17231e28fa877",
+      "bytes": 2887,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/src/tools/list.rs",
+      "sha256": "10c8dc974345c23a8edd068cceafd9681c032ad8f112d8d228903a5cc134cd93",
+      "bytes": 2858,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/src/tools/mod.rs",
+      "sha256": "673f71a4a09fe35d5660aace84e3cc0b0292f2ec6e4091c0dd440a6326973631",
+      "bytes": 3852,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/src/tools/read.rs",
+      "sha256": "eae78b7bf9a43e91bf0bd5bd1bbc4698d9bfdfca26c9c81bc06cd735ebd97fd6",
+      "bytes": 2800,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/src/tools/search.rs",
+      "sha256": "7bae232492141f4ba539c9b46a373b90825a9aaef193e56c84bf325a3c7d1fb6",
+      "bytes": 3590,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/templates/memories/read_path.md",
+      "sha256": "2bc7736029884b714860a6f0d6b2fd26598bba58f2213b787f01fe2a491f4326",
+      "bytes": 6593,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/memories/templates/memories/read_path_v2.md",
+      "sha256": "2f81fa2e89f341a1b7b3cf11ee7b855087c4ab84ddad920980475465ef28ff27",
+      "bytes": 2099,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "ext/skills/src/render.rs",
+      "sha256": "8651f35a98d5babfd94688bc5c3f90c94623ad25f737af54960f4cb80473995d",
+      "bytes": 39279,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/read/src/citations.rs",
+      "sha256": "96549a57473f683a6c9d383a69bc30816ba177307dd2b01f6270eddfafa07156",
+      "bytes": 2520,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/read/src/citations_tests.rs",
+      "sha256": "99bff775ed93feffb9a4d59e13b4329619bd6fe420ca29b5d72208d0a01f31a2",
+      "bytes": 2196,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/read/src/lib.rs",
+      "sha256": "08d65a132bcf11f439bf251620dedafcefbea713cf9e8569cfe4abcf6f23956a",
+      "bytes": 449,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/read/src/metrics.rs",
+      "sha256": "ba10b5a9e344ca973946f9e313f5d02d5b263210e574f339f85adc95abc443f3",
+      "bytes": 64,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/read/src/usage.rs",
+      "sha256": "5010d10a5c10688ed7715ba7d937ed4e249d9ea7dae90675330ca17ca38705b0",
+      "bytes": 2373,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/read/src/usage_tests.rs",
+      "sha256": "821d1aa43cbc1293c8f8f03ea8cc5f92d3f8f706bb6a0ef8bb9a66e8ea1e1284",
+      "bytes": 1692,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/control.rs",
+      "sha256": "17aecfe05403edc8084bd7a433bdec91c5ed21f43044c6b5d8a3ee873649912c",
+      "bytes": 3879,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/extensions/ad_hoc.rs",
+      "sha256": "25683f3f5ba2f26e59fc2cef494d6d9ecddc0880171d93daa3479d390dcd70f9",
+      "bytes": 920,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/extensions/ad_hoc_tests.rs",
+      "sha256": "f47b8d4df877cb893591ed7cb88ab1898e1667564f2948010c12f371a1f75958",
+      "bytes": 1097,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/extensions/mod.rs",
+      "sha256": "b467d33a6660f012e186ca74a8d1363f950f9d064ea9fa9fc7c855242802432a",
+      "bytes": 237,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/extensions/prune.rs",
+      "sha256": "41ec307dc697cc2bfd9eb2928bc2fe2a121210cba7aeda0cf1fe1ecb2affe1f1",
+      "bytes": 3394,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/extensions/prune_tests.rs",
+      "sha256": "6eff8f144f0995a3a1105047b97161c5f3f11fedd9652a9032a80cccd63e9a97",
+      "bytes": 2921,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/guard.rs",
+      "sha256": "bff35c87f3187d105a90dc279cd09dd7f4f976e8a4bb18c5283ea0a479df9d40",
+      "bytes": 2132,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/guard_tests.rs",
+      "sha256": "e594d0b868d4b10add7594908539d82d13b4e2534ddb63ebbbe130550da06c6c",
+      "bytes": 2242,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/lib.rs",
+      "sha256": "e4d3a9f5bfc15c626560451b126419c8b7acee2556d79e8216c19b98004c98f2",
+      "bytes": 5118,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/metrics.rs",
+      "sha256": "6755a09cc5dbeb9d389ad3caf11620e36ea3fc4bfe5cda5bfe85a0b6658c9894",
+      "bytes": 774,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/phase1.rs",
+      "sha256": "5fd4cc0522b0dbc641fab5f3105a6f4d1e6a8c60eb6e48e69781b70689adbba7",
+      "bytes": 27660,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/phase1_output.rs",
+      "sha256": "d9ee40a1367722dcdf6b4b743e2491fb9c921e68e86e54bde28b6fceb31cb7ee",
+      "bytes": 2723,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/phase2.rs",
+      "sha256": "4bc9e3f3b4fbb4dc81f5d482b29244774c69d4560fd64bf26d189b63ad3e4b33",
+      "bytes": 22402,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/phase2_sandbox_tests.rs",
+      "sha256": "4fe13674a41e0cf4a2cf26d9ac6294b45d3b779f8f3ccce2e14553b5ed9d14bc",
+      "bytes": 2294,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/phase2_workspace_roots_tests.rs",
+      "sha256": "1b9e2c5f2e1fa4768bc5ccc4edd1f944aca994663043a479dc8dc541825f9034",
+      "bytes": 1493,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/prompts.rs",
+      "sha256": "ae71fbd98fa0fe7bc0cf678ef908bfbdba915c21181c3a6cd3181a7efb98b9f1",
+      "bytes": 6454,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/prompts_tests.rs",
+      "sha256": "9b2c8dcbc3ab875aa779665dbf02a311b0d5874ae7c01164d45d8dc0eeb96219",
+      "bytes": 2538,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/rollout_input.rs",
+      "sha256": "f611749c4c924502110340adb0a7a97025ded073500c708958a5ca831e9f332e",
+      "bytes": 12227,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/rollout_input_tests.rs",
+      "sha256": "59622a00fb279c28c7686abb6e4b7995ddfe07448296e90a0c5e8c53a06b5487",
+      "bytes": 1652,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/runtime.rs",
+      "sha256": "aeb3f99caa6fe62cb4025b10979d02619c204240e76f23f8d6c7decb7caa5da0",
+      "bytes": 14985,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/start.rs",
+      "sha256": "5a95832c2e8e8e327377d62f94705bafd1102a2aa452552276ae2cfd24da9330",
+      "bytes": 3287,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/startup_dual_write_tests.rs",
+      "sha256": "ffa524ac43e655db4bf150b61e6067e04efdc2c10397bb6d6efcf7224e7d05fb",
+      "bytes": 4443,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/startup_tests.rs",
+      "sha256": "db0003197357e3ad6912b06bd3417aed5e96e0e8a94a97dc919e2fa60cf3a989",
+      "bytes": 53400,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/storage.rs",
+      "sha256": "8409711b3361dcb4dd9f3a80f2c4d76e7242452c09e5ec494c1c4865e536ac3f",
+      "bytes": 8223,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/storage_tests.rs",
+      "sha256": "59f6e0c8264b6662ef7f2a83cff86f02a06f2f86a2e46db360ef0740b488d6fb",
+      "bytes": 5289,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/workspace.rs",
+      "sha256": "78a61bcb6b5e40eaf3139aee205f2fa35c46b7f19154bdeb006cd3cbec436ceb",
+      "bytes": 8398,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/src/workspace_tests.rs",
+      "sha256": "ff99ea588f3683c5f953fa1c28b4bf838d3983fd18d08beca002f55bba89a919",
+      "bytes": 5461,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/templates/extensions/ad_hoc/instructions.md",
+      "sha256": "d36a36083d92f9d44efbd95e0e4b6e81d7d149e812f2bca2009b6dd4b8aa93e7",
+      "bytes": 733,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/templates/memories/consolidation.md",
+      "sha256": "1450e24f84c03375aa5114c6c0857f515395129dcc00f65263221d03866852a0",
+      "bytes": 51237,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/templates/memories/consolidation_v2.md",
+      "sha256": "7334fdb4aa5d958bcff54568a375d0b0145c19a611a1a22faa6bf251a46a5f0e",
+      "bytes": 3128,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/templates/memories/stage_one_input.md",
+      "sha256": "2e54c74909238022305c269c862910bb29509fda8b58ce671ef011f8d6453047",
+      "bytes": 401,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/templates/memories/stage_one_input_v2.md",
+      "sha256": "8fd4bb25fe6bd746b2d46ad841ac3a195d220c3da0cb9230615e2347c6ef853e",
+      "bytes": 939,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/templates/memories/stage_one_system.md",
+      "sha256": "cf795e8a2f5f52d333af2613bf1ff79178112f5fd2161cc181a8ddf52e59da33",
+      "bytes": 30449,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "memories/write/templates/memories/stage_one_system_v2.md",
+      "sha256": "334c0d51a2c63bd317dac074155fb3ecf0a56af8b00657736bab9c74222372b4",
+      "bytes": 3153,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "models-manager/models.json",
+      "sha256": "868826c1d240ef9fe9ffd6803677c5e48a3794c4ce133bcecced365a9fde815d",
+      "bytes": 294361,
+      "availability": "catalog: four supported model instructions consumed natively and through WASM; all catalog message fields retained"
+    },
+    {
+      "path": "models-manager/prompt.md",
+      "sha256": "ac8ae107a0d72fe3476b430afb161ea4e67da2e446d778aefc44828160559807",
+      "bytes": 20903,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "models-manager/src/collaboration_mode_presets.rs",
+      "sha256": "8c19c20ab5c306be375dbe124856b1731ba1e162321b182b63ffaa40166a922e",
+      "bytes": 1052,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "models-manager/src/model_info.rs",
+      "sha256": "56d146a62cba7bdd1d9d5ba0dfd9ecf2e130e4663288752382acc0ccce5bc1e2",
+      "bytes": 6061,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/BUILD.bazel",
+      "sha256": "58055d6114397220623b714fdeffb6cf1527a688c5e719c2d0dfdbb14bda27b0",
+      "bytes": 160,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/Cargo.toml",
+      "sha256": "922d79c1dcdfec2ab5c2698c01cc3c0f59a08d4e72f839765bef7d1aaa3b8fb5",
+      "bytes": 699,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/compact.rs",
+      "sha256": "e312a185459a54a6e44ca9021afe933219d5c19f7f8ec4f452dc8f8e16fe242d",
+      "bytes": 176,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/guardian_instructions.rs",
+      "sha256": "7087b0bf927268512edaaa9ef5c9355945111ce81fe4c51d2ae81d9fcbae16f5",
+      "bytes": 4313,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/guardian_instructions_tests.rs",
+      "sha256": "5d5f9d9879065ab9bbe19e753b9487c986b0c6e266fbbb6e52e0d3439660db58",
+      "bytes": 2999,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/lib.rs",
+      "sha256": "8f7a613282e6b3ce3c21c7b6a85605309c30b1e8c30661c8f125907f35aac74a",
+      "bytes": 1455,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/model_instructions.rs",
+      "sha256": "e53d3d2b7196b5520ebfa0d9a010b07c6e5925c1d0ef2619d4b1ad5498e2b78f",
+      "bytes": 798,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/model_instructions_tests.rs",
+      "sha256": "1e286b07cc0ecb88e6157f6056e5a7a47bc59c84c69010ea40c6c0e9f3cf3008",
+      "bytes": 3756,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/model_messages/collaboration.rs",
+      "sha256": "493a0dc3513dec813bb676a5fcf82675e84b5b418c5a1868cadaaafc2ae347c6",
+      "bytes": 868,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/model_messages/guardian.rs",
+      "sha256": "8ce0f229ff8f16118b6f4024806eddbbebf43088631a797e05fbe19aac93bbbc",
+      "bytes": 2872,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/model_messages/multi_agent.rs",
+      "sha256": "b49b00085753e0e733444774ccfea378fbd81d1372d7e4f1d1c71658c1ee3899",
+      "bytes": 4652,
+      "availability": "custom-subagent exception pending root resolution; evidence only"
+    },
+    {
+      "path": "prompts/src/model_messages/permissions.rs",
+      "sha256": "2929dbd13df5e9541801a9090370c39d11310957320c9a1c6949c55526db2d10",
+      "bytes": 3367,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/model_messages.rs",
+      "sha256": "b4482482f5723c76acd53b28455f494b401ca3a37ab9bcbb03d1514210d31032",
+      "bytes": 8204,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/multi_agent_instructions.rs",
+      "sha256": "d82cd8713ee61fedfd0d488782b4f253cc50ab88890890541c93d6224b3f3231",
+      "bytes": 4418,
+      "availability": "custom-subagent exception pending root resolution; evidence only"
+    },
+    {
+      "path": "prompts/src/multi_agent_instructions_tests.rs",
+      "sha256": "b64a4843b490ea8dc5f1fa0bb11dd8065c978e38a83eefaac60a2dee271fb225",
+      "bytes": 1660,
+      "availability": "custom-subagent exception pending root resolution; evidence only"
+    },
+    {
+      "path": "prompts/src/permissions_instructions.rs",
+      "sha256": "76333484859962611bb3d6962539e26b74756676df61fd43aada7829da0ec38f",
+      "bytes": 15702,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/permissions_instructions_tests.rs",
+      "sha256": "4afc27e951c9b55fa18e42310421d58022b282d041fad1148dc1928ba6731308",
+      "bytes": 24739,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/realtime.rs",
+      "sha256": "c8b6dfa108776798fdd7c430c3f4207d49e42b286c7caa8e38cd4cafa9099754",
+      "bytes": 274,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/review_exit.rs",
+      "sha256": "e72a525ead75c92dc5af58b036ebea6c9126593ed1ff5113cecbd5a2bcc9d815",
+      "bytes": 1291,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/review_exit_tests.rs",
+      "sha256": "6796ab65a75115bde39170389d0356a5925785953e673317e4d964636ff4af5c",
+      "bytes": 716,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/review_request.rs",
+      "sha256": "f4896d6746c3508aa08b72ce15ce143f9041015da9da37b044cdaf4f6f838fc0",
+      "bytes": 5678,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/review_request_tests.rs",
+      "sha256": "4a5699ca3809d357b572df6848af5d363a2b9fcede7fb4a1b49fea80a029cdb7",
+      "bytes": 2034,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/update_plan_instructions.rs",
+      "sha256": "9bd837cc7760dc670ba7454f251a2a039b3d5a5e2bc6e16b916c9d400393337b",
+      "bytes": 2204,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/src/update_plan_instructions_tests.rs",
+      "sha256": "453cfb77997c506f28cd69685ac26b51775915108ab57d462ea735a777aa9c05",
+      "bytes": 1764,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/templates/compact/prompt.md",
+      "sha256": "ab0c334d4faca17e3afbb9b16967c1b2fdcc7242a9a0880af57949fa236d6d07",
+      "bytes": 426,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/templates/compact/summary_prefix.md",
+      "sha256": "e9b088e794a6bb9082ac053fcc760bd818d7e720ee4bcdc72c6e480de7b7cb0e",
+      "bytes": 399,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/templates/guardian/classifier_instructions.md",
+      "sha256": "c19697c572daf359912f27961474b9804ddfccc978edc69cb3b13f1360961fcf",
+      "bytes": 10304,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/templates/guardian/node_repl_policy.md",
+      "sha256": "cbeac65723cf1476dce0680b5b27484640472ef413436074ca8d8cefbf94c787",
+      "bytes": 2813,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/templates/guardian/policy.md",
+      "sha256": "e6b0cf0a2e1c4cabc0a37ac2a0bc424ddd7c89e85d049e32d281a8db6e8d3ce6",
+      "bytes": 8281,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/templates/guardian/policy_template.md",
+      "sha256": "f47fbb2bdba5e7528bfae7f5e2844a7d45a3a922fa74b718f22b22917376cfcf",
+      "bytes": 9734,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/templates/permissions/approval_policy/never.md",
+      "sha256": "41c7931bac2391a24046362bd07615d5a3e73dca4672b911516fac99646be8c4",
+      "bytes": 120,
+      "availability": "bundled permissions rendered by native unrestricted execution; hosted grants must be supplied by host"
+    },
+    {
+      "path": "prompts/templates/permissions/approval_policy/on_request.md",
+      "sha256": "85541a9738741407642b3c39bbe3781fbf8bb42f628d50e562c87738ab192b3a",
+      "bytes": 3661,
+      "availability": "bundled permissions rendered by native unrestricted execution; hosted grants must be supplied by host"
+    },
+    {
+      "path": "prompts/templates/permissions/approval_policy/on_request_rule_request_permission.md",
+      "sha256": "98e8a78ac869d64fb094fb1a12e20e327e46a159bf74022c588b84326bf6afba",
+      "bytes": 1725,
+      "availability": "bundled permissions rendered by native unrestricted execution; hosted grants must be supplied by host"
+    },
+    {
+      "path": "prompts/templates/permissions/approval_policy/unless_trusted.md",
+      "sha256": "fadec1a060a758b805f227bc5715c7dd3d7d7e2015bd5020c386eca0f3293d10",
+      "bytes": 152,
+      "availability": "bundled permissions rendered by native unrestricted execution; hosted grants must be supplied by host"
+    },
+    {
+      "path": "prompts/templates/permissions/sandbox_mode/danger_full_access.md",
+      "sha256": "0d887cb1eaba21a6cade67ab958a6ffee00f671c46f8cf29c83706e397942dbf",
+      "bytes": 201,
+      "availability": "bundled permissions rendered by native unrestricted execution; hosted grants must be supplied by host"
+    },
+    {
+      "path": "prompts/templates/permissions/sandbox_mode/read_only.md",
+      "sha256": "509b39f88e6a4f5cb36485ea8b340680c03f27175ba20200b823ec07bc79668d",
+      "bytes": 177,
+      "availability": "bundled permissions rendered by native unrestricted execution; hosted grants must be supplied by host"
+    },
+    {
+      "path": "prompts/templates/permissions/sandbox_mode/workspace_write.md",
+      "sha256": "763661195d613a48173638af6227d480d70ab0a6898d3a81ff075155e82f7555",
+      "bytes": 281,
+      "availability": "bundled permissions rendered by native unrestricted execution; hosted grants must be supplied by host"
+    },
+    {
+      "path": "prompts/templates/persistent_mode.md",
+      "sha256": "03ff9da48abb85425514c42dad1b742312bc7e2d978d2941e9d2fd90560c2a27",
+      "bytes": 3376,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/templates/realtime/backend_prompt.md",
+      "sha256": "94c279f8b40900e5f2ace13db09bc096ccc99cc72ffb051a126f98df94c6997d",
+      "bytes": 4913,
+      "availability": "voice protocol native and WASM consumers"
+    },
+    {
+      "path": "prompts/templates/realtime/realtime_end.md",
+      "sha256": "95dbde1501871117f96d45f95cb501abbbc25464eab1ae5ed689e110e1849036",
+      "bytes": 223,
+      "availability": "voice protocol native and WASM consumers"
+    },
+    {
+      "path": "prompts/templates/realtime/realtime_start.md",
+      "sha256": "424ebda35f115edff812596b70d7bf56431e7917b7398ccb4abb270b67a50fc2",
+      "bytes": 796,
+      "availability": "voice protocol native and WASM consumers"
+    },
+    {
+      "path": "prompts/templates/review/exit_interrupted.xml",
+      "sha256": "034191c75f15338861ce0be2fcf28855833fc5f601b387cbc3c764032507dc86",
+      "bytes": 264,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/templates/review/exit_success.xml",
+      "sha256": "87ce1bcbc0f1aee3fcba4fedd35775eccf4a640352b071ead206d0b4ff286559",
+      "bytes": 247,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "prompts/templates/review/rubric.md",
+      "sha256": "ec60e7f36a1d1c2679ce095c0205ecc56f7dd8fb57707a13ef362072390f219f",
+      "bytes": 7685,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "tui/assets/prompt_for_init_command.md",
+      "sha256": "70dfe903081ca894fbec7d80b40da2b5560a6106422fdfd0db2907dc9f5aa525",
+      "bytes": 1836,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    },
+    {
+      "path": "utils/template/src/lib.rs",
+      "sha256": "f930640a38e4ed882274397f6f2ac2105c3aac7891269b7b1edf39393b5d80cf",
+      "bytes": 13066,
+      "availability": "source inventory; renderer/asset API available where applicable; no claim of mode dispatch support"
+    }
+  ],
+  "assets": [
+    {
+      "path": "catalog/codex-auto-review/approvals/never.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "catalog/codex-auto-review/auto_review/node_repl_policy.txt",
+      "sha256": "c7d95a841bc65105179ea90c81b13b17ff0c997fa85789768f2cf1988615ceee"
+    },
+    {
+      "path": "catalog/codex-auto-review/auto_review/policy.txt",
+      "sha256": "e6b0cf0a2e1c4cabc0a37ac2a0bc424ddd7c89e85d049e32d281a8db6e8d3ce6"
+    },
+    {
+      "path": "catalog/codex-auto-review/auto_review/policy_template.txt",
+      "sha256": "f47fbb2bdba5e7528bfae7f5e2844a7d45a3a922fa74b718f22b22917376cfcf"
+    },
+    {
+      "path": "catalog/codex-auto-review/instructions_template.txt",
+      "sha256": "ebd0d5854abd07dc38300a71e027204eb028e9fa443c59d18e36fcc24289e818"
+    },
+    {
+      "path": "catalog/codex-auto-review/permissions/danger_full_access.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "catalog/codex-auto-review/permissions/read_only.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "catalog/codex-auto-review/permissions/workspace_write.txt",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "catalog/gpt-5.4/instructions_template.txt",
+      "sha256": "f8c4032f78fdb19b46f468239c5dc757f745fbb10520e64e1e4afbf747e52fb8"
+    },
+    {
+      "path": "catalog/gpt-5.5/instructions_template.txt",
+      "sha256": "2351631dfc5644dc5a45eaaca4139475bd02810ee6cb792d058b551559b3242e"
+    },
+    {
+      "path": "catalog/gpt-5.6-luna/auto_review/node_repl_policy.txt",
+      "sha256": "c7d95a841bc65105179ea90c81b13b17ff0c997fa85789768f2cf1988615ceee"
+    },
+    {
+      "path": "catalog/gpt-5.6-luna/auto_review/policy.txt",
+      "sha256": "e6b0cf0a2e1c4cabc0a37ac2a0bc424ddd7c89e85d049e32d281a8db6e8d3ce6"
+    },
+    {
+      "path": "catalog/gpt-5.6-luna/auto_review/policy_template.txt",
+      "sha256": "f47fbb2bdba5e7528bfae7f5e2844a7d45a3a922fa74b718f22b22917376cfcf"
+    },
+    {
+      "path": "catalog/gpt-5.6-luna/instructions_template.txt",
+      "sha256": "cbefa6b0bede0e332d957fca70ccacf9f12f4c0ecdf81b819e5cbe1a3b16e265"
+    },
+    {
+      "path": "catalog/gpt-5.6-luna/token_budget/auto_compact_fallback_prompt.txt",
+      "sha256": "2c97b42df753cbd6075c2d562744b15197fdb909201b155ce39e33fe179a8a8f"
+    },
+    {
+      "path": "catalog/gpt-5.6-luna/token_budget/guidance_message.txt",
+      "sha256": "797a67f14b57bd8cd9c5eef9475e797440778b3de50d9b0388ca1c35a05c8e82"
+    },
+    {
+      "path": "catalog/gpt-5.6-luna/token_budget/reminder_message_template.txt",
+      "sha256": "840af84260ef8d951f5fc7e4cef7e3bb61b2b063621b117f0a2604aba9a60bf1"
+    },
+    {
+      "path": "catalog/gpt-5.6-sol/instructions_template.txt",
+      "sha256": "cbefa6b0bede0e332d957fca70ccacf9f12f4c0ecdf81b819e5cbe1a3b16e265"
+    },
+    {
+      "path": "catalog/gpt-5.6-sol/token_budget/auto_compact_fallback_prompt.txt",
+      "sha256": "2c97b42df753cbd6075c2d562744b15197fdb909201b155ce39e33fe179a8a8f"
+    },
+    {
+      "path": "catalog/gpt-5.6-sol/token_budget/guidance_message.txt",
+      "sha256": "797a67f14b57bd8cd9c5eef9475e797440778b3de50d9b0388ca1c35a05c8e82"
+    },
+    {
+      "path": "catalog/gpt-5.6-sol/token_budget/reminder_message_template.txt",
+      "sha256": "840af84260ef8d951f5fc7e4cef7e3bb61b2b063621b117f0a2604aba9a60bf1"
+    },
+    {
+      "path": "catalog/gpt-5.6-terra/instructions_template.txt",
+      "sha256": "cbefa6b0bede0e332d957fca70ccacf9f12f4c0ecdf81b819e5cbe1a3b16e265"
+    },
+    {
+      "path": "catalog/gpt-5.6-terra/token_budget/auto_compact_fallback_prompt.txt",
+      "sha256": "2c97b42df753cbd6075c2d562744b15197fdb909201b155ce39e33fe179a8a8f"
+    },
+    {
+      "path": "catalog/gpt-5.6-terra/token_budget/guidance_message.txt",
+      "sha256": "797a67f14b57bd8cd9c5eef9475e797440778b3de50d9b0388ca1c35a05c8e82"
+    },
+    {
+      "path": "catalog/gpt-5.6-terra/token_budget/reminder_message_template.txt",
+      "sha256": "840af84260ef8d951f5fc7e4cef7e3bb61b2b063621b117f0a2604aba9a60bf1"
+    },
+    {
+      "path": "catalog/gpt-6-astra/approvals/on_request_auto_review.txt",
+      "sha256": "65dddb8b4bb89a74889c0b62e8f6620fe88f11b210d63637088c9535935f30f8"
+    },
+    {
+      "path": "catalog/gpt-6-astra/auto_review/rejection_instructions.txt",
+      "sha256": "fc210b5bc0337ddba407c155ef00eea5ba8bda8dd264ce415ce100e1b2ac81e3"
+    },
+    {
+      "path": "catalog/gpt-6-astra/collaboration_modes/default.txt",
+      "sha256": "fd079337070c64126e331db6594867dade96840bb44cb0463f5f492d522eb113"
+    },
+    {
+      "path": "catalog/gpt-6-astra/confirmation_policies/browser_use.txt",
+      "sha256": "0784bf5d70a8a2270ebf10bed860cc49524f590d989219e63d64c6fcf771f20d"
+    },
+    {
+      "path": "catalog/gpt-6-astra/confirmation_policies/computer_use.txt",
+      "sha256": "0784bf5d70a8a2270ebf10bed860cc49524f590d989219e63d64c6fcf771f20d"
+    },
+    {
+      "path": "catalog/gpt-6-astra/guardian_v2/classifier_instructions.txt",
+      "sha256": "1edad6a16d9431dbe14bff1d0ce96196cc983a48d050ebaa35f415b1dc797338"
+    },
+    {
+      "path": "catalog/gpt-6-astra/instructions_template.txt",
+      "sha256": "152dfaeeb552876190962be1c12c93d426840ff12691f648261554a7675a6698"
+    },
+    {
+      "path": "catalog/gpt-6-astra/multi_agent/role/root.txt",
+      "sha256": "4c86e7411c24afc557c906f31a267c991568311715cc81ba0129604c70b83755"
+    },
+    {
+      "path": "catalog/gpt-6-astra/multi_agent/role/subagent.txt",
+      "sha256": "3651a6dee0715ee4990f23bfbc35a13c5da42e24f35a9eda2809614fd3b0a87b"
+    },
+    {
+      "path": "catalog/gpt-6-astra/persistent_instructions.txt",
+      "sha256": "30747e79e50efb64f91cfff3d5ef1882e347081e81448918d5f7d5358e98c523"
+    },
+    {
+      "path": "catalog/gpt-6-astra/token_budget/auto_compact_fallback_prompt.txt",
+      "sha256": "2c97b42df753cbd6075c2d562744b15197fdb909201b155ce39e33fe179a8a8f"
+    },
+    {
+      "path": "catalog/gpt-6-astra/token_budget/guidance_message.txt",
+      "sha256": "797a67f14b57bd8cd9c5eef9475e797440778b3de50d9b0388ca1c35a05c8e82"
+    },
+    {
+      "path": "catalog/gpt-6-astra/token_budget/reminder_message_template.txt",
+      "sha256": "840af84260ef8d951f5fc7e4cef7e3bb61b2b063621b117f0a2604aba9a60bf1"
+    },
+    {
+      "path": "catalog/gpt-daybreak-blue-latest/instructions_template.txt",
+      "sha256": "ebd0d5854abd07dc38300a71e027204eb028e9fa443c59d18e36fcc24289e818"
+    },
+    {
+      "path": "catalog/gpt-daybreak-blue-latest/token_budget/auto_compact_fallback_prompt.txt",
+      "sha256": "2c97b42df753cbd6075c2d562744b15197fdb909201b155ce39e33fe179a8a8f"
+    },
+    {
+      "path": "catalog/gpt-daybreak-blue-latest/token_budget/guidance_message.txt",
+      "sha256": "797a67f14b57bd8cd9c5eef9475e797440778b3de50d9b0388ca1c35a05c8e82"
+    },
+    {
+      "path": "catalog/gpt-daybreak-blue-latest/token_budget/reminder_message_template.txt",
+      "sha256": "840af84260ef8d951f5fc7e4cef7e3bb61b2b063621b117f0a2604aba9a60bf1"
+    },
+    {
+      "path": "catalog/gpt-daybreak-red-latest/instructions_template.txt",
+      "sha256": "40a1232c8bd01a87dc2283e5ae3c75f2b054dc2a12cf04e5a279c26e5c541b9b"
+    },
+    {
+      "path": "collaboration-mode-templates/templates/default.md",
+      "sha256": "1042cc643eb0147ca1039b19287c7462ceb297502f7f310d9664ac323a12feca"
+    },
+    {
+      "path": "collaboration-mode-templates/templates/plan.md",
+      "sha256": "d6d46c2d460a9d91ada2167605a8dfc56efde6b2ab61e101444c736c6fd6960a"
+    },
+    {
+      "path": "core/gpt-5.1-codex-max_prompt.md",
+      "sha256": "1b3dd697043a7f613c691a3721a450251626685b3e97ac3ad3d35ea62758a31e"
+    },
+    {
+      "path": "core/gpt-5.2-codex_prompt.md",
+      "sha256": "1b3dd697043a7f613c691a3721a450251626685b3e97ac3ad3d35ea62758a31e"
+    },
+    {
+      "path": "core/gpt_5_1_prompt.md",
+      "sha256": "b59d4cf7a17350eee7fe00c897bf7da7454672788317f23f54d2fb3d57af7bca"
+    },
+    {
+      "path": "core/gpt_5_2_prompt.md",
+      "sha256": "415333a461404a790c981fb00a7b9dc73b1906d3f87133dc8afe7ed77e92bd67"
+    },
+    {
+      "path": "core/gpt_5_codex_prompt.md",
+      "sha256": "42842be69650ae563d212695e8d3f3591534908fd8ca33b63f742daf41f88b65"
+    },
+    {
+      "path": "core/templates/agents/orchestrator.md",
+      "sha256": "9268e8ae2b730dfc5cc16970ef303ec80e9859599fc8aa046883788de2a79502"
+    },
+    {
+      "path": "core/templates/collab/experimental_prompt.md",
+      "sha256": "6704ebc4ca8914c2ed0ff65706c1f8dd4f681a9ccec4ae7f9008a5f8e1d78cef"
+    },
+    {
+      "path": "core/templates/model_instructions/gpt-5.2-codex_instructions_template.md",
+      "sha256": "492a212d8a23be8b03c488177d8986f4db4ee54a34b2e8a60779e5e5c89a1b63"
+    },
+    {
+      "path": "core/templates/personalities/gpt-5.2-codex_friendly.md",
+      "sha256": "c6d577a699d90df68a8f50ab30a956ac9250befd82fbc9000a824f44333a4394"
+    },
+    {
+      "path": "core/templates/personalities/gpt-5.2-codex_pragmatic.md",
+      "sha256": "3c1e6e6507ac1a04d57f378e6535b78ea2793670f964cbce2cb6e0a7a3d6e7e0"
+    },
+    {
+      "path": "core/templates/review/history_message_completed.md",
+      "sha256": "ba3815d1787697a682253f1c18d4618210732abb64263d633b903955ca838d53"
+    },
+    {
+      "path": "core/templates/review/history_message_interrupted.md",
+      "sha256": "034191c75f15338861ce0be2fcf28855833fc5f601b387cbc3c764032507dc86"
+    },
+    {
+      "path": "core/templates/search_tool/request_plugin_install_description.md",
+      "sha256": "e5acd502e83f3a6a9d20c53bcb521633a8df8c654ceb08da63db5aefb35e1f66"
+    },
+    {
+      "path": "core/templates/search_tool/tool_description.md",
+      "sha256": "0e4029b9b5d23b400e76a0051b9df878f28153ae2de126a77b90b80b64cd3d6b"
+    },
+    {
+      "path": "ext/goal/templates/goals/budget_limit.md",
+      "sha256": "ebac90ff1fc825baf3003875ea8a1e3de495f4a93bbf8fdd066b594595d358aa"
+    },
+    {
+      "path": "ext/goal/templates/goals/continuation.md",
+      "sha256": "764b9c26b36013a21b687d74597e303be9bbf13776c359ec1fb185dbc0e7eac7"
+    },
+    {
+      "path": "ext/goal/templates/goals/objective_updated.md",
+      "sha256": "a9752da8f38e7a8f11f3cda0d8751894bd0c837cca61d697cdf46b55333b77d6"
+    },
+    {
+      "path": "ext/memories/templates/memories/read_path.md",
+      "sha256": "2bc7736029884b714860a6f0d6b2fd26598bba58f2213b787f01fe2a491f4326"
+    },
+    {
+      "path": "ext/memories/templates/memories/read_path_v2.md",
+      "sha256": "2f81fa2e89f341a1b7b3cf11ee7b855087c4ab84ddad920980475465ef28ff27"
+    },
+    {
+      "path": "memories/write/templates/extensions/ad_hoc/instructions.md",
+      "sha256": "d36a36083d92f9d44efbd95e0e4b6e81d7d149e812f2bca2009b6dd4b8aa93e7"
+    },
+    {
+      "path": "memories/write/templates/memories/consolidation.md",
+      "sha256": "1450e24f84c03375aa5114c6c0857f515395129dcc00f65263221d03866852a0"
+    },
+    {
+      "path": "memories/write/templates/memories/consolidation_v2.md",
+      "sha256": "7334fdb4aa5d958bcff54568a375d0b0145c19a611a1a22faa6bf251a46a5f0e"
+    },
+    {
+      "path": "memories/write/templates/memories/stage_one_input.md",
+      "sha256": "2e54c74909238022305c269c862910bb29509fda8b58ce671ef011f8d6453047"
+    },
+    {
+      "path": "memories/write/templates/memories/stage_one_input_v2.md",
+      "sha256": "8fd4bb25fe6bd746b2d46ad841ac3a195d220c3da0cb9230615e2347c6ef853e"
+    },
+    {
+      "path": "memories/write/templates/memories/stage_one_system.md",
+      "sha256": "cf795e8a2f5f52d333af2613bf1ff79178112f5fd2161cc181a8ddf52e59da33"
+    },
+    {
+      "path": "memories/write/templates/memories/stage_one_system_v2.md",
+      "sha256": "334c0d51a2c63bd317dac074155fb3ecf0a56af8b00657736bab9c74222372b4"
+    },
+    {
+      "path": "models-manager/prompt.md",
+      "sha256": "ac8ae107a0d72fe3476b430afb161ea4e67da2e446d778aefc44828160559807"
+    },
+    {
+      "path": "models/codex-auto-review.md",
+      "sha256": "ebd0d5854abd07dc38300a71e027204eb028e9fa443c59d18e36fcc24289e818"
+    },
+    {
+      "path": "models/gpt-5.4.md",
+      "sha256": "f8c4032f78fdb19b46f468239c5dc757f745fbb10520e64e1e4afbf747e52fb8"
+    },
+    {
+      "path": "models/gpt-5.5.md",
+      "sha256": "2351631dfc5644dc5a45eaaca4139475bd02810ee6cb792d058b551559b3242e"
+    },
+    {
+      "path": "models/gpt-5.6-luna.md",
+      "sha256": "cbefa6b0bede0e332d957fca70ccacf9f12f4c0ecdf81b819e5cbe1a3b16e265"
+    },
+    {
+      "path": "models/gpt-5.6-sol.md",
+      "sha256": "cbefa6b0bede0e332d957fca70ccacf9f12f4c0ecdf81b819e5cbe1a3b16e265"
+    },
+    {
+      "path": "models/gpt-5.6-terra.md",
+      "sha256": "cbefa6b0bede0e332d957fca70ccacf9f12f4c0ecdf81b819e5cbe1a3b16e265"
+    },
+    {
+      "path": "models/gpt-6-astra.md",
+      "sha256": "152dfaeeb552876190962be1c12c93d426840ff12691f648261554a7675a6698"
+    },
+    {
+      "path": "models/gpt-daybreak-blue-latest.md",
+      "sha256": "ebd0d5854abd07dc38300a71e027204eb028e9fa443c59d18e36fcc24289e818"
+    },
+    {
+      "path": "models/gpt-daybreak-red-latest.md",
+      "sha256": "40a1232c8bd01a87dc2283e5ae3c75f2b054dc2a12cf04e5a279c26e5c541b9b"
+    },
+    {
+      "path": "prompts/templates/compact/prompt.md",
+      "sha256": "ab0c334d4faca17e3afbb9b16967c1b2fdcc7242a9a0880af57949fa236d6d07"
+    },
+    {
+      "path": "prompts/templates/compact/summary_prefix.md",
+      "sha256": "e9b088e794a6bb9082ac053fcc760bd818d7e720ee4bcdc72c6e480de7b7cb0e"
+    },
+    {
+      "path": "prompts/templates/guardian/classifier_instructions.md",
+      "sha256": "c19697c572daf359912f27961474b9804ddfccc978edc69cb3b13f1360961fcf"
+    },
+    {
+      "path": "prompts/templates/guardian/node_repl_policy.md",
+      "sha256": "cbeac65723cf1476dce0680b5b27484640472ef413436074ca8d8cefbf94c787"
+    },
+    {
+      "path": "prompts/templates/guardian/policy.md",
+      "sha256": "e6b0cf0a2e1c4cabc0a37ac2a0bc424ddd7c89e85d049e32d281a8db6e8d3ce6"
+    },
+    {
+      "path": "prompts/templates/guardian/policy_template.md",
+      "sha256": "f47fbb2bdba5e7528bfae7f5e2844a7d45a3a922fa74b718f22b22917376cfcf"
+    },
+    {
+      "path": "prompts/templates/permissions/approval_policy/never.md",
+      "sha256": "41c7931bac2391a24046362bd07615d5a3e73dca4672b911516fac99646be8c4"
+    },
+    {
+      "path": "prompts/templates/permissions/approval_policy/on_request.md",
+      "sha256": "85541a9738741407642b3c39bbe3781fbf8bb42f628d50e562c87738ab192b3a"
+    },
+    {
+      "path": "prompts/templates/permissions/approval_policy/on_request_rule_request_permission.md",
+      "sha256": "98e8a78ac869d64fb094fb1a12e20e327e46a159bf74022c588b84326bf6afba"
+    },
+    {
+      "path": "prompts/templates/permissions/approval_policy/unless_trusted.md",
+      "sha256": "fadec1a060a758b805f227bc5715c7dd3d7d7e2015bd5020c386eca0f3293d10"
+    },
+    {
+      "path": "prompts/templates/permissions/sandbox_mode/danger_full_access.md",
+      "sha256": "0d887cb1eaba21a6cade67ab958a6ffee00f671c46f8cf29c83706e397942dbf"
+    },
+    {
+      "path": "prompts/templates/permissions/sandbox_mode/read_only.md",
+      "sha256": "509b39f88e6a4f5cb36485ea8b340680c03f27175ba20200b823ec07bc79668d"
+    },
+    {
+      "path": "prompts/templates/permissions/sandbox_mode/workspace_write.md",
+      "sha256": "763661195d613a48173638af6227d480d70ab0a6898d3a81ff075155e82f7555"
+    },
+    {
+      "path": "prompts/templates/persistent_mode.md",
+      "sha256": "03ff9da48abb85425514c42dad1b742312bc7e2d978d2941e9d2fd90560c2a27"
+    },
+    {
+      "path": "prompts/templates/realtime/backend_prompt.md",
+      "sha256": "94c279f8b40900e5f2ace13db09bc096ccc99cc72ffb051a126f98df94c6997d"
+    },
+    {
+      "path": "prompts/templates/realtime/realtime_end.md",
+      "sha256": "95dbde1501871117f96d45f95cb501abbbc25464eab1ae5ed689e110e1849036"
+    },
+    {
+      "path": "prompts/templates/realtime/realtime_start.md",
+      "sha256": "424ebda35f115edff812596b70d7bf56431e7917b7398ccb4abb270b67a50fc2"
+    },
+    {
+      "path": "prompts/templates/review/exit_interrupted.xml",
+      "sha256": "034191c75f15338861ce0be2fcf28855833fc5f601b387cbc3c764032507dc86"
+    },
+    {
+      "path": "prompts/templates/review/exit_success.xml",
+      "sha256": "87ce1bcbc0f1aee3fcba4fedd35775eccf4a640352b071ead206d0b4ff286559"
+    },
+    {
+      "path": "prompts/templates/review/rubric.md",
+      "sha256": "ec60e7f36a1d1c2679ce095c0205ecc56f7dd8fb57707a13ef362072390f219f"
+    },
+    {
+      "path": "tui/assets/prompt_for_init_command.md",
+      "sha256": "70dfe903081ca894fbec7d80b40da2b5560a6106422fdfd0db2907dc9f5aa525"
+    }
+  ]
+}

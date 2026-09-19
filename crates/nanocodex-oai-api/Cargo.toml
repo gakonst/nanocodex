@@ -70,6 +70,7 @@ opusic-c = { workspace = true, optional = true }
 webrtc = { workspace = true, optional = true }
 
 [dev-dependencies]
+pretty_assertions.workspace = true
 criterion.workspace = true
 eyre.workspace = true
 simd-json.workspace = true

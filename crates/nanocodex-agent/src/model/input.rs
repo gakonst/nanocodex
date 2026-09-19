@@ -9,16 +9,6 @@ use serde_json::Value;
 
 use super::context::ContextSnapshot;
 
-const PERMISSIONS_INSTRUCTIONS: &str = concat!(
-    "<permissions instructions>\n",
-    "Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is ",
-    "`danger-full-access`: No filesystem sandboxing - all commands are permitted. Network ",
-    "access is enabled.\n",
-    "Approval policy is currently never. Do not provide the `sandbox_permissions` for any ",
-    "reason, commands will be rejected.\n",
-    "</permissions instructions>",
-);
-
 pub(in crate::model) fn task_input(
     prompt: &Prompt,
     user_content: Vec<ContentItem>,
@@ -69,9 +59,32 @@ pub(in crate::model) fn developer_context() -> ResponseItem {
     ResponseItem::message(
         MessageRole::Developer,
         [ContentItem::InputText {
-            text: PERMISSIONS_INSTRUCTIONS.into(),
+            text: permissions_instructions().into(),
         }],
     )
+}
+
+fn permissions_instructions() -> String {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        use nanocodex_oai_api::prompts::{
+            ApprovalPolicy, PermissionFacts, SandboxMode, permissions,
+        };
+        permissions(&PermissionFacts {
+            sandbox: SandboxMode::DangerFullAccess,
+            network_enabled: true,
+            approval: ApprovalPolicy::Never,
+            writable_roots: &[],
+            denied_read_paths: &[],
+            denied_read_globs: &[],
+        })
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        // WASM delegates execution to a host whose grant can vary per tool and
+        // hand. It cannot truthfully manufacture a global full-access profile.
+        "<host_execution_context>\nExecution permissions are supplied and enforced by the host for each tool and selected environment. The embedded runtime does not grant filesystem, network, or escalation access.\n</host_execution_context>".to_owned()
+    }
 }
 
 pub(in crate::model) fn custom_tool_output(
@@ -173,7 +186,7 @@ mod tests {
                     "content": [
                         {
                             "type": "input_text",
-                            "text": PERMISSIONS_INSTRUCTIONS,
+                            "text": "<permissions instructions>\nFilesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`: No filesystem sandboxing - all commands are permitted. Network access is enabled.\nApproval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.\n</permissions instructions>",
                         },
                     ],
                 }),
