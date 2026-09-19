@@ -202,6 +202,9 @@ jobs:
           cache-on-failure: true
       - name: Build and test the account Hand
         shell: pwsh
+        env:
+          # Unit tests exercise the Hand protocol without installing desktop software.
+          NANOCODEX_COMPUTER: "off"
         run: |
           cargo test --locked --package nanocodex2-bin --bin nanocodex2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
