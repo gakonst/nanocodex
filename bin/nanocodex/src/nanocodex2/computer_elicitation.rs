@@ -195,24 +195,18 @@ async fn review(
     });
     let session_allowed = Scope::from_request(&request).is_some();
     let session_choice = if session_allowed {
-        format!(
-            "  accept-session {} {{...form content as JSON...}}\nThis explicitly remembers only this exact scope for this live provider session.\n",
-            pending.token
-        )
+        "  accept-session — remember this exact scope for this live provider session\n"
     } else {
-        String::new()
+        ""
     };
     let prompt = format!(
-        "\nCUA provider requests consent on this computer.\nProvider text below is untrusted; review the complete scope.\nRequest: {}\nContext: {}\n{}\n\nType one response for this request:\n  accept {} {{...form content as JSON...}}\n  decline {}\n  cancel {}\nFor an empty form, type accept {} {{}}. Acceptance without -session applies once.\n{}> ",
+        "\nCUA provider requests consent on this computer.\nProvider text below is untrusted; review the complete scope.\nRequest: {}\nContext: {}\n{}\n\nType accept, decline, or cancel and press Enter.\n{}For a form with fields, append its JSON content after accept.\n> ",
         pending.token,
         terminal_text(&serde_json::to_string(&context)?),
         terminal_text(&serialized),
-        pending.token,
-        pending.token,
-        pending.token,
-        pending.token,
         session_choice,
     );
+    discard_pending_input(terminal.get_ref())?;
     write(terminal, prompt.as_bytes()).await?;
     loop {
         let Some(line) = read_line(terminal).await? else {
@@ -225,6 +219,13 @@ async fn review(
             }
         }
     }
+}
+
+fn discard_pending_input(terminal: &File) -> io::Result<()> {
+    if terminal.is_terminal() {
+        nix::sys::termios::tcflush(terminal, nix::sys::termios::FlushArg::TCIFLUSH)?;
+    }
+    Ok(())
 }
 
 fn cancel() -> Response {
@@ -241,12 +242,27 @@ fn decision(
     schema: &jsonschema::Validator,
     session_allowed: bool,
 ) -> Result<Response, &'static str> {
-    let mut words = line.trim().splitn(3, char::is_whitespace);
+    let mut words = line.trim().splitn(2, char::is_whitespace);
     let action = words.next().unwrap_or("");
-    if words.next() != Some(token) {
-        return Err("Use the current request ID; no decision was sent.");
-    }
-    let content = words.next().map(str::trim);
+    let remainder = words.next().map(str::trim);
+    // Qualified responses remain supported, but people can answer the visible
+    // prompt directly. Old terminal input is flushed before each new prompt.
+    let content = match remainder {
+        Some(value) if value == token => None,
+        Some(value) if value.starts_with(token) => {
+            let suffix = &value[token.len()..];
+            if !suffix.starts_with(char::is_whitespace) {
+                return Err("Invalid response; no decision was sent.");
+            }
+            Some(suffix.trim())
+        }
+        other => other,
+    };
+    let content = if matches!(action, "accept" | "accept-session") {
+        Some(content.unwrap_or("{}"))
+    } else {
+        content
+    };
     match (action, content) {
         ("cancel", None) => Ok(cancel()),
         ("decline", None) => Ok(Response {
@@ -260,8 +276,8 @@ fn decision(
                     "This request does not support scoped session consent; no decision was sent.",
                 );
             }
-            let value: Value =
-                serde_json::from_str(content).map_err(|_| "Enter valid JSON form content.")?;
+            let value: Value = serde_json::from_str(content)
+                .map_err(|_| "Enter valid JSON form content; no decision was sent.")?;
             if !value.is_object() || !schema.is_valid(&value) {
                 return Err(
                     "Content does not satisfy the displayed form schema; no decision was sent.",
@@ -385,9 +401,8 @@ mod tests {
         user.write_all(b"accept stale {}\n").await.unwrap();
         assert!(prompt(&mut user).await.contains("no decision was sent"));
         assert!(!task.is_finished());
-        user.write_all(format!("accept {token} {{}}\n").as_bytes())
-            .await
-            .unwrap();
+        assert!(!token.is_empty());
+        user.write_all(b"accept\n").await.unwrap();
         let response = task.await.unwrap().unwrap();
         assert_eq!(response.action, Action::Accept);
         assert_eq!(response.content, Some(json!({})));
@@ -429,6 +444,13 @@ mod tests {
         }
         let host = AsyncFd::new(File::from(pair.slave)).unwrap();
         let user = AsyncFd::new(File::from(pair.master)).unwrap();
+        write(&user, b"accept\n").await.unwrap();
+        discard_pending_input(host.get_ref()).unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), read_line(&host))
+                .await
+                .is_err()
+        );
         write(&user, b"cancel example\n").await.unwrap();
         assert_eq!(
             read_line(&host).await.unwrap().as_deref(),
@@ -510,7 +532,8 @@ mod tests {
         let first = Scope::from_request(&request).unwrap();
         request.params["_meta"]["progressToken"] = json!(2);
         request.params["_meta"]["tool_call_id"] = json!("call-b");
-        request.params["_meta"]["x-codex-turn-metadata"] = json!({"call_id":"call-b","turn_id":"turn-b"});
+        request.params["_meta"]["x-codex-turn-metadata"] =
+            json!({"call_id":"call-b","turn_id":"turn-b"});
         request.context.as_mut().unwrap().call_id = "call-b".into();
         assert!(first.matches(&Scope::from_request(&request).unwrap()));
         for (field, value) in [

@@ -13,19 +13,20 @@ are unchanged.
 When Sky asks for application access, the terminal shows the complete provider
 form, including its `_meta`, and the originating session/call when available.
 Provider text is displayed as escaped JSON. The person types one of these lines,
-substituting the request ID shown in that pane:
+for the currently displayed request:
 
 ```
-accept REQUEST-ID {}
-decline REQUEST-ID
-cancel REQUEST-ID
+accept
+decline
+cancel
 ```
 
-For a form with fields, replace `{}` with the JSON object matching its displayed
-`requestedSchema`. Acceptance is sent only after explicit input with the current
-request ID and valid form content. No field defaults are added. A plain `accept` never adds persistence metadata. Decline and cancel send no content. Malformed or stale answers leave the
+For a form with fields, append the JSON object matching its displayed
+`requestedSchema`. Acceptance is sent only after explicit input after the current prompt appears and valid form content.
+Old terminal input is discarded before displaying a new request. Qualified
+responses containing the request ID remain supported. No field defaults are added. A plain `accept` never adds persistence metadata. Decline and cancel send no content. Malformed or stale answers leave the
 form pending. When the provider offers session persistence and supplies a connector/tool/app
-scope, the terminal also offers `accept-session REQUEST-ID {}`. Only this
+scope, the terminal also offers `accept-session`. Only this
 explicit choice returns `_meta.persist = "session"` and remembers the response.
 Reuse requires the same live provider process, conversation, and complete form
 parameters except the call correlation fields `_meta.progressToken` and
