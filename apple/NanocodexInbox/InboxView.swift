@@ -231,8 +231,12 @@ struct InboxView: View {
             // Scrolled content can retain offscreen hit regions at large text
             // sizes. Keep navigation above those regions as well as visually.
             conversationHeader.zIndex(1)
-                if let screen = model.latestScreenOutput {
-                    ChatLatestScreen(output: screen)
+                if let screen = model.latestScreenOutput,
+                   !screenThreads.contains(model.focusedConversationIdentity ?? "") {
+                    ChatLatestScreen(output: screen, onWatchLive: model.remoteService == nil ? nil : {
+                        guard let identity = model.focusedConversationIdentity else { return }
+                        screenThreads.insert(identity)
+                    })
                         .id(model.focusedConversationIdentity)
                         .frame(maxWidth: 620)
                         .padding(.horizontal, 12).padding(.bottom, 6)
@@ -2025,6 +2029,11 @@ private struct ConversationToolCard: View {
         guard ["Run command", "Start process"].contains(title) else { return nil }
         return row.tool?.input.first(where: { $0.label == "Command" })?.value
     }
+    private var codeModeSource: String? {
+        guard title == "Run code" else { return nil }
+        return row.tool?.input.first(where: { $0.label == "Code" })?.value
+    }
+    private var hasSource: Bool { command != nil || codeModeSource != nil }
     private var directory: String? { row.tool?.input.first(where: { $0.label == "Folder" })?.value }
     private var shell: String? { row.tool?.input.first(where: { $0.label == "Shell" })?.value }
     private var exitCode: String? { row.tool?.output.first(where: { $0.label == "Exit code" })?.value }
@@ -2067,7 +2076,7 @@ private struct ConversationToolCard: View {
                 onToggle()
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { expanded.toggle() }
             } label: {
-                VStack(alignment: .leading, spacing: command == nil ? 0 : 10) {
+                VStack(alignment: .leading, spacing: hasSource ? 10 : 0) {
                     if let command {
                         HStack(spacing: 6) {
                             Image(systemName: "folder").foregroundStyle(Color.accentColor)
@@ -2089,6 +2098,22 @@ private struct ConversationToolCard: View {
                         if let shell {
                             Text(shell).font(.caption2.monospaced()).foregroundStyle(Ink.muted)
                         }
+                    } else if let source = codeModeSource {
+                        HStack(spacing: 6) {
+                            Image(systemName: "curlybraces").foregroundStyle(Color.accentColor)
+                            Text("Code Mode").font(.caption.weight(.medium)).foregroundStyle(Ink.muted)
+                            Text("JavaScript").font(.caption2.monospaced()).foregroundStyle(Ink.muted)
+                            Spacer(minLength: 4)
+                            statusIndicator
+                            disclosure
+                        }
+                        ChatCodeText(source: source, language: "javascript")
+                            .font(.system(.footnote, design: .monospaced))
+                            .foregroundStyle(Ink.text)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("code-mode-source-" + row.id)
                     } else {
                         HStack(spacing: 8) {
                             Image(systemName: symbol).foregroundStyle(Color.accentColor)
@@ -2104,7 +2129,7 @@ private struct ConversationToolCard: View {
                             disclosure
                         }
                     }
-                }.padding(.vertical, command == nil ? 6 : 12)
+                }.padding(.vertical, hasSource ? 12 : 6)
                     .frame(minHeight: 44).contentShape(Rectangle())
             }.buttonStyle(.plain)
                 .accessibilityIdentifier("tool-disclosure-" + row.id)
@@ -2114,13 +2139,16 @@ private struct ConversationToolCard: View {
                     if let command {
                         Button("Copy command", systemImage: "doc.on.doc") { UIPasteboard.general.string = command }
                     }
+                    if let source = codeModeSource {
+                        Button("Copy code", systemImage: "doc.on.doc") { UIPasteboard.general.string = source }
+                    }
                     if let directory {
                         Button("Copy directory", systemImage: "folder") { UIPasteboard.general.string = directory }
                     }
                 }
             if expanded {
                 Divider()
-                ToolActivityView(row: row, hidesCommand: command != nil).padding(.vertical, 12)
+                ToolActivityView(row: row, hidesCommand: command != nil, hidesCode: codeModeSource != nil).padding(.vertical, 12)
                     .accessibilityIdentifier("tool-detail-" + row.id)
             }
         }.padding(.horizontal, 12)
@@ -2132,6 +2160,7 @@ private struct ConversationToolCard: View {
 private struct ToolActivityView: View {
     let row: TranscriptRow
     var hidesCommand = false
+    var hidesCode = false
     private var tool: ToolPresentation {
         if let tool = row.tool { return tool }
         var fallback = ToolPresentation(name: row.text, arguments: .null)
@@ -2140,7 +2169,9 @@ private struct ToolActivityView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            let input = tool.input.filter { !hidesCommand || !["Command", "Folder", "Shell"].contains($0.label) }
+            let input = tool.input.filter {
+                (!hidesCommand || !["Command", "Folder", "Shell"].contains($0.label)) && (!hidesCode || $0.label != "Code")
+            }
             if !input.isEmpty { fields(input, heading: "Input") }
             if !tool.output.isEmpty { fields(tool.output, heading: "Result") }
         }.foregroundStyle(Ink.muted).accessibilityIdentifier("tool-activity")

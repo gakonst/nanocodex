@@ -60,6 +60,37 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(composer(app).value as? String, "Keep talking while watching")
     }
 
+    func testLatestComputerScreenOpensLiveDock() throws {
+        guard ProcessInfo.processInfo.environment["NANOCODEX_SCREEN_FIXTURE"] == "1" else {
+            throw XCTSkip("Run fixtures/remote-screen.mjs on loopback port 18965")
+        }
+        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString,
+                          "NANOCODEX_DEMO_SCREENS": "1",
+                          "NANOCODEX_DEMO_GENERATED_OUTPUTS": "1",
+                          "NANOCODEX_DEMO_LIVE_SCREEN_ENTRY": "1"])
+        switchConversation(app, id: "inbox")
+        let latest = app.buttons["latest-computer-screen"]
+        XCTAssertTrue(latest.waitForExistence(timeout: 5))
+        latest.tap()
+        let panel = app.descendants(matching: .any)["thread-screen-panel"].firstMatch
+        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        XCTAssertFalse(latest.exists)
+        let desktop = app.buttons["thread-screen:fixture:desktop"]
+        XCTAssertTrue(desktop.waitForExistence(timeout: 5))
+        desktop.tap()
+        // frames-v1 reports Watching only after decoding its first JPEG frame.
+        XCTAssertTrue(app.staticTexts["Watching"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any)["thread-screen-canvas"].firstMatch.exists)
+        XCTAssertTrue(app.staticTexts["View only"].exists)
+        let draft = "Keep my live screen draft"
+        composer(app).tap(); composer(app).typeText(draft)
+        capture(app, "latest-computer-screen-live")
+        app.buttons["thread-screen-close"].tap()
+        XCTAssertFalse(panel.exists)
+        XCTAssertTrue(latest.waitForExistence(timeout: 5))
+        XCTAssertEqual(composer(app).value as? String, draft)
+    }
+
     func testCompactReplyContextMenuCopiesResponse() {
         let app = launch(["NANOCODEX_DEMO_THINKING_MARKDOWN": "1", "NANOCODEX_DEMO_PROFILE": UUID().uuidString])
         selectInbox(app)
@@ -2437,6 +2468,54 @@ final class InboxUITests: XCTestCase {
         for _ in 0..<4 { if failure.isHittable { break }; conversation.swipeUp() }
         XCTAssertTrue(failure.isHittable, "The expanded command failure remains readable")
         capture(app, "command-card-expanded-failure")
+    }
+
+    func testCodeModeCardShowsFullMultilineSourceAndOutput() {
+        assertCodeModeCardShowsFullMultilineSourceAndOutput(environment: "NANOCODEX_DEMO_CODE_MODE_CARD")
+    }
+
+    func testCodeModeObjectCardShowsFullMultilineSourceAndOutput() {
+        assertCodeModeCardShowsFullMultilineSourceAndOutput(environment: "NANOCODEX_DEMO_CODE_MODE_OBJECT_CARD")
+    }
+
+    private func assertCodeModeCardShowsFullMultilineSourceAndOutput(environment: String) {
+        let app = launch([environment: "1",
+                          "NANOCODEX_DEMO_PROFILE": UUID().uuidString]); selectInbox(app)
+        let conversation = app.scrollViews["conversation"]
+        XCTAssertTrue(conversation.waitForExistence(timeout: 5))
+        let card = conversation.buttons["tool-disclosure-demo-code-mode-card"]
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        let expectedSource = """
+        // Inspect the complete synthetic JavaScript source, preserving every newline beyond the old 140 character preview boundary.
+        const result = await tools.exec_command({
+          cmd: 'git status --short',
+          workdir: '/workspace/demo'
+        });
+        text(result.output);
+        """
+        XCTAssertGreaterThan(expectedSource.count, 140)
+        let source = card.descendants(matching: .any)["code-mode-source-demo-code-mode-card"]
+        XCTAssertTrue(source.exists, "The collapsed card exposes the complete JavaScript")
+        XCTAssertTrue(source.isHittable, "The source is visible before expanding details")
+        XCTAssertEqual(source.label, expectedSource, "JavaScript preserves every character and newline")
+        XCTAssertTrue(card.staticTexts["Code Mode"].exists)
+        XCTAssertFalse(conversation.staticTexts["Run code"].exists)
+        XCTAssertFalse(card.buttons["Copy code"].exists, "Copy is available through the context menu")
+        capture(app, "code-mode-card-full-source")
+        card.press(forDuration: 1)
+        let copy = app.buttons["Copy code"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 5))
+        copy.tap()
+        card.tap()
+        let detail = conversation.descendants(matching: .any)["tool-detail-demo-code-mode-card"]
+        XCTAssertTrue(detail.waitForExistence(timeout: 5))
+        XCTAssertFalse(detail.staticTexts["Code"].exists, "Expanded details do not repeat the Code input")
+        XCTAssertFalse(detail.staticTexts.matching(NSPredicate(format: "label == %@", expectedSource)).firstMatch.exists, "Expanded details do not duplicate the source")
+        XCTAssertFalse(conversation.staticTexts["Run code"].exists)
+        let output = conversation.staticTexts["Synthetic code result"]
+        for _ in 0..<4 { if output.isHittable { break }; conversation.swipeUp() }
+        XCTAssertTrue(output.isHittable, "The expanded Code Mode result remains readable")
+        capture(app, "code-mode-card-expanded-result")
     }
 
     func testToolFailureIsReadable() {

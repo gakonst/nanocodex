@@ -4,22 +4,25 @@ import SwiftUI
 /// Keep this view's identity stable so an open sheet follows incoming snapshots.
 public struct ChatLatestScreen: View {
     public let output: ChatGeneratedOutput
+    private let onWatchLive: (() -> Void)?
     @State private var expanded = false
     @State private var thumbnail: CGImage?
     @State private var failed = false
 
-    public init(output: ChatGeneratedOutput) { self.output = output }
+    public init(output: ChatGeneratedOutput, onWatchLive: (() -> Void)? = nil) {
+        self.output = output; self.onWatchLive = onWatchLive
+    }
 
     public var body: some View {
-        Button { expanded = true } label: {
+        Button { if let onWatchLive { onWatchLive() } else { expanded = true } } label: {
             HStack(spacing: 12) {
                 screenImage
                     .frame(width: 64, height: 44)
                     .clipped()
                     .background(.black.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Latest screen").font(.subheadline.weight(.semibold))
-                    Text("Computer snapshot").font(.caption).foregroundStyle(.secondary)
+                    Text(onWatchLive == nil ? "Latest screen" : "Watch live").font(.subheadline.weight(.semibold))
+                    Text(onWatchLive == nil ? "Computer snapshot" : "Last captured frame · tap to connect").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 8)
                 Image(systemName: "arrow.up.left.and.arrow.down.right").foregroundStyle(.secondary)
@@ -29,7 +32,8 @@ public struct ChatLatestScreen: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Open latest computer screen")
+        .accessibilityLabel(onWatchLive == nil ? "Open latest computer screen" : "Watch live computer screen")
+        .contextMenu { Button("View last snapshot") { expanded = true } }
         .accessibilityIdentifier("latest-computer-screen")
         .sheet(isPresented: $expanded) {
             NavigationStack {

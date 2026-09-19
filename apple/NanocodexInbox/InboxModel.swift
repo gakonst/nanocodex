@@ -2758,6 +2758,33 @@ final class InboxModel: ObservableObject {
             ]))
             demoRows["inbox"] = [.init(id: "demo-command-card", role: "Tool", text: activity.title, tool: activity)]
         }
+        if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_CODE_MODE_CARD"] == "1"
+            || ProcessInfo.processInfo.environment["NANOCODEX_DEMO_CODE_MODE_OBJECT_CARD"] == "1" {
+            // Presentation-only fixture: this JavaScript and its result never execute.
+            let source = """
+            // Inspect the complete synthetic JavaScript source, preserving every newline beyond the old 140 character preview boundary.
+            const result = await tools.exec_command({
+              cmd: 'git status --short',
+              workdir: '/workspace/demo'
+            });
+            text(result.output);
+            """
+            let objectArguments = ProcessInfo.processInfo.environment["NANOCODEX_DEMO_CODE_MODE_OBJECT_CARD"] == "1"
+            var activity = ToolPresentation(name: "exec", arguments: objectArguments
+                ? .object(["code": .string(source)]) : .string(source))
+            activity.finish(.string("Synthetic code result"))
+            demoRows["inbox"] = [.init(id: "demo-code-mode-card", role: "Tool", text: activity.title, tool: activity)]
+        }
+        if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_LIVE_SCREEN_ENTRY"] == "1",
+           let image = DemoContent.rows("inbox").compactMap({ $0.tool?.generatedResults })
+               .flatMap({ ChatGeneratedOutput.parse(results: $0) })
+               .first(where: { $0.kind == .image })?.source {
+            // Reuse the generated-output PNG fixture, attributed to a synthetic
+            // computer result. No computer action is executed by this fixture.
+            var activity = ToolPresentation(name: "computer", arguments: .object(["action": .string("observe")]))
+            activity.finish(.object(["image_url": .string(image)]))
+            demoRows["inbox"] = [.init(id: "demo-live-screen-entry", role: "Tool", text: activity.title, tool: activity)]
+        }
         activateContext()
         restoreCreations()
         reconcile(); observeFocused()
