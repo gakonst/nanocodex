@@ -1,5 +1,6 @@
 //! Rust Hand screen publication. Credentials and signaling remain on the host.
 use crate::Result as CoreResult;
+use crate::audio_duplex::SinkFactory;
 use crate::input::{Lease, timely_event};
 use crate::preparation::{Preparations, VIEWER_CAPACITY};
 use crate::target::PublisherTarget;
@@ -79,6 +80,7 @@ impl Broadcast for NoBroadcast {
 pub struct Options {
     pub video: Option<VideoSource>,
     pub audio: Option<VideoSource>,
+    pub microphone_factory: Option<SinkFactory>,
     pub require_video: bool,
     pub observation: Option<Arc<dyn Observation>>,
     pub broadcast: Box<dyn Broadcast>,
@@ -88,6 +90,7 @@ impl Default for Options {
         Self {
             video: None,
             audio: None,
+            microphone_factory: None,
             require_video: false,
             observation: None,
             broadcast: Box::new(NoBroadcast),
@@ -120,6 +123,7 @@ impl Publisher {
         let Options {
             video,
             audio,
+            microphone_factory,
             mut broadcast,
             observation: providers,
             require_video,
@@ -166,7 +170,7 @@ impl Publisher {
                         if targets.borrow().endpoint() != target.endpoint() { broadcast.stop().await; }
                         continue;
                     },
-                    result = session(&target, &machine, &backend, video.as_ref(), audio.as_ref(), dimensions, &capabilities, input_keepalive, require_video, &mut ready, &providers, &mut broadcast, &mut authorized_at) => result,
+                    result = session(&target, &machine, &backend, video.as_ref(), audio.as_ref(), microphone_factory.clone(), dimensions, &capabilities, input_keepalive, require_video, &mut ready, &providers, &mut broadcast, &mut authorized_at) => result,
                 };
                 let _ = tokio::time::timeout(
                     Duration::from_secs(3),
@@ -244,6 +248,47 @@ type Wire =
 struct Socket {
     wire: Wire,
     video: Option<Video>,
+    microphone: MicrophoneControl,
+}
+// Mirrors the lease deadline conservatively without extending authorization on input.
+#[derive(Default)]
+struct MicrophoneControl {
+    deadline: Option<Instant>,
+    active: Option<Value>,
+}
+impl MicrophoneControl {
+    fn refreshed(&mut self, started: Instant) {
+        self.deadline = Some(started + crate::input::LEASE_DURATION);
+    }
+    fn remaining(&self) -> Duration {
+        self.deadline.map_or(Duration::ZERO, |d| {
+            d.saturating_duration_since(Instant::now())
+        })
+    }
+    fn request(
+        &mut self,
+        lease: &Lease,
+        viewer: &str,
+        data: &Value,
+        apply: impl FnOnce(bool, Duration) -> bool,
+    ) -> Option<Value> {
+        let generation = data["generation"].as_str()?;
+        let request = data["requestID"].as_str().filter(|s| valid_id(s))?;
+        let enabled = data["enabled"].as_bool()?;
+        if !lease.valid(viewer, generation) {
+            return None;
+        }
+        let enabled = apply(enabled, self.remaining());
+        let ack = json!({"type":"control","viewer_id":viewer,"data":{
+            "type":"microphone","generation":generation,"requestID":request,"enabled":enabled}});
+        self.active = enabled.then(|| ack.clone());
+        Some(ack)
+    }
+    fn stopped(&mut self) -> Option<Value> {
+        let mut ack = self.active.take()?;
+        ack["data"]["enabled"] = json!(false);
+        Some(ack)
+    }
 }
 impl Socket {
     async fn send(
@@ -349,8 +394,16 @@ async fn release(
     socket: &mut Socket,
 ) -> Result<(), SessionError> {
     let owner = lease.clear();
+    socket.microphone.deadline = None;
+    if let Some(video) = &socket.video {
+        video.revoke_microphone(&owner);
+    }
+    let microphone_ack = socket.microphone.stopped();
     let _ =
         tokio::time::timeout(Duration::from_secs(3), backend(json!({"action":"release"}))).await;
+    if let Some(ack) = microphone_ack {
+        send(socket, ack).await?;
+    }
     if !owner.is_empty() && !owner.starts_with("agent:") {
         send(
             socket,
@@ -366,6 +419,7 @@ async fn session(
     backend: &Backend,
     video: Option<&VideoSource>,
     audio: Option<&VideoSource>,
+    microphone_factory: Option<SinkFactory>,
     dimensions: (u64, u64),
     capabilities: &Value,
     input_keepalive: bool,
@@ -419,7 +473,8 @@ async fn session(
     .map_err(|_| SessionError::Closed)?;
     tracing::info!(target: "nanocodex2", stage = "screen.socket.connected", machine_id = machine.id(), elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
     let video = match video {
-        Some(source) => match Video::start(source, audio).await {
+        Some(source) => match Video::start_with_microphone(source, audio, microphone_factory).await
+        {
             Ok(video) => Some(video),
             Err(error) => {
                 if require_video {
@@ -432,7 +487,11 @@ async fn session(
         },
         None => None,
     };
-    let mut socket = Socket { wire, video };
+    let mut socket = Socket {
+        wire,
+        video,
+        microphone: MicrophoneControl::default(),
+    };
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(5))
@@ -464,6 +523,9 @@ async fn session(
                     send(&mut socket,json!({"type":"close_viewer","viewer_id":viewer})).await?;
                 }
                 if lease.expired() { release(&mut lease,backend,&mut socket).await?; }
+                if socket.microphone.active.is_some() && !socket.video.as_ref().is_some_and(|v| v.microphone_enabled(lease.owner())) {
+                    if let Some(ack) = socket.microphone.stopped() { send(&mut socket, ack).await?; }
+                }
                 if last_authorized.elapsed()>Duration::from_secs(25) { return Err(SessionError::Unauthorized); }
                 if !connection.is_empty() && last_renewal.elapsed()>=Duration::from_secs(10) && renewal.is_none() {
                     last_renewal=Instant::now(); let http=http.clone(); let url=renew_url.clone(); let token=target.bearer().to_string(); let id=connection.clone();
@@ -599,13 +661,29 @@ async fn session(
                                     if job.take().is_some(){send(&mut socket,json!({"type":"agent_result","request_id":std::mem::take(&mut request_id),"status":"cancelled"})).await?;}
                                     release(&mut lease,backend,&mut socket).await?;
                                 }
-                                if lease.owner().is_empty(){release(&mut lease,backend,&mut socket).await?;lease.acquire(viewer);send(&mut socket,json!({"type":"control","viewer_id":viewer,"data":control_grant(lease.generation(), capabilities)})).await?;}
+                                if lease.owner().is_empty(){release(&mut lease,backend,&mut socket).await?;socket.microphone.refreshed(Instant::now());lease.acquire(viewer);
+                                    let mut grant = control_grant(lease.generation(), capabilities);
+                                    if socket.video.as_ref().is_some_and(Video::microphone_available) { grant["microphone"] = json!(true); }
+                                    send(&mut socket,json!({"type":"control","viewer_id":viewer,"data":grant})).await?;}
                                 else{send(&mut socket,json!({"type":"control","viewer_id":viewer,"data":{"type":"denied"}})).await?;}
                             },
                             "renew" if lease.valid(viewer,data["generation"].as_str().unwrap_or(""))=>{
+                                let renewed_at = Instant::now();
                                 if !renew_control(&mut lease, viewer, data["generation"].as_str().unwrap_or(""), backend, input_keepalive).await {
                                     release(&mut lease,backend,&mut socket).await?;
+                                } else {
+                                    socket.microphone.refreshed(renewed_at);
+                                    if let Some(video) = &socket.video { video.renew_microphone(viewer, socket.microphone.remaining()); }
                                 }
+                            },
+                            "microphone" => {
+                                let ack = {
+                                    let video = socket.video.as_ref();
+                                    socket.microphone.request(&lease, viewer, data, |enabled, remaining| {
+                                        video.is_some_and(|v| v.set_microphone(viewer, enabled, remaining))
+                                    })
+                                };
+                                if let Some(ack) = ack { send(&mut socket, ack).await?; }
                             },
                             "release" if lease.valid(viewer,data["generation"].as_str().unwrap_or(""))=>release(&mut lease,backend,&mut socket).await?,
                             _=>{send(&mut socket,json!({"type":"close_viewer","viewer_id":viewer})).await?;if lease.owner()==viewer{release(&mut lease,backend,&mut socket).await?;}viewers.remove(viewer);},
@@ -803,6 +881,7 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn replaced_host_finishes_and_releases_without_reclaiming() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -930,6 +1009,7 @@ mod tests {
     }
     #[tokio::test]
     async fn frame_window_streams_only_credited_frames_and_stops_on_disconnect() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         use std::sync::atomic::{AtomicUsize, Ordering};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let target = PublisherTarget::from_attachment(
@@ -1046,6 +1126,113 @@ mod tests {
         assert_eq!(
             checked_result(json!({"status":"ok","secret":"extra"})),
             json!({"status":"unavailable"})
+        );
+    }
+}
+
+#[cfg(test)]
+mod microphone_tests {
+    use super::*;
+
+    #[test]
+    fn microphone_requires_current_owner_and_well_formed_request() {
+        let mut lease = Lease::default();
+        lease.acquire("owner");
+        let mut control = MicrophoneControl::default();
+        control.refreshed(Instant::now());
+        let request =
+            json!({"generation":lease.generation(),"requestID":"request-1","enabled":true});
+        for (viewer, data) in [
+            ("other", request.clone()),
+            (
+                "owner",
+                json!({"generation":"stale","requestID":"old","enabled":true}),
+            ),
+            (
+                "owner",
+                json!({"generation":lease.generation(),"enabled":true}),
+            ),
+            (
+                "owner",
+                json!({"generation":lease.generation(),"requestID":"bad","enabled":"true"}),
+            ),
+        ] {
+            assert!(
+                control
+                    .request(&lease, viewer, &data, |_, _| panic!("unauthorized apply"))
+                    .is_none()
+            );
+        }
+        let ack = control
+            .request(&lease, "owner", &request, |enabled, remaining| {
+                assert!(enabled);
+                assert!(remaining > Duration::ZERO && remaining <= crate::input::LEASE_DURATION);
+                true
+            })
+            .unwrap();
+        assert_eq!(ack["data"]["requestID"], "request-1");
+        assert_eq!(ack["data"]["generation"], lease.generation());
+        assert_eq!(ack["data"]["enabled"], true);
+        lease.clear();
+        assert!(
+            control
+                .request(&lease, "owner", &request, |_, _| panic!("revoked apply"))
+                .is_none()
+        );
+        let stopped = control.stopped().unwrap();
+        assert_eq!(stopped["data"]["requestID"], "request-1");
+        assert_eq!(stopped["data"]["enabled"], false);
+        assert!(control.stopped().is_none());
+        lease.acquire("owner");
+        assert!(
+            control
+                .request(&lease, "owner", &request, |_, _| panic!(
+                    "old generation after reacquire"
+                ))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn microphone_apply_failure_mute_and_receiver_failure_preserve_request_identity() {
+        let mut lease = Lease::default();
+        lease.acquire("owner");
+        let mut control = MicrophoneControl::default();
+        control.refreshed(Instant::now());
+        let mut request =
+            json!({"generation":lease.generation(),"requestID":"failed","enabled":true});
+        let ack = control
+            .request(&lease, "owner", &request, |_, _| false)
+            .unwrap();
+        assert_eq!(ack["data"]["enabled"], false);
+        assert!(control.active.is_none());
+        request["requestID"] = json!("live");
+        control
+            .request(&lease, "owner", &request, |_, _| true)
+            .unwrap();
+        let stopped = control.stopped().unwrap();
+        assert_eq!(stopped["data"]["requestID"], "live");
+        assert_eq!(stopped["data"]["generation"], lease.generation());
+        assert_eq!(stopped["data"]["enabled"], false);
+        control
+            .request(&lease, "owner", &request, |_, _| true)
+            .unwrap();
+        request["requestID"] = json!("mute");
+        request["enabled"] = json!(false);
+        let ack = control
+            .request(&lease, "owner", &request, |enabled, _| {
+                assert!(!enabled);
+                false
+            })
+            .unwrap();
+        assert_eq!(ack["data"]["requestID"], "mute");
+        assert!(control.stopped().is_none());
+        lease.acquire_at("owner", Instant::now() - crate::input::LEASE_DURATION);
+        request["generation"] = json!(lease.generation());
+        assert!(
+            control
+                .request(&lease, "owner", &request, |_, _| panic!("expired apply"))
+                .is_none()
         );
     }
 }

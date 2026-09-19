@@ -55,6 +55,7 @@ impl ScreenPublisher {
             runtime::Options {
                 video,
                 audio,
+                microphone_factory: nanocodex_remote::audio_duplex::native_factory().await,
                 require_video,
                 observation: Some(Arc::new(providers)),
                 broadcast: Box::new(broadcast),
