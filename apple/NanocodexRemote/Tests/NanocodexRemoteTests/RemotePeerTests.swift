@@ -145,3 +145,28 @@ final class RemotePeerTests: XCTestCase {
         await publisherQueue?.value; await viewerQueue?.value
     }
 }
+
+extension RemotePeerTests {
+    @MainActor func testAudioRequiresNegotiatedMicrophoneAndCloseRevokesState() async throws {
+        let peer = try RemotePeer(publishing: false, ice: [])
+        XCTAssertFalse(peer.microphoneEnabled)
+        XCTAssertTrue(peer.speakersEnabled)
+        // Rejection occurs before any OS permission request or capture device.
+        do {
+            try await peer.setMicrophoneEnabled(true)
+            XCTFail("A viewer without a negotiated return audio sender cannot enable microphone")
+        } catch {
+            XCTAssertFalse(peer.microphoneEnabled)
+        }
+        peer.setSpeakersEnabled(false)
+        XCTAssertFalse(peer.speakersEnabled)
+        try await peer.setMicrophoneEnabled(false)
+        peer.close()
+        peer.stopMicrophone()
+        XCTAssertFalse(peer.microphoneEnabled)
+        do {
+            try await peer.setMicrophoneEnabled(true)
+            XCTFail("Closed peer cannot request microphone access")
+        } catch { XCTAssertFalse(peer.microphoneEnabled) }
+    }
+}
