@@ -286,20 +286,20 @@ export async function fillBrowserVault(options: {
     let result;
     try {
       result = await cdp.send("Runtime.callFunctionOn", {
-      executionContextId: world.executionContextId,
-      functionDeclaration: BROWSER_VAULT_FILL_FUNCTION,
-      arguments: [request.expected_origin, request.username_selector ?? null, request.password_selector ?? null, request.username_selector ? login.username : null, request.password_selector ? login.password : null, request.submit].map(value => ({ value })),
-      returnByValue: true,
-      silent: true,
-    }, sid);
+        executionContextId: world.executionContextId,
+        functionDeclaration: BROWSER_VAULT_FILL_FUNCTION,
+        arguments: [request.expected_origin, request.username_selector ?? null, request.password_selector ?? null, request.username_selector ? login.username : null, request.password_selector ? login.password : null, request.submit].map(value => ({ value })),
+        returnByValue: true,
+        silent: true,
+      }, sid);
     } catch {
       // Submission can navigate and destroy the execution context before CDP
       // returns. Never claim failure or replay a possibly completed login.
       return { status: "outcome_unknown", next_action: "inspect_before_retry" };
     }
     if (result?.exceptionDetails) return { status: "outcome_unknown", next_action: "inspect_before_retry" };
-    if (!result?.exceptionDetails && result?.result?.value === "unsupported") return { status: "filled", submission: "action_required" };
-    if (result?.exceptionDetails || result?.result?.value !== true) throw new Error();
+    if (result?.result?.value === "unsupported") return { status: "filled", submission: "action_required" };
+    if (result?.result?.value !== true) throw new Error();
     return { status: request.submit ? "submitted" : "filled" };
   } catch { throw new Error("Vault login could not be filled safely"); }
 }
