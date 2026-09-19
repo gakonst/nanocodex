@@ -3349,8 +3349,8 @@ async fn terminal_reload_restarts_local_peers_without_stopping_durable_work() {
     let expected_path = format!("/v1/agents/{AGENT}/ws");
     for fixture in [&first, &second] {
         assert_eq!(
-            *fixture.socket_paths.lock().unwrap(),
-            [expected_path.clone()]
+            fixture.socket_paths.lock().unwrap().as_slice(),
+            std::slice::from_ref(&expected_path)
         );
     }
 
