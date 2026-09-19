@@ -34,7 +34,6 @@ mod screen_macos;
 mod screen_native;
 mod screen_publisher;
 mod screen_video;
-mod screen_video_frames;
 mod service;
 #[allow(dead_code)]
 mod skill;
