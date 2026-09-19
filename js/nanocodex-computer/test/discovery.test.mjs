@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { connectComputerTools } from "../index.mjs";
+import { connectComputerTools, createComputerTools } from "../index.mjs";
+import { hostedAppToolCatalog } from "nanocodex-tools/hosted-catalog";
 
 const context = { sessionId: "discovery", callId: "call", parentCallId: "", model: "fixture", signal: new AbortController().signal };
 function provider(mode = "ok") {
@@ -56,3 +57,29 @@ for (const [mode, message] of [["schema", /JSON schema object/], ["cursor", /rep
     await assert.rejects(connectComputerTools(provider(mode).options), message);
   });
 }
+
+
+test("matches Codex visibility semantics before emitting the account hosted catalog", async t => {
+  // codex-mcp/src/connection_manager/tool_catalog.rs::tool_is_model_visible
+  const cases = [
+    [undefined, true], [{}, true], [{ ui: {} }, true],
+    [{ ui: { visibility: "model" } }, true],
+    [{ ui: { visibility: null } }, true],
+    [{ ui: { visibility: [] } }, false],
+    [{ ui: { visibility: ["app"] } }, false],
+    [{ ui: { visibility: ["model"] } }, true],
+    [{ ui: { visibility: ["app", "model"] } }, true],
+    [{ ui: { visibility: [null, 3, { model: true }] } }, false],
+  ];
+  const definitions = cases.map(([meta], index) => ({
+    name: `visibility_${index}`, inputSchema: { type: "object" },
+    ...(meta === undefined ? {} : { _meta: meta }),
+  }));
+  const attachment = createComputerTools({ executable: process.execPath, transport: "mcp", definitions });
+  t.after(attachment.close);
+  const visible = cases.flatMap(([, visible], index) => visible ? [`mcp__cua_repl__visibility_${index}`] : []);
+  assert.deepEqual(attachment.definitions, definitions);
+  assert.deepEqual(attachment.tools.map(tool => tool.name), visible);
+  assert.deepEqual(hostedAppToolCatalog(attachment.tools).map(entry => entry.definition.name).sort(), [...visible].sort());
+  for (const definition of definitions) assert(attachment.tool(definition.name), "trusted lifecycle lookup retains hidden catalog entries");
+});

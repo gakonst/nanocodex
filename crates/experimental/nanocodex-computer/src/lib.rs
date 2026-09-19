@@ -748,6 +748,32 @@ pub fn output(value: Value) -> ToolResult {
 mod provider_contract_tests {
     use super::*;
 
+    #[test]
+    fn model_visibility_matches_pinned_codex_catalog_filter() {
+        // codex-mcp/src/connection_manager/tool_catalog.rs::tool_is_model_visible
+        for (metadata, expected) in [
+            (json!({}), true),
+            (json!({"_meta":{}}), true),
+            (json!({"_meta":{"ui":{}}}), true),
+            (json!({"_meta":{"ui":{"visibility":"model"}}}), true),
+            (json!({"_meta":{"ui":{"visibility":null}}}), true),
+            (json!({"_meta":{"ui":{"visibility":[]}}}), false),
+            (json!({"_meta":{"ui":{"visibility":["app"]}}}), false),
+            (json!({"_meta":{"ui":{"visibility":["model"]}}}), true),
+            (json!({"_meta":{"ui":{"visibility":["app","model"]}}}), true),
+            (
+                json!({"_meta":{"ui":{"visibility":[null,3,{"model":true}]}}}),
+                false,
+            ),
+        ] {
+            let mut raw = metadata;
+            raw["name"] = json!("fixture");
+            raw["inputSchema"] = json!({"type":"object"});
+            let definition: ProviderTool = serde_json::from_value(raw.clone()).unwrap();
+            assert_eq!(definition.model_visible(), expected, "{raw}");
+        }
+    }
+
     struct EchoProvider;
     #[async_trait]
     impl ComputerExecutor for EchoProvider {
