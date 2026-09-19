@@ -406,6 +406,30 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNil(request.url?.query)
         XCTAssertThrowsError(try client.request(path: "//example.org/v1/agents"))
     }
+    func testLocationContextIsOnlySentWithAgentAdmission() async throws {
+        let location: JSON = .object(["latitude": .number(37), "longitude": .number(-122),
+            "accuracy_meters": .number(100), "timestamp_ms": .number(1_789_776_000_000), "approximate": .bool(true)])
+        let fixture = try HTTPFixture { request in
+            let header = request.headers["x-nanocodex-client-context"] ?? "{}"
+            let context = (try? JSONDecoder().decode(JSON.self, from: Data(header.utf8))) ?? .null
+            let admission = request.method == "POST" && (request.path == "/v1/agents" || request.path.hasSuffix("/turns"))
+            XCTAssertEqual(context["location"], admission ? location : .null)
+            return .init(status: 200, body: request.path == "/v1/agents" ? #"{"agent_id":"created-agent"}"# : "{}")
+        }
+        defer { fixture.close() }
+        let client = ManagedClient(credential: try AccountCredential(origin: fixture.origin, apiKey: fixtureKey),
+            configuration: fixture.configuration, locationContext: { location })
+        defer { client.close() }
+        _ = try await client.create(requestID: "location-create")
+        _ = try await client.command(AgentCommand(agentID: "created-agent", input: "hello", kind: .followUp))
+        _ = try await client.json(path: "/v1/agents/created-agent")
+        _ = try await client.json(path: "/v1/connectors", method: "POST")
+        _ = try await client.command(AgentCommand(agentID: "created-agent", turnID: "turn", kind: .stop))
+        let plain = try client.request(path: "/v1/agents/created-agent", location: location)
+        let header = try XCTUnwrap(plain.value(forHTTPHeaderField: "x-nanocodex-client-context"))
+        XCTAssertEqual(try JSONDecoder().decode(JSON.self, from: Data(header.utf8))["location"], .null)
+    }
+
     func testDefaultAgentCreationUsesNoBodyAndRetainsRetryIdentity() async throws {
         var requests = 0
         let fixture = try HTTPFixture { request in

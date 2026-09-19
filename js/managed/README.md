@@ -195,7 +195,13 @@ a request cannot supply another user ID. The JavaScript managed SDK accepts
 `{ scope: "personal" }` on `listMemories`, `memory`, and `deleteMemory`.
 
 Clients may send bounded `x-nanocodex-client-context` JSON (`client`, `hand`,
-logical `cwd`, `timezone`). The SDK exposes `requestOrigin`; the native CLI sets
+logical `cwd`, `timezone`, optional `location`). Location contains numeric `latitude`,
+`longitude`, `accuracy_meters`, Unix-millisecond `timestamp_ms`, and boolean
+`approximate`. Only finite coordinates in geographic range, accuracy from 0 to
+100,000 meters, and samples at most five minutes old or 30 seconds in the future
+are retained. Invalid location is omitted without losing other context; freshness
+is checked again at startup projection. Location is unverified client-reported
+data and is never inferred from an attached Hand. The SDK exposes `requestOrigin`; the native CLI sets
 its own context automatically. The authenticated edge overwrites the principal
 assertion. HTTP, WebSocket, and voice admission pin caller context on the first
 turn; reconnects and retries cannot replace it. The snapshot is appended once,

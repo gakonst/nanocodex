@@ -6,6 +6,8 @@
     <string>Allow Nanocodex to access the contacts you choose for tasks you request.</string>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>Allow Nanocodex to use your location for nearby places and location-based tasks you request.</string>
+    <key>PHPhotoLibraryPreventAutomaticLimitedAccessAlert</key>
+    <true/>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>Allow Nanocodex to access the photos you choose for your tasks.</string>
     <key>NSSpeechRecognitionUsageDescription</key>

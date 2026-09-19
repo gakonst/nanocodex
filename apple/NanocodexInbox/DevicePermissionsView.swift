@@ -75,7 +75,7 @@ struct DevicePermissionsView: View {
                     access.requestLocation()
                 }
             } footer: {
-                Text("Allow location while using Nanocodex. You can choose approximate or precise location in iOS Settings.")
+                Text("Include a recent location with new tasks and allow agents to request your current location while using Nanocodex. Choose approximate or precise location in iOS Settings.")
             }
             Section {
                 permission("Photos", icon: "photo.on.rectangle", status: photosStatus,
@@ -87,7 +87,7 @@ struct DevicePermissionsView: View {
                 Text("Choose selected photos or your full library. Attaching photos with the system picker also works without library access.")
             }
             Section {
-                Text("Granting permission does not upload your contacts, location, or photo library.")
+                Text("Agents can search permitted contacts and photo metadata while this phone is connected as a Hand. New tasks include a recent location when location access is enabled.")
                     .foregroundStyle(.secondary)
             }
         }

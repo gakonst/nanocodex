@@ -2261,3 +2261,27 @@ test("managed clients freeze and send explicit Hand attribution separately from 
   assert.equal(captured.get("authorization"), `Bearer ${apiKey}`);
   await assert.rejects(Agent.list({ baseUrl: origin, apiKey, requestOrigin: { client: "desktop", user_id: "forged" } }), /invalid request origin/);
 });
+
+
+test("managed client carries a bounded optional location in the existing context header", async () => {
+  const location = { latitude: 37.5, longitude: -122.5, accuracy_meters: 25, timestamp_ms: Date.now(), approximate: false };
+  let captured;
+  await Agent.list({ baseUrl: origin, apiKey, requestOrigin: { client: "iphone", location }, fetch: async (_url, init) => {
+    captured = new Headers(init.headers);
+    return Response.json({ data: [] });
+  } });
+  assert.deepEqual(JSON.parse(captured.get("x-nanocodex-client-context")), { client: "iphone", location });
+});
+
+test("atomic create-and-prompt forwards caller location at first admission", async () => {
+  const location = { latitude: 37.5, longitude: -122.5, accuracy_meters: 25, timestamp_ms: Date.now(), approximate: true };
+  let captured;
+  const result = await Agent.createAndPrompt({ baseUrl: origin, apiKey, idempotencyKey: "location-start", input: "hello",
+    requestOrigin: { client: "iphone", location }, fetch: async (url, init) => {
+      assert.equal(new URL(url).pathname, "/v1/agent-runs");
+      captured = new Headers(init.headers);
+      return Response.json({ agent_id: agentId, turn_id: "turn-location", turn_idempotency_key: "turn-location", accepted_cursor: "1" });
+    } });
+  assert.equal(result.agent.id, agentId);
+  assert.deepEqual(JSON.parse(captured.get("x-nanocodex-client-context")), { client: "iphone", location });
+});

@@ -35,9 +35,9 @@ export function contextData(tag, value) {
 }
 
 /** Client-reported context is descriptive data, never identity or authorization. */
-export function requestOriginContext(value) {
+export function requestOriginContext(value, now = Date.now()) {
   if (!value || typeof value !== "object" || Array.isArray(value)
-    || Object.keys(value).some(key => !["client", "hand", "cwd", "timezone"].includes(key))) {
+    || Object.keys(value).some(key => !["client", "hand", "cwd", "timezone", "location"].includes(key))) {
     throw new TypeError("invalid request origin");
   }
   const result = {};
@@ -55,5 +55,19 @@ export function requestOriginContext(value) {
     try { new Intl.DateTimeFormat("en-US", { timeZone: result.timezone }); }
     catch { throw new TypeError("invalid request origin timezone"); }
   }
+  const location = requestOriginLocation(value.location, now);
+  if (location) result.location = location;
   return result;
+}
+
+/** Optional sensor data is bounded and revalidated when projected, never inferred from a Hand. */
+export function requestOriginLocation(value, now = Date.now()) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || !Number.isFinite(now)) return undefined;
+  const { latitude, longitude, accuracy_meters, timestamp_ms, approximate } = value;
+  if (![latitude, longitude, accuracy_meters, timestamp_ms].every(Number.isFinite)
+    || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180
+    || accuracy_meters < 0 || accuracy_meters > 100_000
+    || timestamp_ms < now - 300_000 || timestamp_ms > now + 30_000
+    || typeof approximate !== "boolean") return undefined;
+  return { latitude, longitude, accuracy_meters, timestamp_ms, approximate };
 }

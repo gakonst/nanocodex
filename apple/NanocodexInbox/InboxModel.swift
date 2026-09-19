@@ -901,14 +901,21 @@ final class InboxModel: ObservableObject {
             return false
         }
     }
+    /// Optional sensor context must never prompt or prevent a task from starting.
+    private static func promptLocationContext() async -> JSON? {
+        let provider = HandLocationProvider.shared
+        if let recent = provider.cachedSnapshot(maxAgeSeconds: 60) { return recent.json }
+        return try? await provider.currentSnapshot(timeoutSeconds: 2).json
+    }
+
     func connect(origin: String, key: String, saveCredential: Bool = true) async throws {
         let attempt = UUID(); connectionAttempt = attempt
         let credential = try AccountCredential(origin: origin.trimmingCharacters(in: .whitespacesAndNewlines), apiKey: key.trimmingCharacters(in: .whitespacesAndNewlines))
         let candidate: ManagedClient
         #if DEBUG && targetEnvironment(simulator)
-        candidate = ManagedClient(credential: credential, configuration: StartupFixture.enabled ? StartupFixture.configuration : nil)
+        candidate = ManagedClient(credential: credential, configuration: StartupFixture.enabled ? StartupFixture.configuration : nil, locationContext: { await Self.promptLocationContext() })
         #else
-        candidate = ManagedClient(credential: credential)
+        candidate = ManagedClient(credential: credential, locationContext: { await Self.promptLocationContext() })
         #endif
         let accountScope = SHA256.hash(data: Data((credential.origin + ":" + String(credential.apiKey.prefix(21))).utf8)).map { String(format: "%02x", $0) }.joined()
         let previousID = UserDefaults.standard.string(forKey: "inbox.selectedTab." + accountScope)
@@ -965,7 +972,7 @@ final class InboxModel: ObservableObject {
     }
     func musicConnectorClient() -> ManagedClient? {
         guard connected, !isDemo, let accountCredential else { return nil }
-        return ManagedClient(credential: accountCredential)
+        return ManagedClient(credential: accountCredential, locationContext: { await Self.promptLocationContext() })
     }
 
     func disconnect() throws {
