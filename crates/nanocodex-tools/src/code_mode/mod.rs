@@ -708,7 +708,7 @@ struct WaitArguments {
     terminate: bool,
 }
 
-fn default_wait_yield_time_ms() -> u64 {
+const fn default_wait_yield_time_ms() -> u64 {
     DEFAULT_WAIT_YIELD.as_millis() as u64
 }
 

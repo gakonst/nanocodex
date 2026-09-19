@@ -238,7 +238,7 @@ impl ManagedSessionState {
 
     /// Client provenance sidecar for durable snapshots. Never send it to the model.
     #[must_use]
-    pub fn client_authored(&self) -> &BTreeSet<String> {
+    pub const fn client_authored(&self) -> &BTreeSet<String> {
         &self.client_authored
     }
 

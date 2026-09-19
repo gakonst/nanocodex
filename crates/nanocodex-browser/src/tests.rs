@@ -1234,7 +1234,7 @@ async fn ios_backend_uses_explicit_appium_session_and_reports_real_engine() -> R
 }
 
 #[tokio::test]
-async fn code_mode_description_exposes_browser_action_schema() -> Result<()> {
+async fn code_mode_description_bounds_browser_action_schema() -> Result<()> {
     let (browser, _recording) = BrowserTool::recording();
     let tools = Tools::builder().without_defaults().tool(browser).build()?;
     let runtime = ToolRuntime::new_with_tools(".", None, None, &tools);
@@ -1251,82 +1251,11 @@ async fn code_mode_description_exposes_browser_action_schema() -> Result<()> {
 
     assert!(description.contains("await tools.browser"));
     assert!(description.contains("declare const tools: { browser("));
-    assert!(description.contains(r#"action: "open""#));
-    assert!(description.contains(r#"action: "reload""#));
-    assert!(description.contains(r#"action: "snapshot""#));
-    assert!(description.contains(r#"action: "snapshot_find""#));
-    assert!(description.contains(r#"action: "dom_snapshot""#));
-    assert!(description.contains(r#"action: "go_back""#));
-    assert!(description.contains(r#"action: "wait_for_text""#));
-    assert!(description.contains(r#"action: "wait_for_function""#));
-    assert!(description.contains("interactive?: boolean"));
-    assert!(description.contains(r#"action: "get_html""#));
-    assert!(description.contains(r#"action: "get_styles""#));
-    assert!(description.contains(r#"action: "screenshot""#));
-    assert!(description.contains("device_scale_factor?: number"));
-    assert!(description.contains(r#"action: "set_device""#));
-    assert!(description.contains(r#"action: "mobile_state""#));
-    assert!(description.contains(r#"action: "mobile_audit""#));
-    assert!(description.contains(r#"device: "iphone_se" | "iphone15_pro""#));
-    assert!(description.contains("horizontalOverflow: number"));
-    assert!(description.contains("target?:"));
-    assert!(description.contains(r#"action: "pdf""#));
-    assert!(description.contains(r#"action: "session_trace_start""#));
-    assert!(description.contains(r#"action: "mouse_move""#));
-    assert!(description.contains(r#"action: "matched_styles""#));
-    assert!(description.contains(r#"action: "event_listeners""#));
-    assert!(description.contains(r#"action: "storage_inspect""#));
-    assert!(description.contains(r#"action: "console""#));
-    assert!(description.contains(r#"action: "errors""#));
-    assert!(description.contains(r#"action: "network_requests""#));
-    assert!(description.contains(r#"action: "network_body""#));
-    assert!(description.contains(r#"action: "web_socket_messages""#));
-    assert!(description.contains(r#"action: "react_events""#));
-    assert!(description.contains(r#"action: "element_context""#));
-    assert!(description.contains(r#"action: "visual_diff""#));
-    assert!(description.contains(r#"action: "visual_trace_start""#));
-    assert!(description.contains(r#"action: "web_vitals""#));
-    assert!(description.contains(r#"action: "performance_trace_start""#));
-    assert!(description.contains(r#"action: "cpu_profile_start""#));
-    assert!(description.contains(r#"action: "coverage_start""#));
-    assert!(description.contains(r#"action: "heap_snapshot""#));
-    assert!(description.contains(r#"action: "heap_retainers""#));
-    assert!(description.contains(r#"action: "heap_inspect""#));
-    assert!(description.contains(r#"action: "video_start""#));
-    assert!(description.contains("Defaults to 30 and accepts values from 1 through 60"));
-    assert!(description.contains(r#"action: "webmcp_list""#));
-    assert!(description.contains(r#"action: "webmcp_invoke""#));
-    assert!(description.contains(r#"action: "webmcp_result""#));
-    assert!(description.contains(r#"action: "webmcp_cancel""#));
-    assert!(description.contains("Duplicate names require `frame_id`"));
-    assert!(description.contains(r#"action: "accessibility_audit""#));
-    assert!(description.contains(r#"action: "axe_audit""#));
-    assert!(description.contains(r#"action: "lighthouse_audit""#));
-    assert!(description.contains(r#"action: "crux""#));
-    assert!(description.contains(r#"action: "passkeys""#));
-    assert!(description.contains(r#"action: "passkey_use""#));
-    assert!(description.contains(r#"action: "passkey_new""#));
-    assert!(description.contains(r#"action: "passkey_auto""#));
-    assert!(description.contains(r#"action: "host_passkey_start""#));
-    assert!(description.contains(r#"action: "host_passkey_resume""#));
-    assert!(description.contains(r#"action: "export_har""#));
-    assert!(description.contains(r#"action: "list_frames""#));
-    assert!(description.contains(r#"action: "list_tabs""#));
-    assert!(description.contains(r#"action: "load_extension""#));
-    assert!(description.contains(r#"action: "trigger_extension_action""#));
-    assert!(description.contains("after?: number"));
-    assert!(description.contains("shadowTreeNodeCount: number"));
-    assert!(description.contains("bodyAvailable: boolean"));
-    assert!(description.contains("last_sequence"));
-    assert!(description.contains("limit?: number"));
-    assert!(description.contains("backgroundColor: string"));
-    assert!(description.contains("refs:"));
-    assert!(description.contains("modelImage?:"));
-    assert!(description.contains("maximumRetainedSize"));
-    assert!(description.contains("outcome?:"));
-    assert!(description.contains(r#"by: "role""#));
+    // The full browser schemas exceed the Codex-compatible declaration budget.
+    // Preserve the bounded fallback; toolSchema still exposes the complete schema
+    // (covered by deferred_browser_is_advertised_without_action_schema_bytes).
+    assert!(description.contains("browser(args: unknown): Promise<unknown>"));
     assert!(description.contains("Promise.all"));
-    assert!(description.contains("Promise<{"));
     Ok(())
 }
 

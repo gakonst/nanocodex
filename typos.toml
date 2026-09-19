@@ -28,6 +28,10 @@ extend-ignore-re = ['\b(?:req|resp|sess|msg)_[0-9a-f]+\b', '\b[0-9a-f]{16}-[A-Z]
 [type.py]
 extend-ignore-re = ["'truncat'"]
 
+# Symphonia exposes this exact time-base numerator field.
+[type.rust]
+extend-ignore-re = ['\btime_base\.numer\b']
+
 [default]
 # Exact executable name used by the remote-screen hand.
 # Chromium's Page.createIsolatedWorld parameter has this exact wire spelling.

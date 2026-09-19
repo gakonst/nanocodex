@@ -185,6 +185,7 @@ impl SessionSnapshot {
     }
 
     #[cfg(all(feature = "openai", not(target_family = "wasm")))]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_rollout(
         model: Model,
         thread_id: String,

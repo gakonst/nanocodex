@@ -183,7 +183,7 @@ impl ModelCheckpoint {
         &self.conversation.canonical_context
     }
 
-    pub(crate) fn client_authored(&self) -> &std::collections::BTreeSet<String> {
+    pub(crate) const fn client_authored(&self) -> &std::collections::BTreeSet<String> {
         self.conversation.managed.client_authored()
     }
 

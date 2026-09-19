@@ -35,7 +35,7 @@ struct JsonSchemaTypeRenderer<'a> {
 }
 
 impl<'a> JsonSchemaTypeRenderer<'a> {
-    fn new(root: &'a JsonValue) -> Self {
+    const fn new(root: &'a JsonValue) -> Self {
         Self {
             root,
             nested_schema_resource_depth: 0,
@@ -412,7 +412,7 @@ impl<'a> JsonSchemaTypeRenderer<'a> {
         }
     }
 
-    fn consume_render_work(&mut self, rendered_bytes: usize) -> bool {
+    const fn consume_render_work(&mut self, rendered_bytes: usize) -> bool {
         if rendered_bytes > self.remaining_render_work_bytes {
             self.render_work_budget_exhausted = true;
             false
@@ -467,7 +467,7 @@ fn percent_decode_uri_fragment(fragment: &str) -> Option<String> {
     String::from_utf8(decoded).ok()
 }
 
-fn decode_hex_digit(digit: u8) -> Option<u8> {
+const fn decode_hex_digit(digit: u8) -> Option<u8> {
     match digit {
         b'0'..=b'9' => Some(digit - b'0'),
         b'a'..=b'f' => Some(digit - b'a' + 10),

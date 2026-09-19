@@ -69,7 +69,7 @@ pub(super) fn wav_duration_seconds(audio_url: &str) -> Option<f64> {
     None
 }
 
-fn canonical_audio_mime(mime: &str) -> Option<&'static str> {
+const fn canonical_audio_mime(mime: &str) -> Option<&'static str> {
     if mime.eq_ignore_ascii_case("audio/wav")
         || mime.eq_ignore_ascii_case("audio/x-wav")
         || mime.eq_ignore_ascii_case("audio/wave")

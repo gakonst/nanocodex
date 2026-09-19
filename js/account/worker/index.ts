@@ -1,4 +1,4 @@
-import { webSearchRequest } from "./webSearchRequest";
+import { webSearchRequest } from "./webSearchRequest.ts";
 import {
   CHATGPT_LOGIN_TTL_MS,
   CHATGPT_SESSION_TTL_MS,
