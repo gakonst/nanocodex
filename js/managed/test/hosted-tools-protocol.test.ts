@@ -34,6 +34,16 @@ const outcome = {
 };
 
 describe("hosted tools socket protocol", () => {
+  it("accepts optional bounded catalog capabilities while retaining legacy frames", () => {
+    for (const capabilities of [[], ["turn_metadata"], ["future_capability"]]) {
+      expect(parseHostedToolsHostFrame(JSON.stringify({type: "catalog", tools: [tool], capabilities})))
+        .toEqual({type: "catalog", tools: [tool], capabilities});
+    }
+    for (const capabilities of [null, true, "turn_metadata", ["turn_metadata", "turn_metadata"], [""], Array.from({length: 17}, (_, i) => `cap_${i}`)]) {
+      expect(() => parseHostedToolsHostFrame(JSON.stringify({type: "catalog", tools: [tool], capabilities}))).toThrow();
+    }
+  });
+
   it("parses the exact executor-to-DO frame set", () => {
     const machines = [{
       id: "laptop",

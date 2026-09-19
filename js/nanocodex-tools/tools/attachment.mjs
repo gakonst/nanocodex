@@ -218,6 +218,7 @@ function createClient(endpoint, transport, options, admission, machines, attachm
     state.catalogSent = true;
     send(socket, {
       type: "catalog",
+      capabilities: ["turn_metadata"],
       tools: state.catalog,
       ...(state.machines.length === 0 ? {} : { machines: state.machines }),
       ...(state.attachmentId === undefined ? {} : { attachment_id: state.attachmentId }),

@@ -154,7 +154,8 @@ async fn catalog_call_result_and_drain_use_exact_frames() {
         let mut socket = accept(&listener).await;
         let catalog = recv_json(&mut socket).await;
         assert_eq!(catalog["type"], "catalog");
-        assert_eq!(catalog.as_object().unwrap().len(), 4);
+        assert_eq!(catalog.as_object().unwrap().len(), 5);
+        assert_eq!(catalog["capabilities"], json!(["turn_metadata"]));
         assert_eq!(catalog["tools"][0]["definition"]["name"], "echo");
         assert_eq!(catalog["attachment_id"], "machine-1");
         assert_eq!(

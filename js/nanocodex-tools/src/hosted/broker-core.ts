@@ -103,6 +103,7 @@ type HostedToolsSocketAttachment = {
   leaseId?: string;
   generation?: number;
   active?: true;
+  turnMetadata?: true;
   draining?: true;
   machines?: readonly HostedMachine[];
 };
@@ -889,6 +890,7 @@ export class HostedToolsBrokerCore {
       {
         ...candidate,
         active: true,
+        ...(frame.capabilities?.includes("turn_metadata") ? { turnMetadata: true as const } : {}),
         ...(frame.machines === undefined ? {} : { machines: frame.machines }),
       } satisfies HostedToolsSocketAttachment,
     );
@@ -1484,6 +1486,13 @@ export class HostedToolsBrokerCore {
   }
 
   #send(socket: HostedToolsSocket, frame: HostedToolsManagedFrame): void {
+    // Retain full identity in the ledger, but preserve the legacy wire shape
+    // until this exact socket generation advertises metadata support.
+    if (frame.type === "call" && this.#attachment(socket)?.turnMetadata !== true) {
+      const { turn_id: _turnId, ...legacy } = frame;
+      socket.send(JSON.stringify(legacy));
+      return;
+    }
     socket.send(JSON.stringify(frame));
   }
 

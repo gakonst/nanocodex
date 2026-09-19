@@ -109,7 +109,7 @@ lines.on("line", (line) => {
             type: "text",
             text,
           }],
-          structuredContent: { echoed: message, text },
+          structuredContent: { echoed: message, text, ...(message === "__metadata__" ? { request_meta: request.params._meta ?? {} } : {}) },
           isError: failed,
         },
       });

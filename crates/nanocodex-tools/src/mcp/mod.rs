@@ -233,8 +233,8 @@ impl PreparedMcpTool {
         self.timeout
     }
 
-    pub(crate) async fn execute(&self, input: Value) -> ToolOutput {
-        execute_mcp_entry(&self.entry, input, self.timeout).await
+    pub(crate) async fn execute(&self, input: Value, context: ToolContext<'_>) -> ToolOutput {
+        execute_mcp_entry(&self.entry, input, self.timeout, context).await
     }
 }
 
@@ -600,17 +600,22 @@ impl DynamicToolProvider for Mcp {
         &self,
         name: &str,
         input: Value,
-        _context: ToolContext<'_>,
+        context: ToolContext<'_>,
     ) -> Option<ToolOutput> {
         let entry = self.state.ready_entry(name).await?;
         if !entry.tool_exposure.is_callable() {
             return None;
         }
-        Some(execute_mcp_entry(&entry, input, entry.timeout).await)
+        Some(execute_mcp_entry(&entry, input, entry.timeout, context).await)
     }
 }
 
-async fn execute_mcp_entry(entry: &ToolEntry, input: Value, timeout: Duration) -> ToolOutput {
+async fn execute_mcp_entry(
+    entry: &ToolEntry,
+    input: Value,
+    timeout: Duration,
+    context: ToolContext<'_>,
+) -> ToolOutput {
     let Value::Object(arguments) = input else {
         return ToolOutput::error(format!(
             "MCP tool {} requires an object argument",
@@ -624,7 +629,14 @@ async fn execute_mcp_entry(entry: &ToolEntry, input: Value, timeout: Duration) -
         .collect::<Vec<_>>()
         .join(",");
     let argument_count = arguments.len();
-    let params = CallToolRequestParams::new(entry.remote_name.clone()).with_arguments(arguments);
+    let mut params =
+        CallToolRequestParams::new(entry.remote_name.clone()).with_arguments(arguments);
+    if let Some(turn_id) = context.turn_id() {
+        params.meta.get_or_insert_with(rmcp::model::RequestMetaObject::new).0.0.insert(
+            "x-codex-turn-metadata".into(),
+            json!({"session_id":context.session_id(), "thread_id":context.session_id(), "turn_id":turn_id, "call_id":context.call_id(), "model":context.model()}),
+        );
+    }
     let span = info_span!(
         target: "nanocodex_tools",
         "mcp.tool_call",
@@ -1302,6 +1314,46 @@ mod tests {
             ["mcp__fixture__echo"],
             "discovered MCP tools must be callable through Code Mode from its first cell"
         );
+    }
+
+    #[tokio::test]
+    async fn direct_and_prepared_mcp_calls_preserve_host_turn_metadata() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/mcp-stdio-server.mjs");
+        let mcp = Mcp::builder()
+            .server(
+                "fixture",
+                McpServer::stdio("node").arg(fixture.to_string_lossy()),
+            )
+            .build()
+            .unwrap();
+        let prepared = mcp
+            .prepared_snapshot(Duration::from_secs(10))
+            .await
+            .unwrap();
+        for (call, turn) in [
+            ("one", Some("session:7")),
+            ("two", Some("session:7")),
+            ("three", Some("session:8")),
+            ("legacy", None),
+        ] {
+            let context = test_context("session", call).with_turn_id(turn);
+            let expected = turn.map(|turn| json!({"session_id":"session", "thread_id":"session", "turn_id":turn, "call_id":call, "model":MODEL})).unwrap_or(Value::Null);
+            let input = json!({"message":"__metadata__"});
+            let direct = mcp
+                .execute("mcp__fixture__echo", input.clone(), context)
+                .await
+                .unwrap();
+            assert_eq!(
+                direct.structured_result()["structuredContent"]["request_meta"]["x-codex-turn-metadata"],
+                expected
+            );
+            let attached = prepared[0].execute(input, context).await;
+            assert_eq!(
+                attached.structured_result()["structuredContent"]["request_meta"]["x-codex-turn-metadata"],
+                expected
+            );
+        }
     }
 
     #[tokio::test]

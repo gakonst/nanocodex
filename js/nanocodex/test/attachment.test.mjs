@@ -30,6 +30,7 @@ test("attachment publishes one exact catalog and exchanges ready, call, result, 
   await waitFor(() => socket.frames().length === 1);
   assert.deepEqual(socket.frames()[0], {
     type: "catalog",
+    capabilities: ["turn_metadata"],
     tools: [{
       provider: "javascript",
       remote_name: "echo",
@@ -107,6 +108,7 @@ test("Tools publishes its non-secret user-machine snapshot with each attachment"
   await waitFor(() => socket.frames().length === 1);
   assert.deepEqual(socket.frames()[0], {
     type: "catalog",
+    capabilities: ["turn_metadata"],
     tools: [],
     attachment_id: "laptop",
     machines: [{

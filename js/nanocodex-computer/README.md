@@ -111,6 +111,10 @@ in `x-codex-turn-metadata`, alongside the legacy `thread_id`, `call_id`, and
 shared by calls in that turn, including Code Mode calls after a yield. It is never
 derived from a tool call ID. Direct/older SDK callers without turn context omit
 `turn_id`; those callers cannot satisfy providers that require turn attribution.
-Hosted calls require the broker and attachment executor to support the optional
-`turn_id` frame field; older executors reject it as an unknown field. Update both
-sides before enabling turn-aware hosted calls.
+Attachment executors advertise `turn_metadata` in their catalog capabilities.
+The broker includes `turn_id` only for the exact socket generation that advertised
+support; legacy executors keep their original call frame shape, including after
+broker upgrades or reconnects. The broker retains the actual turn identity in its
+call ledger even when a legacy executor cannot receive it. Deploy the updated
+broker before rolling out new executors, since older brokers reject the new
+catalog capability field. Existing Hands need no coordinated upgrade.

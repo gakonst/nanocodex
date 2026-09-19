@@ -397,6 +397,7 @@ describe("account Hosted Tools provider", () => {
     const ready = nextFrame(socket);
     socket.send(JSON.stringify({
       type: "catalog",
+      capabilities: ["turn_metadata"],
       tools: snapshot.tools.map(({ definition, route_token: _routeToken, ...entry }) => ({
         ...entry,
         definition: { ...definition, defer_loading: undefined },
@@ -468,6 +469,7 @@ describe("account Hosted Tools provider", () => {
     const successorReady = nextFrame(successor);
     successor.send(JSON.stringify({
       type: "catalog",
+      capabilities: ["turn_metadata"],
       tools: snapshot.tools.map(({ definition, route_token: _routeToken, ...entry }) => ({
         ...entry,
         definition: { ...definition, defer_loading: undefined },
