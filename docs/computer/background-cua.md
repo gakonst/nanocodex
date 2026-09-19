@@ -186,19 +186,12 @@ live input plugin or reboot the desktop merely to complete rollback.
 
 ## Concurrent window bindings and agent cursors
 
-On a provider that exposes native window discovery, initialize CUA, discover the
-window IDs, then retain a separate handle for each target:
-
-```javascript
-const windows = await cua.listWindows("Example App");
-const first = await cua.getApp("Example App", { windowId: windows[0].windowId });
-const second = await cua.getApp("Example App", { windowId: windows[1].windowId });
-```
-
-Choose windows from their observed titles and IDs. Never infer an ID or reuse an
-old binding after its window closes. Native executable authorization remains
-separate from the exact-window session identity. AX handles, screenshot geometry
-and observation history must remain valid independently for each bound window.
+The native backend retains explicit window identities for host integrations.
+The upstream public CUA facade binds an app with `cua.getApp("Example App")`;
+it does not expose `cua.listWindows()` or a `getApp` window-options argument.
+Host integrations that select exact windows must preserve native executable
+authorization separately from the window identity. AX handles, screenshot
+geometry and observation history must remain valid for that bound window.
 
 Mac applications share keyboard focus across their own windows. A cooperative
 cross-process lock covers each synthetic-focus/input transaction for a PID;

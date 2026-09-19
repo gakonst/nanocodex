@@ -118,8 +118,8 @@ let app = await cua.getApp("TextEdit");
 await app.getAXState();
 await nodeRepl.emitImage(await app.getScreenshot({ emit: false }));
 
-// macOS: capture the main display without opening or activating an app.
-await cua.getScreenshot();
+// Or emit the bound app screenshot directly.
+await app.getScreenshot();
 ```
 
 On Linux use `cua.computer`, whose returned documentation describes desktop
