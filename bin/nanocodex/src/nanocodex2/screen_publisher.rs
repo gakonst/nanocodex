@@ -48,6 +48,11 @@ impl ScreenPublisher {
             Box::pin(async move { result.await.map_err(|error| Box::new(error) as _) })
         });
         let machine = runtime::Machine::new(machine.id(), machine.name()).map_err(error)?;
+        let microphone_factory = if video.is_some() {
+            nanocodex_remote::audio_duplex::native_factory(machine.id()).await
+        } else {
+            None
+        };
         runtime::Publisher::start(
             &publisher_target(target)?,
             &machine,
@@ -55,8 +60,7 @@ impl ScreenPublisher {
             runtime::Options {
                 video,
                 audio,
-                microphone_factory: nanocodex_remote::audio_duplex::native_factory(machine.id())
-                    .await,
+                microphone_factory,
                 require_video,
                 observation: Some(Arc::new(providers)),
                 broadcast: Box::new(broadcast),

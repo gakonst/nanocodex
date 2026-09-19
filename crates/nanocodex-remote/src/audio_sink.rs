@@ -96,18 +96,12 @@ mod linux {
     }
     impl Drop for Modules {
         fn drop(&mut self) {
-            let modules = std::mem::take(&mut self.ids);
-            if !modules.is_empty() {
-                // Cleanup also works when the async runtime has shut down.
-                let _ = std::thread::Builder::new()
-                    .name("remote-mic-cleanup".into())
-                    .spawn(move || {
-                        for id in modules.into_iter().rev() {
-                            if let Err(error) = pactl(&["unload-module", &id]) {
-                                tracing::warn!(%error, "remote microphone module cleanup failed");
-                            }
-                        }
-                    });
+            // The stable name must be released before publisher shutdown can
+            // exit the process. Each command is bounded to two seconds.
+            for id in std::mem::take(&mut self.ids).into_iter().rev() {
+                if let Err(error) = pactl(&["unload-module", &id]) {
+                    tracing::warn!(%error, "remote microphone module cleanup failed");
+                }
             }
         }
     }
