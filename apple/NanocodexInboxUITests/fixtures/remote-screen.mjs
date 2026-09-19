@@ -9,6 +9,22 @@ const { WebSocketServer } = require('ws');
 const jpeg = readFileSync(new URL('./screen.jpg', import.meta.url)).toString('base64');
 const surface = { id: 'desktop', machine_id: 'fixture', machine_name: 'Local workspace', name: 'Dashboard', kind: 'vm', width: 960, height: 600, controllable: false, generation: 'fixture-1', transport: 'frames-v1' };
 const controller = { ...surface, id: 'controller', name: 'Synthetic controller', controllable: true };
+const gamepad = { ...controller, id: 'gamepad', name: 'Synthetic native gamepad' };
+const gamepadButtons = new Set(['a', 'b', 'x', 'y', 'leftShoulder', 'rightShoulder', 'back', 'start', 'leftStick', 'rightStick', 'dpadUp', 'dpadDown', 'dpadLeft', 'dpadRight']);
+function gamepadState(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const fields = ['leftX', 'leftY', 'rightX', 'rightY', 'leftTrigger', 'rightTrigger', 'buttons'];
+  if (Object.keys(value).length !== fields.length || Object.keys(value).some(key => !fields.includes(key))) return;
+  const state = {};
+  for (const key of ['leftX', 'leftY', 'rightX', 'rightY', 'leftTrigger', 'rightTrigger']) {
+    const number = value[key];
+    if (typeof number !== 'number' || !Number.isFinite(number) || number > 1 || number < (key.endsWith('Trigger') ? 0 : -1)) return;
+    state[key] = number;
+  }
+  if (!Array.isArray(value.buttons) || value.buttons.length > gamepadButtons.size || new Set(value.buttons).size !== value.buttons.length || value.buttons.some(button => !gamepadButtons.has(button))) return;
+  state.buttons = [...new Set(value.buttons)];
+  return state;
+}
 const events = [];
 const connections = new Map();
 let cursor = 0;
@@ -35,13 +51,15 @@ const server = createServer((req, res) => {
   if (req.method === 'GET' && url.pathname === '/fixture/events') {
     const after = Number(url.searchParams.get('after') || 0);
     res.end(JSON.stringify({ cursor, events: events.filter(event => event.cursor > after) }));
-  } else res.end(JSON.stringify(url.pathname.endsWith('/screens') ? { surfaces: [surface, controller] } : {}));
+  } else res.end(JSON.stringify(url.pathname.endsWith('/screens') ? { surfaces: [surface, controller, gamepad] } : {}));
 });
 const sockets = new WebSocketServer({ server, maxPayload: 8192 });
 sockets.on('connection', (socket, req) => {
   const connection = randomUUID();
   connections.set(connection, socket);
-  const synthetic = new URL(req.url, 'http://127.0.0.1').searchParams.get('surface_id') === 'controller';
+  const surfaceID = new URL(req.url, 'http://127.0.0.1').searchParams.get('surface_id');
+  const nativeGamepad = surfaceID === 'gamepad';
+  const synthetic = nativeGamepad || surfaceID === 'controller';
   let generation;
   let lastSequence = 0;
   const send = message => socket.send(JSON.stringify(message));
@@ -57,7 +75,7 @@ sockets.on('connection', (socket, req) => {
       if (control.type === 'acquire' && !generation) {
         generation = randomUUID(); lastSequence = 0;
         record(connection, { type: 'acquire', generation });
-        send({ type: 'control', data: { type: 'granted', generation, relativePointer: true } });
+        send({ type: 'control', data: { type: 'granted', generation, relativePointer: true, ...(nativeGamepad ? { gamepad: true } : {}) } });
       } else if (generation && control.generation === generation) {
         if (control.type === 'renew') record(connection, { type: 'renew', generation });
         if (control.type === 'release') {
@@ -70,11 +88,14 @@ sockets.on('connection', (socket, req) => {
     if (message.type === 'input' && synthetic && generation) {
       const event = message.data;
       if (!event || event.generation !== generation || !Number.isSafeInteger(event.sequence) || event.sequence <= lastSequence) return;
-      if (!['move', 'relativeMove', 'button', 'scroll', 'key', 'text', 'releaseAll'].includes(event.kind)) return;
+      if (!['move', 'relativeMove', 'button', 'scroll', 'key', 'text', 'releaseAll', 'gamepad'].includes(event.kind)) return;
+      const state = event.kind === 'gamepad' && nativeGamepad ? gamepadState(event.gamepad) : undefined;
+      if (event.kind === 'gamepad' && !state) return;
       lastSequence = event.sequence;
       // Bound both count and payload, including text. No OS input APIs exist here.
       const input = Object.fromEntries(Object.entries(event).filter(([key]) => ['kind', 'sequence', 'generation', 'x', 'y', 'button', 'down', 'key', 'deltaX', 'deltaY'].includes(key)));
       if (typeof event.text === 'string') input.text = event.text.slice(0, 128);
+      if (state) input.gamepad = state;
       record(connection, { type: 'input', input });
     }
   });

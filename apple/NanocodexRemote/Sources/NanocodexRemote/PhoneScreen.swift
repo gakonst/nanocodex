@@ -175,6 +175,7 @@ final class PhoneScreen: NSObject, RemoteCapture, URLSessionDataDelegate, @unche
             case 74: try enqueue("/wda/homescreen", [:])
             default: break
             }
+        case .gamepad: throw RemoteError.unavailable
         case .releaseAll: releaseAll()
         case .relativeMove: throw RemoteError.invalidMessage // XCTest has no persistent mouse pointer.
         case .move: break // XCTest submits complete gestures when the pointer lifts.

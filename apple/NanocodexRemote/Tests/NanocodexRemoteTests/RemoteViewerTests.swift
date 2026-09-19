@@ -204,6 +204,102 @@ final class RemoteViewerTests: XCTestCase {
         XCTAssertFalse(viewer.supportsRelativePointer)
     }
 
+    @MainActor func testGamepadRequiresCurrentExplicitGrant() async throws {
+        let service = try service { _ in XCTFail("No ICE for frames") }
+        defer { service.close() }
+        var catalog = surface("gamepad-capability")
+        catalog["transport"] = "frames-v1"; catalog["frame_window"] = 6
+        let hand = try JSONDecoder().decode(RemoteHand.self, from: JSONSerialization.data(withJSONObject: catalog))
+        let socket = ViewerSocket(), viewer = RemoteViewer()
+        socket.onConnect = { socket.onMessage(.init(type: "ready")) }
+        viewer.makeSignaling = { _ in socket }
+        defer { viewer.close() }
+        await viewer.connect(service: service, hand: hand)
+        let ready = expectation(description: "Decoded frame connects viewer")
+        socket.onSend = { if $0.type == "frame_request" { ready.fulfill() } }
+        socket.onMessage(try jpegFrame())
+        await fulfillment(of: [ready], timeout: 3)
+        socket.onSend = { _ in }
+        func deliver(_ control: RemoteControlMessage) {
+            var message = RemoteMessage(type: "control"); message.data = .control(control)
+            socket.onMessage(message)
+        }
+        func gamepadInputs() {
+            viewer.gamepad(.init(leftX: 0.5, buttons: ["a"]))
+            viewer.gamepad(.init())
+            viewer.gamepad(.init(rightTrigger: 1))
+        }
+        XCTAssertFalse(viewer.supportsGamepad)
+        var changes = 0
+        let metadataObserver = viewer.objectWillChange.sink { changes += 1 }
+        defer { metadataObserver.cancel() }
+        // Absent capability is the deployed older-host wire format.
+        for capability: Bool? in [nil, false, true] {
+            viewer.takeControl()
+            let changesBeforeGrant = changes
+            let grant = RemoteControlMessage(type: .granted, generation: "lease", gamepad: capability)
+            deliver(try JSONDecoder().decode(RemoteControlMessage.self, from: JSONEncoder().encode(grant)))
+            XCTAssertTrue(viewer.controlling)
+            XCTAssertGreaterThan(changes, changesBeforeGrant, "Control grants must update SwiftUI metadata observers")
+            XCTAssertEqual(viewer.supportsGamepad, capability == true)
+            let before = socket.messages.count
+            gamepadInputs()
+            XCTAssertEqual(socket.messages.count - before, capability == true ? 3 : 0)
+            if capability == true {
+                let snapshots = socket.messages.dropFirst(before).compactMap { message -> RemoteInput? in
+                    guard case .input(let event) = message.data else { return nil }; return event
+                }
+                XCTAssertEqual(snapshots.map(\.kind), [.gamepad, .gamepad, .gamepad])
+                XCTAssertEqual(snapshots.map(\.generation), ["lease", "lease", "lease"])
+                XCTAssertEqual(snapshots.map(\.sequence), [1, 2, 3])
+                XCTAssertEqual(snapshots.compactMap(\.gamepad), [
+                    .init(leftX: 0.5, buttons: ["a"]), .init(), .init(rightTrigger: 1)])
+            }
+            viewer.input(kind: .button, x: 0.5, y: 0.5, button: 0, down: true)
+            XCTAssertEqual(socket.messages.count - before, capability == true ? 4 : 1,
+                "Absolute pointer input stays compatible with older hosts")
+            deliver(.init(type: .revoked, generation: "stale"))
+            XCTAssertEqual(viewer.supportsGamepad, capability == true)
+            XCTAssertTrue(viewer.controlling)
+            deliver(.init(type: .revoked, generation: "lease"))
+            XCTAssertFalse(viewer.supportsGamepad)
+            XCTAssertFalse(viewer.controlling)
+            let revokedCount = socket.messages.count
+            gamepadInputs()
+            XCTAssertEqual(socket.messages.count, revokedCount)
+        }
+        viewer.takeControl()
+        deliver(.init(type: .granted, generation: "release", gamepad: true))
+        viewer.gamepad(.init(buttons: ["a"]))
+        let beforeRelease = socket.messages.count
+        viewer.releaseControl()
+        let releaseMessages = Array(socket.messages.dropFirst(beforeRelease))
+        XCTAssertEqual(releaseMessages.map(\.type), ["input", "control"])
+        if case .input(let event) = releaseMessages.first?.data {
+            XCTAssertEqual(event.gamepad, .init())
+            XCTAssertEqual(event.generation, "release")
+        } else { XCTFail("Expected neutral snapshot before releasing lease") }
+        XCTAssertFalse(viewer.supportsGamepad)
+        deliver(.init(type: .revoked))
+        viewer.takeControl()
+        viewer.releaseControl()
+        deliver(.init(type: .granted, generation: "cancelled", gamepad: true))
+        XCTAssertFalse(viewer.supportsGamepad, "A cancelled acquire cannot enable gamepad input")
+        deliver(.init(type: .revoked))
+        viewer.takeControl()
+        deliver(.init(type: .granted, generation: "disconnect", gamepad: true))
+        XCTAssertTrue(viewer.supportsGamepad)
+        let beforeSuspend = socket.messages.count
+        viewer.suspend()
+        let disconnectMessages = Array(socket.messages.dropFirst(beforeSuspend))
+        XCTAssertEqual(disconnectMessages.prefix(2).map(\.type), ["input", "control"])
+        if case .input(let event) = disconnectMessages.first?.data {
+            XCTAssertEqual(event.gamepad, .init())
+            XCTAssertEqual(event.generation, "disconnect")
+        } else { XCTFail("Expected neutral snapshot before disconnect") }
+        XCTAssertFalse(viewer.supportsGamepad)
+    }
+
     private func jpegFrame(width: Int = 3) throws -> RemoteMessage {
         let context = try XCTUnwrap(CGContext(data: nil, width: width, height: 2, bitsPerComponent: 8,
             bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))

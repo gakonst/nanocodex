@@ -22,6 +22,7 @@ struct RemoteControlMessage: Codable, Sendable {
     let type: Kind
     var generation: String?
     var relativePointer: Bool?
+    var gamepad: Bool?
 }
 
 // Hosts acknowledge release with `revoked`, including older hosts that omit a
@@ -93,6 +94,7 @@ public final class RemoteViewer: ObservableObject {
     @Published public private(set) var track: RTCVideoTrack?
     @RemoteFramePublication public private(set) var frame: CGImage? = nil
     @Published public private(set) var supportsRelativePointer = false
+    @Published public private(set) var supportsGamepad = false
     @Published public private(set) var controlling = false
     @Published public private(set) var connected = false
     @Published public private(set) var hand: RemoteHand?
@@ -342,21 +344,26 @@ public final class RemoteViewer: ObservableObject {
     }
 
     public func releaseControl() {
+        releaseGamepad()
         let release = control.release()
-        leaseRenewal?.cancel(); leaseRenewal = nil; supportsRelativePointer = false; controlling = false
+        leaseRenewal?.cancel(); leaseRenewal = nil; supportsRelativePointer = false; supportsGamepad = false; controlling = false
         if let release { sendControl(release) }
         if connected { status = "Watching" }
     }
 
+    public func gamepad(_ state: RemoteGamepadState) {
+        input(kind: .gamepad, gamepad: state)
+    }
+
     public func input(kind: RemoteInput.Kind, x: Double? = nil, y: Double? = nil, button: Int? = nil,
-                      down: Bool? = nil, key: UInt16? = nil, text: String? = nil, deltaX: Double? = nil, deltaY: Double? = nil) {
-        guard controlling, let generation else { return }
+                      down: Bool? = nil, key: UInt16? = nil, text: String? = nil, deltaX: Double? = nil, deltaY: Double? = nil, gamepad: RemoteGamepadState? = nil) {
+        guard controlling, let generation, kind != .gamepad || (connected && supportsGamepad) else { return }
         let needsRelativePointer = kind == .relativeMove ||
             ((kind == .button || kind == .scroll) && x == nil && y == nil)
         guard !needsRelativePointer || supportsRelativePointer else { return }
         sequence += 1
         let event = RemoteInput(kind: kind, sequence: sequence, generation: generation, x: x, y: y,
-            button: button, down: down, key: key, text: text, deltaX: deltaX, deltaY: deltaY)
+            button: button, down: down, key: key, text: text, deltaX: deltaX, deltaY: deltaY, gamepad: gamepad)
         do {
             try event.validate()
             if hand?.transport == .frames {
@@ -371,7 +378,18 @@ public final class RemoteViewer: ObservableObject {
         detach(); hand = nil; service = nil; status = "Disconnected"
     }
 
+    // Best effort only: transport failure during cleanup must not recurse into detach.
+    private func releaseGamepad() {
+        guard controlling, supportsGamepad, let generation else { return }
+        sequence += 1
+        let event = RemoteInput(kind: .gamepad, sequence: sequence, generation: generation, gamepad: .init())
+        if hand?.transport == .frames {
+            var message = RemoteMessage(type: "input"); message.data = .input(event); signaling?.send(message)
+        } else if let data = try? JSONEncoder().encode(event) { try? peer?.send(data) }
+    }
+
     private func detach() {
+        releaseGamepad()
         broadcastTimer?.cancel(); broadcastTimer = nil; broadcastWaiting = false; broadcastRequest = nil
         broadcastStatus = "idle"; broadcastError = nil
         epoch = UUID(); retryTask?.cancel(); retryTask = nil
@@ -384,7 +402,7 @@ public final class RemoteViewer: ObservableObject {
                 signaling?.send(relay)
             } else if let data = try? JSONEncoder().encode(release) { try? peer?.send(data) }
         }
-        control = RemoteViewerControl(); supportsRelativePointer = false; controlling = false
+        control = RemoteViewerControl(); supportsRelativePointer = false; supportsGamepad = false; controlling = false
         leaseRenewal?.cancel(); leaseRenewal = nil
         connectionSetup?.cancel(); connectionSetup = nil
         signalQueue?.cancel(); signalQueue = nil
@@ -541,8 +559,10 @@ public final class RemoteViewer: ObservableObject {
             // Ignored stale revocations must not alter a newer lease's capability.
             if message.type == .granted, generation != nil {
                 supportsRelativePointer = message.relativePointer == true
+                supportsGamepad = message.gamepad == true
             } else if generation == nil {
                 supportsRelativePointer = false
+                supportsGamepad = false
             }
             controlling = generation != nil
             if let generation, generation != previous {
@@ -1038,6 +1058,8 @@ public final class RemoteMacHost: ObservableObject {
         do {
             if let event = try? RemoteInput.decode(data) {
                 guard (event.kind == .move) == motion else { throw RemoteError.invalidMessage }
+                // Apple hosts do not advertise or implement virtual gamepad injection.
+                guard event.kind != .gamepad else { throw RemoteError.unavailable }
                 if try lease.accept(event, from: viewerID, now: now) { try input?.apply(event) }
                 return
             }

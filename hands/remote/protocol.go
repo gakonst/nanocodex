@@ -10,17 +10,18 @@ import (
 )
 
 type remoteInput struct {
-	Kind       string   `json:"kind"`
-	Sequence   uint64   `json:"sequence"`
-	Generation string   `json:"generation"`
-	X          *float64 `json:"x,omitempty"`
-	Y          *float64 `json:"y,omitempty"`
-	Button     *int     `json:"button,omitempty"`
-	Down       *bool    `json:"down,omitempty"`
-	Key        *uint16  `json:"key,omitempty"`
-	Text       *string  `json:"text,omitempty"`
-	DeltaX     *float64 `json:"deltaX,omitempty"`
-	DeltaY     *float64 `json:"deltaY,omitempty"`
+	Gamepad    *gamepadState `json:"gamepad,omitempty"`
+	Kind       string        `json:"kind"`
+	Sequence   uint64        `json:"sequence"`
+	Generation string        `json:"generation"`
+	X          *float64      `json:"x,omitempty"`
+	Y          *float64      `json:"y,omitempty"`
+	Button     *int          `json:"button,omitempty"`
+	Down       *bool         `json:"down,omitempty"`
+	Key        *uint16       `json:"key,omitempty"`
+	Text       *string       `json:"text,omitempty"`
+	DeltaX     *float64      `json:"deltaX,omitempty"`
+	DeltaY     *float64      `json:"deltaY,omitempty"`
 }
 
 func decodeInput(data []byte) (remoteInput, error) {
@@ -48,11 +49,16 @@ func (event remoteInput) validate() error {
 			return invalid
 		}
 	}
+	if event.Kind != "gamepad" && event.Gamepad != nil {
+		return invalid
+	}
 	point := event.X != nil && event.Y != nil
 	noPoint := event.X == nil && event.Y == nil
 	noDeltas := event.DeltaX == nil && event.DeltaY == nil
 	valid := false
 	switch event.Kind {
+	case "gamepad":
+		valid = event.Gamepad != nil && event.Gamepad.validate() == nil && noPoint && noDeltas && event.Button == nil && event.Down == nil && event.Key == nil && event.Text == nil
 	case "move":
 		valid = point && event.Button == nil && event.Down == nil && event.Key == nil && event.Text == nil && noDeltas
 	case "button":

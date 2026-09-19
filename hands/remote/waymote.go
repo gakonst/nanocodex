@@ -24,6 +24,7 @@ import (
 // Waymote owns the wlroots capture and input protocols. Pion forwards its H.264
 // pipe directly into WebRTC: no decoded frames or JPEGs cross the VM boundary.
 type waymoteCapture struct {
+	gamepad  *gamepadController
 	track    *webrtc.TrackLocalStaticRTP
 	input    io.WriteCloser
 	video    io.ReadCloser
@@ -92,6 +93,11 @@ func startWaymoteWithDiagnostics(ctx context.Context, executable string, diagnos
 		return nil, err
 	}
 	capture := &waymoteCapture{track: track, input: input, video: video, cancel: cancel, done: make(chan struct{})}
+	if controller, gamepadErr := configuredGamepad(openGamepad); gamepadErr == nil {
+		capture.gamepad = controller
+	} else {
+		fmt.Fprintf(diagnostics, "Native gamepad unavailable: %v\n", gamepadErr)
+	}
 	go func() {
 		forwarder := h264Forwarder{}
 		err := forwarder.read(video, func(out *rtp.Packet) error {
@@ -115,6 +121,9 @@ func (capture *waymoteCapture) close() {
 		capture.mu.Unlock()
 		return
 	}
+	if capture.gamepad != nil {
+		capture.gamepad.close()
+	}
 	_ = capture.record(5, 0, 0, 0, 0)
 	capture.closed = true
 	_ = capture.input.Close()
@@ -130,7 +139,11 @@ func (capture *waymoteCapture) releaseAll() error {
 	if capture.closed {
 		return nil
 	}
-	return capture.record(5, 0, 0, 0, 0)
+	var gamepadErr error
+	if capture.gamepad != nil {
+		gamepadErr = capture.gamepad.release()
+	}
+	return errors.Join(gamepadErr, capture.record(5, 0, 0, 0, 0))
 }
 
 // Input is already account/control-lease checked by the host session. Keep the
@@ -159,6 +172,11 @@ func (capture *waymoteCapture) apply(event remoteInput) error {
 		down = 1
 	}
 	switch event.Kind {
+	case "gamepad":
+		if capture.gamepad == nil {
+			return errors.New("native gamepad unavailable")
+		}
+		return capture.gamepad.apply(*event.Gamepad)
 	case "move":
 		return nil
 	case "relativeMove":
@@ -174,7 +192,11 @@ func (capture *waymoteCapture) apply(event remoteInput) error {
 		}
 		return capture.record(4, down, key, 0, sequence)
 	case "releaseAll":
-		return capture.record(5, 0, 0, 0, 0)
+		var gamepadErr error
+		if capture.gamepad != nil {
+			gamepadErr = capture.gamepad.release()
+		}
+		return errors.Join(gamepadErr, capture.record(5, 0, 0, 0, 0))
 	case "text":
 		if os.Getenv("NANOCODEX_WAYLAND_TEXT_X11") == "1" || os.Getenv("NANOCODEX_WAYLAND_TEXT_WTYPE") == "1" {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

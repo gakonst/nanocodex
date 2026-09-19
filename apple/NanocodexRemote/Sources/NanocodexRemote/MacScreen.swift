@@ -218,6 +218,7 @@ public final class MacInput {
                 units += next
             }
             flush()
+        case .gamepad: throw RemoteError.unavailable
         case .releaseAll: releaseAll()
         }
     }

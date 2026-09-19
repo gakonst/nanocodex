@@ -75,6 +75,7 @@ type controlMessage struct {
 	Type            string `json:"type"`
 	Generation      string `json:"generation,omitempty"`
 	RelativePointer bool   `json:"relativePointer,omitempty"`
+	Gamepad         bool   `json:"gamepad,omitempty"`
 }
 
 // All peer, lease and input state changes are serialized by the host loop.
@@ -326,7 +327,7 @@ func serveWayland(parent context.Context, config hostConfig) error {
 		}
 		switch message.Type {
 		case "acquire":
-			if message.Generation != "" || message.RelativePointer {
+			if message.Generation != "" || message.RelativePointer || message.Gamepad {
 				remove(event.viewer)
 				return
 			}
@@ -341,7 +342,7 @@ func serveWayland(parent context.Context, config hostConfig) error {
 				fail(err)
 				return
 			}
-			if sendControl(peer, controlMessage{Type: "granted", Generation: lease.acquire(event.viewer, now), RelativePointer: true}) != nil {
+			if sendControl(peer, controlMessage{Type: "granted", Generation: lease.acquire(event.viewer, now), RelativePointer: true, Gamepad: capture.gamepad.available()}) != nil {
 				remove(event.viewer)
 			}
 		case "renew":

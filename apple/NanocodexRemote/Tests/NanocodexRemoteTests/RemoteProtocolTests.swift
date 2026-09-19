@@ -6,6 +6,100 @@ import ImageIO
 #endif
 
 final class RemoteProtocolTests: XCTestCase {
+    func testGamepadStateBoundsAndStrictWire() throws {
+        let neutral = RemoteGamepadState()
+        XCTAssertEqual(try JSONDecoder().decode(RemoteGamepadState.self, from: JSONEncoder().encode(neutral)), neutral)
+        for axis in [\RemoteGamepadState.leftX, \.leftY, \.rightX, \.rightY, \.leftTrigger, \.rightTrigger] {
+            for value in [Double.nan, .infinity, -.infinity, -1.01, 1.01] {
+                var state = neutral; state[keyPath: axis] = value
+                XCTAssertThrowsError(try state.validate())
+            }
+        }
+        for buttons in [["unknown"], ["a", "a"], Array(repeating: "a", count: 15)] {
+            XCTAssertThrowsError(try RemoteGamepadState(buttons: buttons).validate())
+        }
+        let full = RemoteGamepadState(leftX: -1, leftY: 1, rightX: -1, rightY: 1, leftTrigger: 0, rightTrigger: 1,
+            buttons: ["a", "b", "x", "y", "dpadUp", "dpadDown", "dpadLeft", "dpadRight", "leftShoulder", "rightShoulder", "leftStick", "rightStick", "back", "start"])
+        let event = RemoteInput(kind: .gamepad, sequence: 1, generation: "g", gamepad: full)
+        XCTAssertEqual(try RemoteInput.decode(JSONEncoder().encode(event)), event)
+        var wire = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(event)) as? [String: Any])
+        for key in ["x", "y", "button", "down", "key", "text", "deltaX", "deltaY", "unknown"] {
+            var bad = wire; bad[key] = NSNull()
+            XCTAssertThrowsError(try RemoteInput.decode(JSONSerialization.data(withJSONObject: bad)), key)
+        }
+        for key in ["leftX", "leftY", "rightX", "rightY", "leftTrigger", "rightTrigger", "buttons"] {
+            var bad = wire; var state = bad["gamepad"] as! [String: Any]; state.removeValue(forKey: key); bad["gamepad"] = state
+            XCTAssertThrowsError(try RemoteInput.decode(JSONSerialization.data(withJSONObject: bad)), key)
+        }
+        var state = wire["gamepad"] as! [String: Any]; state["unknown"] = 0; wire["gamepad"] = state
+        XCTAssertThrowsError(try RemoteInput.decode(JSONSerialization.data(withJSONObject: wire)))
+        XCTAssertThrowsError(try RemoteInput(kind: .gamepad, sequence: 1, generation: "g").validate())
+        XCTAssertThrowsError(try RemoteInput(kind: .releaseAll, sequence: 1, generation: "g", gamepad: neutral).validate())
+        XCTAssertThrowsError(try RemoteGamepadState(leftTrigger: -0.1).validate())
+        XCTAssertThrowsError(try RemoteGamepadState(rightTrigger: -0.1).validate())
+    }
+
+    func testGamepadPayloadIsRequiredOnlyForGamepadKindInBothDecoders() throws {
+        let encoded = try JSONEncoder().encode(RemoteInput(kind: .gamepad, sequence: 1,
+            generation: "g", gamepad: .init()))
+        let wire = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        var invalid: [[String: Any]] = []
+        for key in ["kind", "sequence", "generation", "gamepad"] {
+            var missing = wire; missing.removeValue(forKey: key); invalid.append(missing)
+            var null = wire; null[key] = NSNull(); invalid.append(null)
+        }
+        for kind in ["move", "relativeMove", "button", "scroll", "key", "text", "releaseAll"] {
+            var wrongKind = wire; wrongKind["kind"] = kind; invalid.append(wrongKind)
+            wrongKind["gamepad"] = NSNull(); invalid.append(wrongKind)
+        }
+        var unknown = wire; unknown["unknown"] = 0; invalid.append(unknown)
+        for object in invalid {
+            let data = try JSONSerialization.data(withJSONObject: object)
+            XCTAssertThrowsError(try RemoteInput.decode(data))
+            XCTAssertThrowsError(try JSONDecoder().decode(RemoteInput.self, from: data))
+        }
+    }
+
+    func testGamepadWireRejectsInvalidFieldTypesAndRanges() throws {
+        let encoded = try JSONEncoder().encode(RemoteInput(kind: .gamepad, sequence: 1,
+            generation: "g", gamepad: .init()))
+        let wire = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let neutral = try XCTUnwrap(wire["gamepad"] as? [String: Any])
+        for key in ["leftX", "leftY", "rightX", "rightY", "leftTrigger", "rightTrigger", "buttons"] {
+            let invalid: [Any] = key == "buttons"
+                ? [NSNull(), "a", [1], ["a", "a"], ["unknown"]]
+                : [NSNull(), true, "0", [], -1.01, 1.01]
+            for value in invalid {
+                var state = neutral; state[key] = value
+                var bad = wire; bad["gamepad"] = state
+                let data = try JSONSerialization.data(withJSONObject: bad)
+                XCTAssertThrowsError(try RemoteInput.decode(data), "\(key): \(value)")
+                XCTAssertThrowsError(try JSONDecoder().decode(RemoteInput.self, from: data), "\(key): \(value)")
+            }
+        }
+        for key in ["leftTrigger", "rightTrigger"] {
+            var state = neutral; state[key] = -0.01
+            var bad = wire; bad["gamepad"] = state
+            XCTAssertThrowsError(try RemoteInput.decode(JSONSerialization.data(withJSONObject: bad)))
+        }
+    }
+
+    func testGamepadSnapshotsUseReliableLeaseSequenceAndReleaseFence() throws {
+        var lease = RemoteControlLease()
+        try lease.acquire(owner: "viewer", generation: "old", now: 0)
+        let pressed = RemoteInput(kind: .gamepad, sequence: 1, generation: "old", gamepad: .init(buttons: ["a"]))
+        XCTAssertTrue(try lease.accept(pressed, from: "viewer", now: 1))
+        XCTAssertFalse(try lease.accept(pressed, from: "viewer", now: 1))
+        XCTAssertTrue(try lease.accept(.init(kind: .gamepad, sequence: 2, generation: "old", gamepad: .init()), from: "viewer", now: 1))
+        XCTAssertTrue(try lease.accept(.init(kind: .releaseAll, sequence: 3, generation: "old"), from: "viewer", now: 1))
+        XCTAssertFalse(try lease.accept(pressed, from: "viewer", now: 1))
+        XCTAssertThrowsError(try lease.accept(.init(kind: .gamepad, sequence: 4, generation: "old", gamepad: .init()), from: "other", now: 1))
+        XCTAssertThrowsError(try lease.accept(.init(kind: .gamepad, sequence: 4, generation: "old", gamepad: .init()), from: "viewer", now: 10))
+        lease.release()
+        try lease.acquire(owner: "viewer", generation: "new", now: 2)
+        XCTAssertThrowsError(try lease.accept(pressed, from: "viewer", now: 2))
+    }
+
     func testThreadScreenSelectionUsesStableIDsAcrossPublicationRestarts() throws {
         func hand(_ machine: String, _ surface: String, _ generation: String) throws -> RemoteHand {
             let json: [String: Any] = ["machine_id": machine, "id": surface, "generation": generation,

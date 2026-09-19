@@ -741,3 +741,28 @@ Connectors (also linked from Account Settings); `nanocodex://connect/soundcloud`
 opens that connector in the list. The app receives only the code and state. App credentials,
 PKCE, tokens, and refresh remain in the broker. SoundCloud app registration is a
 one-time deployment setup; ordinary users authorize their own accounts on the phone.
+
+## Native touch gamepad
+
+Open a controllable live screen and choose its game controls. Linux Wayland
+hosts that advertise a working virtual gamepad show two analog sticks, a D-pad,
+ABXY buttons, shoulders, triggers, stick clicks, Back and Start. Other hosts keep
+the keyboard/mouse controls. The phone sends complete controller snapshots over
+the ordered input channel, including a 30 Hz heartbeat while an input is held.
+Stop, leaving controls, losing control, and backgrounding release held inputs;
+foregrounding requires taking control again.
+
+The Linux screen publisher must explicitly enable `NANOCODEX_VIRTUAL_GAMEPAD=1`
+and have access to `/dev/uinput`. It creates a virtual Xbox-compatible controller
+and advertises support only after device creation succeeds. Grant access to the
+publisher's user narrowly; do not make the device world-writable. If input stops
+arriving for 500 ms, the host releases the virtual controls. Games still need to
+support the resulting Linux/Wine controller device; showing controller-themed
+UI alone does not establish that a game receives its input.
+
+The loopback fixture in `NanocodexInboxUITests/fixtures/remote-screen.mjs`
+records synthetic input without injecting it into the OS. Start it before
+running `RemoteScreenLifecycleUITests` with
+`TEST_RUNNER_NANOCODEX_SCREEN_FIXTURE=1`. Its native gamepad test checks touch
+states, neutral release, Stop, exit and background recovery; live game input
+requires a separate test on the configured desktop.

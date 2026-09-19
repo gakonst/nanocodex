@@ -19,10 +19,62 @@ public enum RemoteError: LocalizedError, Equatable {
     }
 }
 
+/// Complete controller snapshot. A neutral snapshot releases every gamepad control.
+public struct RemoteGamepadState: Codable, Equatable, Sendable {
+    public var leftX: Double
+    public var leftY: Double
+    public var rightX: Double
+    public var rightY: Double
+    public var leftTrigger: Double
+    public var rightTrigger: Double
+    public var buttons: [String]
+
+    public init(leftX: Double = 0, leftY: Double = 0, rightX: Double = 0, rightY: Double = 0,
+                leftTrigger: Double = 0, rightTrigger: Double = 0, buttons: [String] = []) {
+        self.leftX = leftX; self.leftY = leftY; self.rightX = rightX; self.rightY = rightY
+        self.leftTrigger = leftTrigger; self.rightTrigger = rightTrigger; self.buttons = buttons
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case leftX, leftY, rightX, rightY, leftTrigger, rightTrigger, buttons
+    }
+    private struct Field: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let fields = try decoder.container(keyedBy: Field.self)
+        guard Set(fields.allKeys.map(\.stringValue)) == Set(CodingKeys.allCases.map(\.rawValue)) else {
+            throw RemoteError.invalidMessage
+        }
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        leftX = try values.decode(Double.self, forKey: .leftX)
+        leftY = try values.decode(Double.self, forKey: .leftY)
+        rightX = try values.decode(Double.self, forKey: .rightX)
+        rightY = try values.decode(Double.self, forKey: .rightY)
+        leftTrigger = try values.decode(Double.self, forKey: .leftTrigger)
+        rightTrigger = try values.decode(Double.self, forKey: .rightTrigger)
+        buttons = try values.decode([String].self, forKey: .buttons)
+        try validate()
+    }
+
+    public func validate() throws {
+        guard [leftX, leftY, rightX, rightY].allSatisfy({ $0.isFinite && (-1...1).contains($0) }),
+              [leftTrigger, rightTrigger].allSatisfy({ $0.isFinite && (0...1).contains($0) }),
+              buttons.count <= 14, Set(buttons).count == buttons.count,
+              Set(buttons).isSubset(of: ["a", "b", "x", "y", "dpadUp", "dpadDown", "dpadLeft", "dpadRight",
+                  "leftShoulder", "rightShoulder", "leftStick", "rightStick", "back", "start"])
+        else { throw RemoteError.invalidMessage }
+    }
+}
+
 /// Coordinates refer to the complete captured surface, before local letterboxing.
 /// Absolute pointer events carry positions; relative input uses the reliable channel.
 public struct RemoteInput: Codable, Equatable, Sendable {
-    public enum Kind: String, Codable, Sendable { case move, relativeMove, button, scroll, key, text, releaseAll }
+    public enum Kind: String, Codable, Sendable { case move, relativeMove, button, scroll, key, text, releaseAll, gamepad }
     public let kind: Kind
     public let sequence: UInt64
     public let generation: String
@@ -34,13 +86,46 @@ public struct RemoteInput: Codable, Equatable, Sendable {
     public var text: String?
     public var deltaX: Double?
     public var deltaY: Double?
+    public var gamepad: RemoteGamepadState?
 
     public init(kind: Kind, sequence: UInt64, generation: String, x: Double? = nil, y: Double? = nil,
                 button: Int? = nil, down: Bool? = nil, key: UInt16? = nil, text: String? = nil,
-                deltaX: Double? = nil, deltaY: Double? = nil) {
+                deltaX: Double? = nil, deltaY: Double? = nil, gamepad: RemoteGamepadState? = nil) {
         self.kind = kind; self.sequence = sequence; self.generation = generation
         self.x = x; self.y = y; self.button = button; self.down = down; self.key = key
-        self.text = text; self.deltaX = deltaX; self.deltaY = deltaY
+        self.text = text; self.deltaX = deltaX; self.deltaY = deltaY; self.gamepad = gamepad
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case kind, sequence, generation, x, y, button, down, key, text, deltaX, deltaY, gamepad
+    }
+    private struct Field: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let fields = Set(try decoder.container(keyedBy: Field.self).allKeys.map(\.stringValue))
+        guard fields.isSubset(of: Set(CodingKeys.allCases.map(\.rawValue))) else { throw RemoteError.invalidMessage }
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try values.decode(Kind.self, forKey: .kind)
+        if kind == .gamepad {
+            guard fields == ["kind", "sequence", "generation", "gamepad"] else { throw RemoteError.invalidMessage }
+        } else if fields.contains("gamepad") { throw RemoteError.invalidMessage }
+        sequence = try values.decode(UInt64.self, forKey: .sequence)
+        generation = try values.decode(String.self, forKey: .generation)
+        x = try values.decodeIfPresent(Double.self, forKey: .x)
+        y = try values.decodeIfPresent(Double.self, forKey: .y)
+        button = try values.decodeIfPresent(Int.self, forKey: .button)
+        down = try values.decodeIfPresent(Bool.self, forKey: .down)
+        key = try values.decodeIfPresent(UInt16.self, forKey: .key)
+        text = try values.decodeIfPresent(String.self, forKey: .text)
+        deltaX = try values.decodeIfPresent(Double.self, forKey: .deltaX)
+        deltaY = try values.decodeIfPresent(Double.self, forKey: .deltaY)
+        gamepad = try values.decodeIfPresent(RemoteGamepadState.self, forKey: .gamepad)
+        try validate()
     }
 
     public func validate() throws {
@@ -49,6 +134,7 @@ public struct RemoteInput: Codable, Equatable, Sendable {
         for coordinate in [x, y].compactMap({ $0 }) {
             guard coordinate.isFinite, (0...1).contains(coordinate) else { throw RemoteError.invalidMessage }
         }
+        guard kind == .gamepad || gamepad == nil else { throw RemoteError.invalidMessage }
         let point = x != nil && y != nil
         let noPoint = x == nil && y == nil
         switch kind {
@@ -70,6 +156,10 @@ public struct RemoteInput: Codable, Equatable, Sendable {
             guard let text, !text.isEmpty, text.utf8.count <= 4096, !text.contains("\0"),
                   x == nil, y == nil, button == nil, down == nil, key == nil,
                   deltaX == nil, deltaY == nil else { throw RemoteError.invalidMessage }
+        case .gamepad:
+            guard let gamepad, noPoint, button == nil, down == nil, key == nil, text == nil,
+                  deltaX == nil, deltaY == nil else { throw RemoteError.invalidMessage }
+            try gamepad.validate()
         case .releaseAll:
             guard x == nil, y == nil, button == nil, down == nil, key == nil, text == nil,
                   deltaX == nil, deltaY == nil else { throw RemoteError.invalidMessage }
@@ -79,8 +169,11 @@ public struct RemoteInput: Codable, Equatable, Sendable {
     public static func decode(_ data: Data) throws -> Self {
         guard data.count <= 8192,
               let fields = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(fields.keys).isSubset(of: ["kind", "sequence", "generation", "x", "y", "button", "down", "key", "text", "deltaX", "deltaY"])
+              Set(fields.keys).isSubset(of: ["kind", "sequence", "generation", "x", "y", "button", "down", "key", "text", "deltaX", "deltaY", "gamepad"])
         else { throw RemoteError.invalidMessage }
+        if fields["kind"] as? String == "gamepad" {
+            guard Set(fields.keys) == ["kind", "sequence", "generation", "gamepad"] else { throw RemoteError.invalidMessage }
+        } else if fields.keys.contains("gamepad") { throw RemoteError.invalidMessage }
         let event = try JSONDecoder().decode(Self.self, from: data)
         try event.validate()
         return event

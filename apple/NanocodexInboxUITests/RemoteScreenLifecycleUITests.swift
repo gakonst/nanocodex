@@ -7,7 +7,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
     private func requireUI(_ condition: Bool, _ message: String, app: XCUIApplication,
                            file: StaticString = #filePath, line: UInt = #line) throws {
         guard condition else {
-            let screenshot = XCTAttachment(screenshot: app.screenshot())
+            let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
             screenshot.name = "failure-" + message; screenshot.lifetime = .keepAlways; add(screenshot)
             let tree = XCTAttachment(string: app.debugDescription)
             tree.name = "failure-accessibility-tree"; tree.lifetime = .keepAlways; add(tree)
@@ -73,7 +73,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
             (canvas.value as? String ?? "").hasPrefix("Zoom ") && canvas.value as? String != "Zoom 100%"
         }, object: canvas)
         XCTAssertEqual(XCTWaiter.wait(for: [zoomed], timeout: 5), .completed)
-        let evidence = XCTAttachment(screenshot: app.screenshot())
+        let evidence = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         evidence.name = "native-screen-fullscreen-zoom"; evidence.lifetime = .keepAlways; add(evidence)
         app.buttons["Screens"].tap()
         XCTAssertTrue(desktop.waitForExistence(timeout: 10)); desktop.tap(); requireWatching()
@@ -81,7 +81,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
         XCTAssertFalse(canvas.exists)
         XCTAssertEqual(composer.value as? String, draft)
         try openScreenControls(app); XCTAssertTrue(desktop.waitForExistence(timeout: 10)); desktop.tap(); requireWatching()
-        let card = XCTAttachment(screenshot: app.screenshot())
+        let card = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         card.name = "native-screen-fullscreen-reopened"; card.lifetime = .keepAlways; add(card)
         app.buttons["close-screen-pane"].tap()
         XCTAssertTrue(canvas.waitForNonExistence(timeout: 5))
@@ -93,6 +93,15 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
     private struct FixtureLog: Decodable {
         struct Event: Decodable {
             struct Input: Decodable {
+                struct Gamepad: Decodable {
+                    let leftX, leftY, rightX, rightY: Double
+                    let leftTrigger, rightTrigger: Double
+                    let buttons: [String]
+                    var isNeutral: Bool {
+                        [leftX, leftY, rightX, rightY, leftTrigger, rightTrigger].allSatisfy { $0 == 0 } && buttons.isEmpty
+                    }
+                }
+                let gamepad: Gamepad?
                 let kind: String
                 let key: Int?
                 let button: Int?
@@ -142,6 +151,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
             throw XCTSkip("Run fixtures/remote-screen.mjs on loopback port 18965")
         }
         continueAfterFailure = false
+        XCUIDevice.shared.orientation = .portrait
         let baseline = try await fixtureLog(after: 0).cursor
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
@@ -195,7 +205,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
                 inputs.contains { $0.kind == "button" && $0.button == 1 && $0.down == down }
             } && inputs.contains { $0.kind == "relativeMove" && (($0.deltaX ?? 0) != 0 || ($0.deltaY ?? 0) != 0) }
         }
-        let landscapeEvidence = XCTAttachment(screenshot: app.screenshot())
+        let landscapeEvidence = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         landscapeEvidence.name = "synthetic-controller-landscape-after-input"
         landscapeEvidence.lifetime = .keepAlways; add(landscapeEvidence)
         app.buttons["remote-game-stop"].tap()
@@ -225,8 +235,123 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
         // Controller UI survives but input authority must require an explicit tap.
         let afterBackground = try await fixtureLog(after: reacquired.cursor)
         XCTAssertFalse(afterBackground.events.contains { $0.type == "acquire" })
-        let evidence = XCTAttachment(screenshot: app.screenshot())
+        let evidence = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         evidence.name = "synthetic-controller-after-background"; evidence.lifetime = .keepAlways; add(evidence)
+        app.buttons["remote-game-close"].tap()
+        app.buttons["close-screen-pane"].tap()
+    }
+
+    @MainActor
+    func testSyntheticNativeGamepadTouchStatesStopExitAndBackground() async throws {
+        // xcodebuild forwards TEST_RUNNER_NANOCODEX_SCREEN_FIXTURE=1 into
+        // the test runner as NANOCODEX_SCREEN_FIXTURE=1.
+        guard ProcessInfo.processInfo.environment["NANOCODEX_SCREEN_FIXTURE"] == "1" else {
+            throw XCTSkip("Start fixtures/remote-screen.mjs; use TEST_RUNNER_NANOCODEX_SCREEN_FIXTURE=1")
+        }
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .portrait
+        let baseline = try await fixtureLog(after: 0).cursor
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo"]
+        app.launchEnvironment["NANOCODEX_DEMO_SCREENS"] = "1"
+        app.launchEnvironment["NANOCODEX_DEMO_PROFILE"] = "screen-gamepad-" + UUID().uuidString
+        app.launch()
+        defer { XCUIDevice.shared.orientation = .portrait }
+        try openScreenControls(app)
+        let surface = app.buttons["remote-screen:fixture:gamepad"]
+        try requireUI(surface.waitForExistence(timeout: 10), "Native gamepad fixture must exist", app: app)
+        surface.tap()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let landscape = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            app.frame.width > app.frame.height
+        }, object: app)
+        await fulfillment(of: [landscape], timeout: 10)
+        try requireUI(app.frame.width > app.frame.height, "Native gamepad must be landscape", app: app)
+        let entry = app.buttons["remote-game-controls"]
+        try requireUI(entry.waitForExistence(timeout: 10), "Native gamepad entry must exist", app: app)
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: entry)
+        await fulfillment(of: [enabled], timeout: 15)
+        try requireUI(entry.isEnabled, "Native gamepad entry must be enabled", app: app)
+        entry.tap()
+        let acquired = try await requireFixtureEvents(after: baseline, "Native gamepad must acquire a lease") {
+            $0.contains { $0.type == "acquire" }
+        }
+        let connection = try XCTUnwrap(acquired.events.first { $0.type == "acquire" }?.connection)
+        try requireUI(app.descendants(matching: .any)["remote-native-gamepad"].firstMatch.waitForExistence(timeout: 5),
+                      "Native gamepad mode must appear", app: app)
+        var cursor = acquired.cursor
+        for side in ["left", "right"] {
+            let stick = app.descendants(matching: .any)["remote-gamepad-\(side)-analog"].firstMatch
+            try requireUI(stick.waitForExistence(timeout: 5) && stick.isHittable && app.frame.contains(stick.frame),
+                          "Native analog must fit and be hittable: " + side, app: app)
+            stick.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .press(forDuration: 0.1, thenDragTo: stick.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.2)))
+            let log = try await requireFixtureEvents(after: cursor, "Analog touch must send nonzero then neutral: " + side) { events in
+                let states = events.filter { $0.connection == connection && $0.input?.kind == "gamepad" }.compactMap { $0.input?.gamepad }
+                guard let moved = states.firstIndex(where: {
+                    side == "left" ? ($0.leftX > 0 && $0.leftY < 0) : ($0.rightX > 0 && $0.rightY < 0)
+                }) else { return false }
+                return states.dropFirst(moved + 1).contains { $0.isNeutral }
+            }
+            cursor = log.cursor
+        }
+        // Coordinate presses exercise UIKit touch handling, not accessibility actions.
+        // XCTest's public coordinate API serializes gestures; simultaneous
+        // independent trigger + face-button holds require a separate device test.
+        for name in ["a", "b", "x", "y", "leftTrigger", "rightTrigger"] {
+            let control = app.descendants(matching: .any)["remote-gamepad-" + name].firstMatch
+            try requireUI(control.waitForExistence(timeout: 5) && control.isHittable && app.frame.contains(control.frame),
+                          "Native button must fit and be hittable: " + name, app: app)
+            control.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: name == "a" ? 1.1 : 0.2)
+            let log = try await requireFixtureEvents(after: cursor, "Button touch must send pressed then released: " + name) { events in
+                let states = events.filter { $0.connection == connection && $0.input?.kind == "gamepad" }.compactMap { $0.input?.gamepad }
+                guard let pressed = states.firstIndex(where: {
+                    if name == "leftTrigger" { return $0.leftTrigger > 0 }
+                    if name == "rightTrigger" { return $0.rightTrigger > 0 }
+                    return $0.buttons.contains(name)
+                }) else { return false }
+                return states.dropFirst(pressed + 1).contains { $0.isNeutral }
+            }
+            if name == "a" {
+                let held = log.events.filter {
+                    $0.connection == connection && $0.input?.gamepad?.buttons.contains("a") == true
+                }
+                XCTAssertGreaterThanOrEqual(held.count, 10, "A held button must keep sending snapshots past the host watchdog interval")
+            }
+            cursor = log.cursor
+        }
+        let evidence = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        evidence.name = "synthetic-native-gamepad-landscape-touch-input"
+        evidence.lifetime = .keepAlways; add(evidence)
+        app.buttons["remote-game-stop"].tap()
+        let stopped = try await requireFixtureEvents(after: cursor, "Stop must send neutral gamepad and releaseAll") { events in
+            let inputs = events.filter { $0.connection == connection }.compactMap(\.input)
+            return inputs.contains { $0.kind == "gamepad" && $0.gamepad?.isNeutral == true } &&
+                inputs.contains { $0.kind == "releaseAll" }
+        }
+        app.descendants(matching: .any)["remote-gamepad-a"].firstMatch
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        app.buttons["remote-game-close"].tap()
+        let exited = try await requireFixtureEvents(after: stopped.cursor, "Close must release native gamepad lease") {
+            $0.contains { $0.connection == connection && $0.type == "release" }
+        }
+        XCTAssertFalse(exited.events.contains { $0.connection == connection && $0.input?.gamepad?.isNeutral == false },
+                       "Stopped controls must not send active gamepad states")
+        try requireUI(app.buttons["Take control"].waitForExistence(timeout: 5), "Close must restore Take control", app: app)
+        entry.tap()
+        let reacquired = try await requireFixtureEvents(after: exited.cursor, "Explicit reentry must acquire native gamepad control") {
+            $0.contains { $0.type == "acquire" }
+        }
+        let resumedConnection = try XCTUnwrap(reacquired.events.first { $0.type == "acquire" }?.connection)
+        XCUIDevice.shared.press(.home)
+        try requireUI(app.wait(for: .runningBackground, timeout: 10), "Native gamepad app must background", app: app)
+        _ = try await requireFixtureEvents(after: reacquired.cursor, "Background must release or disconnect native gamepad lease") {
+            $0.contains { $0.connection == resumedConnection && ($0.type == "release" || $0.type == "disconnect") }
+        }
+        app.activate()
+        try requireUI(app.buttons["Take control"].waitForExistence(timeout: 15), "Foreground must require explicit control", app: app)
+        let foreground = try await fixtureLog(after: reacquired.cursor)
+        XCTAssertFalse(foreground.events.contains { $0.type == "acquire" }, "Foreground must not automatically acquire")
         app.buttons["remote-game-close"].tap()
         app.buttons["close-screen-pane"].tap()
     }
@@ -295,7 +420,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
                 }
                 if !observed { Thread.sleep(forTimeInterval: 0.15) }
             } while !observed && Date() < deadline
-            let attachment = XCTAttachment(screenshot: app.screenshot())
+            let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
             attachment.name = label; attachment.lifetime = .keepAlways; add(attachment)
             XCTAssertTrue(observed, "The decoded VM terminal must show the guarded command's expected pixel transition")
         }
@@ -340,7 +465,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
         for sample in 1...3 {
             XCTAssertTrue(desktop.waitForExistence(timeout: 20)); desktop.tap()
             _ = try requireDecodedFrame(app, status: app.staticTexts["remote-status"], label: "sample-\(sample)")
-            let screenshot = XCTAttachment(screenshot: app.screenshot())
+            let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
             screenshot.name = "phone-vm-first-frame-\(sample)"; screenshot.lifetime = .keepAlways; add(screenshot)
             app.buttons["Screens"].tap()
         }
@@ -417,7 +542,7 @@ final class RemoteScreenLifecycleUITests: XCTestCase {
                 requireWatching()
             }
             if cycle == 0 || cycle == 3 {
-                let evidence = XCTAttachment(screenshot: app.screenshot())
+                let evidence = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
                 evidence.name = "remote-screen-lifecycle-\(cycle + 1)"
                 evidence.lifetime = .keepAlways
                 add(evidence)
