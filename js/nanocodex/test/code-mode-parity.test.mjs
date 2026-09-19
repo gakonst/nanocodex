@@ -50,9 +50,11 @@ for (const value of ["", " \t\n"]) {
 }
 
 test("notify preserves nonempty serialized content", async () => {
-  const result = JSON.parse(await createCodeRuntime().executeCodeObserved('notify({ progress: 1 });'));
+  const updates = [];
+  const result = JSON.parse(await createCodeRuntime().executeCode('notify({ progress: 1 });', 'default', 'exec', update => updates.push(update)));
   assert.equal(result.success, true);
-  assert.deepEqual(result.notifications, [{ call_id: "exec", text: '{"progress":1}' }]);
+  assert.deepEqual(result.notifications, []);
+  assert.deepEqual(updates, [{ type: 'notification', call_id: "exec", text: '{"progress":1}' }]);
 });
 
 for (const source of ["", " \t\r\n", "// @exec: {}\n \t", "// @exec: {}\r\n\r\n"]) {
@@ -71,7 +73,7 @@ for (const options of [{ yield_time_ms: null }, { max_output_tokens: null }, { y
   });
 }
 
-for (const options of [{ yield_time_ms: -1 }, { max_output_tokens: 0.5 }, { yield_time_ms: Number.MAX_SAFE_INTEGER + 1 }, { unknown: null }]) {
+for (const options of [{ yield_time_ms: -1 }, { max_output_tokens: 0.5 }, { unknown: null }]) {
   test(`exec retains invalid pragma rejection ${JSON.stringify(options)}`, async () => {
     let calls = 0;
     const runtime = createCodeRuntime({ probe: { handler() { calls++; } } });

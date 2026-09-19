@@ -32,53 +32,52 @@ with an empty structured result; image-generation metadata now matches upstream;
 JS image defaults/detail precedence, generatedImage validation, empty notify
 validation and exec pragma empty/null handling match the tested upstream cases.
 
-## Intentional host differences
+## QuickJS is the required engine
 
-- Native Code Mode uses QuickJS rather than V8, so its first sentence says
-  `fresh JavaScript context`. Embedded runtime rewrites the evaluator and lifetime
-  sentences (`crates/nanocodex-tools/src/embedded/runtime.rs`): the host owns nested
-  tool work until it finishes or is cancelled. Upstream stops remaining tasks when
-  the root promise completes. This ownership behavior is covered by existing JS
-  runtime tests and was retained.
-- Provider summaries and deferred metadata may add host tools to the exec prompt.
-  Namespace headers are inferred from local `__` names, rather than using
-  upstream namespace descriptions. Local MCP preamble inclusion also accounts
-  for deferred tools whose full schemas are not in the visible definition list.
-- JS workspace shell descriptions in `tools/execution-contract.mjs`, `bash.mjs`,
-  and the browser/host adapters describe selected hands, bounded Bash, and host
-  approval capabilities. Their parameter keys agree with the shared contract;
-  their descriptions and operating effects are deliberately not upstream PTY
-  promises. The Rust native standard contracts are compared exactly.
-- Web guidance has three explicit substitutions, checked by the script: no PDF
-  screenshot command, image search returns source pages/captions, and response
-  length describes host text limits. Web's host adapter is not upstream's full
-  web capability set. Image-generation and web provider execution/authentication
-  are host implementations; schema parity does not imply provider parity.
-- Image helpers retain stricter data URL/base64 validation. Hosted QuickJS retains
-  resource limits and serialized evaluation. JS timers retain the platform delay
-  cap. Runtime environment, permission, memory, connector, goal and skill prompts
-  are host additions, not copies of Codex CLI prompt layers. Upstream-only tools
-  and modes are not introduced by this change.
+The user explicitly retained QuickJS on 2026-09-18. Do not replace it with V8.
+The production Code Mode runtime remains QuickJS; the standalone comparison
+script uses V8 only to execute upstream helper code and generate test evidence.
+The description says `fresh JavaScript context` to avoid falsely advertising V8.
+Prompts, schemas and observable host behavior are still parity targets.
 
-## Remaining semantic gaps (not intentional-parity claims)
+## Code Mode behavior verified against upstream
 
-These were audited but not changed in this bounded contract/helper patch:
+`python3 scripts/codex-parity/native-behavior.py /path/to/pinned/codex` executes
+21 upstream V8 helper cases, seven upstream Rust wait argument cases and 15
+upstream Rust truncation cases. `native-behavior.json` records the results.
+The JS `code-mode-upstream.test.mjs` runs all 21 helper cases through the native
+JS evaluator, QuickJS, and the worker evaluator, and checks all 15 truncations.
+The focused JS Code Mode and evaluator suite contains 90 passing tests.
 
-| Area | Local evidence | Upstream evidence / difference |
-| --- | --- | --- |
-| Storage | `js/nanocodex-tools/runtime/code-runtime.mjs` shared session Map and structuredClone; hosted QuickJS store forwarding | `code-mode-runtime/src/runtime/callbacks.rs` and `cell_actor/mod.rs`: JSON snapshot/write set, key coercion, commit only when completion wins. Local JS writes can survive termination and retain non-JSON values. |
-| Wait budgets | Native `code_mode/mod.rs` clamps budgets to at least one, inherits exec budget for omitted wait budget, ignores terminate budget; JS inherits exec budget | `core/src/tools/code_mode/wait_handler.rs`, `code_mode/mod.rs`: fresh default per wait, zero permitted, termination budget honored. |
-| Wait validation | Local native denies unknown fields and accepts null optional yield; JS requires safe integers and rejects null wait numeric fields | Upstream permits unknown fields, accepts optional max_tokens null, rejects yield_time_ms null, supports u64 range. |
-| Text serialization | JS host stringify plus hosted QuickJS guest stringify | Upstream `runtime/value.rs` uses primitive string conversion and propagates JSON exceptions; local JS NaN/Infinity/cycles/functions differ. |
-| Notifications | Native buffers until observation; JS wakes observer (direct execution becomes text) | Upstream `cell_actor/callbacks.rs` delegates immediate out-of-band notify injection. |
-| Completion race | JS wait terminate overwrites completed-but-unobserved status | Upstream and local native arbitrate completion versus termination; a completed cell wins. |
-| Output budget/format | JS truncates individual text chunks; native `code_mode/output.rs` drops audio in mixed output | Upstream merges text-only output and has multimodal/audio token accounting. |
-| Yield grace | JS exact requested timer | Native and upstream add 1 second grace for yields of at least 10 seconds. |
+Native and JS now use the same primitive/JSON serialization, image and audio
+normalization rules, default image detail, generated-image hints, per-wait
+budgets, zero budgets, u64 argument acceptance, yield grace and completion versus
+termination rules. Session storage uses JSON snapshots and per-cell writes.
+Normal root completion discards unawaited work, so callers must await tool calls
+whose completion matters. Malformed data URI decoding belongs to later image
+preparation, as in upstream, instead of adding stricter helper-only validation.
 
-Future runtime changes need coordinated native, JS-host and QuickJS guest tests;
-changing only the prompt would misstate the implementation. Native runtime tests
-already cover wait, cancellation, output deltas, and image semantics. The new
-`js/nanocodex/test/code-mode-parity.test.mjs` adds 27 parser/helper regression cases.
+## Remaining work; not a claim of complete equivalence
+
+- `notify` is out of band in the JS host observer. The WASM bridge retains those
+  notifications for the model, but the agent loop still inserts them on return
+  from an observation. Immediate upstream-style injection into an active model
+  turn is not yet implemented on native or WASM.
+- Native audio duration decoding uses the upstream decoder behavior. The JS
+  helper currently estimates PCM WAV duration; additional audio formats need
+  the same decoder coverage to claim full audio budget equivalence.
+- QuickJS engine resource limits and JavaScript engine edge cases remain
+  distinct from V8. The focused corpus is evidence of compatibility for its
+  tested cases, not a proof of arbitrary JavaScript equivalence.
+- Embedded applications can supply their own evaluator. Its execution globals
+  and capabilities still require a separate review; the current host description
+  explains this instead of advertising upstream isolation it cannot guarantee.
+- Namespace descriptions, selected-hand shell behavior, runtime environment,
+  memory, connector, goal and skill prompt layers and upstream-only tool
+  handlers remain tracked by the broader parity audit. A declaration in the
+  inventory is not evidence that its handler exists.
+
+This work is on the integration branch; these checks are not a deployment receipt.
 
 ## Standalone web follow-up
 

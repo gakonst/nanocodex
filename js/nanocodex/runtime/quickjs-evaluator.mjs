@@ -1,3 +1,4 @@
+import { guestValueHelpers } from "nanocodex-tools/runtime/code-values";
 const DEFAULT_MEMORY_LIMIT_BYTES = 64 * 1024 * 1024;
 const DEFAULT_STACK_LIMIT_BYTES = 512 * 1024;
 const DEFAULT_INTERRUPT_CYCLES = 1_000_000;
@@ -32,12 +33,14 @@ async function evaluate(quickJs, source, environment, options) {
   environment.signal?.addEventListener("abort", onAbort, { once: true });
   runtime.setInterruptHandler(() => aborted || ++interruptCycles > maxInterruptCycles);
   let closed = false;
+  const pending = new Set();
 
   try {
     expose(vm, "__nanocodex_call_tool", (nameHandle, inputHandle) => {
       const name = vm.getString(nameHandle);
       const input = vm.getString(inputHandle);
       const deferred = vm.newPromise();
+      pending.add(deferred);
       invokeTool(environment, name, input).then((encoded) => {
         if (closed) return;
         vm.newString(encoded).consume(deferred.resolve);
@@ -58,6 +61,7 @@ async function evaluate(quickJs, source, environment, options) {
     });
     expose(vm, "__nanocodex_sleep", (delayHandle) => {
       const deferred = vm.newPromise();
+      pending.add(deferred);
       environment.setTimeout(() => {
         if (closed) return;
         deferred.resolve();
@@ -101,6 +105,7 @@ async function evaluate(quickJs, source, environment, options) {
   } finally {
     closed = true;
     environment.signal?.removeEventListener("abort", onAbort);
+    for (const deferred of pending) deferred.dispose();
     vm.dispose();
   }
 }
@@ -162,11 +167,8 @@ function formatQuickJsError(error) {
 function guestSource(source, toolNames, toolDefinitions) {
   return `
 const __nanocodex_exit = Symbol("exit");
-const __nanocodex_stringify = (value) => {
-  if (typeof value === "string") return value;
-  if (value === undefined) return "undefined";
-  try { return JSON.stringify(value); } catch { return String(value); }
-};
+${guestValueHelpers()}
+const __nanocodex_stringify = stringify;
 const __nanocodex_decode = (encoded) => {
   const result = JSON.parse(encoded);
   if (!result.ok) {
@@ -190,9 +192,15 @@ const tools = Object.freeze(Object.fromEntries(
 ));
 const ALL_TOOLS = Object.freeze(${JSON.stringify(toolDefinitions)});
 const text = (value) => __nanocodex_emit("text", JSON.stringify(__nanocodex_stringify(value)));
-const image = (value, detail) =>
-  __nanocodex_emit("image", JSON.stringify({ value, detail }));
-const audio = (value) => __nanocodex_emit("audio", JSON.stringify(value));
+const image = (value, detail) => {
+  const item = normalizeImage(value, detail);
+  __nanocodex_emit("image", JSON.stringify({ value: item, detail: item.detail }));
+};
+const audio = (value) => {
+  const item = normalizeAudio(value);
+  if (item.type === "input_text") text(item.text);
+  else __nanocodex_emit("audio", JSON.stringify(item));
+};
 const notify = (value) => __nanocodex_emit("notify", JSON.stringify(__nanocodex_stringify(value)));
 const yield_control = () => __nanocodex_emit("yield_control", "null");
 const __nanocodex_timers = new Map();
@@ -208,13 +216,20 @@ const setTimeout = (callback, delay = 0) => {
   return id;
 };
 const clearTimeout = (id) => __nanocodex_timers.delete(id);
-const generatedImage = (value) =>
-  __nanocodex_emit("generatedImage", JSON.stringify(value));
-const store = (key, value) => {
-  if (typeof key !== "string") throw new TypeError("store key must be a string");
-  __nanocodex_store(key, JSON.stringify({ value }));
+const generatedImage = (value) => {
+  for (const item of generatedImageItems(value)) {
+    if (item.type === "input_text") text(item.text);
+    else image(item);
+  }
 };
-const load = (key) => JSON.parse(__nanocodex_load(key)).value;
+const store = (key, value) => {
+  const entry = storeSnapshot(key, value);
+  __nanocodex_store(entry[0], JSON.stringify({ value: entry[1] }));
+};
+const load = (key) => {
+  if (typeof key === "symbol") throw new TypeError("load key must be a string");
+  return JSON.parse(__nanocodex_load(String(key))).value;
+};
 const exit = () => { throw __nanocodex_exit; };
 const require = undefined;
 const console = Object.freeze(Object.fromEntries(

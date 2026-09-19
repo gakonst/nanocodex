@@ -68,6 +68,7 @@
     },
     "./standard": "./tools/standard.mjs",
     "./standard-descriptions": "./tools/standardDescriptions.mjs",
+    "./runtime/code-values": "./runtime/code-values.mjs",
     "./runtime/code-runtime": "./runtime/code-runtime.mjs",
     "./runtime/tool-configuration": "./runtime/tool-configuration.mjs",
     "./runtime/tool-router": "./runtime/tool-router.mjs",

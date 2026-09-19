@@ -1,3 +1,4 @@
+import { stringify, storeSnapshot, normalizeImage, normalizeAudio, generatedImageItems } from "nanocodex-tools/runtime/code-values";
 import { installBrowserEgressFetch } from "../tools/browser/browserEgress.mjs";
 
 const WORKER_PROTOCOL = "nanocodex.code-evaluator.v1";
@@ -40,23 +41,36 @@ async function evaluate({ source, storedEntries = [], toolDefinitions = [], tool
   });
   Object.freeze(tools);
 
-  const text = (value) => post("output", { kind: "text", value });
-  const image = (value, detail) => post("output", {
-    kind: "image",
-    value,
-    detail,
-  });
-  const audio = (value) => post("output", { kind: "audio", value });
-  const notify = (value) => post("output", { kind: "notify", value });
+  const text = (value) => post("output", { kind: "text", value: stringify(value) });
+  const image = (value, detail) => {
+    const item = normalizeImage(value, detail);
+    post("output", { kind: "image", value: item, detail: item.detail });
+  };
+  const audio = (value) => {
+    const item = normalizeAudio(value);
+    if (item.type === "input_text") text(item.text);
+    else post("output", { kind: "audio", value: item });
+  };
+  const notify = (value) => {
+    const text = stringify(value);
+    if (!text.trim()) throw new TypeError("notify expects non-empty text");
+    post("output", { kind: "notify", value: text });
+  };
   const yield_control = () => post("output", { kind: "yield_control" });
-  const generatedImage = (value) => post("output", { kind: "generatedImage", value });
+  const generatedImage = (value) => {
+    for (const item of generatedImageItems(value)) {
+      if (item.type === "input_text") text(item.text);
+      else image(item);
+    }
+  };
   const store = (key, value) => {
-    if (typeof key !== "string") throw new TypeError("store key must be a string");
-    const snapshot = structuredClone(value);
+    const entry = storeSnapshot(key, value);
+    key = entry[0];
+    const snapshot = entry[1];
     stored.set(key, snapshot);
     storedWrites.set(key, snapshot);
   };
-  const load = (key) => stored.has(key) ? structuredClone(stored.get(key)) : undefined;
+  const load = (key) => { key = `${key}`; return stored.has(key) ? JSON.parse(JSON.stringify(stored.get(key))) : undefined; };
   const EXIT = Symbol("exit");
   const exit = () => { throw EXIT; };
   const guestConsole = Object.freeze(Object.fromEntries(
@@ -100,10 +114,8 @@ async function evaluate({ source, storedEntries = [], toolDefinitions = [], tool
         guestConsole,
       );
     } finally {
-      // Discarding a tool Promise or calling exit() must not orphan parent-held
-      // work. The evaluator remains alive until each invocation receives its
-      // terminal response, or its supervisor terminates this cell on cancel.
-      await Promise.allSettled(toolInvocations);
+      // The supervisor disposes the worker and cancels pending nested calls
+      // when the root script completes.
     }
     return [...storedWrites];
   } catch (error) {
@@ -124,12 +136,6 @@ function callTool(name, input) {
 
 function post(type, value = {}) {
   globalThis.postMessage({ protocol: WORKER_PROTOCOL, evaluationId, type, ...value });
-}
-
-function stringify(value) {
-  if (typeof value === "string") return value;
-  if (value === undefined) return "undefined";
-  try { return JSON.stringify(value); } catch { return String(value); }
 }
 
 function errorMessage(error) {

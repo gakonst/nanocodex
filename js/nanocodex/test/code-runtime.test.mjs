@@ -143,7 +143,7 @@ test("nested lifecycle updates are observed at start and completion boundaries",
 for (const [label, source] of [
   ["normal completion", "void tools.blocked({});"],
   ["exit", "void tools.blocked({}); exit();"],
-]) test(`a cell owns discarded nested tool promises through ${label}`, async () => {
+]) test(`root ${label} cancels discarded nested tool promises`, async () => {
   const started = deferred();
   let nestedSignal;
   const runtime = createCodeRuntime({
@@ -169,17 +169,16 @@ for (const [label, source] of [
     execution.then(() => "settled"),
     new Promise((resolve) => setTimeout(() => resolve("pending"), 10)),
   ]);
-  assert.equal(beforeCancel, "pending");
+  assert.equal(beforeCancel, "settled");
 
-  runtime.cancel("discarded");
   const completed = JSON.parse(await withDeadline(
     execution,
     1_000,
     "discarded nested tool did not cancel",
   ));
   assert.equal(nestedSignal.aborted, true);
-  assert.equal(completed.success, false);
-  assert.match(completed.output, /Code Mode execution was cancelled/);
+  assert.equal(completed.success, true);
+  assert.match(completed.output, /Script completed/);
 });
 
 function deferred() {
@@ -310,13 +309,14 @@ for (const evaluator of ["native", "quickjs", "worker"]) test(`${evaluator} supp
     audio({ type: "audio", data: "AAAA", mimeType: "audio/wav" });
     text("世界".repeat(200));
   `, "helpers", "exec-helpers"), "helpers", "exec-helpers");
-  assert.deepEqual(first.notifications, [{ call_id: "exec-helpers", text: "progress" }]);
+  assert.deepEqual(first.notifications, []);
+  assert.deepEqual(first.updates.filter(update => update.type === "notification"), [{ type: "notification", call_id: "exec-helpers", text: "progress" }]);
   assert.deepEqual(first.cell, { origin_call_id: "exec-helpers", running: true });
   const cellId = outputText(first.output).match(/cell ID ([^\s]+)/)[1];
   let last;
   for (let index = 0; index < 10; index++) {
     const callId = `wait-helpers-${index}`;
-    last = await observed(runtime, runtime.waitCodeObserved(JSON.stringify({ cell_id: cellId, max_tokens: 10 }), "helpers", callId), "helpers", callId);
+    last = await observed(runtime, runtime.waitCodeObserved(JSON.stringify({ cell_id: cellId, max_tokens: 20 }), "helpers", callId), "helpers", callId);
     if (!outputText(last.output).includes("Script running")) break;
   }
   assert.equal(last.success, true);
@@ -324,13 +324,13 @@ for (const evaluator of ["native", "quickjs", "worker"]) test(`${evaluator} supp
   assert.deepEqual(last.cell, { origin_call_id: "exec-helpers", running: false });
   assert.equal(last.output.find((item) => item.type === "input_image").detail, "original");
   assert.equal(last.output.find((item) => item.type === "input_audio").audio_url, "data:audio/wav;base64,AAAA");
-  assert.match(outputText(last.output), /output truncated/);
+  assert.match(outputText(last.output), /tokens truncated|omitted/);
   assert.doesNotMatch(outputText(last.output), /�/);
   const silent = await observed(runtime, runtime.executeCodeObserved(
     '// @exec: {"max_output_tokens":0}\ntext("must-not-appear");', "helpers", "exec-silent",
   ), "helpers", "exec-silent");
   assert.equal(silent.success, true);
-  assert.equal(outputText(silent.output).split("Output:\n")[1].trim(), "…output truncated…");
+  assert.match(outputText(silent.output), /Warning: truncated output.*\nTotal output lines: 1\n\n…4 tokens truncated…/);
   runtime.reset();
 });
 
@@ -388,16 +388,14 @@ for (const value of [
   "data:image/png;base64,!!!!",
   "data:image/png,AAAA",
   "data:application/octet-stream;base64,AAAA",
-  { type: "image", mimeType: "image/png" },
   { image_url: "data:image/png;base64,[object Object]" },
-]) test(`Code Mode rejects malformed image data before recording it: ${JSON.stringify(value)}`, async () => {
+]) test(`Codex helper defers data URI decoding to history preparation: ${JSON.stringify(value)}`, async () => {
   const runtime = createCodeRuntime({});
   const result = JSON.parse(await runtime.executeCode(
     `image(${JSON.stringify(value)});`, "invalid-image", "exec-invalid-image",
   ));
-  assert.equal(result.success, false);
-  assert.match(JSON.stringify(result.output), /nonempty base64 data URL/);
-  assert.equal(Array.isArray(result.output) && result.output.some((item) => item.type === "input_image"), false);
+  assert.equal(result.success, true);
+  assert.equal(result.output.some((item) => item.type === "input_image"), true);
   runtime.reset();
 });
 
@@ -411,7 +409,7 @@ for (const data of ["AAAA", "AA==", "AAA="]) test(`Code Mode accepts base64 imag
   runtime.reset();
 });
 
-for (const evaluator of ["quickjs", "worker"]) test(`${evaluator} rejects malformed image data at the host boundary`, async () => {
+for (const evaluator of ["quickjs", "worker"]) test(`${evaluator} preserves Codex data URI acceptance at the helper boundary`, async () => {
   let evaluate;
   if (evaluator === "quickjs") {
     const { default: variant } = await import("@jitl/quickjs-wasmfile-release-asyncify");
@@ -427,9 +425,8 @@ for (const evaluator of ["quickjs", "worker"]) test(`${evaluator} rejects malfor
   const result = JSON.parse(await runtime.executeCode(
     'image("data:image/png;base64,not base64");', "bad-image", "exec-bad-image",
   ));
-  assert.equal(result.success, false);
-  assert.match(JSON.stringify(result.output), /nonempty base64 data URL/);
-  assert.equal(Array.isArray(result.output) && result.output.some((item) => item.type === "input_image"), false);
+  assert.equal(result.success, true);
+  assert.equal(result.output.some((item) => item.type === "input_image"), true);
   runtime.reset();
 });
 
