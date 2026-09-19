@@ -768,10 +768,16 @@ async fn observe_javascript_code(
             }
             Some("notification") => {
                 #[derive(Deserialize)]
-                struct Notification { call_id: String, text: String }
-                let notification: Notification = serde_json::from_value(value).map_err(|error| {
-                    CodeModeHostError::new(format!("JavaScript Code Mode host returned invalid notification: {error}"))
-                })?;
+                struct Notification {
+                    call_id: String,
+                    text: String,
+                }
+                let notification: Notification =
+                    serde_json::from_value(value).map_err(|error| {
+                        CodeModeHostError::new(format!(
+                            "JavaScript Code Mode host returned invalid notification: {error}"
+                        ))
+                    })?;
                 notifications.push(nanocodex::tools::embedded::CodeModeNotification {
                     call_id: notification.call_id,
                     text: notification.text,
