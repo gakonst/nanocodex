@@ -1,7 +1,7 @@
 import HighlightSwift
 import SwiftUI
 
-struct ChatCodeText: View {
+public struct ChatCodeText: View {
     let source: String
     let language: String
     @Environment(\.colorScheme) private var colorScheme
@@ -13,7 +13,12 @@ struct ChatCodeText: View {
         let dark: Bool
     }
 
-    var body: some View {
+    public init(source: String, language: String) {
+        self.source = source
+        self.language = language
+    }
+
+    public var body: some View {
         let request = Request(source: source, language: language, dark: colorScheme == .dark)
         Text(highlighted?.request == request ? highlighted!.text : AttributedString(source))
             .task(id: request) {

@@ -2086,7 +2086,8 @@ final class InboxUITests: XCTestCase {
         capture(app, "10-inline-sequence")
         let cardY = first.frame.minY
         first.tap()
-        XCTAssertTrue(conversation.staticTexts["Command"].waitForExistence(timeout: 3))
+        XCTAssertTrue(first.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "command-source-")).firstMatch.exists)
+        XCTAssertFalse(conversation.staticTexts["Command"].exists, "The command stays in the card instead of being duplicated in details")
         XCTAssertEqual(first.frame.minY, cardY, accuracy: 4, "Expanding details keeps the tapped card in place")
         XCTAssertTrue(conversation.staticTexts["Exit code"].exists)
         XCTAssertEqual(second.value as? String, "Collapsed", "Each tool expands independently")
@@ -2407,6 +2408,37 @@ final class InboxUITests: XCTestCase {
         XCTAssertFalse(app.buttons["steer-now"].exists)
         capture(app, "conversation-direct-send-keyboard-dismissed")
     }
+    func testCommandCardShowsFullMultilineCommandAndDirectory() {
+        let app = launch(["NANOCODEX_DEMO_COMMAND_CARD": "1",
+                          "NANOCODEX_DEMO_PROFILE": UUID().uuidString]); selectInbox(app)
+        let conversation = app.scrollViews["conversation"]
+        XCTAssertTrue(conversation.waitForExistence(timeout: 5))
+        let card = conversation.buttons["tool-disclosure-demo-command-card"]
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        let command = """
+        printf '%s\\n' 'Inspect the complete synthetic command, including this deliberately long first line beyond the old 140 character preview boundary.'
+        swift test --package-path 'apple/InboxCore' --filter CommandPresentationTests
+        exit 7
+        """
+        XCTAssertGreaterThan(command.count, 140)
+        let source = card.descendants(matching: .any)["command-source-demo-command-card"]
+        XCTAssertTrue(source.exists, "The collapsed card exposes the complete command")
+        XCTAssertTrue(source.isHittable, "The complete command is visible before expanding details")
+        XCTAssertEqual(source.label, command, "Command input preserves every character and newline")
+        let directory = card.descendants(matching: .any)["command-directory-demo-command-card"]
+        XCTAssertTrue(directory.exists)
+        XCTAssertEqual(directory.label, "/workspace/demo project")
+        XCTAssertFalse(card.staticTexts["Run command"].exists)
+        XCTAssertTrue(card.label.contains("Failed"))
+        XCTAssertTrue(card.label.contains("exit 7"))
+        capture(app, "command-card-full-input-and-directory")
+        card.tap()
+        let failure = conversation.staticTexts["Synthetic command failed with exit 7. No command was executed."]
+        for _ in 0..<4 { if failure.isHittable { break }; conversation.swipeUp() }
+        XCTAssertTrue(failure.isHittable, "The expanded command failure remains readable")
+        capture(app, "command-card-expanded-failure")
+    }
+
     func testToolFailureIsReadable() {
         let app = launch(["NANOCODEX_DEMO_TOOL_ERROR": "1"]); selectInbox(app)
 

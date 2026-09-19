@@ -2742,6 +2742,22 @@ final class InboxModel: ObservableObject {
                 for index in cards.indices { cards[index].activeTurns = turns[cards[index].id] ?? cards[index].activeTurns }
             }
         }
+        if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_COMMAND_CARD"] == "1" {
+            // Presentation-only fixture: these arguments and results never execute.
+            let command = """
+            printf '%s\\n' 'Inspect the complete synthetic command, including this deliberately long first line beyond the old 140 character preview boundary.'
+            swift test --package-path 'apple/InboxCore' --filter CommandPresentationTests
+            exit 7
+            """
+            var activity = ToolPresentation(name: "exec_command", arguments: .object([
+                "cmd": .string(command), "workdir": .string("/workspace/demo project")
+            ]))
+            activity.finish(.object([
+                "stderr": .string("Synthetic command failed with exit 7. No command was executed."),
+                "exit_code": .number(7)
+            ]))
+            demoRows["inbox"] = [.init(id: "demo-command-card", role: "Tool", text: activity.title, tool: activity)]
+        }
         activateContext()
         restoreCreations()
         reconcile(); observeFocused()

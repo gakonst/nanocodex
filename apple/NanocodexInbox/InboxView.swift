@@ -2021,6 +2021,13 @@ private struct ConversationToolCard: View {
     private var failed: Bool { row.tool?.status == "Failed" }
     private var title: String { row.tool?.title ?? row.text }
     private var subject: String { row.tool?.subject ?? "" }
+    private var command: String? {
+        guard ["Run command", "Start process"].contains(title) else { return nil }
+        return row.tool?.input.first(where: { $0.label == "Command" })?.value
+    }
+    private var directory: String? { row.tool?.input.first(where: { $0.label == "Folder" })?.value }
+    private var shell: String? { row.tool?.input.first(where: { $0.label == "Shell" })?.value }
+    private var exitCode: String? { row.tool?.output.first(where: { $0.label == "Exit code" })?.value }
     private var symbol: String {
         let family = title.lowercased()
         if family.contains("vault") { return "lock.shield" }
@@ -2039,42 +2046,81 @@ private struct ConversationToolCard: View {
         if row.running || row.tool?.status == "Running" { return "Interrupted" }
         return row.tool?.status ?? "Completed"
     }
+    @ViewBuilder private var statusIndicator: some View {
+        if live { ProgressView().controlSize(.mini).accessibilityLabel("Running") }
+        else if status != "Completed" {
+            Text(exitCode.map { "\(status) · exit \($0)" } ?? status)
+                .font(.caption2.weight(.medium)).foregroundStyle(failed ? Color.orange : Ink.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            Image(systemName: "checkmark").font(.caption2.weight(.semibold))
+                .foregroundStyle(Ink.muted).accessibilityLabel("Completed")
+        }
+    }
+    private var disclosure: some View {
+        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+            .font(.caption2.weight(.semibold)).foregroundStyle(Ink.muted).accessibilityHidden(true)
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
                 onToggle()
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { expanded.toggle() }
             } label: {
-                HStack(spacing: 8) {
-                    Group {
-                        if live { ProgressView().controlSize(.mini) }
-                        else {
-                            Image(systemName: failed ? "exclamationmark.circle.fill" : symbol)
-                                .foregroundStyle(failed ? Color.orange : Ink.muted)
+                VStack(alignment: .leading, spacing: command == nil ? 0 : 10) {
+                    if let command {
+                        HStack(spacing: 6) {
+                            Image(systemName: "folder").foregroundStyle(Color.accentColor)
+                            Text(directory ?? "Default directory")
+                                .font(.caption.monospaced()).foregroundStyle(Ink.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityIdentifier("command-directory-" + row.id)
+                            Spacer(minLength: 4)
+                            statusIndicator
+                            disclosure
                         }
-                    }.frame(width: 18).accessibilityHidden(true)
-                    Text(title).fontWeight(.medium).lineLimit(1)
-                    if !subject.isEmpty {
-                        Text(subject).foregroundStyle(Ink.text).lineLimit(1).truncationMode(.middle)
+                        ChatCodeText(source: command, language: "bash")
+                            .font(.system(.footnote, design: .monospaced))
+                            .foregroundStyle(Ink.text)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityIdentifier("command-source-" + row.id)
+                        if let shell {
+                            Text(shell).font(.caption2.monospaced()).foregroundStyle(Ink.muted)
+                        }
+                    } else {
+                        HStack(spacing: 8) {
+                            Image(systemName: symbol).foregroundStyle(Color.accentColor)
+                                .frame(width: 18).accessibilityHidden(true)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(subject.isEmpty ? title : subject)
+                                    .font(.subheadline).foregroundStyle(Ink.text)
+                                    .lineLimit(3).multilineTextAlignment(.leading)
+                                if !subject.isEmpty { Text(title).font(.caption2).foregroundStyle(Ink.muted) }
+                            }
+                            Spacer(minLength: 0)
+                            statusIndicator
+                            disclosure
+                        }
                     }
-                    Spacer(minLength: 0)
-                    if status != "Completed" {
-                        Text(status).font(.caption2).foregroundStyle(failed ? Color.orange : Ink.muted)
-                            .lineLimit(1).fixedSize()
-                    }
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.caption2.weight(.semibold)).foregroundStyle(Ink.muted)
-                        .accessibilityHidden(true)
-                }.font(.caption).foregroundStyle(Ink.muted)
+                }.padding(.vertical, command == nil ? 6 : 12)
                     .frame(minHeight: 44).contentShape(Rectangle())
             }.buttonStyle(.plain)
                 .accessibilityIdentifier("tool-disclosure-" + row.id)
-                .accessibilityLabel([title, subject, status].filter { !$0.isEmpty }.joined(separator: ", "))
                 .accessibilityValue(expanded ? "Expanded" : "Collapsed")
                 .accessibilityHint(expanded ? "Hide input and results" : "Show input and results")
+                .contextMenu {
+                    if let command {
+                        Button("Copy command", systemImage: "doc.on.doc") { UIPasteboard.general.string = command }
+                    }
+                    if let directory {
+                        Button("Copy directory", systemImage: "folder") { UIPasteboard.general.string = directory }
+                    }
+                }
             if expanded {
                 Divider()
-                ToolActivityView(row: row).padding(.vertical, 12)
+                ToolActivityView(row: row, hidesCommand: command != nil).padding(.vertical, 12)
                     .accessibilityIdentifier("tool-detail-" + row.id)
             }
         }.padding(.horizontal, 12)
@@ -2085,6 +2131,7 @@ private struct ConversationToolCard: View {
 
 private struct ToolActivityView: View {
     let row: TranscriptRow
+    var hidesCommand = false
     private var tool: ToolPresentation {
         if let tool = row.tool { return tool }
         var fallback = ToolPresentation(name: row.text, arguments: .null)
@@ -2093,7 +2140,8 @@ private struct ToolActivityView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if !tool.input.isEmpty { fields(tool.input, heading: "Input") }
+            let input = tool.input.filter { !hidesCommand || !["Command", "Folder", "Shell"].contains($0.label) }
+            if !input.isEmpty { fields(input, heading: "Input") }
             if !tool.output.isEmpty { fields(tool.output, heading: "Result") }
         }.foregroundStyle(Ink.muted).accessibilityIdentifier("tool-activity")
     }
