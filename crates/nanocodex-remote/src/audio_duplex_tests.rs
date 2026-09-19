@@ -58,9 +58,15 @@ impl Fixture {
         let mic = Microphone {
             permission,
             available: true,
+            failed: Arc::new(AtomicBool::new(false)),
             tasks: Arc::new(Mutex::new(Vec::new())),
         };
-        let receiver = tokio::spawn(receive(incoming, updates, factory));
+        let receiver = tokio::spawn(receive_report(
+            incoming,
+            updates,
+            factory,
+            mic.failed.clone(),
+        ));
         Self {
             mic,
             packets,
@@ -179,6 +185,34 @@ async fn malformed_opus_stops_receiver_and_releases_sink() {
         .await
         .unwrap();
     assert!(f.receiver.await.unwrap().is_err());
+    assert!(!f.mic.enabled());
+    assert!(!f.mic.set_enabled(true, Duration::from_secs(1)));
     assert!(f.writes.is_empty());
     assert_eq!(f.closed.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn failed_device_creation_is_observable_and_cannot_be_reenabled() {
+    let (permission, updates) = watch::channel(Permission::default());
+    let mic = Microphone {
+        permission,
+        available: true,
+        failed: Arc::new(AtomicBool::new(false)),
+        tasks: Arc::new(Mutex::new(Vec::new())),
+    };
+    let factory: SinkFactory =
+        Arc::new(|| Box::pin(async { Err("synthetic sink failure".into()) }));
+    let (packets, incoming) = mpsc::channel(3);
+    assert!(mic.set_enabled(true, Duration::from_secs(2)));
+    assert!(mic.enabled());
+    packets.send((Instant::now(), tone())).await.unwrap();
+    assert!(
+        receive_report(incoming, updates, factory, mic.failed.clone())
+            .await
+            .is_err()
+    );
+    assert!(!mic.enabled());
+    mic.renew(Duration::from_secs(2));
+    assert!(!mic.enabled());
+    assert!(!mic.set_enabled(true, Duration::from_secs(2)));
 }
