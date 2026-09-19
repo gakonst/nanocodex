@@ -119,3 +119,37 @@ impl Default for ModelConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::*;
+
+    #[test]
+    fn supported_models_select_exact_pinned_instructions() {
+        for (model, expected) in [
+            (Model::Astra, ASTRA_SYSTEM_PROMPT),
+            (Model::Sol, SYSTEM_PROMPT),
+            (Model::Terra, SYSTEM_PROMPT),
+            (Model::Luna, SYSTEM_PROMPT),
+        ] {
+            let mut config = ModelConfig {
+                model,
+                ..ModelConfig::default()
+            };
+            assert_eq!(config.system_prompt(), expected);
+            assert!(config.system_prompt().starts_with("You are Codex,"));
+            config.additional_instructions = Some(Arc::from("Host instructions"));
+            assert_eq!(
+                config.system_prompt(),
+                format!("{expected}\n\nHost instructions")
+            );
+            config.system_prompt = Some(Arc::from("Explicit override"));
+            assert_eq!(
+                config.system_prompt(),
+                "Explicit override\n\nHost instructions"
+            );
+        }
+        assert!(ASTRA_SYSTEM_PROMPT.starts_with("You are Codex, an agent based on GPT-6."));
+        assert!(!ASTRA_SYSTEM_PROMPT.contains("As Nanocodex,"));
+    }
+}

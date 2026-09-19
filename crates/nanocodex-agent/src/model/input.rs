@@ -9,16 +9,6 @@ use serde_json::Value;
 
 use super::context::ContextSnapshot;
 
-const PERMISSIONS_INSTRUCTIONS: &str = concat!(
-    "<permissions instructions>\n",
-    "Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is ",
-    "`danger-full-access`: No filesystem sandboxing - all commands are permitted. Network ",
-    "access is enabled.\n",
-    "Approval policy is currently never. Do not provide the `sandbox_permissions` for any ",
-    "reason, commands will be rejected.\n",
-    "</permissions instructions>",
-);
-
 pub(in crate::model) fn task_input(
     prompt: &Prompt,
     user_content: Vec<ContentItem>,
@@ -69,9 +59,29 @@ pub(in crate::model) fn developer_context() -> ResponseItem {
     ResponseItem::message(
         MessageRole::Developer,
         [ContentItem::InputText {
-            text: PERMISSIONS_INSTRUCTIONS.into(),
+            text: permissions_instructions().into(),
         }],
     )
+}
+
+fn permissions_instructions() -> String {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        // This native runtime enforces full access, networking, and no escalation.
+        // Keep the bundled upstream sections exact; hosted WASM uses host facts.
+        let sandbox = include_str!("prompts/danger_full_access.md")
+            .replace("{{ network_access }}", "enabled");
+        format!(
+            "<permissions instructions>\n{sandbox}{}</permissions instructions>",
+            include_str!("prompts/never.md"),
+        )
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        // WASM delegates execution to a host whose grant can vary per tool and
+        // hand. It cannot truthfully manufacture a global full-access profile.
+        "<host_execution_context>\nExecution permissions are supplied and enforced by the host for each tool and selected environment. The embedded runtime does not grant filesystem, network, or escalation access.\n</host_execution_context>".to_owned()
+    }
 }
 
 pub(in crate::model) fn custom_tool_output(
@@ -148,6 +158,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    #[cfg(not(target_family = "wasm"))]
     fn task_input_matches_codex_context_shape() {
         let context = ContextSnapshot::capture_at(
             "/workspace/a&b",
@@ -173,7 +184,7 @@ mod tests {
                     "content": [
                         {
                             "type": "input_text",
-                            "text": PERMISSIONS_INSTRUCTIONS,
+                            "text": "<permissions instructions>\nFilesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`: No filesystem sandboxing - all commands are permitted. Network access is enabled.\nApproval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.\n</permissions instructions>",
                         },
                     ],
                 }),
