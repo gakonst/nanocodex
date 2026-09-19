@@ -18,9 +18,12 @@ result. Rust `code_mode_description::parity_tests` compares local definitions,
 output metadata and generated declarations to it. The standard JavaScript tool
 test compares update_plan, view_image and image-generation contracts too.
 
-The base Astra/Sol/Terra/Luna instructions match their upstream model templates.
-Astra retains the existing Nanocodex identity substitutions and stripped trailing
-spaces. The apply_patch grammar and image-generation description are byte exact.
+The base Astra/Sol/Terra/Luna instructions now match their upstream model templates
+exactly, including Astra identity and whitespace. The canonical prompt inventory
+contains 102 assets backed by 255 pinned source files; availability in the registry
+does not mean every optional runtime mode is wired to consume it. Native bundled
+permissions, managed goal continuation, and Realtime voice templates are wired.
+The apply_patch grammar and image-generation description are byte exact.
 Exec's grammar, helper preamble, wait description/schema, and MCP TypeScript
 preamble are checked. The schema renderer is a direct upstream port, checked for
 source equality after only import/module-path adaptation; this fixes references,
@@ -72,10 +75,14 @@ preparation, as in upstream, instead of adding stricter helper-only validation.
 - Embedded applications can supply their own evaluator. Its execution globals
   and capabilities still require a separate review; the current host description
   explains this instead of advertising upstream isolation it cannot guarantee.
-- Namespace descriptions, selected-hand shell behavior, runtime environment,
-  memory, connector, goal and skill prompt layers and upstream-only tool
-  handlers remain tracked by the broader parity audit. A declaration in the
-  inventory is not evidence that its handler exists.
+- The canonical memories adapter is wired on native and managed paths; see
+  [its storage and API notes](codex-memory-api.md). Custom `computer` registration
+  is removed; [CUA provider notes](computer/cua-provider-contract.md) distinguish
+  preserved MCP contracts from compatibility of the external provider itself.
+- Selected-hand shell behavior, remaining context/permission/clock/MCP-resource
+  handlers and optional prompt-mode dispatch still need integration. See the
+  [tool inventory](codex-tool-inventory.md). A catalog declaration is not evidence
+  that its handler exists.
 
 This work is on the integration branch; these checks are not a deployment receipt.
 
