@@ -30,7 +30,9 @@ pub fn canonical_module(name: &str) -> Option<String> {
     .contains(&name)
     .then(|| format!("node:{name}"))
 }
-pub struct Resolver;
+/// Package roots belong to the server, while the cache belongs to each JS kernel.
+pub type ModuleDirectories = std::rc::Rc<std::cell::RefCell<Vec<PathBuf>>>;
+pub struct Resolver(pub ModuleDirectories);
 impl rquickjs::loader::Resolver for Resolver {
     fn resolve<'js>(
         &mut self,
@@ -45,7 +47,174 @@ impl rquickjs::loader::Resolver for Resolver {
                 &format!("Importing module \"{name}\" is not allowed in node_repl"),
             ));
         }
-        canonical_module(name).ok_or_else(|| rquickjs::Error::new_resolving(base, name))
+        if let Some(name) = canonical_module(name) {
+            return Ok(name);
+        }
+        resolve_package(base, name, &self.0.borrow())
+            .map(|p| p.to_string_lossy().into_owned())
+            .map_err(|error| rquickjs::Error::new_resolving_message(base, name, error.to_string()))
+    }
+}
+fn package_target(value: &Value) -> Option<&str> {
+    if let Some(value) = value.as_str() {
+        return Some(value);
+    }
+    for key in ["node", "import", "default"] {
+        if let Some(value) = value.get(key).and_then(package_target) {
+            return Some(value);
+        }
+    }
+    value
+        .as_array()
+        .and_then(|a| a.iter().find_map(package_target))
+}
+fn module_file(path: PathBuf) -> io::Result<PathBuf> {
+    module_file_inner(path, 0)
+}
+fn module_file_inner(path: PathBuf, depth: usize) -> io::Result<PathBuf> {
+    if depth >= 32 {
+        return Err(invalid("Package main resolution exceeded maximum depth"));
+    }
+    if path.is_file() {
+        return fs::canonicalize(path);
+    }
+    if path.is_dir() {
+        if let Ok(bytes) = fs::read(path.join("package.json")) {
+            let package: Value = serde_json::from_slice(&bytes)?;
+            if let Some(main) = package["main"].as_str() {
+                let main = path.join(main);
+                if main != path {
+                    if let Ok(file) = module_file_inner(main, depth + 1) {
+                        return Ok(file);
+                    }
+                }
+            }
+        }
+        for name in ["index.js", "index.mjs", "index.json"] {
+            if path.join(name).is_file() {
+                return fs::canonicalize(path.join(name));
+            }
+        }
+    }
+    for extension in ["js", "mjs", "json"] {
+        let candidate = PathBuf::from(format!("{}.{}", path.display(), extension));
+        if candidate.is_file() {
+            return fs::canonicalize(candidate);
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "Package module was not found",
+    ))
+}
+fn resolve_package(base: &str, name: &str, directories: &[PathBuf]) -> io::Result<PathBuf> {
+    if name.starts_with("file:") {
+        return module_file(
+            url::Url::parse(name)
+                .map_err(|e| invalid(&e.to_string()))?
+                .to_file_path()
+                .map_err(|_| invalid("Expected a local module file URL"))?,
+        );
+    }
+    if Path::new(name).is_absolute() {
+        return module_file(name.into());
+    }
+    if name.starts_with("./") || name.starts_with("../") {
+        let parent = Path::new(base)
+            .parent()
+            .filter(|p| p.is_absolute())
+            .map(Path::to_path_buf)
+            .unwrap_or(std::env::current_dir()?);
+        return module_file(parent.join(name));
+    }
+    if name.starts_with("node:") || name.contains(':') {
+        return Err(invalid("Unsupported module specifier"));
+    }
+    let parts: Vec<_> = name.split('/').collect();
+    let count = if name.starts_with('@') { 2 } else { 1 };
+    if parts.len() < count
+        || parts
+            .iter()
+            .any(|s| s.is_empty() || *s == "." || *s == "..")
+    {
+        return Err(invalid("Invalid package specifier"));
+    }
+    let package_name = parts[..count].join("/");
+    let subpath = if parts.len() == count {
+        ".".to_owned()
+    } else {
+        format!("./{}", parts[count..].join("/"))
+    };
+    let mut roots = Vec::new();
+    if Path::new(base).is_absolute() {
+        for parent in Path::new(base).ancestors().skip(1) {
+            roots.push(parent.join("node_modules"));
+        }
+    }
+    roots.extend_from_slice(directories);
+    for root in roots {
+        let package_dir = root.join(&package_name);
+        if !package_dir.is_dir() {
+            continue;
+        }
+        if let Ok(bytes) = fs::read(package_dir.join("package.json")) {
+            let package: Value = serde_json::from_slice(&bytes)?;
+            if let Some(exports) = package.get("exports") {
+                let selected = exports.get(&subpath).or_else(|| {
+                    (subpath == "."
+                        && !exports
+                            .as_object()
+                            .is_some_and(|o| o.keys().any(|k| k.starts_with('.'))))
+                    .then_some(exports)
+                });
+                let target = selected
+                    .and_then(package_target)
+                    .ok_or_else(|| invalid("Package subpath is not exported"))?;
+                if !target.starts_with("./")
+                    || Path::new(target)
+                        .components()
+                        .any(|c| matches!(c, std::path::Component::ParentDir))
+                {
+                    return Err(invalid("Invalid package exports target"));
+                }
+                return module_file(package_dir.join(target));
+            }
+        }
+        return module_file(if subpath == "." {
+            package_dir
+        } else {
+            package_dir.join(&subpath[2..])
+        });
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("Cannot find package '{name}'"),
+    ))
+}
+pub struct FileLoader;
+impl rquickjs::loader::Loader for FileLoader {
+    fn load<'js>(
+        &mut self,
+        ctx: &rquickjs::Ctx<'js>,
+        name: &str,
+        _: Option<rquickjs::loader::ImportAttributes<'js>>,
+    ) -> rquickjs::Result<rquickjs::Module<'js>> {
+        let source = fs::read_to_string(name)
+            .map_err(|e| rquickjs::Error::new_loading_message(name, e.to_string()))?;
+        let source = if name.ends_with(".json") {
+            let value: Value = serde_json::from_str(&source)
+                .map_err(|e| rquickjs::Error::new_loading_message(name, e.to_string()))?;
+            format!("export default {};", value)
+        } else {
+            if name.ends_with(".cjs") {
+                return Err(rquickjs::Error::new_loading_message(
+                    name,
+                    "CommonJS modules are not supported by the QuickJS module loader",
+                ));
+            }
+            source
+        };
+        rquickjs::Module::declare(ctx.clone(), name, source)
     }
 }
 struct ModuleSources(Vec<(&'static str, String)>);

@@ -1138,6 +1138,34 @@ impl Browsers {
             json!({"messages":browser.iab_host.diagnostics,"pending":browser.iab.as_ref().unwrap().pending()}),
         )
     }
+    /// Finish the visible libraries' turn without switching authenticated routes.
+    /// Managed providers are completed exclusively by the authenticated host channel.
+    pub fn notify_turn_ended(&mut self) -> Result<()> {
+        let ids: Vec<_> = self
+            .providers
+            .iter()
+            .filter(|(_, browser)| self.host_visible(browser) && browser.host_binding.is_none())
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            let browser = self.providers.get_mut(&id).unwrap();
+            if browser.iab.is_some() {
+                if let Some(error) = browser.end_iab_session().into_iter().next() {
+                    return Err(error);
+                }
+            }
+            if browser.extension && browser.extension_started {
+                browser.cancel_choosers(None);
+                browser.shutdown_downloads(None)?;
+                browser.call("Skyre.turnEnded", json!({}), None)?;
+                browser.extension_started = false;
+                browser.sessions.clear();
+                browser.surface.disconnect();
+                browser.contract.disconnect();
+            }
+        }
+        Ok(())
+    }
     /// Called only when the host connection authority scope actually ends.
     /// Each provider reports failures; disconnect alone never fabricates success.
     pub fn end_session(&mut self) -> Vec<(String, Error)> {

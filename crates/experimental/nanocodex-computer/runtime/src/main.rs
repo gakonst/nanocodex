@@ -194,6 +194,7 @@ struct Server {
     peer_policy: Option<skyre::peer::Policy>,
     shutdown: bool,
     mcp_initialized: bool,
+    ended_turns: std::collections::BTreeSet<(String, String)>,
     elicitation_supported: bool,
     next_elicitation: u64,
     download_elicitation: Option<skyre::download_elicitation::DownloadElicitationBroker>,
@@ -246,6 +247,55 @@ impl Server {
         Ok(())
     }
 
+    fn add_node_module_dir(&mut self, args: &Value) -> Result<Value> {
+        let path = PathBuf::from(args["path"].as_str().unwrap());
+        if self.host_options.node_module_dirs.contains(&path) {
+            return Ok(json!({"outputs":[{"channel":"output","value":"false"}]}));
+        }
+        if self.host_options.runtime != skyre::runtime::RuntimeBackend::Quickjs {
+            return Err(Error::unsupported(
+                "Added package directories require the QuickJS backend",
+            ));
+        }
+        let mut directories = self.host_options.node_module_dirs.clone();
+        directories.push(path);
+        if let Some(host) = &mut self.host {
+            host.set_node_module_dirs(directories.clone())?;
+        }
+        for host in self.inactive_route_hosts.values_mut() {
+            host.set_node_module_dirs(directories.clone())?;
+        }
+        self.host_options.node_module_dirs = directories;
+        Ok(json!({"outputs":[{"channel":"output","value":"true"}]}))
+    }
+    fn turn_ended(&mut self, args: &Value) -> Result<Value> {
+        let session = args["session_id"].as_str().unwrap();
+        let turn = args["turn_id"].as_str().unwrap();
+        let key = (session.to_owned(), turn.to_owned());
+        if !self.ended_turns.contains(&key) {
+            // Public notifications cannot select another conversation's route or
+            // advance the authenticated host lifecycle's sequence/capability.
+            if let Some(metadata) = self
+                .host_options
+                .request_meta
+                .as_ref()
+                .and_then(|m| m.get("x-codex-turn-metadata"))
+            {
+                if metadata["session_id"]
+                    .as_str()
+                    .is_some_and(|s| s != session)
+                    || metadata["turn_id"].as_str().is_some_and(|s| s != turn)
+                {
+                    return Err(Error::invalid(
+                        "turn_ended does not match the active host turn",
+                    ));
+                }
+            }
+            self.engine.borrow_mut().notify_turn_ended()?;
+            self.ended_turns.insert(key);
+        }
+        Ok(json!({"outputs":[{"channel":"output","value":"{}"}]}))
+    }
     fn check_connection_output(&self) -> Result<()> {
         let result = self
             .connection_output
@@ -743,7 +793,7 @@ impl Server {
                 ));
             }
             let name = name.unwrap();
-            if ["js", "js_reset"].contains(&name)
+            if ["js", "js_reset", "js_add_node_module_dir", "turn_ended"].contains(&name)
                 && let Err(error) =
                     validate_js_arguments(name, args.get("arguments").unwrap_or(&Value::Null))
             {
@@ -832,6 +882,8 @@ impl Server {
                             }
                             self.eval_without_completion(code, timeout_duration(a)?, emit)
                         }),
+                    "js_add_node_module_dir" => self.add_node_module_dir(a),
+                    "turn_ended" => self.turn_ended(a),
                     "js_reset" => {
                         self.reset_kernel().map(|()|
                             json!({"outputs":[{"channel":"output","value":"js kernel reset"}],"value":null}),
@@ -922,6 +974,7 @@ impl Server {
         self.inactive_route_hosts.clear();
         self.pending_kernel_cleanup.clear();
         self.mcp_initialized = false;
+        self.ended_turns.clear();
         self.elicitation_supported = false;
         self.active_id = Value::Null;
         self.engine.borrow_mut().end_session();
@@ -1085,7 +1138,7 @@ fn read_line(input: &mut impl BufRead) -> Result<Option<Value>> {
 }
 fn timeout_duration(args: &Value) -> Result<Duration> {
     match args.get("timeout_ms") {
-        None | Some(Value::Null) => Ok(Duration::from_millis(9_007_199_254_740_991)),
+        None | Some(Value::Null) => Ok(Duration::from_millis(30_000)),
         Some(v) => v
             .as_u64()
             .filter(|v| *v >= 1)
@@ -1139,6 +1192,43 @@ fn validate_js_arguments(name: &str, args: &Value) -> Result<()> {
         if parsed.title.is_some_and(|title| title.trim().is_empty()) {
             return Err(Error::invalid("js: title must be non-empty"));
         }
+    } else if name == "js_add_node_module_dir" {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Directory {
+            path: String,
+        }
+        let directory: Directory = serde_json::from_value(args).map_err(invalid)?;
+        if directory.path.trim().is_empty() {
+            return Err(Error::invalid(
+                "js_add_node_module_dir: path must be non-empty",
+            ));
+        }
+        if !std::path::Path::new(&directory.path).is_absolute() {
+            return Err(Error::invalid(
+                "js_add_node_module_dir: path must be absolute",
+            ));
+        }
+    } else if name == "turn_ended" {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Turn {
+            hook_event_name: String,
+            session_id: String,
+            turn_id: String,
+        }
+        let turn: Turn = serde_json::from_value(args).map_err(invalid)?;
+        for (key, value) in [
+            ("hook_event_name", turn.hook_event_name),
+            ("session_id", turn.session_id),
+            ("turn_id", turn.turn_id),
+        ] {
+            if value.trim().is_empty() {
+                return Err(Error::invalid(format!(
+                    "turn_ended: {key} must be non-empty"
+                )));
+            }
+        }
     } else {
         serde_json::from_value::<ResetArguments>(args).map_err(invalid)?;
     }
@@ -1146,15 +1236,20 @@ fn validate_js_arguments(name: &str, args: &Value) -> Result<()> {
 }
 
 fn cua_tools() -> Value {
-    json!({"tools":[
-        {"name":"js","description":include_str!("cua_tool_description.md"),"inputSchema":{"additionalProperties":false,"type":"object","properties":{
-            "code":{"description":"JavaScript to execute using the initialized CUA runtime.","type":"string"},
-            "title":{"description":"Short user-facing description of what the code does.","type":"string","minLength":1},
-            "timeout_ms":{"description":"Optional caller-selected execution timeout in milliseconds. Omitted calls have no artificial deadline.","type":"integer","minimum":1}
-        },"required":["code"]}},
-        {"name":"js_reset","description":include_str!("cua_reset_description.md"),"inputSchema":{"additionalProperties":false,"type":"object","properties":{}},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}}
-    ]})
+    let mut catalog: Value = serde_json::from_str(include_str!("cua_provider_tools.json"))
+        .expect("checked-in CUA provider tool catalog");
+    for tool in catalog["tools"].as_array_mut().unwrap() {
+        match tool["name"].as_str().unwrap() {
+            "js" => tool["description"] = json!(include_str!("cua_tool_description.md").trim_end()),
+            "js_reset" => {
+                tool["description"] = json!(include_str!("cua_reset_description.md").trim_end())
+            }
+            _ => (),
+        }
+    }
+    catalog
 }
+
 fn tool_output(value: Value) -> Value {
     let mut content = vec![];
     if let Some(error) = value.get("error") {
@@ -1380,6 +1475,7 @@ fn run() -> Result<()> {
         peer_policy,
         shutdown: false,
         mcp_initialized: false,
+        ended_turns: Default::default(),
         elicitation_supported: false,
         next_elicitation: 0,
         download_elicitation: None,
@@ -1761,6 +1857,7 @@ mod elicitation_tests {
             peer_policy: None,
             shutdown: false,
             mcp_initialized: true,
+            ended_turns: Default::default(),
             elicitation_supported: true,
             next_elicitation: 0,
             download_elicitation: None,
@@ -2372,5 +2469,236 @@ mod elicitation_tests {
             );
             // The actual writer is still waiting for _release until here.
         });
+    }
+}
+
+#[cfg(test)]
+mod cua_mcp_tests {
+    use super::*;
+
+    fn call(server: &mut Server, name: &str, arguments: Value) -> Value {
+        server
+            .handle(
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":name,"arguments":arguments}}),
+                &mut |_| Ok(()),
+            )
+            .unwrap()
+    }
+    fn text(reply: &Value) -> &str {
+        assert!(reply.get("error").is_none(), "{reply}");
+        assert_ne!(reply["result"]["isError"], true, "{reply}");
+        reply["result"]["content"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["text"]
+            .as_str()
+            .unwrap()
+    }
+
+    #[test]
+    fn catalog_retains_provider_schemas_annotations_and_hidden_visibility() {
+        let captured: Value =
+            serde_json::from_str(include_str!("cua_provider_tools.json")).unwrap();
+        let actual = cua_tools();
+        assert_eq!(actual["tools"].as_array().unwrap().len(), 4);
+        for (actual, captured) in actual["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(captured["tools"].as_array().unwrap())
+        {
+            for key in ["name", "inputSchema", "annotations", "_meta"] {
+                assert_eq!(actual[key], captured[key], "{key}");
+            }
+        }
+        assert_eq!(
+            timeout_duration(&json!({})).unwrap(),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            timeout_duration(&json!({"timeout_ms":60000})).unwrap(),
+            Duration::from_secs(60)
+        );
+        // The installed provider advertises maxLength=80 but accepts longer titles.
+        assert!(validate_js_arguments("js", &json!({"code":"1", "title":"x".repeat(81)})).is_ok());
+    }
+
+    #[test]
+    fn added_packages_resolve_in_running_kernel_and_survive_reset_with_fresh_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("node_modules");
+        let package = root.join("@fixture/value");
+        std::fs::create_dir_all(package.join("node_modules/child")).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            r#"{"type":"module","exports":{".":{"import":"./entry.js"},"./data":"./data.json"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("node_modules/child/index.js"),
+            "export default 39;",
+        )
+        .unwrap();
+        std::fs::write(package.join("local.js"), "export default 3;").unwrap();
+        std::fs::write(
+            package.join("entry.js"),
+            "import a from 'child';import b from './local.js';export default a+b;",
+        )
+        .unwrap();
+        std::fs::write(package.join("data.json"), "{\"value\":7}").unwrap();
+        let mut server = elicitation_tests::server();
+        assert_eq!(
+            text(&call(
+                &mut server,
+                "js",
+                json!({"code":"let retained=11;nodeRepl.write(retained)"})
+            )),
+            "11"
+        );
+        assert_eq!(
+            text(&call(
+                &mut server,
+                "js_add_node_module_dir",
+                json!({"path":root})
+            )),
+            "true"
+        );
+        assert_eq!(
+            text(&call(
+                &mut server,
+                "js_add_node_module_dir",
+                json!({"path":root})
+            )),
+            "false"
+        );
+        let code = "nodeRepl.write((await import('@fixture/value')).default)";
+        assert_eq!(text(&call(&mut server, "js", json!({"code":code}))), "42");
+        assert_eq!(
+            text(&call(
+                &mut server,
+                "js",
+                json!({"code":"nodeRepl.write((await import('@fixture/value/data')).default.value)"})
+            )),
+            "7"
+        );
+        std::fs::write(package.join("local.js"), "export default 4;").unwrap();
+        assert_eq!(text(&call(&mut server, "js", json!({"code":code}))), "42");
+        text(&call(&mut server, "js_reset", json!({})));
+        assert_eq!(text(&call(&mut server, "js", json!({"code":code}))), "43");
+        assert_eq!(
+            text(&call(
+                &mut server,
+                "js",
+                json!({"code":"nodeRepl.write(typeof retained)"})
+            )),
+            "undefined"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn turn_end_dispatches_real_provider_hook_once_per_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let helper = directory.path().join("provider.py");
+        std::fs::write(
+            &helper,
+            r#"import sys,json
+history=[]
+for line in sys.stdin:
+ r=json.loads(line);history.append(r['method'])
+ print(json.dumps({'id':r['id'],'ok':True,'result':{'history':list(history)}}),flush=True)
+"#,
+        )
+        .unwrap();
+        let mut server = elicitation_tests::server();
+        server.engine.borrow_mut().platforms.configure(&json!({
+            "id":"fixture", "kind":"windows_helper", "executable":"/usr/bin/python3", "args":[helper]
+        })).unwrap();
+        let invoke = |server: &mut Server| {
+            server
+                .engine
+                .borrow_mut()
+                .platforms
+                .execute(
+                    "platform.call",
+                    &json!({"id":"fixture", "method":"list_apps", "params":{}}),
+                )
+                .unwrap()
+        };
+        assert_eq!(invoke(&mut server)["history"], json!(["list_apps"]));
+        let args = json!({"hook_event_name":"Stop", "session_id":"s", "turn_id":"t"});
+        assert_eq!(text(&call(&mut server, "turn_ended", args.clone())), "{}");
+        assert_eq!(
+            invoke(&mut server)["history"],
+            json!(["list_apps", "end_turn", "list_apps"])
+        );
+        assert_eq!(text(&call(&mut server, "turn_ended", args)), "{}");
+        assert_eq!(
+            invoke(&mut server)["history"],
+            json!(["list_apps", "end_turn", "list_apps", "list_apps"])
+        );
+        let next = json!({"hook_event_name":"Stop", "session_id":"s", "turn_id":"next"});
+        assert_eq!(text(&call(&mut server, "turn_ended", next)), "{}");
+        assert_eq!(
+            invoke(&mut server)["history"],
+            json!([
+                "list_apps",
+                "end_turn",
+                "list_apps",
+                "list_apps",
+                "end_turn",
+                "list_apps"
+            ])
+        );
+    }
+
+    #[test]
+    fn new_tool_arguments_fail_before_mutation_and_turn_end_preserves_kernel() {
+        let mut server = elicitation_tests::server();
+        for args in [
+            json!({}),
+            json!({"path":"relative"}),
+            json!({"path":"/absolute", "extra":true}),
+        ] {
+            assert!(
+                call(&mut server, "js_add_node_module_dir", args)
+                    .get("error")
+                    .is_some()
+            );
+        }
+        assert!(server.host_options.node_module_dirs.is_empty());
+        for args in [
+            json!({}),
+            json!({"hook_event_name":"", "session_id":"s", "turn_id":"t"}),
+        ] {
+            assert!(call(&mut server, "turn_ended", args).get("error").is_some());
+        }
+        text(&call(
+            &mut server,
+            "js",
+            json!({"code":"let retained=42;nodeRepl.write(retained)"}),
+        ));
+        let args = json!({"hook_event_name":"Stop", "session_id":"s", "turn_id":"t"});
+        server.host_options.request_meta =
+            Some(json!({"x-codex-turn-metadata":{"session_id":"other","turn_id":"t"}}));
+        assert_eq!(
+            call(&mut server, "turn_ended", args.clone())["result"]["isError"],
+            true
+        );
+        assert!(server.ended_turns.is_empty());
+        server.host_options.request_meta = None;
+        assert_eq!(text(&call(&mut server, "turn_ended", args.clone())), "{}");
+        assert_eq!(text(&call(&mut server, "turn_ended", args)), "{}");
+        assert_eq!(server.ended_turns.len(), 1);
+        assert_eq!(
+            text(&call(
+                &mut server,
+                "js",
+                json!({"code":"nodeRepl.write(retained)"})
+            )),
+            "42"
+        );
     }
 }

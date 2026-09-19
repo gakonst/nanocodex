@@ -26,6 +26,10 @@ pub(crate) enum Command {
         value: Option<Value>,
         reply: SyncSender<Result<()>>,
     },
+    ModuleDirectories {
+        value: Vec<std::path::PathBuf>,
+        reply: SyncSender<Result<()>>,
+    },
     Reset,
     Stop,
 }
@@ -172,6 +176,15 @@ impl Worker {
                         }
                         let _ = reply.send(result);
                     }
+                    Command::ModuleDirectories { value, reply } => {
+                        let result = host
+                            .as_mut()
+                            .map_or(Ok(()), |host| host.set_node_module_dirs(value.clone()));
+                        if result.is_ok() {
+                            options.node_module_dirs = value;
+                        }
+                        let _ = reply.send(result);
+                    }
                     Command::Reset => host = None,
                     Command::Stop => break,
                 }
@@ -233,6 +246,20 @@ impl Worker {
                 Err(_) => return Err(Error::action("Runtime worker disconnected")),
             }
         }
+    }
+    pub fn set_node_module_dirs(&mut self, value: Vec<std::path::PathBuf>) -> Result<()> {
+        if self.active {
+            return Err(Error::action(
+                "Cannot change module directories during an active cell",
+            ));
+        }
+        let (reply, receive) = mpsc::sync_channel(1);
+        self.commands
+            .send(Command::ModuleDirectories { value, reply })
+            .map_err(|_| Error::action("Runtime worker terminated"))?;
+        receive
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| Error::action("Runtime module directory update was not acknowledged"))?
     }
     pub fn set_request_meta(&mut self, value: Option<Value>) -> Result<()> {
         if self.active {

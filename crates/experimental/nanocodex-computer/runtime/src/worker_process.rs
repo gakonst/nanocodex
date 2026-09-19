@@ -604,6 +604,11 @@ pub(super) fn supervise(
                 }
                 let _ = reply.send(result);
             }
+            Command::ModuleDirectories { reply, .. } => {
+                let _ = reply.send(Err(Error::unsupported(
+                    "Added package directories require the QuickJS backend",
+                )));
+            }
             Command::Reset => {
                 process = None;
                 child_pid.store(0, Ordering::Release);

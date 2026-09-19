@@ -105,6 +105,8 @@ impl std::str::FromStr for RuntimeBackend {
 #[serde(deny_unknown_fields)]
 pub struct HostOptions {
     #[serde(default)]
+    pub node_module_dirs: Vec<std::path::PathBuf>,
+    #[serde(default)]
     pub runtime: RuntimeBackend,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
@@ -278,6 +280,18 @@ impl Host {
             Backend::V8(host) => host.has_background(),
         }
     }
+    pub fn set_node_module_dirs(&mut self, value: Vec<std::path::PathBuf>) -> Result<()> {
+        match &mut self.backend {
+            Backend::Quickjs(host) => {
+                *host.module_dirs.borrow_mut() = value;
+                Ok(())
+            }
+            #[cfg(feature = "v8")]
+            Backend::V8(_) => Err(Error::unsupported(
+                "Added package directories require the QuickJS backend",
+            )),
+        }
+    }
     pub fn set_request_meta(&mut self, value: Option<Value>) -> Result<()> {
         match &mut self.backend {
             Backend::Quickjs(host) => host.set_request_meta(value),
@@ -389,6 +403,7 @@ fn native_app_state_quickjs_cache_checks_current_clock_before_insertion() {
     });
 }
 struct QuickJsHost {
+    module_dirs: modules::ModuleDirectories,
     drain: Rc<quickjs_drain::Bridge>,
     pending_rpc: PendingRpc,
     dispatch: Dispatch,
@@ -455,9 +470,13 @@ impl QuickJsHost {
         let pending_rpc = Rc::new(RefCell::new(rpc::Queue::default()));
         let enqueue_rpc = pending_rpc.clone();
         let runtime = Runtime::new().map_err(js_error)?;
+        let module_dirs = Rc::new(RefCell::new(options.node_module_dirs.clone()));
         runtime.set_loader(
-            modules::Resolver,
-            modules::loader().with_module("skyre:kernel", kernel::MODULE),
+            modules::Resolver(module_dirs.clone()),
+            (
+                modules::loader().with_module("skyre:kernel", kernel::MODULE),
+                modules::FileLoader,
+            ),
         );
         let mut random = [0u8; 12];
         getrandom::fill(&mut random)
@@ -622,6 +641,7 @@ impl QuickJsHost {
             })
             .map_err(js_error)?;
         Ok(Self {
+            module_dirs,
             drain,
             pending_rpc,
             dispatch: dispatcher,
