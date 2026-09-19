@@ -93,7 +93,13 @@ func (action agentInput) steps(generation string) ([]agentStep, error) {
 			button = pointer(0)
 		}
 		for _, down := range []bool{true, false} {
-			add(remoteInput{Kind: "button", X: action.X, Y: action.Y, Button: button, Down: pointer(down)}, 0)
+			// Keep a click observable by applications that poll button state.
+			// This applies only to synthesized agent clicks, not live viewer input.
+			delay := time.Duration(0)
+			if !down {
+				delay = 50 * time.Millisecond
+			}
+			add(remoteInput{Kind: "button", X: action.X, Y: action.Y, Button: button, Down: pointer(down)}, delay)
 		}
 	case "type":
 		add(remoteInput{Kind: "text", Text: action.Text}, 0)

@@ -59,3 +59,27 @@ func TestAgentKeyPressSpansPollingFrames(t *testing.T) {
 		t.Fatal("modifier must be released after the key")
 	}
 }
+
+func TestAgentClickRemainsVisibleAcrossApplicationPollingPhases(t *testing.T) {
+	steps, err := (agentInput{Action: "click", X: pointer(0.4), Y: pointer(0.6)}).steps("lease")
+	if err != nil || len(steps) != 2 || !*steps[0].input.Down || *steps[1].input.Down {
+		t.Fatal("invalid click sequence", err)
+	}
+	release := steps[0].delay + steps[1].delay
+	if release > 100*time.Millisecond {
+		t.Fatal("click unnecessarily stalls input")
+	}
+	// A 30 Hz application must observe down regardless of its sampling phase.
+	period := time.Second / 30
+	for phase := time.Duration(0); phase < period; phase += time.Millisecond {
+		observed := false
+		for at := phase; at < release; at += period {
+			if at >= steps[0].delay {
+				observed = true
+			}
+		}
+		if !observed {
+			t.Fatalf("click missed at polling phase %s", phase)
+		}
+	}
+}
