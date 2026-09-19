@@ -5,12 +5,12 @@ import type {
 } from "./browser-api.d.mts";
 
 export type Vec2 = [x: number, y: number];
-export type Point = { x: number; y: number };
+export type Point = Vec2;
+export type DesktopPoint = { x: number; y: number };
 export type ObservationOptions = { emit?: boolean };
 export type StateOptions = ObservationOptions & { disableDiffing?: boolean };
 export type StateAndScreenshot = { state: string; screenshot?: Uint8Array };
 export type PasteOptions = { format?: "text" | "md" | "html" };
-export type CuaDragOptions = { mouseButton?: MouseButton; modifiers?: ("shift" | "ctrl" | "control" | "alt" | "option" | "super" | "meta" | "cmd" | "command")[] };
 export type CuaClickOptions = { mouseButton?: MouseButton; clickCount?: number };
 export type SelectTextOptions = {
   prefix?: string;
@@ -43,17 +43,7 @@ export type AppInfo = {
   useCount?: number;
   isRunning?: boolean;
 };
-export type AppWindowInfo = {
-  windowId: number;
-  pid: number;
-  title?: string | null;
-  frame?: [x: number, y: number, width: number, height: number] | null;
-};
-export type GetAppOptions = { windowId?: number };
-export interface App extends Target {
-  /** Native gesture; unsupported backends refuse before input. */
-  drag(from: Vec2, to: Vec2, options?: CuaDragOptions): Promise<void>;
-}
+export interface App extends Target {}
 
 export type BrowserInfo = {
   id: string;
@@ -70,7 +60,7 @@ export type BrowserTabInfo = {
   url?: string;
 };
 export type BrowserState = BrowserInfo & { tabs: BrowserTabInfo[] };
-export type ComputerState = { apps: AppInfo[]; browsers: BrowserState[] };
+export type ComputerState = { apps: AppInfo[]; browsers: BrowserState[]; errors?: string[] };
 export type TabInfo = BrowserTabInfo & { browserId: string };
 export type BrowserOptions = { browser?: string };
 export type GetBrowserOptions = { id?: string; url?: string };
@@ -86,41 +76,41 @@ export type Screenshot = {
   filepath: string;
 };
 export interface DragHandle {
-  start(point: Point): Promise<void>;
-  move_to(point: Point): Promise<void>;
+  start(point: DesktopPoint): Promise<void>;
+  move_to(point: DesktopPoint): Promise<void>;
   end(): Promise<void>;
 }
 export interface Computer {
   readonly target: "linux" | "mac" | "windows";
   drag_handle?(): DragHandle;
   get_screenshot?(): Promise<Screenshot[]>;
-  /** macOS main display; read-only, without app coordinate authority. */
-  get_desktop_screenshot?(): Promise<Uint8Array>;
-  move?(point: Point): Promise<void>;
+  move?(point: DesktopPoint): Promise<void>;
 }
 
 export interface Cua {
   initialize(): Promise<ComputerState>;
-  getState(options?: ObservationOptions): Promise<ComputerState>;
-  /** macOS main display; present when supported by the native provider. */
-  getScreenshot?(options?: ObservationOptions): Promise<Uint8Array>;
-  readonly browsers: BrowserProvider;
-  readonly computer: Computer;
-  /** Bind an exact window from listWindows for independent background control. */
-  getApp(app: string, options?: GetAppOptions): Promise<App>;
-  /** Present when the backend supports explicit native-window discovery. */
-  listWindows?(app: string, options?: ObservationOptions): Promise<AppWindowInfo[]>;
-  listApps(options?: ObservationOptions): Promise<AppInfo[]>;
-  getBrowser(options?: GetBrowserOptions): Promise<Browser>;
-  createBrowserTab(
+  /** Redisplay documentation emitted in this session. */
+  rewriteDocumentation?(): Promise<void>;
+  getState?(options?: ObservationOptions): Promise<ComputerState>;
+  browsers?: BrowserProvider;
+  computer?: Computer;
+  getApp?(app: string): Promise<App>;
+  listApps?(options?: ObservationOptions): Promise<AppInfo[]>;
+  getBrowser?(options?: GetBrowserOptions): Promise<Browser>;
+  createBrowserTab?(
     browserId: string,
     url?: string,
     options?: CreateBrowserTabOptions,
   ): Promise<Tab>;
-  getTab(id: string, options?: BrowserOptions): Promise<Tab>;
-  listBrowsers(options?: ObservationOptions): Promise<BrowserInfo[]>;
-  listTabs(options?: BrowserOptions & ObservationOptions): Promise<TabInfo[]>;
+  getTab?(id: string, options?: BrowserOptions): Promise<Tab>;
+  listBrowsers?(options?: ObservationOptions): Promise<BrowserInfo[]>;
+  listTabs?(options?: BrowserOptions & ObservationOptions): Promise<TabInfo[]>;
 }
+
+export type TinySkyAlt = Cua;
+export type State = ComputerState;
+export type SetupOptions = { browser?: boolean; computer?: boolean };
+export type ClickOptions = CuaClickOptions;
 
 export type ImageInput =
   | string
