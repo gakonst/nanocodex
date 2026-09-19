@@ -32,7 +32,7 @@ export async function discoverComputer({ binary } = {}) {
 export async function connectComputerTools(options) {
   if (!options?.executable) throw new TypeError("A trusted CUA executable is required");
   options = { ...options, transport: options.transport ?? (process.env.NANOCODEX_COMPUTER_TRANSPORT === "mcp" ? "mcp" : undefined) };
-  const providerProcess = new ComputerProcess(options.executable, launchArguments(options), options.environment ?? {}, options.transport === "mcp");
+  const providerProcess = new ComputerProcess(options.executable, launchArguments(options), options.environment ?? {}, options.transport === "mcp", options);
   try {
     await providerProcess.initialize();
     const definitions = await providerProcess.discover();
@@ -50,7 +50,8 @@ function launchArguments({ args = [], transport }) {
 }
 
 /** A native attachment owns the executable/configuration, each conversation a JS scope. */
-export function createComputerTools({ executable, args = [], environment = {}, desktopRuntime, transport, definitions }) {
+export function createComputerTools({ executable, args = [], environment = {}, desktopRuntime, transport, definitions, elicitationHandler, elicitationTimeoutMs = 300_000 }) {
+  validateElicitationOptions({ elicitationHandler, elicitationTimeoutMs });
   if (!executable) throw new TypeError("A trusted CUA executable is required");
   if (transport === "mcp" && definitions === undefined) throw new TypeError("External MCP providers require connectComputerTools discovery or a trusted catalog");
   const launchArgs = launchArguments({ args, transport });
@@ -105,7 +106,8 @@ export function createComputerTools({ executable, args = [], environment = {}, d
           }
           operation.throwIfAborted();
           if (disposed) throw new Error("CUA attachment is closed");
-          session.process = new ComputerProcess(executable, launchArgs, { ...environment, ...desktopEnvironment }, transport === "mcp");
+          session.process = new ComputerProcess(executable, launchArgs, { ...environment, ...desktopEnvironment }, transport === "mcp", { elicitationHandler, elicitationTimeoutMs });
+          session.process.context = context;
           await session.process.initialize();
           const discovered = await session.process.discover();
           // The legacy synchronous constructor declares only its bundled tools.
@@ -121,6 +123,7 @@ export function createComputerTools({ executable, args = [], environment = {}, d
             : canonical(discovered) === canonical(catalog);
           if (!matches) throw new Error("CUA provider catalog changed; reconnect the attachment before invoking it");
         }
+        session.process.context = context;
         const result = await session.process.rpc("tools/call", {
           name, arguments: value,
           _meta: { "x-codex-turn-metadata": { thread_id: id, call_id: context.callId, model: context.model } },
@@ -131,7 +134,10 @@ export function createComputerTools({ executable, args = [], environment = {}, d
         return toolResult(content, result, { value: result, success: result.isError !== true, metadata: result._meta });
       } catch (error) {
         session.process?.close(); session.process = undefined; session.interrupted = true; throw error;
-      } finally { cancelTimeout(); operation.removeEventListener("abort", abort); }
+      } finally {
+        if (session.process) session.process.context = undefined;
+        cancelTimeout(); operation.removeEventListener("abort", abort);
+      }
     };
     // A QuickJS scope is ordered, but every conversation owns an independent
     // chain and process. Long work in one conversation never blocks another.
@@ -179,8 +185,19 @@ function scheduleDeadline(callback, milliseconds) {
   return () => clearTimeout(timer);
 }
 
+function validateElicitationOptions({ elicitationHandler, elicitationTimeoutMs = 300_000 }) {
+  if (elicitationHandler !== undefined && typeof elicitationHandler !== "function") throw new TypeError("elicitationHandler must be a function");
+  if (!Number.isSafeInteger(elicitationTimeoutMs) || elicitationTimeoutMs < 1) throw new TypeError("elicitationTimeoutMs must be a positive safe integer");
+}
+
+function isObject(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }
+
 class ComputerProcess {
-  constructor(executable, args, environment, mcp = false) {
+  constructor(executable, args, environment, mcp = false, options = {}) {
+    validateElicitationOptions(options);
+    this.elicitationHandler = options.elicitationHandler;
+    this.elicitationTimeoutMs = options.elicitationTimeoutMs ?? 300_000;
+    this.elicitations = new Map();
     const env = Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "SystemRoot", "LOCALAPPDATA", "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE", "NANOCODEX_COMPUTER_BACKGROUND", "NANOCODEX_HYPRLAND_CAPTURE", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "LANG", "SKY_ENABLE_AUDIO"]
       .filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
     this.child = spawn(executable, mcp ? args : [...args, "--allow-native-control", "serve"], { env: { ...env, ...environment }, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
@@ -191,12 +208,14 @@ class ComputerProcess {
         for (let line; (line = this.lines.shift()) !== undefined;) {
           const value = JSON.parse(line.toString("utf8"));
           if (value.method) {
-            if (value.id !== undefined) void this.send({ jsonrpc: "2.0", id: value.id, error: { code: -32601, message: "No interactive approval channel; configure host-approved surfaces." } }).catch(error => this.close(error));
+            if (value.id !== undefined) void this.serverRequest(value).catch(error => this.close(error));
+            else if (value.method === "notifications/cancelled") this.elicitations.get(value.params?.requestId)?.abort(new Error("CUA provider cancelled elicitation"));
             continue;
           }
           const pending = this.pending.get(value.id);
           if (!pending) throw new Error("CUA response belongs to an unknown call");
           this.pending.delete(value.id);
+          for (const controller of this.elicitations.values()) controller.abort(new Error("CUA requesting call completed"));
           if (value.error) pending.reject(new Error(value.error.message ?? "CUA runtime error"));
           else pending.resolve(value.result);
         }
@@ -206,8 +225,61 @@ class ComputerProcess {
     this.child.once("exit", () => this.close(new Error("CUA runtime exited")));
     this.child.stdin.on("error", error => this.close(error));
   }
+  async serverRequest(request) {
+    const reply = value => this.send({ jsonrpc: "2.0", id: request.id, ...value });
+    if (request.method !== "elicitation/create" || !this.elicitationHandler) {
+      await reply({ error: { code: -32601, message: "No host form elicitation handler for this request" } });
+      return;
+    }
+    const params = request.params;
+    if (!isObject(params) || (params.mode !== undefined && params.mode !== "form")
+      || typeof params.message !== "string" || !isObject(params.requestedSchema)
+      || (params._meta !== undefined && !isObject(params._meta))) {
+      await reply({ error: { code: -32602, message: "Expected MCP form elicitation parameters" } });
+      return;
+    }
+    if (this.elicitations.has(request.id) || this.elicitations.size >= 32) {
+      throw new Error("CUA provider sent duplicate or excessive pending elicitations");
+    }
+    const callId = this.pending.keys().next().value;
+    if (callId === undefined) {
+      await reply({ error: { code: -32601, message: "No active CUA call for form elicitation" } });
+      return;
+    }
+    const controller = new AbortController();
+    this.elicitations.set(request.id, controller);
+    const cancelTimeout = scheduleDeadline(() => controller.abort(new Error("CUA form elicitation timed out")), this.elicitationTimeoutMs);
+    const context = this.context;
+    try {
+      // Forward the complete provider request, including approval/persistence
+      // hints in _meta. Only a genuine host UI may select the response.
+      const result = await interruptible(Promise.resolve().then(() => {
+        controller.signal.throwIfAborted();
+        return this.elicitationHandler(params, {
+          sessionId: context?.sessionId, callId: context?.callId, model: context?.model,
+          requestId: request.id, signal: controller.signal,
+        });
+      }), controller.signal);
+      controller.signal.throwIfAborted();
+      if (!this.pending.has(callId)) return;
+      if (!isObject(result) || !["accept", "decline", "cancel"].includes(result.action)
+        || (result.content !== undefined && !isObject(result.content))
+        || (result._meta !== undefined && !isObject(result._meta))) {
+        await reply({ error: { code: -32602, message: "Invalid host form elicitation response" } });
+      } else if (!this.closed && this.pending.has(callId)) {
+        await reply({ result });
+      }
+    } catch (error) {
+      if (!this.closed && this.pending.has(callId)) await reply(controller.signal.aborted
+        ? { result: { action: "cancel" } }
+        : { error: { code: -32603, message: "Host form elicitation failed" } });
+    } finally {
+      cancelTimeout();
+      this.elicitations.delete(request.id);
+    }
+  }
   async initialize() {
-    await this.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "nanocodex-computer", version: "0.1.0" } });
+    await this.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: this.elicitationHandler ? { elicitation: { form: {} } } : {}, clientInfo: { name: "nanocodex-computer", version: "0.1.0" } });
     await this.send({ jsonrpc: "2.0", method: "notifications/initialized" });
   }
   async discover() {
@@ -243,6 +315,8 @@ class ComputerProcess {
   close(error = new Error("CUA session stopped")) {
     if (this.closed) return;
     this.closed = error;
+    for (const controller of this.elicitations.values()) controller.abort(error);
+    this.elicitations.clear();
     this.child.kill("SIGKILL");
     this.child.stdin.destroy(); this.child.stdout.destroy();
     for (const pending of this.pending.values()) pending.reject(error);

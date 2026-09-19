@@ -200,6 +200,21 @@ let computer = ComputerTools::connect(ComputerConfig::new("/usr/local/bin/nanoco
 // Register computer.js() and computer.reset() in your existing Tools builder.
 ```
 
+For an external MCP provider, hosts can set `ComputerConfig.elicitation_handler`
+to an `Arc<dyn ComputerElicitationHandler>`. Only that configuration advertises
+`elicitation.form`. The host receives the form's original params (including all
+`_meta`), request ID, and the active conversation/call identity; discovery has no
+conversation identity. Return `ComputerElicitationResponse` with the user's
+`Accept`, `Decline`, or `Cancel` action, optional content, and optional response
+metadata. The adapter never supplies consent or copies persistence suggestions
+into a response. Provider text and metadata are untrusted UI data.
+
+The handler future is dropped when the caller cancels, the provider disconnects
+or cancels its request, the requesting call completes, or `elicitation_timeout` expires (five minutes by default).
+Hosts must dismiss their pending form on future drop. Expiry sends `cancel`;
+unsupported requests and forms without a host handler receive an MCP error.
+This API does not enable a CLI or desktop approval UI automatically.
+
 `ComputerExecutor` supports attachment-specific transports; `VmTools` implements
 that path without exposing a guest executable or command string to the model.
 The Node attachment adapter is [js/nanocodex-computer](../../../js/nanocodex-computer).

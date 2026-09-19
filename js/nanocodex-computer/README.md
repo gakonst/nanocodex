@@ -56,3 +56,42 @@ Managed `select_computer` returns the selected provider's exact declarations.
 Read those before calling CUA. Screen-only Mac, Windows, Linux and phone hosts
 are unsupported by this CUA path; their hardware publishers remain separate.
 The managed namespace does not publish `computer`.
+
+Hosts with a genuine user-facing form UI can provide `elicitationHandler`:
+
+```js
+const computer = await connectComputerTools({
+  executable: providerExecutable,
+  args: providerArgs,
+  transport: "mcp",
+  elicitationTimeoutMs: 300_000,
+  elicitationHandler: async (params, context) => {
+    // Host-owned UI: display params.message/requestedSchema and the provider's
+    // _meta approval details; dismiss when context.signal is aborted.
+    return await showHostForm(params, context);
+    // Return { action: "accept" | "decline" | "cancel", content?, _meta? }.
+  },
+});
+```
+
+Only a configured handler advertises MCP `elicitation.form`. The adapter accepts
+`elicitation/create` form requests (omitted `mode` also means form), forwards all
+raw parameters including `_meta`, and preserves the host's response metadata.
+It never selects acceptance or persistence. Hosts must obtain the user's choice
+before returning `accept` or `_meta.persist`; provider metadata is presentation
+input, not authorization. URL requests and legacy extension methods are unsupported.
+Without a handler, server requests receive a method-not-found error.
+
+Context contains the provider `requestId`, `signal`, and the active tool's
+`sessionId`, `callId`, and `model`. Discovery-time requests have no active tool
+identity. `elicitationTimeoutMs` is a positive safe integer, defaults to 300 seconds,
+and bounds the form wait independently of provider-owned tool execution timeouts.
+Expiry and provider cancellation abort the signal and return `cancel`. Caller
+abort, requesting call completion, session release, process exit, and attachment close also abort pending
+forms. Hosts must use the signal to dismiss their UI; late responses are ignored.
+Thrown handlers return an internal error without exposing the host exception.
+
+The current desktop app does not yet supply this callback: its JSONL bridge has
+no form-response action or native form presentation route. It therefore does not
+advertise this capability. Adding an adapter callback alone does not enable
+interactive approval in an installed desktop app.

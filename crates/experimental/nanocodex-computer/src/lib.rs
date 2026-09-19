@@ -24,6 +24,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
     sync::{mpsc, oneshot},
+    task::{AbortHandle, JoinSet},
 };
 
 // The shared JSON contract cannot represent integers above JavaScript's range.
@@ -40,6 +41,10 @@ pub struct ComputerConfig {
     /// True for an exact external MCP command, without companion launch flags.
     pub mcp_transport: bool,
     provider_catalog: Option<Vec<ProviderTool>>,
+    /// Host UI callback. No elicitation capability is advertised without it.
+    pub elicitation_handler: Option<Arc<dyn ComputerElicitationHandler>>,
+    /// Maximum time for a host response; expiry returns `cancel`, never consent.
+    pub elicitation_timeout: Duration,
 }
 
 impl ComputerConfig {
@@ -67,6 +72,8 @@ impl ComputerConfig {
             desktop_runtime: None,
             mcp_transport: false,
             provider_catalog: None,
+            elicitation_handler: None,
+            elicitation_timeout: Duration::from_secs(300),
         }
     }
 
@@ -122,6 +129,54 @@ impl ComputerConfig {
             })
             .map(Self::new)
     }
+}
+
+/// Trusted call identity for routing a form to the correct conversation UI.
+#[derive(Clone, Debug)]
+pub struct ComputerElicitationContext {
+    pub session_id: String,
+    pub call_id: String,
+    pub model: String,
+}
+
+/// Provider-owned form, including the complete original `params._meta`.
+/// Provider text and persistence suggestions are untrusted UI data, not consent.
+#[derive(Clone, Debug)]
+pub struct ComputerElicitationRequest {
+    pub id: Value,
+    pub params: Value,
+    /// Absent during initial provider discovery.
+    pub context: Option<ComputerElicitationContext>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ComputerElicitationAction {
+    Accept,
+    Decline,
+    Cancel,
+}
+
+/// Only the host's explicit response is sent; no content or persistence is added.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct ComputerElicitationResponse {
+    pub action: ComputerElicitationAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Value>,
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Value>,
+}
+
+/// Implemented by the embedding application's approval/form UI, never a tool.
+/// The future is dropped on timeout, provider cancellation, connection closure,
+/// requesting call completion, or caller cancellation. Hosts must dismiss pending
+/// UI when it is dropped.
+#[async_trait]
+pub trait ComputerElicitationHandler: Send + Sync + std::fmt::Debug + 'static {
+    async fn elicit(
+        &self,
+        request: ComputerElicitationRequest,
+    ) -> Result<ComputerElicitationResponse, ToolError>;
 }
 
 /// Serializable invocation shared by native and VM transports.
@@ -460,6 +515,11 @@ async fn run_session(
                 Some(process) => process,
                 None => Process::start(&config).await?,
             };
+            process.elicitation_context = Some(ComputerElicitationContext {
+                session_id: session.clone(),
+                call_id: call_id.clone(),
+                model: model.clone(),
+            });
             let value = process.rpc("tools/call", json!({"name":name,"arguments":arguments,
                 "_meta":{"x-codex-turn-metadata":{"thread_id":session,"call_id":call_id,"model":model}}})).await?;
             let output = output(value)?;
@@ -501,6 +561,9 @@ struct Process {
     output: BufReader<ChildStdout>,
     next_id: u64,
     catalog: Vec<ProviderTool>,
+    elicitation_handler: Option<Arc<dyn ComputerElicitationHandler>>,
+    elicitation_timeout: Duration,
+    elicitation_context: Option<ComputerElicitationContext>,
 }
 impl Process {
     async fn start(config: &ComputerConfig) -> Result<Self, ToolError> {
@@ -576,8 +639,16 @@ impl Process {
             output,
             next_id: 0,
             catalog: Vec::new(),
+            elicitation_handler: config.elicitation_handler.clone(),
+            elicitation_timeout: config.elicitation_timeout,
+            elicitation_context: None,
         };
-        process.rpc("initialize", json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"nanocodex-computer","version":env!("CARGO_PKG_VERSION")}})).await?;
+        let capabilities = if config.elicitation_handler.is_some() {
+            json!({"elicitation":{"form":{}}})
+        } else {
+            json!({})
+        };
+        process.rpc("initialize", json!({"protocolVersion":"2025-06-18","capabilities":capabilities,"clientInfo":{"name":"nanocodex-computer","version":env!("CARGO_PKG_VERSION")}})).await?;
         process
             .send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
             .await?;
@@ -655,17 +726,84 @@ impl Process {
         let id = self.next_id;
         self.send(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
             .await?;
+        // Owned tasks are aborted when this RPC is dropped or its transport closes.
+        // Continue reading while the host is deciding so EOF/cancellation cannot
+        // leave approval UI running against a dead provider.
+        let mut elicitations = JoinSet::<(Value, Value)>::new();
+        let mut pending = BTreeMap::<String, AbortHandle>::new();
+        let mut line = Vec::new();
         loop {
-            let mut line = Vec::new();
-            if self.output.read_until(b'\n', &mut line).await? == 0 {
-                return Err("CUA runtime closed its output".into());
+            tokio::select! {
+                completed = elicitations.join_next(), if !elicitations.is_empty() => {
+                    if completed.as_ref().is_some_and(|result| result.as_ref().is_err_and(|error| !error.is_cancelled())) {
+                        return Err("CUA host elicitation task failed".into());
+                    }
+                    if let Some(Ok((request_id, response))) = completed {
+                        let key = request_id.to_string();
+                        if pending.remove(&key).is_some() {
+                            self.send(response).await?;
+                        }
+                    }
+                    continue;
+                }
+                read = self.output.read_until(b'\n', &mut line) => {
+                    if read? == 0 {
+                        return Err("CUA runtime closed its output".into());
+                    }
+                }
             }
             let value: Value = serde_json::from_slice(&line)?;
-            if value.get("method").is_some() {
-                // Approval requests need an embedding-owned approval channel;
-                // never synthesize acceptance from model or page content.
-                if let Some(id) = value.get("id") {
-                    self.send(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"No interactive approval channel; configure host-approved surfaces."}})).await?;
+            line.clear();
+            if let Some(method) = value.get("method") {
+                if method == "notifications/cancelled" {
+                    if let Some(request_id) = value.pointer("/params/requestId") {
+                        if let Some(task) = pending.remove(&request_id.to_string()) {
+                            task.abort();
+                            self.send(json!({"jsonrpc":"2.0","id":request_id,"result":{"action":"cancel"}})).await?;
+                        }
+                    }
+                } else if let Some(request_id) = value.get("id") {
+                    let params = value.get("params").cloned().unwrap_or(Value::Null);
+                    let handler = self.elicitation_handler.clone();
+                    if method != "elicitation/create" || handler.is_none() {
+                        self.send(json!({"jsonrpc":"2.0","id":request_id,"error":{"code":-32601,"message":"No host handler for this server request"}})).await?;
+                        continue;
+                    }
+                    if !params.is_object()
+                        || !params.get("message").is_some_and(Value::is_string)
+                        || !params.get("requestedSchema").is_some_and(Value::is_object)
+                        || params.get("mode").is_some_and(|mode| mode != "form")
+                        || params.get("_meta").is_some_and(|meta| !meta.is_object())
+                    {
+                        self.send(json!({"jsonrpc":"2.0","id":request_id,"error":{"code":-32602,"message":"Expected a form elicitation request"}})).await?;
+                        continue;
+                    }
+                    let key = request_id.to_string();
+                    if pending.contains_key(&key) || pending.len() >= 32 {
+                        return Err(
+                            "CUA provider sent duplicate or excessive pending elicitations".into(),
+                        );
+                    }
+                    let request = ComputerElicitationRequest {
+                        id: request_id.clone(),
+                        params,
+                        context: self.elicitation_context.clone(),
+                    };
+                    let timeout = self.elicitation_timeout;
+                    let handler = handler.expect("checked above");
+                    let task = elicitations.spawn(async move {
+                        let response = tokio::time::timeout(timeout, handler.elicit(request.clone())).await;
+                        let response = match response {
+                            Ok(Ok(result)) if result.content.as_ref().is_some_and(|value| !value.is_object())
+                                || result.meta.as_ref().is_some_and(|value| !value.is_object()) =>
+                                json!({"jsonrpc":"2.0","id":request.id,"error":{"code":-32602,"message":"Invalid host form elicitation response"}}),
+                            Ok(Ok(result)) => json!({"jsonrpc":"2.0","id":request.id,"result":result}),
+                            Ok(Err(_)) => json!({"jsonrpc":"2.0","id":request.id,"error":{"code":-32603,"message":"Host form elicitation failed"}}),
+                            Err(_) => json!({"jsonrpc":"2.0","id":request.id,"result":{"action":"cancel"}}),
+                        };
+                        (request.id, response)
+                    });
+                    pending.insert(key, task);
                 }
                 continue;
             }
