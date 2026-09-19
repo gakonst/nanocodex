@@ -324,6 +324,7 @@ private struct RemoteGameGlass<S: Shape>: ViewModifier {
                             .font(.caption2).foregroundStyle(.white.opacity(0.75))
                     }
                     Spacer(minLength: 0)
+                    gameplayAudioControls
                     Button(paused ? "Resume" : "Stop", systemImage: paused ? "play.fill" : "stop.fill") {
                         if paused { paused = false; epoch += 1 } else { stop(); paused = true }
                     }
@@ -396,6 +397,7 @@ private struct RemoteGameGlass<S: Shape>: ViewModifier {
                     if viewer.connected && !viewer.controlling {
                         Button("Take control") { viewer.takeControl() }.font(.caption.bold()).frame(minHeight: 44)
                     }
+                    gameplayAudioControls
                     Button {
                         stop(); paused = true; showingBindingGuide = true
                     } label: {
@@ -459,6 +461,34 @@ private struct RemoteGameGlass<S: Shape>: ViewModifier {
             .onChange(of: geometry.size) { _, _ in stop() }
         }
         .sheet(isPresented: $showingBindingGuide) { nativeBindingGuide }
+    }
+
+    private var gameplayAudioControls: some View {
+        Group {
+            Button {
+                viewer.setMicrophoneEnabled(!(viewer.microphoneEnabled || viewer.microphonePending))
+            } label: {
+                Image(systemName: viewer.microphonePending ? "hourglass" : viewer.microphoneEnabled ? "mic.fill" : "mic.slash.fill")
+                    .foregroundStyle(viewer.microphonePending ? Color.orange : viewer.microphoneEnabled ? Color.mint : Color.white)
+                    .frame(width: 44, height: 44)
+            }
+            .disabled(!viewer.controlling || !viewer.supportsMicrophone)
+            .accessibilityLabel(viewer.microphonePending ? "Cancel microphone request" : viewer.microphoneEnabled ? "Mute microphone" : "Enable microphone")
+            .accessibilityValue(viewer.microphonePending ? "Pending" : viewer.microphoneEnabled ? "On" : "Off")
+            .accessibilityHint(viewer.microphoneError ?? "Send microphone audio to the remote computer")
+            .accessibilityIdentifier("remote-microphone")
+
+            Button {
+                viewer.setSpeakersEnabled(!viewer.speakersEnabled)
+            } label: {
+                Image(systemName: viewer.speakersEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                    .frame(width: 44, height: 44)
+            }
+            .accessibilityLabel(viewer.speakersEnabled ? "Mute speakers" : "Enable speakers")
+            .accessibilityValue(viewer.speakersEnabled ? "On" : "Off")
+            .accessibilityIdentifier("remote-speakers")
+        }
+        .buttonStyle(.plain)
     }
 
     private var nativeBindingGuide: some View {
