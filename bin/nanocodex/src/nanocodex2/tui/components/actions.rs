@@ -20,7 +20,7 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-const ACTIONS: [Action; 15] = [
+const ACTIONS: [Action; 16] = [
     Action::Effort,
     Action::FastMode,
     Action::Goal,
@@ -36,6 +36,7 @@ const ACTIONS: [Action; 15] = [
     Action::Voice,
     Action::Screen,
     Action::Zoom,
+    Action::Reload,
 ];
 const KEY_BINDINGS: [(&str, &str); 3] = [("↑↓", "move"), ("enter/tab", "open"), ("esc", "close")];
 const SEARCH_LABEL: &str = "Search: ";
@@ -70,6 +71,7 @@ pub(super) enum Action {
     ResumeSession,
     Fork,
     Keybindings,
+    Reload,
     ReloadConfig,
     EditConfig,
     DebugContext,
@@ -293,6 +295,7 @@ impl ActionsMenu {
             Action::ResumeSession => self.availability.new_session,
             Action::Fork => self.availability.fork,
             Action::Keybindings => true,
+            Action::Reload => true,
             Action::ReloadConfig => true,
             Action::EditConfig => true,
             Action::DebugContext => true,
@@ -344,6 +347,7 @@ impl Action {
             Self::ResumeSession => "Resume session",
             Self::Fork => "Fork session",
             Self::Keybindings => "Keyboard shortcuts",
+            Self::Reload => "Reload local terminals",
             Self::ReloadConfig => "Reload config",
             Self::EditConfig => "Edit config",
             Self::DebugContext => "Debug context",
@@ -368,6 +372,7 @@ impl Action {
             Self::NewSession => Some("clear"),
             Self::ResumeSession => Some("attach restore"),
             Self::Fork => Some("btw"),
+            Self::Reload => Some("reload"),
             Self::ReloadConfig => Some("refresh"),
             Self::Reflection => Some("reflection"),
             Self::Keybindings | Self::EditConfig | Self::DebugContext => None,
@@ -602,5 +607,39 @@ mod tests {
         assert!(!menu.is_enabled(Action::Model));
         assert!(menu.is_enabled(Action::Effort));
         assert!(menu.is_enabled(Action::FastMode));
+    }
+
+    #[test]
+    fn reload_action_is_discoverable_during_active_work() {
+        let mut menu = ActionsMenu::new(availability(false, false));
+        menu.availability.new_session = false;
+        assert!(super::ACTIONS.contains(&Action::Reload));
+        assert!(menu.is_enabled(Action::Reload));
+        menu.insert_paste("Reload local terminals");
+        assert_eq!(
+            menu.trigger_selected().effects,
+            [ActionsEffect::Trigger(Action::Reload)]
+        );
+    }
+
+    #[test]
+    fn reload_menu_commands_never_submit_prompts() {
+        for code in [KeyCode::Enter, KeyCode::Tab] {
+            for (query, expected) in [
+                ("reload", SettingsCommand::Reload),
+                (
+                    "reload extra",
+                    SettingsCommand::Invalid("Usage: /reload".to_owned()),
+                ),
+            ] {
+                let mut menu = ActionsMenu::new(availability(false, false));
+                menu.insert_paste(query);
+                let update = menu.update(ActionsEvent::Terminal(Event::Key(KeyEvent::new(
+                    code,
+                    KeyModifiers::NONE,
+                ))));
+                assert_eq!(update.effects, [ActionsEffect::Settings(expected)]);
+            }
+        }
     }
 }

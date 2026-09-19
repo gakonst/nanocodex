@@ -3,6 +3,7 @@
 use std::{
     collections::HashMap,
     io::{Read, Write},
+    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -52,6 +53,10 @@ struct Terminal {
 
 impl Terminal {
     fn start(origin: &str, attach: bool) -> Self {
+        Self::start_with_reload_dir(origin, attach, None)
+    }
+
+    fn start_with_reload_dir(origin: &str, attach: bool, reload_dir: Option<&Path>) -> Self {
         let workspace = tempfile::tempdir().unwrap();
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -71,8 +76,17 @@ impl Terminal {
         command.env_remove("TMUX");
         command.env_remove("TMUX_PANE");
         command.env_remove("TERM_PROGRAM");
+        command.env_remove("NANOCODEX2_RELOAD_EXECUTABLE");
         command.env("TERM", "xterm-256color");
         command.env("NANOCODEX_MANAGED_URL", origin);
+        // Every test terminal gets an isolated registry, even when the caller
+        // inherited a real user's reload directory. Only explicit peers share it.
+        command.env(
+            "NANOCODEX_RELOAD_DIR",
+            reload_dir
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| workspace.path().join(".reload")),
+        );
         command.env(
             "NANOCODEX_API_KEY",
             format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43)),
@@ -172,6 +186,7 @@ impl Drop for Terminal {
 
 #[derive(Clone)]
 struct Service {
+    socket_paths: Arc<Mutex<Vec<String>>>,
     vault_writes: Arc<Mutex<Vec<Value>>>,
     listed_agent: Arc<Mutex<String>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
@@ -285,6 +300,11 @@ async fn socket(
     upgrade: WebSocketUpgrade,
     Query(query): Query<HashMap<String, String>>,
 ) -> axum::response::Response {
+    service
+        .socket_paths
+        .lock()
+        .unwrap()
+        .push(uri.path().to_owned());
     let cursor = query
         .get("cursor")
         .and_then(|cursor| cursor.parse().ok())
@@ -436,6 +456,7 @@ async fn cancel(
 }
 
 struct Fixture {
+    socket_paths: Arc<Mutex<Vec<String>>>,
     vault_writes: Arc<Mutex<Vec<Value>>>,
     listed_agent: Arc<Mutex<String>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
@@ -487,6 +508,29 @@ impl Fixture {
         initial_history: Vec<Value>,
         history_gate: Arc<tokio::sync::Semaphore>,
     ) -> Self {
+        Self::launch_with_reload_dir(active, attach, initial_history, history_gate, None).await
+    }
+
+    async fn start_with_reload_dir(reload_dir: &Path) -> Self {
+        let fixture = Self::launch_with_reload_dir(
+            true,
+            true,
+            Vec::new(),
+            Arc::new(tokio::sync::Semaphore::new(1)),
+            Some(reload_dir),
+        )
+        .await;
+        fixture.terminal.wait_text("Enter steer").await;
+        fixture
+    }
+
+    async fn launch_with_reload_dir(
+        active: bool,
+        attach: bool,
+        initial_history: Vec<Value>,
+        history_gate: Arc<tokio::sync::Semaphore>,
+        reload_dir: Option<&Path>,
+    ) -> Self {
         let cursor = initial_history
             .last()
             .and_then(|event| event["cursor"].as_str())
@@ -506,6 +550,7 @@ impl Fixture {
         let session_list_gate = Arc::new(tokio::sync::Semaphore::new(1));
         let listed_agent = Arc::new(Mutex::new(AGENT.to_owned()));
         let resume_gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let socket_paths = Arc::new(Mutex::new(Vec::new()));
         let vault_writes = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new()
             .route("/v1/credentials", get(vault_metadata))
@@ -530,6 +575,7 @@ impl Fixture {
             .route("/v1/agents/{agent}/turns/{turn}/steer", post(steer))
             .route("/v1/agents/{agent}/turns/{turn}/cancel", post(cancel))
             .with_state(Service {
+                socket_paths: socket_paths.clone(),
                 vault_writes: vault_writes.clone(),
                 listed_agent: listed_agent.clone(),
                 resume_gate: resume_gate.clone(),
@@ -551,12 +597,13 @@ impl Fixture {
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        let terminal = Terminal::start(&origin, attach);
+        let terminal = Terminal::start_with_reload_dir(&origin, attach, reload_dir);
         let events = tokio::time::timeout(TIMEOUT, connections.recv())
             .await
             .unwrap()
             .unwrap();
         Self {
+            socket_paths,
             vault_writes,
             listed_agent,
             resume_gate,
@@ -3289,5 +3336,44 @@ async fn terminal_vault_approval_cancel_then_explicit_approve_sends_one_safe_rec
             !output.contains(forbidden),
             "unsafe/raw Vault output: {forbidden}"
         );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn terminal_reload_restarts_local_peers_without_stopping_durable_work() {
+    let registry_parent = tempfile::tempdir().unwrap();
+    let registry = registry_parent.path().join("reload");
+    let mut first = Fixture::start_with_reload_dir(&registry).await;
+    let mut second = Fixture::start_with_reload_dir(&registry).await;
+    let expected_path = format!("/v1/agents/{AGENT}/ws");
+    for fixture in [&first, &second] {
+        assert_eq!(
+            *fixture.socket_paths.lock().unwrap(),
+            [expected_path.clone()]
+        );
+    }
+
+    first.terminal.prompt("/reload", "\r");
+    first.replacement_connection().await;
+    second.replacement_connection().await;
+
+    for fixture in [&mut first, &mut second] {
+        fixture.terminal.wait_text("Enter steer").await;
+        assert_eq!(
+            *fixture.socket_paths.lock().unwrap(),
+            [expected_path.clone(), expected_path.clone()],
+            "reload must reattach to the existing agent on each original service"
+        );
+        assert!(fixture.terminal.child.try_wait().unwrap().is_none());
+        fixture.terminal.prompt("/id", "\r");
+        fixture.terminal.wait_text("Agent ID").await;
+        fixture.terminal.wait_text(AGENT).await;
+        fixture.terminal.input("\x1b");
+        fixture.terminal.wait_no_text("Agent ID").await;
+        fixture.terminal.wait_text("Enter steer").await;
+        assert!(fixture.submissions.try_recv().is_err());
+        assert!(fixture.steers.try_recv().is_err());
+        assert!(fixture.cancellations.try_recv().is_err());
     }
 }

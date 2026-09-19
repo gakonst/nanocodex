@@ -64,6 +64,7 @@ pub(crate) enum ComposerEffect {
 pub(crate) enum SettingsCommand {
     Bug(String),
     Attach,
+    Reload,
     Screen,
     Zoom,
     Voice(crate::voice::Command),
@@ -82,6 +83,11 @@ impl SettingsCommand {
             "/bug" => Some(Self::Bug(
                 input.trim_start()[command.len()..].trim().to_owned(),
             )),
+            "/reload" => Some(if parts.next().is_some() {
+                Self::Invalid("Usage: /reload".into())
+            } else {
+                Self::Reload
+            }),
             "/attach" => Some(if parts.next().is_some() {
                 Self::Invalid("Usage: /attach".into())
             } else {
@@ -3309,5 +3315,38 @@ mod tests {
         let terminal = render(&mut composer, 3, 2);
 
         assert_eq!(rows(&terminal)[0], "abc");
+    }
+
+    #[test]
+    fn reload_parser_accepts_only_the_exact_command_without_arguments() {
+        for input in ["/reload", "  /reload  ", "\t/reload\n"] {
+            assert_eq!(SettingsCommand::parse(input), Some(SettingsCommand::Reload));
+        }
+        for input in ["/reload extra", "/reload\nextra", "/reload --all"] {
+            assert_eq!(
+                SettingsCommand::parse(input),
+                Some(SettingsCommand::Invalid("Usage: /reload".to_owned()))
+            );
+        }
+        assert_eq!(SettingsCommand::parse("/reloadable"), None);
+    }
+
+    #[test]
+    fn reload_enter_and_tab_never_submit_or_queue_prompts() {
+        for code in [KeyCode::Enter, KeyCode::Tab] {
+            for (input, expected) in [
+                ("/reload", SettingsCommand::Reload),
+                (
+                    "/reload extra",
+                    SettingsCommand::Invalid("Usage: /reload".to_owned()),
+                ),
+            ] {
+                let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+                composer.replace_draft(input.to_owned());
+                let update = composer.update(key(code, KeyModifiers::NONE));
+                assert_eq!(update.effect, Some(ComposerEffect::Settings(expected)));
+                assert!(composer.draft().is_empty());
+            }
+        }
     }
 }
