@@ -70,6 +70,8 @@ impl ScreenPublisher {
             ));
         }
         tracing::info!(target: "nanocodex2", stage = "screen.capture.initial", machine_id = machine.id(), elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
+        // Older guests and native backends do not accept keepAlive requests.
+        let input_keepalive = first["inputKeepalive"] == true;
         let dimensions = (
             first["width"].as_u64().unwrap_or(1280),
             first["height"].as_u64().unwrap_or(720),
@@ -101,7 +103,7 @@ impl ScreenPublisher {
                         if targets.borrow().endpoint() != target.endpoint() { broadcast.stop().await; }
                         continue;
                     },
-                    result = session(&target, &machine, &backend, video.as_ref(), audio.as_ref(), dimensions, &mut ready, &providers, &mut broadcast, &mut authorized_at) => result,
+                    result = session(&target, &machine, &backend, video.as_ref(), audio.as_ref(), dimensions, input_keepalive, &mut ready, &providers, &mut broadcast, &mut authorized_at) => result,
                 };
                 let _ = tokio::time::timeout(
                     Duration::from_secs(3),
@@ -323,6 +325,32 @@ impl Lease {
         true
     }
 }
+// Refresh the guest fail-safe only for a current, authorized viewer renewal.
+// Video/observations and other viewers must never prolong held input.
+async fn renew_control(
+    lease: &mut Lease,
+    owner: &str,
+    generation: &str,
+    backend: &ScreenBackend,
+    input_keepalive: bool,
+) -> bool {
+    if !lease.valid(owner, generation) {
+        return false;
+    }
+    if input_keepalive
+        && call(
+            backend,
+            json!({"action":"keepAlive"}),
+            Duration::from_secs(2),
+        )
+        .await["status"]
+            != "ok"
+    {
+        return false;
+    }
+    lease.deadline = Some(Instant::now() + Duration::from_secs(10));
+    true
+}
 async fn release(
     lease: &mut Lease,
     backend: &ScreenBackend,
@@ -348,6 +376,7 @@ async fn session(
     video: Option<&VideoSource>,
     audio: Option<&VideoSource>,
     dimensions: (u64, u64),
+    input_keepalive: bool,
     ready: &mut Option<oneshot::Sender<()>>,
     providers: &Registry,
     broadcast: &mut super::screen_broadcast::Broadcast,
@@ -586,7 +615,11 @@ async fn session(
                                 if lease.owner.is_empty(){release(&mut lease,backend,&mut socket).await?;lease.acquire(viewer);send(&mut socket,json!({"type":"control","viewer_id":viewer,"data":control_grant(&lease.generation)})).await?;}
                                 else{send(&mut socket,json!({"type":"control","viewer_id":viewer,"data":{"type":"denied"}})).await?;}
                             },
-                            "renew" if lease.valid(viewer,data["generation"].as_str().unwrap_or(""))=>lease.deadline=Some(Instant::now()+Duration::from_secs(10)),
+                            "renew" if lease.valid(viewer,data["generation"].as_str().unwrap_or(""))=>{
+                                if !renew_control(&mut lease, viewer, data["generation"].as_str().unwrap_or(""), backend, input_keepalive).await {
+                                    release(&mut lease,backend,&mut socket).await?;
+                                }
+                            },
                             "release" if lease.valid(viewer,data["generation"].as_str().unwrap_or(""))=>release(&mut lease,backend,&mut socket).await?,
                             _=>{send(&mut socket,json!({"type":"close_viewer","viewer_id":viewer})).await?;if lease.owner==viewer{release(&mut lease,backend,&mut socket).await?;}viewers.remove(viewer);},
                         }
@@ -797,6 +830,39 @@ mod tests {
             _ = std::future::ready(()) => assert!(lease.expired()),
         }
         assert!(preparations.contains("new-viewer"));
+    }
+    #[tokio::test]
+    async fn input_keepalive_requires_current_lease_and_backend_support() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = calls.clone();
+        let backend: ScreenBackend = Arc::new(move |input| {
+            assert_eq!(input, json!({"action":"keepAlive"}));
+            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(json!({"status":"ok"})) })
+        });
+        let mut lease = Lease::default();
+        lease.acquire("viewer");
+        let generation = lease.generation.clone();
+        assert!(!renew_control(&mut lease, "other", &generation, &backend, true).await);
+        assert!(!renew_control(&mut lease, "viewer", "old", &backend, true).await);
+        assert!(renew_control(&mut lease, "viewer", &generation, &backend, false).await);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(renew_control(&mut lease, "viewer", &generation, &backend, true).await);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        lease.deadline = Some(Instant::now() - Duration::from_secs(1));
+        assert!(!renew_control(&mut lease, "viewer", &generation, &backend, true).await);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn input_keepalive_failure_does_not_extend_lease() {
+        let backend: ScreenBackend =
+            Arc::new(|_| Box::pin(async { Ok(json!({"status":"error"})) }));
+        let mut lease = Lease::default();
+        lease.acquire("viewer");
+        let generation = lease.generation.clone();
+        let deadline = lease.deadline;
+        assert!(!renew_control(&mut lease, "viewer", &generation, &backend, true).await);
+        assert_eq!(lease.deadline, deadline);
     }
     #[tokio::test]
     async fn stalled_provider_does_not_discard_successful_screenshot() {
