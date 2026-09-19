@@ -38,7 +38,7 @@ default-members = ["crates/nanocodex"]
 resolver = "2"
 
 [workspace.package]
-version = "0.6.1"
+version = "0.6.2"
 edition = "2024"
 rust-version = "1.97"
 authors = ["Nanocodex Contributors"]
@@ -93,26 +93,26 @@ jiff = { version = "0.2.35", default-features = false, features = ["std", "tz-sy
 jsonschema = { version = "0.48.5", default-features = false }
 krun = { package = "libkrun", version = "=2.0.0-dev", git = "https://github.com/containers/libkrun", rev = "df85b8b75f55e8ef1b06b5bc18f08dc6d7b5aeb0", features = ["blk", "net"] }
 mpp = { version = "=0.11.0", git = "https://github.com/tempoxyz/mpp-rs", rev = "2e265801d216ef54a85b31acda5d0fac192e1b5e", default-features = false }
-nanocodex = { version = "0.6.1", path = "crates/nanocodex" }
-nanocodex-agent = { version = "0.6.1", path = "crates/nanocodex-agent" }
-nanocodex-managed = { version = "0.6.1", path = "crates/nanocodex-managed" }
-nanocodex-cli-auth = { version = "0.6.1", path = "bin/nanocodex/account-auth" }
-nanocodex-durability = { version = "0.6.1", path = "crates/nanocodex-durability" }
-nanocodex-browser = { version = "0.6.1", path = "crates/nanocodex-browser" }
-nanocodex-computer = { version = "0.6.1", path = "crates/experimental/nanocodex-computer" }
-nanocodex-egress = { version = "0.6.1", path = "crates/nanocodex-egress" }
-nanocodex-voice-native = { version = "0.6.1", path = "crates/nanocodex-voice-native" }
-nanocodex-voice = { version = "0.6.1", path = "crates/nanocodex-voice" }
-nanocodex-voice-protocol = { version = "0.6.1", path = "crates/nanocodex-voice-protocol" }
-nanocodex-eval = { version = "0.6.1", path = "crates/experimental/nanocodex-eval" }
-nanocodex-eval-adapters = { version = "0.6.1", path = "crates/experimental/nanocodex-eval-adapters" }
-nanocodex-vm = { version = "0.6.1", path = "crates/nanocodex-vm" }
-nanocodex-oai-api = { version = "0.6.1", path = "crates/nanocodex-oai-api" }
-nanocodex-observability = { version = "0.6.1", path = "crates/nanocodex-observability" }
-nanocodex-subagents = { version = "0.6.1", path = "crates/nanocodex-subagents" }
-nanocodex-tools = { version = "0.6.1", path = "crates/nanocodex-tools" }
-nanocodex-tools-macros = { version = "0.6.1", path = "crates/nanocodex-tools/macros" }
-nanousd = { version = "0.6.1", path = "bin/nanousd" }
+nanocodex = { version = "0.6.2", path = "crates/nanocodex" }
+nanocodex-agent = { version = "0.6.2", path = "crates/nanocodex-agent" }
+nanocodex-managed = { version = "0.6.2", path = "crates/nanocodex-managed" }
+nanocodex-cli-auth = { version = "0.6.2", path = "bin/nanocodex/account-auth" }
+nanocodex-durability = { version = "0.6.2", path = "crates/nanocodex-durability" }
+nanocodex-browser = { version = "0.6.2", path = "crates/nanocodex-browser" }
+nanocodex-computer = { version = "0.6.2", path = "crates/experimental/nanocodex-computer" }
+nanocodex-egress = { version = "0.6.2", path = "crates/nanocodex-egress" }
+nanocodex-voice-native = { version = "0.6.2", path = "crates/nanocodex-voice-native" }
+nanocodex-voice = { version = "0.6.2", path = "crates/nanocodex-voice" }
+nanocodex-voice-protocol = { version = "0.6.2", path = "crates/nanocodex-voice-protocol" }
+nanocodex-eval = { version = "0.6.2", path = "crates/experimental/nanocodex-eval" }
+nanocodex-eval-adapters = { version = "0.6.2", path = "crates/experimental/nanocodex-eval-adapters" }
+nanocodex-vm = { version = "0.6.2", path = "crates/nanocodex-vm" }
+nanocodex-oai-api = { version = "0.6.2", path = "crates/nanocodex-oai-api" }
+nanocodex-observability = { version = "0.6.2", path = "crates/nanocodex-observability" }
+nanocodex-subagents = { version = "0.6.2", path = "crates/nanocodex-subagents" }
+nanocodex-tools = { version = "0.6.2", path = "crates/nanocodex-tools" }
+nanocodex-tools-macros = { version = "0.6.2", path = "crates/nanocodex-tools/macros" }
+nanousd = { version = "0.6.2", path = "bin/nanousd" }
 oci-client = { version = "0.17.0", git = "https://github.com/gakonst/rust-oci-client", rev = "17c22ce8842e9275ef6bc11fa4eb58101a4abd7f", default-features = false, features = ["rustls-tls-no-provider"] }
 rand = "0.9.2"
 reflink-copy = "0.1.30"

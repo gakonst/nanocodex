@@ -5,11 +5,51 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.1](https://github.com/gakonst/nanocodex/releases/tag/v0.6.1) - 2026-09-15
+## [0.6.2](https://github.com/gakonst/nanocodex/releases/tag/v0.6.2) - 2026-09-19
+
+### Bug Fixes
+
+- [ci] Validate Codex parity imports and bounded declarations ([#415](https://github.com/gakonst/nanocodex/issues/415))
+- Repair malformed stored tool images before replay
+- Classify rejected images during connection warmup
+- Reject malformed image output and recover poisoned sessions
+- Fix compaction and image recovery across durable replay ([#375](https://github.com/gakonst/nanocodex/issues/375))
+- Align hosted compaction retries and HTTPS fallback with codex-rs ([#370](https://github.com/gakonst/nanocodex/issues/370))
+- [oai] Retry HTTPS request failures ([#341](https://github.com/gakonst/nanocodex/issues/341))
+
+### Dependencies
+
+- Align Codex compaction requests and summary recovery ([#410](https://github.com/gakonst/nanocodex/issues/410))
+
+### Features
+
+- [connect] Add ChatGPT account failover and per-session pins ([#343](https://github.com/gakonst/nanocodex/issues/343))
+- [hands] Unify computer publishers and reduce startup latency
 
 ### Miscellaneous Tasks
 
-- [release] Synchronize workspace packages to 0.6.1
+- Prepare release 0.6.2
+
+### Other
+
+- Pin only consumed Codex runtime prompts and verify upstream fidelity ([#411](https://github.com/gakonst/nanocodex/issues/411))
+- Merge origin/master into feat/mobile-project-threads
+- Merge pull request [#371](https://github.com/gakonst/nanocodex/issues/371) from gakonst/fix/hosted-image-output
+- Merge master and align image preparation and replay with codex-rs
+- Merge remote-tracking branch 'origin/master' into fix/hosted-image-output
+- Merge master and retain its shared Vault link routing fix
+- Merge remote-tracking branch 'origin/master' into feat/background-cua-integration
+- Merge pull request [#374](https://github.com/gakonst/nanocodex/issues/374) from gakonst/phone-admin-merge
+- Add cloud phone agents with deployment-admin access
+- Merge remote-tracking branch 'origin/master' into feat/hand-rtmp
+- Merge remote-tracking branch 'origin/master' into perf/hand-video-60fps
+- Merge origin/master into Windows Hand installer
+
+## [0.6.1](https://github.com/gakonst/nanocodex/releases/tag/v0.6.1) - 2026-09-15
+
+### Bug Fixes
+
+- [voice] Ship verified native runtime in 0.6.1 ([#333](https://github.com/gakonst/nanocodex/issues/333))
 
 ## [0.6.0](https://github.com/gakonst/nanocodex/releases/tag/v0.6.0) - 2026-09-15
 
@@ -67,7 +107,7 @@ Read the [0.5 → 0.6 Rust API changelog and migration guide](https://github.com
 
 ### Miscellaneous Tasks
 
-- Prepare release 0.6.0
+- Release nanocodex 0.6.0 ([#330](https://github.com/gakonst/nanocodex/issues/330))
 - [ci] Satisfy workspace formatting and Rust 1.97 checks
 
 ### Other

@@ -5,15 +5,347 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2](https://github.com/gakonst/nanocodex/releases/tag/v0.6.2) - 2026-09-19
+
+### Bug Fixes
+
+- [ci] Validate Codex parity imports and bounded declarations ([#415](https://github.com/gakonst/nanocodex/issues/415))
+- [ios] Quiet progress notifications and clear stale Island activities
+- [cua] Canonicalize lane identities for journal recovery
+- [computer] Support Linux background function and navigation keys
+- [managed] Emit terminal lifecycle events for goal commands ([#393](https://github.com/gakonst/nanocodex/issues/393))
+- [tui] Sort fuzzy history matches by recency
+- Restore cross-platform CI checks and Hand client shutdown ([#386](https://github.com/gakonst/nanocodex/issues/386))
+- Fix RTMP live test compilation on Windows ([#369](https://github.com/gakonst/nanocodex/issues/369))
+- Repair malformed stored tool images before replay
+- Classify rejected images during connection warmup
+- Preserve native view_image normalization in Code Mode
+- Reject malformed image output and recover poisoned sessions
+- Fix live Omarchy Lua activation and companion override precedence
+- Fix compaction and image recovery across durable replay ([#375](https://github.com/gakonst/nanocodex/issues/375))
+- [tui] Open file links from their owning Hand
+- [remote] Retry publisher renewal within authorization deadline
+- Align hosted compaction retries and HTTPS fallback with codex-rs ([#370](https://github.com/gakonst/nanocodex/issues/370))
+- Fix RTMP live test compilation on Windows
+- [deploy] Preserve production phone migration and Worker integration
+- [tui] Copy selected text through shared native clipboard routing
+- [vault] Support JavaScript-backed login forms and controls ([#365](https://github.com/gakonst/nanocodex/issues/365))
+- [browser] Expose bounded private navigation failure reasons ([#366](https://github.com/gakonst/nanocodex/issues/366))
+- [agent] Settle compaction failures and expose retry progress ([#363](https://github.com/gakonst/nanocodex/issues/363))
+- [browser] Retain useful content and links on long private pages ([#364](https://github.com/gakonst/nanocodex/issues/364))
+- [vault] Complete private browser verification and authenticated browsing ([#362](https://github.com/gakonst/nanocodex/issues/362))
+- [hand] Restore Mac WebRTC video and share capture policy ([#359](https://github.com/gakonst/nanocodex/issues/359))
+- [tui] Stop treating yielded shell sessions as live requests ([#356](https://github.com/gakonst/nanocodex/issues/356))
+- [web] Keep take control in the current viewer size ([#357](https://github.com/gakonst/nanocodex/issues/357))
+- [remote] Support XWayland text and package observation helper ([#355](https://github.com/gakonst/nanocodex/issues/355))
+- [cua] Capture Mac desktop and preserve screenshot errors ([#353](https://github.com/gakonst/nanocodex/issues/353))
+- [connect] Accept retained ChatGPT account status metadata
+- [cli] Preserve scroll events and reduce wheel jumps
+- [cli] Stabilize voice startup and stream transcripts inline
+- [voice] Use native libwebrtc audio on macOS
+- [managed] Stop retrying terminal cancellation admission failures
+- [ci] Preserve opaque identifiers and intentional fixture fragments
+- [cli] Share voice controls with the standalone TUI benchmark
+- [hands] Preserve video streams across forced encoder restarts
+- [hand] Statically link Opus stack protection on Windows GNU
+- [hand] Advertise reachable WebRTC addresses behind NAT
+- [hands] Allow explicit websocket screen transport behind NAT
+- [account] Keep remote screens connected through brief interruptions
+- [macos] Preserve standalone VM host signing policy
+- [remote] Measure first decoded frames for relayed screens
+- [hand] Use compatible installer file flags
+- [hand] Create logs folder shortcut portably
+- [hand] Use bundled installer language
+- [hand] Use numeric installer product version
+- [computer] Preserve integer Windows click counts
+- [tui] Make Windows tests platform aware
+- [tui] Gate Unix clipboard test on Windows
+- [hands] Validate VM backend before preparing its base cache
+- [hands] Resume interrupted overlay publication before spare adoption
+- [macos] Sign bundled Hand with VM entitlement
+- [hands] Bundle VM image sources and handle fenced teardown
+- [oai] Retry HTTPS request failures ([#341](https://github.com/gakonst/nanocodex/issues/341))
+- [ci] Cover bundled Hands and preserve benchmark identifiers
+- [hands] Simplify shared publisher supervision
+- [ci] Build the Mac app's bundled Hand helper
+- [voice] Revalidate personalization after lifecycle replay
+- [observability] Retain native durable object constructor state
+- [connectors] Resolve modern SoundCloud AAC playback hosts
+- [voice] Preserve provider query in relay RPC
+- [connectors] Resolve approved SoundCloud playback streams
+- [managed] Satisfy access cache lint checks
+- [spotify] Coordinate rate limits across agents and app accounts
+- [connect] Accept non-spending approvals for hosted apps
+- [connect] Label native tool approvals as app tools
+- [mobile] Load and manage accounts in Connectors
+- [soundcloud] Use mobile OAuth consent and document registration
+- [connectors] Align CLI catalog and Spotify phone authorization
+- [release] Prefer bundled voice libraries during linking ([#336](https://github.com/gakonst/nanocodex/issues/336))
+
+### Dependencies
+
+- Align Codex compaction requests and summary recovery ([#410](https://github.com/gakonst/nanocodex/issues/410))
+
+### Documentation
+
+- [cua] Pin final validated upgrade bundle
+- Document Mac first-click verification and versioned deployment
+- [apple] Record mobile navigation performance measurements
+- [egress] Identify music OAuth connectors
+- [voice] Describe managed transport and startup measurements
+- [perf] Measure cold CLI launches on landed master
+- [perf] Record end-to-end and conversation preparation measurements
+- [remote] Verify published fullscreen and pointer capture
+- [perf] Verify live encoder recovery and final input latency
+- [perf] Measure reduced remote input presentation latency
+- [perf] Verify published desktop audio on Linux and Windows
+- [hand] Describe Windows system audio playback
+- [perf] Verify published web screen recovery
+- [perf] Link final screen startup evidence
+- [perf] Record measured local viewer admission improvement
+- [hands] Record measured startup gains and shared token operations
+- [perf] Distinguish finite local responses from health service calls
+- [perf] Record screen upgrade controls and rejected routing experiments
+- [perf] Trace and remove empty VM pool lookup latency
+- [perf] Verify published Linux VM nightly rollout
+- [release] Verify published nightly and normal updater
+- [perf] Verify installed Mac and iPhone Hand builds
+- [perf] Retain post-deploy VM mount traces and artifact identities
+- [perf] Summarize measured Hand and screen outcomes
+- [perf] Record deployed screen admission and WAN frame traces
+- [perf] Record correlated Hand call and attachment measurements
+- [perf] Separate warm VM attachment transport waits
+- [perf] Record Linux overlay VM preparation and recovery traces
+- [perf] Publish text TTFT and paired voice measurements
+- [perf] Record managed API SQL and voice trace audit
+- [connect] Correct connector approval options
+- [release] Lead with API changes and fix paragraph layout ([#337](https://github.com/gakonst/nanocodex/issues/337))
+- [js] Align the CDN example with release 0.6.1 ([#334](https://github.com/gakonst/nanocodex/issues/334))
+
+### Features
+
+- [computer] Automatically install official upstream CUA ([#413](https://github.com/gakonst/nanocodex/issues/413))
+- [observation] Validate WoW Classic Beta accessibility export
+- [web] Show assigned contacts and account admin panel
+- [computer] Parallel background window control and agent cursors ([#377](https://github.com/gakonst/nanocodex/issues/377))
+- [tui] Launch cloud debugging thread with /bug
+- [tui] Add Vault credential approval without raw JSON ([#361](https://github.com/gakonst/nanocodex/issues/361))
+- [vault] Direct touch and native keyboard for private takeover ([#367](https://github.com/gakonst/nanocodex/issues/367))
+- [hand] Preserve high-resolution Mac video with shared encoder settings ([#360](https://github.com/gakonst/nanocodex/issues/360))
+- [cli] Preview matching thread passages beside the picker
+- [vault] Add secure chat intake and private browser login ([#358](https://github.com/gakonst/nanocodex/issues/358))
+- [cli] Open thread picker with /attach
+- [cli] Search recent threads by title and conversation content
+- [apple] Add conversation drawer and compact mobile layout
+- [cli] Add inline Hand screens with WebRTC video and audio
+- [hands] Expose live screen control through computer tools
+- [cli] Add managed native voice and measure end-to-end flows
+- [connectors] Add Stripe Link spend approval requests ([#351](https://github.com/gakonst/nanocodex/issues/351))
+- [hands] Assign readable paths and host-qualified VM names
+- [agent] Scope personal memories and attribute startup callers
+- [agent] Inject cache-stable startup environment context
+- [remote] Add fullscreen and captured pointer control
+- [hand] Support relative Windows pointer control
+- [remote] Stream desktop audio to the web viewer
+- [hand] Configure Windows video resolution and bitrate
+- [hand] Publish desktop output as a stereo Opus track
+- [hands] Capture Windows system audio with WASAPI loopback
+- [hand] Keep Windows desktop Hands running as a service
+- [hands] Capture and control the native Windows desktop
+- [account] Expose multiple ChatGPT connections across apps ([#346](https://github.com/gakonst/nanocodex/issues/346))
+- [connect] Add ChatGPT account failover and per-session pins ([#343](https://github.com/gakonst/nanocodex/issues/343))
+- [hand] Ship one-click Windows installer
+- [hands] Unify computer publishers and reduce startup latency
+- [hands] Share native host and VM capabilities across CLI and app
+- [desktop] Supervise account VM factories and retained VM controls
+- [connect] Add provider-scoped client connectors
+- [connect] Proxy provider SDK requests for all API connectors
+- [connect] Expose granted connector APIs directly to apps
+- [soundcloud] Complete account OAuth entirely on iPhone
+- [connect] Register DJ Booth's account integration
+- [connectors] Add music OAuth and discoverable account API tools
+
+### Miscellaneous Tasks
+
+- Prepare release 0.6.2
+- Select expensive native checks by changed inputs ([#389](https://github.com/gakonst/nanocodex/issues/389))
+- Release cancelled runs and isolate real-time audio cadence checks ([#387](https://github.com/gakonst/nanocodex/issues/387))
+- Reuse WASM previews and parallelize Swift package checks ([#383](https://github.com/gakonst/nanocodex/issues/383))
+- Reuse published images and separate deployment endurance checks ([#381](https://github.com/gakonst/nanocodex/issues/381))
+- Reuse image caches and stop redundant build work ([#380](https://github.com/gakonst/nanocodex/issues/380))
+- [hand] Serialize Windows native parity tests
+- [hand] Validate installer before Rust builds
+- Preserve opaque tool call identifiers in trace fixtures
+- [voice] Trace relay startup and provider request stages
+
+### Other
+
+- Add mobile game controls and move live frame work off main ([#414](https://github.com/gakonst/nanocodex/issues/414))
+- Expose the consumed Codex memories API over existing scoped storage ([#412](https://github.com/gakonst/nanocodex/issues/412))
+- Pin only consumed Codex runtime prompts and verify upstream fidelity ([#411](https://github.com/gakonst/nanocodex/issues/411))
+- Align shared Codex tool contracts and schema rendering ([#407](https://github.com/gakonst/nanocodex/issues/407))
+- Attach the installed upstream CUA provider through its MCP contract ([#406](https://github.com/gakonst/nanocodex/issues/406))
+- Show Code Mode source cards and open live screens from chat ([#405](https://github.com/gakonst/nanocodex/issues/405))
+- Present full syntax-colored commands and working directories in tool cards ([#404](https://github.com/gakonst/nanocodex/issues/404))
+- Smooth live tool arrivals without competing bottom snaps ([#403](https://github.com/gakonst/nanocodex/issues/403))
+- Make iOS chat responsive, steer by default, and stabilize scrolling ([#402](https://github.com/gakonst/nanocodex/issues/402))
+- Show mobile progress and tool calls inline ([#401](https://github.com/gakonst/nanocodex/issues/401))
+- Merge pull request [#399](https://github.com/gakonst/nanocodex/issues/399) from gakonst/revert/durable-projects
+- Remove iOS project grouping and restore independent conversations
+- Remove durable project delegation and retire migrated grouping
+- Allow follow-ups across accessible conversations ([#397](https://github.com/gakonst/nanocodex/issues/397))
+- Merge PR [#395](https://github.com/gakonst/nanocodex/issues/395): independent CUA loops, scoped dialog focus and offline upgrade
+- Preserve primary focus when background Wayland clients open dialogs
+- Add isolated persistent per-window CUA lanes and native acceptance
+- Add offline atomic Omarchy CUA upgrade and rollback
+- Remove account-specific migration tooling from public source ([#394](https://github.com/gakonst/nanocodex/issues/394))
+- Merge pull request [#385](https://github.com/gakonst/nanocodex/issues/385) from gakonst/fix/newer-messages
+- Record live replies and preserved reading position in simulator
+- Render live replies immediately while preserving history reading position
+- Merge pull request [#384](https://github.com/gakonst/nanocodex/issues/384) from gakonst/fix/mobile-interaction-performance
+- Wait for loaded conversation before live swipe test baselines
+- Reduce project chat rendering work and preserve live voice transcripts
+- Merge pull request [#382](https://github.com/gakonst/nanocodex/issues/382) from gakonst/fix/simulator-process-reaping
+- Use XCTest as the sole simulator recording owner
+- Reap shell children even when yielded sessions are not polled
+- Merge pull request [#368](https://github.com/gakonst/nanocodex/issues/368) from gakonst/feat/mobile-project-threads
+- Verify recovered simulator journeys and preserve Screen control accessibility
+- Route screen lifecycle tests through thread dock controls
+- Merge origin/master into feat/mobile-project-threads
+- Add per-thread screen viewing from the conversation menu
+- Expand mobile projects into durable threads and simplify activity sheet
+- Return project task outcomes automatically and reuse persistent threads
+- Add project master chats and persistent task threads on iOS
+- Merge pull request [#371](https://github.com/gakonst/nanocodex/issues/371) from gakonst/fix/hosted-image-output
+- Merge master and align image preparation and replay with codex-rs
+- Merge remote-tracking branch 'origin/master' into fix/hosted-image-output
+- Merge remote-tracking branch 'origin/master' into fix/hosted-image-output
+- Merge pull request [#379](https://github.com/gakonst/nanocodex/issues/379) from gakonst/fix/hand-video-level-ranges
+- Make H264 level match ranges disjoint
+- Merge pull request [#378](https://github.com/gakonst/nanocodex/issues/378) from gakonst/fix/communications-ci-metadata
+- Complete phone license and Hand dependency metadata
+- Merge pull request [#376](https://github.com/gakonst/nanocodex/issues/376) from gakonst/feat/communications-orchestration
+- Merge remote-tracking branch 'origin/master' into feat/communications-orchestration
+- Merge pull request [#372](https://github.com/gakonst/nanocodex/issues/372) from gakonst/feat/background-cua-integration
+- Merge master and retain its shared Vault link routing fix
+- Route Vault opening through the shared link effect
+- Preserve upstream author spelling in CUA attribution
+- Make background AppKit windows key before their first click
+- Keep authorization-denial fixture valid for HTTPS fallback
+- Merge remote-tracking branch 'origin/master' into feat/background-cua-integration
+- Clarify background native paste limitations
+- Add experimental background app CUA for macOS and Hyprland
+- Coordinate phone calls and bounded email follow-ups
+- Merge pull request [#374](https://github.com/gakonst/nanocodex/issues/374) from gakonst/phone-admin-merge
+- Restrict dedicated email activation to the deployment admin
+- Merge dedicated agent mailbox with cloud phone agents
+- Add dedicated Cloudflare agent email service
+- Add cloud phone agents with deployment-admin access
+- Keep remote viewing stable across tab switches and ICE renewal
+- Merge remote-tracking branch 'origin/master' into feat/hand-rtmp
+- Merge remote-tracking branch 'origin/master' into feat/hand-rtmp
+- Keep Waymote broadcast control input open and classify failures safely
+- Keep Cloudflare sandbox previews on the restricted-network fallback
+- Preserve native Mac resolution and 60fps with direct hardware encoding
+- Use authenticated WebRTC for Cloudflare desktop streams at 1080p60
+- Raise VM desktop capture to native 1080p60 with shared video limits
+- Merge remote-tracking branch 'origin/master' into feat/hand-rtmp
+- Preserve RTMP capture when preview uses frame fallback
+- Merge remote-tracking branch 'origin/master' into feat/hand-rtmp
+- Merge remote-tracking branch 'origin/master' into feat/hand-rtmp
+- Include capture policy and audio runtime in Cloudflare Hand image
+- Add high-quality RTMP broadcasting for connected Hand screens
+- Connect live computer observations to Linux accessibility and app context ([#354](https://github.com/gakonst/nanocodex/issues/354))
+- Merge pull request [#350](https://github.com/gakonst/nanocodex/issues/350) from gakonst/feat/remote-fullscreen-control
+- Merge commit 'd1de7d86' into feat/hand-stream-audio
+- Integrate shared 60 fps video with Windows desktop capture
+- [remote] Remove unproven viewer routing experiment
+- Merge pull request [#345](https://github.com/gakonst/nanocodex/issues/345) from gakonst/perf/hand-video-60fps
+- Merge remote-tracking branch 'origin/master' into perf/hand-video-60fps
+- Merge pull request [#340](https://github.com/gakonst/nanocodex/issues/340) from gakonst/codex/windows-hand-installer
+- Merge origin/master into Windows Hand installer
+
+### Performance
+
+- [build] Parallelize nightly components and cache native builds
+- [managed] Prepare active conversations before prompt submission
+- [hand] Forward native encoded frames without lookahead
+- [hands] Forward encoded frames without delimiter lookahead
+- [remote] Verify bounded viewer authority before direct broker upgrade
+- [hands] Skip proven-empty agent VM factory pools
+- [remote] Keep viewer admission RPC payloads finite
+- [remote] Authorize viewers before a single broker upgrade
+- [hands] Correlate pool readiness replies with mount polls
+- [hands] Trace VM mount reservation and settlement stages
+- [remote] Locate screen dispatch and upgrade return waits
+- [remote] Trace account proxy screen admission waits
+- [hands] Stream shared remote screens at 60 fps
+- [hands] Separate attachment DNS and TCP timings
+- [hands] Reuse the live router when admitting attachments
+- [hands] Prepare Linux VMs with private overlay disks
+- [apple] Reuse screen admission authority and retry rejected snapshots
+- [hands] Return transitioned call rows without rereading
+- [remote] Reuse short-lived authority for screen admission
+- [hands] Correlate broker and provider call timings
+- [hands] Trace attachment connection stages
+- [remote] Reduce native screen startup latency
+- [macos] Stream incremental transcript events to the native client
+- [managed] Restrict personalization warming to active sessions
+- [managed] Prepare personalization outside prompt admission
+- [connect] Expose fresh grant-scoped connector status without account aggregation
+- [observability] Split local and semantic history search timing
+- [observability] Correlate model egress with agent subjects
+- [observability] Compact SQL traces and split lifecycle timing
+- [observability] Include account and memory SQL in audit
+- [observability] Trace managed SQL and startup components
+- [voice] Transfer relay SDP through private RPC
+- [managed] Reuse short-lived request authorization
+- [voice] Return complete call answers over private RPC
+- [voice] Resolve live authorization and ownership over RPC
+- [egress] Resolve credential RPC without local HTTP streams
+- [egress] Preserve credential refresh alarms on activation
+- [managed] Share live account catalog during first-turn admission
+- [voice] Skip legacy credential directory round trips
+- [voice] Activate media before durable task admission
+- [egress] Resolve live model credentials over RPC
+- [managed] Request only vault metadata during startup
+- [managed] Remove redundant auth and model ownership round trips
+- [tools] Defer shared workspace metadata scans until use
+- [managed] Combine HTTP agent creation in one Session request
+
+### Styling
+
+- Align Code Mode execution behavior while retaining QuickJS ([#409](https://github.com/gakonst/nanocodex/issues/409))
+- Preserve the Codex web tool schema and command batches ([#408](https://github.com/gakonst/nanocodex/issues/408))
+- Add persistent goal mode and goal tools ([#392](https://github.com/gakonst/nanocodex/issues/392))
+- Support the scoped one-time conversation project migration ([#391](https://github.com/gakonst/nanocodex/issues/391))
+- Format Windows portability tests
+
+### Testing
+
+- Verify request arrival in incomplete-download fixture ([#388](https://github.com/gakonst/nanocodex/issues/388))
+- [architecture] Record managed voice protocol dependency
+- [connectors] Cover Stripe Link browser authorization ([#352](https://github.com/gakonst/nanocodex/issues/352))
+- [hand] Verify audio capture stops with its stream
+- [remote] Cover packed authority exports and production VM assertion
+- [hands] Isolate scope eviction from personalization warmup
+- [package] Require the public Hand admission export artifacts
+- [remote] Cover direct viewer routing and no replay fallback
+- [hands] Receive H264 video in the offline Docker smoke test
+- [hand] Parse Windows smoke receipt
+- [hand] Verify Notepad input visually
+- [hand] Focus Notepad editor before typing
+- [computer] Resolve Python absolutely on Windows
+- [tui] Allow WinAPI terminal restoration
+- [tui] Use portable Windows paths and escapes
+- [hands] Negotiate video in the live Docker smoke test
+- [remote] Measure explicitly selected screen dimensions
+
 ## [0.6.1](https://github.com/gakonst/nanocodex/releases/tag/v0.6.1) - 2026-09-15
 
 ### Bug Fixes
 
-- [voice] Distribute and repair the native runtime with CLI releases
-
-### Miscellaneous Tasks
-
-- [release] Synchronize workspace packages to 0.6.1
+- [voice] Ship verified native runtime in 0.6.1 ([#333](https://github.com/gakonst/nanocodex/issues/333))
 
 ### Testing
 
@@ -32,7 +364,6 @@ Read the [0.5 → 0.6 Rust API changelog and migration guide](https://github.com
 
 ### Bug Fixes
 
-- [release] Include the computer reset contract in crate archives
 - [managed] Share cache keys without unsupported cache options
 - [web] Respect reduced motion and transparency preferences ([#322](https://github.com/gakonst/nanocodex/issues/322))
 - [managed] Clarify workspace-relative hand paths ([#321](https://github.com/gakonst/nanocodex/issues/321))
@@ -652,7 +983,6 @@ Read the [0.5 → 0.6 Rust API changelog and migration guide](https://github.com
 
 ### Documentation
 
-- Update the browser CDN example for 0.6.0
 - [hand] Keep Cloudflare toolkit scratch off R2 ([#314](https://github.com/gakonst/nanocodex/issues/314))
 - [vm] Record installed Mac GPU Hand validation
 - Record deployment and final mobile refresh validation
@@ -955,7 +1285,7 @@ Read the [0.5 → 0.6 Rust API changelog and migration guide](https://github.com
 
 ### Miscellaneous Tasks
 
-- Prepare release 0.6.0
+- Release nanocodex 0.6.0 ([#330](https://github.com/gakonst/nanocodex/issues/330))
 - [apple] Update PhoneNumberKit to 5.0.9 ([#325](https://github.com/gakonst/nanocodex/issues/325))
 - [ci] Recognize the Mesa Zink driver name
 - [ci] Satisfy workspace formatting and Rust 1.97 checks

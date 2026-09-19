@@ -54,7 +54,7 @@ base64.workspace = true
 filetime.workspace = true
 futures-util = { workspace = true, optional = true }
 landlock = { workspace = true, optional = true }
-nanocodex-tools = { path = "../nanocodex-tools", version = "0.6.1", default-features = false }
+nanocodex-tools = { path = "../nanocodex-tools", version = "0.6.2", default-features = false }
 nix = { workspace = true, optional = true, features = ["fs", "mount", "poll"] }
 rtnetlink = { workspace = true, optional = true }
 rustix = { workspace = true, optional = true }
@@ -65,7 +65,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-std", "io-util", "macros", "process", "rt", "rt-multi-thread", "sync", "time", "signal"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-nanocodex-hand = { version = "0.6.1", path = "../nanocodex-hand", optional = true }
+nanocodex-hand = { version = "0.6.2", path = "../nanocodex-hand", optional = true }
 x11rb = { version = "0.13.2", optional = true, features = ["xtest"] }
 image = { version = "0.25.9", default-features = false, features = ["jpeg"], optional = true }
 
