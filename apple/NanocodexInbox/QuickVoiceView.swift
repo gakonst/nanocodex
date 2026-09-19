@@ -59,7 +59,8 @@ final class QuickVoiceRecorder: ObservableObject {
         }
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
+            // duckOthers is unsupported by the record-only category.
+            try session.setCategory(.record, mode: .measurement)
             try session.setActive(true)
             sessionActive = true
             let request = SFSpeechAudioBufferRecognitionRequest()
