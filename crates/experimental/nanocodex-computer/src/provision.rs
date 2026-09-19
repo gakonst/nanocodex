@@ -152,7 +152,6 @@ mod mac {
         ffi::OsString,
         fs,
         path::{Path, PathBuf},
-        process::Command,
         sync::atomic::{AtomicU64, Ordering},
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -174,10 +173,12 @@ mod mac {
         fn run(&mut self, program: &str, args: &[OsString]) -> Result<String, String>;
     }
 
+    #[cfg(target_os = "macos")]
     pub(super) struct System;
+    #[cfg(target_os = "macos")]
     impl Commands for System {
         fn run(&mut self, program: &str, args: &[OsString]) -> Result<String, String> {
-            let output = Command::new(program)
+            let output = std::process::Command::new(program)
                 .args(args)
                 .stdin(std::process::Stdio::null())
                 .output()
