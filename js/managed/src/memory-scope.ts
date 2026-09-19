@@ -1,3 +1,4 @@
+import { scopeMemoryFiles, scopeFileMemories } from "./extension-memory-storage";
 import { PreparedPersonalizationStore } from "./personalization";
 import { initializeMemoryContent, memoryIdentityDigest, readMemoryContent, storeMemoryContent } from "./durable-memory-storage";
 import { DurableObject } from "cloudflare:workers";
@@ -211,6 +212,30 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
     }
     if (!this.#authorized(assertedOrganization)) return json({ error: "not_found" }, { status: 404 });
     try {
+      if (request.method === "POST" && url.pathname.startsWith("/extension-memories/")) {
+        const owner = request.headers.get("x-nanocodex-private-memory-owner");
+        if ((assertedTeam.startsWith("personal:") && (!owner || assertedTeam !== `personal:${owner}`)) || !request.headers.get(SUBJECT_ASSERTION))
+          return json({ error: "forbidden" }, { status: 403 });
+        const operation = url.pathname.slice("/extension-memories/".length);
+        if (!["list", "read", "search", "add_ad_hoc_note", "files", "file"].includes(operation)) return json({ error: "not_found" }, { status: 404 });
+        if (operation === "add_ad_hoc_note" && request.headers.get(MEMORY_MUTATION_ASSERTION) !== "1")
+          return json({ error: "memory_read_only" }, { status: 403 });
+        try {
+          const legacy = {
+            list: async () => (await this.#listMemories(assertedTeam).json<{ memories: MemoryRecord[] }>()).memories,
+            read: (id: number, version: number) => this.#readMemories([{ id, version }], assertedTeam).memories[0]?.content,
+          };
+          if (operation === "files") return json(await scopeMemoryFiles(this.ctx.storage, assertedTeam, legacy).listFiles());
+          if (operation === "file") {
+            const input = await parseJsonBody<{ path: string }>(request);
+            return json(await scopeMemoryFiles(this.ctx.storage, assertedTeam, legacy).readFile(input.path));
+          }
+          const backend = scopeFileMemories(this.ctx.storage, assertedTeam, legacy);
+          return json(await backend[operation]!(await parseJsonBody<unknown>(request)));
+        } catch (error) {
+          return json({ error: "invalid_request", message: error instanceof Error ? error.message : "private memory operation failed" }, { status: 400 });
+        }
+      }
       if (request.method === "POST" && url.pathname === "/personalization") {
         const userId = request.headers.get("x-nanocodex-personalization-user");
         const storageId = request.headers.get("x-nanocodex-personalization-session");

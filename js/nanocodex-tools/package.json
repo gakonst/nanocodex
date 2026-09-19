@@ -80,6 +80,14 @@
     "./x": {
       "types": "./tools/x.d.mts",
       "import": "./tools/x.mjs"
+    },
+    "./extensions": {
+      "types": "./tools/extensions.d.mts",
+      "import": "./tools/extensions.mjs"
+    },
+    "./node-extensions": {
+      "types": "./tools/node-extensions.d.mts",
+      "import": "./tools/node-extensions.mjs"
     }
   },
   "files": [
