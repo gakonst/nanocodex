@@ -5,7 +5,9 @@ elicitation in its controlling terminal, including a dedicated tmux pane. Run
 that Hand in the foreground and leave the pane available to the person operating
 it. The handler is installed before external provider discovery, so the MCP
 initialize request advertises form elicitation only when a real foreground
-canonical terminal is available. The existing provider configuration and sandbox
+canonical terminal is available on stdin. The handler opens a separate descriptor
+for the resolved terminal device; it does not read stdin. This avoids macOS
+kqueue rejecting the `/dev/tty` alias. The existing provider configuration and sandbox
 are unchanged.
 
 When Sky asks for application access, the terminal shows the complete provider

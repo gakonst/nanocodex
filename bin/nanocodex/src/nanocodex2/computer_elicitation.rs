@@ -32,11 +32,17 @@ pub(super) fn configure(config: &mut ComputerConfig) {
 }
 
 fn terminal() -> io::Result<File> {
+    // macOS kqueue rejects the /dev/tty alias. Resolve the real foreground
+    // terminal from stdin, then open an independent descriptor; never read stdin.
+    if !io::stdin().is_terminal() {
+        return Err(io::Error::other("CUA consent requires a terminal on stdin"));
+    }
+    let path = nix::unistd::ttyname(io::stdin())?;
     let file = OpenOptions::new()
         .read(true)
         .write(true)
         .custom_flags(OFlag::O_NONBLOCK.bits() | OFlag::O_NOCTTY.bits())
-        .open("/dev/tty")?;
+        .open(path)?;
     // A daemon, pipe, background job or TUI must not acquire a consent reader.
     if !file.is_terminal()
         || tcgetpgrp(&file)? != getpgrp()
