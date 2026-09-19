@@ -1,3 +1,4 @@
+import { webSearchRequest } from "./webSearchRequest";
 import {
   CHATGPT_LOGIN_TTL_MS,
   CHATGPT_SESSION_TTL_MS,
@@ -76,14 +77,12 @@ const RESPONSES_WEBSOCKETS_BETA = "responses_websockets=2026-02-06";
 const WEB_SEARCH_URL = "https://api.openai.com/v1/alpha/search";
 const IMAGE_GENERATION_URL = "https://api.openai.com/v1/images/generations";
 const IMAGE_EDIT_URL = "https://api.openai.com/v1/images/edits";
-const MODEL = "gpt-5.6-sol";
 const IMAGE_MODEL = "gpt-image-2";
 const CODEX_ORIGINATOR = "codex_cli_rs";
 const CODEX_USER_AGENT = "codex_cli_rs/0.0.0";
 const CODEX_ATTESTATION_UNAVAILABLE = '{"v":1,"s":1}';
 const MAX_JSON_BODY_CHARS = 32 * 1024 * 1024;
 const MAX_SEARCH_OUTPUT_CHARS = 1024 * 1024;
-const MAX_WEB_OPERATION_ITEMS = 16;
 const MAX_IMAGE_INPUT_CHARS = 8 * 1024 * 1024;
 const MAX_IMAGE_INPUT_TOTAL_CHARS = 20 * 1024 * 1024;
 const MAX_IMAGE_PROMPT_CHARS = 16 * 1024;
@@ -350,32 +349,15 @@ async function proxyWebSearch(request: Request, env: WorkerEnv, url: URL): Promi
   if (access instanceof Response) return access;
   const decoded = await readJsonBody(request);
   if (decoded instanceof Response) return decoded;
-  const sessionId = typeof decoded.session_id === "string" ? decoded.session_id : "";
-  if (!/^[A-Za-z0-9._:-]{1,200}$/.test(sessionId)) return json({ error: "invalid session" }, { status: 400 });
-  const commands = asObject(decoded.commands);
-  if (!commands || !hasWebOperation(commands)) {
-    return json({ error: "web__run requires at least one operation" }, { status: 400 });
-  }
-  const queries = Array.isArray(commands.search_query) ? commands.search_query.length : 0;
-  if (queries > 4) return json({ error: "web__run accepts at most 4 search queries" }, { status: 400 });
-  if (queries === 4 && !["medium", "long"].includes(String(commands.response_length))) {
-    return json({ error: "four search queries require medium or long response_length" }, { status: 400 });
-  }
-  if (webOperationItemCount(commands) > MAX_WEB_OPERATION_ITEMS) {
-    return json({ error: "web__run accepts at most 16 operation items per request" }, { status: 400 });
-  }
+  let searchBody: Record<string, unknown>;
+  try { searchBody = webSearchRequest(decoded); }
+  catch (error) { return json({ error: error instanceof Error ? error.message : "invalid search request" }, { status: 400 }); }
   const actorId = isManagedAccess(access)
     ? managedModelActorId(request, access)
     : access.actorId;
   const limited = await limitAgentOperation(env, actorId, "search");
   if (limited) return limited;
-  const upstreamBody = JSON.stringify({
-    id: sessionId,
-    model: MODEL,
-    commands,
-    settings: { allowed_callers: ["direct"], external_web_access: true },
-    max_output_tokens: 10_000,
-  });
+  const upstreamBody = JSON.stringify(searchBody);
   const upstream = isManagedAccess(access)
     ? await fetchManagedModel(access, "search", upstreamBody)
     : await fetchOpenAi(
@@ -399,7 +381,7 @@ async function proxyWebSearch(request: Request, env: WorkerEnv, url: URL): Promi
   try { payload = JSON.parse(body); } catch { return json({ error: "web search returned invalid JSON" }, { status: 502 }); }
   const output = asObject(payload)?.output;
   if (typeof output !== "string") return json({ error: "web search response omitted output" }, { status: 502 });
-  return json({ output });
+  return json({ output, results: asObject(payload)?.results });
 }
 
 async function proxyImageGeneration(request: Request, env: WorkerEnv, url: URL): Promise<Response> {
@@ -787,16 +769,6 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown> |
   } catch {
     return json({ error: "invalid JSON" }, { status: 400 });
   }
-}
-
-function hasWebOperation(commands: Record<string, unknown>): boolean {
-  return ["search_query", "image_query", "open", "click", "find", "finance", "weather", "sports", "time"]
-    .some((key) => Array.isArray(commands[key]) && commands[key].length > 0);
-}
-
-function webOperationItemCount(commands: Record<string, unknown>): number {
-  return ["search_query", "image_query", "open", "click", "find", "finance", "weather", "sports", "time"]
-    .reduce((total, key) => total + (Array.isArray(commands[key]) ? commands[key].length : 0), 0);
 }
 
 function openAiHeaders(credential: Credential): Record<string, string> {
