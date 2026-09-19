@@ -1,6 +1,9 @@
 //! Rust Hand screen publication. Credentials and signaling remain on the host.
 use super::observation_providers::{Context, Registry};
 use super::screen_video::{Video, VideoSource, ice_servers};
+#[path = "screen_preparation.rs"]
+mod screen_preparation;
+use screen_preparation::{Preparations, VIEWER_CAPACITY};
 use futures_util::{SinkExt, StreamExt, future::BoxFuture};
 use nanocodex_managed::ManagedError;
 use nanocodex_tools::attachment::{AttachmentMachine, AttachmentTarget};
@@ -421,6 +424,7 @@ async fn session(
     let mut connection = String::new();
     let mut generation = String::new();
     let mut viewers = HashSet::<String>::new();
+    let mut preparations = Preparations::new();
     let mut pending_frames = HashMap::<String, u64>::new();
     let mut frame_tick = tokio::time::interval(Duration::from_nanos(33_333_333));
     frame_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -446,6 +450,26 @@ async fn session(
             },
             ok = async { match &mut renewal { Some(future)=>future.await,None=>std::future::pending().await } } => {
                 renewal=None; if !ok { return Err(SessionError::Unauthorized); } *last_authorized=Instant::now();
+            },
+            (viewer, deadline, response) = preparations.next() => {
+                // Only HTTP preparation runs concurrently. Preserve the original
+                // total eight-second budget; Video.add still owns a bounded,
+                // exclusive setup phase in this loop.
+                let video = socket.video.as_mut().ok_or(SessionError::Closed)?;
+                let offer = tokio::time::timeout_at(deadline, async {
+                    let response = response??;
+                    video.add(&viewer, ice_servers(&response)?).await
+                }).await;
+                match offer {
+                    Ok(Ok(offer)) => {
+                        viewers.insert(viewer.clone());
+                        send(&mut socket, offer).await?;
+                    },
+                    failure => {
+                        match failure { Ok(Err(error)) => eprintln!("Hand video negotiation failed: {error}"), _ => eprintln!("Hand video negotiation timed out") }
+                        send(&mut socket, json!({"type":"close_viewer","viewer_id":viewer})).await?;
+                    }
+                }
             },
             result = completed(&mut job) => {
                 job=None;
@@ -501,29 +525,40 @@ async fn session(
                     "pong"=>{},
                     "viewer"=>{
                         if viewer.is_empty() || value["surface_id"]!="desktop" {return Err(SessionError::Closed);}
-                        if viewers.len()>=4 {send(&mut socket,json!({"type":"close_viewer","viewer_id":viewer})).await?;}else{
+                        // A duplicate ID is ambiguous even at capacity: cancel
+                        // that viewer without disturbing unrelated peers.
+                        if viewers.contains(viewer) || preparations.contains(viewer) {
+                            preparations.remove(viewer);
+                            pending_frames.remove(viewer);
+                            viewers.remove(viewer);
+                            if lease.owner==viewer{release(&mut lease,backend,&mut socket).await?;}
+                            send(&mut socket,json!({"type":"close_viewer","viewer_id":viewer})).await?;
+                            continue;
+                        }
+                        if viewers.len()+preparations.len()>=VIEWER_CAPACITY {
+                            send(&mut socket,json!({"type":"close_viewer","viewer_id":viewer})).await?;
+                        } else if socket.video.is_some() {
+                            let mut url=base.clone();url.set_path(&format!("{}/ice",base.path()));
+                            let http=http.clone();let token=target.bearer().to_string();
+                            let deadline=tokio::time::Instant::now()+Duration::from_secs(8);
+                            preparations.insert(viewer, deadline, async move {
+                                http.post(url).bearer_auth(token).send().await?.error_for_status()?.json::<Value>().await
+                            }).map_err(|_|SessionError::Closed)?;
+                        } else {
                             viewers.insert(viewer.into());
-                            if let Some(video) = &mut socket.video {
-                                let mut url=base.clone();url.set_path(&format!("{}/ice",base.path()));
-                                let offer = tokio::time::timeout(Duration::from_secs(8), async {
-                                    let response=http.post(url).bearer_auth(target.bearer()).send().await?.error_for_status()?.json::<Value>().await?;
-                                    video.add(viewer, ice_servers(&response)?).await
-                                }).await;
-                                match offer {
-                                    Ok(Ok(offer))=>send(&mut socket,offer).await?,
-                                    failure=>{
-                                        match failure { Ok(Err(error)) => eprintln!("Hand video negotiation failed: {error}"), _ => eprintln!("Hand video negotiation timed out") }
-                                        send(&mut socket,json!({"type":"close_viewer","viewer_id":viewer})).await?;viewers.remove(viewer);
-                                    }
-                                }
-                            }
                         }
                     },
                     "viewer_left"=>{
+                        preparations.remove(viewer);
                         viewers.remove(viewer);
                         pending_frames.remove(viewer);
                         if lease.owner==viewer{release(&mut lease,backend,&mut socket).await?;}
                         if let Some(video)=&mut socket.video{video.remove(viewer);}
+                    },
+                    "signal" if preparations.contains(viewer)=>{
+                        // No pre-offer signaling queue: cancel and fail closed.
+                        preparations.remove(viewer);
+                        send(&mut socket,json!({"type":"close_viewer","viewer_id":viewer})).await?;
                     },
                     "signal" if viewers.contains(viewer)=>{
                         if let Some(video)=&mut socket.video
@@ -740,6 +775,29 @@ fn steps(action: &Value) -> Result<Vec<(Duration, Value)>, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn stalled_preparation_allows_established_input_and_lease_processing() {
+        let mut preparations = Preparations::new();
+        preparations.insert("new-viewer", tokio::time::Instant::now() + Duration::from_secs(8), std::future::pending::<()>()).unwrap();
+        let mut lease = Lease::default();
+        lease.acquire("established");
+        let generation = lease.generation.clone();
+        for sequence in 1..=3 {
+            let event = json!({"kind":"key", "generation":generation, "sequence":sequence});
+            tokio::select! {
+                biased;
+                _ = preparations.next() => panic!("stalled preparation completed"),
+                input = std::future::ready(event) => assert!(lease.accept("established", &input)),
+            }
+        }
+        lease.deadline = Some(Instant::now() - Duration::from_secs(1));
+        tokio::select! {
+            biased;
+            _ = preparations.next() => panic!("stalled preparation completed"),
+            _ = std::future::ready(()) => assert!(lease.expired()),
+        }
+        assert!(preparations.contains("new-viewer"));
+    }
     #[tokio::test]
     async fn stalled_provider_does_not_discard_successful_screenshot() {
         let backend: ScreenBackend = Arc::new(|_| {
