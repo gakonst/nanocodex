@@ -2,14 +2,16 @@
 //! are unloaded; global defaults and existing application routing are untouched.
 use super::{AudioSink, Result, SinkFactory};
 
-pub async fn native_factory() -> Option<SinkFactory> {
+pub async fn native_factory(machine_id: &str) -> Option<SinkFactory> {
     #[cfg(target_os = "linux")]
     {
-        if linux::probe().await {
-            return Some(std::sync::Arc::new(|| Box::pin(linux::open())));
-        }
+        return linux::factory(machine_id).await.ok();
     }
-    None
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = machine_id;
+        None
+    }
 }
 
 // Compiled in tests on macOS too, so Linux code cannot silently bitrot.
@@ -18,11 +20,10 @@ mod linux {
     use super::*;
     use std::{
         process::{Command, Stdio},
-        sync::atomic::{AtomicU64, Ordering},
+        sync::Arc,
         time::{Duration, Instant},
     };
     use tokio::io::AsyncWriteExt;
-    static NEXT: AtomicU64 = AtomicU64::new(0);
 
     // Every utility invocation is bounded, including module cleanup after drop.
     fn pactl(args: &[&str]) -> Result<String> {
@@ -44,8 +45,11 @@ mod linux {
                     .stdout
                     .take()
                     .ok_or("missing PulseAudio response")?
-                    .take(4096)
+                    .take(65536)
                     .read_to_string(&mut text)?;
+                if text.len() >= 65536 {
+                    return Err("PulseAudio response exceeds limit".into());
+                }
                 return Ok(text.trim().into());
             }
             if start.elapsed() >= Duration::from_secs(2) {
@@ -56,7 +60,7 @@ mod linux {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
-    pub(super) async fn probe() -> bool {
+    pub(super) async fn factory(machine_id: &str) -> Result<SinkFactory> {
         let player = tokio::time::timeout(
             Duration::from_secs(2),
             tokio::process::Command::new("pacat")
@@ -67,34 +71,32 @@ mod linux {
                 .kill_on_drop(true)
                 .status(),
         )
-        .await
-        .is_ok_and(|s| s.is_ok_and(|s| s.success()));
-        if !player {
-            return false;
+        .await??;
+        if !player.success() {
+            return Err("PulseAudio player unavailable".into());
         }
-        // Advertise only after both the sink and remapped input actually exist.
-        // This creates virtual devices only and never captures a physical mic.
-        tokio::task::spawn_blocking(|| {
-            create_modules().is_ok_and(|(mut modules, _)| modules.close().is_ok())
-        })
-        .await
-        .unwrap_or(false)
+        let name = device_name(machine_id);
+        // Cancellation drops the completed result. This creates only virtual
+        // devices; PCM playback starts only when an authorized writer opens.
+        let modules = tokio::task::spawn_blocking(move || create_modules(&name)).await??;
+        Ok(factory_from_modules(Arc::new(modules)))
     }
-    struct Modules(Vec<String>);
-    impl Modules {
-        fn close(&mut self) -> Result<()> {
-            let mut result = Ok(());
-            for id in std::mem::take(&mut self.0).into_iter().rev() {
-                if let Err(error) = pactl(&["unload-module", &id]) {
-                    result = Err(error);
-                }
-            }
-            result
-        }
+    fn factory_from_modules(modules: Arc<Modules>) -> SinkFactory {
+        Arc::new(move || Box::pin(open_modules(Arc::clone(&modules))))
+    }
+    fn device_name(machine_id: &str) -> String {
+        format!(
+            "nanocodex_remote_mic_{}",
+            uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, machine_id.as_bytes()).simple()
+        )
+    }
+    struct Modules {
+        ids: Vec<String>,
+        name: String,
     }
     impl Drop for Modules {
         fn drop(&mut self) {
-            let modules = std::mem::take(&mut self.0);
+            let modules = std::mem::take(&mut self.ids);
             if !modules.is_empty() {
                 // Cleanup also works when the async runtime has shut down.
                 let _ = std::thread::Builder::new()
@@ -115,26 +117,59 @@ mod linux {
             .map_err(|_| "invalid PulseAudio module ID")?;
         Ok(value)
     }
-    fn create_modules() -> Result<(Modules, String)> {
+    fn create_modules(name: &str) -> Result<Modules> {
         // A preexisting output prevents creating a null sink as the only/default
         // playback sink. Never request set-default-* or module-loopback.
         if pactl(&["get-default-sink"])?.is_empty() || pactl(&["get-default-source"])?.is_empty() {
             return Err("existing playback and input defaults required".into());
         }
-        let name = format!(
-            "nanocodex_remote_mic_{}_{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        );
-        let mut modules = Modules(Vec::new());
-        modules.0.push(module_id(pactl(&["load-module", "module-null-sink", &format!("sink_name={name}"), "rate=48000", "channels=1", "sink_properties='device.description=Nanocodex_Remote_Microphone_Input device.class=filter priority.session=0'"])?)?);
-        modules.0.push(module_id(pactl(&["load-module", "module-remap-source", &format!("master={name}.monitor"), &format!("source_name={name}_source"), "source_properties='device.description=Nanocodex_Remote_Microphone device.class=filter priority.session=0'", "channels=1"])?)?);
-        Ok((modules, name))
+        let source = format!("{name}_source");
+        // Never adopt or unload an existing device, including a racing publisher.
+        for (kind, requested) in [("sinks", name), ("sources", source.as_str())] {
+            if pactl(&["list", "short", kind])?
+                .lines()
+                .any(|line| line.split_whitespace().nth(1) == Some(requested))
+            {
+                return Err("remote microphone device name already occupied".into());
+            }
+        }
+        let mut modules = Modules {
+            ids: Vec::new(),
+            name: name.into(),
+        };
+        modules.ids.push(module_id(pactl(&["load-module", "module-null-sink", &format!("sink_name={name}"), "rate=48000", "channels=1", "sink_properties='device.description=Nanocodex_Remote_Microphone_Input device.class=filter priority.session=0'"])?)?);
+        modules.ids.push(module_id(pactl(&["load-module", "module-remap-source", &format!("master={name}.monitor"), &format!("source_name={name}_source"), "source_properties='device.description=Nanocodex_Remote_Microphone device.class=filter priority.session=0'", "channels=1"])?)?);
+        // Pulse may rename a device if another publisher wins the race. Verify
+        // exact names AND returned module ownership; cleanup only our own IDs.
+        for (kind, requested, owner) in [
+            ("sinks", name, &modules.ids[0]),
+            ("sources", source.as_str(), &modules.ids[1]),
+        ] {
+            let devices: serde_json::Value =
+                serde_json::from_str(&pactl(&["--format=json", "list", kind])?)?;
+            if !devices
+                .as_array()
+                .ok_or("invalid PulseAudio device list")?
+                .iter()
+                .any(|device| {
+                    device["name"].as_str() == Some(requested)
+                        && (device["owner_module"]
+                            .as_u64()
+                            .map(|id| id.to_string())
+                            .or_else(|| device["owner_module"].as_str().map(str::to_owned)))
+                        .as_deref()
+                            == Some(owner.as_str())
+                })
+            {
+                return Err("remote microphone device name or ownership mismatch".into());
+            }
+        }
+        Ok(modules)
     }
     struct PulseSink {
         player: tokio::process::Child,
         input: Option<tokio::process::ChildStdin>,
-        _modules: Modules,
+        _modules: Arc<Modules>,
     }
     impl Drop for PulseSink {
         fn drop(&mut self) {
@@ -153,12 +188,7 @@ mod linux {
             Ok(())
         }
     }
-    pub(super) async fn open() -> Result<Box<dyn AudioSink>> {
-        // A cancelled join still drops the completed result and unloads modules.
-        let (modules, name) = tokio::task::spawn_blocking(create_modules).await??;
-        open_modules(modules, name).await
-    }
-    async fn open_modules(modules: Modules, name: String) -> Result<Box<dyn AudioSink>> {
+    async fn open_modules(modules: Arc<Modules>) -> Result<Box<dyn AudioSink>> {
         let mut player = tokio::process::Command::new("pacat")
             .args([
                 "--playback",
@@ -169,7 +199,7 @@ mod linux {
                 "--latency-msec=20",
                 "--client-name=Nanocodex Remote Microphone",
                 "--device",
-                &name,
+                &modules.name,
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -182,6 +212,18 @@ mod linux {
             input: Some(input),
             _modules: modules,
         }))
+    }
+    #[test]
+    fn stable_device_name_is_machine_scoped() {
+        assert_eq!(device_name("fixture"), device_name("fixture"));
+        assert_ne!(device_name("fixture"), device_name("other"));
+        assert_eq!(
+            device_name("fixture"),
+            format!(
+                "nanocodex_remote_mic_{}",
+                uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"fixture").simple()
+            )
+        );
     }
     #[test]
     fn module_ids_cannot_address_arbitrary_modules_or_arguments() {
@@ -198,10 +240,15 @@ mod linux {
         use tokio::io::AsyncReadExt;
         let default_sink = pactl(&["get-default-sink"]).unwrap();
         let default_source = pactl(&["get-default-source"]).unwrap();
-        assert!(probe().await);
-        let (modules, name) = create_modules().unwrap();
+        let machine_id = "synthetic-microphone-lifetime";
+        let name = device_name(machine_id);
+        let factory = factory(machine_id).await.unwrap();
+        assert!(
+            self::factory(machine_id).await.is_err(),
+            "occupied name must fail closed"
+        );
         let source = format!("{name}_source");
-        let mut sink = open_modules(modules, name.clone()).await.unwrap();
+        let mut sink = factory().await.unwrap();
         let mut recorder = tokio::process::Command::new("parec")
             .args([
                 "--raw",
@@ -251,6 +298,32 @@ mod linux {
         .expect("synthetic tone must reach virtual input");
         assert!(peak > 1000);
         drop(writing.await.unwrap());
+        // Muting closes the PCM writer but preserves the exact source identity.
+        let sources = pactl(&["list", "short", "sources"]).unwrap();
+        let before = sources
+            .lines()
+            .find(|line| line.split_whitespace().nth(1) == Some(source.as_str()))
+            .unwrap()
+            .to_owned();
+        let reopened = factory().await.unwrap();
+        assert!(
+            pactl(&["list", "short", "sources"])
+                .unwrap()
+                .lines()
+                .any(|line| {
+                    line.split_whitespace()
+                        .take(3)
+                        .eq(before.split_whitespace().take(3))
+                })
+        );
+        drop(factory);
+        assert!(
+            pactl(&["list", "short", "sources"])
+                .unwrap()
+                .contains(&source),
+            "writer retains modules after factory drops"
+        );
+        drop(reopened);
         recorder.kill().await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
