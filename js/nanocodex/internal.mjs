@@ -558,8 +558,8 @@ const hostBridge = Object.freeze({
     host.releaseSession(sessionId);
     if (hostSessions.get(sessionId) === host) hostSessions.delete(sessionId);
   },
-  executeCode(source, sessionId, callId, model) {
-    return requiredSessionHost(sessionId).executeCode(source, sessionId, callId, model);
+  executeCode(source, sessionId, callId, model, turnId) {
+    return requiredSessionHost(sessionId).executeCode(source, sessionId, callId, model, turnId);
   },
   waitCode(input, sessionId, callId) {
     return requiredSessionHost(sessionId).waitCode(input, sessionId, callId);
@@ -567,8 +567,8 @@ const hostBridge = Object.freeze({
   nextCodeUpdate(sessionId, callId) {
     return requiredSessionHost(sessionId).nextCodeUpdate(sessionId, callId);
   },
-  executeTool(name, input, sessionId, callId, model) {
-    return requiredSessionHost(sessionId).executeTool(name, input, sessionId, callId, model);
+  executeTool(name, input, sessionId, callId, model, turnId) {
+    return requiredSessionHost(sessionId).executeTool(name, input, sessionId, callId, model, turnId);
   },
   beginCodeTurn(sessionId) {
     hostSessions.get(sessionId)?.beginCodeTurn?.(sessionId);

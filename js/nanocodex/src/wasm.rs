@@ -107,6 +107,7 @@ extern "C" {
         session_id: &str,
         call_id: &str,
         model: &str,
+        turn_id: Option<&str>,
     ) -> Result<Promise, JsValue>;
 
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = waitCode)]
@@ -122,6 +123,7 @@ extern "C" {
         session_id: &str,
         call_id: &str,
         model: &str,
+        turn_id: Option<&str>,
     ) -> Result<Promise, JsValue>;
 
     #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = beginCodeTurn)]
@@ -659,6 +661,7 @@ impl CodeModeHost for JavaScriptCodeModeHost {
                 context.session_id(),
                 context.call_id(),
                 context.model(),
+                context.turn_id(),
             )
             .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
             let value = JsFuture::from(promise)
@@ -710,6 +713,7 @@ async fn execute_javascript_code(
         context.session_id(),
         context.call_id(),
         context.model(),
+        context.turn_id(),
     )
     .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
     observe_javascript_code(execution, context, observer).await

@@ -104,3 +104,13 @@ to provision OpenAI CUA on macOS and Windows, then returns the executable.
 managed runtime and uses its exact MCP command and environment automatically.
 Explicit provider settings and `off` take precedence; Linux retains companion
 discovery. See [installation details](../../docs/computer/upstream-provider.md).
+
+CUA calls include `session_id` and, when supplied by the agent runtime, `turn_id`
+in `x-codex-turn-metadata`, alongside the legacy `thread_id`, `call_id`, and
+`model` fields. `turn_id` is the stable agent turn identity (`thread:logical_turn`)
+shared by calls in that turn, including Code Mode calls after a yield. It is never
+derived from a tool call ID. Direct/older SDK callers without turn context omit
+`turn_id`; those callers cannot satisfy providers that require turn attribution.
+Hosted calls require the broker and attachment executor to support the optional
+`turn_id` frame field; older executors reject it as an unknown field. Update both
+sides before enabling turn-aware hosted calls.

@@ -47,7 +47,7 @@ test("discovers all paginated provider contracts without rewriting schemas or op
     const call = JSON.parse(result.output[0].text);
     assert.equal(call.name, name);
     assert.deepEqual(call.arguments, input);
-    assert.deepEqual(call._meta["x-codex-turn-metadata"], { thread_id: "discovery", call_id: "call", model: "fixture" });
+    assert.deepEqual(call._meta["x-codex-turn-metadata"], { session_id: "discovery", thread_id: "discovery", call_id: "call", model: "fixture" });
     assert.deepEqual(result.metadata, { provider: "fixture" });
   }
 });
@@ -92,4 +92,18 @@ test("explicit discovery catalogs remain pinned including hidden tool metadata",
   const attachment = createComputerTools({ ...options, definitions: changed });
   t.after(attachment.close);
   await assert.rejects(attachment.tool("js").handler({ source: "unchanged visible schema" }, context), /catalog changed/);
+});
+
+
+test("provider metadata preserves stable turns across calls and never substitutes call IDs", async t => {
+  const attachment = await connectComputerTools(provider().options);
+  t.after(attachment.close);
+  for (const [callId, turnId] of [["one", "discovery:7"], ["two", "discovery:7"], ["three", "discovery:8"], ["legacy", undefined]]) {
+    const result = await attachment.tool("js").handler({ source: "fixture" }, { ...context, callId, turnId });
+    const metadata = JSON.parse(result.output[0].text)._meta["x-codex-turn-metadata"];
+    assert.deepEqual(metadata, {
+      session_id: "discovery", thread_id: "discovery", call_id: callId, model: "fixture",
+      ...(turnId === undefined ? {} : { turn_id: turnId }),
+    });
+  }
 });

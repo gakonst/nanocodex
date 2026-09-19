@@ -341,6 +341,7 @@ pub struct ToolContext<'a> {
     model: &'a str,
     session_id: &'a str,
     call_id: &'a str,
+    turn_id: Option<&'a str>,
     history: &'a [ResponseItem],
     output_token_budget: usize,
     host_context: Option<&'a str>,
@@ -360,6 +361,7 @@ impl<'a> ToolContext<'a> {
             model,
             session_id,
             call_id,
+            turn_id: None,
             history,
             output_token_budget,
             host_context: None,
@@ -398,6 +400,20 @@ impl<'a> ToolContext<'a> {
     #[must_use]
     pub const fn call_id(self) -> &'a str {
         self.call_id
+    }
+
+    /// Attaches the host's stable logical-turn identity. This is shared by all
+    /// tool calls in a turn and must not be replaced with a tool-call identity.
+    #[must_use]
+    pub const fn with_turn_id(mut self, turn_id: Option<&'a str>) -> Self {
+        self.turn_id = turn_id;
+        self
+    }
+
+    /// Returns the logical-turn identity, if supplied by the execution host.
+    #[must_use]
+    pub const fn turn_id(self) -> Option<&'a str> {
+        self.turn_id
     }
 
     /// Returns committed authoritative history visible at this call boundary.

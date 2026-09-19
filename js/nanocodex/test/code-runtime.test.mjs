@@ -438,3 +438,49 @@ test("Code Mode preserves a real PNG fixture", async () => {
   assert.equal(result.output.find((item) => item.type === "input_image").image_url, url);
   runtime.reset();
 });
+
+
+test("direct and yielded nested calls retain the originating turn identity", async () => {
+  const release = deferred();
+  const contexts = [];
+  const runtime = createCodeRuntime({
+    probe: { supportsParallelToolCalls: true, async handler(input, context) {
+      contexts.push({ callId: context.callId, turnId: context.turnId });
+      if (input.block) await release.promise;
+      return "ok";
+    } },
+  });
+  await runtime.executeTool("probe", "{}", "owner", "direct", "fixture", "owner:7");
+  const initial = await observed(runtime, runtime.executeCodeObserved(
+    '// @exec: {"yield_time_ms": 0}\nawait tools.probe({block:true}); await tools.probe({});',
+    "owner", "exec-turn", "fixture", "owner:7",
+  ), "owner", "exec-turn");
+  const cellId = outputText(initial.output).match(/Script running with cell ID ([^\s]+)/)[1];
+  await runtime.executeTool("probe", "{}", "owner", "next-turn", "fixture", "owner:8");
+  release.resolve();
+  const completed = await observed(runtime, runtime.waitCodeObserved(JSON.stringify({ cell_id: cellId }), "owner", "wait-turn"), "owner", "wait-turn");
+  assert.equal(completed.success, true);
+  assert.deepEqual(contexts.map(({turnId}) => turnId), ["owner:7", "owner:7", "owner:8", "owner:7"]);
+  assert.equal(new Set(contexts.map(({callId}) => callId)).size, 4);
+  runtime.reset();
+});
+
+
+test("global host bridge forwards turn identity to direct and Code Mode hosts", async () => {
+  const { installHostBridge, bindHostSession, releaseHostSession } = await import("../internal.mjs");
+  const contexts = [];
+  const runtime = createCodeRuntime({ probe: { handler(_input, context) { contexts.push(context.turnId); return "ok"; } } });
+  const host = { executeTool: runtime.executeTool, executeCode: runtime.executeCodeObserved };
+  installHostBridge();
+  bindHostSession(host, "bridge-turn");
+  try {
+    const direct = JSON.parse(await globalThis.nanocodexHost.executeTool("probe", "{}", "bridge-turn", "direct", "fixture", "bridge-turn:7"));
+    assert.equal(direct.success, true);
+    const nested = await observed(runtime, globalThis.nanocodexHost.executeCode("await tools.probe({});", "bridge-turn", "exec", "fixture", "bridge-turn:7"), "bridge-turn", "exec");
+    assert.equal(nested.success, true);
+    assert.deepEqual(contexts, ["bridge-turn:7", "bridge-turn:7"]);
+  } finally {
+    releaseHostSession(host, "bridge-turn");
+    runtime.reset();
+  }
+});

@@ -10,6 +10,8 @@ export type ToolContext = Readonly<{
   callId: string;
   parentCallId: string;
   sessionId: string;
+  /** Stable agent turn identity; absent for callers without turn context. */
+  turnId?: string | undefined;
   model: string;
   signal: AbortSignal;
   subagent?: SubagentToolContext | undefined;

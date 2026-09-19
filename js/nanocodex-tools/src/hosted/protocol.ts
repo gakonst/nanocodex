@@ -91,6 +91,7 @@ export type HostedToolsManagedFrame =
   | {
       type: "call";
       session_id: string;
+      turn_id?: string;
       call_id: string;
       model: string;
       name: string;
@@ -254,7 +255,7 @@ function parsePing(frame: Record<string, unknown>): Extract<HostedToolsHostFrame
 
 function parseCall(frame: Record<string, unknown>): Extract<HostedToolsManagedFrame, { type: "call" }> {
   exactKeys(frame, [
-    "type", "session_id", "call_id", "model", "name", "input", "output_token_budget",
+    "type", "session_id", "turn_id", "call_id", "model", "name", "input", "output_token_budget",
     "output_byte_budget", "deadline_at",
   ]);
   const input = typeof frame.input === "string"
@@ -263,6 +264,7 @@ function parseCall(frame: Record<string, unknown>): Extract<HostedToolsManagedFr
   return {
     type: "call",
     session_id: identifier(frame.session_id, "session_id"),
+    ...(frame.turn_id === undefined ? {} : { turn_id: boundedText(frame.turn_id, 1, 256, "turn_id") }),
     call_id: identifier(frame.call_id, "call_id"),
     model: identifier(frame.model, "model"),
     name: toolName(frame.name),
