@@ -132,6 +132,8 @@ public struct TranscriptRow: Identifiable, Codable, Equatable, Sendable {
     public var modelCallID: String?
     /// Cursor that admitted this row; retained while streamed content changes.
     public var cursor: Cursor?
+    /// Latest tool result, independent of stable row admission/scroll identity.
+    public var completionCursor: Cursor?
     public init(id: String, role: String, text: String, detail: String = "", running: Bool = false, tool: ToolPresentation? = nil, images: [String]? = nil) {
         self.id = id; self.role = role; self.text = text; self.detail = detail; self.running = running; self.tool = tool; self.images = images
     }
@@ -157,6 +159,7 @@ public struct TranscriptProjection: Sendable {
     private var lastUserRow: [String: Int] = [:]
     private var lastFinalRow: [String: Int] = [:]
     private var toolRows: [String: Int] = [:]
+    private var cancellationRows: [StreamRole: Int] = [:]
     public init() {}
 
     private mutating func finish(_ turn: String, cancelled: Bool) {
@@ -208,7 +211,19 @@ public struct TranscriptProjection: Sendable {
                 }
                 finish(turn, cancelled: envelope.type == "turn_cancelled")
             } else if envelope.type == "turn_failed" || envelope.type == "turn_cancelled" {
-                rows.append(.init(id: id, role: "Status", text: envelope.type == "turn_cancelled" ? "Stopped." : (d["error"].string.isEmpty ? "This turn failed." : d["error"].string)))
+                if envelope.type == "turn_cancelled" {
+                    let scope = StreamRole(turn: turn, agent: agent, role: "Status")
+                    if let index = cancellationRows[scope] {
+                        // The transport diagnostic can precede the durable terminal.
+                        // Keep its identity and position when confirming cancellation.
+                        rows[index].text = "Stopped."
+                    } else {
+                        cancellationRows[scope] = rows.count
+                        rows.append(.init(id: id, role: "Status", text: "Stopped."))
+                    }
+                } else {
+                    rows.append(.init(id: id, role: "Status", text: d["error"].string.isEmpty ? "This turn failed." : d["error"].string))
+                }
                 finish(turn, cancelled: envelope.type == "turn_cancelled")
             } else if envelope.type == "event" {
                 let event = d["event"], p = event["payload"], type = event["type"].string
@@ -294,8 +309,23 @@ public struct TranscriptProjection: Sendable {
                         }
                     }
                 case "run.steered": break
-                case "run.error": rows.append(.init(id: id, role: "Status", text: p["message"].string))
+                case "run.error":
+                    // Only the canonical cancellation diagnostic duplicates Stopped.
+                    // Other errors (including retryable failures) remain visible.
+                    if p["message"].string == "the turn was cancelled",
+                       p["code"] == .null || p["code"].string == "cancelled",
+                       p["disposition"].string != "retryable" {
+                        let scope = StreamRole(turn: turn, agent: agent, role: "Status")
+                        guard cancellationRows[scope] == nil else { continue }
+                        cancellationRows[scope] = rows.count
+                    }
+                    rows.append(.init(id: id, role: "Status", text: p["message"].string))
                 default: break
+                }
+                if type == "tool.result",
+                   let index = toolRows[prefix + ":tool:" + p["call_id"].string]
+                    ?? rows.indices.last(where: { rows[$0].id == prefix + ":tool:" + p["call_id"].string }) {
+                    rows[index].completionCursor = envelope.cursor
                 }
                 // A poll invocation ends with its response, even if the process
                 // it observes continues. The original command tracks that process.

@@ -1,16 +1,20 @@
 import Foundation
 import CryptoKit
+import os
+
+private let historyPerformanceLog = OSLog(subsystem: "xyz.paradigm.centaur", category: "Performance")
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
 
 public enum APIError: LocalizedError, Equatable {
-    case invalidOrigin, invalidCredential, invalidResponse, agentDeleting, http(Int)
+    case invalidOrigin, invalidCredential, invalidResponse, agentDeleting, steeringTargetFinished, http(Int)
     public var errorDescription: String? {
         switch self {
         case .invalidOrigin: return "Enter an HTTPS server origin, without a path or query."
         case .invalidCredential: return "Enter a Nanocodex account API key."
         case .invalidResponse: return "Nanocodex returned an unreadable response. Refresh to reconnect."
+        case .steeringTargetFinished: return "The active turn finished before this message arrived."
         case .agentDeleting: return "This conversation is being deleted."
         case .http(401), .http(403): return "This connection is no longer authorized. Reconnect your account."
         case .http(409): return "This turn changed before the action arrived. Refresh and try again."
@@ -120,15 +124,31 @@ public final class ManagedClient: @unchecked Sendable {
         return request
     }
     public func json(path: String, method: String = "GET", body: JSON? = nil, idempotencyKey: String? = nil) async throws -> JSON {
-        let (data, response) = try await ManagedAccess.data(for: request(path: path, method: method, body: body, idempotencyKey: idempotencyKey), using: session)
+        let isHistory = path.contains("/events/history?")
+        let signpostID = OSSignpostID(log: historyPerformanceLog)
+        let data: Data
+        let response: URLResponse
+        do {
+            if isHistory { os_signpost(.begin, log: historyPerformanceLog, name: "HistoryTransport", signpostID: signpostID) }
+            defer { if isHistory { os_signpost(.end, log: historyPerformanceLog, name: "HistoryTransport", signpostID: signpostID) } }
+            (data, response) = try await ManagedAccess.data(for: request(path: path, method: method, body: body, idempotencyKey: idempotencyKey), using: session)
+        }
         guard let response = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         guard (200..<300).contains(response.statusCode) else {
             if response.statusCode == 409, data.count <= 64 * 1024,
                (try? JSONDecoder().decode(JSON.self, from: data)["error"].string) == "agent_deleting" {
                 throw APIError.agentDeleting
             }
+            if response.statusCode == 409, path.hasSuffix("/steer"), data.count <= 64 * 1024,
+               let rejection = try? JSONDecoder().decode(JSON.self, from: data),
+               rejection["error"].string == "turn_not_steerable",
+               ["completed", "failed", "cancelled"].contains(rejection["state"].string) {
+                throw APIError.steeringTargetFinished
+            }
             throw APIError.http(response.statusCode)
         }
+        if isHistory { os_signpost(.begin, log: historyPerformanceLog, name: "HistoryJSONDecode", signpostID: signpostID, "bytes=%d", data.count) }
+        defer { if isHistory { os_signpost(.end, log: historyPerformanceLog, name: "HistoryJSONDecode", signpostID: signpostID) } }
         return data.isEmpty ? .null : try JSONDecoder().decode(JSON.self, from: data)
     }
     public func list() async throws -> [AgentCard] {
@@ -253,16 +273,24 @@ public final class ManagedClient: @unchecked Sendable {
         guard before == nil || after == nil else { throw APIError.invalidResponse }
         let path = try Self.agentPath(id) + "/events/history?limit=128"
             + (before.map { "&before=" + $0.rawValue } ?? "") + (after.map { "&after=" + $0.rawValue } ?? "")
-        return try EventPage(try await json(path: path))
+        let body = try await json(path: path)
+        let signpostID = OSSignpostID(log: historyPerformanceLog)
+        os_signpost(.begin, log: historyPerformanceLog, name: "HistoryEventPreparation", signpostID: signpostID)
+        defer { os_signpost(.end, log: historyPerformanceLog, name: "HistoryEventPreparation", signpostID: signpostID) }
+        return try EventPage(body)
     }
     /// Find a readable opening window. Paging has no lifetime/event-count limit;
     /// discarded newer pages remain addressable using the forward cursor.
     public func conversationHistory(_ id: String) async throws -> ConversationHistory {
+        let signpostID = OSSignpostID(log: historyPerformanceLog)
+        os_signpost(.begin, log: historyPerformanceLog, name: "HistoryOpening", signpostID: signpostID)
+        defer { os_signpost(.end, log: historyPerformanceLog, name: "HistoryOpening", signpostID: signpostID) }
         var page = try await history(id)
         let latest = page.latest
         var events = page.events
         var counts = try await TranscriptPreparation.byteCounts(events)
-        var rows = try await TranscriptPreparation.rows(events)
+        let projector = TranscriptStreamProjection()
+        var rows = try await projector.rows(events)
         var hasNewer = false
         while page.hasMore, !rows.contains(where: { $0.role == "You" || $0.role == "Agent" }) {
             try Task.checkCancellation()
@@ -278,11 +306,11 @@ public final class ManagedClient: @unchecked Sendable {
             if removed > 0 {
                 events.removeLast(removed); counts.removeLast(removed); hasNewer = true
             }
-            rows = try await TranscriptPreparation.rows(events)
+            rows = try await projector.rows(events)
         }
         try Task.checkCancellation()
         return ConversationHistory(events: events, latest: latest, hasMore: page.hasMore,
-                                   byteCounts: counts, rows: rows, hasNewer: hasNewer)
+                                   byteCounts: counts, rows: rows, hasNewer: hasNewer, projector: projector)
     }
     @discardableResult
     public func command(_ command: AgentCommand) async throws -> JSON {
@@ -512,6 +540,8 @@ public struct ConversationHistory: Sendable {
     public let byteCounts: [Int]
     public let rows: [TranscriptRow]
     public let hasNewer: Bool
+    /// Transfer the prepared window into its stream observer without replaying it.
+    public let projector: TranscriptStreamProjection
 }
 
 public struct EventPage: Sendable {

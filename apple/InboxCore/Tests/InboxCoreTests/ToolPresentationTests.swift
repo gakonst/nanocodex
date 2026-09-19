@@ -2,6 +2,101 @@ import XCTest
 @testable import InboxCore
 
 final class ToolPresentationTests: XCTestCase {
+    func testComputerScreenProvenanceIsExactAndSurvivesCompletion() throws {
+        var direct = ToolPresentation(name: "functions.computer", arguments: .null)
+        XCTAssertTrue(direct.isComputerScreenOutput)
+        let metadata: JSON = .object(["tool_name": .string("screen")])
+        var result = ToolPresentation(name: "user_example", arguments: .null)
+        result.finish(.null, metadata: metadata)
+        direct.applyCompletion(result, metadata: metadata)
+        XCTAssertTrue(direct.isComputerScreenOutput)
+        XCTAssertTrue(try JSONDecoder().decode(ToolPresentation.self, from: JSONEncoder().encode(direct)).isComputerScreenOutput)
+        for name in ["mcp__cua_repl__js", "browser_execute", "view_image", "exec"] {
+            XCTAssertFalse(ToolPresentation(name: name, arguments: .null).isComputerScreenOutput)
+        }
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(direct)) as? [String: Any])
+        object.removeValue(forKey: "generatedIsComputerScreen")
+        XCTAssertFalse(try JSONDecoder().decode(ToolPresentation.self, from: JSONSerialization.data(withJSONObject: object)).isComputerScreenOutput)
+    }
+
+    func testNestedComputerAndOuterCodeModeKeepSeparateProvenanceInEitherCompletionOrder() throws {
+        func event(_ cursor: Int, _ type: String, _ call: String, _ tool: String, metadata: JSON = .null, result: JSON = .null) throws -> AgentEvent {
+            try AgentEvent(.object(["cursor": .string(String(cursor)), "type": .string("event"), "turn_id": .string("synthetic-turn"),
+                "event": .object(["type": .string(type), "payload": .object([
+                    "call_id": .string(call), "tool": .string(tool), "metadata": metadata,
+                    "arguments": .object(["code": .string("image(await tools.computer({action: 'observe'}));")]),
+                    "result": result
+                ])])]))
+        }
+        let image: JSON = .object(["type": .string("input_image"), "image_url": .string("data:image/png;base64,AQIDBA==")])
+        for nestedFirst in [false, true] {
+            let screenMetadata: JSON = .object(["tool_name": .string("screen")])
+            let calls = [try event(1, "tool.call", "outer", "functions.exec"),
+                         try event(2, "tool.call", "nested", "user_synthetic", metadata: screenMetadata)]
+            let nested = try event(nestedFirst ? 3 : 4, "tool.result", "nested", "user_synthetic", metadata: screenMetadata,
+                                   result: .object(["image_url": .string("data:image/png;base64,AQIDBA==")]))
+            let outer = try event(nestedFirst ? 4 : 3, "tool.result", "outer", "functions.exec", result: .array([image]))
+            let rows = transcript(calls + (nestedFirst ? [nested, outer] : [outer, nested]))
+            let tools = rows.compactMap(\.tool)
+            XCTAssertEqual(tools.count, 2)
+            XCTAssertEqual(tools.filter(\.isComputerScreenOutput).count, 1)
+            XCTAssertFalse(try XCTUnwrap(tools.first { $0.title == "Run code" }).isComputerScreenOutput)
+            XCTAssertTrue(tools.allSatisfy { $0.generatedResults?.contains { $0.contains("AQIDBA==") } == true })
+        }
+    }
+
+    func testNativeScreenshotAttributionRequiresStandaloneCapture() {
+        XCTAssertTrue(ToolPresentation(name: "browser_screenshot", arguments: .null).isComputerScreenOutput)
+        for code in ["await cua.getScreenshot();", "await nodeRepl.emitImage(await app.getScreenshot({emit:false}));"] {
+            let arguments: JSON = .object(["code": .string(code)])
+            XCTAssertTrue(ToolPresentation(name: "mcp__cua_repl__js", arguments: arguments).isComputerScreenOutput)
+            XCTAssertFalse(ToolPresentation(name: "exec", arguments: arguments).isComputerScreenOutput)
+            XCTAssertFalse(ToolPresentation(name: "browser_execute", arguments: arguments).isComputerScreenOutput)
+        }
+        for code in ["await nodeRepl.emitImage(chart);", "await app.getScreenshot(); await nodeRepl.emitImage(chart);",
+                     "// await cua.getScreenshot();", "const hint = 'await cua.getScreenshot();';"] {
+            XCTAssertFalse(ToolPresentation(name: "mcp__cua_repl__js", arguments: .object(["code": .string(code)])).isComputerScreenOutput)
+        }
+    }
+
+    func testDelegationSummaryIncludesRolePromptAndCompletedIdentity() {
+        var tool = ToolPresentation(name: "functions.spawn_agent", arguments: .object([
+            "role": .string("UI reviewer"), "task": .string("Review\n the   settings screen")
+        ]))
+        XCTAssertEqual(tool.subject, "UI reviewer · Review the settings screen")
+        var result = ToolPresentation(name: "spawn_agent", arguments: .null)
+        result.finish(.object(["agent_id": .number(42)]))
+        tool.applyCompletion(result, metadata: .null)
+        XCTAssertEqual(tool.subject, "Agent 42 · UI reviewer · Review the settings screen")
+        XCTAssertTrue(tool.input.contains { $0.label == "Task" && $0.value == "Review\n the   settings screen" })
+    }
+
+    func testAgentMessageSummaryIsBoundedAndRetainsFullDetails() throws {
+        let message = "Check\n  the preview " + String(repeating: "🧑🏽‍💻", count: 200)
+        let tool = ToolPresentation(name: "send_agent_message", arguments: .object([
+            "agent_id": .number(42), "message": .string(message)
+        ]))
+        XCTAssertTrue(tool.subject.hasPrefix("Agent 42 · Check the preview "))
+        XCTAssertEqual(tool.subject.count, 140)
+        XCTAssertTrue(tool.subject.hasSuffix("…"))
+        XCTAssertTrue(tool.input.contains { $0.label == "Message" && $0.value == message })
+        let restored = try JSONDecoder().decode(ToolPresentation.self, from: JSONEncoder().encode(tool))
+        XCTAssertEqual(restored, tool)
+    }
+
+    func testAgentTargetsHandleUnknownAndMultipleIDsWithoutJSON() {
+        XCTAssertEqual(ToolPresentation(name: "send_agent_message", arguments: .object([
+            "message": .string("Continue"), "agent_id": .object(["unexpected": .string("payload")])
+        ])).subject, "Agent · Continue")
+        XCTAssertEqual(ToolPresentation(name: "wait_agent", arguments: .object([
+            "agent_ids": .array((1...6).map { .number(Double($0)) })
+        ])).subject, "Agent 1, Agent 2, Agent 3, Agent 4 +2 more")
+        XCTAssertEqual(ToolPresentation(name: "close_agent", arguments: .string("{\"agent_id\":42}")).subject, "Agent 42")
+        XCTAssertEqual(ToolPresentation(name: "send_agent_message", arguments: .object([
+            "agent_id": .number(42), "role": .string("Reviewer"), "message": .string("Inspect tests")
+        ])).subject, "Agent 42 · Reviewer · Inspect tests")
+    }
+
     func testRecoveryReplayKeepsOneCommandAndItsOriginalStartTime() throws {
         func event(_ cursor: String, _ time: Double, _ type: String, _ payload: JSON) throws -> AgentEvent {
             try AgentEvent(.object(["cursor": .string(cursor), "created_at": .number(time), "type": .string("event"), "turn_id": .string("t"), "event": .object(["type": .string(type), "payload": payload])]))

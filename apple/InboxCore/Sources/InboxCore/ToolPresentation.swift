@@ -31,6 +31,8 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
     public var generatedResults: [String]?
     public var generatedIncludesText: Bool?
     public var generatedIsInspection: Bool?
+    public var generatedIsComputerScreen: Bool?
+    public var isComputerScreenOutput: Bool { generatedIsComputerScreen == true }
     public var isInspectionOutput: Bool {
         if generatedIsInspection == true { return true }
         // Old cached rows predate the provenance flag. Their existing title
@@ -43,8 +45,10 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
         var family = metadata["tool_name"].string
         if family.isEmpty { family = metadata["toolName"].string }
         if family.isEmpty { family = name.hasPrefix("user_") ? "machine_action" : name }
+        let attributedName = family
         if family.hasPrefix("mcp__") { family = family.components(separatedBy: "__").dropFirst(2).joined(separator: "_") }
         if family.hasPrefix("functions.") { family = String(family.dropFirst(10)) }
+        generatedIsComputerScreen = Self.isComputerCapture(name: attributedName, family: family, arguments: Self.decoded(arguments))
         vaultIntakeEligible = family == "request_vault_intake" || family == "browser_vault_request_challenge" || family == "browser_vault_request_takeover"
         terminalCommand = ["exec_command", "write_stdin"].contains(family)
         generatedIncludesText = ["exec", "wait"].contains(family)
@@ -64,9 +68,7 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
         ]
         title = names[family] ?? Self.humanize(family)
         let decoded = Self.decoded(arguments)
-        subject = ["title", "description", "path", "file_path", "query", "url", "task", "command", "cmd"]
-            .map { decoded[$0].string }.first(where: { !$0.isEmpty }) ?? ""
-        subject = String(subject.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").prefix(140))
+        subject = Self.summary(family: family, arguments: decoded)
         input = Self.fields(decoded, label: family == "exec" ? "Code" : family == "apply_patch" ? "Patch" : "Input")
         status = "Running"
     }
@@ -89,6 +91,7 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
         if !metadata["tool_name"].string.isEmpty || !metadata["toolName"].string.isEmpty {
             let presentation = ToolPresentation(name: "", arguments: .null, metadata: metadata)
             vaultIntakeEligible = presentation.vaultIntakeEligible
+            generatedIsComputerScreen = generatedIsComputerScreen == true || presentation.generatedIsComputerScreen == true
             title = presentation.title; generatedIncludesText = presentation.generatedIncludesText
             generatedIsInspection = generatedIsInspection == true || presentation.generatedIsInspection == true
         }
@@ -103,16 +106,91 @@ public struct ToolPresentation: Codable, Equatable, Sendable {
             displayedResult = .object(fields)
         }
         output = Self.fields(displayedResult, label: "Result")
+        includeSpawnedAgentIdentity()
         if output.isEmpty { output = [.init(label: "Result", value: isFailure ? "The action failed without an error message." : "No output returned.")] }
     }
 
     mutating func applyCompletion(_ result: Self, metadata: JSON) {
+        generatedIsComputerScreen = generatedIsComputerScreen == true || result.generatedIsComputerScreen == true
         status = result.status; output = result.output; generatedResults = result.generatedResults
         vaultIntake = result.vaultIntake
         vaultIntakeEligible = result.vaultIntakeEligible
         generatedIncludesText = generatedIncludesText == true || result.generatedIncludesText == true
         generatedIsInspection = generatedIsInspection == true || result.generatedIsInspection == true
         if !metadata["tool_name"].string.isEmpty || !metadata["toolName"].string.isEmpty { title = result.title }
+        includeSpawnedAgentIdentity()
+    }
+
+    /// Generic Code Mode, browser automation and native REPLs may emit ordinary
+    /// images. A native REPL is attributed only for a standalone screenshot call;
+    /// mixed scripts need image-level provenance from the producer.
+    private static func isComputerCapture(name: String, family: String, arguments: JSON) -> Bool {
+        if ["computer", "screen", "browser_screenshot"].contains(family) { return true }
+        guard ["mcp__cua_repl__js", "cua_repl.js"].contains(name) else { return false }
+        let code = arguments["code"].string
+        let capture = #"(?:await\s+)?[A-Za-z_$][A-Za-z0-9_$]*\.getScreenshot\(\s*(?:\{\s*emit\s*:\s*false\s*\}\s*)?\)"#
+        let expression = #"^\s*(?:"# + capture + #"|(?:await\s+)?nodeRepl\.emitImage\(\s*"# + capture + #"\s*\))\s*;?\s*$"#
+        return code.range(of: expression, options: .regularExpression) != nil
+    }
+
+    /// Only known scalar fields enter the collapsed card; full payloads remain in input/output.
+    static func summary(family: String, arguments: JSON) -> String {
+        func text(_ key: String) -> String { arguments[key].string }
+        func identifier(_ value: JSON) -> String {
+            switch value {
+            case .number(let number) where number.isFinite && number > 0 && number.rounded() == number:
+                return String(format: "%.0f", number)
+            case .string(let value): return compact(value, limit: 36)
+            default: return ""
+            }
+        }
+        func target(_ value: JSON) -> String {
+            let id = identifier(value)
+            return id.isEmpty ? "Agent" : "Agent " + id
+        }
+        func joined(_ identity: String, _ excerpt: String) -> String {
+            let identity = compact(identity, limit: 60)
+            let excerpt = compact(excerpt, limit: 140)
+            return excerpt.isEmpty ? identity : identity + " · " + excerpt
+        }
+        let summary: String
+        switch family {
+        case "spawn_agent":
+            summary = joined(text("role").isEmpty ? "Subagent" : text("role"), text("task"))
+        case "send_agent_message":
+            let identity = text("role").isEmpty ? target(arguments["agent_id"]) : joined(target(arguments["agent_id"]), text("role"))
+            summary = joined(identity, text("message"))
+        case "wait_agent":
+            if case .array(let ids) = arguments["agent_ids"] {
+                let targets = ids.prefix(4).map(target).joined(separator: ", ")
+                summary = targets + (ids.count > 4 ? " +\(ids.count - 4) more" : "")
+            } else { summary = target(arguments["agent_id"]) }
+        case "interrupt_agent", "close_agent":
+            summary = target(arguments["agent_id"])
+        case "web_search", "search_query", "search":
+            summary = ["query", "q"].map(text).first(where: { !$0.isEmpty }) ?? ""
+        case "tool_search_tool":
+            summary = text("query")
+        default:
+            summary = ["title", "description", "path", "file_path", "query", "url", "task", "command", "cmd"]
+                .map(text).first(where: { !$0.isEmpty }) ?? ""
+        }
+        return compact(summary, limit: 140)
+    }
+
+    private static func compact(_ value: String, limit: Int) -> String {
+        let normalized = value.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        guard normalized.count > limit else { return normalized }
+        return String(normalized.prefix(limit - 1)) + "…"
+    }
+
+    private mutating func includeSpawnedAgentIdentity() {
+        guard title == "Delegate task",
+              let id = output.first(where: { $0.label == "Agent id" })?.value,
+              !id.isEmpty else { return }
+        let identity = "Agent " + Self.compact(id, limit: 36)
+        guard subject != identity, !subject.hasPrefix(identity + " · ") else { return }
+        subject = Self.compact(subject.isEmpty ? identity : identity + " · " + subject, limit: 140)
     }
 
     public static func humanize(_ value: String) -> String {

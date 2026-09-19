@@ -45,15 +45,20 @@ public struct ChatImageAttachment: View {
     let source: String
     @State private var output: ChatGeneratedOutput?
     @State private var loaded = false
-    public init(source: String) { self.source = source }
+    let loadsThumbnail: Bool
+    public init(source: String, loadsThumbnail: Bool = true) {
+        self.source = source
+        self.loadsThumbnail = loadsThumbnail
+    }
     public var body: some View {
         Group {
-            if let output { GeneratedImage(output: output) }
+            if let output { GeneratedImage(output: output, loadsThumbnail: loadsThumbnail) }
             else if loaded { Label("Image unavailable", systemImage: "photo").foregroundStyle(.secondary) }
             else { ProgressView() }
         }.frame(height: 360, alignment: .topLeading)
-        .task(id: source) {
+        .task(id: loadsThumbnail ? source : nil) {
             loaded = false; output = nil
+            guard loadsThumbnail else { return }
             let source = source
             let parsed = await Task.detached(priority: .utility) {
                 ChatGeneratedOutput.image(source: source)

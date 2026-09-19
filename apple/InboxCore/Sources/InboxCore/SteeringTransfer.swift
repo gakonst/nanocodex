@@ -11,11 +11,27 @@ public struct SteeringTransfer: Identifiable, Codable, Equatable, Sendable {
     public let sourceTurnID: String
     public let targetTurnID: String
     public var phase: Phase = .preparing
+    /// True only for a local message never admitted as a separate turn.
+    public var direct: Bool?
+    /// Local direct sends have no separately admitted user turn in history.
+    public var sourceInput: String?
+    /// Exact uploaded input preserves remote image/video references after ACK.
+    public var sourcePayload: JSON?
+    /// Send-time position, independent of later output or history pagination.
+    public var sourceCursor: Cursor?
+    public var sourceRowID: String?
     public var error: String?
     public var withdrawRequested = false
     public var wasAccepted = false
-    public init(agentID: String, sourceTurnID: String, targetTurnID: String) {
+    public init(agentID: String, sourceTurnID: String, targetTurnID: String, direct: Bool = false, sourceInput: String? = nil, sourceCursor: Cursor? = nil, sourceRowID: String? = nil) {
         self.agentID = agentID; self.sourceTurnID = sourceTurnID; self.targetTurnID = targetTurnID
+        self.direct = direct ? true : nil
+        self.sourceInput = direct ? sourceInput : nil
+        self.sourceCursor = direct ? sourceCursor : nil
+        self.sourceRowID = direct ? sourceRowID : nil
+    }
+    public func canStartFollowUp(after error: APIError) -> Bool {
+        direct == true && phase == .sending && error == .steeringTargetFinished
     }
     public var sourceCancellation: AgentCommand { .init(agentID: agentID, turnID: sourceTurnID, kind: .stop) }
     public func command(input: JSON) -> AgentCommand {

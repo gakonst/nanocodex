@@ -22,19 +22,47 @@ final class InboxModel: ObservableObject {
     // App Intents and windows share the same account and Hand connection.
     static let shared = InboxModel()
     enum Filter: String, CaseIterable { case inbox = "Inbox", running = "Running", all = "All" }
-    @Published var cards: [AgentCard] = [] { didSet { scheduleAgentNotifications() } }
-    @Published var deck = InboxDeck()
-    @Published var filter: Filter = .all { didSet { reconcile() } }
+    @Published var cards: [AgentCard] = [] {
+        didSet {
+            rosterRevision = UUID()
+            let previous = focusedCardCache.card(id: deck.focusedID, in: oldValue)
+            focusedCardCache.invalidate()
+            let current = focusedCardCache.card(id: deck.focusedID, in: cards)
+            if previous?.id != current?.id || previous?.activeTurns != current?.activeTurns { queueProjection.invalidate() }
+            scheduleAgentNotifications()
+        }
+    }
+    private var focusedCardCache = FocusedCardCache()
+    private var rosterRevision = UUID()
+    @Published var deck = InboxDeck() {
+        didSet {
+            rosterRevision = UUID()
+            if oldValue.focusedID != deck.focusedID { queueProjection.invalidate() }
+        }
+    }
+    @Published var filter: Filter = .all { didSet { rosterRevision = UUID(); reconcile() } }
     @Published var drafts: [String: String] = [:]
-    @Published var rows: [TranscriptRow] = [] { didSet { mediaProjection.update(rows) } }
-    private var mediaProjection = InboxMediaProjection()
+    @Published var rows: [TranscriptRow] = [] {
+        didSet {
+            rowsRevision = UUID(); queueProjection.invalidate()
+            if !publishingPreparedRows { scheduleMediaPreparation() }
+        }
+    }
+    private var rowsRevision = UUID()
+    private var publishingPreparedRows = false
+    private var mediaPreparation: Task<Void, Never>?
+    private var queueProjection = MessageQueueProjectionCache()
+    /// Changes only when transcript/queue inputs mutate, never for composer edits.
+    var focusedTranscriptRevision: UUID { queueProjection.revision }
+    private var mediaProjection = InboxMediaProjection() { didSet { queueProjection.invalidate() } }
     var generatedOutputsByRow: [String: [ChatGeneratedOutput]] { mediaProjection.outputs }
+    var latestScreenOutput: ChatGeneratedOutput? { mediaProjection.latestScreen }
     @Published var threadLoading = false
     @Published var threadError: String?
     private var observedAgentID: String?
-    private var tabOrder: [String] = []
-    @Published private(set) var closedConversationIDs = Set<String>()
-    @Published private var openedConversations = Set<String>()
+    private var tabOrder: [String] = [] { didSet { rosterRevision = UUID() } }
+    @Published private(set) var closedConversationIDs = Set<String>() { didSet { rosterRevision = UUID() } }
+    @Published private var openedConversations = Set<String>() { didSet { rosterRevision = UUID() } }
     @Published private var olderConversationLimit = 0
     private struct TabHistory {
         var events: [AgentEvent]
@@ -68,7 +96,7 @@ final class InboxModel: ObservableObject {
     @Published var connected = false
     @Published private(set) var restoringAccount = true
     @Published private(set) var restorationError: String?
-    @Published private(set) var isDemo = false
+    @Published private(set) var isDemo = false { didSet { queueProjection.invalidate() } }
     @Published var refreshing = false
     @Published private(set) var scheduledJobs: [ScheduledJob] = []
     @Published private(set) var scheduledJobAgents: [String: String] = [:]
@@ -92,11 +120,22 @@ final class InboxModel: ObservableObject {
     @Published private var creationErrors: [String: String] = [:]
     private var creationTasks: [String: Task<String, Error>] = [:]
     private var createdAgentIDs: [String: String] = [:]
-    @Published var pending: [PendingMessage] = [] { didSet { scheduleAgentNotifications() } }
+    @Published var pending: [PendingMessage] = [] {
+        didSet {
+            let id = deck.focusedID
+            if oldValue.filter({ $0.agentID == id }) != pending.filter({ $0.agentID == id }) { queueProjection.invalidate() }
+            scheduleAgentNotifications()
+        }
+    }
     @Published private(set) var cancellations: [PendingTurnCancellation] = []
     private let cancellationTasks = TurnCancellationTasks()
     private let steeringTasks = TurnCancellationTasks()
-    @Published var steeringTransfers: [SteeringTransfer] = []
+    @Published var steeringTransfers: [SteeringTransfer] = [] {
+        didSet {
+            let id = deck.focusedID
+            if oldValue.filter({ $0.agentID == id }) != steeringTransfers.filter({ $0.agentID == id }) { queueProjection.invalidate() }
+        }
+    }
     @Published private(set) var attachmentDrafts: [String: [MessageAttachment]] = [:]
     private var attachmentURLs: [String: URL] = [:]
     private var attachmentMovieURLs: [String: URL] = [:]
@@ -117,7 +156,7 @@ final class InboxModel: ObservableObject {
     private var smsAuth: SMSAuth?
     private var smsOrigin: String?
     private var authGeneration = UUID()
-    private var pinnedThreadID: String?
+    private var pinnedThreadID: String? { didSet { rosterRevision = UUID() } }
     private var demoRows: [String: [TranscriptRow]] = [:]
     private var demoFaults = Set<String>()
     #if DEBUG
@@ -162,7 +201,7 @@ final class InboxModel: ObservableObject {
     private var streamReceivedFrame = false
     private var generation = UUID()
     private var observation = UUID() { didSet { cancelOlderHistoryPrefetch() } }
-    private var events: [AgentEvent] = [] { didSet { eventsRevision = UUID() } }
+    private var events: [AgentEvent] = [] { didSet { eventsRevision = UUID(); queueProjection.invalidateHistory() } }
     private var eventsRevision = UUID()
     private var projectedFirstCursor: Cursor?
     private let preferences = InboxPreferencesWriter()
@@ -170,13 +209,13 @@ final class InboxModel: ObservableObject {
     private var retainedBytes = 0
     private var projection: Task<Void, Never>?
     @Published private var navigation: [(id: String, seen: String?, deferred: Cursor?, filter: Filter)] = []
-    private var deferred: [String: Cursor] = [:] { didSet { scheduleAgentNotifications() } }
+    private var deferred: [String: Cursor] = [:] { didSet { rosterRevision = UUID(); scheduleAgentNotifications() } }
     private var cursor = Cursor.zero
     private var olderBefore: Cursor? {
         didSet { if olderBefore != oldValue { cancelOlderHistoryPrefetch() } }
     }
     private var olderHistoryPrefetch: (id: String, before: Cursor, task: Task<(EventPage, [Int]), Error>)?
-    private var seen: [String: String] = [:] { didSet { scheduleAgentNotifications() } }
+    private var seen: [String: String] = [:] { didSet { rosterRevision = UUID(); scheduleAgentNotifications() } }
     private var scope = "" { didSet { restoreThreadScreens(); scheduleAgentNotifications() } }
     private lazy var agentNotifications = AgentNotificationController(open: { [weak self] url in self?.openAgentActivity(url) })
     private var agentNotificationUpdate: Task<Void, Never>?
@@ -234,8 +273,7 @@ final class InboxModel: ObservableObject {
     }
 
     var focused: AgentCard? {
-        let id = deck.focusedID
-        return cards.first { $0.id == id }
+        focusedCardCache.card(id: deck.focusedID, in: cards)
     }
     var focusedConversationIdentity: String? {
         focused.map { card in createdAgentIDs.first(where: { $0.value == card.id })?.key ?? card.id }
@@ -265,32 +303,27 @@ final class InboxModel: ObservableObject {
         guard let head = focused?.activeTurns.first else { return [] }
         return pending.contains { $0.agentID == focused?.id && $0.id == head } ? [] : [head]
     }
-    func queuePresentation(agentID: String, rows: [TranscriptRow]) -> MessageQueuePresentation {
-        let history = agentID == focused?.id ? events : tabHistories[agentID]?.events ?? []
-        let cancelled = Set(history.filter { $0.type == "turn_cancelled" }.map(\.turnID))
-        let started = Set(history.filter { event in
-            event.type == "event" && ["run.started", "assistant.delta", "assistant.message", "reasoning.summary.delta", "tool.call", "tool.result"].contains(event.data["event"]["type"].string)
-        }.map(\.turnID))
-        let transfers = steeringTransfers.filter { $0.agentID == agentID }
-        let transferred = Set(transfers.map(\.sourceTurnID))
-        let displayed = rows.compactMap { row -> TranscriptRow? in
-            guard let transfer = transfers.first(where: { $0.sourceTurnID == (row.turnID ?? row.id) }) else { return row }
-            guard transfer.wasAccepted || transfer.phase == .withdrawn
-                || (transfer.phase == .unconfirmed && !pending.contains(where: { $0.id == transfer.id })) else { return nil }
-            guard row.role == "You" else { return nil }
-            var row = row
-            if transfer.phase == .withdrawn { row.role = "Status"; row.text = "Steering withdrawn: " + row.text }
-            else if !transfer.wasAccepted { row.role = "Status"; row.text = "Steering delivery unconfirmed: " + row.text; row.detail = transfer.error ?? "" }
-            else { row.detail = transfer.error ?? (transfer.phase == .withdrawing ? transfer.title : "Steering sent to the active turn") }
-            return row
-        }
-        let active = (cards.first { $0.id == agentID }?.activeTurns ?? []).filter { !transferred.contains($0) }
-        return MessageQueuePresentation(agentID: agentID, rows: displayed, pending: pending,
-            activeTurns: active, cancelledTurns: cancelled.subtracting(transferred),
-            executingTurns: (isDemo ? Set(active.prefix(1)) : started).subtracting(transferred))
-    }
     var focusedQueue: MessageQueuePresentation {
-        queuePresentation(agentID: focused?.id ?? "", rows: rows)
+        let card = focused
+        return queueProjection.presentation(agentID: card?.id ?? "", events: events, rows: rows,
+            pending: pending, steeringTransfers: steeringTransfers, activeTurns: card?.activeTurns ?? [], isDemo: isDemo)
+    }
+    /// Renderers await this snapshot so history scans and queue projection never
+    /// run on the main actor. Synchronous action handlers retain focusedQueue.
+    func prepareFocusedQueue() async -> MessageQueuePresentation? {
+        let card = focused, revision = queueProjection.revision, epoch = generation
+        let cached = queueProjection, history = events, transcript = rows
+        let messages = pending, transfers = steeringTransfers, demo = isDemo
+        let task = Task.detached(priority: .userInitiated) {
+            var prepared = cached
+            let value = prepared.presentation(agentID: card?.id ?? "", events: history, rows: transcript,
+                pending: messages, steeringTransfers: transfers, activeTurns: card?.activeTurns ?? [], isDemo: demo)
+            return (prepared, value)
+        }
+        let (prepared, value) = await withTaskCancellationHandler(operation: { await task.value }, onCancel: { task.cancel() })
+        guard !Task.isCancelled, generation == epoch, queueProjection.revision == revision else { return nil }
+        queueProjection = prepared
+        return value
     }
     private func retainQueuedMessage(_ id: String) {
         guard !pending.contains(where: { $0.id == id }),
@@ -851,7 +884,7 @@ final class InboxModel: ObservableObject {
         projection?.cancel(); projection = nil; eventBytes = []; retainedBytes = 0; navigation = []; deferred = [:]
         observedAgentID = nil; threadLoading = false; threadError = nil
         connected = false; restoringAccount = false; restorationError = nil
-        isDemo = false; cards = []; deck = InboxDeck(); rows = []; events = []; drafts = [:]; seen = [:]
+        isDemo = false; cards = []; deck = InboxDeck(); mediaProjection = InboxMediaProjection(); rows = []; events = []; drafts = [:]; seen = [:]
         attachmentDrafts = [:]; attachmentURLs = [:]; attachmentMovieURLs = [:]; attachmentImports = []; attachmentErrors = [:]
         scope = ""; error = nil; notice = nil; busy = []; retries = [:]; refreshing = false
         newerAfter = nil; latestJumpEvents = nil
@@ -1047,7 +1080,8 @@ final class InboxModel: ObservableObject {
                 return card
             } + created
             if cards != merged { cards = merged }
-            reconcile()
+            await reconcileInBackground()
+            guard generation == epoch, !Task.isCancelled else { return }
             // Keep state coverage for running work, but fetch older history only
             // when the user opens the conversation or reveals its overview.
             let pendingIDs = Set(pending.map(\.agentID) + cancellations.map(\.agentID)).union(busy)
@@ -1108,7 +1142,7 @@ final class InboxModel: ObservableObject {
         }
         // Unchanged roster reads must not re-sort every conversation or publish
         // the same error again. Both invalidate the entire visible SwiftUI tree.
-        if changed { reconcile() }
+        if changed { await reconcileInBackground() }
     }
     private func seenCursor(_ id: String) -> Cursor? { seen[id].flatMap { Cursor(rawValue: $0) } }
     private func forgetUnavailableAgent(_ id: String) {
@@ -1123,28 +1157,25 @@ final class InboxModel: ObservableObject {
         if pinnedThreadID == id { pinnedThreadID = nil }
         reconcile()
     }
-    private func reconcile() {
-        openedConversations.formIntersection(Set(cards.map(\.id)))
-        let available = recentConversationIDs
-        var unique = Set<String>()
-        tabOrder.removeAll { !available.contains($0) || !unique.insert($0).inserted }
-        let known = Set(tabOrder)
-        tabOrder.append(contentsOf: cards.sorted(by: AgentCard.mostRecentFirst).map(\.id).filter { available.contains($0) && !known.contains($0) })
+    private var rosterSnapshot: InboxRosterProjection {
+        InboxRosterProjection(cards: cards, focusedID: deck.focusedID, opened: openedConversations,
+            closed: closedConversationIDs, tabOrder: tabOrder, pinnedID: pinnedThreadID,
+            filter: InboxRosterProjection.Filter(rawValue: filter.rawValue) ?? .all, seen: seen, deferred: deferred)
+    }
+    private func reconcileInBackground() async {
+        let snapshot = rosterSnapshot, revision = rosterRevision, epoch = generation
+        let task = Task.detached(priority: .userInitiated) { snapshot.resolve() }
+        let result = await withTaskCancellationHandler(operation: { await task.value }, onCancel: { task.cancel() })
+        guard !Task.isCancelled, epoch == generation, revision == rosterRevision else { return }
+        publishRoster(result)
+    }
+    private func reconcile() { publishRoster(rosterSnapshot.resolve()) }
+    private func publishRoster(_ result: InboxRosterProjection.Result) {
+        if openedConversations != result.opened { openedConversations = result.opened }
+        if tabOrder != result.tabs { tabOrder = result.tabs }
         let previous = deck.focusedID
-        let eligible = cards.filter { card in
-            guard !closedConversationIDs.contains(card.id), available.contains(card.id) else { return false }
-            if card.id == pinnedThreadID { return true }
-            switch filter {
-            case .inbox: return card.isInInbox(seen: seenCursor(card.id), deferred: deferred[card.id])
-            case .running: return card.isRunning
-            case .all: return true
-            }
-        }.sorted { a, b in
-            let ar = a.needsAttention(seen: seenCursor(a.id)), br = b.needsAttention(seen: seenCursor(b.id))
-            return ar != br ? ar : a.updatedAt != b.updatedAt ? a.updatedAt > b.updatedAt : a.id < b.id
-        }
         var nextDeck = deck
-        nextDeck.reconcile(eligible.map(\.id))
+        nextDeck.reconcile(result.eligible)
         if nextDeck != deck { deck = nextDeck }
         if previous != deck.focusedID { observeFocused() }
         if !restoringAccount, let url = pendingActivityURL {
@@ -1155,13 +1186,13 @@ final class InboxModel: ObservableObject {
     private func prioritizeNext() {
         let order = Dictionary(uniqueKeysWithValues: deck.order.enumerated().map { ($0.element, $0.offset) })
         let visible = Set(order.keys)
-        let ranked = cards.filter { visible.contains($0.id) }.sorted { a, b in
-            let ad = deferred[a.id] == a.latestCursor, bd = deferred[b.id] == b.latestCursor
-            if ad != bd { return !ad }
-            let ar = a.needsAttention(seen: seenCursor(a.id)), br = b.needsAttention(seen: seenCursor(b.id))
-            if ar != br { return ar }
-            let ai = order[a.id] ?? 0, bi = order[b.id] ?? 0
-            return ai < bi
+        let ranked = cards.filter { visible.contains($0.id) }.map { card in
+            (id: card.id, deferred: deferred[card.id] == card.latestCursor,
+             attention: card.needsAttention(seen: seenCursor(card.id)), order: order[card.id] ?? 0)
+        }.sorted { a, b in
+            if a.deferred != b.deferred { return !a.deferred }
+            if a.attention != b.attention { return a.attention }
+            return a.order < b.order
         }
         var nextDeck = deck
         nextDeck.prioritize(ranked.map(\.id))
@@ -1360,6 +1391,7 @@ final class InboxModel: ObservableObject {
             // switches and foregrounding only need to apply newly received events.
             streamProjector = deck.focusedID.flatMap { tabHistories[$0]?.projector } ?? TranscriptStreamProjection()
             focusedHistoryLoaded = false
+            mediaProjection = InboxMediaProjection()
             rows = []; events = []; eventBytes = []; retainedBytes = 0; cursor = .zero
             olderBefore = nil; newerAfter = nil; hasOlder = false; hasNewer = false; followingLatest = true; protectedHistoryCursors = nil; selectedTurn = ""
         }
@@ -1380,7 +1412,8 @@ final class InboxModel: ObservableObject {
             focusedHistoryLoaded = true
             events = cached.events; cursor = cached.cursor; hasOlder = cached.hasOlder; newerAfter = cached.newerAfter; hasNewer = cached.hasNewer
             eventBytes = cached.bytes; retainedBytes = cached.retainedBytes
-            olderBefore = events.first?.cursor; mediaProjection = cached.media; rows = cached.rows
+            olderBefore = events.first?.cursor; publishPreparedRows(cached.rows, media: cached.media)
+            os_signpost(.event, log: accountPerformanceLog, name: "CachedHistoryRowsPublished", "rows=%d", rows.count)
         }
         threadLoading = !focusedHistoryLoaded
         guard let client, isActive else { return }
@@ -1435,8 +1468,8 @@ final class InboxModel: ObservableObject {
                         self.cursor = prepared.latest; self.olderBefore = self.events.first?.cursor
                         let media = await self.prepareMedia(prepared.rows)
                         guard self.generation == epoch, self.observation == token, !Task.isCancelled else { return }
-                        self.mediaProjection = media
-                        self.rows = prepared.rows; self.projectedFirstCursor = self.events.first?.cursor
+                        self.streamProjector = prepared.projector
+                        self.publishPreparedRows(prepared.rows, media: media); self.projectedFirstCursor = self.events.first?.cursor
                         self.focusedHistoryLoaded = true
                         if let index = self.cards.firstIndex(where: { $0.id == id }) {
                             var card = self.cards[index]
@@ -1446,6 +1479,7 @@ final class InboxModel: ObservableObject {
                             self.reconcilePending(id: id, events: self.events, state: card)
                         }
                         self.threadLoading = false; loaded = true
+                        os_signpost(.event, log: accountPerformanceLog, name: "HistoryRowsPublished", "rows=%d", self.rows.count)
                     }
                     self.streamReceivedFrame = false
                     try await client.stream(id, after: self.cursor) { [weak self] frame in
@@ -1597,7 +1631,7 @@ final class InboxModel: ObservableObject {
                 if cards[index] != card { cards[index] = card }
                 reconcilePending(id: id, events: history, state: card)
                 historyCursors[id] = max(historyCursors[id] ?? .zero, card.appliedHistoryCursor)
-                reconcile()
+                await reconcileInBackground()
             }
             if overviewEvents[id]?.last?.cursor == history.last?.cursor { return }
             do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
@@ -1638,7 +1672,29 @@ final class InboxModel: ObservableObject {
             }
         }
     }
+    private func publishPreparedRows(_ projected: [TranscriptRow], media: InboxMediaProjection) {
+        mediaPreparation?.cancel(); mediaPreparation = nil
+        publishingPreparedRows = true
+        rows = projected
+        mediaProjection = media
+        publishingPreparedRows = false
+    }
+    private func scheduleMediaPreparation() {
+        mediaPreparation?.cancel()
+        let snapshot = rows, revision = rowsRevision, epoch = generation
+        mediaPreparation = Task { [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            let prepared = await self.prepareMedia(snapshot)
+            guard !Task.isCancelled, self.generation == epoch, self.rowsRevision == revision else { return }
+            self.mediaProjection = prepared
+            self.objectWillChange.send()
+            self.mediaPreparation = nil
+        }
+    }
     private func prepareMedia(_ rows: [TranscriptRow]) async -> InboxMediaProjection {
+        let signpostID = OSSignpostID(log: accountPerformanceLog)
+        os_signpost(.begin, log: accountPerformanceLog, name: "HistoryMediaPreparation", signpostID: signpostID, "rows=%d", rows.count)
+        defer { os_signpost(.end, log: accountPerformanceLog, name: "HistoryMediaPreparation", signpostID: signpostID) }
         let previous = mediaProjection
         let task = Task.detached(priority: .userInitiated) {
             var next = previous
@@ -1657,8 +1713,8 @@ final class InboxModel: ObservableObject {
         // Rows and media become visible together. A second asynchronous media
         // insertion after a history prepend would invalidate its reading anchor.
         if history.first?.cursor == events.first?.cursor {
-            mediaProjection = media
-            if rows != projected { rows = projected }
+            if rows != projected { publishPreparedRows(projected, media: media) }
+            else { mediaProjection = media }
             projectedFirstCursor = history.first?.cursor
             if let index = cards.firstIndex(where: { $0.id == id }) {
                 var card = cards[index]
@@ -1880,11 +1936,20 @@ final class InboxModel: ObservableObject {
         catch { self.error = error.localizedDescription; return false }
         let attachments = focusedAttachments
         let predecessor = focusedQueue.messages.last?.id ?? focusedTurn
-        let message = PendingMessage(agentID: card.id, input: input, predecessor: predecessor, contextIDs: captured.map(\.id), attachments: attachments.isEmpty ? nil : attachments)
+        var message = PendingMessage(agentID: card.id, input: input, predecessor: predecessor, contextIDs: captured.map(\.id), attachments: attachments.isEmpty ? nil : attachments)
+        // Capture the running target at Send, before focus or roster can change.
+        let target = card.activeTurns.first
+        if let target {
+            message.predecessor = ""
+            message.phase = .starting
+            steeringTransfers.append(.init(agentID: card.id, sourceTurnID: message.id, targetTurnID: target, direct: true, sourceInput: input,
+                sourceCursor: max(cursor, card.latestCursor), sourceRowID: hasNewer ? nil : rows.last?.id))
+        }
         attachmentDrafts[card.id] = nil; attachmentErrors[card.id] = nil
         pending.append(message); drafts[card.id] = ""; selectedContext[card.id] = nil; excludedContext[card.id] = nil; busy.insert(card.id); notice = nil; persist()
         let epoch = generation
-        if deviceHandEnabled, !isDemo { startHandTask(message, epoch: epoch) }
+        if target != nil { startSteering(message.id) }
+        else if deviceHandEnabled, !isDemo { startHandTask(message, epoch: epoch) }
         else { Task { await submit(message, epoch: epoch) } }
         return true
     }
@@ -2000,19 +2065,7 @@ final class InboxModel: ObservableObject {
         handTasks.endObservation(id: id, outcome: stopTurn ? .stopped : .paused)
     }
 
-    private func submit(_ message: PendingMessage, epoch: UUID) async {
-        guard message.remoteAdmission != true else { return }
-        defer {
-            let agentID = resolvedAgentID(message.agentID)
-            if generation == epoch, !pending.contains(where: { $0.agentID == agentID && $0.id != message.id && $0.phase == .submitting }) {
-                busy.remove(agentID)
-            }
-        }
-        await preferences.flush()
-        guard generation == epoch, !Task.isCancelled else { return }
-        do {
-            _ = try await readyAgent(message.agentID)
-            guard generation == epoch, let message = pending.first(where: { $0.id == message.id }), message.phase != .cancelling else { return }
+    private func submissionWithAttachments(_ message: PendingMessage, epoch: UUID) async throws -> AgentCommand {
             var command = message.submission
             if let attachments = message.attachments, !attachments.isEmpty {
                 let store = try AttachmentStore(scope: scope)
@@ -2031,6 +2084,23 @@ final class InboxModel: ObservableObject {
                     command.images += try attachment.originalContent(path: path)
                 }
             }
+            return command
+    }
+
+    private func submit(_ message: PendingMessage, epoch: UUID) async {
+        guard message.remoteAdmission != true else { return }
+        defer {
+            let agentID = resolvedAgentID(message.agentID)
+            if generation == epoch, !pending.contains(where: { $0.agentID == agentID && $0.id != message.id && $0.phase == .submitting }) {
+                busy.remove(agentID)
+            }
+        }
+        await preferences.flush()
+        guard generation == epoch, !Task.isCancelled else { return }
+        do {
+            _ = try await readyAgent(message.agentID)
+            guard generation == epoch, let message = pending.first(where: { $0.id == message.id }), message.phase != .cancelling else { return }
+            let command = try await submissionWithAttachments(message, epoch: epoch)
             guard generation == epoch, let current = pending.first(where: { $0.id == message.id }), current.phase != .cancelling else { return }
             let receipt = try await execute(command)
             guard generation == epoch else { return }
@@ -2098,9 +2168,11 @@ final class InboxModel: ObservableObject {
         persist()
     }
     private func startSteering(_ id: String) {
+        guard connected else { return }
         let epoch = generation
         steeringTasks.start(id) { [self] in
             guard let initial = steeringTransfer(id), generation == epoch else { return }
+            defer { if generation == epoch { busy.remove(initial.agentID) } }
             prepareHandForBackground()
             do {
                 var input: JSON = .null
@@ -2108,7 +2180,11 @@ final class InboxModel: ObservableObject {
                     // Re-read the exact admitted payload, including remote image/video
                     // references. A transcript excerpt is never steering input.
                     let source: JSON
-                    if isDemo { source = .object(["turn_id": .string(id), "input": .string(pending.first { $0.id == id }?.input ?? ""), "state": .string("accepted")]) }
+                    if initial.direct == true {
+                        guard let message = pending.first(where: { $0.id == id }) else { return }
+                        let command = try await submissionWithAttachments(message, epoch: epoch)
+                        source = .object(["turn_id": .string(id), "input": try command.requestSpec().body?["input"] ?? .null])
+                    } else if isDemo { source = .object(["turn_id": .string(id), "input": .string(pending.first { $0.id == id }?.input ?? ""), "state": .string("accepted")]) }
                     else {
                         guard let client else { throw APIError.invalidCredential }
                         source = try await client.turn(agentID: initial.agentID, turnID: id)
@@ -2116,7 +2192,7 @@ final class InboxModel: ObservableObject {
                     guard generation == epoch, !Task.isCancelled else { return }
                     guard source["turn_id"].string == id, source["input"] != .null else { throw APIError.invalidResponse }
                     input = source["input"]
-                    if initial.phase != .ready {
+                    if initial.direct != true && initial.phase != .ready {
                         guard ["accepted", "cancelling", "cancelled"].contains(source["state"].string) else { throw APIError.http(409) }
                         changeSteering(id) { $0.phase = .removingQueued }
                         await preferences.flush()
@@ -2133,13 +2209,17 @@ final class InboxModel: ObservableObject {
                         changeSteering(id) { $0.phase = .withdrawn }
                         completeSteering(id); return
                     }
-                    changeSteering(id) { $0.phase = .sending }
+                    changeSteering(id) { $0.phase = .sending; if $0.direct == true { $0.sourcePayload = input } }
                     await preferences.flush()
                     guard generation == epoch, !Task.isCancelled else { return }
                     let receipt = try await execute(initial.command(input: input))
                     guard generation == epoch, !Task.isCancelled else { return }
                     guard initial.isAccepted(receipt) else { throw APIError.invalidResponse }
                     changeSteering(id) { $0.phase = .accepted; $0.wasAccepted = true; $0.error = nil }
+                    if let message = pending.first(where: { $0.id == id }) {
+                        do { try recordContextDelivery(message) }
+                        catch { self.error = error.localizedDescription }
+                    }
                     completeSteering(id)
                 }
                 guard let current = steeringTransfer(id), current.withdrawRequested else { return }
@@ -2164,9 +2244,19 @@ final class InboxModel: ObservableObject {
                 }
             } catch {
                 guard generation == epoch, !Task.isCancelled else { return }
+                if let api = error as? APIError, let transfer = steeringTransfer(id), transfer.canStartFollowUp(after: api),
+                   let index = pending.firstIndex(where: { $0.id == id }), !transfer.withdrawRequested {
+                    // Only a definitive pre-admission terminal rejection permits fallback.
+                    // Persist the original ID/payload as a normal send before dispatch.
+                    steeringTransfers.removeAll { $0.id == id }
+                    pending[index].phase = .submitting; pending[index].predecessor = ""
+                    persist()
+                    await submit(pending[index], epoch: epoch)
+                    return
+                }
                 changeSteering(id) { transfer in
                     if transfer.phase == .sending {
-                        if let api = error as? APIError, [.http(401), .http(403), .http(404), .http(409)].contains(api) {
+                        if let api = error as? APIError, [.http(401), .http(403), .http(404), .http(409), .steeringTargetFinished].contains(api) {
                             transfer.phase = .ready
                             transfer.error = "Steering was rejected by the target turn. The message is retained; no replacement turn was started."
                         } else {
@@ -2354,7 +2444,7 @@ final class InboxModel: ObservableObject {
         }
         for index in pending.indices where pending[index].phase == .starting && steeringTransfer(pending[index].id) == nil {
             pending[index].phase = .queued
-            pending[index].error = "Steering has not been sent. Tap Steer now to update the active turn."
+            pending[index].error = "Steering has not been sent. Retry sending the retained message."
         }
         // Restore explicit queued cancellation, never infer a stop of the active
         // turn from the old cancel-and-continue presentation phase.
@@ -2457,7 +2547,7 @@ final class InboxModel: ObservableObject {
             if isDemo, command.kind == .stop { demoFinish(agentID: command.agentID, turnID: command.turnID) }
             if command.kind != .stop, drafts[command.agentID] == command.input { drafts[command.agentID] = ""; persist() }
             retries.removeValue(forKey: command.agentID)
-            notice = command.kind == .steer ? "Direction sent" : command.kind == .stop ? "Stop requested" : "Follow-up accepted"
+            notice = command.kind == .steer ? nil : command.kind == .stop ? "Stop requested" : "Follow-up accepted"
             await refresh()
         } catch {
             guard generation == epoch else { return }
@@ -2767,24 +2857,48 @@ private enum KeychainAccount {
 private struct InboxMediaProjection: Sendable {
     private struct Entry: Sendable {
         var results: [String]
+        var computerScreen: Bool
         var outputs: [ChatGeneratedOutput]
     }
     private var entries: [String: Entry] = [:]
+    // Only hashes survive window eviction. Original bytes are retained for one
+    // latest screen, not for the conversation's entire screenshot history.
+    private var screenIDs = Set<String>()
+    private var latestScreenCursor: Cursor?
+    private(set) var latestScreen: ChatGeneratedOutput?
     private(set) var outputs: [String: [ChatGeneratedOutput]] = [:]
     mutating func update(_ rows: [TranscriptRow]) {
         var retained: [String: Entry] = [:]
-        var projected: [String: [ChatGeneratedOutput]] = [:]
+        var knownScreens = screenIDs
+        var latest = latestScreen
+        var latestCursor = latestScreenCursor
         for row in rows {
             guard !Task.isCancelled else { return }
             guard let tool = row.tool, !tool.isInspectionOutput, let results = tool.generatedResults else { continue }
+            let computerScreen = tool.isComputerScreenOutput
             let entry: Entry
-            if let previous = entries[row.id], previous.results == results { entry = previous }
+            if let previous = entries[row.id], previous.results == results, previous.computerScreen == computerScreen { entry = previous }
             else {
-                entry = Entry(results: results, outputs: ChatGeneratedOutput.parse(results: results))
+                entry = Entry(results: results, computerScreen: computerScreen,
+                              outputs: ChatGeneratedOutput.parse(results: results, computerScreen: computerScreen))
             }
             retained[row.id] = entry
-            if !entry.outputs.isEmpty { projected[row.id] = entry.outputs }
+            for output in entry.outputs where output.isComputerScreen {
+                knownScreens.insert(output.id)
+                let cursor = row.completionCursor ?? row.cursor ?? .zero
+                if latestCursor == nil || cursor >= latestCursor! {
+                    latest = output; latestCursor = cursor
+                }
+            }
         }
-        entries = retained; outputs = projected
+        // Attribution may arrive after an outer exec image, and rows need not be
+        // in completion order. Filter only after every attributed result is seen.
+        var projected: [String: [ChatGeneratedOutput]] = [:]
+        for (id, entry) in retained {
+            let ordinary = entry.outputs.filter { !knownScreens.contains($0.id) }
+            if !ordinary.isEmpty { projected[id] = ordinary }
+        }
+        entries = retained; outputs = projected; screenIDs = knownScreens
+        latestScreen = latest; latestScreenCursor = latestCursor
     }
 }

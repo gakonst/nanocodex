@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let transcriptPerformanceLog = OSLog(subsystem: "xyz.paradigm.centaur", category: "Performance")
 
 /// Expensive projection and payload accounting run on the cooperative executor.
 /// Callers own observation identity and must validate it before publishing results.
@@ -17,6 +20,9 @@ public enum TranscriptPreparation {
     public static func byteCounts(_ events: [AgentEvent]) async throws -> [Int] {
         let task = Task.detached(priority: .userInitiated) {
             assert(!Thread.isMainThread)
+            let signpostID = OSSignpostID(log: transcriptPerformanceLog)
+            os_signpost(.begin, log: transcriptPerformanceLog, name: "HistoryByteAccounting", signpostID: signpostID, "events=%d", events.count)
+            defer { os_signpost(.end, log: transcriptPerformanceLog, name: "HistoryByteAccounting", signpostID: signpostID) }
             let encoder = JSONEncoder()
             return try events.map { event in
                 try Task.checkCancellation()
@@ -61,6 +67,9 @@ public actor TranscriptStreamProjection {
     public init() {}
 
     public func rows(_ events: [AgentEvent]) throws -> [TranscriptRow] {
+        let signpostID = OSSignpostID(log: transcriptPerformanceLog)
+        os_signpost(.begin, log: transcriptPerformanceLog, name: "TranscriptProjection", signpostID: signpostID, "events=%d", events.count)
+        defer { os_signpost(.end, log: transcriptPerformanceLog, name: "TranscriptProjection", signpostID: signpostID) }
         try Task.checkCancellation()
         if first != events.first?.cursor || events.count < count
             || (count > 0 && events[count - 1].cursor != last) {

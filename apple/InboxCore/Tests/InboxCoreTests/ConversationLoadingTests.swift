@@ -2,6 +2,49 @@ import XCTest
 @testable import InboxCore
 
 final class ConversationLoadingTests: XCTestCase {
+    func testOpeningProjectionHandoffPerformanceAndStreamCorrectness() async throws {
+        // A full 128-event page with tool results and readable text, no private data.
+        let events: [JSON] = (1...128).map { index in
+            let turn = "turn-\(index / 4)"
+            if index % 4 == 0 {
+                return .object(["cursor": .string("\(index)"), "type": .string("turn_completed"),
+                    "turn_id": .string(turn), "final_message": .string(String(repeating: "Synthetic answer. ", count: 128))])
+            }
+            return .object(["cursor": .string("\(index)"), "type": .string("event"), "turn_id": .string(turn),
+                "event": .object(["type": .string("tool.result"), "payload": .object([
+                    "tool": .string("web.run"), "call_id": .string("call-\(index)"),
+                    "result": .object(["content": .array([.object(["type": .string("text"),
+                        "text": .string(String(repeating: "Synthetic search result. ", count: 1024))])])])])])])
+        }
+        let body = try JSONEncoder().encode(JSON.object(["data": .array(events),
+            "has_more": .bool(true), "latest_cursor": .string("128")]))
+        let fixture = try HTTPFixture { _ in .init(body: String(decoding: body, as: UTF8.self)) }
+        defer { fixture.close() }
+        let client = ManagedClient(credential: try .init(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
+        defer { client.close() }
+        let start = ContinuousClock.now
+        let history = try await client.conversationHistory("synthetic-agent")
+        let opening = start.duration(to: .now)
+        let coldStart = ContinuousClock.now
+        let cold = try await TranscriptStreamProjection().rows(history.events)
+        let coldTime = coldStart.duration(to: .now)
+        XCTAssertEqual(cold, history.rows)
+        let replayStart = ContinuousClock.now
+        let projector = history.projector
+        let replay = try await projector.rows(history.events)
+        let replayTime = replayStart.duration(to: .now)
+        XCTAssertEqual(replay, history.rows)
+        let next = try AgentEvent(.object(["cursor": .string("129"), "type": .string("turn_completed"),
+            "turn_id": .string("new-turn"), "final_message": .string("New stream answer")]))
+        let resumed = try await projector.rows(history.events + [next])
+        XCTAssertEqual(resumed, transcript(history.events + [next]))
+        let older = try AgentEvent(.object(["cursor": .string("0"), "type": .string("turn_accepted"),
+            "turn_id": .string("earlier"), "input": .string("Earlier request")]))
+        let prepended = try await projector.rows([older] + history.events)
+        XCTAssertEqual(prepended, transcript([older] + history.events))
+        print("OPENING_HANDOFF_PERF events=128 payload_bytes=\(body.count) opening=\(opening) old_first_stream_projection=\(coldTime) transferred_first_stream_projection=\(replayTime)")
+    }
+
     func testHistoryResponsePreservesAnAnswerLargerThanTheOldResponseAndWindowCaps() async throws {
         let answer = String(repeating: "x", count: 33 * 1024 * 1024) + " full answer"
         let fixture = try HTTPFixture { _ in

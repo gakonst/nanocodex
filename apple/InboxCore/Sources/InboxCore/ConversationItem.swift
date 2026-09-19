@@ -2,7 +2,7 @@ import Foundation
 
 /// Chronological feed entries retain the identity and position of their source
 /// row. Tool completion updates its card in place; turns never reorder the feed.
-public struct ConversationItem: Identifiable, Equatable {
+public struct ConversationItem: Identifiable, Equatable, Sendable {
     public let id: String
     public var message: TranscriptRow?
     public var activity: [TranscriptRow] = []
