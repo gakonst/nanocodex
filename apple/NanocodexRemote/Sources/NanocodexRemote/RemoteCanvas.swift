@@ -58,6 +58,7 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
     var showInputDiagnostics = false
     private let diagnosticToggle = NSButton(title: "Troubleshoot", target: nil, action: nil)
     private let keyboard = RemoteKeyboardCapture()
+    private let cursor = RemoteCursorCapture()
     private let keyboardNotice = NSTextField(wrappingLabelWithString: "")
     private var trackSize: CGSize?
     private let video = RTCMTLNSVideoView()
@@ -92,7 +93,9 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
             }
         }
         keyboard.release = { [weak self] in self?.releaseKeys() }
-        keyboard.statusChanged = { [weak self] in self?.updateKeyboardNotice() }
+        keyboard.statusChanged = { [weak self] in
+            self?.updateKeyboardNotice(); self?.updateCursorCapture()
+        }
         keyboard.focusChanged = { [weak self] in self?.restoreImmersiveFocus() }
         keyboardNotice.setAccessibilityIdentifier("remote-keyboard-capture-status")
         keyboardNotice.font = .systemFont(ofSize: 12)
@@ -122,6 +125,7 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
         }
         if keyboard.isActive() { keyboard.start() }
         updateKeyboardNotice()
+        updateCursorCapture()
         needsLayout = true
     }
     public func videoView(_ videoView: RTCVideoRenderer, didChangeVideoSize size: CGSize) {
@@ -132,7 +136,11 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
     }
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        updateCursorCapture()
         if immersive, viewer?.controlling == true { window?.makeFirstResponder(self) }
+    }
+    private func updateCursorCapture() {
+        cursor.update(hidden: immersive && keyboard.isActive())
     }
     private func restoreImmersiveFocus() {
         guard immersive, viewer?.controlling == true, NSApp.isActive,
@@ -223,6 +231,7 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
         guard viewer?.controlling == true else { return }
         if RemoteModifierState.isExit(keyCode: event.keyCode, flags: event.modifierFlags) {
             releaseKeys(); keyboard.stop()
+            cursor.update(hidden: false)
             viewer?.releaseControl()
             onExit?()
             return
@@ -252,11 +261,12 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
     public override func resignFirstResponder() -> Bool {
         guard super.resignFirstResponder() else { return false }
         releaseKeys(); keyboard.pause()
+        cursor.update(hidden: false)
         return true
     }
     // SwiftUI dismantles this view while invalidating its graph. Session state
     // belongs to RemoteDashboard.onDisappear; publishing here can crash it.
-    func detach() { releaseKeys(); keyboard.stop(); viewer = nil; track?.remove(video); track = nil; video.isHidden = true; snapshot.image = nil; snapshot.isHidden = true }
+    func detach() { releaseKeys(); viewer = nil; keyboard.stop(); cursor.update(hidden: false); track?.remove(video); track = nil; video.isHidden = true; snapshot.image = nil; snapshot.isHidden = true }
     public func insertText(_ string: Any, replacementRange: NSRange) {
         let text = (string as? NSAttributedString)?.string ?? (string as? String ?? "")
         if !text.isEmpty, text.utf8.count <= 4096 { viewer?.input(kind: .text, text: text) }; unmarkText()
