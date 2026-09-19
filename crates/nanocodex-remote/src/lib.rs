@@ -4,6 +4,7 @@
 //! The core owns media tasks, WebRTC peers and input ordering. Host authentication,
 //! reconnection, capture permission and native input injection stay with the caller.
 pub mod audio;
+pub mod audio_duplex;
 pub mod capture;
 pub mod frames;
 pub mod ice;
