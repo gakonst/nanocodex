@@ -153,6 +153,7 @@ pub(crate) struct HistoryCheckpoint {
     pub(crate) provider_session_id: Arc<str>,
     pub(crate) canonical_context: ResponseItem,
     pub(crate) history: Vec<ResponseItem>,
+    pub(crate) client_authored: std::collections::BTreeSet<String>,
     pub(crate) prompt_cache_key: Arc<str>,
     pub(crate) context_baseline: Option<ContextBaseline>,
 }
@@ -182,6 +183,10 @@ impl ModelCheckpoint {
         &self.conversation.canonical_context
     }
 
+    pub(crate) fn client_authored(&self) -> &std::collections::BTreeSet<String> {
+        self.conversation.managed.client_authored()
+    }
+
     pub(crate) fn snapshot_history(&self) -> Vec<ResponseItem> {
         self.conversation.flattened_history()
     }
@@ -201,15 +206,20 @@ impl ModelCheckpoint {
         prompt_cache_key: Arc<str>,
         canonical_context: ResponseItem,
         history: Vec<ResponseItem>,
+        client_authored: std::collections::BTreeSet<String>,
         global_instructions: Option<Arc<str>>,
         context_baseline: Option<ContextBaseline>,
     ) -> Result<Self> {
         let context_baseline =
             context_baseline.unwrap_or_else(|| ContextBaseline::reconstruct(&history));
+        let mut conversation = ConversationState::resume(canonical_context, history)?;
+        conversation
+            .managed
+            .restore_client_authored(client_authored);
         Ok(Self {
             workspace,
             provider_session_id,
-            conversation: ConversationState::resume(canonical_context, history)?,
+            conversation,
             request_prefix: Arc::from(request_prefix),
             prompt_cache_key,
             preserve_inherited_delta: false,
@@ -387,9 +397,9 @@ impl<S> ModelRun<S> {
         if !self.pending_developer_messages.is_empty() {
             session
                 .conversation
-                .append(self.pending_developer_messages.drain(..));
+                .append_client(self.pending_developer_messages.drain(..));
         }
-        session.conversation.append([item]);
+        session.conversation.append_client([item]);
         session.conversation.commit_tail();
         session.preserve_inherited_delta = true;
         Ok(ModelCheckpoint {
@@ -526,6 +536,7 @@ pub(crate) fn prepare_history_checkpoint(
         provider_session_id,
         canonical_context,
         history,
+        client_authored,
         prompt_cache_key,
         context_baseline,
     } = resume;
@@ -550,6 +561,7 @@ pub(crate) fn prepare_history_checkpoint(
         prompt_cache_key,
         canonical_context,
         history,
+        client_authored,
         context_source.global_instructions(),
         context_baseline,
     )?;

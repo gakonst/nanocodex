@@ -31,6 +31,7 @@ where
             workspace,
             canonical_context,
             history,
+            client_authored,
             context_baseline,
             checkpoint,
         } = snapshot.into_resume()?;
@@ -55,6 +56,7 @@ where
                     provider_session_id: Arc::clone(&lineage_id),
                     canonical_context,
                     history,
+                    client_authored,
                     prompt_cache_key: Arc::clone(&restored_cache_key),
                     context_baseline,
                 }))

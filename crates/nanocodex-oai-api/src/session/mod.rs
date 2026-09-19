@@ -4,8 +4,6 @@ pub(crate) mod compaction;
 pub(crate) mod context;
 
 mod builder;
-#[cfg(not(target_family = "wasm"))]
-mod image_dimensions;
 mod response;
 #[doc(hidden)]
 pub(crate) mod state;

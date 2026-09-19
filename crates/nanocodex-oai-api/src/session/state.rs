@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{collections::BTreeSet, fmt};
 
 use serde::{Deserialize, Serialize};
 
@@ -100,6 +100,7 @@ pub enum SessionIdError {
 #[derive(Clone)]
 pub struct ManagedSessionState {
     context: ContextManager,
+    client_authored: BTreeSet<String>,
     delta_start: usize,
     previous_response_id: Option<String>,
     history_revision: u64,
@@ -113,6 +114,7 @@ impl ManagedSessionState {
         assign_missing_response_item_ids(&mut items);
         Self {
             context: ContextManager::new(items),
+            client_authored: BTreeSet::new(),
             delta_start: 0,
             previous_response_id: None,
             history_revision: 0,
@@ -213,6 +215,51 @@ impl ManagedSessionState {
     /// applied by the underlying context manager.
     pub fn append(&mut self, items: impl IntoIterator<Item = ResponseItem>) {
         self.context.record_items(items);
+    }
+
+    /// Records explicitly client-authored input, preserving developer provenance
+    /// separately from the provider-visible response items.
+    pub fn append_client(&mut self, items: impl IntoIterator<Item = ResponseItem>) {
+        let mut items: Vec<_> = items.into_iter().collect();
+        assign_missing_response_item_ids(&mut items);
+        self.client_authored.extend(items.iter().filter_map(|item| {
+            matches!(
+                item,
+                ResponseItem::Message {
+                    role: crate::MessageRole::Developer,
+                    ..
+                }
+            )
+            .then(|| item.id().map(ToString::to_string))
+            .flatten()
+        }));
+        self.append(items);
+    }
+
+    /// Client provenance sidecar for durable snapshots. Never send it to the model.
+    #[must_use]
+    pub fn client_authored(&self) -> &BTreeSet<String> {
+        &self.client_authored
+    }
+
+    /// Restores explicit provenance. Legacy histories without this sidecar have
+    /// no client-authored developer messages; text is never used to infer origin.
+    pub fn restore_client_authored(&mut self, ids: BTreeSet<String>) {
+        self.client_authored = self
+            .context
+            .iter()
+            .filter_map(|item| {
+                let id = item.id()?;
+                (matches!(
+                    item,
+                    ResponseItem::Message {
+                        role: crate::MessageRole::Developer,
+                        ..
+                    }
+                ) && ids.contains(id.as_str()))
+                .then(|| id.to_string())
+            })
+            .collect();
     }
 
     /// Usage baseline needed to preserve compaction decisions across recovery.
@@ -348,9 +395,15 @@ impl ManagedSessionState {
         request_prefix: &[ResponseItem],
     ) {
         let initial_context = initial_context.into_iter().collect::<Vec<_>>();
-        let history =
-            compaction::install_history(&self.context.flattened_items(), &initial_context, item);
+        let history = compaction::install_history_with_provenance(
+            &self.context.flattened_items(),
+            &initial_context,
+            item,
+            &self.client_authored,
+        );
         self.context.replace_and_recompute(history, request_prefix);
+        let provenance = std::mem::take(&mut self.client_authored);
+        self.restore_client_authored(provenance);
         self.reset_for_full_request();
         self.history_revision = self.history_revision.saturating_add(1);
     }
@@ -394,6 +447,34 @@ mod tests {
     use serde_json::json;
 
     use super::{ManagedSessionState, ManagedSessionStateError};
+
+    #[test]
+    fn developer_provenance_survives_restore_and_compaction_without_leaking_to_wire() {
+        use crate::{ContentItem, MessageRole, ResponseItem};
+        let dev = |text: &str| {
+            ResponseItem::message(MessageRole::Developer, [ContentItem::input_text(text)])
+        };
+        let mut state = ManagedSessionState::new(vec![dev("generated context")]);
+        state.append_client([dev("client instructions")]);
+        let ids = state.client_authored().clone();
+        assert_eq!(ids.len(), 1);
+        let wire = serde_json::to_string(&state.flattened_history()).unwrap();
+        assert!(!wire.contains("client_authored"));
+        let mut restored =
+            ManagedSessionState::resume(serde_json::from_str(&wire).unwrap()).unwrap();
+        assert!(restored.client_authored().is_empty());
+        restored.restore_client_authored(ids.clone());
+        restored.install_compaction(
+            serde_json::from_value(json!({"type":"compaction", "encrypted_content":"opaque"}))
+                .unwrap(),
+            [],
+            &[],
+        );
+        assert_eq!(restored.client_authored(), &ids);
+        let history = serde_json::to_string(&restored.flattened_history()).unwrap();
+        assert!(history.contains("client instructions"));
+        assert!(!history.contains("generated context"));
+    }
 
     #[test]
     fn removing_a_tool_definition_preserves_transcript_and_corrected_schemas() {

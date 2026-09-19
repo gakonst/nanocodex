@@ -66,6 +66,7 @@ pub(super) struct RolloutCommit {
     turn: RolloutTurn,
     model: Model,
     context_baseline: ContextBaseline,
+    client_authored: std::collections::BTreeSet<String>,
 }
 
 impl RolloutCommit {
@@ -76,6 +77,7 @@ impl RolloutCommit {
             turn,
             model: session.selected_model(),
             context_baseline: session.context_baseline().clone(),
+            client_authored: session.model().client_authored().clone(),
         }
     }
 
@@ -86,6 +88,7 @@ impl RolloutCommit {
             turn,
             model: session.selected_model(),
             context_baseline: session.context_baseline().clone(),
+            client_authored: session.model().client_authored().clone(),
         }
     }
 
@@ -101,6 +104,7 @@ impl RolloutCommit {
             turn,
             model: Model::Sol,
             context_baseline: ContextBaseline::Missing,
+            client_authored: std::collections::BTreeSet::new(),
         }
     }
 }
