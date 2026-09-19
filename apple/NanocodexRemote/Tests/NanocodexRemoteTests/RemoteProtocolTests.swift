@@ -219,6 +219,25 @@ final class RemoteProtocolTests: XCTestCase {
         XCTAssertTrue(try lease.accept(.init(kind: .button, sequence: 6, generation: "g", button: 0, down: true), from: "a", now: 2))
     }
 
+    func testCapturedPointerCommandsAreBoundedAndNeverWarp() throws {
+        let events: [RemoteInput] = [
+            .init(kind: .relativeMove, sequence: 1, generation: "capture", deltaX: 24, deltaY: -12),
+            .init(kind: .button, sequence: 2, generation: "capture", button: 1, down: false),
+            .init(kind: .scroll, sequence: 3, generation: "capture", deltaX: 0, deltaY: 10),
+        ]
+        for event in events { XCTAssertEqual(try RemoteInput.decode(JSONEncoder().encode(event)), event) }
+        var invalid = events[0]; invalid.deltaX = 4097
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = events[0]; invalid.deltaY = .nan
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = events[0]; invalid.x = 0.5; invalid.y = 0.5
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = events[1]; invalid.x = 0.5
+        XCTAssertThrowsError(try invalid.validate())
+        invalid = events[2]; invalid.y = 0.5
+        XCTAssertThrowsError(try invalid.validate())
+    }
+
     func testControlGenerationAndDeadlineFenceInput() throws {
         var lease = RemoteControlLease()
         try lease.acquire(owner: "viewer-a", generation: "first", now: 1)

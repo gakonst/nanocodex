@@ -100,6 +100,22 @@ final class RemotePeerTests: XCTestCase {
             }
         }
         await fulfillment(of: [control, motion, reply, rendered, firstDecodedFrame], timeout: 10)
+        let hold: [RemoteInput] = [
+            .init(kind: .button, sequence: 1, generation: "capture", x: 0.5, y: 0.5, button: 1, down: true),
+            .init(kind: .relativeMove, sequence: 2, generation: "capture", deltaX: 24, deltaY: -12),
+            .init(kind: .button, sequence: 3, generation: "capture", button: 1, down: false),
+        ]
+        let heldInput = expectation(description: "Captured right-button movement arrives reliably in order")
+        heldInput.expectedFulfillmentCount = hold.count
+        var receivedHold: [RemoteInput] = []
+        publisher.onData = { data, isMotion in
+            XCTAssertFalse(isMotion, "Relative displacements cannot use the lossy motion channel")
+            do { receivedHold.append(try RemoteInput.decode(data)); heldInput.fulfill() }
+            catch { XCTFail("Invalid captured input: \(error)") }
+        }
+        for event in hold { try viewer.send(JSONEncoder().encode(event)) }
+        await fulfillment(of: [heldInput], timeout: 5)
+        XCTAssertEqual(receivedHold, hold)
         let originalCandidate = await publisher.selectedLocalCandidate()
         if relay != nil { XCTAssertTrue(originalCandidate?.hasPrefix("relay:") == true) }
         let restartedInput = expectation(description: "Existing input channel survives ICE restart")

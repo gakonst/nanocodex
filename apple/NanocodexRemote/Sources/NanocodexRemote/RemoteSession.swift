@@ -88,6 +88,20 @@ struct RemoteViewerControl {
     }
 }
 
+// Constant-size accumulation; split at the protocol boundary instead of clipping
+// displacement when several physical events arrive in one batch.
+private struct RemoteRelativeMotion {
+    private var x = 0.0
+    private var y = 0.0
+    mutating func append(x: Double, y: Double) { self.x += x; self.y += y }
+    mutating func next() -> (x: Double, y: Double)? {
+        guard x != 0 || y != 0 else { return nil }
+        let step = (x: min(4096, max(-4096, x)), y: min(4096, max(-4096, y)))
+        x -= step.x; y -= step.y
+        return step
+    }
+}
+
 @MainActor
 public final class RemoteViewer: ObservableObject {
     @Published public private(set) var status = "Disconnected"
@@ -96,6 +110,8 @@ public final class RemoteViewer: ObservableObject {
     @Published public private(set) var supportsRelativePointer = false
     @Published public private(set) var supportsGamepad = false
     @Published public private(set) var controlling = false
+    @Published public var captureMouse = false
+    public var relativePointer: Bool { supportsRelativePointer }
     @Published public private(set) var connected = false
     @Published public private(set) var hand: RemoteHand?
     @Published public private(set) var connecting = false
@@ -113,6 +129,8 @@ public final class RemoteViewer: ObservableObject {
     private var control = RemoteViewerControl()
     private var generation: String? { control.generation }
     private var sequence: UInt64 = 0
+    private var relativeMotion = RemoteRelativeMotion()
+    private var relativeMotionTask: Task<Void, Never>?
     private var leaseRenewal: Task<Void, Never>?
     private var connectionDeadline: Task<Void, Never>?
     private var signalQueue: Task<Void, Never>?
@@ -344,9 +362,10 @@ public final class RemoteViewer: ObservableObject {
     }
 
     public func releaseControl() {
+        flushRelativeMotion()
         releaseGamepad()
         let release = control.release()
-        leaseRenewal?.cancel(); leaseRenewal = nil; supportsRelativePointer = false; supportsGamepad = false; controlling = false
+        leaseRenewal?.cancel(); leaseRenewal = nil; supportsRelativePointer = false; supportsGamepad = false; controlling = false; captureMouse = false
         if let release { sendControl(release) }
         if connected { status = "Watching" }
     }
@@ -357,20 +376,57 @@ public final class RemoteViewer: ObservableObject {
 
     public func input(kind: RemoteInput.Kind, x: Double? = nil, y: Double? = nil, button: Int? = nil,
                       down: Bool? = nil, key: UInt16? = nil, text: String? = nil, deltaX: Double? = nil, deltaY: Double? = nil, gamepad: RemoteGamepadState? = nil) {
-        guard controlling, let generation, kind != .gamepad || (connected && supportsGamepad) else { return }
-        let needsRelativePointer = kind == .relativeMove ||
-            ((kind == .button || kind == .scroll) && x == nil && y == nil)
-        guard !needsRelativePointer || supportsRelativePointer else { return }
-        sequence += 1
-        let event = RemoteInput(kind: kind, sequence: sequence, generation: generation, x: x, y: y,
+        guard controlling, connected, let generation, kind != .gamepad || supportsGamepad else { return }
+        guard relativePointer || (kind != .relativeMove && !([.button, .scroll].contains(kind) && x == nil)) else { return }
+        let event = RemoteInput(kind: kind, sequence: sequence + 1, generation: generation, x: x, y: y,
             button: button, down: down, key: key, text: text, deltaX: deltaX, deltaY: deltaY, gamepad: gamepad)
+        do { try event.validate() } catch { fail(error); return }
+        if kind == .relativeMove, let deltaX, let deltaY {
+            relativeMotion.append(x: deltaX, y: deltaY)
+            guard relativeMotionTask == nil else { return }
+            // A fixed deadline from the first sample, never extended by later
+            // movement. Discrete input flushes sooner on the same reliable stream.
+            let deadline = ContinuousClock.now + .milliseconds(4), attempt = epoch
+            relativeMotionTask = Task { [weak self] in
+                do { try await ContinuousClock().sleep(until: deadline, tolerance: .zero) } catch { return }
+                guard let self, self.epoch == attempt, self.generation == generation else { return }
+                self.flushRelativeMotion()
+            }
+        } else {
+            flushRelativeMotion()
+            _ = sendInput(event)
+        }
+    }
+
+    @discardableResult private func sendInput(_ event: RemoteInput) -> Bool {
+        guard controlling, generation == event.generation else { return false }
+        sequence += 1
+        let event = RemoteInput(kind: event.kind, sequence: sequence, generation: event.generation,
+            x: event.x, y: event.y, button: event.button, down: event.down, key: event.key,
+            text: event.text, deltaX: event.deltaX, deltaY: event.deltaY, gamepad: event.gamepad)
         do {
             try event.validate()
             if hand?.transport == .frames {
                 var message = RemoteMessage(type: "input"); message.data = .input(event); signaling?.send(message)
-            } else { try peer?.send(JSONEncoder().encode(event), motion: kind == .move) }
+            } else { try peer?.send(JSONEncoder().encode(event), motion: event.kind == .move) }
+            return true
+        } catch { fail(error); return false }
+    }
+
+    private func flushRelativeMotion() {
+        relativeMotionTask?.cancel(); relativeMotionTask = nil
+        var pending = relativeMotion
+        relativeMotion = RemoteRelativeMotion()
+        guard controlling, let generation else { return }
+        while let delta = pending.next() {
+            guard sendInput(RemoteInput(kind: .relativeMove, sequence: 1, generation: generation,
+                deltaX: delta.x, deltaY: delta.y)) else { return }
         }
-        catch { fail(error) }
+    }
+
+    private func cancelRelativeMotion() {
+        relativeMotionTask?.cancel(); relativeMotionTask = nil
+        relativeMotion = RemoteRelativeMotion()
     }
 
     public func close() {
@@ -390,6 +446,7 @@ public final class RemoteViewer: ObservableObject {
 
     private func detach() {
         releaseGamepad()
+        cancelRelativeMotion()
         broadcastTimer?.cancel(); broadcastTimer = nil; broadcastWaiting = false; broadcastRequest = nil
         broadcastStatus = "idle"; broadcastError = nil
         epoch = UUID(); retryTask?.cancel(); retryTask = nil
@@ -402,7 +459,7 @@ public final class RemoteViewer: ObservableObject {
                 signaling?.send(relay)
             } else if let data = try? JSONEncoder().encode(release) { try? peer?.send(data) }
         }
-        control = RemoteViewerControl(); supportsRelativePointer = false; supportsGamepad = false; controlling = false
+        control = RemoteViewerControl(); supportsRelativePointer = false; supportsGamepad = false; controlling = false; captureMouse = false
         leaseRenewal?.cancel(); leaseRenewal = nil
         connectionSetup?.cancel(); connectionSetup = nil
         signalQueue?.cancel(); signalQueue = nil
@@ -454,6 +511,9 @@ public final class RemoteViewer: ObservableObject {
         }
     }
     private func sendControl(_ message: RemoteControlMessage) {
+        let attempt = epoch
+        flushRelativeMotion()
+        guard epoch == attempt else { return }
         if hand?.transport == .frames {
             var relay = RemoteMessage(type: "control"); relay.data = .control(message); signaling?.send(relay); return
         }
@@ -564,6 +624,8 @@ public final class RemoteViewer: ObservableObject {
                 supportsRelativePointer = false
                 supportsGamepad = false
             }
+            if generation != previous || !supportsRelativePointer { cancelRelativeMotion() }
+            if !supportsRelativePointer { captureMouse = false }
             controlling = generation != nil
             if let generation, generation != previous {
                 sequence = 0; status = "You’re controlling"
@@ -576,6 +638,7 @@ public final class RemoteViewer: ObservableObject {
                     }
                 }
             } else if generation == nil {
+                captureMouse = false
                 leaseRenewal?.cancel(); leaseRenewal = nil
                 status = message.type == .denied && !control.requested ? "Another viewer is controlling this screen" : "Watching"
             }

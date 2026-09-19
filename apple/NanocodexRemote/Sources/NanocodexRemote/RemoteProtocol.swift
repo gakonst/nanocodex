@@ -141,11 +141,15 @@ public struct RemoteInput: Codable, Equatable, Sendable {
         case .move:
             guard x != nil, y != nil, button == nil, down == nil, key == nil, text == nil,
                   deltaX == nil, deltaY == nil else { throw RemoteError.invalidMessage }
+        case .relativeMove:
+            guard x == nil, y == nil, let deltaX, let deltaY, deltaX.isFinite, deltaY.isFinite,
+                  abs(deltaX) <= 4096, abs(deltaY) <= 4096,
+                  button == nil, down == nil, key == nil, text == nil else { throw RemoteError.invalidMessage }
         case .button:
             guard (point || noPoint), let button, (0...2).contains(button), down != nil,
                   key == nil, text == nil, deltaX == nil, deltaY == nil else { throw RemoteError.invalidMessage }
-        case .relativeMove, .scroll:
-            guard (kind == .relativeMove ? noPoint : (point || noPoint)),
+        case .scroll:
+            guard (point || noPoint),
                   let deltaX, let deltaY, deltaX.isFinite, deltaY.isFinite,
                   abs(deltaX) <= 4096, abs(deltaY) <= 4096,
                   button == nil, down == nil, key == nil, text == nil else { throw RemoteError.invalidMessage }

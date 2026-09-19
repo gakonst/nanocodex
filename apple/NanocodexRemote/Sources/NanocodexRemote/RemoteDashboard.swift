@@ -100,6 +100,17 @@ public struct RemoteDashboard: View {
                     Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel("Refresh screens")
                 }
+                if viewer.hand != nil {
+                    Button {
+                        NotificationCenter.default.post(name: .remoteToggleFullScreen, object: viewer)
+                    } label: {
+                        Label("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right")
+                    }
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut("f", modifiers: [.control, .command])
+                    .help("Show the livestream full screen (⌃⌘F). Press again to exit.")
+                    .accessibilityIdentifier("remote-fullscreen")
+                }
                 if let onClose {
                     Button(action: onClose) { Image(systemName: "xmark").frame(width: 32, height: 32) }
                         .accessibilityLabel("Close screen pane").accessibilityIdentifier("close-screen-pane")
@@ -115,10 +126,17 @@ public struct RemoteDashboard: View {
                         .font(.caption).foregroundStyle(viewer.controlling ? Color.accentColor : Color.secondary)
                     Spacer(minLength: 0)
                     if viewer.controlling {
+                        if viewer.relativePointer {
+                            Toggle("Lock Mouse", isOn: $viewer.captureMouse)
+                                .toggleStyle(.checkbox)
+                                .help("For games: click the screen to lock the mouse. ⌘⇧Esc releases control.")
+                                .accessibilityIdentifier("remote-lock-mouse")
+                        }
                         Button { showKeyboard.toggle() } label: { Image(systemName: "keyboard") }
                             .help("Remote typing controls").accessibilityLabel("Remote keyboard")
                             .accessibilityValue(showKeyboard ? "Visible" : "Hidden")
                         Button("Release control") { viewer.releaseControl() }
+                            .keyboardShortcut(.escape, modifiers: [.command, .shift])
                             .accessibilityIdentifier("remote-release-control")
                     } else if viewer.hand?.controllable == true {
                         Button("Take control") { viewer.takeControl() }.buttonStyle(.borderedProminent).disabled(!viewer.connected)
@@ -210,7 +228,7 @@ public struct RemoteDashboard: View {
                     Spacer()
 #if os(macOS)
                     if viewer.controlling {
-                        Text("Click screen to type · ⌘⇧Esc releases").font(.caption2).foregroundStyle(.secondary)
+                        Text(viewer.captureMouse ? "Click screen to lock mouse · ⌘⇧Esc releases" : "Click screen to type · ⌘⇧Esc releases").font(.caption2).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 #else
