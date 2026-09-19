@@ -1,3 +1,4 @@
+import { CUA_JS_NAME, CUA_PARAMETERS, CUA_RESET_PARAMETERS } from "nanocodex-computer/contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ToolMap } from "nanocodex";
 
@@ -175,7 +176,7 @@ describe("managed sandbox preview wiring", () => {
       (_machineId, name) => sourceTools[name],
     );
 
-    expect(tools.map(({ name }) => name)).toEqual(["computer", "select_computer", "mcp__cua_repl__js", "mcp__cua_repl__js_reset", "exec_command", "write_stdin", "preview"]);
+    expect(tools.map(({ name }) => name)).toEqual(["select_computer", "mcp__cua_repl__js", "mcp__cua_repl__js_reset", "exec_command", "write_stdin", "preview"]);
     const exec = tools.find(({ name }) => name === "exec_command")!;
     await expect(exec.handler(
       { cmd: "pwd", workdir: "/test" },
@@ -192,37 +193,17 @@ describe("managed sandbox preview wiring", () => {
     expect(sourceHandler).toHaveBeenCalledTimes(1);
   });
 
-  it("rechecks execution authority before invoking a captured screen", async () => {
+  it("rechecks execution authority before invoking a captured CUA provider", async () => {
     let allowed = true;
-    const screen = vi.fn(async () => ({ status: "ok" }));
+    const invoke = vi.fn(async () => ({ content: [] }));
     const tools = createManagedNamespaceTools(() => allowed,
-      () => [{ id: "desktop", workspace: "/" }], () => undefined, async () => {}, undefined,
-      () => ({ handler: screen }));
-    const select = tools.find(tool => tool.name === "select_computer")!;
-    const computer = tools.find(tool => tool.name === "computer")!;
-    await select.handler({ workdir: "/desktop" }, toolContext());
+      () => [{ id: "desktop", workspace: "/" }],
+      (_id, name) => name.startsWith("mcp__cua_repl__") ? { handler: invoke, definition: { description: "Fixture CUA provider", parameters: name === CUA_JS_NAME ? CUA_PARAMETERS : CUA_RESET_PARAMETERS } } : undefined);
+    await tools.find(tool => tool.name === "select_computer")!.handler({ workdir: "/desktop" }, toolContext());
     allowed = false;
-    await expect(computer.handler({ action: "click", x: 0.5, y: 0.5 }, toolContext()))
+    await expect(tools.find(tool => tool.name === "mcp__cua_repl__js")!.handler({ code: "1" }, toolContext()))
       .rejects.toMatchObject({ status: 403, code: "namespace_forbidden" });
-    expect(screen).not.toHaveBeenCalled();
-  });
-
-  it("refreshes screen discovery before selecting a publisher absent from the startup snapshot", async () => {
-    const screen = vi.fn(async () => ({ status: "ok" }));
-    let connected = false;
-    const refresh = vi.fn(async (_context, name) => {
-      if (name === "select_computer") connected = true;
-    });
-    const tools = createManagedNamespaceTools(() => true,
-      () => [{ id: "omarchy", workspace: "/workspace" }], () => undefined, refresh, undefined,
-      () => connected ? { handler: screen } : undefined);
-    const context = toolContext();
-    expect(await tools.find(tool => tool.name === "select_computer")!.handler({ workdir: "/omarchy" }, context))
-      .toMatchObject({ tools: ["computer"] });
-    expect(refresh).toHaveBeenCalledWith(context, "select_computer");
-    await tools.find(tool => tool.name === "computer")!.handler({ action: "observe" }, context);
-    expect(screen).toHaveBeenCalledOnce();
-    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it("refreshes an epoch-bound retained route once before a new subagent namespace snapshot", async () => {

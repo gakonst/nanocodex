@@ -1,15 +1,15 @@
 # nanocodex-computer (experimental)
 
 Node attachment adapter for the persistent Nanocodex CUA companion. It exports
-the same `mcp__cua_repl__js` / `mcp__cua_repl__js_reset` function contract as
-Codex's `cua_repl` MCP server and the Rust integration.
+the `mcp__cua_repl__js` / `mcp__cua_repl__js_reset` names used by
+Codex MCP integration. The installed provider owns the descriptions and API.
 
 ```js
-import { createComputerTools, discoverComputer } from "nanocodex-computer";
+import { connectComputerTools, discoverComputer } from "nanocodex-computer";
 
 const executable = await discoverComputer();
 if (!executable) throw new Error("Install the companion with pnpm install:computer");
-const computer = createComputerTools({ executable });
+const computer = await connectComputerTools({ executable });
 // Add computer.tools to your existing createTools({ tools, workspace }) call.
 // Close the attachment before completing its resource cleanup:
 await computer.close();
@@ -35,3 +35,15 @@ input validator without importing Node APIs, for hosted Workers and brokers.
 
 See the [runtime and integration documentation](../../crates/experimental/nanocodex-computer/README.md)
 for OS requirements, CDP setup, release packaging and validation commands.
+
+`connectComputerTools` discovers MCP descriptions and schemas before publishing
+an attachment, then checks each conversation process against that catalog.
+Use `transport: "mcp"` with an external provider's exact executable and args;
+companion-specific flags are not added in that mode. This attachment supports
+the bundled argument schemas and rejects other schemas explicitly; use generic
+MCP registration for a provider with different tools or arguments.
+
+Managed `select_computer` returns the selected provider's exact declarations.
+Read those before calling CUA. Screen-only Mac, Windows, Linux and phone hosts
+are unsupported by this CUA path; their hardware publishers remain separate.
+The managed namespace does not publish `computer`.

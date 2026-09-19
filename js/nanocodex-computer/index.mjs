@@ -28,13 +28,34 @@ export async function discoverComputer({ binary } = {}) {
   }
 }
 
-/** A native attachment owns the executable/configuration, each conversation a JS scope. */
-export function createComputerTools({ executable, args = [], environment = {}, desktopRuntime }) {
-  if (!executable) throw new TypeError("A trusted CUA executable is required");
-  const launchArgs = [...args];
+/** Discover the provider's actual MCP declarations before publishing tools. */
+export async function connectComputerTools(options) {
+  if (!options?.executable) throw new TypeError("A trusted CUA executable is required");
+  const process = new ComputerProcess(options.executable, launchArguments(options), options.environment ?? {}, options.transport === "mcp");
+  try {
+    await process.initialize();
+    const definitions = await process.discover();
+    return createComputerTools({ ...options, definitions });
+  } finally { process.close(); }
+}
+
+function launchArguments({ args = [], transport }) {
+  const result = [...args];
+  if (transport === "mcp") return result;
   for (const [name, flag] of [["NANOCODEX_COMPUTER_SECURITY_CONFIG", "--security-config"], ["NANOCODEX_COMPUTER_CDP", "--cdp"], ["NANOCODEX_COMPUTER_BROWSER_PREFERENCES", "--browser-preferences"], ["NANOCODEX_COMPUTER_IAB_CONFIG", "--iab-config"], ["NANOCODEX_COMPUTER_RUNTIME_CONFIG", "--runtime-config"], ["NANOCODEX_COMPUTER_PLATFORM_CONFIG", "--platform-config"]]) {
-    if (process.env[name]) launchArgs.push(flag, process.env[name]);
+    if (process.env[name]) result.push(flag, process.env[name]);
   }
+  return result;
+}
+
+/** A native attachment owns the executable/configuration, each conversation a JS scope. */
+export function createComputerTools({ executable, args = [], environment = {}, desktopRuntime, transport, definitions }) {
+  if (!executable) throw new TypeError("A trusted CUA executable is required");
+  const launchArgs = launchArguments({ args, transport });
+  const catalog = definitions ?? [
+    { name: "js", description: CUA_DESCRIPTION, inputSchema: CUA_PARAMETERS },
+    { name: "js_reset", description: CUA_RESET_DESCRIPTION, inputSchema: CUA_RESET_PARAMETERS },
+  ];
   const sessions = new Map();
   let disposed = false;
   const releaseSession = id => {
@@ -81,8 +102,10 @@ export function createComputerTools({ executable, args = [], environment = {}, d
           }
           operation.throwIfAborted();
           if (disposed) throw new Error("CUA attachment is closed");
-          session.process = new ComputerProcess(executable, launchArgs, { ...environment, ...desktopEnvironment });
+          session.process = new ComputerProcess(executable, launchArgs, { ...environment, ...desktopEnvironment }, transport === "mcp");
           await session.process.initialize();
+          const discovered = await session.process.discover();
+          if (canonical(discovered) !== canonical(catalog)) throw new Error("CUA provider catalog changed; reconnect the attachment before invoking it");
         }
         const result = await session.process.rpc("tools/call", {
           name: reset ? "js_reset" : "js", arguments: value,
@@ -107,8 +130,8 @@ export function createComputerTools({ executable, args = [], environment = {}, d
   return Object.freeze({
     close,
     tools: [
-      namedTool(CUA_JS_NAME, { description: CUA_DESCRIPTION, parameters: CUA_PARAMETERS, supportsParallelToolCalls: true, handler: (input, context) => invoke(false, input, context), releaseSession, dispose: close }),
-      namedTool(CUA_RESET_NAME, { description: CUA_RESET_DESCRIPTION, parameters: CUA_RESET_PARAMETERS, supportsParallelToolCalls: true, handler: (input, context) => invoke(true, input, context), releaseSession, dispose: close }),
+      namedTool(CUA_JS_NAME, { description: catalog[0].description, parameters: catalog[0].inputSchema, supportsParallelToolCalls: true, handler: (input, context) => invoke(false, input, context), releaseSession, dispose: close }),
+      namedTool(CUA_RESET_NAME, { description: catalog[1].description, parameters: catalog[1].inputSchema, supportsParallelToolCalls: true, handler: (input, context) => invoke(true, input, context), releaseSession, dispose: close }),
     ],
   });
 }
@@ -137,10 +160,10 @@ function scheduleDeadline(callback, milliseconds) {
 }
 
 class ComputerProcess {
-  constructor(executable, args, environment) {
+  constructor(executable, args, environment, mcp = false) {
     const env = Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "SystemRoot", "LOCALAPPDATA", "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE", "NANOCODEX_COMPUTER_BACKGROUND", "NANOCODEX_HYPRLAND_CAPTURE", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "LANG", "SKY_ENABLE_AUDIO"]
       .filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
-    this.child = spawn(executable, [...args, "--allow-native-control", "serve"], { env: { ...env, ...environment }, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+    this.child = spawn(executable, mcp ? args : [...args, "--allow-native-control", "serve"], { env: { ...env, ...environment }, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
     this.pending = new Map(); this.sequence = 0; this.lines = new LineBuffer();
     this.child.stdout.on("data", chunk => {
       try {
@@ -166,6 +189,26 @@ class ComputerProcess {
   async initialize() {
     await this.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "nanocodex-computer", version: "0.1.0" } });
     await this.send({ jsonrpc: "2.0", method: "notifications/initialized" });
+  }
+  async discover() {
+    const tools = [], cursors = new Set();
+    let cursor;
+    do {
+      const page = await this.rpc("tools/list", cursor ? { cursor } : {});
+      if (!Array.isArray(page.tools)) throw new Error("CUA provider did not return an MCP tools/list catalog");
+      tools.push(...page.tools);
+      cursor = page.nextCursor;
+      if (cursor !== undefined && (typeof cursor !== "string" || !cursor || cursors.has(cursor))) throw new Error("CUA provider returned an invalid or repeated tools/list cursor");
+      cursors.add(cursor);
+    } while (cursor !== undefined);
+    return ["js", "js_reset"].map((name, index) => {
+      const matches = tools.filter(tool => tool.name === name);
+      if (matches.length !== 1 || typeof matches[0].description !== "string") throw new Error(`CUA provider must publish exactly one ${name} tool with its description`);
+      const tool = matches[0];
+      const expected = index === 0 ? CUA_PARAMETERS : CUA_RESET_PARAMETERS;
+      if (canonical(tool.inputSchema) !== canonical(expected)) throw new Error(`CUA provider ${name} schema is unsupported by this attachment; configure the provider through generic MCP instead`);
+      return { name, description: tool.description, inputSchema: tool.inputSchema };
+    });
   }
   send(value) {
     if (this.closed) throw this.closed;
@@ -246,4 +289,11 @@ export function outputContent(result) {
 function decodeBase64(data) {
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data) || !data.length) throw new TypeError("Invalid CUA base64 content");
   return Buffer.from(data, "base64");
+}
+
+function canonical(value) {
+  return JSON.stringify(value, function (_key, item) {
+    return item && typeof item === "object" && !Array.isArray(item)
+      ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item;
+  });
 }

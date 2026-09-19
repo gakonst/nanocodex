@@ -10,7 +10,7 @@ import { Agent } from "nanocodex/managed";
 import { createTools } from "nanocodex/tools";
 import * as Workspace from "nanocodex/node/workspace";
 import { createNodeProcessTools } from "nanocodex-tools/node";
-import { createComputerTools, discoverComputer } from "nanocodex-computer";
+import { connectComputerTools, discoverComputer } from "nanocodex-computer";
 import WebSocket from "ws";
 import { mergeAccountHands, restoredAccountHands } from "./account-hands.mjs";
 import { createVmTools, supportsLocalVms } from "./vm-tools.mjs";
@@ -793,7 +793,7 @@ export class DesktopRuntime extends EventEmitter {
     resource.abort.signal.throwIfAborted();
     const vmTools = this.#localVmTools(hand, resource);
     const computerExecutable = await discoverComputer({ binary: this.#state.defaults.binary });
-    const computer = computerExecutable ? createComputerTools({ executable: computerExecutable,
+    const computer = computerExecutable ? await connectComputerTools({ executable: computerExecutable,
       ...(process.platform === "linux" && !hand.agentId ? { desktopRuntime: join(this.#nativeScreenDirectory(hand), "desktop") } : {}) }) : undefined;
     if (computer) resource.add(computer.close);
     const tools = await createTools({ tools: [...processes.tools, ...vmTools, ...(computer?.tools ?? [])], workspace, attachmentId: hand.id, machines: [{ id: hand.id, name: hand.name, workspace: hand.workspace, capabilities: ["native", "shell", "filesystem", "process", "pipes", ...(computer ? ["computer"] : []), ...(vmTools.length ? ["vm_host"] : [])] }] });

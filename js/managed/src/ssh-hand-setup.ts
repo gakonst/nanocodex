@@ -18,7 +18,7 @@ type SetupOptions = {
 export function serverHandTool(options: SetupOptions): NamedTool {
   return {
     name: "server_hand",
-    description: "List vault SSH targets, connect a Linux server as an interactive Hand, or disconnect it. Use only for a server the user asked to connect. Connect installs a dedicated desktop container over the target-bound vault SSH identity; the server must provide Docker access. Keys and Hand credentials stay outside the transcript. Reconnect reuses its machine identity and workspace. A published screen is not proof of decoded video; verify with its screen tool or viewer.",
+    description: "List vault SSH targets, connect a Linux server as an interactive Hand, or disconnect it. Use only for a server the user asked to connect. Connect installs a dedicated desktop container over the target-bound vault SSH identity; the server must provide Docker access. Keys and Hand credentials stay outside the transcript. Reconnect reuses its machine identity and workspace. A published screen is not proof of decoded video; verify in the viewer. Screen publication alone does not provide a CUA MCP provider.",
     parameters: { type: "object", properties: {
       operation: { type: "string", enum: ["list", "connect", "disconnect"] },
       identity_ref: { type: "string", description: "Exact SSH reference from list; required for connect/disconnect." },

@@ -196,7 +196,7 @@ Nanocodex Codex/OAuth and Responses transports consume the same tool contract.
 
 ```rust,no_run
 use nanocodex_computer::{ComputerConfig, ComputerTools};
-let computer = ComputerTools::local(ComputerConfig::new("/usr/local/bin/nanocodex-computer"));
+let computer = ComputerTools::connect(ComputerConfig::new("/usr/local/bin/nanocodex-computer")).await?;
 // Register computer.js() and computer.reset() in your existing Tools builder.
 ```
 

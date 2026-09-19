@@ -537,6 +537,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
       machines: [{ id: "machine-a", name: "Machine A", workspace: "/a", capabilities: ["shell"] }],
     }));
     const selected = fixture.broker.machineTool("machine-a", "exec_command")!;
+    expect(selected.definition).toMatchObject(machineEntry("exec_command").definition);
 
     const replacement = fixture.socket();
     await fixture.broker.message(replacement.webSocket, JSON.stringify({

@@ -149,6 +149,7 @@ export type HostedToolsPreparedTool = Readonly<{
   connectGrantId?: string;
   appToolCatalogDigest?: string;
   canonicalName: string;
+  providerDefinition: HostedToolCatalogEntry["definition"];
   machine?: HostedMachine;
   entry: HostedToolCatalogEntry;
   invoke(request: HostedToolsInvokeRequest): Promise<HostedToolsInvocationOutcome>;
@@ -162,6 +163,7 @@ type HostedToolsCatalogBinding = Readonly<{
   leaseId: string;
   generation: number;
   wireName: string;
+  providerDefinition: HostedToolCatalogEntry["definition"];
   machine?: HostedMachine;
   entry: HostedToolCatalogEntry;
 }>;
@@ -181,6 +183,8 @@ export type HostedToolsCatalogValidator = (
 export type HostedToolsCodeTool = Readonly<{
   name: string;
   parallelSafe: boolean;
+  /** The admitted provider declaration, before namespace routing. */
+  definition?: HostedToolsCodeDefinition;
   /** Opaque immutable route identity for trusted broker-to-broker relays. */
   routeToken?: string;
   handler(
@@ -1008,6 +1012,7 @@ export class HostedToolsBrokerCore {
         ? {}
         : { appToolCatalogDigest: binding.appToolCatalogDigest }),
       canonicalName: binding.wireName,
+      providerDefinition: binding.providerDefinition,
       ...(binding.machine === undefined ? {} : { machine: binding.machine }),
       entry: binding.entry,
       invoke: (request: HostedToolsInvokeRequest) => this.#invoke(binding, request),
@@ -1018,6 +1023,7 @@ export class HostedToolsBrokerCore {
     return Object.freeze({
       name,
       parallelSafe: prepared.entry.parallel_safe,
+      definition: { ...prepared.providerDefinition, defer_loading: true as const },
       routeToken: prepared.routeToken,
       provider: prepared.entry.provider,
       remoteName: prepared.entry.remote_name,
@@ -1425,6 +1431,7 @@ export class HostedToolsBrokerCore {
           leaseId: state.lease_id ?? "offline",
           generation: state.generation,
           wireName: entry.definition.name,
+          providerDefinition: entry.definition,
           ...(machine === undefined ? {} : { machine }),
           entry: exposedEntry(entry, machine),
           ...(connectGrantId === undefined ? {} : { connectGrantId }),

@@ -448,7 +448,9 @@ impl AgentArgs {
         if configured_vm.is_none()
             && let Some(config) = nanocodex_computer::ComputerConfig::discover()
         {
-            let computer = nanocodex_computer::ComputerTools::local(config);
+            let computer = nanocodex_computer::ComputerTools::connect(config)
+                .await
+                .map_err(|error| eyre!(error.to_string()))?;
             tools = tools.add(computer.js()).add(computer.reset());
         }
         if let Some(managed_memory) = &managed_memory {

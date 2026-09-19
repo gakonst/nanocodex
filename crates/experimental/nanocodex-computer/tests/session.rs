@@ -263,3 +263,30 @@ async fn background_mode_cannot_be_retargeted_to_a_private_desktop() {
             .contains("Background CUA cannot be combined")
     );
 }
+
+#[tokio::test]
+#[ignore = "requires built CUA companion; pnpm test:computer runs this"]
+async fn discovers_an_external_mcp_command_before_publishing_its_tools() {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime/target/debug/nanocodex-computer");
+    let mut config = ComputerConfig::mcp(path);
+    // These are the provider's exact args. Appending companion flags again
+    // would cause the process to reject its command line.
+    config.args = vec![
+        "--fixture".into(),
+        "--allow-native-control".into(),
+        "serve".into(),
+    ];
+    let computer = ComputerTools::connect(config).await.unwrap();
+    let definition = serde_json::to_value(computer.js().definition()).unwrap();
+    assert!(definition.to_string().contains("mcp__cua_repl__js"));
+    assert!(definition.to_string().contains("Control native apps"));
+    assert!(
+        computer
+            .js()
+            .execute(input("nodeRepl.write('discovered');"), context("discovery"))
+            .await
+            .unwrap()
+            .success
+    );
+}

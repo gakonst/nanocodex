@@ -51,7 +51,7 @@ References:
   backends. Unsupported backends must refuse before input rather than discard
   the options.
 
-The live-screen `computer` service retains exclusive human-priority control.
+The internal live-screen service retains exclusive human-priority control. It does not register a model-facing `computer` tool or implement the CUA MCP API.
 Background app actions belong to `cua.getApp`, with exact app/window binding.
 Do not remove screen ownership checks to simulate concurrency.
 

@@ -37,6 +37,9 @@ pub struct ComputerConfig {
     pub environment: BTreeMap<OsString, OsString>,
     /// Private Linux Hand desktop directory; resolved when a session starts.
     pub desktop_runtime: Option<PathBuf>,
+    /// True for an exact external MCP command, without companion launch flags.
+    pub mcp_transport: bool,
+    provider_descriptions: Option<[String; 2]>,
 }
 
 impl ComputerConfig {
@@ -62,7 +65,17 @@ impl ComputerConfig {
             args,
             environment: BTreeMap::new(),
             desktop_runtime: None,
+            mcp_transport: false,
+            provider_descriptions: None,
         }
+    }
+
+    /// Configure an external CUA MCP provider with its exact host-supplied args.
+    pub fn mcp(executable: impl Into<PathBuf>) -> Self {
+        let mut config = Self::new(executable);
+        config.args.clear();
+        config.mcp_transport = true;
+        config
     }
 
     /// Discover the installed companion. An explicit setting never silently
@@ -151,8 +164,23 @@ pub trait ComputerExecutor: Send + Sync + 'static {
 #[derive(Clone)]
 pub struct ComputerTools {
     executor: Arc<dyn ComputerExecutor>,
+    descriptions: Option<Arc<[String; 2]>>,
 }
 impl ComputerTools {
+    /// Perform MCP discovery before publishing the provider's exact descriptions.
+    /// Unsupported argument schemas must use the generic MCP client instead.
+    pub async fn connect(mut config: ComputerConfig) -> Result<Self, ToolError> {
+        // Catalog discovery must not require starting the native display.
+        let mut discovery_config = config.clone();
+        discovery_config.desktop_runtime = None;
+        let process = Process::start(&discovery_config).await?;
+        let descriptions = process.descriptions.clone();
+        config.provider_descriptions = Some(descriptions.clone());
+        let mut tools = Self::local(config);
+        tools.descriptions = Some(Arc::new(descriptions));
+        Ok(tools)
+    }
+
     pub fn local(config: ComputerConfig) -> Self {
         let (dispatch, requests) = mpsc::unbounded_channel();
         tokio::spawn(route_sessions(config, requests));
@@ -161,18 +189,21 @@ impl ComputerTools {
     pub fn new(executor: impl ComputerExecutor) -> Self {
         Self {
             executor: Arc::new(executor),
+            descriptions: None,
         }
     }
     pub fn js(&self) -> ComputerTool {
         ComputerTool {
             executor: self.executor.clone(),
             reset: false,
+            descriptions: self.descriptions.clone(),
         }
     }
     pub fn reset(&self) -> ComputerTool {
         ComputerTool {
             executor: self.executor.clone(),
             reset: true,
+            descriptions: self.descriptions.clone(),
         }
     }
 }
@@ -181,6 +212,7 @@ impl ComputerTools {
 pub struct ComputerTool {
     executor: Arc<dyn ComputerExecutor>,
     reset: bool,
+    descriptions: Option<Arc<[String; 2]>>,
 }
 
 #[async_trait]
@@ -193,13 +225,19 @@ impl Tool for ComputerTool {
         if self.reset {
             ToolDefinition::function(
                 "mcp__cua_repl__js_reset",
-                include_str!("reset_description.md"),
+                self.descriptions
+                    .as_ref()
+                    .map_or(include_str!("reset_description.md"), |docs| {
+                        docs[1].as_str()
+                    }),
                 json!({"type":"object","properties":{},"additionalProperties":false}),
             )
         } else {
             ToolDefinition::function(
                 "mcp__cua_repl__js",
-                include_str!("description.md"),
+                self.descriptions
+                    .as_ref()
+                    .map_or(include_str!("description.md"), |docs| docs[0].as_str()),
                 serde_json::from_str::<Value>(include_str!("js-schema.json"))
                     .expect("embedded CUA schema is valid JSON"),
             )
@@ -364,15 +402,15 @@ struct Process {
     input: ChildStdin,
     output: BufReader<ChildStdout>,
     next_id: u64,
+    descriptions: [String; 2],
 }
 impl Process {
     async fn start(config: &ComputerConfig) -> Result<Self, ToolError> {
         let mut command = Command::new(&config.executable);
-        command
-            .args(&config.args)
-            .arg("--allow-native-control")
-            .arg("serve")
-            .env_clear();
+        command.args(&config.args).env_clear();
+        if !config.mcp_transport {
+            command.arg("--allow-native-control").arg("serve");
+        }
         // Desktop connection and OS home variables only. Account/API tokens do
         // not cross into a model-controlled JavaScript process.
         for name in [
@@ -439,12 +477,87 @@ impl Process {
             input,
             output,
             next_id: 0,
+            descriptions: Default::default(),
         };
         process.rpc("initialize", json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"nanocodex-computer","version":env!("CARGO_PKG_VERSION")}})).await?;
         process
             .send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
             .await?;
+        let descriptions = process.discover().await?;
+        let expected = config
+            .provider_descriptions
+            .as_ref()
+            .map(|docs| [docs[0].as_str(), docs[1].as_str()]);
+        if expected.is_some_and(|expected| {
+            expected != [descriptions[0].as_str(), descriptions[1].as_str()]
+        }) {
+            return Err(
+                "CUA provider catalog changed; reconnect the attachment before invoking it".into(),
+            );
+        }
+        process.descriptions = descriptions;
         Ok(process)
+    }
+    async fn discover(&mut self) -> Result<[String; 2], ToolError> {
+        let mut tools = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut cursors = std::collections::BTreeSet::new();
+        loop {
+            let page = self
+                .rpc(
+                    "tools/list",
+                    cursor
+                        .as_ref()
+                        .map_or_else(|| json!({}), |cursor| json!({"cursor": cursor})),
+                )
+                .await?;
+            tools.extend(
+                page["tools"]
+                    .as_array()
+                    .ok_or("CUA provider did not return an MCP tools/list catalog")?
+                    .iter()
+                    .cloned(),
+            );
+            match page.get("nextCursor") {
+                None => break,
+                Some(value) => {
+                    let next = value
+                        .as_str()
+                        .filter(|value| !value.is_empty())
+                        .ok_or("CUA provider returned an invalid tools/list cursor")?;
+                    if !cursors.insert(next.to_owned()) {
+                        return Err("CUA provider returned a repeated tools/list cursor".into());
+                    }
+                    cursor = Some(next.to_owned());
+                }
+            }
+        }
+        let mut descriptions = Vec::new();
+        for (name, schema) in [
+            (
+                "js",
+                serde_json::from_str::<Value>(include_str!("js-schema.json"))?,
+            ),
+            (
+                "js_reset",
+                json!({"type":"object","properties":{},"additionalProperties":false}),
+            ),
+        ] {
+            let found: Vec<_> = tools.iter().filter(|tool| tool["name"] == name).collect();
+            if found.len() != 1 {
+                return Err(format!("CUA provider must publish exactly one {name} tool").into());
+            }
+            if found[0]["inputSchema"] != schema {
+                return Err(format!("CUA provider {name} schema is unsupported by this attachment; configure the provider through generic MCP instead").into());
+            }
+            descriptions.push(
+                found[0]["description"]
+                    .as_str()
+                    .ok_or("CUA provider tool has no description")?
+                    .to_owned(),
+            );
+        }
+        Ok([descriptions.remove(0), descriptions.remove(0)])
     }
     async fn send(&mut self, value: Value) -> Result<(), ToolError> {
         let mut bytes = serde_json::to_vec(&value)?;

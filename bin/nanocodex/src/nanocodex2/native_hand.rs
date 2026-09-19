@@ -322,7 +322,9 @@ pub(super) async fn run_observed(
         {
             config.desktop_runtime = Some(state.directory.join("desktop"));
         }
-        let computer = nanocodex_computer::ComputerTools::local(config);
+        let computer = nanocodex_computer::ComputerTools::connect(config)
+            .await
+            .map_err(|error| ManagedError::Configuration(error.to_string()))?;
         tools = tools.add(computer.js()).add(computer.reset());
     }
     if let Some(browser) = browser {
