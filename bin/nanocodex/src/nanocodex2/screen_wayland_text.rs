@@ -1,5 +1,8 @@
 //! Opt-in text backends. Selection happens before delivery; errors never retry text.
-use nix::libc;
+use nix::{
+    sys::signal::{Signal, killpg},
+    unistd::Pid,
+};
 use std::{
     ffi::OsString, io, os::unix::fs::PermissionsExt, path::PathBuf, process::Stdio, time::Duration,
 };
@@ -130,9 +133,7 @@ async fn focused(executable: &std::path::Path) -> io::Result<bool> {
 struct Group(i32);
 impl Drop for Group {
     fn drop(&mut self) {
-        unsafe {
-            libc::kill(-self.0, libc::SIGKILL);
-        }
+        let _ = killpg(Pid::from_raw(self.0), Signal::SIGKILL);
     }
 }
 async fn read_limited(reader: impl tokio::io::AsyncRead + Unpin) -> io::Result<Vec<u8>> {
@@ -409,7 +410,10 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
-        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        assert_eq!(
+            nix::sys::signal::kill(Pid::from_raw(pid), None),
+            Err(nix::errno::Errno::ESRCH)
+        );
         let executable = f.script(
             "output",
             "/bin/dd if=/dev/zero bs=20000 count=1 2>/dev/null",
