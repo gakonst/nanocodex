@@ -61,22 +61,20 @@
     if (options?.emit !== false) await globalThis.nodeRepl?.write?.(value, 'cua.state');
   }
   async function emitImage(value, options) {
-    if (options?.emit !== false) await globalThis.nodeRepl?.emitImage?.(value);
+    if (options?.emit !== false) await globalThis.nodeRepl?.emitImage?.({bytes:value,mimeType:'image/png'});
   }
   function nativeTarget(computer, app) {
     const stateArgs = options => options?.disableDiffing === undefined ? {app} : {app,disableDiff:options.disableDiffing};
     return {
       async getAXState(options) {
-        const result = await computer.get_app_state({...stateArgs(options),screenshot:false});
+        const result = await computer.get_app_state(stateArgs(options));
         await emitState(result.text, options);
         return result.text;
       },
       async getScreenshot(options) {
-        const result = await computer.get_app_state({app,text:false});
+        const result = await computer.get_app_state({app});
         if (result.screenshot === null) {
-          const error = new Error(result.screenshotError?.message ?? ('Screenshot unavailable for ' + app + '.'));
-          if (result.screenshotError?.code !== undefined) error.code = result.screenshotError.code;
-          throw error;
+          throw new Error('Screenshot unavailable for ' + app + '.');
         }
         const screenshot = await imageFromUrl(result.screenshot.url);
         await emitImage(screenshot, options);
@@ -96,9 +94,7 @@
           ...(options?.mouseButton === undefined ? {} : {mouse_button:options.mouseButton}),
           ...(options?.clickCount === undefined ? {} : {click_count:options.clickCount})});
       },
-      drag(from,to,options) { return computer.drag({app,from_x:from[0],from_y:from[1],to_x:to[0],to_y:to[1],
-        ...(options?.mouseButton === undefined ? {} : {mouse_button:options.mouseButton}),
-        ...(options?.modifiers === undefined ? {} : {modifiers:options.modifiers})}); },
+      drag(from,to) { return computer.drag({app,from_x:from[0],from_y:from[1],to_x:to[0],to_y:to[1]}); },
       pressKey(key) { return computer.press_key({app,key}); },
       scroll(value,direction,pages) {
         return computer.scroll({app,...(Array.isArray(value) ? {x:value[0],y:value[1]} : {element_index:value}),direction,...(pages === undefined ? {} : {pages})});
@@ -125,8 +121,8 @@
   };
   async function createCUA({computer,browsers,readDocumentation = packagedDocumentation,getNodeRepl = () => globalThis.nodeRepl,getDocumentationContext = getNodeRepl}) {
     const documentation = new Map();
-    let coreSent = false, otherBrowserSent = false, queue = Promise.resolve();
-    const documentedBrowsers = new Set();
+    let coreText, coreRequestMeta, otherBrowserSent = false, queue = Promise.resolve();
+    const documentedBrowsers = new Map();
     const initialDoc = () => getDocumentationContext()?.env?.TINYSKY_ALT_INITIALIZE_DOCS ?? 'core-cua-repl';
     async function confirmationPolicy() {
       const metadata = getDocumentationContext()?.requestMeta?.['openai/confirmation_policies'];
@@ -134,15 +130,21 @@
       if (typeof value === 'string' && value.trim() !== '' && new TextEncoder().encode(value).length <= 12000) return value;
       return readDocumentation('confirmations');
     }
-    function emit(value = '', options) {
+    function enqueue(operation) {
       const output = getNodeRepl();
       const writer = output?.write;
       const sink = writer == null ? undefined : writer.bind(output);
       if (sink === undefined) return Promise.resolve();
-      const pending = queue.then(async () => {
+      const requestMeta = getDocumentationContext()?.requestMeta;
+      const pending = queue.then(() => operation(sink,requestMeta));
+      queue = pending.catch(() => {});
+      return pending;
+    }
+    function emit(value = '', options) {
+      return enqueue(async (sink,requestMeta) => {
         const browser = options?.browser;
         let core = '', shared = '', specific = '';
-        if (!coreSent) {
+        if (coreText === undefined) {
           const name = initialDoc();
           core = await readDocumentation(name);
           if (name === 'core-cua-repl') core += '\n' + await confirmationPolicy();
@@ -153,31 +155,61 @@
           if (value !== undefined && !documentedBrowsers.has(browser.browserId)) specific = value;
         }
         const state = options?.emit === false ? '' : typeof value === 'string' ? value : JSON.stringify(value);
-        if (core !== '') await sink(core,'cua.core');
-        coreSent = true;
+        if (core !== '') { await sink(core,'cua.core'); coreRequestMeta = requestMeta; }
+        coreText ??= core;
         const browserText = [shared,specific].filter(value => value !== '').join('\n\n');
-        if (browserText !== '') await sink(browserText,'cua.browser');
-        if (browser !== undefined) { otherBrowserSent = true; documentedBrowsers.add(browser.browserId); }
+        if (browser !== undefined && browserText !== '') {
+          await sink(browserText,'cua.browser.' + browser.browserId);
+          documentedBrowsers.set(browser.browserId,{text:browserText,requestMeta});
+        }
+        if (browser !== undefined) otherBrowserSent = true;
         if (state !== '') await sink(state,'cua.state');
       });
-      queue = pending.catch(() => {});
-      return pending;
+    }
+    function rewriteDocumentation() {
+      return enqueue(async (sink,requestMeta) => {
+        if (coreText && !(requestMeta != null && requestMeta === coreRequestMeta)) {
+          await sink(coreText,'cua.core');
+          coreRequestMeta = requestMeta;
+        }
+        for (const [id,record] of documentedBrowsers) {
+          if (requestMeta != null && requestMeta === record.requestMeta) continue;
+          await sink(record.text,'cua.browser.' + id);
+          record.requestMeta = requestMeta;
+        }
+      });
+    }
+    async function browserTabs(browser) {
+      const userTabs = browser.user?.openTabs ? browser.user.openTabs().catch(error => {globalThis.console?.error?.(error);return [];}) : Promise.resolve([]);
+      const [opened,controlled] = await Promise.all([userTabs,browser.tabs.list()]);
+      const tabs = new Map();
+      for (const tab of opened) tabs.set(tab.id,tab);
+      for (const tab of controlled) tabs.set(tab.id,tab);
+      return [...tabs.values()];
     }
     await emit();
     const result = {
+      rewriteDocumentation,
       async getState(options) {
-        const appPromise = typeof computer?.list_apps === 'function' ? computer.list_apps() : [];
-        const [apps, infos] = await Promise.all([appPromise,browsers?.list() ?? []]);
-        const states = browsers ? await Promise.all(infos.map(async info => {
-          const browser = await browsers.get(info.id);
-          const userTabs = browser.user?.openTabs ? browser.user.openTabs().catch(error => {globalThis.console?.error?.(error);return [];}) : [];
-          const [opened,controlled] = await Promise.all([userTabs,browser.tabs.list()]);
-          const tabs = new Map();
-          for (const tab of opened) tabs.set(tab.id,tab);
-          for (const tab of controlled) tabs.set(tab.id,tab);
-          return {...info,tabs:[...tabs.values()]};
-        })) : [];
-        const state = {apps,browsers:states};
+        const appPromise = (async () => {
+          if (computer === undefined) return [];
+          const target = computer.target;
+          switch (target) {
+            case 'windows': case 'mac': return computer.list_apps();
+            case 'linux': return [];
+            default: {const error = new Error(target);error.name = 'UnreachableCaseError';throw error;}
+          }
+        })();
+        const browserPromise = (async () => {
+          if (browsers === undefined) return [];
+          return Promise.all((await browsers.list()).map(async info => ({...info,tabs:await browserTabs(await browsers.get(info.id))})));
+        })();
+        const [apps,browserStates] = await Promise.allSettled([appPromise,browserPromise]);
+        const errors = [];
+        for (const [name,inventory] of Object.entries({'Native apps':apps,Browsers:browserStates})) {
+          if (inventory.status === 'rejected') errors.push(name + ': ' + String(inventory.reason));
+        }
+        const state = {apps:apps.status === 'fulfilled' ? apps.value : [],browsers:browserStates.status === 'fulfilled' ? browserStates.value : [],...(errors.length ? {errors} : {})};
         await emit(state,options);
         return state;
       }
@@ -252,7 +284,7 @@
             let browser;
             if (options?.browser !== undefined) { browser = await choose(options); selected = browser; }
             else browser = await browsers.get(info.id);
-            return (await browser.tabs.list()).map(tab => ({...tab,browserId:browser.browserId}));
+            return (await browserTabs(browser)).map(tab => ({...tab,browserId:browser.browserId}));
           }))).flat();
           await emit(tabs,{...options,browser:selected});
           return tabs;
@@ -261,32 +293,15 @@
     }
     if (computer !== undefined) Object.assign(result,{
       computer,
-      ...(computer.target === 'mac' && typeof computer.get_desktop_screenshot === 'function' ? {
-        async getScreenshot(options) {
-          const screenshot = await computer.get_desktop_screenshot();
-          await emitImage(screenshot, options);
-          return screenshot;
-        }
-      } : {}),
-      ...(typeof computer.list_app_windows === 'function' ? {async listWindows(identifier, options) {
-        if (typeof computer.list_app_windows !== 'function') throw new Error('Explicit native windows are unavailable.');
-        const windows = await computer.list_app_windows({app:identifier});
-        await emit(windows,options);
-        return windows;
-      }} : {}),
-      async getApp(identifier, options) {
-        if (options?.windowId !== undefined) {
-          if (!Number.isInteger(options.windowId) || options.windowId <= 0 || options.windowId > 0xffffffff) throw new TypeError('windowId must be a positive u32');
-          identifier = identifier + '#window=' + options.windowId;
-        }
-        if (typeof computer.get_app_state !== 'function') throw new Error('Native app bindings are unavailable for ' + computer.target + '.');
-        const state = await computer.get_app_state({app:identifier,disableDiff:true,screenshot:false});
+      async getApp(identifier) {
+        if (computer.target !== 'mac') throw new Error('Native app bindings are unavailable for ' + computer.target + '.');
+        const state = await computer.get_app_state({app:identifier,disableDiff:true});
         const app = nativeTarget(computer,state.app);
         await emit(state.text);
         return app;
       },
       async listApps(options) {
-        if (typeof computer.get_app_state !== 'function') throw new Error('Native app bindings are unavailable for ' + computer.target + '.');
+        if (computer.target !== 'mac') throw new Error('Native app bindings are unavailable for ' + computer.target + '.');
         const apps = await computer.list_apps();await emit(apps,options);return apps;
       }
     });
@@ -303,7 +318,7 @@
       // Read browser first and enqueue its construction before reading computer.
       // Actual Node provider imports remain outside this native adapter owner.
       const browserSetup = options.browser !== false ? Promise.resolve().then(() => {
-        const provider = browserFacade({rpc,trackOperation,deriveOperation,ownedYield,target:()=>({}),bytes,emitImage:value=>globalThis.nodeRepl.emitImage(value),emitBrowserDocumentation:async id=>rpc('browser.documentation',{browser:id})});
+        const provider = browserFacade({rpc,trackOperation,deriveOperation,ownedYield,target:()=>({}),bytes,emitImage:value=>globalThis.nodeRepl.emitImage({bytes:value,mimeType:'image/png'}),emitBrowserDocumentation:async id=>rpc('browser.documentation',{browser:id})});
         const wrap = info => provider.browser(info.id,info);
         return {value:{
           async list() {return (await rpc('browser.list')).map(info=>Object.fromEntries(
@@ -332,7 +347,7 @@
       const browsers = browserResult?.value, computer = computerResult?.value;
       const api = await createCUA({computer,browsers,getDocumentationContext:getPrivateNodeRepl});
       return api;
-    })().then(api => {Object.assign(cua,api);});
+    })().then(api => {Object.assign(cua,api,{initialize:api.getState});});
     return setup;
   }
   globalThis.cua = cua;

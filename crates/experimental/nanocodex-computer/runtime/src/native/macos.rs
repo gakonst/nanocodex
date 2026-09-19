@@ -2493,7 +2493,7 @@ unsafe extern "C" {
 }
 fn window_capture_match_error(count: usize) -> String {
     format!(
-        "Expected one capturable window matching the observed application window, found {count}. Open or select an application window and refresh its state; use cua.getScreenshot() to explicitly capture the full main display."
+        "Expected one capturable window matching the observed application window, found {count}. Open or select an application window and refresh its state."
     )
 }
 
@@ -2814,13 +2814,13 @@ mod screenshot_diagnostic_tests {
     }
 
     #[test]
-    fn ambiguous_or_missing_window_requires_explicit_desktop_capture() {
+    fn ambiguous_or_missing_window_requests_a_fresh_app_observation() {
         for count in [0, 2, 5] {
             let message = window_capture_match_error(count);
             assert!(message.contains(&format!("found {count}")));
             assert!(message.contains("matching the observed application window"));
-            assert!(message.contains("cua.getScreenshot()"));
-            assert!(message.contains("full main display"));
+            assert!(!message.contains("cua.getScreenshot()"));
+            assert!(!message.contains("full main display"));
             assert!(message.contains("refresh its state"));
         }
     }

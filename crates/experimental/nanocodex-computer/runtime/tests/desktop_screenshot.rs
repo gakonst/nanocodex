@@ -1,4 +1,4 @@
-//! Display capture must work with no apps or AX windows, and never bind action geometry.
+//! Removed desktop extensions are not advertised and cannot reach the backend.
 use serde_json::{Value, json};
 use skyre::{
     Error, Result,
@@ -34,7 +34,7 @@ impl Desktop for DesktopOnly {
         })
     }
     fn capabilities(&self) -> Vec<&'static str> {
-        vec![]
+        vec!["list_app_windows"]
     }
 }
 fn host(denied: bool) -> (Host, Rc<RefCell<Vec<&'static str>>>) {
@@ -52,46 +52,44 @@ fn eval(host: &mut Host, code: &str) -> Value {
     result
 }
 #[test]
-fn desktop_screenshot_is_read_only_and_emits_once_by_default() {
+fn public_facade_does_not_expose_desktop_capture_or_window_extensions() {
     let (mut host, calls) = host(false);
     let result = eval(
         &mut host,
-        "var shot = await cua.getScreenshot(); nodeRepl.write([shot instanceof Uint8Array, shot[0], shot[1]]);",
+        "nodeRepl.write(JSON.stringify([typeof cua.getScreenshot,typeof cua.listWindows,typeof cua.computer.get_desktop_screenshot,typeof cua.computer.list_app_windows]));",
     );
-    let outputs = result["outputs"].as_array().unwrap();
-    assert_eq!(
-        outputs.iter().filter(|o| o["channel"] == "image").count(),
-        1
-    );
-    assert!(outputs.iter().any(|o| o["value"] == "[ true, 137, 80 ]"));
-    assert_eq!(&*calls.borrow(), &["capture"]);
-    let result = eval(&mut host, "await cua.getScreenshot({emit:false});");
     assert!(
-        !result["outputs"]
+        result["outputs"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|o| o["channel"] == "image")
-    );
-    assert_eq!(&*calls.borrow(), &["capture", "capture"]);
-}
-#[test]
-fn desktop_screenshot_keeps_permission_errors_actionable() {
-    let (mut host, calls) = host(true);
-    let result = eval(
-        &mut host,
-        "try { await cua.getScreenshot(); } catch (e) { nodeRepl.write(JSON.stringify({message:e.message,code:e.code})); }",
-    );
-    assert!(
-        result["outputs"].as_array().unwrap().iter().any(|o| {
-            o["value"]
-                .as_str()
-                .and_then(|v| serde_json::from_str::<Value>(v).ok())
-                == Some(json!({"message":"Grant Screen Recording permission","code":-32003}))
-        }),
+            .any(|o| o["value"] == "[\"undefined\",\"undefined\",\"undefined\",\"undefined\"]"),
         "{result}"
     );
-    assert_eq!(&*calls.borrow(), &["capture"]);
+    assert!(calls.borrow().is_empty());
+}
+#[test]
+fn removed_sky_capture_is_unavailable_without_calling_the_backend() {
+    for denied in [false, true] {
+        let calls = Rc::new(RefCell::new(vec![]));
+        let mut engine = Engine::new(Box::new(DesktopOnly {
+            calls: calls.clone(),
+            denied,
+        }));
+        engine.security.authorize_native_control();
+        let error = engine
+            .execute(
+                "sky.execute",
+                &json!({"method":"get_desktop_screenshot","args":[]}),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, -32601);
+        assert_eq!(
+            error.message,
+            "Sky method unavailable: get_desktop_screenshot"
+        );
+        assert!(calls.borrow().is_empty());
+    }
 }
 #[test]
 fn default_backend_explicitly_reports_unsupported_desktop_capture() {
@@ -107,7 +105,7 @@ fn default_backend_explicitly_reports_unsupported_desktop_capture() {
 }
 
 #[test]
-fn restrictions_and_missing_host_grant_block_direct_and_facade_display_capture() {
+fn removed_capture_never_bypasses_restrictions_or_missing_host_grant() {
     use skyre::security::{Security, SecurityConfig};
 
     for (config, authorized, code) in [
@@ -117,7 +115,7 @@ fn restrictions_and_missing_host_grant_block_direct_and_facade_display_capture()
                 ..Default::default()
             },
             true,
-            -32010,
+            -32601,
         ),
         (
             SecurityConfig {
@@ -125,7 +123,7 @@ fn restrictions_and_missing_host_grant_block_direct_and_facade_display_capture()
                 ..Default::default()
             },
             true,
-            -32010,
+            -32601,
         ),
         (
             SecurityConfig {
@@ -133,7 +131,7 @@ fn restrictions_and_missing_host_grant_block_direct_and_facade_display_capture()
                 ..Default::default()
             },
             true,
-            -32010,
+            -32601,
         ),
         (
             SecurityConfig {
@@ -141,16 +139,16 @@ fn restrictions_and_missing_host_grant_block_direct_and_facade_display_capture()
                 ..Default::default()
             },
             true,
-            -32010,
+            -32601,
         ),
-        (SecurityConfig::default(), false, -32003),
+        (SecurityConfig::default(), false, -32601),
         (
             SecurityConfig {
                 preapproved_apps: vec!["com.apple.finder".into()],
                 ..Default::default()
             },
             false,
-            -32003,
+            -32601,
         ),
     ] {
         let calls = Rc::new(RefCell::new(vec![]));
@@ -171,27 +169,6 @@ fn restrictions_and_missing_host_grant_block_direct_and_facade_display_capture()
             )
             .unwrap_err();
         assert_eq!(error.code, code);
-        assert!(calls.borrow().is_empty());
-
-        let mut host = Host::new(Rc::new(RefCell::new(engine))).unwrap();
-        let result = eval(
-            &mut host,
-            r#"
-        try { await cua.getScreenshot(); }
-        catch (error) { nodeRepl.write(JSON.stringify({message:error.message,code:error.code})); }
-    "#,
-        );
-        let outputs = result["outputs"].as_array().unwrap();
-        assert!(!outputs.iter().any(|o| o["channel"] == "image"));
-        assert!(
-            outputs.iter().any(|o| {
-                o["value"]
-                    .as_str()
-                    .and_then(|v| serde_json::from_str::<Value>(v).ok())
-                    == Some(json!({"message":error.message,"code":error.code}))
-            }),
-            "{result}"
-        );
         assert!(calls.borrow().is_empty());
     }
 }

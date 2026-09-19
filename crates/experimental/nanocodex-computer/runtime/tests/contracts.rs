@@ -639,7 +639,7 @@ fn native_points_are_window_relative_on_negative_origin_displays() {
 }
 
 #[test]
-fn native_drag_preserves_button_and_modifiers_through_public_cua() {
+fn native_drag_ignores_unsupported_options_through_public_cua() {
     let engine = Rc::new(RefCell::new(Engine::new(Box::new(Fixture::default()))));
     let mut host = Host::new(engine.clone()).unwrap();
     eval(&mut host, "var app = await cua.getApp('fixture://native');");
@@ -653,7 +653,7 @@ fn native_drag_preserves_button_and_modifiers_through_public_cua() {
         .unwrap();
     assert_eq!(
         state["actions"][0],
-        json!({"kind":"drag","from":[20.0,30.0],"to":[80.0,90.0],"button":2,"modifiers":["shift","ctrl"]})
+        json!({"kind":"drag","from":[20.0,30.0],"to":[80.0,90.0],"button":0,"modifiers":[]})
     );
     eval(&mut host, "await app.drag([20,30],[80,90]);");
     let state = engine

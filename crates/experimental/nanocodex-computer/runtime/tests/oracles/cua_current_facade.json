@@ -1,0 +1,371 @@
+{
+  "keys": [
+    "browsers",
+    "computer",
+    "createBrowserTab",
+    "getApp",
+    "getBrowser",
+    "getState",
+    "getTab",
+    "listApps",
+    "listBrowsers",
+    "listTabs",
+    "rewriteDocumentation"
+  ],
+  "tabs": [
+    {
+      "id": "user",
+      "browserId": "one"
+    },
+    {
+      "id": "shared",
+      "title": "controlled",
+      "browserId": "one"
+    },
+    {
+      "id": "controlled",
+      "browserId": "one"
+    },
+    {
+      "id": "user",
+      "browserId": "two"
+    },
+    {
+      "id": "shared",
+      "title": "controlled",
+      "browserId": "two"
+    },
+    {
+      "id": "controlled",
+      "browserId": "two"
+    }
+  ],
+  "state": {
+    "apps": [
+      {
+        "id": "fixture.app"
+      }
+    ],
+    "browsers": [
+      {
+        "id": "one",
+        "tabs": [
+          {
+            "id": "user"
+          },
+          {
+            "id": "shared",
+            "title": "controlled"
+          },
+          {
+            "id": "controlled"
+          }
+        ]
+      },
+      {
+        "id": "two",
+        "tabs": [
+          {
+            "id": "user"
+          },
+          {
+            "id": "shared",
+            "title": "controlled"
+          },
+          {
+            "id": "controlled"
+          }
+        ]
+      }
+    ]
+  },
+  "nativeError": {
+    "apps": [],
+    "browsers": [
+      {
+        "id": "one",
+        "tabs": [
+          {
+            "id": "user"
+          },
+          {
+            "id": "shared",
+            "title": "controlled"
+          },
+          {
+            "id": "controlled"
+          }
+        ]
+      },
+      {
+        "id": "two",
+        "tabs": [
+          {
+            "id": "user"
+          },
+          {
+            "id": "shared",
+            "title": "controlled"
+          },
+          {
+            "id": "controlled"
+          }
+        ]
+      }
+    ],
+    "errors": [
+      "Native apps: Error: native unavailable"
+    ]
+  },
+  "bothErrors": {
+    "apps": [],
+    "browsers": [],
+    "errors": [
+      "Native apps: Error: native unavailable",
+      "Browsers: browser unavailable"
+    ]
+  },
+  "browserError": {
+    "apps": [
+      {
+        "id": "fixture.app"
+      }
+    ],
+    "browsers": [],
+    "errors": [
+      "Browsers: browser unavailable"
+    ]
+  },
+  "userFallback": [
+    {
+      "id": "shared",
+      "title": "controlled",
+      "browserId": "one"
+    },
+    {
+      "id": "controlled",
+      "browserId": "one"
+    }
+  ],
+  "firstDocs": [
+    {
+      "text": "doc:core-cua-repl\ndoc:confirmations",
+      "id": "cua.core"
+    },
+    {
+      "text": "doc:other-browser-apis\n\nbrowser:one",
+      "id": "cua.browser.one"
+    },
+    {
+      "text": "browser:two",
+      "id": "cua.browser.two"
+    }
+  ],
+  "sameRequest": [],
+  "newRequest": [
+    {
+      "text": "doc:core-cua-repl\ndoc:confirmations",
+      "id": "cua.core"
+    },
+    {
+      "text": "doc:other-browser-apis\n\nbrowser:one",
+      "id": "cua.browser.one"
+    },
+    {
+      "text": "browser:two",
+      "id": "cua.browser.two"
+    }
+  ],
+  "repeatedRequest": [],
+  "missingRequest": [
+    {
+      "text": "doc:core-cua-repl\ndoc:confirmations",
+      "id": "cua.core"
+    },
+    {
+      "text": "doc:other-browser-apis\n\nbrowser:one",
+      "id": "cua.browser.one"
+    },
+    {
+      "text": "browser:two",
+      "id": "cua.browser.two"
+    },
+    {
+      "text": "doc:core-cua-repl\ndoc:confirmations",
+      "id": "cua.core"
+    },
+    {
+      "text": "doc:other-browser-apis\n\nbrowser:one",
+      "id": "cua.browser.one"
+    },
+    {
+      "text": "browser:two",
+      "id": "cua.browser.two"
+    }
+  ],
+  "reads": [
+    "core-cua-repl",
+    "confirmations",
+    "other-browser-apis"
+  ],
+  "native": [
+    {
+      "app": "Fixture",
+      "disableDiff": true
+    },
+    {
+      "app": "fixture.app",
+      "disableDiff": true
+    },
+    {
+      "app": "fixture.app"
+    },
+    {
+      "app": "fixture.app"
+    },
+    {
+      "app": "fixture.app",
+      "from_x": 1,
+      "from_y": 2,
+      "to_x": 3,
+      "to_y": 4
+    },
+    {
+      "app": "fixture.app"
+    },
+    {
+      "app": "fixture.app"
+    }
+  ],
+  "images": [
+    {
+      "bytes": [
+        1,
+        2
+      ],
+      "mimeType": "image/png"
+    }
+  ],
+  "screenshotError": {
+    "message": "Screenshot unavailable for fixture.app."
+  },
+  "noScreenshot": {
+    "state": "fixture state"
+  },
+  "linux": {
+    "apps": [],
+    "browsers": [
+      {
+        "id": "one",
+        "tabs": [
+          {
+            "id": "user"
+          },
+          {
+            "id": "shared",
+            "title": "controlled"
+          },
+          {
+            "id": "controlled"
+          }
+        ]
+      },
+      {
+        "id": "two",
+        "tabs": [
+          {
+            "id": "user"
+          },
+          {
+            "id": "shared",
+            "title": "controlled"
+          },
+          {
+            "id": "controlled"
+          }
+        ]
+      }
+    ]
+  },
+  "windows": {
+    "apps": [
+      {
+        "id": "fixture.app"
+      }
+    ],
+    "browsers": [
+      {
+        "id": "one",
+        "tabs": [
+          {
+            "id": "user"
+          },
+          {
+            "id": "shared",
+            "title": "controlled"
+          },
+          {
+            "id": "controlled"
+          }
+        ]
+      },
+      {
+        "id": "two",
+        "tabs": [
+          {
+            "id": "user"
+          },
+          {
+            "id": "shared",
+            "title": "controlled"
+          },
+          {
+            "id": "controlled"
+          }
+        ]
+      }
+    ]
+  },
+  "unknown": {
+    "apps": [],
+    "browsers": [
+      {
+        "id": "one",
+        "tabs": [
+          {
+            "id": "user"
+          },
+          {
+            "id": "shared",
+            "title": "controlled"
+          },
+          {
+            "id": "controlled"
+          }
+        ]
+      },
+      {
+        "id": "two",
+        "tabs": [
+          {
+            "id": "user"
+          },
+          {
+            "id": "shared",
+            "title": "controlled"
+          },
+          {
+            "id": "controlled"
+          }
+        ]
+      }
+    ],
+    "errors": [
+      "Native apps: UnreachableCaseError: unknown"
+    ]
+  },
+  "platformErrors": [
+    "Native app bindings are unavailable for linux.",
+    "Native app bindings are unavailable for linux."
+  ]
+}

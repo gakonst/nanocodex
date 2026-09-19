@@ -179,7 +179,7 @@ fn failed_revision_and_media_publication_cannot_leave_coordinate_authority() {
 }
 
 #[test]
-fn optional_capture_preserves_ax_state_and_original_error_without_geometry() {
+fn optional_capture_preserves_ax_state_and_facade_error_without_geometry() {
     let (engine, state) = fixture();
     state.borrow_mut().fail_capture = true;
     let mut host = skyre::runtime::Host::new(Rc::new(RefCell::new(engine))).unwrap();
@@ -198,7 +198,7 @@ fn optional_capture_preserves_ax_state_and_original_error_without_geometry() {
     assert!(result.get("error").is_none(), "{result}");
     let expected = json!({
         "hasAX":true,"hasCombined":true,"hasScreenshot":false,
-        "captureError":{"message":"owned capture failure","code":Error::action("unused").code}
+        "captureError":{"message":"Screenshot unavailable for fixture://capture."}
     });
     assert!(
         result["outputs"].as_array().unwrap().iter().any(|o| {
@@ -213,7 +213,7 @@ fn optional_capture_preserves_ax_state_and_original_error_without_geometry() {
         !state.borrow().geometry,
         "failed optional capture grants no coordinate authority"
     );
-    assert_eq!(state.borrow().observation_captures, 2);
+    assert_eq!(state.borrow().observation_captures, 4);
     assert_eq!(state.borrow().ordinary_captures, 0);
 }
 
@@ -242,7 +242,7 @@ fn sky_optional_capture_keeps_error_and_ax_revision_but_explicit_capture_is_stri
 }
 
 #[test]
-fn public_text_observation_skips_capture_but_visual_observation_keeps_geometry() {
+fn public_observations_request_the_installed_combined_native_state() {
     use skyre::runtime::Host;
     use std::time::Duration;
     let (engine, state) = fixture();
@@ -255,8 +255,8 @@ fn public_text_observation_skips_capture_but_visual_observation_keeps_geometry()
         let result = host.evaluate(code, Duration::from_secs(3)).unwrap();
         assert!(result.get("error").is_none(), "{result}");
     }
-    assert_eq!(state.borrow().observation_captures, 0);
-    assert!(!state.borrow().geometry);
+    assert_eq!(state.borrow().observation_captures, 2);
+    assert!(state.borrow().geometry);
     let result = host
         .evaluate(
             "await app.getAXStateAndScreenshot({emit:false});",
@@ -264,7 +264,7 @@ fn public_text_observation_skips_capture_but_visual_observation_keeps_geometry()
         )
         .unwrap();
     assert!(result.get("error").is_none(), "{result}");
-    assert_eq!(state.borrow().observation_captures, 1);
+    assert_eq!(state.borrow().observation_captures, 3);
     assert!(state.borrow().geometry);
 }
 
@@ -289,7 +289,7 @@ fn cached_app_actions_validate_identity_without_relisting_and_reject_ended_proce
 }
 
 #[test]
-fn public_screenshot_skips_ax_tree_and_refreshes_geometry_each_time() {
+fn public_screenshot_requests_ax_tree_and_refreshes_geometry_each_time() {
     use skyre::runtime::Host;
     use std::time::Duration;
     let (engine, state) = fixture();
@@ -312,9 +312,9 @@ fn public_screenshot_skips_ax_tree_and_refreshes_geometry_each_time() {
         assert!(result.get("error").is_none(), "{result}");
         assert!(state.borrow().geometry);
     }
-    assert_eq!(state.borrow().snapshots, snapshots);
-    assert_eq!(state.borrow().prepared_captures, 2);
-    assert_eq!(state.borrow().observation_captures, 2);
+    assert_eq!(state.borrow().snapshots, snapshots + 2);
+    assert_eq!(state.borrow().prepared_captures, 0);
+    assert_eq!(state.borrow().observation_captures, 3);
     state.borrow_mut().fail_capture = true;
     let result = host
         .evaluate(

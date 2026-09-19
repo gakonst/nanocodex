@@ -71,7 +71,7 @@ var result=await first;
                 prelude_free(&mut host, &code),
                 json!({
                     "initial":{"keys":["initialize"],"settled":false},"samePromise":true,"sameOwner":true,
-                    "sameFacade":true,"sameInitialize":true,"resultUndefined":true,"ignoredReads":0,
+                    "sameFacade":true,"sameInitialize":false,"resultUndefined":true,"ignoredReads":0,
                     "browser":if browser {"object"} else {"undefined"},
                     "computer":if computer {"object"} else {"undefined"},
                     "state":{"apps":[],"browsers":[]}
@@ -233,7 +233,7 @@ fn public_setup_hosts_keep_independent_first_options_and_module_caches() {
                 &mut a,
                 "var {setupCUA} = await import('@oai/cua/tinyskyAlt');var p=setupCUA({browser:false,computer:false});await p;Object.keys(cua).sort()"
             ),
-            json!(["getState", "initialize"])
+            json!(["getState", "initialize", "rewriteDocumentation"])
         );
         assert_eq!(
             prelude_free(
@@ -358,8 +358,8 @@ var outcomes=await Promise.allSettled([outer,inner]);
                     "lateReads":0,"reentries":1,"statuses":["fulfilled","fulfilled"],
                     "undefinedValues":[true,true],
                     "keys":if different_options {
-                        vec!["browsers","computer","createBrowserTab","getApp","getBrowser","getState","getTab","initialize","listApps","listBrowsers","listTabs"]
-                    } else {vec!["getState","initialize"]},
+                        vec!["browsers","computer","createBrowserTab","getApp","getBrowser","getState","getTab","initialize","listApps","listBrowsers","listTabs","rewriteDocumentation"]
+                    } else {vec!["getState","initialize","rewriteDocumentation"]},
                     "browser":if different_options {"object"} else {"undefined"},
                     "computer":if different_options {"object"} else {"undefined"}
                 }),
@@ -436,7 +436,7 @@ var outcomes=await Promise.allSettled([outer,inner]);
                     "statuses":if outer_rejects {vec!["rejected","fulfilled"]}else{vec!["fulfilled","rejected"]},
                     "ownedErrors":if outer_rejects {json!([true,null])}else{json!([null,true])},
                     "undefinedValues":if outer_rejects {json!([null,true])}else{json!([true,null])},
-                    "keys":["getState","initialize"],"browser":"undefined","computer":"undefined"}),
+                    "keys":["getState","initialize","rewriteDocumentation"],"browser":"undefined","computer":"undefined"}),
                 "{runtime:?}, outer_rejects={outer_rejects}"
             );
             if outer_rejects {

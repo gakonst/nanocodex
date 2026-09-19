@@ -1,7 +1,11 @@
 {
-  "schema": 1,
-  "scope": "Nine observed full-original inert first-setup publication/assignment cases; native engine-specific nonextensible Error.message remains outside comparison",
-  "source_observations_sha256": "25540594c96abb2a42da3f2a888a400195aa384daeb73d02acccebd053683197",
+  "schema": 2,
+  "scope": "Current installed CUA factory composed with the retained pre-bootstrap compatibility setup seam; inert providers only. The installed globals module exports no setupCUA. Engine-specific nonextensible Error.message is excluded by the Rust comparison.",
+  "sourceHashes": {
+    "tinysky_alt/create_tinysky_alt.js": "d8c19eb3a82cfbd84ddc32625c05901fd3c7ad654db92e617ba1ab3bb16fdab4",
+    "tinysky_alt/globals.js": "3e2a88b85007a0124cb1852bac7d217d9ff67d534824f5d4fec96a26a02e408f",
+    "get_state.js": "6c234e87bbef5d35ee15f3b7dcde5f777991e622258ee069a43b0df3cf26592d"
+  },
   "cases": [
     {
       "id": "ordinary",
@@ -25,7 +29,8 @@
           "initialize",
           "listApps",
           "listBrowsers",
-          "listTabs"
+          "listTabs",
+          "rewriteDocumentation"
         ],
         "agent": {
           "type": "object",
@@ -63,7 +68,8 @@
           "initialize",
           "listApps",
           "listBrowsers",
-          "listTabs"
+          "listTabs",
+          "rewriteDocumentation"
         ],
         "agent": {
           "type": "object",
@@ -123,7 +129,8 @@
           "initialize",
           "listApps",
           "listBrowsers",
-          "listTabs"
+          "listTabs",
+          "rewriteDocumentation"
         ],
         "agent": {
           "type": "string",
@@ -153,7 +160,8 @@
           "initialize",
           "listApps",
           "listBrowsers",
-          "listTabs"
+          "listTabs",
+          "rewriteDocumentation"
         ],
         "agent": {
           "type": "string",
@@ -177,7 +185,8 @@
           "getApp",
           "getState",
           "initialize",
-          "listApps"
+          "listApps",
+          "rewriteDocumentation"
         ],
         "agent": {
           "type": "undefined",
@@ -197,7 +206,7 @@
         "resultUndefined": true,
         "error": {
           "name": "TypeError",
-          "message": "Cannot add property getState, object is not extensible"
+          "message": "Cannot add property rewriteDocumentation, object is not extensible"
         },
         "keys": [
           "initialize"
@@ -220,7 +229,8 @@
             "at": "cua-getState-set",
             "keys": [
               "getState",
-              "initialize"
+              "initialize",
+              "rewriteDocumentation"
             ],
             "agent": {
               "type": "object",
@@ -238,7 +248,8 @@
         },
         "keys": [
           "getState",
-          "initialize"
+          "initialize",
+          "rewriteDocumentation"
         ],
         "agent": {
           "type": "object",
@@ -260,7 +271,8 @@
               "browsers",
               "getBrowser",
               "getState",
-              "initialize"
+              "initialize",
+              "rewriteDocumentation"
             ],
             "agent": {
               "type": "object",
@@ -284,7 +296,8 @@
           "initialize",
           "listApps",
           "listBrowsers",
-          "listTabs"
+          "listTabs",
+          "rewriteDocumentation"
         ],
         "agent": {
           "type": "object",

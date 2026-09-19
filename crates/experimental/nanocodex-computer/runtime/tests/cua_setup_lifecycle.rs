@@ -20,7 +20,8 @@ nodeRepl.write(JSON.stringify({
   samePromise: setupOwnerPromise === __skyreInitialize(),
   settledUndefined: setupFirstResult === undefined,
   keys: Object.keys(cua).sort(),
-  installed: ['getState','getApp','listApps','getBrowser','getTab','createBrowserTab','listBrowsers','listTabs'].every(k => typeof cua[k] === 'function'),
+  initializeAliasesState: cua.initialize === cua.getState,
+  installed: ['getState','getApp','listApps','getBrowser','getTab','createBrowserTab','listBrowsers','listTabs','rewriteDocumentation'].every(k => typeof cua[k] === 'function'),
   providers: [typeof cua.computer, typeof cua.browsers]
 }));
 "#;
@@ -40,9 +41,9 @@ nodeRepl.write(JSON.stringify({
 "#;
 
 fn expected_first() -> Value {
-    json!({"samePromise":true,"settledUndefined":true,"installed":true,
+    json!({"samePromise":true,"settledUndefined":true,"installed":true,"initializeAliasesState":true,
         "providers":["object","object"],
-        "keys":["browsers","computer","createBrowserTab","getApp","getBrowser","getState","getTab","initialize","listApps","listBrowsers","listTabs"]})
+        "keys":["browsers","computer","createBrowserTab","getApp","getBrowser","getState","getTab","initialize","listApps","listBrowsers","listTabs","rewriteDocumentation"]})
 }
 fn expected_later() -> Value {
     json!({"samePromise":true,"sameFacade":true,"sameStateMethod":true,

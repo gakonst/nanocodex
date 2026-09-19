@@ -115,7 +115,6 @@ impl Trace {
                 let mut input = json!({"app":CANONICAL});
                 if let Some(value) = reply.disable_diff {
                     input["disableDiff"] = json!(value);
-                    input["screenshot"] = json!(false);
                 }
                 let expected = json!({"method":"get_app_state","args":[input]});
                 assert_eq!(*args, expected);

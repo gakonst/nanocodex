@@ -328,6 +328,11 @@ impl Engine {
             }
         }
     }
+    /// MCP lifecycle notification. It does not mint host-turn authority or reset JS.
+    pub fn notify_turn_ended(&mut self) -> Result<()> {
+        self.browsers.notify_turn_ended()?;
+        self.platforms.end_turn()
+    }
     pub fn end_session(&mut self) {
         self.browsers.cancel_all_raw_waits();
         self.approvals.clear();
@@ -1095,7 +1100,6 @@ impl Engine {
         } {
             "mac" => vec![
                 "list_apps",
-                "get_desktop_screenshot",
                 "get_app_state",
                 "click",
                 "drag",
@@ -1134,9 +1138,6 @@ impl Engine {
             ],
             _ => vec![],
         };
-        if self.desktop.capabilities().contains(&"list_app_windows") {
-            methods.push("list_app_windows");
-        }
         if std::env::var("SKY_ENABLE_AUDIO").as_deref() == Ok("1") {
             methods.extend(["start_audio_recording", "stop_audio_recording"]);
         }
