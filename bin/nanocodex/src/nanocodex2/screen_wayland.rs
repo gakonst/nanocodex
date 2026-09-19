@@ -23,6 +23,8 @@ use tokio::{
 };
 #[path = "screen_wayland_frames.rs"]
 mod frames;
+#[path = "screen_wayland_text.rs"]
+mod text;
 type Result<T> = std::result::Result<T, ManagedError>;
 fn error(e: impl std::fmt::Display) -> ManagedError {
     ManagedError::Configuration(e.to_string())
@@ -246,6 +248,11 @@ impl State {
         let mut input = self.input.lock().await;
         if let Input::Gamepad { gamepad } = &event {
             return self.gamepad.apply(gamepad).map_err(error);
+        }
+        if let Input::Text { text } = &event {
+            if self::text::type_text(text).await.map_err(error)? {
+                return Ok(());
+            }
         }
         let release = matches!(event, Input::ReleaseAll {});
         let gamepad = if release {
