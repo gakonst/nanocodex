@@ -206,6 +206,7 @@ func serveWayland(parent context.Context, config hostConfig) error {
 	}
 	peers := map[string]*hostPeer{}
 	preparations := map[string]context.CancelFunc{}
+	initialICE := newICEPreparation(ctx, service.ice)
 	lease := controlLease{}
 	var agent *agentJob
 	finishAgent := func(result agentResult) {
@@ -681,6 +682,9 @@ func serveWayland(parent context.Context, config hostConfig) error {
 					return errors.New("invalid remote connection")
 				}
 				connectionID = message.ConnectionID
+				if !config.Frames {
+					initialICE.prefetch()
+				}
 				lastAuthorization = time.Now()
 				authorizationTimer.Reset(25 * time.Second)
 				kind := "vm"
@@ -783,13 +787,14 @@ func serveWayland(parent context.Context, config hostConfig) error {
 					peers[message.ViewerID] = &hostPeer{viewerID: message.ViewerID, frames: true, answered: true}
 					continue
 				}
-				// Fetch fresh TURN credentials without blocking input from existing
-				// viewers. A departing viewer cancels its pending request.
+				// Reuse this host session's bounded ICE preparation without blocking
+				// input. A departing viewer cancels only its wait; peer renewals
+				// continue to fetch fresh credentials directly.
 				prepareContext, cancel := context.WithCancel(ctx)
 				id := message.ViewerID
 				preparations[id] = cancel
 				go func() {
-					ice, err := service.ice(prepareContext)
+					ice, err := initialICE.get(prepareContext)
 					emit(hostEvent{viewer: id, prepared: true, ice: ice, err: err})
 				}()
 			case "broadcast":
