@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ToolMap } from "nanocodex";
-import { CUA_JS_NAME, CUA_RESET_NAME, CUA_PARAMETERS, CUA_RESET_PARAMETERS } from "nanocodex-computer/contract";
+import { CUA_JS_NAME, CUA_RESET_NAME, CUA_PARAMETERS, CUA_RESET_PARAMETERS, CUA_DESCRIPTION, CUA_RESET_DESCRIPTION } from "nanocodex-computer/contract";
 // @ts-expect-error The runtime subpath is intentionally JavaScript-only.
 import { ToolRouter, toolMapSource } from "nanocodex-tools/runtime/tool-router";
 
@@ -9,6 +9,13 @@ import {
   createNamespaceExecutionTools as createRuntimeNamespaceExecutionTools,
   machineMountRoot,
 } from "../src/namespace-tools";
+
+const cuaTool = (name: string, handler: RoutedHandler) => ({
+  handler,
+  definition: { description: name === CUA_JS_NAME ? CUA_DESCRIPTION : CUA_RESET_DESCRIPTION,
+    parameters: name === CUA_JS_NAME ? CUA_PARAMETERS : CUA_RESET_PARAMETERS },
+});
+type RoutedHandler = (input: unknown, context: any) => unknown;
 
 const context = (overrides: Partial<{
   sessionId: string;
@@ -23,48 +30,44 @@ const context = (overrides: Partial<{
 });
 
 describe("cwd-root namespace execution", () => {
-  it("selects a Wayland screen without a companion and preserves its captured route and images", async () => {
-    const result = { [Symbol.for("nanocodex.toolResult")]: true, output: [{ type: "input_image", image_url: "data:image/jpeg;base64,original" }],
-      structuredResult: { image_url: "data:image/jpeg;base64,original", status: "ok" }, success: true };
-    const original = vi.fn(async () => result), replacement = vi.fn(async () => result);
-    let screen = original;
+  it("does not publish a custom computer tool or silently adapt screen-only Hands", async () => {
+    const screen = vi.fn();
     const runtime = createNamespaceExecutionRuntime(
-      () => [{ id: "omarchy", root: "/omarchy-desktop", workspace: "/srv/workspace" }],
+      () => [{ id: "screen", workspace: "/workspace" }],
       () => undefined, undefined, () => ({ handler: screen }),
     );
-    expect(await runtime.tools.select_computer!.handler({ workdir: "/omarchy-desktop" }, context()))
-      .toEqual({ workdir: "/omarchy-desktop", machine_id: "omarchy", tools: ["computer"] });
-    screen = replacement;
-    expect(await runtime.tools.computer!.handler({ action: "observe" }, context({ parentCallId: "next" }))).toBe(result);
-    expect(original).toHaveBeenCalledWith({ action: "observe" }, expect.anything());
-    expect(replacement).not.toHaveBeenCalled();
-    await runtime.tools.computer!.handler({ workdir: "/omarchy-desktop", action: "click", x: 0.2, y: 0.3 }, context({ parentCallId: "explicit-again" }));
-    expect(original).toHaveBeenCalledTimes(2);
-    expect(replacement).not.toHaveBeenCalled();
-    await expect(runtime.tools[CUA_JS_NAME]!.handler({ code: "await cua.getState()" }, context())).rejects.toThrow('computer({action:"observe"})');
-    await expect(runtime.tools[CUA_RESET_NAME]!.handler({}, context())).rejects.toThrow("no cua_repl runtime to reset");
-    await runtime.tools.select_computer!.handler({ workdir: "/omarchy-desktop" }, context({ parentCallId: "reselect" }));
-    await runtime.tools.computer!.handler({ action: "observe" }, context({ parentCallId: "after-reselect" }));
-    expect(replacement).toHaveBeenCalledOnce();
-    await runtime.tools.computer!.releaseSession?.("root-session");
-    await runtime.tools.computer!.handler({ action: "observe" }, context());
-    expect(replacement).toHaveBeenCalledTimes(2);
+    expect(runtime.tools).not.toHaveProperty("computer");
+    await expect(runtime.tools.select_computer!.handler({ workdir: "/screen" }, context()))
+      .rejects.toThrow("screen-only Hands are unsupported");
+    await expect(runtime.tools[CUA_JS_NAME]!.handler({ code: "await cua.getState()" }, context()))
+      .rejects.toThrow("No CUA provider");
+    expect(screen).not.toHaveBeenCalled();
   });
 
-  it("routes screen workdirs exactly and validates input before touching either desktop", async () => {
-    const first = vi.fn(), second = vi.fn();
+  it("returns discovered provider instructions and accepts provider-owned schemas", async () => {
+    const handler = vi.fn();
+    let description = "Provider-native initialization: await desktop.connect()";
+    let supported = true;
     const runtime = createNamespaceExecutionRuntime(
-      () => [{ id: "mac", workspace: "/Users/me" }, { id: "windows", workspace: "C:\\Users\\me" }],
-      () => undefined, undefined, id => ({ handler: id === "mac" ? first : second }),
+      () => [{ id: "native", root: "/native", workspace: "/workspace" }],
+      (_id, name) => name === CUA_JS_NAME || name === CUA_RESET_NAME ? {
+        handler, definition: { description, parameters: supported
+          ? (name === CUA_JS_NAME ? CUA_PARAMETERS : CUA_RESET_PARAMETERS)
+          : { type: "object", properties: { invented: { type: "string" } } } },
+      } : undefined,
     );
-    await expect(runtime.tools.computer!.handler({ action: "observe" }, context())).rejects.toThrow("Multiple computers");
-    await runtime.tools.computer!.handler({ workdir: "/windows", action: "click", x: 0.2, y: 0.4 }, context());
-    expect(second).toHaveBeenCalledExactlyOnceWith({ action: "click", x: 0.2, y: 0.4 }, expect.anything());
-    expect(first).not.toHaveBeenCalled();
-    await expect(runtime.tools.computer!.handler({ workdir: "/mac", action: "click", x: 2, y: 0 }, context())).rejects.toThrow("Invalid point");
-    await expect(runtime.tools.computer!.handler({ workdir: "/brain", action: "observe" }, context())).rejects.toThrow("no live screen");
-    expect(first).not.toHaveBeenCalled();
-    await expect(runtime.tools.computer!.handler({ action: "observe" }, context({ sessionId: "other" }))).rejects.toThrow("Multiple computers");
+    await expect(runtime.tools[CUA_JS_NAME]!.handler({ code: "1" }, context()))
+      .rejects.toThrow("select_computer first");
+    const selection = await runtime.tools.select_computer!.handler({ workdir: "/native" }, context());
+    expect(selection).toMatchObject({ definitions: [
+      { name: CUA_JS_NAME, description, parameters: CUA_PARAMETERS },
+      { name: CUA_RESET_NAME, description, parameters: CUA_RESET_PARAMETERS },
+    ] });
+    expect(runtime.tools[CUA_JS_NAME]!.description).not.toContain("cua.getApp");
+    supported = false;
+    const changed = await runtime.tools.select_computer!.handler({ workdir: "/native" }, context({ parentCallId: "new" }));
+    expect(changed).toMatchObject({ definitions: [{ parameters: { type: "object", properties: { invented: { type: "string" } } } }, { parameters: { type: "object", properties: { invented: { type: "string" } } } }] });
+    expect(handler).not.toHaveBeenCalled();
   });
 
   it("routes old identity paths through the same captured Hand as its readable name", async () => {
@@ -90,21 +93,23 @@ describe("cwd-root namespace execution", () => {
     let current = original;
     const runtime = createNamespaceExecutionRuntime(
       () => [{ id: "vm", root: "/vm", workspace: "/workspace" }],
-      (_id, name) => name === CUA_JS_NAME || name === CUA_RESET_NAME ? { handler: current } : undefined,
+      (_id, name) => name === CUA_JS_NAME || name === CUA_RESET_NAME ? cuaTool(name, current) : undefined,
     );
     runtime.capture(context());
     current = replacement;
-    expect(runtime.tools[CUA_JS_NAME]!.parameters).toEqual(CUA_PARAMETERS);
-    expect(runtime.tools[CUA_RESET_NAME]!.parameters).toEqual(CUA_RESET_PARAMETERS);
+    expect(runtime.tools[CUA_JS_NAME]!.parameters).toEqual({ type: "object", additionalProperties: true });
+    expect(runtime.tools[CUA_RESET_NAME]!.parameters).toEqual({ type: "object", additionalProperties: true });
     await runtime.tools.select_computer!.handler({ workdir: "/vm" }, context());
     await runtime.tools[CUA_JS_NAME]!.handler({ code: "await cua.getState();" }, context({ parentCallId: "next-cell" }));
     expect(original).toHaveBeenCalledWith({ code: "await cua.getState();" }, expect.objectContaining({ sessionId: "root-session" }));
     expect(replacement).not.toHaveBeenCalled();
     await runtime.tools[CUA_RESET_NAME]!.handler({}, context({ parentCallId: "reset-cell" }));
     expect(original).toHaveBeenLastCalledWith({}, expect.anything());
-    await expect(runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/vm", code: "1" }, context())).rejects.toThrow("Unknown CUA argument");
+    await runtime.tools[CUA_JS_NAME]!.handler({ provider_argument: "custom", code: "1" }, context());
+    expect(original).toHaveBeenLastCalledWith({ provider_argument: "custom", code: "1" }, expect.anything());
     await expect(runtime.tools.select_computer!.handler({ workdir: "/brain" }, context())).rejects.toThrow("no CUA runtime");
     await runtime.tools[CUA_JS_NAME]!.releaseSession?.("root-session");
+    await runtime.tools.select_computer!.handler({ workdir: "/vm" }, context({ parentCallId: "new-session-cell" }));
     await runtime.tools[CUA_JS_NAME]!.handler({ code: "1" }, context({ parentCallId: "new-session-cell" }));
     expect(replacement).toHaveBeenCalledTimes(1);
   });
@@ -113,7 +118,7 @@ describe("cwd-root namespace execution", () => {
     const second = vi.fn();
     const runtime = createNamespaceExecutionRuntime(
       () => [{ id: "one", workspace: "/workspace" }, { id: "two", workspace: "/workspace" }],
-      (id, name) => name === CUA_JS_NAME || name === CUA_RESET_NAME ? { handler: id === "one" ? first : second } : undefined,
+      (id, name) => name === CUA_JS_NAME || name === CUA_RESET_NAME ? cuaTool(name, id === "one" ? first : second) : undefined,
     );
     await expect(runtime.tools[CUA_JS_NAME]!.handler({ code: "1" }, context())).rejects.toThrow("Multiple computers");
     await runtime.tools.select_computer!.handler({ workdir: "/two" }, context());

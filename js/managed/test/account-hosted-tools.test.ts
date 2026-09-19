@@ -54,6 +54,20 @@ const snapshot = {
 };
 
 describe("account Hosted Tools provider", () => {
+  it("retains a machine provider declaration across account discovery", async () => {
+    const definition = { type: "function" as const, name: "mcp__cua_repl__js",
+      description: "Provider startup: await desktop.connect()", strict: false,
+      parameters: { type: "object", properties: { code: { type: "string" } }, required: ["code"] },
+      defer_loading: true as const };
+    const catalog = { tools: [], machines: [{ ...snapshot.machines[0], tools: [{
+      name: "mcp__cua_repl__js", parallel_safe: true, route_token: "cua-route", definition,
+    }] }] };
+    const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([
+      [ACCOUNT_A, async () => Response.json(catalog)],
+    ])), ACCOUNT_A, () => true);
+    await provider.refresh();
+    expect(provider.machineTool("laptop", "mcp__cua_repl__js")?.definition).toEqual(definition);
+  });
   it("joins screen discovery by machine identity without promoting an offline factory", async () => {
     const target = { machine_id: "laptop", machine_name: "Build laptop", id: "desktop", name: "Desktop",
       kind: "desktop", generation: "screen-generation", width: 1280, height: 800, controllable: true, agent_tools: true };
@@ -66,6 +80,8 @@ describe("account Hosted Tools provider", () => {
       capabilities: ["filesystem", "native-shell", "computer", "screen"] });
     expect(provider.machineOnline("laptop")).toBe(false);
     expect(provider.screenTool("laptop")).toBeDefined();
+    expect(provider.definitions().map(tool => tool.name)).not.toContain(screenTool(target).definition.name);
+    expect(provider.resolve(screenTool(target).definition.name)).toBeUndefined();
     expect(provider.screenTool("other")).toBeUndefined();
     // Metadata alone cannot bind a route for a different screen generation.
     catalog = { ...catalog, screens: [{ ...target, generation: "replacement" }] };
@@ -73,6 +89,19 @@ describe("account Hosted Tools provider", () => {
     expect(provider.screenTool("laptop")).toBeUndefined();
     expect(provider.screenMachines()).toEqual([]);
     expect(provider.machines()[0]!.capabilities).not.toContain("screen");
+  });
+  it.each(["mac", "windows", "linux", "phone"])("keeps %s screen publishers internal to the viewer", async kind => {
+    const target = { machine_id: `screen-${kind}`, machine_name: "Fixture screen", id: "desktop", name: "Screen",
+      kind, generation: "generation", width: 800, height: 600, controllable: true, agent_tools: true };
+    const published = screenTool(target);
+    const catalog = { tools: [published], machines: [], screens: [target] };
+    const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([
+      [ACCOUNT_A, async () => Response.json(catalog)],
+    ])), ACCOUNT_A, () => true);
+    await provider.refresh();
+    expect(provider.screenTool(target.machine_id)).toBeDefined();
+    expect(provider.definitions()).toEqual([]);
+    expect(provider.resolve(published.definition.name)).toBeUndefined();
   });
   it("returns transitioned SQL rows without a second SELECT and retains failed transitions", async () => {
     const namespace = (env as unknown as {

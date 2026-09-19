@@ -149,6 +149,7 @@ export type HostedToolsPreparedTool = Readonly<{
   connectGrantId?: string;
   appToolCatalogDigest?: string;
   canonicalName: string;
+  providerDefinition: HostedToolCatalogEntry["definition"];
   machine?: HostedMachine;
   entry: HostedToolCatalogEntry;
   invoke(request: HostedToolsInvokeRequest): Promise<HostedToolsInvocationOutcome>;
@@ -162,6 +163,7 @@ type HostedToolsCatalogBinding = Readonly<{
   leaseId: string;
   generation: number;
   wireName: string;
+  providerDefinition: HostedToolCatalogEntry["definition"];
   machine?: HostedMachine;
   entry: HostedToolCatalogEntry;
 }>;
@@ -181,6 +183,8 @@ export type HostedToolsCatalogValidator = (
 export type HostedToolsCodeTool = Readonly<{
   name: string;
   parallelSafe: boolean;
+  /** The admitted provider declaration, before namespace routing. */
+  definition?: HostedToolsCodeDefinition;
   /** Opaque immutable route identity for trusted broker-to-broker relays. */
   routeToken?: string;
   handler(
@@ -196,7 +200,7 @@ export type HostedToolsInvocationContext = Readonly<
 
 export type HostedToolsAuthorizationContext = Pick<ToolContext, "sessionId" | "subagent">;
 
-export type HostedMachineToolName = (typeof HOSTED_MACHINE_TOOL_NAMES)[number];
+export type HostedMachineToolName = (typeof HOSTED_MACHINE_TOOL_NAMES)[number] | `mcp__cua_repl__${string}`;
 
 export interface HostedToolsDynamicProvider {
   definitions(): readonly HostedToolsCodeDefinition[];
@@ -427,7 +431,7 @@ export class HostedToolsBrokerCore {
     name: HostedMachineToolName,
     context?: HostedToolsAuthorizationContext,
   ): HostedToolsCodeTool | undefined {
-    if (!MACHINE_TOOL_NAMES.has(name)) return undefined;
+    if (!MACHINE_TOOL_NAMES.has(name) && !name.startsWith("mcp__cua_repl__")) return undefined;
     const binding = this.#catalogBindings().find((candidate) => (
       candidate.machine?.id === machineId && candidate.wireName === name
     ));
@@ -449,7 +453,7 @@ export class HostedToolsBrokerCore {
     name: HostedMachineToolName,
     context?: HostedToolsAuthorizationContext,
   ): HostedToolsCodeTool | undefined {
-    if (!MACHINE_TOOL_NAMES.has(name)) return undefined;
+    if (!MACHINE_TOOL_NAMES.has(name) && !name.startsWith("mcp__cua_repl__")) return undefined;
     const binding = this.#catalogBindings(undefined, true).find((candidate) => (
       candidate.routeId === routeId
       && candidate.machine?.id === machineId
@@ -779,6 +783,7 @@ export class HostedToolsBrokerCore {
       if (initial.expectedAttachmentId !== undefined) {
         const extra = frame.tools.find((entry) => (
           !MACHINE_TOOL_NAMES.has(entry.definition.name)
+          && !entry.definition.name.startsWith("mcp__cua_repl__")
           && !ATTACHED_OVERLAY_TOOL_NAMES.has(entry.definition.name)
         ));
         if (extra !== undefined) {
@@ -1008,6 +1013,7 @@ export class HostedToolsBrokerCore {
         ? {}
         : { appToolCatalogDigest: binding.appToolCatalogDigest }),
       canonicalName: binding.wireName,
+      providerDefinition: binding.providerDefinition,
       ...(binding.machine === undefined ? {} : { machine: binding.machine }),
       entry: binding.entry,
       invoke: (request: HostedToolsInvokeRequest) => this.#invoke(binding, request),
@@ -1018,6 +1024,7 @@ export class HostedToolsBrokerCore {
     return Object.freeze({
       name,
       parallelSafe: prepared.entry.parallel_safe,
+      definition: { ...prepared.providerDefinition, defer_loading: true as const },
       routeToken: prepared.routeToken,
       provider: prepared.entry.provider,
       remoteName: prepared.entry.remote_name,
@@ -1425,6 +1432,7 @@ export class HostedToolsBrokerCore {
           leaseId: state.lease_id ?? "offline",
           generation: state.generation,
           wireName: entry.definition.name,
+          providerDefinition: entry.definition,
           ...(machine === undefined ? {} : { machine }),
           entry: exposedEntry(entry, machine),
           ...(connectGrantId === undefined ? {} : { connectGrantId }),
@@ -1499,11 +1507,13 @@ function reservedMachineEntry(
   entry: HostedToolCatalogEntry,
   machine: HostedMachine | undefined,
 ): boolean {
-  return machine !== undefined && MACHINE_TOOL_NAMES.has(entry.definition.name);
+  return machine !== undefined && MACHINE_TOOL_NAMES.has(entry.definition.name)
+    && !entry.definition.name.startsWith("mcp__cua_repl__");
 }
 
 function reservedMachineBinding(binding: HostedToolsCatalogBinding): boolean {
-  return binding.machine !== undefined && MACHINE_TOOL_NAMES.has(binding.wireName);
+  return binding.machine !== undefined && MACHINE_TOOL_NAMES.has(binding.wireName)
+    && !binding.wireName.startsWith("mcp__cua_repl__");
 }
 
 function validateMachineToolContracts(entries: readonly HostedToolCatalogEntry[]): void {
@@ -1605,7 +1615,9 @@ function exposedEntry(entry: HostedToolCatalogEntry, machine: HostedMachine | un
   const definition = {
     ...entry.definition,
     name: exposedName,
-    description: `Routes to ${routeName}. ${entry.definition.description}`,
+    description: entry.definition.name.startsWith("mcp__cua_repl__")
+      ? entry.definition.description
+      : `Routes to ${routeName}. ${entry.definition.description}`,
   };
   return Object.freeze({
     ...entry,

@@ -1001,8 +1001,12 @@ async fn open_workspace_agent_with_settings(
         .without_defaults()
         .add(WorkspaceTools::new(&workspace));
     if let Some(config) = nanocodex_computer::ComputerConfig::discover() {
-        let computer = nanocodex_computer::ComputerTools::local(config);
-        tools = tools.add(computer.js()).add(computer.reset());
+        let computer = nanocodex_computer::ComputerTools::connect(config)
+            .await
+            .map_err(|error| ManagedError::Configuration(error.to_string()))?;
+        for tool in computer.tools() {
+            tools = tools.add(tool);
+        }
     }
     let tools = tools
         .build()

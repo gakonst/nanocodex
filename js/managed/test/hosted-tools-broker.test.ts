@@ -41,6 +41,35 @@ type CallRow = NonNullable<ReturnType<HostedToolsBrokerPersistence["call"]>>;
 type CallState = CallRow["state"];
 
 describe("HostedToolsBroker socket-owned protocol", () => {
+  it("publishes every discovered CUA contract on leased Hands without a fixed tool allowlist", async () => {
+    const fixture = createFixture();
+    const host = fixture.socket(undefined, undefined, undefined, "leased-vm", NOW + 10, "cua-route");
+    const names = ["js", "js_reset", "js_add_node_module_dir", "future_provider_tool"];
+    const tools = names.map((name) => ({
+      ...entry(`mcp__cua_repl__${name}`),
+      definition: {
+        type: "function" as const, name: `mcp__cua_repl__${name}`,
+        description: `Provider contract for ${name}`, strict: false,
+        parameters: { type: "object", properties: { provider_argument: { type: "string" } } },
+      },
+    }));
+    await fixture.broker.message(host.webSocket, JSON.stringify({
+      type: "catalog", attachment_id: "leased-vm", tools,
+      machines: [{ id: "leased-vm", name: "CUA fixture", workspace: "/workspace", capabilities: ["computer"] }],
+    }));
+    expect(host.sent).toEqual([{ type: "ready" }]);
+    expect(host.closed).toBeUndefined();
+    const discovered = fixture.broker.provider().definitions();
+    expect(discovered).toHaveLength(names.length);
+    for (const tool of tools) {
+      expect(discovered).toContainEqual(expect.objectContaining({
+        description: tool.definition.description, parameters: tool.definition.parameters,
+      }));
+      expect(fixture.broker.machineTool("leased-vm", tool.definition.name as `mcp__cua_repl__${string}`)?.definition)
+        .toMatchObject(tool.definition);
+    }
+  });
+
   it("accepts one immutable catalog and exposes provider metadata without public identity pins", async () => {
     const fixture = createFixture();
     const host = fixture.socket();
@@ -537,6 +566,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
       machines: [{ id: "machine-a", name: "Machine A", workspace: "/a", capabilities: ["shell"] }],
     }));
     const selected = fixture.broker.machineTool("machine-a", "exec_command")!;
+    expect(selected.definition).toMatchObject(machineEntry("exec_command").definition);
 
     const replacement = fixture.socket();
     await fixture.broker.message(replacement.webSocket, JSON.stringify({

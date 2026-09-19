@@ -34,6 +34,7 @@ type AccountHostedMachine = Readonly<{
   tools: readonly Readonly<{
     name: HostedMachineToolName;
     parallel_safe: boolean;
+    definition?: HostedToolsCodeDefinition;
     route_token: string;
   }>[];
 }>;
@@ -230,6 +231,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
             return tool?.routeToken === undefined ? [] : [{
               name,
               parallel_safe: tool.parallelSafe,
+              definition: tool.definition,
               route_token: tool.routeToken,
             }];
           }),
@@ -356,7 +358,8 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   }
 
   resolve(name: string): HostedToolsCodeTool | undefined {
-    return this.#allowed() ? this.#tools.get(name) : undefined;
+    const tool = this.#allowed() ? this.#tools.get(name) : undefined;
+    return tool?.provider === "screens" ? undefined : tool;
   }
 
   machines(context?: AuthorizationContext): readonly HostedMachine[] {
@@ -475,17 +478,21 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       };
       tools.set(definition.name, Object.freeze(tool));
     }
+    // Screen publishers remain available to the trusted viewer/internal route,
+    // but are not a model-facing alternative to an actual CUA MCP provider.
     this.#definitions = Object.freeze(snapshot.tools
+      .filter((entry) => entry.provider !== "screens")
       .map((entry) => entry.definition)
       .filter((definition) => tools.has(definition.name)));
     this.#candidates = Object.freeze(snapshot.tools
-      .filter((entry) => tools.has(entry.definition.name)));
+      .filter((entry) => entry.provider !== "screens" && tools.has(entry.definition.name)));
     const machineTools = new Map<string, HostedToolsCodeTool>();
     for (const entry of snapshot.machines) {
       for (const route of entry.tools) {
         machineTools.set(machineToolKey(entry.machine.id, route.name), Object.freeze({
           name: route.name,
           parallelSafe: route.parallel_safe,
+          definition: route.definition,
           routeToken: route.route_token,
           handler: (
             input: unknown,

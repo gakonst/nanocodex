@@ -1,6 +1,5 @@
 import type { ToolMap } from "nanocodex";
-import { SCREEN_DESCRIPTION, SCREEN_PARAMETERS, screenAction } from "./hand-remote-agent";
-import { CUA_JS_NAME, CUA_RESET_NAME, CUA_DESCRIPTION, CUA_PARAMETERS, CUA_RESET_DESCRIPTION, CUA_RESET_PARAMETERS, validateInput } from "nanocodex-computer/contract";
+import { CUA_JS_NAME, CUA_RESET_NAME } from "nanocodex-computer/contract";
 import {
   createNamespaceManifest,
   createNamespaceScope,
@@ -21,6 +20,7 @@ const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
 const DEFAULT_CWD = "/brain";
 
 export type RoutedTool = Readonly<{
+  definition?: Readonly<{ description?: string; parameters?: Record<string, unknown> }>;
   handler(input: unknown, context: ToolContext): unknown | Promise<unknown>;
 }>;
 
@@ -120,42 +120,18 @@ export function createNamespaceExecutionRuntime(
   const computer = (context: ToolContext): MountedHand => {
     const retained = computers.get(context.sessionId);
     if (retained) return retained;
-    const available = [...cell(context).hands.values()].filter(hand => hand.screen || (hand.cua && hand.cuaReset));
+    const available = [...cell(context).hands.values()].filter(hand => hand.cua && hand.cuaReset);
     if (available.length !== 1) {
       throw new Error(available.length === 0
-        ? "No computer is attached to this conversation"
+        ? "No CUA provider is attached to this conversation; a screen publisher alone does not implement cua_repl"
         : "Multiple computers are attached. Call select_computer with an explicit Hand workdir first.");
     }
-    const selected = available[0]!;
-    computers.set(context.sessionId, selected);
-    return selected;
+    throw new Error("Call select_computer first to read the attached CUA provider contract");
   };
 
   const tools: ToolMap = {
-    computer: {
-      description: `${SCREEN_DESCRIPTION} Supply a Hand workdir from environment or mount, or call select_computer first. Prefer this tool for the visible desktop. /brain has no screen.`,
-      parameters: { ...SCREEN_PARAMETERS, properties: { ...SCREEN_PARAMETERS.properties,
-        workdir: { type: "string", description: "Hand workdir; omit to use the selected computer." },
-      } },
-      handler: async (input, context) => {
-        const value = record(input);
-        const workdir = optionalString(value.workdir, "workdir");
-        const action = screenAction(without(value, "workdir"));
-        const binding = cell(context);
-        const requested = workdir
-          ? binding.hands.get(routeNamespaceCwd(binding.scope, canonicalCwd(binding, workdir), "namespace.discover").mount.mountId)
-          : computer(context);
-        const selected = computers.get(context.sessionId);
-        // Repeated workdirs must not move a click to a new publication after
-        // observing the old one. select_computer explicitly refreshes the route.
-        const hand = selected && selected.machineId === requested?.machineId ? selected : requested;
-        if (!hand?.screen) throw new Error(`Hand ${hand?.root ?? workdir} has no live screen. ${hand?.cua && hand.cuaReset ? "Use select_computer and cua_repl.js for its native CUA runtime." : "Connect its screen publisher, then select it again."}`);
-        computers.set(context.sessionId, hand);
-        return hand.screen.handler(action, context);
-      }, releaseSession, dispose,
-    },
     select_computer: {
-      description: "Select the Hand for subsequent computer, cua_repl.js and cua_repl.js_reset calls. Returns available tools: use computer for the live screen; cua_repl.js requires a native CUA runtime. Use a workdir returned by mount or environment. One available computer is selected automatically; multiple computers require an explicit selection. Connections remain pinned until you select again. /brain has no desktop.",
+      description: "Select the Hand for subsequent cua_repl.js and cua_repl.js_reset calls. Requires an attached CUA provider; a screen publisher alone is not a CUA provider. Use a workdir returned by mount or environment. Call this before the first CUA call to read the provider descriptions and schemas. Connections remain pinned until you select again. /brain has no desktop.",
       parameters: { type: "object", properties: { workdir: { type: "string", description: "Mounted Hand root selecting the computer." } }, required: ["workdir"], additionalProperties: false },
       handler: async (input, context) => {
         const value = record(input);
@@ -164,29 +140,36 @@ export function createNamespaceExecutionRuntime(
         const binding = cell(context);
         const route = routeNamespaceCwd(binding.scope, canonicalCwd(binding, workdir), "namespace.discover");
         const hand = binding.hands.get(route.mount.mountId);
-        if (!hand?.screen && (!hand?.cua || !hand.cuaReset)) throw new Error(`namespace mount ${route.mount.root} has no CUA runtime or live screen`);
+        if (!hand?.cua || !hand.cuaReset) throw new Error(`namespace mount ${route.mount.root} has no CUA runtime; screen-only Hands are unsupported by cua_repl`);
+        const definitions = [hand.cua, hand.cuaReset].map((tool, index) => {
+          const name = index === 0 ? CUA_JS_NAME : CUA_RESET_NAME;
+          const definition = tool.definition;
+          if (!definition || typeof definition.description !== "string"
+            || !definition.parameters || typeof definition.parameters !== "object") {
+            throw new Error(`Hand ${hand.root} has no discovered ${name} contract; reconnect its CUA provider`);
+          }
+          return { name, description: definition.description, parameters: definition.parameters };
+        });
         computers.set(context.sessionId, hand);
         return { workdir: hand.root, machine_id: hand.machineId,
-          tools: [...(hand.screen ? ["computer"] : []), ...(hand.cua && hand.cuaReset ? [CUA_JS_NAME, CUA_RESET_NAME] : [])] };
+          tools: [CUA_JS_NAME, CUA_RESET_NAME], definitions };
       }, releaseSession, dispose,
     },
     [CUA_JS_NAME]: {
-      description: `${CUA_DESCRIPTION} When multiple Hands are attached, choose one with select_computer first.`,
-      parameters: CUA_PARAMETERS,
+      description: "Execute JavaScript with the selected Hand’s CUA MCP provider. Before the first call, use select_computer and follow its returned provider description exactly. Available JavaScript APIs belong to that provider.",
+      parameters: { type: "object", additionalProperties: true },
       handler: async (input, context) => {
-        validateInput(input);
         const hand = computer(context);
-        if (!hand.cua) throw new Error(`Hand ${hand.root} provides live screen control through computer. Call computer({action:"observe"}) to see it; this Hand has no native cua_repl runtime.`);
+        if (!hand.cua) throw new Error(`Hand ${hand.root} has no cua_repl provider`);
         return hand.cua.handler(input, context);
       }, releaseSession, dispose,
     },
     [CUA_RESET_NAME]: {
-      description: CUA_RESET_DESCRIPTION,
-      parameters: CUA_RESET_PARAMETERS,
+      description: "Invoke js_reset on the selected Hand’s CUA MCP provider. Call select_computer first and follow the exact reset description it returns.",
+      parameters: { type: "object", additionalProperties: true },
       handler: async (input, context) => {
-        validateInput(input, true);
         const hand = computer(context);
-        if (!hand.cuaReset) throw new Error(`Hand ${hand.root} uses computer for live screen control and has no cua_repl runtime to reset.`);
+        if (!hand.cuaReset) throw new Error(`Hand ${hand.root} has no cua_repl provider to reset`);
         return hand.cuaReset.handler(input, context);
       }, releaseSession, dispose,
     },
