@@ -127,7 +127,7 @@ async fn windows_provision(refresh: bool) -> Result<serde_json::Value, String> {
             String::from_utf8_lossy(&result.stderr)
         ));
     }
-    let receipt: serde_json::Value = serde_json::from_slice(&result.stdout)
+    let mut receipt: serde_json::Value = serde_json::from_slice(&result.stdout)
         .map_err(|e| format!("Invalid OpenAI Store receipt: {e}"))?;
     config_from_receipt(&receipt)?;
     let root = runtime_root()?;
@@ -136,6 +136,21 @@ async fn windows_provision(refresh: bool) -> Result<serde_json::Value, String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_nanos();
+    // Keep the Nanocodex host outside the byte-verified upstream resources tree.
+    // Each receipt owns an immutable host file so updates preserve running hosts.
+    let host = root.join(format!(
+        "windows-sky-host-{}-{stamp}.mjs",
+        std::process::id()
+    ));
+    std::fs::write(&host, include_bytes!("windows_sky_host.mjs")).map_err(|e| e.to_string())?;
+    let args = receipt["args"]
+        .as_array_mut()
+        .ok_or("OpenAI CUA Windows receipt has no provider arguments")?;
+    args.insert(
+        0,
+        serde_json::Value::String(host.to_string_lossy().into_owned()),
+    );
+    config_from_receipt(&receipt)?;
     let stage = root.join(format!("provider-{}-{stamp}.json", std::process::id()));
     std::fs::write(
         &stage,

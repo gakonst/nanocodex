@@ -39,6 +39,17 @@ compared with its Store source using SHA-256. The matching bundled Node handles
 long Windows paths; no extra Node or Python installation is needed. Windows
 requires Microsoft App Installer/winget and Store access for initial download.
 
+Windows setup also writes a Nanocodex-owned host script outside the verified
+OpenAI resources tree. It starts the packaged `WindowsHelperTransport` and signed
+helper through the upstream native-pipe integration, then starts the official
+MCP provider with that pipe. `CODEX_CLI_PATH` and the provider sandbox remain in
+place. The host forwards authentic turn metadata and approval requests through
+the SDK's `requestComputerUseApproval`/elicitation bridge; it never grants app
+access itself. Timeout, cancellation, disconnect, reset, and turn completion
+close pending approvals and the native helper. Each receipt retains its own host
+script so replacing the selected runtime does not overwrite a running host.
+
+
 Linux and Linux VM/container guests retain the existing Linux computer backend.
 This implementation has no verified official Linux Sky distribution; it does not
 try to run a macOS or Windows binary there. `computer setup` reports unsupported
@@ -76,3 +87,14 @@ start. A real macOS download and the Windows Store installation were exercised,
 and both installed providers returned `js`, `js_add_node_module_dir`, `js_reset`,
 and hidden `turn_ended` through MCP. Catalog discovery is not a claim of completed
 approval UI or a full screen/input acceptance test.
+
+
+The Windows native-pipe contract was verified against Store build 26.915.4065.0
+and Codex Desktop 9922. An isolated real-provider test returned app inventory,
+forwarded a Calculator approval form, preserved a deliberate denial, and completed
+`turn_ended`. This proves transport and denial handling; it does not establish
+human approval UI, screen capture, or input acceptance. The diagnostic fixture is
+`crates/experimental/nanocodex-computer/tests/windows-sky/live-probe.mjs` (place it
+beside the host script and run with the verified bundled Node on Windows). Its
+responses to every elicitation are declines. Transport fixtures run with
+`node --test crates/experimental/nanocodex-computer/tests/windows-sky/host.test.mjs`.
