@@ -772,7 +772,7 @@ async fn observe_javascript_code(
                 let notification: Notification = serde_json::from_value(value).map_err(|error| {
                     CodeModeHostError::new(format!("JavaScript Code Mode host returned invalid notification: {error}"))
                 })?;
-                notifications.push(nanocodex_tools::code_mode::CodeModeNotification {
+                notifications.push(nanocodex::tools::embedded::CodeModeNotification {
                     call_id: notification.call_id,
                     text: notification.text,
                 });

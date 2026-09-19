@@ -85,7 +85,7 @@ export function decodeAudio(url) {
   const comma = url.indexOf(",");
   if (comma < 0 || !url.slice(0, comma).split(";").slice(1).some((s) => s.toLowerCase() === "base64")) return;
   const data = url.slice(comma + 1);
-  if (data.length > 27_962_028 || data.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) return;
+  if (data.length > Math.ceil(50 * 1024 * 1024 / 3) * 4 || data.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) return;
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
   const last = alphabet.indexOf(data[data.length - padding - 1]);
@@ -114,7 +114,7 @@ export function wavDuration(url) {
     const start = offset + 8;
     const length = Math.min(size, bytes.length - start);
     if (kind === "fmt ") {
-      if (length < 16) return;
+      if (length < 14) return;
       let encoding = view.getUint16(start, true);
       if (encoding === 0xfffe) {
         if (length < 40 || ![0,0,0,0,16,0,128,0,0,170,0,56,155,113].every((b, i) => bytes[start + 26 + i] === b)) return;
