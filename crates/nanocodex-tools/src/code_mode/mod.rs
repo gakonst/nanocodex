@@ -1,5 +1,6 @@
 //! Code Mode execution results, notifications, and nested-tool observation.
 
+mod audio;
 mod embedded;
 mod output;
 use crate::code_mode_spec as spec;
@@ -33,11 +34,7 @@ use crate::runtime::{OwnedToolContext, ToolRegistry};
 use embedded::EmbeddedHost;
 pub(crate) use spec::{exec_spec, wait_spec};
 
-const INITIAL_YIELD: Duration = if cfg!(test) {
-    Duration::from_secs(30)
-} else {
-    Duration::from_secs(10)
-};
+const INITIAL_YIELD: Duration = Duration::from_secs(10);
 const DEFAULT_WAIT_YIELD: Duration = Duration::from_secs(10);
 const OBSERVER_YIELD_GRACE: Duration = Duration::from_secs(1);
 const MIN_YIELD_FOR_OBSERVER_GRACE: Duration = Duration::from_secs(10);
@@ -134,7 +131,6 @@ struct LiveCell {
     id: u64,
     origin_call_id: String,
     turn_id: AtomicU64,
-    output_token_budget: usize,
     observation: Arc<Mutex<CellObservationState>>,
     lifecycle: Arc<CellLifecycle>,
     terminate: StdMutex<Option<oneshot::Sender<()>>>,
@@ -379,8 +375,7 @@ impl CodeModeRuntime {
         };
         let output_token_budget = source
             .max_output_tokens
-            .unwrap_or(context.output_token_budget)
-            .max(1);
+            .unwrap_or(crate::contract::DEFAULT_TOOL_OUTPUT_TOKENS);
         tracing::Span::current().record("output.max_tokens", output_token_budget);
         let context = context.with_output_token_budget(output_token_budget);
         #[cfg(test)]
@@ -411,7 +406,6 @@ impl CodeModeRuntime {
                 stored,
                 Arc::clone(&self.stored),
                 Arc::clone(&self.host),
-                output_token_budget,
             ));
             registry.live_cells.insert(cell_id, Arc::clone(&cell));
             cell
@@ -492,7 +486,7 @@ impl CodeModeRuntime {
                 );
             }
         };
-        let continued_output_token_budget = cell.output_token_budget;
+        let output_token_budget = arguments.max_tokens;
         if arguments.terminate {
             cell.request_terminate();
             let (mut execution, running) = observe_cell(
@@ -500,7 +494,7 @@ impl CodeModeRuntime {
                 observation,
                 started_at,
                 ObservationMode::Terminate,
-                Some(continued_output_token_budget),
+                output_token_budget,
                 observer,
             )
             .await;
@@ -513,22 +507,14 @@ impl CodeModeRuntime {
             });
             return execution;
         }
-        let yield_time = Duration::from_millis(
-            arguments
-                .yield_time_ms
-                .unwrap_or(u64::try_from(DEFAULT_WAIT_YIELD.as_millis()).unwrap_or(u64::MAX)),
-        );
+        let yield_time = Duration::from_millis(arguments.yield_time_ms);
         let yield_time = observer_yield_timeout(yield_time);
-        let output_token_budget = arguments
-            .max_tokens
-            .unwrap_or(continued_output_token_budget)
-            .max(1);
         let (mut execution, running) = observe_cell(
             &cell,
             observation,
             started_at,
             ObservationMode::YieldAfter(yield_time),
-            Some(output_token_budget),
+            output_token_budget,
             observer,
         )
         .await;
@@ -712,15 +698,18 @@ fn parse_exec_source(input: &str) -> Result<ParsedExecSource, String> {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct WaitArguments {
     cell_id: String,
-    #[serde(default)]
-    yield_time_ms: Option<u64>,
+    #[serde(default = "default_wait_yield_time_ms")]
+    yield_time_ms: u64,
     #[serde(default)]
     max_tokens: Option<usize>,
     #[serde(default)]
     terminate: bool,
+}
+
+fn default_wait_yield_time_ms() -> u64 {
+    DEFAULT_WAIT_YIELD.as_millis() as u64
 }
 
 impl CellRegistry {
@@ -742,7 +731,6 @@ impl LiveCell {
         stored: HashMap<String, Value>,
         shared_stored: Arc<Mutex<HashMap<String, Value>>>,
         host: Arc<Mutex<SharedJsHost>>,
-        output_token_budget: usize,
     ) -> Self {
         let (updates_tx, updates) = mpsc::unbounded_channel();
         let (terminate, terminate_rx) = oneshot::channel();
@@ -781,7 +769,6 @@ impl LiveCell {
             id,
             origin_call_id,
             turn_id: AtomicU64::new(turn_id),
-            output_token_budget,
             observation: Arc::new(Mutex::new(CellObservationState {
                 updates,
                 buffered: ObservationBuffer::default(),
