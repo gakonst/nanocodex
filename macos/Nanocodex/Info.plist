@@ -16,7 +16,7 @@
 <key>NSHighResolutionCapable</key><true/>
 <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Nanocodex</string>
 <key>NSPrincipalClass</key><string>NSApplication</string>
-<key>NSMicrophoneUsageDescription</key><string>Talk with Nanocodex using live voice in your conversation.</string>
+<key>NSMicrophoneUsageDescription</key><string>Use live voice conversations or optionally send microphone audio to a remote computer you control.</string>
 <key>NSLocalNetworkUsageDescription</key><string>Connect to your nearby Hands to view their screens and send keyboard, pointer, and touch input.</string>
 <key>NSSupportsAutomaticTermination</key><false/>
 <key>NSSupportsSuddenTermination</key><false/>

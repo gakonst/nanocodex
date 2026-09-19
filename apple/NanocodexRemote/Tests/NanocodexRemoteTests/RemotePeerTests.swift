@@ -170,3 +170,30 @@ extension RemotePeerTests {
         } catch { XCTAssertFalse(peer.microphoneEnabled) }
     }
 }
+
+// These exercise lifecycle state without opening a capture device.
+extension RemotePeerTests {
+    @MainActor func testAudioSessionStopNotifiesViewerWithoutClosingTransport() throws {
+        let peer = try RemotePeer(publishing: false, ice: [])
+        defer { peer.close() }
+        var stops = 0
+        var transportChanges = 0
+        peer.onMicrophoneStopped = { stops += 1; XCTAssertFalse(peer.microphoneEnabled) }
+        peer.onState = { _ in transportChanges += 1 }
+        peer.audioSessionStoppedMicrophone()
+        XCTAssertEqual(stops, 1, "Notify even before capture starts to cancel pending viewer opt-in")
+        XCTAssertEqual(transportChanges, 0, "An audio interruption is not a transport failure")
+        XCTAssertTrue(peer.speakersEnabled)
+        peer.close()
+        peer.audioSessionStoppedMicrophone()
+        XCTAssertEqual(stops, 1, "Queued OS notifications cannot mutate a closed viewer")
+    }
+
+    @MainActor func testAudioSessionStopDoesNotAffectPublisher() throws {
+        let peer = try RemotePeer(publishing: true, ice: [])
+        defer { peer.close() }
+        peer.onMicrophoneStopped = { XCTFail("Publisher does not own viewer microphone") }
+        peer.audioSessionStoppedMicrophone()
+        XCTAssertFalse(peer.microphoneEnabled)
+    }
+}
