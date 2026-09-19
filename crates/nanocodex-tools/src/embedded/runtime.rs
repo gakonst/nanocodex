@@ -237,8 +237,7 @@ impl EmbeddedToolRuntime {
             );
             if let ToolDefinition::Custom { description, .. } = &mut exec {
                 *description = description
-                    .replace("Runs raw JavaScript -- no Node, no file system, no network access, no console.", "Runs JavaScript inside the evaluator supplied by the embedding application.")
-                    .replace("When the JS code is fully evaluated, the isolate's lifetime ends and unawaited promises are silently discarded.", "The cell owns its nested tool calls until they finish or are cancelled. Await every nested tool call before completing the script.").into_boxed_str();
+                    .replace("Runs raw JavaScript -- no Node, no file system, no network access, no console.", "Runs JavaScript inside the evaluator supplied by the embedding application.").into_boxed_str();
             }
             let mut model_definitions = vec![exec, crate::code_mode_spec::wait_spec()];
             model_definitions.extend(direct_definitions);

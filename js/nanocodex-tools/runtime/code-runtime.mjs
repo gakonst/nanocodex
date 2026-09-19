@@ -1,3 +1,5 @@
+import { stringify, storeSnapshot, normalizeImage, normalizeAudio, generatedImageItems } from "./code-values.mjs";
+import { limitCodeOutput } from "./code-output.mjs";
 import {
   providerSource,
   ToolRouter,
@@ -91,12 +93,16 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     }
     const startedAt = performance.now();
     const content = cell?.content ?? [];
-    const stored = stores.get(sessionId) || new Map();
-    stores.set(sessionId, stored);
+    const sessionStore = stores.get(sessionId) || new Map();
+    stores.set(sessionId, sessionStore);
+    const stored = new Map([...sessionStore].map(([key, value]) => [key, jsonSnapshot(value, "stored value")]));
+    const storedWrites = new Map();
     const nestedCalls = [];
+    const notifications = [];
     const controller = cell?.controller ?? new AbortController();
     const execution = { callId: parentCallId, controller, sessionId, cell, turn: turns.get(sessionId) ?? 0 };
     activeExecutions.add(execution);
+    let finished = false;
     let admission;
     try {
       admission = await router.admit(controller.signal);
@@ -162,7 +168,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         // Rust records nested calls in invocation order even when parallel
         // siblings finish out of order. Reserve the slot before dispatch.
         nestedCalls.push(recordedCall);
-        observer?.({
+        if (!finished) observer?.({
           type: "nested_call_started",
           call_id: callId,
           name,
@@ -192,7 +198,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
             success: false,
             duration_ns: elapsedNs(toolStartedAt),
           });
-          observer?.({ type: "nested_call_completed", call: recordedCall });
+          if (!finished) observer?.({ type: "nested_call_completed", call: recordedCall });
           throw error;
         }
         let structured;
@@ -212,7 +218,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
             success: false,
             duration_ns: elapsedNs(toolStartedAt),
           });
-          observer?.({ type: "nested_call_completed", call: recordedCall });
+          if (!finished) observer?.({ type: "nested_call_completed", call: recordedCall });
           throw error;
         }
         Object.assign(recordedCall, {
@@ -222,7 +228,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
           duration_ns: elapsedNs(toolStartedAt),
           metadata,
         });
-        observer?.({ type: "nested_call_completed", call: recordedCall });
+        if (!finished) observer?.({ type: "nested_call_completed", call: recordedCall });
         if (!success) throw toolValue(result);
         return toolValue(result);
       }
@@ -236,56 +242,23 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     }
     function image(value, detail) {
       controller.signal.throwIfAborted();
-      const object = value !== null && typeof value === "object" && !Array.isArray(value);
-      const mcp = object && value.image_url === undefined && value.type === "image";
-      const url = typeof value === "string" ? value
-        : mcp && typeof value.data === "string" ? (value.data.toLowerCase().startsWith("data:")
-          ? value.data : `data:${value.mimeType || value.mime_type || "application/octet-stream"};base64,${value.data}`)
-        : object ? value.image_url : undefined;
-      if (typeof url !== "string" || !validImageDataUrl(url)) {
-        throw new TypeError("image() requires a nonempty base64 data URL with an image MIME type or MCP image block");
-      }
-      const details = ["auto", "low", "high", "original"];
-      const metadataDetail = mcp ? value._meta?.["codex/imageDetail"] : undefined;
-      const embeddedDetail = mcp ? (details.includes(metadataDetail) ? metadataDetail : undefined)
-        : object ? value.detail : undefined;
-      if ((detail != null && typeof detail !== "string")
-        || (embeddedDetail != null && typeof embeddedDetail !== "string")) {
-        throw new TypeError("image detail must be a string when provided");
-      }
-      const selected = (detail ?? embeddedDetail ?? "high").toLowerCase();
-      if (!details.includes(selected)) throw new TypeError("image detail must be one of: auto, low, high, original");
-      content.push({ type: "input_image", image_url: url, detail: selected });
+      content.push(normalizeImage(value, detail));
     }
     function audio(value) {
       controller.signal.throwIfAborted();
-      const url = typeof value === "string" ? value
-        : value?.type === "audio" ? `data:${value.mimeType};base64,${value.data}`
-        : value?.audio_url;
-      if (typeof url !== "string" || !url.startsWith("data:audio/")) {
-        throw new TypeError("audio() requires a base64 data URL or MCP audio block");
-      }
-      content.push({ type: "input_audio", audio_url: url });
+      content.push(normalizeAudio(value));
     }
-    function generatedImage(result) {
-      if (!result || typeof result !== "object" || Array.isArray(result)) {
-        throw new TypeError("generatedImage expects an image generation result object");
-      }
-      const outputHint = result.output_hint;
-      if (outputHint !== undefined && typeof outputHint !== "string") {
-        throw new TypeError("generatedImage output_hint must be a string when provided");
-      }
-      image(result);
-      if (outputHint !== undefined) text(outputHint);
+    function generatedImage(value) {
+      controller.signal.throwIfAborted();
+      content.push(...generatedImageItems(value));
     }
     function notify(value) {
       controller.signal.throwIfAborted();
       const notification = stringify(value);
       if (!notification.trim()) throw new TypeError("notify expects non-empty text");
-      if (cell) {
-        cell.notifications.push({ call_id: parentCallId, text: notification });
-        cell.wake?.();
-      } else text(notification);
+      observer?.({ type: "notification", call_id: parentCallId, text: notification });
+      extras.notify?.({ sessionId, callId: parentCallId, text: notification });
+      if (!observer && !extras.notify) notifications.push({ call_id: parentCallId, text: notification });
     }
     function yield_control() {
       if (cell) { cell.yieldRequested = true; cell.wake?.(); }
@@ -311,11 +284,16 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     }
     function store(key, value) {
       controller.signal.throwIfAborted();
-      if (typeof key !== "string") throw new TypeError("store key must be a string");
-      stored.set(key, clone(value));
+      const entry = storeSnapshot(key, value);
+      key = entry[0];
+      const snapshot = entry[1];
+      stored.set(key, snapshot);
+      storedWrites.set(key, snapshot);
     }
     function load(key) {
-      return stored.has(key) ? clone(stored.get(key)) : undefined;
+      controller.signal.throwIfAborted();
+      key = `${key}`;
+      return stored.has(key) ? jsonSnapshot(stored.get(key), "stored value") : undefined;
     }
     function exit() {
       throw EXIT;
@@ -345,10 +323,8 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
               storedEntries: [...stored],
             });
           } finally {
-            // A guest may discard a tool Promise or call exit(). The cell still
-            // owns that work: do not report completion or drop its cancellation
-            // controller until every invocation reaches a terminal boundary.
-            await Promise.allSettled(nestedInvocations);
+            // Root completion defines the isolate lifetime; pending nested work
+            // is cancelled below without delaying the completed result.
           }
         })(), controller.signal);
       } catch (error) {
@@ -359,6 +335,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         output: withStatus("Script completed", startedAt, content),
         success: true,
         nested_calls: nestedCalls,
+        notifications,
       });
     } catch (error) {
       if (execution.interruption) throw execution.interruption;
@@ -369,6 +346,14 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         nested_calls: nestedCalls,
       });
     } finally {
+      finished = true;
+      if (!controller.signal.aborted) {
+        // Failed scripts are completed results too. Merge only the write set;
+        // concurrent cells must not replace each other's unrelated writes.
+        for (const [key, value] of storedWrites) sessionStore.set(key, value);
+        if (cell) cell.finished = true;
+      }
+      controller.abort(new Error(CANCELLATION_MESSAGE));
       for (const timer of timers.values()) clearTimeout(timer);
       admission.release();
       activeExecutions.delete(execution);
@@ -410,18 +395,18 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
 
   function waitCodeObserved(input, sessionId = "default", callId = "wait") {
     return observeOperation(sessionId, callId, (observation) => {
-      const options = parseCellOptions(JSON.parse(input), ["cell_id", "yield_time_ms", "max_tokens", "terminate"]);
+      const options = parseCellOptions(input, ["cell_id", "yield_time_ms", "max_tokens", "terminate"], ["max_tokens"], true);
       if (typeof options.cell_id !== "string") throw new TypeError("wait requires a string cell_id");
       if (options.terminate !== undefined && typeof options.terminate !== "boolean") throw new TypeError("terminate must be boolean");
       const cell = cells.get(options.cell_id);
       if (!cell || cell.sessionId !== sessionId) throw new Error(`exec cell ${options.cell_id} not found`);
       if (cell.observing) throw new Error(`exec cell ${cell.id} already has an active observer`);
       cell.turn = turns.get(sessionId) ?? 0;
-      if (options.terminate) {
+      if (options.terminate && !cell.finished && !cell.result) {
         cell.terminated = true;
         cell.controller.abort(new Error(CANCELLATION_MESSAGE));
       }
-      return observeCell(cell, observation, options.yield_time_ms ?? 10_000, options.max_tokens ?? cell.budget);
+      return observeCell(cell, observation, options.yield_time_ms ?? 10_000, options.max_tokens ?? 10_000);
     });
   }
 
@@ -446,12 +431,12 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     let timer;
     try {
       if (cell.terminated) await cell.completion;
-      else if (!cell.result && !cell.yieldRequested && cell.notifications.length === 0) {
+      else if (!cell.result && !cell.yieldRequested) {
         await new Promise((resolve) => {
           cell.wake = resolve;
           // JS timer APIs overflow past this boundary; clamp instead of
           // accidentally turning a large valid duration into a 1 ms wait.
-          timer = setTimeout(resolve, Math.min(yieldTime, 2_147_483_647));
+          timer = setTimeout(resolve, Math.min(yieldTime + (yieldTime >= 10_000 ? 1_000 : 0), 2_147_483_647));
         });
       }
       if (cell.interruption) throw cell.interruption;
@@ -668,16 +653,6 @@ function outputBody(value) {
   return stringify(value);
 }
 
-function stringify(value) {
-  if (typeof value === "string") return value;
-  if (value === undefined) return "undefined";
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
 function clone(value) {
   if (typeof globalThis.structuredClone === "function") return structuredClone(value);
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -814,57 +789,39 @@ function parseExec(source) {
   if (!line.trimStart().startsWith("// @exec:")) return { source };
   const rest = source.slice(line.length).replace(/^\r?\n/, "");
   if (!rest.trim()) throw new TypeError("exec pragma must be followed by JavaScript source on subsequent lines");
-  return { ...parseCellOptions(JSON.parse(line.trimStart().slice("// @exec:".length)), ["yield_time_ms", "max_output_tokens"], ["yield_time_ms", "max_output_tokens"]), source: rest };
+  return { ...parseCellOptions(line.trimStart().slice("// @exec:".length), ["yield_time_ms", "max_output_tokens"], ["yield_time_ms", "max_output_tokens"]), source: rest };
 }
 
-function parseCellOptions(value, allowed, nullable = []) {
+// Match serde u64 parsing without losing integer spelling to IEEE-754
+// rounding. Fractional/exponent JSON numbers are not integer arguments.
+function parseCellOptions(encoded, allowed, nullable = [], ignoreUnknown = false) {
+  const value = JSON.parse(encoded);
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("cell options must be a JSON object");
+  const tokens = encoded.match(/"(?:\\.|[^"\\])*"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null|[{}\[\]:,]/g);
+  let depth = 0;
+  const rawNumbers = new Map();
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "{" || token === "[") depth++;
+    else if (token === "}" || token === "]") depth--;
+    else if (depth === 1 && token.startsWith('"') && tokens[i + 1] === ":") {
+      const key = JSON.parse(token);
+      if (rawNumbers.has(key) && allowed.includes(key)) throw new TypeError(`duplicate field ${key}`);
+      rawNumbers.set(key, tokens[i + 2]);
+    }
+  }
   for (const [key, field] of Object.entries(value)) {
-    if (!allowed.includes(key)) throw new TypeError(`unknown cell option: ${key}`);
+    if (!allowed.includes(key)) {
+      if (ignoreUnknown) continue;
+      throw new TypeError(`unknown cell option: ${key}`);
+    }
     if (field === null && nullable.includes(key)) continue;
-    if (key !== "cell_id" && key !== "terminate" && (!Number.isSafeInteger(field) || field < 0)) {
-      throw new TypeError(`${key} must be a non-negative safe integer`);
+    if (key !== "cell_id" && key !== "terminate") {
+      const raw = rawNumbers.get(key);
+      if (typeof field !== "number" || !/^\d+$/.test(raw) || BigInt(raw) > 18_446_744_073_709_551_615n) {
+        throw new TypeError(`${key} must be a non-negative u64 integer`);
+      }
     }
   }
   return value;
-}
-
-function limitCodeOutput(output, budget) {
-  let remaining = budget * 4;
-  const limit = (text) => {
-    const bytes = new TextEncoder().encode(text);
-    if (bytes.length <= remaining) { remaining -= bytes.length; return text; }
-    const half = Math.floor(remaining / 2);
-    remaining = 0;
-    // Decode complete code points only, including for non-ASCII tool output.
-    let end = half;
-    let start = bytes.length - half;
-    while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
-    while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++;
-    const decoder = new TextDecoder();
-    return `${decoder.decode(bytes.subarray(0, end))}…output truncated…${decoder.decode(bytes.subarray(start))}`;
-  };
-  if (typeof output === "string") {
-    const split = output.indexOf("Output:\n");
-    return split < 0 ? output : output.slice(0, split + 8) + limit(output.slice(split + 8));
-  }
-  return output.map((item, index) =>
-    item.type === "input_text" ? { ...item, text: index === 0 ? item.text : limit(item.text) } : item);
-}
-
-// Validate the encoded envelope before it becomes durable model history. Avoid
-// decoding or a repeated-group regex: screenshots can contain megabytes of data.
-function validImageDataUrl(url) {
-  const comma = url.indexOf(",");
-  if (comma < 0) return false;
-  const header = url.slice(0, comma);
-  const match = /^data:image\/[a-z0-9!#$&^_.+%-]+;base64$/i.exec(header);
-  if (!match || match[0].length !== header.length) return false;
-  const encoded = url.slice(comma + 1);
-  if (!encoded.length || encoded.length % 4 !== 0) return false;
-  const padding = encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
-  const payload = encoded.slice(0, encoded.length - padding);
-  if (/[^A-Za-z0-9+/]/.test(payload)) return false;
-  const last = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".indexOf(payload.at(-1));
-  return padding === 2 ? (last & 15) === 0 : padding === 1 ? (last & 3) === 0 : true;
 }

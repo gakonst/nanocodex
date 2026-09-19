@@ -720,6 +720,7 @@ async fn observe_javascript_code(
     context: ToolContext<'_>,
     mut observer: Option<&mut dyn CodeModeObserver>,
 ) -> Result<CodeModeExecution, CodeModeHostError> {
+    let mut notifications = Vec::new();
     loop {
         let update = host_next_code_update(context.session_id(), context.call_id())
             .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
@@ -765,6 +766,17 @@ async fn observe_javascript_code(
                     observer.update(CodeModeUpdate::NestedCallCompleted(&update.call));
                 }
             }
+            Some("notification") => {
+                #[derive(Deserialize)]
+                struct Notification { call_id: String, text: String }
+                let notification: Notification = serde_json::from_value(value).map_err(|error| {
+                    CodeModeHostError::new(format!("JavaScript Code Mode host returned invalid notification: {error}"))
+                })?;
+                notifications.push(nanocodex_tools::code_mode::CodeModeNotification {
+                    call_id: notification.call_id,
+                    text: notification.text,
+                });
+            }
             _ => {
                 return Err(CodeModeHostError::new(
                     "JavaScript Code Mode host returned an unknown nested update",
@@ -775,7 +787,9 @@ async fn observe_javascript_code(
     let value = JsFuture::from(execution)
         .await
         .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
-    decode_code_execution(value)
+    let mut result = decode_code_execution(value)?;
+    result.notifications.extend(notifications);
+    Ok(result)
 }
 
 fn decode_code_execution(value: JsValue) -> Result<CodeModeExecution, CodeModeHostError> {
