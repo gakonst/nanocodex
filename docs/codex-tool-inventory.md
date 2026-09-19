@@ -1,0 +1,36 @@
+# Tool catalog inventory at pinned upstream
+
+Upstream: `36430b36881cf5c289cb48e671cfc9e8b542ae7b`. This matrix distinguishes contracts from execution. A catalog entry is not a working handler. Paths below are relative to `codex-rs` upstream unless marked local.
+
+| Names | Constructor/provider evidence | Feature/variant selection | Existing local native / JS implementation and required integration |
+| --- | --- | --- | --- |
+| `exec_command`, `write_stdin` | `core/src/tools/handlers/shell_spec.rs`, `ExecCommandHandler` | login allowed, exec approvals, environment ID, shell parameter, Windows guidance; unified/one-shot execution; TTY gating | `crates/nanocodex-tools/src/shell`, `tools/{nodeProcess,bash,execution-contract}.mjs`; wire option selection and exact definitions, verify one-shot/approval/environment routing |
+| `request_permissions` | `shell_spec.rs::create_request_permissions_tool` | RequestPermissionsTool + ready environment | missing dedicated local handler; needs permission UI/policy integration |
+| `apply_patch` | `apply_patch_spec.rs` | optional environment ID grammar | native apply_patch and JS workspace handlers exist; environment selection variant needs routing |
+| `update_plan` | `plan_spec.rs` | config update_plan_enabled | native plan.rs / JS standard.mjs exist |
+| `view_image` | `view_image_spec.rs` | original detail, unified image budget, environment ID (8 combinations) | native view_image.rs / JS standard.mjs exist; select variant using runtime capabilities |
+| `exec`, `wait` | `core/src/tools/code_mode/{execute_spec,wait_spec}.rs` | CodeMode/CodeModeOnly, image visibility, default yield, namespace descriptions | native/JS implementation retains QuickJS and is covered by the differential Code Mode suite |
+| `tool_search` | `tool_search_spec.rs` (built-in `tool_search` type) | dynamic source listing include/omit, default limit, source descriptions | local deferred search exists; built-in wire type/name and source metadata require integration |
+| `list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource` | `mcp_resource_spec.rs` | configured MCP servers | native mcp module exists; exact resource handlers / JS parity need verification and integration |
+| `new_context`, `get_context_remaining` | `new_context_window_spec.rs`, `get_context_remaining_spec.rs` | TokenBudget | missing dedicated local handlers; hook context reset and actual remaining budget |
+| `request_user_input` | `request_user_input_spec.rs` | experimental flag; available collaboration modes | missing exact blocking handler; host input UI integration required |
+| `request_user_input_async` | `request_user_input_async.rs` | root only + model supported tools; model-specific description | host async input exists in managed surface; native/JS exact schema, events and normalization need integration |
+| `send_message_to_user_async` | `send_message_to_user_async.rs` | root only + flag/model supported tools | missing dedicated local handler; host event delivery integration |
+| `wait_for_environment` | `wait_for_environment.rs` | DeferredExecutor; configurable descriptions | mount/environment host mechanisms exist, missing exact handler with readiness semantics |
+| `clock.curr_time`, `clock.sleep` | `current_time.rs`, `sleep.rs` | CurrentTimeReminder/model clock, SleepTool+mode | missing exact tools; sleep must wake on new turn input |
+| `list_available_plugins_to_install`, `request_plugin_install` | matching `_spec.rs` | ToolSuggest; ListTool vs inline candidate presentation | account/skill installation differs; missing exact plugin discovery and install request handlers |
+| `test_sync_tool` | `test_sync_spec.rs` | experimental_supported_tools | missing test barrier handler (must remain explicitly gated) |
+| `multi_agent_v1.spawn_agent/send_input/resume_agent/wait_agent/close_agent` | `multi_agents_spec.rs` | V1, roles/models/reasoning overrides, wait timeouts | custom subagents retained by user exception; compatibility adapters can use task-tree agents without creating durable projects |
+| `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `interrupt_agent`, `list_agents` | `multi_agents_spec.rs` V2 + model message overrides | namespace configurable; roles/model metadata hiding; direct-only; optional wait | existing custom spawn/send_agent_message/wait_agent/interrupt_agent/list_agents overlap but schemas differ; add explicit adapters, preserve authorization and no durable project creation |
+| `get_goal`, `create_goal`, `update_goal` | `ext/goal/src/spec.rs` | goal extension runtime visibility/availability | host goal tools exist, differing scopes/schema/status semantics; native and JS handler integration required |
+| `image_gen.imagegen` | `ext/image-generation/src/tool.rs` and description MD | extension + model image generation support | native image_generation / JS standard wrapper exist; provider behaviors need separate parity evidence |
+| `web.run` | `ext/web-search/src/tool.rs`, `web_run_description.md` | standalone namespace + provider capability + web mode | native/JS command contracts and batched gateway forwarding aligned; full JS history propagation still pending |
+| `web_search` hosted built-in | `core/src/tools/hosted_spec.rs` | disabled/cached/live; filters/location/context/content types/indexed access | provider-native spec variant, not a function handler; exact request forwarding required |
+| `skills.list`, `skills.read` | `ext/skills/src/tools/{mod,list,read}.rs` | skill extension, orchestrator/local sources | host skills tools exist with different schemas; exact adapter needed |
+| `memories.list`, `memories.search`, `memories.read`, `memories.add_ad_hoc_note` | `ext/memories/src/tools/{mod,list,search,read,ad_hoc_note}.rs` | memory extension/tool state | canonical adapter exposes existing records as virtual files and append-only notes; see codex-memory-api.md after integration |
+| Dynamic functions / namespaces | `tools/src/dynamic_tool.rs`, `responses_api.rs`, `core/src/tools/handlers/dynamic.rs` | runtime-provided schemas/output schemas | local external tool registration exists; preserve namespaces/defer metadata/output schema normalization |
+| MCP functions / agent plugins | `tools/src/mcp_tool.rs`, `responses_api.rs`, `core/src/tools/handlers/mcp.rs` | configured server catalog, connector omissions, direct/deferred exposure | local MCP catalog exists; exact normalization/deferred wrapper and output envelope checks needed |
+
+No `shell`/`shell_command` constructor exists at this pin: shell-type model settings select `exec_command` behavior in `spec_plan.rs`. No fixed `computer` tool constructor occurs in core; CUA is provider/extension integration owned by root. Removing custom `tools.computer` must be coordinated with that integration.
+
+Remaining implementation groups: (1) permission/user-input/async-message/environment lifecycle, (2) context/clock/test barrier, (3) plugins/skills/memory/goals adapters, (4) full web provider and hosted web request forwarding, (5) agent compatibility adapters and dynamic/MCP resource exposure. Catalog work only supplies exact model contracts and exhaustive source inventory; it must not register schema-only stand-ins as working tools.
