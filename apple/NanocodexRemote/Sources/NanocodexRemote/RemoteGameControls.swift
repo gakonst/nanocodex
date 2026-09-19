@@ -475,7 +475,7 @@ private struct RemoteGameGlass<S: Shape>: ViewModifier {
             .disabled(!viewer.controlling || !viewer.supportsMicrophone)
             .accessibilityLabel(viewer.microphonePending ? "Cancel microphone request" : viewer.microphoneEnabled ? "Mute microphone" : "Enable microphone")
             .accessibilityValue(viewer.microphonePending ? "Pending" : viewer.microphoneEnabled ? "On" : "Off")
-            .accessibilityHint(viewer.microphoneError ?? "Send microphone audio to the remote computer")
+            .accessibilityHint(viewer.microphoneError ?? viewer.microphoneSetupHint)
             .accessibilityIdentifier("remote-microphone")
 
             Button {
@@ -512,6 +512,9 @@ private struct RemoteGameGlass<S: Shape>: ViewModifier {
                 Section {
                     Text("Drag each stick for analog input. L3 and R3 press the sticks. Hold LT, RT, LB, or RB together with other buttons as your game requires.")
                     Text("Input is paused. Close this guide and tap Resume to play.")
+                }
+                if viewer.supportsMicrophone {
+                    Section("Voice input") { Text(viewer.microphoneSetupHint) }
                 }
             }
             .navigationTitle("WoW button guide")

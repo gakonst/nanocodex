@@ -378,6 +378,8 @@ public final class RemoteViewer: ObservableObject {
         }
     }
 
+    var microphoneSetupHint: String { "Select Nanocodex_Remote_Microphone in the remote app’s voice-input settings. This selection stays available while you mute and unmute." }
+
     public func setSpeakersEnabled(_ enabled: Bool) {
         speakersEnabled = enabled
         peer?.setSpeakersEnabled(enabled)

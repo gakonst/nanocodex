@@ -167,6 +167,7 @@ public struct RemoteDashboard: View {
                 }
                 .accessibilityLabel(viewer.microphonePending ? "Cancel microphone" : viewer.microphoneEnabled ? "Mute microphone" : "Enable microphone")
                 .accessibilityValue(viewer.microphonePending ? "Connecting" : viewer.microphoneEnabled ? "On" : "Off")
+                .help(viewer.microphoneError ?? viewer.microphoneSetupHint)
                 .accessibilityIdentifier("remote-microphone")
                 .disabled(!viewer.connected || !viewer.controlling)
             }

@@ -94,7 +94,7 @@ public final class MacRemoteViewport: NSView, NSWindowDelegate {
         microphoneButton.isHidden = !viewer.supportsMicrophone
         microphoneButton.title = viewer.microphonePending ? "Cancel Microphone" : viewer.microphoneEnabled ? "Mute Microphone" : "Enable Microphone"
         microphoneButton.isEnabled = viewer.controlling && viewer.connected
-        microphoneButton.toolTip = viewer.microphoneError ?? (viewer.microphoneEnabled ? "Your microphone is being sent to the remote computer." : "Microphone is off.")
+        microphoneButton.toolTip = viewer.microphoneError ?? viewer.microphoneSetupHint
         speakersButton.title = viewer.speakersEnabled ? "Mute Sound" : "Enable Sound"
         speakersButton.isEnabled = viewer.connected && viewer.supportsSpeakers
         hint.stringValue = viewer.controlling ? (viewer.captureMouse ? "Click screen to lock · ⌘⇧Esc releases" : "⌘⇧Esc releases control") : "View only"
