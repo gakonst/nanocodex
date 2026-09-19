@@ -1553,7 +1553,7 @@ function managedClient(options) {
 
   const response = async (path, init = {}) => {
     const headers = new Headers();
-    if (path === "/v1/agents" || path.startsWith("/v1/agents/")) headers.set("x-nanocodex-client-context", JSON.stringify(requestOrigin));
+    if (path === "/v1/agent-runs" || path === "/v1/agents" || path.startsWith("/v1/agents/")) headers.set("x-nanocodex-client-context", JSON.stringify(requestOrigin));
     if (init.body !== undefined) headers.set("content-type", "application/json");
     if (init.accept) headers.set("accept", init.accept);
     if (init.idempotencyKey) headers.set("idempotency-key", init.idempotencyKey);

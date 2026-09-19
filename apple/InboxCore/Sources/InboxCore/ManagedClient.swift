@@ -79,8 +79,10 @@ public final class ManagedClient: @unchecked Sendable {
     private let session: URLSession
     private let responseCache: URLCache?
     private let requestOrigin: [String: String]
-    public init(credential: AccountCredential, configuration: URLSessionConfiguration? = nil) {
+    private let locationContext: (@Sendable () async -> JSON?)?
+    public init(credential: AccountCredential, configuration: URLSessionConfiguration? = nil, locationContext: (@Sendable () async -> JSON?)? = nil) {
         self.credential = credential
+        self.locationContext = locationContext
         #if os(iOS)
         let clientName = "ios"
         #elseif os(macOS)
@@ -101,7 +103,7 @@ public final class ManagedClient: @unchecked Sendable {
     public func close() { session.invalidateAndCancel() }
     /// Call on explicit sign-out, not when suspending an observer.
     public func clearCachedResponses() { responseCache?.removeAllCachedResponses(); ManagedAccess.clear() }
-    public func request(path: String, method: String = "GET", body: JSON? = nil, idempotencyKey: String? = nil) throws -> URLRequest {
+    public func request(path: String, method: String = "GET", body: JSON? = nil, idempotencyKey: String? = nil, location: JSON? = nil) throws -> URLRequest {
         guard path.hasPrefix("/v1/"), !path.contains(".."), !path.contains("#"),
               let url = URL(string: credential.origin + path) else { throw APIError.invalidResponse }
         var request = URLRequest(url: url, timeoutInterval: 20)
@@ -112,7 +114,12 @@ public final class ManagedClient: @unchecked Sendable {
         request.setValue("Bearer " + credential.apiKey, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if path == "/v1/agents" || path.hasPrefix("/v1/agents/") {
-            let context = try JSONSerialization.data(withJSONObject: requestOrigin, options: [.sortedKeys])
+            var origin = requestOrigin.mapValues(JSON.string)
+            if method == "POST", path == "/v1/agents" || path.hasSuffix("/turns"), let location {
+                origin["location"] = location
+            }
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            let context = try encoder.encode(JSON.object(origin))
             request.setValue(String(decoding: context, as: UTF8.self), forHTTPHeaderField: "x-nanocodex-client-context")
         }
         if let body {
@@ -124,6 +131,9 @@ public final class ManagedClient: @unchecked Sendable {
         return request
     }
     public func json(path: String, method: String = "GET", body: JSON? = nil, idempotencyKey: String? = nil) async throws -> JSON {
+        let isAdmission = method == "POST" && (path == "/v1/agents" || (path.hasPrefix("/v1/agents/") && path.hasSuffix("/turns")))
+        let location = isAdmission ? await locationContext?() : nil
+        try Task.checkCancellation()
         let isHistory = path.contains("/events/history?")
         let signpostID = OSSignpostID(log: historyPerformanceLog)
         let data: Data
@@ -131,7 +141,7 @@ public final class ManagedClient: @unchecked Sendable {
         do {
             if isHistory { os_signpost(.begin, log: historyPerformanceLog, name: "HistoryTransport", signpostID: signpostID) }
             defer { if isHistory { os_signpost(.end, log: historyPerformanceLog, name: "HistoryTransport", signpostID: signpostID) } }
-            (data, response) = try await ManagedAccess.data(for: request(path: path, method: method, body: body, idempotencyKey: idempotencyKey), using: session)
+            (data, response) = try await ManagedAccess.data(for: request(path: path, method: method, body: body, idempotencyKey: idempotencyKey, location: location), using: session)
         }
         guard let response = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         guard (200..<300).contains(response.statusCode) else {

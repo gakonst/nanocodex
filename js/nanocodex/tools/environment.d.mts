@@ -30,5 +30,11 @@ export type AgentEnvironment = Readonly<{
 }>;
 export function projectEnvironment(info: AccountEnvironmentSource, host: Readonly<{ runtime: string; default_cwd: string }>): AgentEnvironment;
 export function contextData(tag: string, value: unknown): string;
-export type RequestOriginContext = Readonly<{ client?: string; hand?: string; cwd?: string; timezone?: string }>;
-export function requestOriginContext(value: unknown): RequestOriginContext;
+/** Client-reported sensor sample. timestamp_ms is Unix milliseconds; accuracy_meters is horizontal accuracy. */
+export type RequestOriginLocation = Readonly<{
+  latitude: number; longitude: number; accuracy_meters: number; timestamp_ms: number; approximate: boolean;
+}>;
+export type RequestOriginContext = Readonly<{ client?: string; hand?: string; cwd?: string; timezone?: string; location?: RequestOriginLocation }>;
+/** Drops invalid optional location samples or samples older than five minutes / over 30 seconds in the future. */
+export function requestOriginLocation(value: unknown, now?: number): RequestOriginLocation | undefined;
+export function requestOriginContext(value: unknown, now?: number): RequestOriginContext;

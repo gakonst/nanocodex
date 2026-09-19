@@ -40,7 +40,7 @@ final class HandTests: XCTestCase {
         let hand = try HandWorkspace(id: "phone-one", name: "iPhone", root: directory())
         XCTAssertEqual(hand.catalog["attachment_id"].string, "phone-one")
         XCTAssertEqual(hand.catalog["machines"].array.first?["workspace"].string, "/workspace")
-        XCTAssertEqual(Set(hand.catalog["tools"].array.map { $0["definition"]["name"].string }), Set(["device_info", "list_files", "read_file", "write_file"]))
+        XCTAssertEqual(Set(hand.catalog["tools"].array.map { $0["definition"]["name"].string }), Set(["device_info", "list_files", "read_file", "write_file"]).union(HandPersonalTools.available ? HandPersonalTools.names : []))
     }
     @MainActor
     func testCatalogAdvertisesFlipperAsADeviceCapabilityWhenEnabled() throws {

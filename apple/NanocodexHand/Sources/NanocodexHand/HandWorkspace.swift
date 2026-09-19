@@ -54,9 +54,13 @@ public actor HandWorkspace {
         let bluetoothTools = bluetooth == nil ? [] : BluetoothLETools.catalog {
             tool($0, $1, properties: $2, required: $3, parallel: false, timeout: 180_000)
         }
+        let personalTools = HandPersonalTools.available ? HandPersonalTools.catalog {
+            tool($0, $1, properties: $2, required: $3)
+        } : []
         let optionalCapabilities = (messageContext == nil ? [] : ["message_context"])
             + (flipper == nil ? [] : ["bluetooth", "flipper_zero"])
             + (bluetooth == nil ? [] : ["bluetooth_le", "gatt"])
+            + (HandPersonalTools.available ? ["contacts", "photos", "location"] : [])
         return .object([
             "type": .string("catalog"), "attachment_id": .string(id),
             "machines": .array([.object(["id": .string(id), "name": .string(name), "workspace": .string("/workspace"), "capabilities": .array((["native", "filesystem", platform == "ios" ? "background_limited" : "background"] + optionalCapabilities).map(JSON.string))])]),
@@ -65,13 +69,16 @@ public actor HandWorkspace {
                 tool("list_files", "List files in this device's app workspace. No setup is needed. Other apps' files are not accessible.", properties: ["path": path], required: ["path"]),
                 tool("read_file", "Read a UTF-8 file from this device's app workspace.", properties: ["path": path], required: ["path"]),
                 tool("write_file", "Write a UTF-8 file in this device's app workspace. Creates parent folders and replaces the file atomically.", properties: ["path": path, "content": .object(["type": .string("string")])], required: ["path", "content"], parallel: false)
-            ] + contextTools + flipperTools + bluetoothTools)
+            ] + contextTools + flipperTools + bluetoothTools + personalTools)
         ])
     }
 
     public func call(name: String, input: JSON) async throws -> JSON {
         try Task.checkCancellation()
         guard case .object(let fields) = input else { throw HandFailure.invalidInput }
+        if HandPersonalTools.available, HandPersonalTools.names.contains(name) {
+            return try await HandPersonalTools.call(name: name, fields: fields)
+        }
         if let messageContext, HandContextTools.names.contains(name) {
             return try HandContextTools.call(name: name, fields: fields, context: messageContext)
         }

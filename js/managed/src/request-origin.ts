@@ -1,4 +1,4 @@
-import { requestOriginContext, type RequestOriginContext } from "nanocodex/tools/environment";
+import { requestOriginContext, requestOriginLocation, type RequestOriginContext } from "nanocodex/tools/environment";
 import type { AccountMachine } from "./account-info";
 
 export type CallerContext = Readonly<{
@@ -23,6 +23,7 @@ export function callerContext(headers: Headers): CallerContext {
 
 export function projectCaller(context: CallerContext, hands: readonly AccountMachine[]) {
   const claimed = context.reported;
+  const location = requestOriginLocation(claimed?.location);
   const hand = claimed?.hand ? hands.find(hand => hand.id === claimed.hand) : undefined;
   const originRoot = hand && claimed?.cwd && [hand.mount, ...(hand.aliases ?? [])]
     .find(root => claimed.cwd === root || claimed.cwd!.startsWith(`${root}/`));
@@ -30,6 +31,7 @@ export function projectCaller(context: CallerContext, hands: readonly AccountMac
   return {
     client: claimed?.client ? { name: claimed.client, attribution: "client_reported" as const } : null,
     hand: hand ? { key: hand.id, path: hand.mount, attribution: "client_reported_authorized_hand" as const } : null,
+    ...(location ? { location: { ...location, attribution: "client_reported" as const } } : {}),
     ...(context.principal ? { principal: context.principal } : {}),
     ...(claimed ? { cwd, timezone: claimed.timezone ?? null } : {}),
   };

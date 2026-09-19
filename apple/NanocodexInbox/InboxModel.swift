@@ -649,6 +649,158 @@ final class InboxModel: ObservableObject {
         }
     }
 
+    // Synchronous identity lookup never presents sign-in and does no network work.
+    // Pin this before recording so restoration cannot redirect a captured request.
+    func lockedVoiceAccountScope() throws -> String {
+        guard !isDemo else { throw APIError.invalidCredential }
+        if connected { return scope }
+        guard let credential = try KeychainAccount.read() else { throw APIError.invalidCredential }
+        return SHA256.hash(data: Data((credential.origin + ":" + String(credential.apiKey.prefix(21))).utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    func restoreLockedVoiceAccount(scope expected: String) async throws {
+        // An app launch may already be restoring. Do not race a second adoption.
+        while signingIn {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        try Task.checkCancellation()
+        guard try lockedVoiceAccountScope() == expected else { throw APIError.invalidCredential }
+        if !connected { await restoreSavedAccount() }
+        try Task.checkCancellation()
+        guard connected, !isDemo, scope == expected else { throw APIError.invalidCredential }
+    }
+
+    // Recovery has its own account-scoped journal until it can enter normal drafts.
+    // It is never rendered by the Live Activity or exposed to another account.
+    func retainLockedVoiceRecovery(_ text: String, captureID: String, accountScope: String) {
+        guard let text = QuickVoiceInput.finalText(text) else { return }
+        // Once queued, recovery belongs permanently to that stable message ID.
+        // Reconciliation may already have removed an admitted turn from pending.
+        if let target = lockedVoiceOwnedTarget(captureID, accountScope: accountScope) {
+            UserDefaults.standard.set(target, forKey: "inbox.lockedVoiceLastTarget." + accountScope)
+            return
+        }
+        let key = "inbox.lockedVoiceRecovery." + accountScope
+        var saved = UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
+        saved[captureID] = text
+        UserDefaults.standard.set(saved, forKey: key)
+        if connected, scope == accountScope { restoreLockedVoiceRecovery() }
+    }
+
+    private func restoreLockedVoiceRecovery() {
+        let key = "inbox.lockedVoiceRecovery." + scope
+        let saved = UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
+        guard !saved.isEmpty else { return }
+        for (captureID, text) in saved {
+            // A pending message already owns retries and its stable admission ID.
+            guard lockedVoiceOwnedTarget(captureID, accountScope: scope) == nil,
+                  !pending.contains(where: { $0.id == captureID }) else { continue }
+            let id = resolvedAgentID("draft-" + captureID)
+            if !cards.contains(where: { $0.id == id }) {
+                pendingCreations.insert(id)
+                cards.insert(newConversationCard(id), at: 0)
+            }
+            drafts[id] = text
+            UserDefaults.standard.set(id, forKey: "inbox.lockedVoiceLastTarget." + scope)
+        }
+        persist()
+        // Keep the journal until the normal preferences write has completed.
+        Task { [preferences] in
+            await preferences.flush()
+            if UserDefaults.standard.dictionary(forKey: key) as? [String: String] == saved {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
+    }
+
+    private func lockedVoiceOwnedTarget(_ captureID: String, accountScope: String) -> String? {
+        (UserDefaults.standard.dictionary(forKey: "inbox.lockedVoiceOwnership." + accountScope) as? [String: String])?[captureID]
+    }
+
+    private func ownLockedVoice(_ captureID: String, target: String, accountScope: String) {
+        let key = "inbox.lockedVoiceOwnership." + accountScope
+        var owned = UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
+        owned[captureID] = target
+        UserDefaults.standard.set(owned, forKey: key)
+        UserDefaults.standard.set(target, forKey: "inbox.lockedVoiceLastTarget." + accountScope)
+    }
+
+    func openLockedVoiceRecovery() async {
+        while signingIn {
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+        }
+        if !connected { await restoreSavedAccount() }
+        guard connected, !isDemo else { return }
+        restoreLockedVoiceRecovery()
+        guard let target = UserDefaults.standard.string(forKey: "inbox.lockedVoiceLastTarget." + scope),
+              cards.contains(where: { $0.id == resolvedAgentID(target) }) else { return }
+        select(resolvedAgentID(target))
+    }
+
+    /// Return only after cloud admission. Never route locked capture to deviceHand.
+    /// The capture UUID is both the persisted message ID and cloud idempotency key.
+    func submitLockedVoice(_ text: String, captureID: String, accountScope expected: String,
+                           generation epoch: UUID) async throws {
+        try Task.checkCancellation()
+        guard connected, !isDemo, scope == expected, generation == epoch, let client,
+              let input = QuickVoiceInput.finalText(text), UUID(uuidString: captureID) != nil else {
+            throw APIError.invalidCredential
+        }
+        let localID = "draft-" + captureID
+        if let existing = pending.first(where: { $0.id == captureID }) {
+            guard existing.input == input else { throw APIError.invalidResponse }
+            if existing.phase == .queued || existing.remoteAdmission == true { return }
+            // An ambiguous attempt must be retried explicitly from the ordinary queue.
+            throw APIError.invalidResponse
+        }
+        guard lockedVoiceOwnedTarget(captureID, accountScope: expected) == nil else { throw APIError.invalidResponse }
+        if !cards.contains(where: { $0.id == resolvedAgentID(localID) }) {
+            pendingCreations.insert(localID)
+            cards.insert(newConversationCard(localID), at: 0)
+        }
+        let message = PendingMessage(agentID: resolvedAgentID(localID), input: input, predecessor: "", id: captureID)
+        pending.append(message); drafts[message.agentID] = ""; busy.insert(message.agentID); persist()
+        ownLockedVoice(captureID, target: message.agentID, accountScope: expected)
+        defer { if generation == epoch { busy.remove(resolvedAgentID(localID)) } }
+        do {
+            await preferences.flush()
+            try Task.checkCancellation()
+            guard generation == epoch, scope == expected else { throw APIError.invalidCredential }
+            _ = try await readyAgent(message.agentID)
+            try Task.checkCancellation()
+            guard generation == epoch, scope == expected,
+                  let current = pending.first(where: { $0.id == captureID }), current.phase == .submitting else {
+                throw CancellationError()
+            }
+            // Persist the remote conversation binding before admitting its first turn.
+            await preferences.flush()
+            try Task.checkCancellation()
+            guard generation == epoch, scope == expected,
+                  pending.first(where: { $0.id == captureID })?.phase == .submitting else { throw CancellationError() }
+            let receipt = try await client.command(current.submission)
+            guard generation == epoch, scope == expected else { throw APIError.invalidCredential }
+            guard receipt["turn_id"].string == captureID,
+                  ["accepted", "queued", "running", "completed", "cancelled", "failed"].contains(receipt["state"].string) else {
+                throw APIError.invalidResponse
+            }
+            if let index = pending.firstIndex(where: { $0.id == captureID }) {
+                try pending[index].acknowledge(receipt)
+                persist()
+                await preferences.flush()
+            }
+            try Task.checkCancellation()
+        } catch {
+            if generation == epoch, let index = pending.firstIndex(where: { $0.id == captureID }),
+               pending[index].phase == .submitting {
+                pending[index].phase = .failed
+                pending[index].error = "Delivery unconfirmed. Retry keeps the same message ID."
+                persist()
+                await preferences.flush()
+            }
+            throw error
+        }
+    }
+
     func start() async {
         guard !didStart else { return }; didStart = true
         do { try ContextStore.shared().activate(nil) } catch { contextError = error.localizedDescription }
@@ -749,14 +901,21 @@ final class InboxModel: ObservableObject {
             return false
         }
     }
+    /// Optional sensor context must never prompt or prevent a task from starting.
+    private static func promptLocationContext() async -> JSON? {
+        let provider = HandLocationProvider.shared
+        if let recent = provider.cachedSnapshot(maxAgeSeconds: 60) { return recent.json }
+        return try? await provider.currentSnapshot(timeoutSeconds: 2).json
+    }
+
     func connect(origin: String, key: String, saveCredential: Bool = true) async throws {
         let attempt = UUID(); connectionAttempt = attempt
         let credential = try AccountCredential(origin: origin.trimmingCharacters(in: .whitespacesAndNewlines), apiKey: key.trimmingCharacters(in: .whitespacesAndNewlines))
         let candidate: ManagedClient
         #if DEBUG && targetEnvironment(simulator)
-        candidate = ManagedClient(credential: credential, configuration: StartupFixture.enabled ? StartupFixture.configuration : nil)
+        candidate = ManagedClient(credential: credential, configuration: StartupFixture.enabled ? StartupFixture.configuration : nil, locationContext: { await Self.promptLocationContext() })
         #else
-        candidate = ManagedClient(credential: credential)
+        candidate = ManagedClient(credential: credential, locationContext: { await Self.promptLocationContext() })
         #endif
         let accountScope = SHA256.hash(data: Data((credential.origin + ":" + String(credential.apiKey.prefix(21))).utf8)).map { String(format: "%02x", $0) }.joined()
         let previousID = UserDefaults.standard.string(forKey: "inbox.selectedTab." + accountScope)
@@ -800,6 +959,7 @@ final class InboxModel: ObservableObject {
         }
         cards = initial
         restoreCreations()
+        restoreLockedVoiceRecovery()
         if let previousID, !closedConversationIDs.contains(previousID), cards.contains(where: { $0.id == previousID }) {
             deck.reconcile(cards.filter { !closedConversationIDs.contains($0.id) }.map(\.id)); deck.focus(previousID)
             if let openingRequest {
@@ -812,7 +972,7 @@ final class InboxModel: ObservableObject {
     }
     func musicConnectorClient() -> ManagedClient? {
         guard connected, !isDemo, let accountCredential else { return nil }
-        return ManagedClient(credential: accountCredential)
+        return ManagedClient(credential: accountCredential, locationContext: { await Self.promptLocationContext() })
     }
 
     func disconnect() throws {
@@ -2669,6 +2829,13 @@ final class InboxModel: ObservableObject {
     private func bindCreatedAgent(_ localID: String, to id: String) {
         let wasFocused = deck.focusedID == localID
         createdAgentIDs[localID] = id
+        let ownershipKey = "inbox.lockedVoiceOwnership." + scope
+        if var owned = UserDefaults.standard.dictionary(forKey: ownershipKey) as? [String: String] {
+            for captureID in owned.keys where owned[captureID] == localID { owned[captureID] = id }
+            UserDefaults.standard.set(owned, forKey: ownershipKey)
+        }
+        let recoveryKey = "inbox.lockedVoiceLastTarget." + scope
+        if UserDefaults.standard.string(forKey: recoveryKey) == localID { UserDefaults.standard.set(id, forKey: recoveryKey) }
         if let screen = threadScreens.removeValue(forKey: localID) { threadScreens[id] = screen; persistThreadScreens() }
         if closedConversationIDs.remove(localID) != nil { closedConversationIDs.insert(id) }
         if openedConversations.remove(localID) != nil { openedConversations.insert(id) }

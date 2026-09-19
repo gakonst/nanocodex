@@ -168,6 +168,9 @@ jobs:
       - name: Compile the service supervisor and validate Windows scripts
         shell: powershell
         run: ./windows/hand/test-service-build.ps1
+      - name: Verify CUA bootstrap copies without Store installation
+        shell: powershell
+        run: powershell.exe -NoLogo -NoProfile -NonInteractive -File ./windows/hand/test-cua-provision.ps1
       - name: Validate the one-click installer definition
         shell: pwsh
         run: |

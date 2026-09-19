@@ -2,6 +2,7 @@ import SwiftUI
 import Speech
 import AVFoundation
 import InboxCore
+import OSLog
 
 @MainActor
 final class QuickVoiceRecorder: ObservableObject {
@@ -10,35 +11,58 @@ final class QuickVoiceRecorder: ObservableObject {
     @Published var recording = false
     @Published var working = false
     var onFinal: ((String) -> Void)?
+    var onStatus: ((String) -> Void)?
+    var onError: ((String) -> Void)?
+    var onAudioEnded: (() -> Void)?
+    enum PermissionMode { case request, alreadyGranted }
     private let engine = AVAudioEngine()
+    private let log = Logger(subsystem: "xyz.paradigm.centaur", category: "QuickVoice")
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var recognition: SFSpeechRecognitionTask?
     private var deadline: Task<Void, Never>?
     private var gate = QuickVoiceCaptureGate()
+    fileprivate static weak var audioOwner: AnyObject?
+    private var sessionActive = false
     private var tapped = false
     private var finishing = false
 
-    func start(locale: String) async {
+    static var permissionsGranted: Bool {
+        SFSpeechRecognizer.authorizationStatus() == .authorized && AVAudioApplication.shared.recordPermission == .granted
+    }
+
+    func start(locale: String, permissions: PermissionMode = .request) async {
         stop()
+        guard Self.audioOwner == nil else {
+            fail("Another voice recording is in progress. Finish it first."); return
+        }
+        Self.audioOwner = self
         let token = gate.begin()
         working = true
-        status = "Requesting microphone and speech access…"
-        let speech = await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
-        }
-        guard gate.accepts(token) else { return }
-        let microphone = await AVAudioApplication.requestRecordPermission()
-        guard gate.accepts(token) else { return }
-        guard speech == .authorized, microphone else {
-            fail("Allow Microphone and Speech Recognition in Settings to record."); return
+        if permissions == .alreadyGranted {
+            guard Self.permissionsGranted else {
+                fail("Allow Microphone and Speech Recognition in the app before recording from the Lock Screen."); return
+            }
+        } else {
+            status = "Requesting microphone and speech access…"
+            let speech = await withCheckedContinuation { continuation in
+                SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
+            }
+            guard gate.accepts(token) else { return }
+            let microphone = await AVAudioApplication.requestRecordPermission()
+            guard gate.accepts(token) else { return }
+            guard speech == .authorized, microphone else {
+                fail("Allow Microphone and Speech Recognition in Settings to record."); return
+            }
         }
         guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: locale)), recognizer.isAvailable else {
             fail("Speech recognition is unavailable. Try again when connected."); return
         }
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
+            // duckOthers is unsupported by the record-only category.
+            try session.setCategory(.record, mode: .measurement)
             try session.setActive(true)
+            sessionActive = true
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
             request.taskHint = .dictation
@@ -59,7 +83,11 @@ final class QuickVoiceRecorder: ObservableObject {
                     guard let self, self.gate.accepts(token) else { return }
                     if let text { self.transcript = text }
                     // Errors and interruptions never submit a partial transcript.
-                    if let error { self.fail(error.localizedDescription); return }
+                    if let error {
+                        let failure = error as NSError
+                        self.log.error("Speech failed: domain=\(failure.domain, privacy: .public) code=\(failure.code)")
+                        self.fail(error.localizedDescription); return
+                    }
                     if let text, let input = self.gate.completed(text, token: token, isFinal: final) {
                         self.stop()
                         self.status = "Starting task…"
@@ -76,8 +104,13 @@ final class QuickVoiceRecorder: ObservableObject {
             transcript = ""
             recording = true
             status = "Listening… Pause when finished to start your task."
+            onStatus?("listening")
             armDeadline(seconds: 15, token: token) { self.fail("No speech was recognized. Try again.") }
-        } catch { fail(error.localizedDescription) }
+        } catch {
+            let failure = error as NSError
+            log.error("Audio start failed: domain=\(failure.domain, privacy: .public) code=\(failure.code)")
+            fail(error.localizedDescription)
+        }
     }
 
     func finish() {
@@ -85,8 +118,8 @@ final class QuickVoiceRecorder: ObservableObject {
         finishing = true
         recording = false
         status = "Finishing transcription…"
-        releaseMicrophone()
-        request?.endAudio()
+        onStatus?("transcribing")
+        releaseMicrophone(endAudio: true)
         // Wait for the recognizer's final result; never send the last partial on timeout.
         armDeadline(seconds: 5, token: gate.token) {
             self.fail("Transcription did not finish. Your words are preserved; edit and send or try again.")
@@ -98,7 +131,7 @@ final class QuickVoiceRecorder: ObservableObject {
         fail("Recording interrupted. Your words are preserved; edit and send or try again.")
     }
 
-    func fail(_ message: String) { stop(); status = message }
+    func fail(_ message: String) { stop(); status = message; onError?(message) }
 
     func stop() {
         gate.cancel()
@@ -107,12 +140,20 @@ final class QuickVoiceRecorder: ObservableObject {
         recognition?.cancel(); recognition = nil
         request = nil
         finishing = false; recording = false; working = false
+        if Self.audioOwner === self { Self.audioOwner = nil }
     }
 
-    private func releaseMicrophone() {
+    private func releaseMicrophone(endAudio: Bool = false) {
+        let hadAudio = tapped
+        // Reserve completion time before relinquishing background audio execution.
+        if hadAudio { onAudioEnded?() }
         engine.stop()
         if tapped { engine.inputNode.removeTap(onBus: 0); tapped = false }
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if endAudio { request?.endAudio() }
+        if sessionActive {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            sessionActive = false
+        }
     }
 
     private func armDeadline(seconds: Double, token: UUID, action: @escaping @MainActor () -> Void) {
@@ -121,6 +162,167 @@ final class QuickVoiceRecorder: ObservableObject {
             do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
             guard let self, self.gate.accepts(token) else { return }
             action()
+        }
+    }
+}
+
+/// Lock Screen capture is explicitly committed by Send. Speech recognition starts
+/// only after recording ends, so recognizer pauses cannot stop or submit capture.
+@MainActor
+final class LockedAudioRecorder: NSObject, AVAudioRecorderDelegate {
+    var transcript = ""
+    private(set) var recording = false
+    var onFinal: ((String) -> Void)?
+    var onStatus: ((String) -> Void)?
+    var onError: ((String) -> Void)?
+    var onAudioEnded: (() -> Void)?
+    private var recorder: AVAudioRecorder?
+    private var recognition: SFSpeechRecognitionTask?
+    private var recognizer: SFSpeechRecognizer?
+    private var file: URL?
+    private var deadline: Task<Void, Never>?
+    private var token = UUID()
+    private var sessionActive = false
+    private let log = Logger(subsystem: "xyz.paradigm.centaur", category: "QuickVoice")
+
+    func start(locale: String, permissions: QuickVoiceRecorder.PermissionMode) async {
+        stop()
+        transcript = ""
+        guard QuickVoiceRecorder.audioOwner == nil else {
+            fail("Another recording is in progress."); return
+        }
+        QuickVoiceRecorder.audioOwner = self
+        // Reap only this feature's orphan files after an interrupted process.
+        do {
+            for url in try FileManager.default.contentsOfDirectory(at: FileManager.default.temporaryDirectory,
+                includingPropertiesForKeys: nil) where url.lastPathComponent.hasPrefix("locked-voice-") && url.pathExtension == "m4a" {
+                try FileManager.default.removeItem(at: url)
+            }
+        } catch {
+            report(error, stage: "cleanup")
+            fail("Previous recording cleanup failed."); return
+        }
+        guard QuickVoiceRecorder.permissionsGranted else {
+            fail("Microphone or speech permission unavailable."); return
+        }
+        recognizer = SFSpeechRecognizer(locale: Locale(identifier: locale))
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.record, mode: .measurement)
+            try session.setActive(true)
+            sessionActive = true
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("locked-voice-\(UUID().uuidString).m4a")
+            file = url
+            // Captured audio remains accessible to this app while the phone is locked.
+            guard FileManager.default.createFile(atPath: url.path, contents: nil,
+                attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]) else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+            let audio = try AVAudioRecorder(url: url, settings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 44100,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+            ])
+            audio.delegate = self
+            recorder = audio
+            guard audio.record() else { throw CocoaError(.fileWriteUnknown) }
+            recording = true
+            onStatus?("listening")
+        } catch {
+            report(error, stage: "record")
+            fail("Microphone could not start.")
+        }
+    }
+
+    func finish() {
+        guard recording, let file else { return }
+        // Acquire background completion time before relinquishing microphone access.
+        onAudioEnded?()
+        recording = false
+        recorder?.delegate = nil
+        recorder?.stop()
+        recorder = nil
+        deactivate()
+        onStatus?("transcribing")
+        guard let recognizer, recognizer.isAvailable else {
+            fail("Speech recognition unavailable."); return
+        }
+        let current = token
+        let request = SFSpeechURLRecognitionRequest(url: file)
+        request.shouldReportPartialResults = false
+        recognition = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            let text = result?.bestTranscription.formattedString
+            let final = result?.isFinal == true
+            Task { @MainActor in
+                guard let self, self.token == current else { return }
+                if let error {
+                    self.report(error, stage: "transcribe")
+                    self.fail("Transcription failed."); return
+                }
+                guard final else { return }
+                guard let text, let input = QuickVoiceInput.finalText(text) else {
+                    self.fail("No speech recognized."); return
+                }
+                self.transcript = input
+                self.stop()
+                self.onFinal?(input)
+            }
+        }
+        deadline = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(20)) } catch { return }
+            guard let self, self.token == current else { return }
+            self.fail("Transcription timed out.")
+        }
+    }
+
+    func interrupt() { fail("Recording interrupted.") }
+
+    func stop() {
+        token = UUID()
+        deadline?.cancel(); deadline = nil
+        if recording { onAudioEnded?() }
+        recording = false
+        recorder?.delegate = nil
+        recorder?.stop(); recorder = nil
+        recognition?.cancel(); recognition = nil
+        recognizer = nil
+        deactivate()
+        if let file {
+            do { try FileManager.default.removeItem(at: file); self.file = nil }
+            catch { report(error, stage: "cleanup") }
+        }
+        if QuickVoiceRecorder.audioOwner === self { QuickVoiceRecorder.audioOwner = nil }
+    }
+
+    private func deactivate() {
+        guard sessionActive else { return }
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        sessionActive = false
+    }
+
+    private func fail(_ message: String) {
+        log.error("Locked audio failure: \(message, privacy: .public)")
+        stop()
+        onError?(message)
+    }
+
+    private func report(_ error: Error, stage: String) {
+        let error = error as NSError
+        log.error("Locked audio \(stage, privacy: .public): domain=\(error.domain, privacy: .public) code=\(error.code)")
+    }
+
+    nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
+        Task { @MainActor [weak self] in
+            guard let self, self.recorder === recorder else { return }
+            self.fail("Audio recording failed.")
+        }
+    }
+
+    nonisolated func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+        Task { @MainActor [weak self] in
+            guard let self, self.recorder === recorder, self.recording else { return }
+            self.fail("Audio recording ended unexpectedly.")
         }
     }
 }
@@ -195,6 +397,7 @@ struct QuickVoiceView: View {
         guard model.connected, !model.isDemo else {
             recorder.fail("Sign in and connect first, then tap Record again."); return
         }
+        LockedVoiceCoordinator.shared.yieldToForegroundRecording()
         account = model.quickVoiceGeneration
         model.voice.stop()
         recorder.onFinal = { submit($0) }

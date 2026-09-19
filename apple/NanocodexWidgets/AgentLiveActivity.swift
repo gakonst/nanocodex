@@ -1,4 +1,5 @@
 import ActivityKit
+import AppIntents
 import InboxCore
 import SwiftUI
 import WidgetKit
@@ -8,6 +9,8 @@ struct NanocodexWidgets: WidgetBundle {
     var body: some Widget {
         AgentLiveActivity()
         VoiceTaskWidget()
+        LockedVoiceActivity()
+        LockedVoiceControl()
     }
 }
 
@@ -156,11 +159,10 @@ struct VoiceTaskWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: VoiceTaskProvider()) { _ in
             VoiceTaskWidgetView()
-                .widgetURL(URL(string: "nanocodex://voice/new")!)
                 .containerBackground(for: .widget) { Color.clear }
         }
         .configurationDisplayName("Speak to Nanocodex")
-        .description("Speak in Greek or English to start a new agent thread.")
+        .description("Tap to record a voice task with a small recording activity. Set up permissions in the app first. The inline widget opens the app.")
         .supportedFamilies([.accessoryCircular, .accessoryRectangular, .accessoryInline])
     }
 }
@@ -168,26 +170,128 @@ struct VoiceTaskWidget: Widget {
 private struct VoiceTaskWidgetView: View {
     @Environment(\.widgetFamily) private var family
     var body: some View {
-        Group {
-            switch family {
-            case .accessoryInline:
-                Label("Speak to Nanocodex", systemImage: "mic.fill")
-            case .accessoryRectangular:
-                HStack(spacing: 8) {
-                    Image(systemName: "mic.fill").font(.title2)
-                    VStack(alignment: .leading) {
-                        Text("Speak to Nanocodex").font(.headline)
-                        Text("New agent thread").font(.caption)
+        if family == .accessoryInline {
+            Label("Speak to Nanocodex", systemImage: "mic.fill")
+                .widgetURL(URL(string: "nanocodex://voice/new")!)
+        } else {
+            Button(intent: StartLockedVoiceIntent()) {
+                if family == .accessoryRectangular {
+                    HStack(spacing: 8) {
+                        Image(systemName: "mic.fill").font(.title2)
+                        VStack(alignment: .leading) {
+                            Text("Speak to Nanocodex").font(.headline)
+                            Text("Tap to record").font(.caption)
+                        }
+                    }
+                } else {
+                    ZStack {
+                        AccessoryWidgetBackground()
+                        Image(systemName: "mic.fill").font(.title2)
                     }
                 }
-            default:
-                ZStack {
-                    AccessoryWidgetBackground()
-                    Image(systemName: "mic.fill").font(.title2)
-                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Record a voice task")
+            .accessibilityHint("Starts recording with a small Live Activity")
+        }
+    }
+}
+
+struct LockedVoiceControl: ControlWidget {
+    static let kind = "NanocodexLockedVoiceControl"
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: Self.kind) {
+            ControlWidgetButton(action: StartLockedVoiceIntent()) {
+                Label("Voice task", systemImage: "mic.fill")
             }
         }
-        .accessibilityLabel("Speak to Nanocodex")
-        .accessibilityHint("Opens voice capture to start a new agent thread in Greek or English")
+        .displayName("Record a voice task")
+        .description("Record a new Nanocodex task in English or Greek.")
+    }
+}
+
+struct LockedVoiceActivity: Widget {
+    var body: some WidgetConfiguration {
+        ActivityConfiguration(for: LockedVoiceActivityAttributes.self) { context in
+            HStack(spacing: 12) {
+                Image(systemName: symbol(displayPhase(context))).font(.title2)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(headline(displayPhase(context))).font(.headline)
+                    Text(context.state.language == "el-GR" ? "Ελληνικά" : "English")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                controls(context)
+            }
+            .padding()
+            .activityBackgroundTint(.black)
+            .activitySystemActionForegroundColor(.white)
+            .foregroundStyle(.white)
+        } dynamicIsland: { context in
+            DynamicIsland {
+                DynamicIslandExpandedRegion(.leading) {
+                    Image(systemName: symbol(displayPhase(context)))
+                }
+                DynamicIslandExpandedRegion(.center) {
+                    Text(headline(displayPhase(context))).font(.headline)
+                }
+                DynamicIslandExpandedRegion(.bottom) { controls(context) }
+            } compactLeading: {
+                Image(systemName: symbol(displayPhase(context)))
+            } compactTrailing: {
+                Text(displayPhase(context) == "sent" ? "Sent" : context.isStale ? "Ended" : "Voice").font(.caption2)
+            } minimal: {
+                Image(systemName: symbol(displayPhase(context)))
+            }
+        }
+    }
+
+    @ViewBuilder private func controls(_ context: ActivityViewContext<LockedVoiceActivityAttributes>) -> some View {
+        if context.isStale {
+            EmptyView()
+        } else if ["preparing", "listening", "transcribing"].contains(context.state.phase) {
+            HStack {
+                Button(intent: CancelLockedVoiceIntent(captureID: context.attributes.captureID)) {
+                    Image(systemName: "xmark").accessibilityLabel("Cancel recording")
+                }
+                if context.state.phase == "listening" {
+                    Button(intent: FinishLockedVoiceIntent(captureID: context.attributes.captureID)) {
+                        Image(systemName: "arrow.up").accessibilityLabel("Send recording")
+                    }
+                }
+            }.buttonStyle(.bordered)
+        } else if ["recordingFailed", "transcriptionFailed"].contains(context.state.phase) {
+            Button("Record again", intent: StartLockedVoiceIntent()).buttonStyle(.bordered)
+        }
+    }
+
+    private func displayPhase(_ context: ActivityViewContext<LockedVoiceActivityAttributes>) -> String {
+        let phase = context.state.phase
+        let active = ["preparing", "listening", "transcribing", "sending"].contains(phase)
+        return context.isStale && active ? "expired" : phase
+    }
+
+    private func headline(_ phase: String) -> String {
+        switch phase {
+        case "preparing": "Getting ready…"
+        case "listening": "Recording…"
+        case "transcribing": "Finishing…"
+        case "sending": "Sending…"
+        case "sent": "Task sent"
+        case "cancelled": "Cancelled"
+        case "recordingFailed": "Recording stopped"
+        case "transcriptionFailed": "Transcription unfinished"
+        case "deliveryFailed": "Delivery unconfirmed"
+        case "expired": "Status unavailable"
+        default: "Voice task ended"
+        }
+    }
+    private func symbol(_ phase: String) -> String {
+        switch phase {
+        case "sent": "checkmark.circle.fill"
+        case "failed", "recordingFailed", "transcriptionFailed", "deliveryFailed", "expired": "exclamationmark.circle"
+        case "cancelled": "xmark.circle"
+        default: "mic.fill"
+        }
     }
 }

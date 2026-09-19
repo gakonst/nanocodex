@@ -2,6 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>NSContactsUsageDescription</key>
+    <string>Allow Nanocodex to access the contacts you choose for tasks you request.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>Allow Nanocodex to use your location for nearby places and location-based tasks you request.</string>
+    <key>PHPhotoLibraryPreventAutomaticLimitedAccessAlert</key>
+    <true/>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>Allow Nanocodex to access the photos you choose for your tasks.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Transcribe your voice into a new agent task in English or Greek.</string>
 	<key>NSSupportsLiveActivities</key>
@@ -9,7 +17,7 @@
 	<key>CFBundleURLTypes</key>
 	<array><dict><key>CFBundleURLName</key><string>xyz.paradigm.centaur.activity</string><key>CFBundleURLSchemes</key><array><string>nanocodex</string></array></dict></array>
 	<key>UIBackgroundModes</key>
-	<array><string>fetch</string><string>processing</string><string>bluetooth-central</string></array>
+	<array><string>audio</string><string>fetch</string><string>processing</string><string>bluetooth-central</string></array>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array><string>xyz.paradigm.centaur.hand.refresh</string><string>xyz.paradigm.centaur.hand.turn.*</string></array>
 	<key>NSCameraUsageDescription</key>
