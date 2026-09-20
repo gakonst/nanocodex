@@ -1,0 +1,417 @@
+{
+  "label": "rust-mic-verbose",
+  "requested": {
+    "width": 1280,
+    "height": 720,
+    "fps": 60,
+    "bitrate_kbps": 6000,
+    "cpus": 2,
+    "memory_gib": 4
+  },
+  "host_arch": "amd64 emulation on arm64 Docker host",
+  "synthetic_source": true,
+  "samples": [
+    {
+      "latency_ms": 42.19999998807907,
+      "expected_display_ms": 35.899999999999636,
+      "media_time": 2.121
+    },
+    {
+      "latency_ms": 35,
+      "expected_display_ms": 28.30000001192093,
+      "media_time": 2.523
+    },
+    {
+      "latency_ms": 64,
+      "expected_display_ms": 57.60000000596028,
+      "media_time": 2.958
+    },
+    {
+      "latency_ms": 26.599999994039536,
+      "expected_display_ms": 18.899999994039717,
+      "media_time": 3.322
+    },
+    {
+      "latency_ms": 37.900000005960464,
+      "expected_display_ms": 30.400000005960464,
+      "media_time": 3.74
+    },
+    {
+      "latency_ms": 45.10000002384186,
+      "expected_display_ms": 37.50000001192075,
+      "media_time": 4.139
+    },
+    {
+      "latency_ms": 30.900000005960464,
+      "expected_display_ms": 24.400000011921293,
+      "media_time": 4.556
+    },
+    {
+      "latency_ms": 34.19999998807907,
+      "expected_display_ms": 25.300000000000182,
+      "media_time": 4.974
+    },
+    {
+      "latency_ms": 44.599999994039536,
+      "expected_display_ms": 38.3000000059601,
+      "media_time": 5.374
+    },
+    {
+      "latency_ms": 30.80000001192093,
+      "expected_display_ms": 24.700000011920565,
+      "media_time": 5.79
+    },
+    {
+      "latency_ms": 41.30000001192093,
+      "expected_display_ms": 32.40000001192129,
+      "media_time": 6.208
+    },
+    {
+      "latency_ms": 47.89999997615814,
+      "expected_display_ms": 41.99999998807834,
+      "media_time": 6.607
+    },
+    {
+      "latency_ms": 26.400000005960464,
+      "expected_display_ms": 18.900000011921293,
+      "media_time": 7.008
+    },
+    {
+      "latency_ms": 51.80000001192093,
+      "expected_display_ms": 45.8000000059601,
+      "media_time": 7.442
+    },
+    {
+      "latency_ms": 31.200000017881393,
+      "expected_display_ms": 24.100000005961192,
+      "media_time": 7.823
+    },
+    {
+      "latency_ms": 27,
+      "expected_display_ms": 19.799999994040263,
+      "media_time": 8.224
+    },
+    {
+      "latency_ms": 51.10000002384186,
+      "expected_display_ms": 42.30000001192093,
+      "media_time": 8.668
+    },
+    {
+      "latency_ms": 42.5,
+      "expected_display_ms": 36,
+      "media_time": 9.051
+    },
+    {
+      "latency_ms": 28.399999976158142,
+      "expected_display_ms": 22.599999988078707,
+      "media_time": 9.465
+    },
+    {
+      "latency_ms": 55.89999997615814,
+      "expected_display_ms": 49.49999998807834,
+      "media_time": 9.881
+    },
+    {
+      "latency_ms": 34.599999994039536,
+      "expected_display_ms": 28.8999999880798,
+      "media_time": 10.283
+    },
+    {
+      "latency_ms": 49,
+      "expected_display_ms": 42.1000000119202,
+      "media_time": 10.702
+    },
+    {
+      "latency_ms": 41.80000001192093,
+      "expected_display_ms": 37.79999999999927,
+      "media_time": 11.082
+    },
+    {
+      "latency_ms": 57.5,
+      "expected_display_ms": 50.49999999403917,
+      "media_time": 11.517
+    },
+    {
+      "latency_ms": 48.900000005960464,
+      "expected_display_ms": 43.700000011920565,
+      "media_time": 11.899
+    },
+    {
+      "latency_ms": 27.599999994039536,
+      "expected_display_ms": 19.100000005961192,
+      "media_time": 12.298
+    },
+    {
+      "latency_ms": 53.900000005960464,
+      "expected_display_ms": 60.50000001192166,
+      "media_time": 12.735
+    },
+    {
+      "latency_ms": 45.400000005960464,
+      "expected_display_ms": 52.1999999940399,
+      "media_time": 13.115
+    },
+    {
+      "latency_ms": 71.7000000178814,
+      "expected_display_ms": 48.50000000595901,
+      "media_time": 13.531
+    },
+    {
+      "latency_ms": 56.10000002384186,
+      "expected_display_ms": 50.1000000119202,
+      "media_time": 13.948
+    }
+  ],
+  "errors": [],
+  "first_video_ms": 2424.4000000059605,
+  "width": 1280,
+  "height": 720,
+  "stats": [
+    {
+      "id": "CPQ4YT9U4v_PvBb/jEZ",
+      "timestamp": 1789862082297.901,
+      "type": "candidate-pair",
+      "bytesDiscardedOnSend": 0,
+      "bytesReceived": 0,
+      "bytesSent": 0,
+      "consentRequestsSent": 2,
+      "currentRoundTripTime": 0.001,
+      "localCandidateId": "IQ4YT9U4v",
+      "nominated": false,
+      "packetsDiscardedOnSend": 0,
+      "packetsReceived": 0,
+      "packetsSent": 0,
+      "priority": 7926369428998980000,
+      "remoteCandidateId": "IPvBb/jEZ",
+      "requestsReceived": 12,
+      "requestsSent": 3,
+      "responsesReceived": 3,
+      "responsesSent": 12,
+      "state": "succeeded",
+      "totalRoundTripTime": 0.002,
+      "transportId": "T01",
+      "writable": false
+    },
+    {
+      "id": "CPUNxgYrzd_9kkzoGoy",
+      "timestamp": 1789862082297.901,
+      "type": "candidate-pair",
+      "bytesDiscardedOnSend": 0,
+      "bytesReceived": 0,
+      "bytesSent": 4389,
+      "consentRequestsSent": 2,
+      "currentRoundTripTime": 0.001,
+      "lastPacketSentTimestamp": 1789862067459,
+      "localCandidateId": "IUNxgYrzd",
+      "nominated": false,
+      "packetsDiscardedOnSend": 0,
+      "packetsReceived": 0,
+      "packetsSent": 6,
+      "priority": 9079290933605827000,
+      "remoteCandidateId": "I9kkzoGoy",
+      "requestsReceived": 11,
+      "requestsSent": 3,
+      "responsesReceived": 3,
+      "responsesSent": 11,
+      "state": "succeeded",
+      "totalRoundTripTime": 0.002,
+      "transportId": "T01",
+      "writable": true
+    },
+    {
+      "id": "CPeh4iP2gK_7wegD7X0",
+      "timestamp": 1789862082297.901,
+      "type": "candidate-pair",
+      "availableIncomingBitrate": 194494,
+      "availableOutgoingBitrate": 300000,
+      "bytesDiscardedOnSend": 0,
+      "bytesReceived": 477690,
+      "bytesSent": 19877,
+      "consentRequestsSent": 9,
+      "currentRoundTripTime": 0,
+      "lastPacketReceivedTimestamp": 1789862082303,
+      "lastPacketSentTimestamp": 1789862082143,
+      "localCandidateId": "Ieh4iP2gK",
+      "nominated": true,
+      "packetsDiscardedOnSend": 0,
+      "packetsReceived": 1855,
+      "packetsSent": 135,
+      "priority": 7926380424115257000,
+      "remoteCandidateId": "I7wegD7X0",
+      "requestsReceived": 10,
+      "requestsSent": 10,
+      "responsesReceived": 10,
+      "responsesSent": 10,
+      "state": "succeeded",
+      "totalRoundTripTime": 0.018,
+      "transportId": "T01",
+      "writable": true
+    },
+    {
+      "id": "IT01A1034753995",
+      "timestamp": 1789862082297.901,
+      "type": "inbound-rtp",
+      "codecId": "CIT01_111_minptime=10;useinbandfec=1",
+      "kind": "audio",
+      "mediaType": "audio",
+      "ssrc": 1034753995,
+      "transportId": "T01",
+      "jitter": 0.001,
+      "packetsLost": 0,
+      "packetsReceived": 721,
+      "packetsReceivedWithCe": 0,
+      "packetsReceivedWithEct1": 0,
+      "audioLevel": 0.08853419598986785,
+      "bytesReceived": 231441,
+      "concealedSamples": 0,
+      "concealmentEvents": 0,
+      "estimatedPlayoutTimestamp": 3998850882245,
+      "fecPacketsDiscarded": 0,
+      "fecPacketsReceived": 0,
+      "headerBytesReceived": 8652,
+      "insertedSamplesForDeceleration": 1744,
+      "jitterBufferDelay": 22233.6,
+      "jitterBufferEmittedCount": 691200,
+      "jitterBufferMinimumDelay": 17817.6,
+      "jitterBufferTargetDelay": 17817.6,
+      "lastPacketReceivedTimestamp": 1789862082280.641,
+      "mid": "1",
+      "packetsDiscarded": 0,
+      "playoutId": "AP",
+      "remoteId": "ROA1034753995",
+      "removedSamplesForAcceleration": 1526,
+      "silentConcealedSamples": 0,
+      "totalAudioEnergy": 0.11284267628080137,
+      "totalProcessingDelay": 18028.91424,
+      "totalSamplesDuration": 15.71999999999971,
+      "totalSamplesReceived": 691200,
+      "trackIdentifier": "desktop-audio"
+    },
+    {
+      "id": "IT01V3666810398",
+      "timestamp": 1789862082297.901,
+      "type": "inbound-rtp",
+      "codecId": "CIT01_125_level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
+      "kind": "video",
+      "mediaType": "video",
+      "ssrc": 3666810398,
+      "transportId": "T01",
+      "jitter": 0.002,
+      "packetsLost": 0,
+      "packetsReceived": 1037,
+      "packetsReceivedWithCe": 0,
+      "packetsReceivedWithEct1": 0,
+      "bytesReceived": 201151,
+      "estimatedPlayoutTimestamp": 3998850882265,
+      "firCount": 0,
+      "frameHeight": 720,
+      "frameWidth": 1280,
+      "framesAssembledFromMultiplePackets": 57,
+      "framesDecoded": 857,
+      "framesDropped": 0,
+      "framesPerSecond": 60,
+      "framesReceived": 859,
+      "freezeCount": 0,
+      "headerBytesReceived": 12444,
+      "jitterBufferDelay": 9.865836,
+      "jitterBufferEmittedCount": 857,
+      "jitterBufferMinimumDelay": 12.163103,
+      "jitterBufferTargetDelay": 15.191664999999999,
+      "keyFramesDecoded": 29,
+      "lastPacketReceivedTimestamp": 1789862082298.26,
+      "mid": "0",
+      "nackCount": 0,
+      "pauseCount": 0,
+      "pliCount": 1,
+      "qpSum": 29,
+      "remoteId": "ROV3666810398",
+      "totalAssemblyTime": 0.004293,
+      "totalDecodeTime": 0.38820099999999996,
+      "totalFreezesDuration": 0,
+      "totalInterFrameDelay": 14.255,
+      "totalPausesDuration": 0,
+      "totalProcessingDelay": 10.329687,
+      "totalSquaredInterFrameDelay": 0.2537610000000021,
+      "trackIdentifier": "desktop"
+    }
+  ],
+  "summary": {
+    "n": 30,
+    "p50_ms": 42.5,
+    "p95_ms": 64
+  },
+  "microphone_checks": {
+    "source": "nanocodex_remote_mic_95a079ec4fdd55cb9b81dd614719683a_source",
+    "defaults_before": {
+      "sink": "perf",
+      "source": "perf.monitor"
+    },
+    "scope": "Synthetic browser 660Hz -> WebRTC Opus -> isolated host virtual PulseAudio source; no physical microphone or native app UI",
+    "source_present_before_enable": true,
+    "generator": {
+      "frequency_hz": 660,
+      "context_state": "running",
+      "direction": "sendrecv",
+      "track_kind": "audio"
+    },
+    "before_enable": {
+      "samples": 48000,
+      "rms": 0.0,
+      "peak": 0.0,
+      "amplitude_660hz": 0.0,
+      "amplitude_440hz": 0.0
+    },
+    "enable_ack": {
+      "enabled": true,
+      "generation": "cc4bfa06-bbf4-4ed5-9bb4-bc9f48bc78ba",
+      "requestID": "9a3571da-5bad-44c3-bf6e-0364b60a519d",
+      "type": "microphone"
+    },
+    "enabled": {
+      "samples": 48000,
+      "rms": 0.05280971320014071,
+      "peak": 0.20159912109375,
+      "amplitude_660hz": 0.02795641764477055,
+      "amplitude_440hz": 0.00017202985286747668
+    },
+    "mute_ack": {
+      "enabled": false,
+      "generation": "cc4bfa06-bbf4-4ed5-9bb4-bc9f48bc78ba",
+      "requestID": "baad1337-874d-436b-8fd0-1407d075cfa3",
+      "type": "microphone"
+    },
+    "after_mute": {
+      "samples": 48000,
+      "rms": 0.0,
+      "peak": 0.0,
+      "amplitude_660hz": 0.0,
+      "amplitude_440hz": 0.0
+    },
+    "defaults_after": {
+      "sink": "perf",
+      "source": "nanocodex_remote_mic_95a079ec4fdd55cb9b81dd614719683a_source"
+    },
+    "acks": [
+      {
+        "enabled": true,
+        "generation": "cc4bfa06-bbf4-4ed5-9bb4-bc9f48bc78ba",
+        "requestID": "9a3571da-5bad-44c3-bf6e-0364b60a519d",
+        "type": "microphone"
+      },
+      {
+        "enabled": false,
+        "generation": "cc4bfa06-bbf4-4ed5-9bb4-bc9f48bc78ba",
+        "requestID": "9a3571da-5bad-44c3-bf6e-0364b60a519d",
+        "type": "microphone"
+      },
+      {
+        "enabled": false,
+        "generation": "cc4bfa06-bbf4-4ed5-9bb4-bc9f48bc78ba",
+        "requestID": "baad1337-874d-436b-8fd0-1407d075cfa3",
+        "type": "microphone"
+      }
+    ],
+    "passed": false
+  },
+  "error": "AssertionError('microphone PCM or default-device verification failed')"
+}

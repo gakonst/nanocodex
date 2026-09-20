@@ -74,3 +74,39 @@ are context and are not current baseline measurements for this refactor.
 
 Until those paths are tested on the exact installed versions, passing unit
 suites is component evidence, not a claim that the whole system works.
+
+## Implemented paths and remaining rollout
+
+`crates/nanocodex-remote` owns the Rust publisher, peer preparation, media framing,
+input lease and microphone lifecycle. The native CLI delegates to it. Linux
+Wayland capture/input and the standalone `wayland-host`, `desktop-host`, and
+`server-host` commands use that same runtime. Both managed and standalone server
+image definitions now build the Rust publisher. The Go source is retained for
+comparison/rollback and the separate paired-phone companion; it is no longer the
+publisher selected by those image definitions. The Apple screen-publishing UI and
+phone capture remain native Swift consumers of the existing wire protocol.
+
+The Mac viewer exposes Take/Release Control, Lock Mouse, microphone/speaker
+controls and native fullscreen. Control–Command–F toggles fullscreen;
+Command–Shift–Escape releases input. Capture belongs to the focused window and
+releases on focus loss. This follows the window-owned relative-input behavior
+in [SDL](https://wiki.libsdl.org/SDL3/SDL_SetWindowRelativeMouseMode) and the
+separate capture/fullscreen escape controls described by
+[Moonlight](https://github.com/moonlight-stream/moonlight-docs/wiki/Setup-Guide).
+No Moonlight code was copied.
+
+Linux microphone input is a stable virtual Pulse source named from the machine
+identity. Select **Nanocodex_Remote_Microphone** once in the remote app's voice
+input settings. Mute/revoke stops the PCM writer while preserving that selection;
+publisher shutdown removes only its owned devices. The publisher does not explicitly change global defaults. PulseAudio can
+automatically select the new input on a headless host whose only previous source
+was a playback monitor; hosts with an existing input retain that selection. This does not claim that a particular game has selected the source.
+Mac and Windows host microphone sinks are not implemented; unsupported hosts do
+not advertise the microphone capability. iPhone audio defaults to the speaker,
+and interruptions/device removal stop microphone capture without automatic resume.
+
+The phone controller displays physical WoW gamepad button identities and sends
+standard snapshots. It does not assign invented spells or actions. Current game
+bindings still require an in-game check. The addon is an independent Lua/Python
+consumer under `examples/wow`; its carrier and application tests use mocked game
+APIs and are not a live WoW reply demonstration.

@@ -1,0 +1,15 @@
+47658f7bc8b201b8505d39bc59f07afed01facf5743e3601281de47261d0afab  /usr/local/bin/nanocodex-remote
+/usr/local/bin/nanocodex-remote: go1.26.5
+	path	github.com/gakonst/nanocodex/hands/remote
+	mod	github.com/gakonst/nanocodex/hands/remote	(devel)
+	dep	github.com/Masterminds/semver	v1.5.0	h1:H65muMkzWKEuNDnfl9d70GUjFniHKHRbFPGBuZ3QEww=
+	dep	github.com/cenkalti/backoff	v2.2.1+incompatible	h1:tNowT99t7UNflLxfYYSlKYsBpXdEet03Pg2g16Swow4=
+	dep	github.com/coder/websocket	v1.8.15	h1:6B2JPeOGlpff2Uz6vOEH1Vzpi0iUz20A+lPVhPHtNUA=
+	dep	github.com/danielpaulus/go-ios	v1.3.3-0.20260904123936-7e82aa2c8395	h1:nxlDfZDsPr3yw9lEDuCZDW/04pk8tFTfwjGb68yOnIE=
+	dep	github.com/google/uuid	v1.6.0	h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
+	dep	github.com/grandcat/zeroconf	v1.0.0	h1:uHhahLBKqwWBV6WZUDAT71044vwOTL+McW0mBJvo6kE=
+	dep	github.com/miekg/dns	v1.1.57	h1:Jzi7ApEIzwEPLHWRcafCN9LZSBbqQpxjt/wpgvg7wcM=
+	dep	github.com/pion/datachannel	v1.6.2	h1:7EXQ8TH3vTouBUdRWYbcX2edSx9Yj6k5zl5P+qyxEPc=
+	dep	github.com/pion/dtls/v3	v3.1.8	h1:aLcgjZqzrYn5AbjSds4LvK2WI5VzJc1PencExyDjYis=
+ffmpeg version 7.1.5-0+deb13u1 Copyright (c) 2000-2026 the FFmpeg developers
+Google Chrome 153.0.8010.52
