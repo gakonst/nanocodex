@@ -7,9 +7,6 @@ extend-exclude = [
     "crates/nanocodex-browser/assets/axe.js",
     "crates/nanocodex-browser/assets/react_diagnostics.js",
     # Preserve upstream sources and captured protocol/encoding fixture bytes.
-    "crates/experimental/nanocodex-computer/runtime/vendor/",
-    "crates/experimental/nanocodex-computer/runtime/tests/oracles/",
-    "crates/experimental/nanocodex-computer/runtime/src/runtime_icu_data/",
     "js/account/public/data/",
     "js/account/src/data/harness-repository.json",
     "js/account/worker-configuration.d.ts",

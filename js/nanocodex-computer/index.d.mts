@@ -1,5 +1,4 @@
 import type { NamedTool } from "nanocodex-tools";
-export type * from "./api.d.mts";
 /** Installs a missing managed provider through the trusted native CLI on supported platforms. */
 export function ensureComputer(options?: { binary?: string }): Promise<string | undefined>;
 export function discoverComputer(options?: { binary?: string }): Promise<string | undefined>;
@@ -46,9 +45,6 @@ export type ComputerOptions = {
   elicitationTimeoutMs?: number;
   args?: readonly string[];
   environment?: Record<string, string>;
-  desktopRuntime?: string;
-  /** Exact MCP command/args; do not append companion-specific flags. */
-  transport?: "mcp";
   /** Trusted discovered catalog; connectComputerTools obtains this automatically. */
   definitions?: readonly ComputerToolDefinition[];
 };

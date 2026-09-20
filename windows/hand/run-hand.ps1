@@ -16,12 +16,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $binary = Join-Path $InstallDir "nanocodex2.exe"
-$computer = Join-Path $InstallDir "nanocodex-computer.exe"
 $state = Join-Path $DataDir "state"
 $log = Join-Path $DataDir "hand.log"
 $account = Join-Path $DataDir "account.json"
 
-foreach ($path in @($binary, $computer)) {
+foreach ($path in @($binary)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Nanocodex Hand is incomplete: missing $path"
     }

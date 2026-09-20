@@ -34,7 +34,7 @@ function provider({ requestParams = params, method = "elicitation/create", cance
         if (${cancel}) setTimeout(() => send({method:'notifications/cancelled',params:{requestId:0}}), 30);
       } else if (request.id === 0) send({id:call,result:{content:[{type:'text',text:JSON.stringify({capabilities,response:request})}]}});
     });`;
-  return { executable: process.execPath, args: ["-e", script], transport: "mcp" };
+  return { executable: process.execPath, args: ["-e", script] };
 }
 async function response(attachment, ctx = context()) {
   const result = await attachment.tool("js").handler({}, ctx);

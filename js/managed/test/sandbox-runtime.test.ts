@@ -1,4 +1,4 @@
-import { CUA_JS_NAME, CUA_PARAMETERS, CUA_RESET_PARAMETERS } from "nanocodex-computer/contract";
+import { CUA_JS_NAME } from "nanocodex-computer/contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ToolMap } from "nanocodex";
 
@@ -199,7 +199,7 @@ describe("managed sandbox preview wiring", () => {
     const invoke = vi.fn(async () => ({ content: [] }));
     const tools = createManagedNamespaceTools(() => allowed,
       () => [{ id: "desktop", workspace: "/" }],
-      (_id, name) => name.startsWith("mcp__cua_repl__") ? { handler: invoke, definition: { description: "Fixture CUA provider", parameters: name === CUA_JS_NAME ? CUA_PARAMETERS : CUA_RESET_PARAMETERS } } : undefined);
+      (_id, name) => name.startsWith("mcp__cua_repl__") ? { handler: invoke, definition: { description: "Fixture CUA provider", parameters: { type: "object", additionalProperties: true } } } : undefined);
     await tools.find(tool => tool.name === "select_computer")!.handler({ workdir: "/desktop" }, toolContext());
     allowed = false;
     await expect(tools.find(tool => tool.name === "mcp__cua_repl__js")!.handler({ code: "1" }, toolContext()))

@@ -61,7 +61,7 @@ let workspace = image.private_workspace(
 .launch()
 .await?;
 
-let tools = workspace.tools_builder().build()?;
+let tools = workspace.tools_builder().await?.build()?;
 // Pass `tools` to `Nanocodex::builder(...).tools(tools)`.
 
 drop(tools);
@@ -460,7 +460,7 @@ let workspace = DockerWorkspace::builder("nanocodex-hand:local", "my-hand-worksp
     .cpus(2)
     .memory_mib(1024)
     .launch().await?;
-let tools = workspace.attachment_tools_builder().build()?;
+let tools = workspace.attachment_tools_builder().await?.build()?;
 // Attach these tools using the ordinary Hosted Tools contract.
 drop(tools);
 workspace.shutdown().await?; // The named volume survives.

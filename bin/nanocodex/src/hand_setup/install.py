@@ -125,13 +125,6 @@ def account_get(config, path):
 def template_inputs(stage):
     names = ["Dockerfile", "Dockerfile.ext4", "populate-ext4.sh", "build-root.sh",
         "toolkit/install-alpine.sh", "toolkit/python.txt", "toolkit/check.py", "toolkit/install-paths.sh"]
-    computer = stage / "computer-source"
-    for name in ["Cargo.toml", "Cargo.lock", "src/main.rs"]:
-        if not (computer / name).is_file():
-            raise RuntimeError(f"Missing bundled computer build source: {name}")
-    if not (computer / "extensions").is_dir():
-        raise RuntimeError("Missing bundled computer extensions")
-    names.extend(path.relative_to(stage).as_posix() for path in computer.rglob("*") if path.is_file())
     return sorted(names)
 
 
@@ -150,8 +143,7 @@ def prepare_template(stage):
     if not template.exists():
         print("Preparing retained VM desktop template…", flush=True)
         run("docker", "info", stdout=subprocess.DEVNULL)
-        run("docker", "build", "--build-context", f"computer-source={stage / 'computer-source'}",
-            "-t", f"nanocodex-vm:{key}", str(stage))
+        run("docker", "build", "-t", f"nanocodex-vm:{key}", str(stage))
         run("bash", str(stage / "build-root.sh"), f"nanocodex-vm:{key}", str(template), "16384")
     return template
 
@@ -227,7 +219,7 @@ def main(stage, config):
     cache = ROOT / "cache"
     artifacts = []
     for artifact in config["artifacts"]:
-        if artifact["name"] not in ["nanocodex2", "nanocodex-vm-guest", "nanocodex-computer"]:
+        if artifact["name"] not in ["nanocodex2", "nanocodex-vm-guest"]:
             raise RuntimeError("Unexpected artifact")
         source = stage / artifact["name"] if artifact.get("local") else download(artifact["url"], artifact["sha256"], cache)
         if digest(source) != artifact["sha256"]:

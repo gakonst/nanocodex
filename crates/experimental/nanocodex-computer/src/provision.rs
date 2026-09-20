@@ -548,7 +548,6 @@ mod receipt_tests {
         let executable = std::env::current_exe().unwrap();
         let receipt = serde_json::json!({"status":"installed","transport":"mcp","executable":executable,"args":["provider entry.mjs"],"environment":{"CODEX_CLI_PATH":"signed host"}});
         let config = super::config_from_receipt(&receipt).unwrap();
-        assert!(config.mcp_transport);
         assert_eq!(config.executable, executable);
         assert_eq!(config.args, ["provider entry.mjs"]);
         assert_eq!(

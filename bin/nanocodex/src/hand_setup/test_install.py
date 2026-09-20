@@ -24,27 +24,19 @@ class InstallerTests(unittest.TestCase):
                 shutil.copytree(source, stage / name)
             else:
                 shutil.copyfile(source, stage / name)
-        for name in ["Cargo.toml", "Cargo.lock", "src/main.rs", "extensions/helper.js"]:
-            path = stage / "computer-source" / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(name)
-
-    def test_computer_source_changes_invalidate_cached_image(self):
+    def test_template_changes_invalidate_cached_image(self):
         with tempfile.TemporaryDirectory() as directory:
             stage = Path(directory)
             self.stage_template(stage)
             original = installer.template_key(stage)
-            helper = stage / "computer-source/extensions/helper.js"
-            helper.write_text("updated")
-            edited = installer.template_key(stage)
-            self.assertNotEqual(original, edited)
-            helper.rename(helper.with_name("renamed.js"))
-            renamed = installer.template_key(stage)
-            self.assertNotEqual(edited, renamed)
-            helper.with_name("renamed.js").unlink()
-            self.assertNotEqual(renamed, installer.template_key(stage))
+            dockerfile = stage / "Dockerfile"
+            dockerfile.write_text(dockerfile.read_text() + "\n# updated\n")
+            self.assertNotEqual(original, installer.template_key(stage))
+            (stage / "toolkit/check.py").unlink()
+            with self.assertRaises(FileNotFoundError):
+                installer.template_key(stage)
 
-    def test_image_build_receives_bundled_context_and_rerun_reuses_image(self):
+    def test_image_build_uses_staged_template_and_rerun_reuses_image(self):
         with tempfile.TemporaryDirectory() as directory:
             stage = Path(directory)
             self.stage_template(stage)
@@ -52,14 +44,10 @@ class InstallerTests(unittest.TestCase):
             with patch.object(installer, "ROOT", stage), patch.object(installer, "run") as run:
                 template = installer.prepare_template(stage)
                 build = next(call.args for call in run.call_args_list if call.args[:2] == ("docker", "build"))
-                self.assertEqual(build[build.index("--build-context") + 1], f"computer-source={stage / 'computer-source'}")
+                self.assertEqual(build, ("docker", "build", "-t", f"nanocodex-vm:{installer.template_key(stage)}", str(stage)))
                 template.touch()
                 run.reset_mock()
                 self.assertEqual(installer.prepare_template(stage), template)
-                run.assert_not_called()
-                (stage / "computer-source/src/main.rs").unlink()
-                with self.assertRaisesRegex(RuntimeError, "Missing bundled"):
-                    installer.prepare_template(stage)
                 run.assert_not_called()
 
     def test_account_check_uses_identified_client_and_auth_header(self):

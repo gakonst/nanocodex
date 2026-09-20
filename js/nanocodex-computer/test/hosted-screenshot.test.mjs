@@ -1,18 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { provider } from "./provider-fixture.mjs";
 
 import { HostedToolsBrokerCore } from "nanocodex-tools/hosted";
 import { createTools } from "../../nanocodex/tools/Tools.mjs";
-import { createComputerTools } from "../index.mjs";
+import { connectComputerTools } from "../index.mjs";
 import { CUA_JS_NAME, CUA_RESET_NAME } from "../contract.mjs";
 
-test("parallel Sky-style screenshots cross companion, attachment, broker, and model output", { timeout: 30_000 }, async t => {
-  const executable = process.env.NANOCODEX_TEST_COMPUTER ?? fileURLToPath(new URL(
-    "../../../crates/experimental/nanocodex-computer/runtime/target/debug/nanocodex-computer",
-    import.meta.url,
-  ));
-  const computer = createComputerTools({ executable, args: ["--fixture"] });
+test("provider screenshots cross MCP attachment, broker, and model output", { timeout: 30_000 }, async t => {
+  const computer = await connectComputerTools(provider());
   const tools = await createTools({
     tools: Object.fromEntries(computer.tools.map(tool => [tool.name, tool])),
   });
@@ -54,17 +50,17 @@ test("parallel Sky-style screenshots cross companion, attachment, broker, and mo
   assert.equal(reset.parallelSafe, true);
   const sessions = Array.from({ length: 4 }, (_, index) => `conversation:${index}`);
   await Promise.all(sessions.map((sessionId, index) => tool.handler(
-    { code: "let app = await cua.getApp('fixture://native');" },
+    { set: "selected" },
     { sessionId, callId: `select:${index}`, model: "gpt-5.6-sol" },
   )));
   const results = await Promise.all(sessions.map((sessionId, index) => tool.handler(
-    { code: "await nodeRepl.emitImage(await app.getScreenshot({emit:false}));" },
+    { image: true },
     { sessionId, callId: `shot:${index}`, model: "gpt-5.6-sol" },
   )));
   for (const result of results) assertPng(result);
   await reset.handler({}, { sessionId: sessions[0], callId: "reset:0", model: "gpt-5.6-sol" });
   const cleared = await tool.handler(
-    { code: "nodeRepl.write(typeof app);" },
+    { get: true },
     { sessionId: sessions[0], callId: "after-reset:0", model: "gpt-5.6-sol" },
   );
   assert.equal(cleared.output.at(-1).text, "undefined");

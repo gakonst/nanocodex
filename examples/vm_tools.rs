@@ -86,7 +86,7 @@ async fn run_host(arguments: Vec<std::ffi::OsString>) -> Result<(), AnyError> {
     }
     let workspace = workspace.launch().await?;
     let vm = workspace.tools();
-    let agent_tools = workspace.tools_builder().build()?;
+    let agent_tools = workspace.tools_builder().await?.build()?;
     let context = ToolContext::new("vm-proof", "session-1", "call-1", &[], 10_000);
 
     let execution = vm

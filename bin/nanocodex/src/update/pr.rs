@@ -13,7 +13,6 @@ const WORKFLOW: &str = "nightly.yml";
 pub(super) struct Artifact {
     pub(super) contents: Vec<u8>,
     pub(super) companion: Option<Vec<u8>>,
-    pub(super) computer: Option<Vec<u8>>,
     pub(super) voice: Option<Vec<u8>>,
     pub(super) head_sha: String,
     pub(super) run_url: String,
@@ -141,11 +140,6 @@ pub(super) async fn download(number: u64, asset_name: &str) -> Result<Artifact> 
             &checksum_manifest,
             &asset_name.replacen("nanocodex-", "nanocodex2-", 1),
         )?,
-        computer: optional_binary(
-            directory.path(),
-            &checksum_manifest,
-            &asset_name.replacen("nanocodex-", "nanocodex-computer-", 1),
-        )?,
         voice: optional_binary(
             directory.path(),
             &checksum_manifest,
@@ -177,21 +171,21 @@ mod companion_tests {
     #[test]
     fn optional_companions_require_their_own_checksum_and_advertised_file() {
         let directory = tempfile::tempdir().unwrap();
-        let name = "nanocodex-computer-test";
+        let name = "nanocodex2-test";
         assert!(
             optional_binary(directory.path(), b"", name)
                 .unwrap()
                 .is_none()
         );
-        let manifest = format!("{}  {name}\n", hex::encode(Sha256::digest(b"computer")));
+        let manifest = format!("{}  {name}\n", hex::encode(Sha256::digest(b"companion")));
         assert!(optional_binary(directory.path(), manifest.as_bytes(), name).is_err());
-        fs::write(directory.path().join(name), b"computer").unwrap();
+        fs::write(directory.path().join(name), b"companion").unwrap();
         assert!(optional_binary(directory.path(), b"", name).is_err());
         assert_eq!(
             optional_binary(directory.path(), manifest.as_bytes(), name)
                 .unwrap()
                 .as_deref(),
-            Some(b"computer".as_slice())
+            Some(b"companion".as_slice())
         );
         fs::write(directory.path().join(name), b"modified").unwrap();
         assert!(optional_binary(directory.path(), manifest.as_bytes(), name).is_err());

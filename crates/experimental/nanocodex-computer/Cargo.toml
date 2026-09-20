@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "Experimental persistent CUA tools for local and attached Nanocodex computers"
+description = "Thin MCP transport for the official external Sky computer provider"
 include = ["src/**", "tests/**", "README.md", "CHANGELOG.md", "Cargo.toml"]
 
 [dependencies]

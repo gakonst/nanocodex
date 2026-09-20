@@ -38,11 +38,11 @@ async function fixture(t, platform = "darwin") {
   return { root, executable, binary, calls, script, helper };
 }
 
-test("managed installation precedes the adjacent companion and discovery has no setup side effects", async t => {
+test("discovery never selects an adjacent retired companion and has no setup side effects", async t => {
   const f = await fixture(t);
   await f.helper();
   await f.script(join(f.root, "nanocodex-computer"), "process.exit(0)");
-  assert.equal(await discoverComputer({ binary: f.binary }), join(f.root, "nanocodex-computer"));
+  assert.equal(await discoverComputer({ binary: f.binary }), undefined);
   await assert.rejects(readFile(f.calls), { code: "ENOENT" });
   await f.script(f.executable, "process.exit(0)");
   assert.equal(await discoverComputer({ binary: f.binary }), f.executable);
@@ -91,17 +91,17 @@ test("a missing native helper explains how to recover", async t => {
   await assert.rejects(ensureComputer(), /native helper.*Reinstall Nanocodex.*computer setup/);
 });
 
-test("Linux keeps companion discovery and never attempts managed provisioning", async t => {
+test("unsupported platforms never discover a companion or attempt managed provisioning", async t => {
   const f = await fixture(t, "linux");
   const companion = join(f.root, "nanocodex-computer");
   await f.script(companion, "process.exit(0)");
   await f.script(f.executable, "process.exit(0)");
-  assert.equal(await discoverComputer({ binary: f.binary }), companion);
-  assert.equal(await ensureComputer({ binary: f.binary }), companion);
+  assert.equal(await discoverComputer({ binary: f.binary }), undefined);
+  assert.equal(await ensureComputer({ binary: f.binary }), undefined);
   await assert.rejects(readFile(f.calls), { code: "ENOENT" });
 });
 
-test("managed providers automatically use MCP while explicit transport overrides remain authoritative", async t => {
+test("every provider uses exact MCP arguments regardless of retired environment flags", async t => {
   const f = await fixture(t);
   await f.script(f.executable, `
     if (process.argv.length !== 2) process.exit(9);
@@ -118,30 +118,32 @@ test("managed providers automatically use MCP while explicit transport overrides
   assert.equal((await attachment.tool("js").handler({}, { sessionId: "synthetic", signal: new AbortController().signal })).output[0].text, "managed MCP");
   assert.throws(() => createComputerTools({ executable: f.executable }), /require connectComputerTools/);
   process.env.NANOCODEX_COMPUTER_TRANSPORT = "legacy";
-  await assert.rejects(connectComputerTools({ executable: f.executable }), /exited/);
-  const explicit = await connectComputerTools({ executable: f.executable, transport: "mcp" });
+  const ignoredLegacy = await connectComputerTools({ executable: f.executable });
+  t.after(ignoredLegacy.close);
+  const explicit = await connectComputerTools({ executable: f.executable });
   t.after(explicit.close);
   delete process.env.NANOCODEX_COMPUTER_TRANSPORT;
   const custom = join(f.root, "custom-provider");
   await f.script(custom, await readFile(f.executable, "utf8").then(value => value.split("\n").slice(1).join("\n")));
-  await assert.rejects(connectComputerTools({ executable: custom }), /exited/);
+  const direct = await connectComputerTools({ executable: custom });
+  t.after(direct.close);
   process.env.NANOCODEX_COMPUTER_TRANSPORT = "mcp";
   const overridden = await connectComputerTools({ executable: custom });
   t.after(overridden.close);
 });
 
-test("the default install root follows HOME and unusable managed entries do not shadow a companion", async t => {
+test("the default install root follows HOME and unusable managed entries do not fall back", async t => {
   const f = await fixture(t);
   delete process.env.NANOCODEX_DIR;
   const managed = join(f.root, ".nanocodex/runtimes/openai-cua/current/cua-provider");
   const companion = join(f.root, "nanocodex-computer");
   await f.script(companion, "process.exit(0)");
   await mkdir(managed, { recursive: true });
-  assert.equal(await discoverComputer({ binary: f.binary }), companion);
+  assert.equal(await discoverComputer({ binary: f.binary }), undefined);
   await rm(managed, { recursive: true });
   await f.script(managed, "process.exit(0)");
   await chmod(managed, 0o600);
-  assert.equal(await discoverComputer({ binary: f.binary }), companion);
+  assert.equal(await discoverComputer({ binary: f.binary }), undefined);
   await chmod(managed, 0o755);
   assert.equal(await ensureComputer(), managed);
 });

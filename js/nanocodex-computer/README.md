@@ -1,61 +1,60 @@
-# nanocodex-computer (experimental)
+# nanocodex-computer
 
-Node attachment adapter for the persistent Nanocodex CUA companion. It exports
-the `mcp__cua_repl__js` / `mcp__cua_repl__js_reset` names used by
-Codex MCP integration. The installed provider owns the descriptions and API.
+MCP attachment for the official OpenAI CUA provider (Sky on macOS). The installed
+provider owns its tools, descriptions, schemas, JavaScript API, and permissions.
+This package contains no CUA implementation, browser API facade, or fallback
+runtime. It launches the provider with its exact trusted command and arguments.
 
 ```js
-import { connectComputerTools, discoverComputer } from "nanocodex-computer";
+import { connectComputerTools, ensureComputer } from "nanocodex-computer";
 
-const executable = await discoverComputer();
-if (!executable) throw new Error("Install the companion with pnpm install:computer");
+const executable = await ensureComputer({ binary: installedNativeHelper });
+if (!executable) throw new Error("No official CUA provider is configured");
 const computer = await connectComputerTools({ executable });
-// Add computer.tools to your existing createTools({ tools, workspace }) call.
-// Close the attachment before completing its resource cleanup:
+// Add computer.tools to createTools({ tools, workspace }).
+// Read the discovered provider declarations before using any CUA API.
 await computer.close();
 ```
 
-Each conversation has its own persistent process. Calls are serialized, and
-cancellation stops the process before another call can continue. A failed
-transport requires `cua_repl.js_reset`. The named tools implement `releaseSession` and
-`dispose` for attachment cleanup. Releasing a conversation cancels its active and
-queued calls; a new conversation with the same ID receives a fresh scope.
-Screenshot results are API image content with original detail, including when
-consumed through Code Mode. MCP result metadata and current Codex call metadata
-survive the adapter. Optional `title`/`timeout_ms` accept `null`; omitting the timeout
-does not create an artificial deadline, and positive safe-integer deadlines are
-supported without Node's 32-bit timer overflow.
+`ensureComputer({ binary })` uses the installed `nanocodex2` or `nanocodex` helper
+to provision the official provider on macOS and Windows. `discoverComputer` is
+read-only. Both honor `NANOCODEX_COMPUTER` as an explicit provider executable,
+and `off`, `none`, or `0` disable CUA. Neither searches for the retired companion
+in PATH, Cargo directories, source builds, or adjacent installations. Unsupported
+platforms return no provider unless an explicit MCP executable is configured.
+The Windows managed receipt supplies its exact arguments and environment.
 
-`createComputerTools` accepts trusted `args`, `environment` and a Linux Hand's
-private `desktopRuntime` directory. Those are host configuration, not model
-arguments. The child environment omits account/API credentials.
+`connectComputerTools` discovers the full paginated MCP catalog before exposing
+an attachment. `definitions` and each tool's `providerDefinition` preserve the
+provider declarations, including optional metadata. The tools are published as
+`mcp__cua_repl__<provider name>`. Entries whose `_meta.ui.visibility` excludes
+`model` remain available through trusted `tool(name)` lookup. Each conversation
+process must present the same catalog. `createComputerTools` is a synchronous
+constructor for hosts that already have that trusted discovered catalog; it
+never invents one. The `/contract` export contains only namespace name constants.
 
-`nanocodex-computer/contract` exports the tool descriptions, JSON schemas and
-input validator without importing Node APIs, for hosted Workers and brokers.
+Trusted `args` and `environment` configure the child process. There are no
+companion launch flags, platform arguments, security configuration, private
+desktop routing, or protocol switches. The inherited child environment omits
+account/API credentials. The provider receives model arguments unchanged,
+including its own optional fields and timeouts. Tool execution deadlines and
+reset behavior belong to the provider.
 
-See the [runtime and integration documentation](../../crates/experimental/nanocodex-computer/README.md)
-for OS requirements, CDP setup, release packaging and validation commands.
+Each conversation has its own process and ordered call queue. Independent
+conversations run concurrently. Caller cancellation stops the active process;
+queued cancellation rejects without running that call. Session release and
+attachment close cancel their active and queued work. A later call after a
+transport failure starts a fresh provider process; the adapter does not require
+an invented reset command. It never retries a failed call automatically.
 
-`connectComputerTools` discovers MCP descriptions and schemas before publishing
-an attachment, then checks each conversation process against that catalog.
-Use `transport: "mcp"` with an external provider's exact executable and args;
-companion-specific flags are not added in that mode. Every discovered tool is
-routed with its provider-owned schema and arguments, without imposing the bundled
-companion contract. Optional MCP metadata is preserved in `definitions` and each
-tool's `providerDefinition`. Tools whose `_meta.ui.visibility` excludes `model`
-are omitted from `tools`; trusted hosts can invoke them through `tool(name)`.
+MCP results and metadata remain available unchanged as the tool result's `value`.
+Text, images, and audio are translated into model content; other MCP content is
+represented as its JSON text. Images retain the provider's declared MIME type
+and use original detail. The adapter does not reinterpret screenshot bytes.
 
-For an installed external launch wrapper, set `NANOCODEX_COMPUTER` to its absolute
-path and `NANOCODEX_COMPUTER_TRANSPORT=mcp`. Native discovery and JavaScript desktop
-attachments use that wrapper without companion flags. Programmatic native callers
-can instead use `ComputerConfig::mcp(executable)`, set `args` and `environment`, and
-await `ComputerTools::connect`; JavaScript callers pass the same trusted options
-to `connectComputerTools`. External provider timeouts remain provider-owned.
-
-Managed `select_computer` returns the selected provider's exact declarations.
-Read those before calling CUA. Screen-only Mac, Windows, Linux and phone hosts
-are unsupported by this CUA path; their hardware publishers remain separate.
-The managed namespace does not publish `computer`.
+CUA calls carry `session_id`, `thread_id`, `call_id`, and `model` in
+`x-codex-turn-metadata`, plus `turn_id` when supplied by the agent runtime. The
+adapter never derives a turn ID from a tool call ID.
 
 Hosts with a genuine user-facing form UI can provide `elicitationHandler`:
 
@@ -63,58 +62,30 @@ Hosts with a genuine user-facing form UI can provide `elicitationHandler`:
 const computer = await connectComputerTools({
   executable: providerExecutable,
   args: providerArgs,
-  transport: "mcp",
-  elicitationTimeoutMs: 300_000,
   elicitationHandler: async (params, context) => {
-    // Host-owned UI: display params.message/requestedSchema and the provider's
-    // _meta approval details; dismiss when context.signal is aborted.
+    // Display the provider's message, schema, and metadata in a real host UI.
+    // Dismiss the form when context.signal is aborted.
     return await showHostForm(params, context);
-    // Return { action: "accept" | "decline" | "cancel", content?, _meta? }.
   },
 });
 ```
 
-Only a configured handler advertises MCP `elicitation.form`. The adapter accepts
-`elicitation/create` and `openai/elicitation/create` form requests (omitted `mode` also means form), forwards all
-raw parameters including `_meta`, and preserves the host's response metadata.
-It never selects acceptance or persistence. Hosts must obtain the user's choice
-before returning `accept` or `_meta.persist`; provider metadata is presentation
-input, not authorization. URL requests and other extension methods are unsupported.
-Without a handler, server requests receive a method-not-found error.
+Only a configured handler advertises MCP `elicitation.form`. Form requests from
+`elicitation/create` or `openai/elicitation/create` are forwarded with their raw
+parameters and `_meta`; omitted mode means form. The host response preserves its
+content and metadata. The adapter never fabricates acceptance or persistence.
+Without a handler it returns method-not-found. Unsupported URL requests return
+an error. The desktop app currently supplies no form callback and therefore does
+not advertise interactive elicitation.
 
-Context contains the provider `requestId`, `signal`, and the active tool's
-`sessionId`, `callId`, and `model`. Discovery-time requests have no active tool
-identity. `elicitationTimeoutMs` is a positive safe integer, defaults to 300 seconds,
-and bounds the form wait independently of provider-owned tool execution timeouts.
-Expiry and provider cancellation abort the signal and return `cancel`. Caller
-abort, requesting call completion, session release, process exit, and attachment close also abort pending
-forms. Hosts must use the signal to dismiss their UI; late responses are ignored.
-Thrown handlers return an internal error without exposing the host exception.
+Context includes `requestId`, `signal`, and the active tool's `sessionId`,
+`callId`, and `model`; discovery-time requests have no active tool identity.
+`elicitationTimeoutMs` defaults to 300000 and must be a positive safe integer.
+Expiry or provider cancellation returns `cancel`. Caller abort, call completion,
+release, process exit, and attachment close dismiss pending forms; late responses
+are ignored. Host exceptions produce an internal error without exposing details.
 
-The current desktop app does not yet supply this callback: its JSONL bridge has
-no form-response action or native form presentation route. It therefore does not
-advertise this capability. Adding an adapter callback alone does not enable
-interactive approval in an installed desktop app.
-
-## Managed installation
-
-`ensureComputer({ binary })` uses the installed `nanocodex2` or `nanocodex` helper
-to provision OpenAI CUA on macOS and Windows, then returns the executable.
-`discoverComputer` remains read-only. `connectComputerTools` recognizes the
-managed runtime and uses its exact MCP command and environment automatically.
-Explicit provider settings and `off` take precedence; Linux retains companion
-discovery. See [installation details](../../docs/computer/upstream-provider.md).
-
-CUA calls include `session_id` and, when supplied by the agent runtime, `turn_id`
-in `x-codex-turn-metadata`, alongside the legacy `thread_id`, `call_id`, and
-`model` fields. `turn_id` is the stable agent turn identity (`thread:logical_turn`)
-shared by calls in that turn, including Code Mode calls after a yield. It is never
-derived from a tool call ID. Direct/older SDK callers without turn context omit
-`turn_id`; those callers cannot satisfy providers that require turn attribution.
-Attachment executors advertise `turn_metadata` in their catalog capabilities.
-The broker includes `turn_id` only for the exact socket generation that advertised
-support; legacy executors keep their original call frame shape, including after
-broker upgrades or reconnects. The broker retains the actual turn identity in its
-call ledger even when a legacy executor cannot receive it. Deploy the updated
-broker before rolling out new executors, since older brokers reject the new
-catalog capability field. Existing Hands need no coordinated upgrade.
+Run `pnpm --filter nanocodex-computer test` and
+`pnpm --filter nanocodex-computer typecheck`. Tests use synthetic MCP protocol
+fixtures; they do not ship a replacement CUA runtime. See
+[provider installation](../../docs/computer/upstream-provider.md).

@@ -62,7 +62,6 @@ jobs:
           env-vars: ImageOS
           workspaces: |
             . -> target
-            crates/experimental/nanocodex-computer/runtime -> target
           cache-on-failure: true
       - run: cargo test --workspace --locked
 
@@ -96,7 +95,6 @@ jobs:
           env-vars: ImageOS
           workspaces: |
             . -> target
-            crates/experimental/nanocodex-computer/runtime -> target
           cache-on-failure: true
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -179,7 +177,6 @@ jobs:
           try {
             ./windows/hand/build.ps1 `
               -Nanocodex2 $placeholder `
-              -Computer $placeholder `
               -Version 0.0.0-ci `
               -NumericVersion 0.0.0.0
           } finally {
@@ -201,7 +198,6 @@ jobs:
           env-vars: ImageOS
           workspaces: |
             . -> target
-            crates/experimental/nanocodex-computer/runtime -> target
           cache-on-failure: true
       - name: Build and test the account Hand
         shell: pwsh
@@ -213,29 +209,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo build --locked --package nanocodex2-bin --bin nanocodex2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Test and build native Windows computer control
-        shell: pwsh
-        run: |
-          cargo test --locked `
-            --manifest-path crates/experimental/nanocodex-computer/runtime/Cargo.toml `
-            --test parity windows_ -- --test-threads=1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo build --locked --release `
-            --manifest-path crates/experimental/nanocodex-computer/runtime/Cargo.toml `
-            --bin nanocodex-computer
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Exercise real Windows capture, accessibility, and input
-        shell: pwsh
-        run: >-
-          ./windows/hand/smoke.ps1
-          -Computer ./crates/experimental/nanocodex-computer/runtime/target/release/nanocodex-computer.exe
       - name: Validate the per-user startup plan
         shell: pwsh
+        env:
+          NANOCODEX_COMPUTER: "off"
         run: |
           $stage = Join-Path $env:RUNNER_TEMP "nanocodex-hand"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item target/debug/nanocodex2.exe $stage/
-          Copy-Item crates/experimental/nanocodex-computer/runtime/target/release/nanocodex-computer.exe $stage/
           Copy-Item windows/hand/run-hand.ps1 $stage/
           ./windows/hand/test-setup.ps1 -InstallDir $stage
       - name: Build the one-click installer
@@ -243,7 +224,6 @@ jobs:
         run: >-
           ./windows/hand/build.ps1
           -Nanocodex2 ./target/debug/nanocodex2.exe
-          -Computer ./crates/experimental/nanocodex-computer/runtime/target/release/nanocodex-computer.exe
           -Version 0.0.0-ci
           -NumericVersion 0.0.0.0
 
@@ -341,7 +321,6 @@ jobs:
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ${{ runner.temp }}/hand-context
-          build-contexts: computer-source=crates/experimental/nanocodex-computer/runtime
           load: true
           tags: nanocodex-hand:ci
           cache-from: type=gha,scope=ci-hand-${{ matrix.arch }}
@@ -526,15 +505,11 @@ jobs:
           NANOCODEX_CONNECTOR_SDK_PYTHON="$RUNNER_TEMP/connector-sdk-python/bin/python" \
             pnpm --filter @nanocodex/connect-api exec node --experimental-strip-types --test \
             test/connectorPolicy.test.mjs test/connectorWorker.test.mjs test/connectorSpotipy.test.mjs
-      - name: Test computer adapters and native Linux input
+      - name: Test official computer adapters
         run: |
-          sudo apt-get update && sudo apt-get install --yes libpulse-dev libxkbcommon-dev xvfb python3-tk
           pnpm test:computer
           pnpm --filter nanocodex-computer typecheck
           pnpm --filter nanocodex-managed-service exec vitest run test/namespace-tools.test.ts
-          NANOCODEX_COMPUTER="$PWD/crates/experimental/nanocodex-computer/runtime/target/debug/nanocodex-computer" python3 crates/experimental/nanocodex-computer/tests/linux/live.py
-          browser=$(command -v google-chrome)
-          NANOCODEX_TEST_BROWSER="$browser" node --test js/nanocodex-computer/test/browser.test.mjs
 
   python:
     needs: changes

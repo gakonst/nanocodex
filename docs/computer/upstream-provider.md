@@ -50,10 +50,11 @@ close pending approvals and the native helper. Each receipt retains its own host
 script so replacing the selected runtime does not overwrite a running host.
 
 
-Linux and Linux VM/container guests retain the existing Linux computer backend.
-This implementation has no verified official Linux Sky distribution; it does not
-try to run a macOS or Windows binary there. `computer setup` reports unsupported
-on other platforms.
+Linux and Linux VM/container guests require an explicitly configured upstream
+MCP provider. No custom CUA runtime, background-input plugin, or legacy fallback
+is bundled. Automatic `computer setup` currently supports macOS and Windows;
+without a provider, guests report CUA unavailable. Remote screen streaming is
+a separate feature and does not imply an installed CUA provider.
 
 ## Selection and updates
 
@@ -76,9 +77,9 @@ copy helper. Normal installations use the shared native provisioning command.
 ## Approval integration and validation
 
 The adapters preserve upstream `elicitation/create` and
-`openai/elicitation/create` forms. Desktop and remote-Hand form approval UI is
-still separate work: installing a provider does not grant consent, and operations
-requiring an unwired form remain unavailable. See the native and JavaScript
+`openai/elicitation/create` forms. Foreground terminals and native Mac/Windows Hands can present provider forms to
+the user. Installing a provider does not grant consent. A host without a human
+response channel leaves operations requiring a form unavailable. See the native and JavaScript
 adapter READMEs for the embedding callback API.
 
 Validation covers installer invocation/opt-outs, exact command and environment

@@ -20,7 +20,7 @@ const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
 const DEFAULT_CWD = "/brain";
 
 export type RoutedTool = Readonly<{
-  definition?: Readonly<{ description?: string; parameters?: Record<string, unknown> }>;
+  definition?: Readonly<{ description?: string; parameters?: Record<string, unknown>; [key: string]: unknown }>;
   handler(input: unknown, context: ToolContext): unknown | Promise<unknown>;
 }>;
 
@@ -148,7 +148,7 @@ export function createNamespaceExecutionRuntime(
             || !definition.parameters || typeof definition.parameters !== "object") {
             throw new Error(`Hand ${hand.root} has no discovered ${name} contract; reconnect its CUA provider`);
           }
-          return { name, description: definition.description, parameters: definition.parameters };
+          return { ...definition, name };
         });
         computers.set(context.sessionId, hand);
         return { workdir: hand.root, machine_id: hand.machineId,

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ToolMap } from "nanocodex";
-import { CUA_JS_NAME, CUA_RESET_NAME, CUA_PARAMETERS, CUA_RESET_PARAMETERS, CUA_DESCRIPTION, CUA_RESET_DESCRIPTION } from "nanocodex-computer/contract";
+import { CUA_JS_NAME, CUA_RESET_NAME } from "nanocodex-computer/contract";
 // @ts-expect-error The runtime subpath is intentionally JavaScript-only.
 import { ToolRouter, toolMapSource } from "nanocodex-tools/runtime/tool-router";
 
@@ -10,10 +10,15 @@ import {
   machineMountRoot,
 } from "../src/namespace-tools";
 
+const providerParameters = { type: "object", properties: { source: { type: "string" } } };
+const resetParameters = { type: "object", properties: { reason: { type: "string" } } };
+const providerDescription = "Synthetic MCP provider invocation";
+const resetDescription = "Synthetic MCP provider reset";
+
 const cuaTool = (name: string, handler: RoutedHandler) => ({
   handler,
-  definition: { description: name === CUA_JS_NAME ? CUA_DESCRIPTION : CUA_RESET_DESCRIPTION,
-    parameters: name === CUA_JS_NAME ? CUA_PARAMETERS : CUA_RESET_PARAMETERS },
+  definition: { description: name === CUA_JS_NAME ? providerDescription : resetDescription,
+    parameters: name === CUA_JS_NAME ? providerParameters : resetParameters },
 });
 type RoutedHandler = (input: unknown, context: any) => unknown;
 
@@ -51,8 +56,9 @@ describe("cwd-root namespace execution", () => {
     const runtime = createNamespaceExecutionRuntime(
       () => [{ id: "native", root: "/native", workspace: "/workspace" }],
       (_id, name) => name === CUA_JS_NAME || name === CUA_RESET_NAME ? {
-        handler, definition: { description, parameters: supported
-          ? (name === CUA_JS_NAME ? CUA_PARAMETERS : CUA_RESET_PARAMETERS)
+        handler, definition: { description, output_schema: { type: "object" },
+          _meta: { provider: { retained: true } }, annotations: { readOnlyHint: false }, parameters: supported
+          ? (name === CUA_JS_NAME ? providerParameters : resetParameters)
           : { type: "object", properties: { invented: { type: "string" } } } },
       } : undefined,
     );
@@ -60,8 +66,9 @@ describe("cwd-root namespace execution", () => {
       .rejects.toThrow("select_computer first");
     const selection = await runtime.tools.select_computer!.handler({ workdir: "/native" }, context());
     expect(selection).toMatchObject({ definitions: [
-      { name: CUA_JS_NAME, description, parameters: CUA_PARAMETERS },
-      { name: CUA_RESET_NAME, description, parameters: CUA_RESET_PARAMETERS },
+      { name: CUA_JS_NAME, description, parameters: providerParameters, output_schema: { type: "object" },
+        _meta: { provider: { retained: true } }, annotations: { readOnlyHint: false } },
+      { name: CUA_RESET_NAME, description, parameters: resetParameters },
     ] });
     expect(runtime.tools[CUA_JS_NAME]!.description).not.toContain("cua.getApp");
     supported = false;

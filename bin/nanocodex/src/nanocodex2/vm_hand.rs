@@ -197,7 +197,21 @@ impl VmHand {
         } else {
             None
         };
-        let mut tools = workspace.attachment_tools_builder();
+        let mut tools = match workspace.attachment_tools_builder().await {
+            Ok(tools) => tools,
+            Err(error) => {
+                let message = format!("failed to discover Hand upstream Sky tools: {error}");
+                if let Some(browser) = &browser {
+                    let _ = browser.close().await;
+                }
+                return match workspace.shutdown().await {
+                    Ok(()) => Err(configuration(message)),
+                    Err(shutdown) => Err(configuration(format!(
+                        "{message}; Hand shutdown also failed: {shutdown}"
+                    ))),
+                };
+            }
+        };
         if let Some(browser) = &browser {
             tools = tools.tool(BrowserExecuteTool::from_browser(browser.clone()));
         }

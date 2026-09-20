@@ -1,93 +1,159 @@
-use nanocodex_computer::{ComputerConfig, ComputerRequest, ComputerTools};
+//! External MCP transport contract tests. No custom CUA runtime is used.
+#![cfg(unix)]
+
+use nanocodex_computer::{ComputerConfig, ComputerTools};
 use nanocodex_oai_api::tools::{Tool, ToolContext, ToolInput, ToolOutputBody, ToolOutputContent};
-use serde_json::json;
-use std::{path::PathBuf, time::Duration};
+use serde_json::{Value, json};
+use std::time::Duration;
 
-fn fixture() -> ComputerTools {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime/target/debug/nanocodex-computer");
-    assert!(
-        path.is_file(),
-        "Run pnpm test:computer to build the companion first"
-    );
-    let mut config = ComputerConfig::new(path);
-    config.args.push("--fixture".into());
-    ComputerTools::local(config)
+fn catalog() -> Value {
+    json!([
+        {"name":"js", "description":"Exact upstream documentation\nincluding whitespace.", "inputSchema":{"type":"object","additionalProperties":true}, "annotations":{"readOnlyHint":false}, "outputSchema":{"type":"object"}},
+        {"name":"js_reset", "description":"Upstream reset", "inputSchema":{"type":"object"}},
+        {"name":"future_tool", "description":"Provider decides argument meanings", "inputSchema":{"type":"object"}, "_meta":{"custom":[1,2]}},
+        {"name":"turn_ended", "inputSchema":{"type":"object"}, "_meta":{"ui":{"visibility":[]}}}
+    ])
 }
+
+fn config() -> ComputerConfig {
+    // Reject any appended companion/platform flags, and echo raw wire requests.
+    let script = format!(
+        r#"
+[ "$#" -eq 0 ] || exit 64
+IFS= read -r initialize
+printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"2025-06-18","capabilities":{{}}}}}}'
+IFS= read -r initialized
+IFS= read -r list
+printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"tools":{catalog}}}}}'
+next=3
+count=0
+while IFS= read -r call; do
+    case "$call" in
+        *'"code":"wait"'*) IFS= read -r never; exit 0 ;;
+        *'"name":"js_reset"'*) count=0 ;;
+        *) count=$((count + 1)) ;;
+    esac
+    printf '{{"jsonrpc":"2.0","id":%s,"result":{{"content":[],"structuredContent":{{"count":%s,"call":%s,"initialize":%s}}}}}}\n' "$next" "$count" "$call" "$initialize"
+    next=$((next + 1))
+done
+"#,
+        catalog = catalog()
+    );
+    let mut config = ComputerConfig::new("/bin/sh");
+    config.args = vec!["-c".into(), script.into()];
+    config
+}
+
 fn context(session: &str) -> ToolContext<'_> {
-    ToolContext::new("gpt-6-astra", session, "fixture-call", &[], 16000)
+    ToolContext::new("fixture-model", session, "fixture-call", &[], 16000)
 }
-fn input(code: &str) -> ToolInput {
-    ToolInput::Function(serde_json::value::to_raw_value(&json!({"code":code})).unwrap())
-}
-
-#[test]
-fn validates_code_and_timeout_at_the_transport_boundary() {
-    for timeout_ms in [30_000, 120_001, 300_000, 2_147_483_648] {
-        assert!(
-            ComputerRequest {
-                code: "1".into(),
-                title: None,
-                timeout_ms
-            }
-            .validate()
-            .is_ok()
-        );
-    }
-    let defaults: ComputerRequest =
-        serde_json::from_value(json!({"code":"1","title":null,"timeout_ms":null})).unwrap();
-    assert_eq!(defaults.timeout_ms, 9_007_199_254_740_991);
-    for timeout_ms in [0, 9_007_199_254_740_992, u64::MAX] {
-        assert!(
-            ComputerRequest {
-                code: "1".into(),
-                title: None,
-                timeout_ms
-            }
-            .validate()
-            .is_err()
-        );
-    }
-    assert!(
-        ComputerRequest {
-            code: "a".repeat(1024 * 1024 + 1),
-            title: None,
-            timeout_ms: 1
-        }
-        .validate()
-        .is_ok()
-    );
+fn input(arguments: Value) -> ToolInput {
+    ToolInput::Function(serde_json::value::to_raw_value(&arguments).unwrap())
 }
 
 #[tokio::test]
-#[ignore = "requires built CUA companion; pnpm test:computer runs this"]
-async fn long_timeout_and_current_call_metadata_cross_the_rust_adapter() {
-    let computer = fixture();
-    for call in ["first", "next"] {
-        let args = json!({"code":"nodeRepl.write(JSON.stringify(nodeRepl.requestMeta));","timeout_ms":300_000,"title":null});
+async fn external_catalog_arguments_and_metadata_cross_the_process_unchanged() {
+    let computer = ComputerTools::connect(config()).await.unwrap();
+    assert_eq!(serde_json::to_value(computer.catalog()).unwrap(), catalog());
+    assert_eq!(computer.tools().count(), 3);
+    assert!(computer.tool("turn_ended").is_some());
+    let definition = serde_json::to_value(computer.js().definition()).unwrap();
+    assert_eq!(definition["name"], "mcp__cua_repl__js");
+    assert_eq!(definition["description"], catalog()[0]["description"]);
+    assert_eq!(
+        computer.js().provider_definition().input_schema,
+        catalog()[0]["inputSchema"]
+    );
+    for name in ["js", "future_tool", "turn_ended"] {
+        let arguments =
+            json!({"code":"anything", "timeout_ms":"provider-owned", "unknown":{"value":true}});
         let result = computer
-            .js()
-            .execute(
-                ToolInput::Function(serde_json::value::to_raw_value(&args).unwrap()),
-                ToolContext::new("owned-model", "metadata-thread", call, &[], 16000),
-            )
+            .tool(name)
+            .unwrap()
+            .execute(input(arguments.clone()), context("one"))
             .await
             .unwrap();
-        assert!(result.success);
-        let text = result.structured_result()["content"]
-            .as_array()
-            .unwrap()
-            .last()
-            .unwrap()["text"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        let metadata: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let wire = &result.structured_result()["structuredContent"]["call"];
+        assert_eq!(wire["params"]["arguments"], arguments);
+        assert_eq!(wire["params"]["name"], name);
         assert_eq!(
-            metadata["x-codex-turn-metadata"],
-            json!({"session_id":"metadata-thread","thread_id":"metadata-thread","call_id":call,"model":"owned-model"})
+            wire["params"]["_meta"]["x-codex-turn-metadata"],
+            json!({"session_id":"one", "thread_id":"one", "call_id":"fixture-call", "model":"fixture-model"})
         );
     }
+}
+
+#[tokio::test]
+async fn conversations_retain_independent_upstream_processes_and_reset() {
+    let computer = ComputerTools::connect(config()).await.unwrap();
+    for (session, count) in [("one", 1), ("one", 2), ("two", 1)] {
+        let result = computer
+            .js()
+            .execute(input(json!({})), context(session))
+            .await
+            .unwrap();
+        assert_eq!(
+            result.structured_result()["structuredContent"]["count"],
+            count
+        );
+    }
+    computer
+        .reset()
+        .execute(input(json!({})), context("one"))
+        .await
+        .unwrap();
+    let result = computer
+        .js()
+        .execute(input(json!({})), context("one"))
+        .await
+        .unwrap();
+    assert_eq!(result.structured_result()["structuredContent"]["count"], 1);
+}
+
+#[tokio::test]
+async fn cancellation_stops_only_its_process_and_requires_explicit_reset() {
+    let computer = ComputerTools::connect(config()).await.unwrap();
+    computer
+        .js()
+        .execute(input(json!({})), context("cancelled"))
+        .await
+        .unwrap();
+    let js = computer.js();
+    let task = tokio::spawn(async move {
+        js.execute(input(json!({"code":"wait"})), context("cancelled"))
+            .await
+    });
+    // The other conversation must complete while the first provider is blocked.
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        computer.js().execute(input(json!({})), context("other")),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    task.abort();
+    let _ = task.await;
+    assert!(
+        computer
+            .js()
+            .execute(input(json!({})), context("cancelled"))
+            .await
+            .is_err()
+    );
+    computer
+        .reset()
+        .execute(input(json!({})), context("cancelled"))
+        .await
+        .unwrap();
+    assert!(
+        computer
+            .js()
+            .execute(input(json!({})), context("cancelled"))
+            .await
+            .unwrap()
+            .success
+    );
 }
 
 #[test]
@@ -113,189 +179,9 @@ fn image_bytes_determine_the_api_mime_and_invalid_images_fail() {
 }
 
 #[tokio::test]
-#[ignore = "requires built CUA companion; pnpm test:computer runs this"]
-async fn conversation_state_reset_and_screenshots_cross_the_real_process_boundary() {
-    let computer = fixture();
-    let js = computer.js();
-    assert_eq!(
-        serde_json::to_value(js.definition()).unwrap()["name"],
-        "mcp__cua_repl__js"
-    );
-    assert_eq!(
-        serde_json::to_value(computer.reset().definition()).unwrap()["name"],
-        "mcp__cua_repl__js_reset"
-    );
-    let first = js
-        .execute(
-            input("let app = await cua.getApp('fixture://native');"),
-            context("one"),
-        )
-        .await
-        .unwrap();
-    assert!(first.success);
-    let metadata: serde_json::Value =
-        serde_json::from_str(first.metadata.as_ref().unwrap().get()).unwrap();
-    assert!(metadata["codex/nodeReplExecutionDurationMs"].is_number());
-    assert_eq!(metadata, first.structured_result()["_meta"]);
-    let changed = js.execute(input("await app.click(2); await app.getAXState(); await nodeRepl.emitImage(await app.getScreenshot({emit:false}));"), context("one")).await.unwrap();
-    assert!(changed.success, "{}", changed.structured_result());
-    let ToolOutputBody::Content(content) = changed.output else {
-        panic!("Expected image content")
-    };
-    assert!(content.iter().any(|item| matches!(
-        item,
-        ToolOutputContent::InputImage {
-            detail: nanocodex_oai_api::ImageDetail::Original,
-            ..
-        }
-    )));
-    let other = js
-        .execute(input("nodeRepl.write(typeof app);"), context("two"))
-        .await
-        .unwrap();
-    assert!(other.structured_result().to_string().contains("undefined"));
-    computer
-        .reset()
-        .execute(
-            ToolInput::Function(serde_json::value::to_raw_value(&json!({})).unwrap()),
-            context("one"),
-        )
-        .await
-        .unwrap();
-    let reset = js
-        .execute(input("nodeRepl.write(typeof app);"), context("one"))
-        .await
-        .unwrap();
-    assert!(reset.structured_result().to_string().contains("undefined"));
-}
-
-#[tokio::test]
-#[ignore = "requires built CUA companion; pnpm test:computer runs this"]
-async fn independent_conversations_execute_in_parallel() {
-    let computer = fixture();
-    let js = computer.js();
-    let left = js.clone();
-    let right = js.clone();
-    left.execute(input("nodeRepl.write('warm');"), context("parallel-left"))
-        .await
-        .unwrap();
-    right
-        .execute(input("nodeRepl.write('warm');"), context("parallel-right"))
-        .await
-        .unwrap();
-    let started = std::time::Instant::now();
-    let (left, right) = tokio::join!(
-        left.execute(
-            input("await new Promise(resolve=>setTimeout(resolve,1000));nodeRepl.write('left');"),
-            context("parallel-left"),
-        ),
-        right.execute(
-            input("await new Promise(resolve=>setTimeout(resolve,1000));nodeRepl.write('right');"),
-            context("parallel-right"),
-        ),
-    );
-    assert!(left.unwrap().success);
-    assert!(right.unwrap().success);
-    assert!(
-        started.elapsed() < Duration::from_millis(1750),
-        "independent CUA conversations were serialized"
-    );
-}
-
-#[tokio::test]
-#[ignore = "requires built CUA companion; pnpm test:computer runs this"]
-async fn cancellation_stops_the_process_and_requires_an_explicit_reset() {
-    let computer = fixture();
-    let js = computer.js();
-    js.execute(input("nodeRepl.write('ready');"), context("cancelled"))
-        .await
-        .unwrap();
-    let active = js.clone();
-    let task = tokio::spawn(async move {
-        active
-            .execute(input("while (true) {}"), context("cancelled"))
-            .await
-    });
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    task.abort();
-    let _ = task.await;
-    assert!(
-        js.execute(input("nodeRepl.write(1);"), context("cancelled"))
-            .await
-            .is_err()
-    );
-    computer
-        .reset()
-        .execute(
-            ToolInput::Function(serde_json::value::to_raw_value(&json!({})).unwrap()),
-            context("cancelled"),
-        )
-        .await
-        .unwrap();
-    assert!(
-        js.execute(input("nodeRepl.write(2);"), context("cancelled"))
-            .await
-            .unwrap()
-            .success
-    );
-}
-
-#[tokio::test]
-async fn background_mode_cannot_be_retargeted_to_a_private_desktop() {
-    let mut config = ComputerConfig::new("/does/not/exist");
-    config.desktop_runtime = Some("/does/not/exist".into());
-    config
-        .environment
-        .insert("NANOCODEX_COMPUTER_BACKGROUND".into(), "hyprland".into());
-    let computer = ComputerTools::local(config);
-    let error = computer
-        .js()
-        .execute(
-            input("await cua.getState()"),
-            context("conflicting-desktops"),
-        )
-        .await
-        .err()
-        .expect("conflicting routing must fail");
-    assert!(
-        error
-            .to_string()
-            .contains("Background CUA cannot be combined")
-    );
-}
-
-#[tokio::test]
-#[ignore = "requires built CUA companion; pnpm test:computer runs this"]
-async fn discovers_an_external_mcp_command_before_publishing_its_tools() {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime/target/debug/nanocodex-computer");
-    let mut config = ComputerConfig::mcp(path);
-    // These are the provider's exact args. Appending companion flags again
-    // would cause the process to reject its command line.
-    config.args = vec![
-        "--fixture".into(),
-        "--allow-native-control".into(),
-        "serve".into(),
-    ];
-    let computer = ComputerTools::connect(config).await.unwrap();
-    let definition = serde_json::to_value(computer.js().definition()).unwrap();
-    assert!(definition.to_string().contains("mcp__cua_repl__js"));
-    assert!(definition.to_string().contains("Control native apps"));
-    assert!(
-        computer
-            .js()
-            .execute(input("nodeRepl.write('discovered');"), context("discovery"))
-            .await
-            .unwrap()
-            .success
-    );
-}
-
-#[tokio::test]
 #[ignore = "requires NANOCODEX_TEST_EXTERNAL_COMPUTER pointing to an installed external MCP launcher"]
 async fn installed_external_provider_discovery_preserves_catalog_and_hides_lifecycle_hook() {
     let Some(executable) = std::env::var_os("NANOCODEX_TEST_EXTERNAL_COMPUTER") else {
-        // The bundled runtime's --include-ignored suite needs no external install.
         eprintln!("Skipping installed-provider smoke: NANOCODEX_TEST_EXTERNAL_COMPUTER is unset");
         return;
     };
@@ -335,4 +221,56 @@ async fn installed_external_provider_discovery_preserves_catalog_and_hides_lifec
                 .as_deref()
                 .is_some_and(|text| !text.is_empty())
     }));
+}
+
+fn paginated_config(second_page: Value) -> ComputerConfig {
+    let first_page = json!({"tools":[catalog()[0].clone()], "nextCursor":"opaque-next-page"});
+    let script = format!(
+        r#"
+IFS= read -r initialize
+printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":"2025-06-18","capabilities":{{}}}}}}'
+IFS= read -r initialized
+IFS= read -r list
+printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{first_page}}}'
+IFS= read -r page
+case "$page" in
+    *'"cursor":"opaque-next-page"'*) : ;;
+    *) exit 64 ;;
+esac
+printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{second_page}}}'
+IFS= read -r end
+"#
+    );
+    let mut config = ComputerConfig::mcp("/bin/sh");
+    config.args = vec!["-c".into(), script.into()];
+    config
+}
+
+#[tokio::test]
+async fn discovers_all_catalog_pages_without_changing_metadata() {
+    let expected = catalog();
+    let config = paginated_config(json!({"tools":expected.as_array().unwrap()[1..]}));
+    let computer = ComputerTools::connect(config).await.unwrap();
+    assert_eq!(serde_json::to_value(computer.catalog()).unwrap(), expected);
+    assert_eq!(computer.tools().count(), 3);
+}
+
+#[tokio::test]
+async fn rejects_repeated_cursors_and_duplicate_tool_names() {
+    for (page, expected) in [
+        (
+            json!({"tools":[], "nextCursor":"opaque-next-page"}),
+            "repeated tools/list cursor",
+        ),
+        (
+            json!({"tools":[catalog()[0].clone()]}),
+            "non-empty and unique",
+        ),
+    ] {
+        let error = match ComputerTools::connect(paginated_config(page)).await {
+            Ok(_) => panic!("invalid catalog was registered"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains(expected), "{error}");
+    }
 }

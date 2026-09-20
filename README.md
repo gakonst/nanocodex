@@ -125,7 +125,8 @@ automatically on first voice use.
 On macOS and Windows, current native CLIs and Hands automatically provision
 OpenAI's signed CUA runtime and select its upstream MCP tools. The macOS installer
 fetches the official app bundle; Windows uses its official Microsoft Store package.
-Linux keeps the Linux computer backend. Use `nanocodex2 computer setup --refresh`
+Linux requires an explicitly installed upstream MCP provider; no custom CUA backend is bundled.
+Use `nanocodex2 computer setup --refresh`
 to update or repair the runtime, or `NANOCODEX_COMPUTER=off` to disable it.
 See [runtime installation and platform limits](docs/computer/upstream-provider.md).
 
@@ -224,10 +225,9 @@ arguments, and waits for remote registration and the native desktop catalog.
 reconnect independently of SSH. Re-running setup reuses identities and private
 VM roots under `/srv/nanocodex`; it never replaces a retained workspace. A setup
 already enrolled to another account or origin is rejected. `--artifacts DIR`
-accepts matching locally built Linux `nanocodex2`, `nanocodex-vm-guest`, and
-`nanocodex-computer` executables for development. The CLI bundles the computer
-runtime source needed to build the VM image; no local checkout is required.
-Image reuse includes that source in its cache key.
+accepts matching locally built Linux `nanocodex2` and `nanocodex-vm-guest`
+executables for development. Computer use in a guest requires an explicitly
+configured upstream MCP provider; no custom CUA runtime is built into the image.
 
 ### Windows Hand
 
@@ -236,8 +236,8 @@ double-click it on an x86-64 Windows 10 or 11 computer. Keep **Sign in and
 connect this computer now** selected, then enter the account phone number and
 the six-digit SMS code. No terminal setup or administrator access is required.
 
-The installer bundles the account Hand and native Windows computer-control
-runtime. It verifies both before enrollment, uses a dedicated per-user account
+The installer bundles the account Hand and provisions OpenAI’s official computer-use
+runtime. It verifies the runtime before use, uses a dedicated per-user account
 credential, and registers a hidden interactive startup task with failure
 recovery. Running in the signed-in session is deliberate: Windows Graphics
 Capture, UI Automation, and input cannot control that desktop from a Session 0

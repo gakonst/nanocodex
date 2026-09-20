@@ -28,7 +28,6 @@ $taskName = "Nanocodex Hand"
 $dataDir = Join-Path $env:LOCALAPPDATA "Nanocodex\Hand"
 $accountFile = Join-Path $dataDir "account.json"
 $binary = Join-Path $InstallDir "nanocodex2.exe"
-$computer = Join-Path $InstallDir "nanocodex-computer.exe"
 $runner = Join-Path $InstallDir "run-hand.ps1"
 $powershell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -89,7 +88,7 @@ function Get-AccountStatus {
 }
 
 function Assert-Payload {
-    foreach ($path in @($binary, $computer, $runner)) {
+    foreach ($path in @($binary, $runner)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
             throw "Nanocodex Hand is incomplete: missing $path"
         }
@@ -97,14 +96,6 @@ function Assert-Payload {
     & $binary --version | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "nanocodex2.exe could not start"
-    }
-    $capabilities = & $computer call sky.setup 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "nanocodex-computer.exe could not start: $($capabilities -join [Environment]::NewLine)"
-    }
-    $platform = ($capabilities -join [Environment]::NewLine) | ConvertFrom-Json
-    if ($platform.target -ne "windows") {
-        throw "The bundled computer-control runtime is not a Windows build"
     }
 }
 
@@ -153,15 +144,11 @@ if ($Action -eq "Status") {
 }
 
 Assert-Payload
-# Install the official per-user OpenAI runtime before starting this user's Hand.
-# Explicit custom providers and disabled CUA retain their existing behavior.
-if ([string]::IsNullOrEmpty($env:NANOCODEX_COMPUTER)) {
-    & $binary computer setup --help *> $null
-    if ($LASTEXITCODE -eq 0) {
-        & $binary computer setup --refresh
-        if ($LASTEXITCODE -ne 0) { throw "OpenAI CUA setup failed; retry nanocodex2 computer setup before starting the Hand." }
-    } else {
-        Write-Warning "This older Nanocodex release does not support automatic upstream CUA setup."
+# Provision the official per-user OpenAI Sky runtime before starting the Hand.
+if ($env:NANOCODEX_COMPUTER -cnotin @("off", "none", "0")) {
+    & $binary computer setup --refresh
+    if ($LASTEXITCODE -ne 0) {
+        throw "OpenAI Sky setup failed; retry nanocodex2 computer setup before starting the Hand."
     }
 }
 

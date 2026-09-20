@@ -158,6 +158,8 @@ async fn tools_isolation_exclusive_ownership_and_persistence() {
 
     let tools = workspace
         .tools_builder()
+        .await
+        .unwrap()
         .web_search(false)
         .image_generation(false)
         .build()
@@ -276,6 +278,8 @@ async fn cua_starts_a_private_desktop_without_a_screen_publisher() {
     {
         let tools = workspace
             .tools_builder()
+            .await
+            .unwrap()
             .web_search(false)
             .image_generation(false)
             .build()
@@ -363,6 +367,8 @@ async fn desktop_and_last_capability_cleanup() {
     {
         let tools = workspace
             .tools_builder()
+            .await
+            .unwrap()
             .web_search(false)
             .image_generation(false)
             .build()

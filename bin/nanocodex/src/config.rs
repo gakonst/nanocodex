@@ -419,11 +419,12 @@ impl AgentArgs {
             None
         };
         let configured_vm = vm.start(vm_egress).await?;
-        let mut tools = configured_vm
-            .as_ref()
-            .map_or_else(Tools::builder, ConfiguredVm::tools_builder)
-            .web_search(web_search)
-            .image_generation(self.image_generation);
+        let mut tools = match configured_vm.as_ref() {
+            Some(vm) => vm.tools_builder().await?,
+            None => Tools::builder(),
+        }
+        .web_search(web_search)
+        .image_generation(self.image_generation);
         let managed_mcp = if self.mcp.loads_managed() {
             load_managed_mcp_credential(&codex_home).await?
         } else {
