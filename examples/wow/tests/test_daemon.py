@@ -268,6 +268,57 @@ class DaemonTests(unittest.TestCase):
             Bridge(self.desktop, 17, self.dispatcher, self.path)
 
 
+    def test_legacy_owner_rejected_before_sqlite_and_upgrade_can_write(self):
+        import subprocess
+        import sys
+        from unittest.mock import patch
+        from server import APIError
+        self.bridge.close()
+        self.bridge.close = lambda: None
+        # An independent process models the old daemon's lifetime database flock.
+        script = ("import fcntl,os,sys; "
+                  "fd=os.open(sys.argv[1],os.O_RDONLY); "
+                  "fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB); "
+                  "print('locked',flush=True); sys.stdin.read(1)")
+        legacy = subprocess.Popen([sys.executable, '-c', script, str(self.path)],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(legacy.stdout.readline().strip(), 'locked')
+            with patch('transport.daemon.EventStore') as store:
+                with self.assertRaisesRegex(APIError, 'Legacy bridge'):
+                    Bridge(self.desktop, 17, self.dispatcher, self.path)
+                store.assert_not_called()
+        finally:
+            legacy.communicate('x', timeout=5)
+        upgraded = Bridge(self.desktop, 17, self.dispatcher, self.path)
+        try:
+            with upgraded.store.db:
+                upgraded.store.db.execute('CREATE TABLE upgrade_probe(value INTEGER)')
+                upgraded.store.db.execute('INSERT INTO upgrade_probe VALUES(1)')
+            self.assertEqual(upgraded.store.db.execute('SELECT value FROM upgrade_probe').fetchone(), (1,))
+        finally:
+            upgraded.close()
+
+    def test_private_sidecar_lock_preserves_sqlite_writes_and_rejects_unsafe_files(self):
+        from server import APIError
+        lock = Path(str(self.path) + '.lock')
+        self.assertEqual(lock.stat().st_mode & 0o777, 0o600)
+        # SQLite transactions remain usable while the ownership lock is held.
+        with self.bridge.store.db:
+            self.bridge.store.db.execute("CREATE TABLE lock_probe(value INTEGER)")
+            self.bridge.store.db.execute("INSERT INTO lock_probe VALUES(1)")
+        self.assertEqual(self.bridge.store.db.execute("SELECT value FROM lock_probe").fetchone(), (1,))
+        self.bridge.close()
+        self.bridge.close = lambda: None
+        lock.chmod(0o644)
+        with self.assertRaises(APIError):
+            Bridge(self.desktop, 17, self.dispatcher, self.path)
+        lock.unlink()
+        lock.symlink_to(self.path)
+        with self.assertRaises(OSError):
+            Bridge(self.desktop, 17, self.dispatcher, self.path)
+
+
 class RealDispatcherTests(unittest.TestCase):
     def test_unknown_mutation_is_not_retried_after_reconnect(self):
         from transport.dispatch import Dispatcher as RealDispatcher

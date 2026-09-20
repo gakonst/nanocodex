@@ -13,6 +13,7 @@ import fcntl
 import hashlib
 import json
 import os
+import stat
 from pathlib import Path
 import sys
 import threading
@@ -35,16 +36,47 @@ MAX_PENDING = 64
 MAX_OUTPUTS = 4096
 
 
+def _probe_legacy_owner(journal_path):
+    """Fail before SQLite IO if an older daemon holds the database-file flock.
+
+    Release the probe immediately: keeping it during SQLite writes deadlocks on
+    macOS. The sidecar owns new daemons; upgrades still require stopping old ones.
+    """
+    try:
+        fd = os.open(journal_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
+            raise APIError("Bridge journal must be private (0600).", 503)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise APIError("Legacy bridge owns this journal; stop it before upgrading.", 503) from None
+    finally:
+        os.close(fd)
+
+
 class Bridge:
     def __init__(self, desktop, session, dispatcher, journal_path, *, clock=time.monotonic):
         Frame(session).encode()
         self.desktop, self.session, self.dispatcher, self.clock = desktop, session, dispatcher, clock
+        _probe_legacy_owner(journal_path)
         self.store = EventStore(journal_path)
-        self.guard = os.open(journal_path, os.O_RDONLY | os.O_NOFOLLOW)
+        # Keep process ownership separate from SQLite's database locks. On
+        # macOS flock on the database itself conflicts with SQLite writes. The
+        # private sidecar remains on disk to prevent unlink/recreate lock races.
+        self.guard = None
         try:
+            self.guard = os.open(str(journal_path) + ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+            info = os.fstat(self.guard)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
+                raise APIError("Bridge ownership lock must be private (0600).", 503)
             fcntl.flock(self.guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BaseException:
-            os.close(self.guard)
+            if self.guard is not None:
+                os.close(self.guard)
             self.store.close()
             raise
         self.lock = threading.RLock()

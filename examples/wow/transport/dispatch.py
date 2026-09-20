@@ -15,7 +15,27 @@ JSON request_id must match. Missing IDs are rejected, never randomly replaced.
 Outputs have kind,value,request_id,state,event_id. R/P/A/E values are complete plain UTF-8 text (<=16384 bytes). S values are
 ncs1 incremental stream envelopes (<=4096 bytes including header); long answers
 use multiple S messages without truncation. See transport.streaming for schema.
-States are local_queued, remoteaccepted, reply, completed, error, or unknown.
+States are local_queued, remoteaccepted, metadata, streaming, reply, completed, error, or unknown.
+Tagged A metadata uses ncm1 with percent-encoded tab-separated fields. Sends
+retain their human ACK followed by ncm1/send/request/thread/turn/local_queued|remoteaccepted;
+metadata is not a terminal state. Creation emits ncm1/created/request/project/thread/title.
+Fallback plain R replies are immediately preceded by ncm1/reply/request/thread/turn
+so selection-aware clients can route completed answers without changing R framing.
+refresh_projects with page=0 enables an immutable journal snapshot (4096 rows,
+1 MiB, <=128 pages). Continue with snapshot_id and page, each under a new request
+ID. A ncm1/projects/snapshot/page/pages precedes its P ncw1 partial row page;
+combine all row pages before validating/importing the roster. The legacy action
+without page retains its single-message behavior. Both open and locally closed
+threads are included in the paged roster; closed rows carry status=closed. The
+initial page reads GET /api/workspace once; later pages use only the journal.
+load_history requires thread_id and stable view_id; optional before is a backend
+history cursor. Its R body is nch1/snapshot/thread/page/pages/before/has_more/view
+(tab-separated percent-encoded header) then newline and raw UTF-8 display text.
+Continue the immutable page set with thread_id, view_id, snapshot_id and page.
+Only after its last page use before for the next older backend batch (64 events).
+stop_turn requires exact thread_id/turn_id and confirms only a cancellation
+request. connection_status probes GET /api/status; reconnect first invokes the
+backend's supported resume() if available. Neither action accepts credentials.
 Carrier ACK and local enqueue are not remote admission or model completion.
 
 Use transport.messages.Assembler(deliver, accepted_kinds=('Q',)) between Link
@@ -29,9 +49,9 @@ For each output, iterate wire_fragments(output, wire_message_id), feeding the
 next fragment to Link.send as soon as the previous carrier frame is ACKed.
 This delegates to the owner's fragments(kind, id, text): M + R/P/A/E + u16 ID,
 total, offset + <=88 bytes. The transport reassembles ONE complete message before
-NS.OnTransportMessage(kind, text), so P always carries a complete ncw1 snapshot.
+NS.OnTransportMessage(kind, text), so P carries one complete ncw1 page (or legacy snapshot).
 encode_output returns UTF-8 body bytes; S has a tab header followed by raw text.
-Request/event identities stay in the adapter/journal, not the display text.
+User-facing prose excludes request/event identities; tagged metadata carries routing IDs.
 Retain outputs until carrier delivery; repeated calls replay stable event_ids
 for adapter deduplication. The burst Pump supplies pacing; no sleeps are added.
 This is a local application API, not live transport or full app readiness proof.
@@ -53,7 +73,7 @@ import threading
 from urllib.parse import quote
 
 from durable_client import EventStore
-from server import APIError, MODES, display_name, identifier, stable_id
+from server import APIError, MODES, display_name, identifier, stable_id, history_query
 
 from transport.messages import MAX_MESSAGE, fragments
 from transport.streaming import project, decode as decode_stream, StreamLimit
@@ -62,7 +82,12 @@ MAX_REQUEST = MAX_MESSAGE
 MAX_VALUE = MAX_MESSAGE
 WIRE_KINDS = {'reply': 'R', 'projects': 'P', 'ack': 'A', 'error': 'E', 'stream': 'S'}
 MAX_RECORDS = 1024
-MAX_ROWS = 1000
+MAX_ROWS = 4096
+MAX_CATALOG_BYTES = 1024 * 1024
+MAX_CATALOG_PAGES = 128
+MAX_SNAPSHOT_BYTES = 256 * 1024
+MAX_PAGES = 32
+HISTORY_LIMIT = 64
 
 
 class InvalidRequest(ValueError):
@@ -147,10 +172,14 @@ def parse_request(payload, request_id=None):
             action = value.get('action')
             specs = {
                 'create_project': ('/api/projects/create', {'name'}, set()),
-                'create_chat': ('/api/threads/create', {'name', 'project_id'}, set()),
+                'create_chat': ('/api/threads/create', {'name'}, {'project_id'}),
                 'rename_project': ('/api/projects/rename', {'name', 'project_id'}, set()),
                 'rename_chat': ('/api/threads/rename', {'name', 'thread_id'}, {'project_id'}),
-                'refresh_projects': ('/api/projects', set(), set()),
+                'refresh_projects': ('/api/projects', set(), {'page', 'snapshot_id'}),
+                'load_history': ('/api/messages', {'thread_id', 'view_id'}, {'before', 'page', 'snapshot_id'}),
+                'stop_turn': ('/api/turns/cancel', {'thread_id', 'turn_id'}, set()),
+                'connection_status': ('/api/status', set(), set()),
+                'reconnect': ('/api/status', set(), set()),
             }
             if not isinstance(action, str) or action not in specs:
                 raise InvalidRequest('Unsupported action.')
@@ -161,6 +190,31 @@ def parse_request(payload, request_id=None):
             for key in ('project_id', 'thread_id'):
                 if key in value:
                     data[key] = identifier(value[key])
+            if 'turn_id' in value:
+                data['turn_id'] = stable_id(value['turn_id'])
+            if 'view_id' in value:
+                data['view_id'] = stable_id(value['view_id'])
+            if 'page' in value:
+                page_limit = MAX_CATALOG_PAGES if action == 'refresh_projects' else MAX_PAGES
+                if type(value['page']) is not int or not 0 <= value['page'] < page_limit:
+                    raise InvalidRequest('Invalid page.')
+                data['page'] = value['page']
+            if 'snapshot_id' in value:
+                data['snapshot_id'] = stable_id(value['snapshot_id'])
+                if 'page' not in value or 'before' in value:
+                    raise InvalidRequest('Snapshot page required; before cannot change.')
+            elif data.get('page', 0) != 0:
+                raise InvalidRequest('First page must be zero.')
+            if action == 'load_history':
+                query = {'thread_id': [data['thread_id']], 'limit': [str(HISTORY_LIMIT)]}
+                if 'before' in value:
+                    query['before'] = [_text(value['before'], 20)]
+                    data['before'] = value['before']
+                history_query(query)
+            if action == 'reconnect':
+                data['reconnect'] = True
+            if action == 'stop_turn':
+                data['idempotency_key'] = rid
             if action == 'rename_chat':
                 data.pop('project_id', None)  # UI selection context, not a backend field.
             if 'name' in value:
@@ -188,6 +242,33 @@ def _output(rid, kind, value, state):
     _text(value, MAX_VALUE)
     return {'kind': kind, 'value': value, 'request_id': rid, 'state': state,
             'event_id': rid + ':' + state}
+
+
+def _metadata(rid, tag, *fields, state='metadata'):
+    value = '\t'.join(['ncm1', tag] + [quote(str(field), safe='') for field in fields])
+    output = _output(rid, 'ack', value, state)
+    output['event_id'] = rid + ':metadata:' + tag
+    return output
+
+
+def _snapshot_limit():
+    raise APIError('Snapshot exceeds retained-content limit.', 413)
+
+
+def _utf8_pages(text, limit):
+    """Split complete Unicode text without dropping bytes or splitting a codepoint."""
+    encoded, pages = text.encode('utf-8'), []
+    if len(encoded) > MAX_SNAPSHOT_BYTES:
+        _snapshot_limit()
+    while encoded:
+        end = min(limit, len(encoded))
+        while end < len(encoded) and encoded[end] & 0xc0 == 0x80:
+            end -= 1
+        pages.append(encoded[:end].decode('utf-8'))
+        encoded = encoded[end:]
+        if len(pages) > MAX_PAGES:
+            _snapshot_limit()
+    return pages or ['']
 
 
 def encode_output(output):
@@ -265,7 +346,27 @@ class Dispatcher:
                 self.journal.db.execute('INSERT INTO dispatch_requests VALUES(?,?,?)', (rid, digest, json.dumps(record)))
             try:
                 if route == '/api/projects':
-                    record['outputs'] = [self._projects(rid)]
+                    record['outputs'] = (self._project_page(rid, data, record)
+                                         if 'page' in data else [self._projects(rid)])
+                elif route == '/api/messages':
+                    record['outputs'] = [self._history_page(rid, data, record)]
+                elif route == '/api/status':
+                    if data.get('reconnect'):
+                        resume = getattr(self.backend, 'resume', None)
+                        if callable(resume):
+                            resume()  # Supported durable subscription restoration, no new turns.
+                    status = self.status()
+                    record['outputs'] = [_metadata(rid, 'connection', status['state'], state='completed')]
+                elif route == '/api/turns/cancel':
+                    result = self.backend.handle('POST', route, {}, data)
+                    receipt = result.get('receipt', {})
+                    if (result.get('thread_id') != data['thread_id'] or result.get('turn_id') != data['turn_id']
+                            or receipt.get('turn_id') != data['turn_id']
+                            or receipt.get('state') not in ('cancelling', 'cancelled', 'completed', 'failed')):
+                        raise InvalidRequest('Unconfirmed cancellation receipt.')
+                    record['outputs'] = [
+                        _output(rid, 'ack', 'Stop requested; completion is not yet confirmed.', 'completed'),
+                        _metadata(rid, 'stop', data['thread_id'], data['turn_id'], 'requested')]
                 else:
                     result = self.backend.handle('POST', route, {}, data)
                     if route == '/api/send':
@@ -285,6 +386,12 @@ class Dispatcher:
                             raise InvalidRequest('Unconfirmed creation receipt.')
                         state, message = 'completed', 'Organization action completed.'
                     record['outputs'] = [_output(rid, 'ack', message, state)]
+                    if route == '/api/send':
+                        record['outputs'].append(_metadata(rid, 'send', rid, thread, turn, state))
+                    elif route.endswith('/create'):
+                        record['outputs'].append(_metadata(rid, 'created', rid,
+                            _receipt_id(result.get('project_id')), _receipt_id(result.get('thread_id')),
+                            data[name_field]))
             except Exception as exc:
                 record['outputs'] = [_error(rid, exc.status if isinstance(exc, APIError) else 502)]
             self._save(rid, record)
@@ -326,6 +433,118 @@ class Dispatcher:
                 seen_threads.add(tid)
                 add(['T', pid, tid, thread['title'], thread.get('status', 'unknown')])
         return _output(rid, 'projects', '\n'.join(rows), 'completed')
+
+    def _snapshot(self, data, kind):
+        saved = self._read(data['snapshot_id'])
+        snapshot = saved and saved[1].get('snapshot')
+        if not snapshot or snapshot.get('kind') != kind:
+            raise APIError('Unknown snapshot.', 400)
+        if kind == 'history' and (snapshot['thread'] != data['thread_id'] or snapshot['view'] != data['view_id']):
+            raise APIError('Snapshot belongs to another view.', 400)
+        if data['page'] >= len(snapshot['pages']):
+            raise APIError('Page outside snapshot.', 400)
+        return snapshot
+
+    def _project_page(self, rid, data, record):
+        if 'snapshot_id' in data:
+            snapshot = self._snapshot(data, 'projects')
+            snapshot_id = data['snapshot_id']
+        else:
+            workspace = self.backend.handle('GET', '/api/workspace', {}, {})
+            projects, threads = workspace['projects'], workspace['threads']
+            if (not isinstance(projects, list) or not isinstance(threads, list)
+                    or len(projects) + len(threads) > MAX_ROWS):
+                _snapshot_limit()
+            by_project, seen_threads = {}, set()
+            for project_row in projects:
+                pid = identifier(project_row['id'])
+                if pid in by_project:
+                    raise InvalidRequest('Duplicate project.')
+                by_project[pid] = []
+            for thread in threads:
+                pid, tid = identifier(thread['project_id']), identifier(thread['id'])
+                if pid not in by_project or tid in seen_threads or type(thread.get('closed', False)) is not bool:
+                    raise InvalidRequest('Invalid workspace thread.')
+                seen_threads.add(tid)
+                by_project[pid].append(thread)
+            pages, rows = [], ['ncw1']
+            page_bytes, total_bytes, count = 4, 4, 0
+            def add(fields):
+                nonlocal rows, page_bytes, total_bytes, count
+                row = fields[0] + '\t' + '\t'.join(quote(_text(s, 4096, controls=True), safe='') for s in fields[1:])
+                size = 1 + len(row.encode('utf-8'))
+                count += 1
+                total_bytes += size
+                if count > MAX_ROWS or total_bytes > MAX_CATALOG_BYTES or 4 + size > MAX_VALUE:
+                    _snapshot_limit()
+                if page_bytes + size > MAX_VALUE:
+                    total_bytes += 4  # Each retained page repeats the ncw1 header.
+                    if total_bytes > MAX_CATALOG_BYTES:
+                        _snapshot_limit()
+                    pages.append('\n'.join(rows))
+                    rows, page_bytes = ['ncw1'], 4
+                rows.append(row)
+                page_bytes += size
+            for project_row in projects:
+                pid = identifier(project_row['id'])
+                add(['P', pid, project_row['name']])
+                for thread in by_project[pid]:
+                    add(['T', pid, thread['id'], thread['title'],
+                         'closed' if thread.get('closed', False) else thread.get('status', 'unknown')])
+            pages.append('\n'.join(rows))
+            if len(pages) > MAX_CATALOG_PAGES:
+                _snapshot_limit()
+            snapshot = {'kind': 'projects', 'pages': pages}
+            record['snapshot'] = snapshot
+            snapshot_id = rid
+        page = data.get('page', 0)
+        return [_metadata(rid, 'projects', snapshot_id, page, len(snapshot['pages'])),
+                _output(rid, 'projects', snapshot['pages'][page], 'completed')]
+
+    def _history_page(self, rid, data, record):
+        if 'snapshot_id' in data:
+            snapshot = self._snapshot(data, 'history')
+            snapshot_id = data['snapshot_id']
+        else:
+            query = {'thread_id': [data['thread_id']], 'limit': [str(HISTORY_LIMIT)]}
+            if 'before' in data:
+                query['before'] = [data['before']]
+            result = self.backend.handle('GET', '/api/messages', query, {})
+            details = result['message_details']
+            if not isinstance(details, list) or len(details) > HISTORY_LIMIT or type(result.get('has_more')) is not bool:
+                raise InvalidRequest('Invalid history.')
+            before = result.get('first_cursor')
+            if before is not None:
+                history_query({'thread_id': [data['thread_id']], 'before': [before]})
+            more = result['has_more']
+            if more and (before is None or ('before' in data and int(before) >= int(data['before']))):
+                raise InvalidRequest('History cursor did not advance.')
+            texts, size = [], 0
+            for detail in details:
+                role = detail.get('role')
+                if role not in ('user', 'assistant'):
+                    raise InvalidRequest('Invalid history role.')
+                text = ('You' if role == 'user' else 'Assistant') + ':\n' + _text(detail.get('text'), MAX_SNAPSHOT_BYTES)
+                size += len(text.encode('utf-8')) + (2 if texts else 0)
+                if size > MAX_SNAPSHOT_BYTES:
+                    _snapshot_limit()
+                texts.append(text)
+            snapshot = {'kind': 'history', 'thread': data['thread_id'], 'view': data['view_id'],
+                        'before': before or '', 'more': more}
+            # Budget worst-case page number/count; all identifiers are bounded.
+            header = self._history_header(rid, snapshot, MAX_PAGES - 1, MAX_PAGES)
+            snapshot['pages'] = _utf8_pages('\n\n'.join(texts), MAX_VALUE - len(header.encode('utf-8')))
+            record['snapshot'] = snapshot
+            snapshot_id = rid
+        page = data.get('page', 0)
+        header = self._history_header(snapshot_id, snapshot, page, len(snapshot['pages']))
+        return _output(rid, 'reply', header + snapshot['pages'][page], 'completed')
+
+    @staticmethod
+    def _history_header(snapshot_id, snapshot, page, pages):
+        fields = [snapshot_id, snapshot['thread'], str(page), str(pages), snapshot['before'],
+                  '1' if snapshot['more'] else '0', snapshot['view']]
+        return 'nch1\t' + '\t'.join(quote(value, safe='') for value in fields) + '\n'
 
     def status(self):
         """Safe status projection. Never infer account connectivity from carrier IO."""
@@ -449,6 +668,7 @@ class Dispatcher:
         if kind in ('turn_accepted', 'turn_completed') and not any(x['state'] == 'remoteaccepted' for x in record['outputs']):
             record['outputs'].append(_output(rid, 'ack', 'Accepted remotely; awaiting reply.', 'remoteaccepted'))
         if kind == 'turn_completed':
+            record['outputs'].append(_metadata(rid, 'reply', rid, record['thread'], record['turn']))
             record['outputs'].append(_output(rid, 'reply', text, 'reply'))
             record['done'] = True
         elif kind in ('turn_failed', 'turn_cancelled'):

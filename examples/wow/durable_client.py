@@ -233,6 +233,14 @@ class DurableBackend(Backend):
         self.fingerprint = None
         self.clients = {}
 
+    def credentials(self):
+        # REST fallbacks (including history and stop) share the stream account
+        # fence. Check before metadata access or HTTP, not after a REST mutation.
+        key = super().credentials()
+        if self.fingerprint is not None and DurableClient.account_id(self, key) != self.fingerprint:
+            raise APIError('Account changed; restart the durable backend.', 401)
+        return key
+
     def _open_store(self):
         key = self.credentials()
         fingerprint = DurableClient.account_id(self, key)

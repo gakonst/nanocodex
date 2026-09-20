@@ -9,4 +9,5 @@ Settings.lua
 Core.lua
 Projects.lua
 Bridge.lua
+Client.lua
 Transport.lua

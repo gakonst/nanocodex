@@ -152,3 +152,108 @@ class AddonBridgeIntegrationTests(unittest.TestCase):
             rows = bridge.store.db.execute('SELECT mid,rid,body FROM bridge_requests ORDER BY mid').fetchall()
             self.assertEqual([row[0] for row in rows], [1, 2])
             self.assertEqual(rows[0][2], rows[1][2])  # Identical bytes, separate explicit intents.
+
+    def test_native_client_roster_history_create_send_stop_and_reconnect(self):
+        """Real addon client state through NC1, Bridge journals and Dispatcher."""
+        class ClientBackend(Backend):
+            def __init__(self):
+                super().__init__()
+                self.created = 0
+                self.cancelled = []
+                self.resumed = 0
+                self.history_queries = []
+                self.workspace_reads = 0
+                self.history = 'Earlier question |Ω\n' + 'History Ω ' * 1750
+                self.threads = [dict(id='fixture-thread', title='First chat', status='unknown'),
+                                dict(id='fixture-other', title='Other chat', status='unknown')]
+                # Exercise multiple application pages, not just carrier chunks.
+                self.threads += [dict(id=f'fixture-{i}', title=f'Thread {i} ' + 'x' * 700,
+                                      status='unknown') for i in range(24)]
+
+            def resume(self): self.resumed += 1
+
+            def handle(self, method, path, query, data):
+                if path == '/api/send': return super().handle(method, path, query, data)
+                if path == '/api/status': return dict(connected=True)
+                if path == '/api/workspace':
+                    self.workspace_reads += 1
+                    return dict(projects=[dict(id='fixture-project', name='Fixture project')],
+                                threads=[dict(row, project_id='fixture-project', closed=False) for row in self.threads])
+                if path == '/api/threads':
+                    return dict(threads=[] if query.get('closed') == ['true'] else self.threads)
+                if path == '/api/messages':
+                    self.history_queries.append(query)
+                    thread = query['thread_id'][0]
+                    if thread == 'fixture-thread':
+                        text = 'Oldest question' if 'before' in query else self.history
+                        return dict(message_details=[dict(role='user', text=text)],
+                                    first_cursor='1' if 'before' in query else '10',
+                                    has_more='before' not in query)
+                    return dict(message_details=[dict(role='assistant', text='Other conversation' if thread == 'fixture-other' else 'New empty chat')],
+                                first_cursor='1', has_more=False)
+                if path == '/api/threads/create':
+                    self.created += 1
+                    self.threads.append(dict(id='fixture-created', title=data['title'], status='unknown'))
+                    return dict(project_id='fixture-project', thread_id='fixture-created', title=data['title'], status='created')
+                if path == '/api/turns/cancel':
+                    self.cancelled.append(data)
+                    return dict(thread_id=data['thread_id'], turn_id=data['turn_id'],
+                                receipt=dict(turn_id=data['turn_id'], state='cancelling'))
+                raise AssertionError((method, path, query, data))
+
+        with tempfile.TemporaryDirectory() as directory:
+            desktop = LuaDesktop()
+            self.addCleanup(desktop.close)
+            desktop.replay = True
+            backend = ClientBackend()
+            dispatcher = Dispatcher(backend, Path(directory) / 'dispatch.sqlite3')
+            self.addCleanup(dispatcher.close)
+            bridge = Bridge(desktop, 17, dispatcher, Path(directory) / 'bridge.sqlite3')
+            self.addCleanup(bridge.close)
+
+            def drive_until(predicate):
+                for _ in range(2400):
+                    bridge.step()
+                    self.assertIsNone(bridge.error)
+                    bridge.work_once()
+                    if predicate(): return
+                self.fail('native client did not reach expected state: ' + repr(desktop.state))
+
+            self.assertTrue(desktop.command('refresh')['submitted'])
+            drive_until(lambda: desktop.state['threads'] == 26 and desktop.state['client']['account'] == 'Account connected')
+            snapshots = [json.loads(row[0]).get("snapshot", {}) for row in dispatcher.journal.db.execute("SELECT record FROM dispatch_requests")]
+            self.assertTrue(any(snapshot.get("kind") == "projects" and len(snapshot["pages"]) > 1 for snapshot in snapshots))
+            self.assertEqual(backend.workspace_reads, 1, 'roster pages share one immutable backend read')
+            self.assertTrue(desktop.command('select1')['submitted'])
+            drive_until(lambda: desktop.state['client']['history'] == 'You:\n' + backend.history)
+            self.assertEqual(len(backend.history_queries), 1, 'local history pages share one immutable backend read')
+            self.assertIn('Earlier question ||Ω', desktop.state['text'])
+            self.assertTrue(desktop.command('earlier')['submitted'])
+            drive_until(lambda: desktop.state['client']['history'].startswith('You:\nOldest question\n\n'))
+            self.assertEqual(backend.history_queries[-1]['before'], ['10'])
+
+            self.assertTrue(desktop.command('sendthread')['submitted'])
+            self.assertFalse(desktop.command('sendthread')['submitted'], 'pending click must not duplicate a send')
+            drive_until(lambda: len(backend.sent) == 1 and 'Accepted remotely' in desktop.state['transport'])
+            backend.rows = [dict(type='event', cursor='1', turn_id='fixture-turn-1',
+                                event=dict(type='assistant.delta', payload=dict(text='Live partial |Ω',
+                                      model_call_index=0, item_id='answer', phase='final_answer')))]
+            drive_until(lambda: 'Live partial ||Ω' in desktop.state['text'])
+            self.assertTrue(desktop.command('stop')['submitted'])
+            drive_until(lambda: len(backend.cancelled) == 1 and 'Stop requested' in desktop.state['transport'])
+            self.assertEqual(backend.cancelled[0]['thread_id'], 'fixture-thread')
+            self.assertEqual(backend.cancelled[0]['turn_id'], 'fixture-turn-1')
+
+            self.assertTrue(desktop.command('select2')['submitted'])
+            drive_until(lambda: desktop.state['text'] == 'Assistant:\nOther conversation')
+            backend.rows.append(dict(type='turn_completed', cursor='2', turn_id='fixture-turn-1', final_message='Background final'))
+            drive_until(lambda: desktop.state['status'] == 'Completed')
+            self.assertEqual(desktop.state['text'], 'Assistant:\nOther conversation', 'background completion must preserve selected history')
+            self.assertEqual(len(backend.sent), 1)
+
+            self.assertTrue(desktop.command('new')['submitted'])
+            drive_until(lambda: desktop.state['client'].get('thread') == 'fixture-created' and desktop.state['text'] == 'Assistant:\nNew empty chat')
+            self.assertEqual(backend.created, 1, 'carrier replay must not duplicate creation')
+            self.assertTrue(desktop.command('reconnect')['submitted'])
+            drive_until(lambda: backend.resumed == 1 and not desktop.state['pending'])
+            self.assertFalse(bridge.evidence()['model_roundtrip_proven'])

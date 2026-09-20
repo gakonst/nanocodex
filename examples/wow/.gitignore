@@ -28,3 +28,6 @@ transport/research/
 update-wow.sh
 *.tar.gz
 *.zip
+
+# Local validation tools, logs and interruption checkpoints.
+build/

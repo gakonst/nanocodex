@@ -17,6 +17,11 @@ function methods:SetFocus() self.focus = true end
 function methods:ClearFocus() self.focus = false end
 function methods:HighlightText() self.highlighted = true end
 function methods:SetScrollChild(child) self.child = child end
+function methods:GetHeight() return self.height or 1080 end
+function methods:GetWidth() return self.width or 1920 end
+function methods:SetScale(value) self.scale = value end
+function methods:GetVerticalScroll() return self.offset or 0 end
+function methods:SetVerticalScroll(value) self.offset = value end
 local function newFrame(name)
     local f = setmetatable({ scripts={}, events={}, visible=true, name=name }, {__index=methods})
     frames[#frames+1] = f
@@ -25,6 +30,9 @@ local function newFrame(name)
 end
 function methods:CreateFontString(_, _, font) local f = newFrame() f.font = font return f end
 for _, name in ipairs({"SetSize", "SetFrameStrata", "SetClampedToScreen", "EnableMouse", "SetMovable", "RegisterForDrag", "StartMoving", "StopMovingOrSizing", "SetBackdrop", "SetBackdropColor", "SetBackdropBorderColor", "SetWidth", "SetHeight", "SetJustifyH", "SetMultiLine", "SetAutoFocus", "SetFontObject", "SetMaxLetters", "UpdateScrollChildRect"}) do methods[name] = function() end end
+function methods:SetSize(width, height) self.width, self.height = width, height end
+function methods:SetHeight(value) self.height = value end
+function methods:SetWidth(value) self.width = value end
 function methods:SetBackdrop(value) self.backdrop = value end
 function methods:SetFontObject(value) self.font = value end
 CreateFrame = function(_, name, parent, template) local f = newFrame(name) f.parent = parent f.template = template return f end
@@ -119,15 +127,15 @@ local p,t = NS.ProjectSelection()
 assert(p == "p/1" and t == "t1")
 assert(NanocodexWowDB.project_id == p and NanocodexWowDB.thread_id == t)
 local previous = NanocodexWowDB.projectSnapshot
-for _, bad in ipairs({"", "ncw2", "ncw1\nP\ta\t%", "ncw1\nP\ta\t%GG", "ncw1\nP\ta\t%00", "ncw1\nP\ta\tname\textra", "ncw1\nT\tmissing\tt\tTitle\tidle", "ncw1\nP\ta\tA\nP\ta\tB", "ncw1\nP\ta\tA\nT\ta\tt\tX\ti\nT\ta\tt\tY\ti", "ncw1\nP\t\tName", "ncw1\n\n", string.rep("x", 262145)}) do
+for _, bad in ipairs({"", "ncw2", "ncw1\nP\ta\t%", "ncw1\nP\ta\t%GG", "ncw1\nP\ta\t%00", "ncw1\nP\ta\tname\textra", "ncw1\nT\tmissing\tt\tTitle\tidle", "ncw1\nP\ta\tA\nP\ta\tB", "ncw1\nP\ta\tA\nT\ta\tt\tX\ti\nT\ta\tt\tY\ti", "ncw1\nP\t\tName", "ncw1\n\n", string.rep("x", 1048577)}) do
     assert(not NS.ImportProjects(bad), bad)
     assert(NanocodexWowDB.projectSnapshot == previous)
 end
-local exact = "ncw1\nP\ta\t" .. string.rep("x", 262144 - #"ncw1\nP\ta\t")
+local exact = "ncw1\nP\ta\t" .. string.rep("x", 1048576 - #"ncw1\nP\ta\t")
 assert(NS.ParseProjects(exact))
 assert(not NS.ParseProjects(exact .. "x"))
 local many = {"ncw1"}
-for i=1,1000 do many[#many+1] = "P\tp"..i.."\tName" end
+for i=1,4096 do many[#many+1] = "P\tp"..i.."\tName" end
 assert(NS.ParseProjects(table.concat(many,"\n")))
 many[#many+1] = "P\textra\tName"
 assert(not NS.ParseProjects(table.concat(many,"\n")))
@@ -168,7 +176,8 @@ assert(#exports == count)
 assert(NS.ImportProjects("ncw1"))
 p,t = NS.ProjectSelection()
 assert(not p and not t)
-assert(not NS.ProjectAction("create_chat", "Name"))
+assert(NS.ProjectAction("create_chat", "Name"))
+assert(not exports[#exports]:find('"project_id":',1,true), "new unassigned chats need no selected project")
 assert(NS.ProjectAction("create_project", "Name"))
 NS.Ask("lore", true)
 assert(exports[#exports]:find('"mode":"hint"',1,true))
@@ -325,6 +334,63 @@ local importer=NS.ImportProjects NS.ImportProjects=nil
 assert(NS.OnTransportMessage('projects',snapshot)==false)
 NS.ImportProjects=importer
 io.write("PASS: rejected snapshots/replies retain unacknowledged carrier and application identities\n")
+
+-- The actual side-panel widgets call the native client, not clipboard exports.
+assert(loadfile("addon/Nanocodex/Client.lua"))("Nanocodex", NS)
+local clientRequests = {}
+NS.TransportSend = function(payload) clientRequests[#clientRequests+1]=payload return false,"pending" end
+NS.TransportStatus = function() return {connected=true,pending=false} end
+assert(NS.ImportProjects(snapshot))
+NS.OpenConversation()
+assert(#NanocodexWowPanel.threadRows >= 2)
+NanocodexWowPanel.threadSearch:SetText("Second")
+assert(NanocodexWowPanel.threadRows[1].threadID == "t2")
+assert(not NanocodexWowPanel.threadRows[2]:IsShown())
+NanocodexWowPanel.threadRows[1].scripts.OnClick(NanocodexWowPanel.threadRows[1])
+assert(clientRequests[#clientRequests]:find('"action":"load_history"',1,true))
+assert(clientRequests[#clientRequests]:find('"thread_id":"t2"',1,true))
+assert(NS.ClientState().thread=="t2")
+NanocodexWowPanel.newButton.scripts.OnClick()
+assert(clientRequests[#clientRequests]:find('"action":"create_chat"',1,true))
+NanocodexWowPanel.reconnectButton.scripts.OnClick()
+assert(clientRequests[#clientRequests]:find('"action":"reconnect"',1,true))
+NanocodexWowPanel.threadSearch:SetFocus()
+NanocodexWowPanel.minimize.scripts.OnClick()
+assert(not NanocodexWowPanel.threadSearch.focus)
+assert(not NanocodexWowPanel.threadScroll:IsShown())
+NS.OnTransportMessage("reply", "Passive update") NS.FlushConversation(.05)
+assert(NanocodexWowDB.minimized)
+io.write("PASS: native side-view search/selection/new/reconnect widgets, minimized focus and passive updates\n")
+
+-- A full supported catalog must retain a bounded pool while scrolling/searching.
+local catalog = {"ncw1", "P\tp\tProject"}
+for i=1,4095 do catalog[#catalog+1] = "T\tp\tt"..i.."\tChat "..i.."\tidle" end
+NanocodexWowPanel.threadSearch:SetText("")
+assert(NS.ImportProjects(table.concat(catalog, "\n")))
+assert(#NanocodexWowPanel.threadRows == 6, "114px viewport needs at most six reusable rows")
+local threadScroll = NanocodexWowPanel.threadScroll
+threadScroll.scripts.OnVerticalScroll(threadScroll, 980*26)
+assert(NanocodexWowPanel.threadRows[1].threadID == "t981")
+assert(#NanocodexWowPanel.threadRows == 6)
+NanocodexWowPanel.threadSearch:SetText("Chat 999")
+assert(threadScroll:GetVerticalScroll() == 0 and NanocodexWowPanel.threadRows[1].threadID == "t999")
+assert(not NanocodexWowPanel.threadRows[2]:IsShown())
+UIParent.height = 560
+UIParent.width = 400
+eventFrame.scripts.OnEvent(eventFrame, "UI_SCALE_CHANGED")
+assert(NanocodexWowPanel.scale*700 <= UIParent.height-24)
+assert(NanocodexWowPanel.scale*460 <= UIParent.width-24)
+-- Continuations and passive rendering keep moving while hidden, without focus.
+NanocodexWowPanel:Hide()
+assert(NS.RefreshWorkspace())
+local beforePump = #clientRequests
+eventFrame.scripts.OnUpdate(eventFrame, .05)
+assert(#clientRequests == beforePump+1 and clientRequests[#clientRequests]:find('"action":"connection_status"',1,true))
+NS.OnTransportMessage("reply", "Hidden event pump")
+eventFrame.scripts.OnUpdate(eventFrame, .05)
+assert(NanocodexWowPanel.answer:GetText() == "Hidden event pump")
+assert(not NanocodexWowPanel:IsShown() and not NanocodexWowPrompt.focus)
+io.write("PASS: six-row virtualization, deep scrolling/search reset, display bounds, hidden continuation/render pump\n")
 
 -- Slash entry before ADDON_LOADED must open the newly constructed panel.
 local fresh = {}

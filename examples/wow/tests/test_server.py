@@ -46,7 +46,10 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(len(b.calls), 1)
 
     def test_new_run_against_upstream_source_validator(self):
-        validator = Path(__file__).resolve().parents[2] / 'nanocodex-api-reference/js/managed/src/agent-settings.ts'
+        source = Path(__file__).resolve()
+        validator = source.parents[3] / 'js/managed/src/agent-settings.ts'
+        if not validator.is_file():
+            validator = source.parents[2] / 'nanocodex-api-reference/js/managed/src/agent-settings.ts'
         bun = shutil.which('bun')
         if not bun or not validator.is_file():
             self.skipTest('Optional upstream source checkout and Bun required')

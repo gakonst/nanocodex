@@ -1,5 +1,5 @@
 local _, NS = ...
-local MAX_BYTES, MAX_ROWS = 256 * 1024, 1000
+local MAX_BYTES, MAX_ROWS = 1024 * 1024, 4096
 local panel, state
 local function db()
     if type(NanocodexWowDB) ~= "table" then NanocodexWowDB = {} end
@@ -13,7 +13,7 @@ local function decode(s)
 end
 -- This is data, never executable Lua or WoW markup. Reject the entire import on error.
 function NS.ParseProjects(value)
-    if type(value) ~= "string" or #value > MAX_BYTES then return nil, "Snapshot exceeds 256 KiB." end
+    if type(value) ~= "string" or #value > MAX_BYTES then return nil, "Snapshot exceeds the 1 MiB catalog limit; open the companion." end
     value = value:gsub("\r\n", "\n")
     if value:sub(-1) == "\n" then value = value:sub(1, -2) end
     local result = {projects={}, threads={}, byProject={}, byThread={}}
@@ -22,7 +22,7 @@ function NS.ParseProjects(value)
         if count == 0 then
             if line ~= "ncw1" then return nil, "Expected ncw1 snapshot header." end
         else
-            if count > MAX_ROWS then return nil, "Snapshot exceeds 1000 rows." end
+            if count > MAX_ROWS then return nil, "Snapshot exceeds 4096 project/chat rows; open the companion." end
             local fields = {}
             if line:find("\t", 1, true) then
                 for field in (line .. "\t"):gmatch("([^\t]*)\t") do fields[#fields+1] = field end
@@ -72,6 +72,7 @@ function NS.SelectProject(projectID, threadID)
     if not s.byProject[projectID] or (threadID and not (s.byThread[projectID] and s.byThread[projectID][threadID])) then return false end
     db().project_id, db().thread_id = projectID, threadID
     if panel then panel.refresh() end
+    if NS.RefreshThreadList then NS.RefreshThreadList() end
     return true
 end
 function NS.ImportProjects(value)
@@ -80,6 +81,7 @@ function NS.ImportProjects(value)
     state, db().projectSnapshot = parsed, value
     NS.ProjectSelection()
     if panel then panel.refresh() end
+    if NS.RefreshThreadList then NS.RefreshThreadList() end
     NS.Notify("success", "Project snapshot received. Select a project and chat.")
     return true
 end
@@ -88,7 +90,7 @@ function NS.ProjectAction(action, name)
     if action ~= "create_project" and action ~= "create_chat" and action ~= "rename_project" and action ~= "rename_chat" then return false end
     name = type(name) == "string" and name:match("^%s*(.-)%s*$") or ""
     if name == "" or #name > 512 or name:find("[%z\1-\31\127]") then NS.Notify("error", "Enter a name (1–512 bytes).") return false end
-    if action ~= "create_project" and not p then NS.Notify("error", "Select a project first.") return false end
+    if action ~= "create_project" and action ~= "create_chat" and not p then NS.Notify("error", "Select a project first.") return false end
     if action == "rename_chat" and not t then NS.Notify("error", "Select a chat first.") return false end
     if not NS.QueueRequest then NS.Notify("error", "Transport unavailable; request not queued.") return false end
     return NS.QueueRequest({schemaVersion=1, source="nanocodex-wow", type="nanocodex.action", action=action,
@@ -136,7 +138,10 @@ function NS.Projects()
                 if not row then
                     row = CreateFrame("Button", nil, child, "UIPanelButtonTemplate")
                     row:SetSize(625, 24) row:SetPoint("TOPLEFT", 0, -(i-1)*26) rows[i] = row
-                    row:SetScript("OnClick", function(self) NS.SelectProject(self.projectID, self.threadID) end)
+                    row:SetScript("OnClick", function(self)
+                        if self.threadID and NS.LoadThread then NS.LoadThread(self.projectID, self.threadID)
+                        else NS.SelectProject(self.projectID, self.threadID) if NS.ClearThreadView then NS.ClearThreadView() end end
+                    end)
                 end
                 row.projectID, row.threadID = entry.p, entry.t
                 row:SetText(safe(entry.label)) row:Show()
@@ -159,4 +164,22 @@ function NS.Projects()
         table.insert(UISpecialFrames, "NanocodexWowProjects")
     end
     panel.refresh() panel:Show()
+end
+
+-- Flat account roster for the native side view, including closed chats in paged refreshes.
+function NS.ThreadEntries(query)
+    query = type(query) == "string" and query:lower() or ""
+    local result, s = {}, current()
+    for _, thread in ipairs(s.threads) do
+        local project = s.byProject[thread.project_id]
+        if query == "" or (thread.title .. " " .. project.name):lower():find(query, 1, true) then
+            result[#result+1] = {id=thread.id, project_id=thread.project_id, title=thread.title, project_name=project.name, status=thread.status}
+        end
+    end
+    return result
+end
+function NS.SelectedThreadTitle()
+    local p, t = NS.ProjectSelection()
+    local s = current()
+    return t and (s.byProject[p].name .. " / " .. s.byThread[p][t].title) or nil
 end

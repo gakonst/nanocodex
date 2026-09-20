@@ -163,10 +163,12 @@ class DispatchTests(unittest.TestCase):
             {'turn_id': 'r', 'event_type': 'event', 'text': 'partial'},
             {'turn_id': 'r', 'event_type': 'turn_accepted', 'text': 'user'}], 'last_cursor': '3'}
         first = self.d.poll('r')
-        self.assertEqual([x['state'] for x in first], ['local_queued', 'remoteaccepted'])
+        self.assertEqual([x['state'] for x in first], ['local_queued', 'metadata', 'remoteaccepted'])
         self.backend.history = {'message_details': [
             {'turn_id': 'r', 'event_type': 'turn_completed', 'text': 'Answer Ω'}], 'last_cursor': '4'}
         out = self.d.poll('r')
+        self.assertEqual(out[-2]['value'], 'ncm1\treply\tr\tthread1\tr')
+        self.assertEqual(out[-2]['state'], 'metadata')
         self.assertEqual(out[-1]['kind'], 'reply')
         self.assertEqual(out[-1]['value'], 'Answer Ω')
         self.assertEqual(self.backend.calls[-1][2]['after'], ['3'])
@@ -217,7 +219,7 @@ class DispatchTests(unittest.TestCase):
             backend.store.accept('thread1', {'type': 'turn_completed', 'id': 'r', 'cursor': '2', 'final_message': 'Offline reply'})
             with patch.object(backend, 'request', side_effect=AssertionError('No network needed')):
                 out = self.d.poll('r')
-            self.assertEqual([x['state'] for x in out], ['local_queued', 'remoteaccepted', 'streaming', 'streaming', 'completed'])
+            self.assertEqual([x['state'] for x in out], ['local_queued', 'metadata', 'remoteaccepted', 'streaming', 'streaming', 'completed'])
             self.d.close()
             self.d = Dispatcher(backend, self.path)
             self.assertEqual(self.d.poll('r'), out)
@@ -359,7 +361,8 @@ class DispatchTests(unittest.TestCase):
         for piece in pieces:
             retry.receive(piece)
         self.assertEqual(len(self.backend.calls), 1)
-        self.assertEqual(receipts[0], receipts[1])
+        self.assertEqual(len(receipts), 4)
+        self.assertEqual(receipts[:2], receipts[2:])
 
     def test_codec_plain_error_and_full_reply_roundtrip(self):
         outputs = self.complete('Ω🎮' * 120)

@@ -446,14 +446,19 @@ class Backend:
                 return {'connected': True, 'base_url': self.base_url, 'model': 'luna', 'model_policy': 'Luna for new conversations; existing threads retain their model', 'auth': 'cli-account-store', 'voice': voice_status()}
             except APIError as exc:
                 return {'connected': False, 'base_url': self.base_url, 'model': 'luna', 'model_policy': 'Luna for new conversations; existing threads retain their model', 'auth': 'cli-account-store', 'voice': voice_status(), 'error': exc.message}
-        if method == 'GET' and path in ('/api/projects', '/api/threads'):
-            values = query_fields(query, () if path == '/api/projects' else ('project_id', 'closed'))
+        if method == 'GET' and path in ('/api/projects', '/api/threads', '/api/workspace'):
+            values = query_fields(query, ('project_id', 'closed') if path == '/api/threads' else ())
             project = identifier(values.get('project_id')) if path == '/api/threads' else None
             if values.get('closed', 'false') not in ('true', 'false'):
                 raise APIError('closed must be true or false.')
             with metadata(self) as (_, local):
                 roster = self.agents()
                 projects, threads = self.organization_rows(roster, local)
+                if path == '/api/workspace':
+                    # One account-scoped read supplies the complete bridge roster,
+                    # including local closed state, without per-project requests.
+                    return {'projects': list(projects.values()), 'threads': threads,
+                            'metadata_scope': METADATA_SCOPE}
                 if project is None:
                     return {'projects': list(projects.values()), 'metadata_scope': METADATA_SCOPE}
                 self.require_owned(roster, project)

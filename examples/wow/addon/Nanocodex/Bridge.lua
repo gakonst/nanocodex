@@ -22,7 +22,7 @@ function NS.TransportDisplay()
     local connected = type(status) == "table" and status.connected == true
     local detail = type(status) == "table" and (status.message or status.state) or status
     return (connected and "Bridge linked" or "Disconnected") ..
-        (type(detail) == "string" and " · " .. safe(detail) or "") .. "\n" .. lastRequest
+        (type(detail) == "string" and " · " .. safe(detail) or "") .. "\n" .. (NS.ClientStatus and NS.ClientStatus() .. " · " or "") .. lastRequest
 end
 function NS.QueueRequest(request)
     if type(NS.TransportSend) ~= "function" then
@@ -63,11 +63,16 @@ function NS.Ask(prompt, gameMode)
     if not gameMode and NS.ProjectSelection then projectID, threadID = NS.ProjectSelection() end
     if projectID and not threadID then NS.Notify("error", "Use /nc projects to select a chat first.") return false end
     if not NS.Snapshot() then return false end
-    return NS.QueueRequest({
+    local accepted, reason = NS.QueueRequest({
         schemaVersion = 1, source = "nanocodex-wow", type = "nanocodex.ask",
         mode = projectID and "agent" or "hint", project_id = projectID, thread_id = threadID,
         prompt = prompt, context = NanocodexWowDB.lastContext,
     })
+    if accepted then
+        if (gameMode or not projectID) and NS.ClientGameSent then NS.ClientGameSent()
+        elseif NS.ClientSent then NS.ClientSent(prompt) end
+    end
+    return accepted, reason
 end
 
 local MAX_ANSWER = 256 * 1024
@@ -219,8 +224,13 @@ function NS.ReceiveStream(value)
     stream.revision=rev stream.receipts[rev]=value
     stream.receipts[rev-256]=nil
     activeRequest=rid
-    displayStreams()
     lastRequest=op=='done' and 'Completed' or op=='error' and 'Turn failed or was cancelled' or 'Streaming reply…'
+    local texts={}
+    for _,streamKey in ipairs(order) do
+        local entry=streams[streamKey]
+        if entry.request==rid and entry.text~='' then texts[#texts+1]=entry.text end
+    end
+    if not NS.ClientStream or not NS.ClientStream(rid,turn,table.concat(texts,'\n\n'),lastRequest) then displayStreams() end
     return true
 end
 function NS.StreamState()
@@ -229,6 +239,13 @@ end
 
 function NS.OnTransportMessage(kind, value)
     if type(kind) ~= "string" or type(value) ~= "string" then return false end
+    if NS.ReceiveClientMessage then
+        local handled=NS.ReceiveClientMessage(kind,value)
+        if handled~=nil then
+            if handled and kind=="reply" and value:sub(1,5)~="nch1\t" then lastRequest="Reply received" end
+            return handled
+        end
+    end
     if kind == "stream" then
         return NS.ReceiveStream(value)
     elseif kind == "reply" then
