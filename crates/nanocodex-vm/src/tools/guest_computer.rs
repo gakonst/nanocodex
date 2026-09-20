@@ -54,6 +54,32 @@ impl GuestComputer {
             .get_or_try_init(|| async {
                 let config = ComputerConfig::discover()
                     .ok_or("No upstream Sky MCP provider is configured for this guest")?;
+                #[cfg(all(feature = "desktop", target_os = "linux"))]
+                let config = {
+                    // The guest owns this display. Point the upstream provider at
+                    // it explicitly instead of inheriting the host's desktop.
+                    let mut config = config;
+                    let runtime = PathBuf::from(DESKTOP_RUNTIME);
+                    let display = std::fs::read_to_string(runtime.join("display"))?;
+                    if !display.starts_with(':')
+                        || display.len() > 6
+                        || !display[1..].bytes().all(|byte| byte.is_ascii_digit())
+                    {
+                        return Err("Guest desktop published an invalid X display".into());
+                    }
+                    config.environment.insert("DISPLAY".into(), display.into());
+                    config.environment.insert(
+                        "XAUTHORITY".into(),
+                        runtime.join("Xauthority").into_os_string(),
+                    );
+                    config
+                        .environment
+                        .insert("XDG_RUNTIME_DIR".into(), runtime.into_os_string());
+                    config
+                        .environment
+                        .insert("WAYLAND_DISPLAY".into(), "".into());
+                    config
+                };
                 ComputerTools::connect(config).await
             })
             .await
