@@ -453,6 +453,7 @@ async fn run_workspace_lifecycle(pinned: bool) {
             } else {
                 vec![]
             })
+            .env("NANOCODEX_COMPUTER", "off")
             .env("NANOCODEX_MANAGED_URL", &state.origin)
             .env("NC_API_KEY", &api_key)
             .env_remove("NANOCODEX_API_KEY")
@@ -549,6 +550,7 @@ async fn run_rejects_a_malformed_create_live_ready_frame() {
         PROCESS_TIMEOUT,
         tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
             .args(["run", "this turn must not submit"])
+            .env("NANOCODEX_COMPUTER", "off")
             .env("NANOCODEX_MANAGED_URL", &state.origin)
             .env("NC_API_KEY", &api_key)
             .env_remove("NANOCODEX_API_KEY")
@@ -610,6 +612,7 @@ async fn run_keeps_the_durable_agent_when_local_tools_are_initially_unavailable(
                 "--idempotency-key",
                 "stable-request-without-local-tools",
             ])
+            .env("NANOCODEX_COMPUTER", "off")
             .env("NANOCODEX_MANAGED_URL", &state.origin)
             .env("NC_API_KEY", &api_key)
             .env_remove("NANOCODEX_API_KEY")
@@ -680,6 +683,7 @@ async fn run_reconnects_the_same_local_host_after_a_ready_socket_disconnect() {
                 "--idempotency-key",
                 "disconnect-then-cloud",
             ])
+            .env("NANOCODEX_COMPUTER", "off")
             .env("NANOCODEX_MANAGED_URL", &state.origin)
             .env("NC_API_KEY", &api_key)
             .env_remove("NANOCODEX_API_KEY")
@@ -765,6 +769,7 @@ async fn run_reopens_one_durable_agent_and_falls_back_when_local_tools_are_absen
                 "--idempotency-key",
                 "durable-turn-one",
             ])
+            .env("NANOCODEX_COMPUTER", "off")
             .env("NANOCODEX_MANAGED_URL", &state.origin)
             .env("NC_API_KEY", &api_key)
             .env_remove("NANOCODEX_API_KEY")
@@ -808,6 +813,7 @@ async fn run_reopens_one_durable_agent_and_falls_back_when_local_tools_are_absen
                 "--idempotency-key",
                 "durable-turn-two",
             ])
+            .env("NANOCODEX_COMPUTER", "off")
             .env("NANOCODEX_MANAGED_URL", &state.origin)
             .env("NC_API_KEY", &api_key)
             .env_remove("NANOCODEX_API_KEY")
@@ -1497,7 +1503,21 @@ async fn serve_tool_host(mut socket: WebSocket, state: TestState, disconnect_aft
     };
     let catalog: serde_json::Value = serde_json::from_str(&catalog).unwrap();
     assert_eq!(catalog["type"], "catalog");
-    assert_eq!(catalog.as_object().unwrap().len(), 4);
+    assert_eq!(
+        catalog
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["type", "tools", "machines", "attachment_id", "capabilities"]
+            .into_iter()
+            .collect(),
+    );
+    assert_eq!(
+        catalog["capabilities"],
+        serde_json::json!(["turn_metadata"])
+    );
     let names = catalog["tools"]
         .as_array()
         .unwrap()
