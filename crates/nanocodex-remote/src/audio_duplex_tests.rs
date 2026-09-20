@@ -216,3 +216,90 @@ async fn failed_device_creation_is_observable_and_cannot_be_reenabled() {
     assert!(!mic.enabled());
     assert!(!mic.set_enabled(true, Duration::from_secs(2)));
 }
+
+#[tokio::test]
+async fn renewal_preserves_pending_factory_exactly_once() {
+    let mut f = Fixture::new(Duration::from_millis(50));
+    f.mic.set_enabled(true, Duration::from_secs(2));
+    f.packet().await;
+    count(&f.opened, 1).await;
+    f.mic.renew(Duration::from_secs(2));
+    f.written().await;
+    assert_eq!(f.opened.load(Ordering::SeqCst), 1);
+    assert!(f.writes.is_empty());
+    drop(f.mic);
+    f.receiver.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn renewal_preserves_pending_write_and_revoke_drops_it() {
+    struct PendingWrite {
+        started: mpsc::UnboundedSender<()>,
+        proceed: Arc<tokio::sync::Notify>,
+        completed: Arc<AtomicUsize>,
+        dropped: Arc<AtomicUsize>,
+    }
+    struct Dropped(Arc<AtomicUsize>);
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    #[async_trait::async_trait]
+    impl AudioSink for PendingWrite {
+        async fn write(&mut self, _: &[u8]) -> Result<()> {
+            let _guard = Dropped(self.dropped.clone());
+            self.started.send(())?;
+            self.proceed.notified().await;
+            self.completed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+    let (permission, mut updates) = watch::channel(Permission {
+        deadline: Some(Instant::now() + Duration::from_secs(2)),
+        epoch: 1,
+        since: Some(Instant::now()),
+    });
+    let (started, mut starts) = mpsc::unbounded_channel();
+    let proceed = Arc::new(tokio::sync::Notify::new());
+    let completed = Arc::new(AtomicUsize::new(0));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let mut sink = PendingWrite {
+        started,
+        proceed: proceed.clone(),
+        completed: completed.clone(),
+        dropped: dropped.clone(),
+    };
+    let task = tokio::spawn(async move {
+        assert!(
+            while_authorized(&mut updates, 1, sink.write(&[0, 0]))
+                .await
+                .unwrap()
+                .is_ok()
+        );
+        assert!(
+            while_authorized(&mut updates, 1, sink.write(&[0, 0]))
+                .await
+                .is_none()
+        );
+    });
+    starts.recv().await.unwrap();
+    permission.send_modify(|p| p.deadline = Some(Instant::now() + Duration::from_secs(3)));
+    // Let the helper consume the renewal while the write remains blocked.
+    tokio::task::yield_now().await;
+    assert_eq!(dropped.load(Ordering::SeqCst), 0);
+    proceed.notify_one();
+    starts.recv().await.unwrap();
+    assert_eq!(completed.load(Ordering::SeqCst), 1);
+    permission.send_modify(|p| {
+        p.epoch += 1;
+        p.deadline = None;
+    });
+    tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(completed.load(Ordering::SeqCst), 1);
+    assert_eq!(dropped.load(Ordering::SeqCst), 2);
+    assert!(starts.try_recv().is_err());
+}

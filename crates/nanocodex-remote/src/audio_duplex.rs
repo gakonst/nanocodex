@@ -83,7 +83,14 @@ impl Microphone {
                 let (packets, incoming) = mpsc::channel(3);
                 let reader = Task(tokio::spawn(async move {
                     let mut sequence = None;
-                    while let Ok((packet, _)) = track.read_rtp().await {
+                    loop {
+                        let (packet, _) = match track.read_rtp().await {
+                            Ok(packet) => packet,
+                            Err(error) => {
+                                tracing::warn!(%error, "remote microphone RTP reader stopped");
+                                break;
+                            }
+                        };
                         // Never replay reordered/duplicate microphone samples. A full queue
                         // drops audio instead of accumulating delayed speech.
                         let seq = packet.header.sequence_number;
@@ -175,6 +182,29 @@ async fn receive_report(
     result
 }
 
+// Renewal extends authorization without dropping partially completed sink work.
+async fn while_authorized<F: Future>(
+    permission: &mut watch::Receiver<Permission>,
+    epoch: u64,
+    work: F,
+) -> Option<F::Output> {
+    tokio::pin!(work);
+    loop {
+        let current = *permission.borrow_and_update();
+        if current.epoch != epoch || !current.active() {
+            return None;
+        }
+        tokio::select! {
+            biased;
+            changed = permission.changed() => {
+                if changed.is_err() { return None; }
+            }
+            _ = tokio::time::sleep_until(current.deadline.unwrap().into()) => {}
+            result = &mut work => { return Some(result); }
+        }
+    }
+}
+
 async fn receive(
     mut packets: mpsc::Receiver<(Instant, Vec<u8>)>,
     mut permission: watch::Receiver<Permission>,
@@ -202,12 +232,12 @@ async fn receive(
                 let Some((arrived, packet)) = packet else { return Ok(()); };
                 if !current.active() || current.since.is_none_or(|since| arrived < since) || arrived.elapsed() > Duration::from_millis(100) { continue; }
                 if sink.is_none() {
-                    sink = Some(tokio::select! {
-                        biased;
-                        _ = permission.changed() => { continue; }
-                        _ = tokio::time::sleep_until(expiry.into()) => { continue; }
-                        result = tokio::time::timeout(Duration::from_secs(5), factory()) => { result?? }
-                    });
+                    let Some(result) = while_authorized(
+                        &mut permission,
+                        current.epoch,
+                        tokio::time::timeout(Duration::from_secs(5), factory()),
+                    ).await else { continue; };
+                    sink = Some(result??);
                     decoder = Some(Decoder::new(Channels::Mono, SampleRate::Hz48000).map_err(|e| std::io::Error::other(e.message()))?);
                 }
                 // A revoke/close while device creation was pending must never write.
@@ -215,11 +245,13 @@ async fn receive(
                 if permission.has_changed().is_err() || latest.epoch != current.epoch || !latest.active() { sink = None; decoder = None; continue; }
                 let count = decoder.as_mut().unwrap().decode_to_slice(&packet, &mut pcm, false).map_err(|e| std::io::Error::other(e.message()))?;
                 let bytes: Vec<u8> = pcm[..count].iter().flat_map(|s| s.to_le_bytes()).collect();
-                tokio::select! {
-                    biased;
-                    _ = permission.changed() => {}
-                    _ = tokio::time::sleep_until(latest.deadline.unwrap().into()) => { sink = None; decoder = None; }
-                    result = tokio::time::timeout(Duration::from_millis(100), sink.as_mut().unwrap().write(&bytes)) => { result??; }
+                match while_authorized(
+                    &mut permission,
+                    current.epoch,
+                    tokio::time::timeout(Duration::from_millis(100), sink.as_mut().unwrap().write(&bytes)),
+                ).await {
+                    Some(result) => { result??; }
+                    None => { sink = None; decoder = None; }
                 }
             }
         }
