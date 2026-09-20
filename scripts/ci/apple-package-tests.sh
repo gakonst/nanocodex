@@ -3,6 +3,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 log_dir="$PWD/apple/build/evidence/package-tests"
 mkdir -p "$log_dir"
+python3 apple/NanocodexInboxUITests/verify_render_projection.py
 # Each package owns its .build tree. Two lanes avoid adding runner queue waits
 # and cap compiler concurrency rather than oversubscribing the host four ways.
 cpus=$(getconf _NPROCESSORS_ONLN)

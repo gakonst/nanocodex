@@ -2492,10 +2492,11 @@ final class InboxUITests: XCTestCase {
           workdir: '/workspace/demo'
         });
         text(result.output);
-        """
-        XCTAssertGreaterThan(expectedSource.count, 140)
+        """ + "\n// " + String(repeating: "Preserve full source. ", count: 20)
+        XCTAssertGreaterThan(expectedSource.count, 512)
         let preview = card.descendants(matching: .any)["code-mode-preview-demo-code-mode-card"]
         XCTAssertTrue(preview.isHittable, "Collapsed cards show a compact preview")
+        XCTAssertLessThanOrEqual(preview.label.count, 512, "Collapsed highlighting only receives the bounded preview")
         XCTAssertLessThan(preview.frame.height, 65, "Preview stays within three caption lines")
         XCTAssertTrue(card.staticTexts["Code Mode"].exists)
         XCTAssertFalse(conversation.staticTexts["Run code"].exists)

@@ -1499,16 +1499,43 @@ private final class ConversationRenderProjection: ObservableObject {
     @Published private(set) var value: Value?
     private(set) var rebuildCount: UInt64 = 0
 
-    func prepare(_ model: InboxModel, identity: String) async {
+    private var preparation: Task<Void, Never>?
+    private var preparationID = UUID()
+
+    func request(_ model: InboxModel, identity: String) {
+        guard preparation == nil else { return }
+        // Revision changes coalesce behind one worker instead of cancelling
+        // expensive grouping on every incoming tool event.
+        let requestID = UUID()
+        preparationID = requestID
+        preparation = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.preparationID == requestID { self.preparation = nil } }
+            while !Task.isCancelled, model.focusedConversationIdentity == identity {
+                await self.prepare(model, identity: identity)
+                if self.value?.revision == model.focusedTranscriptRevision { return }
+                await Task.yield()
+            }
+        }
+    }
+
+    func cancel() {
+        preparation?.cancel()
+        preparation = nil
+        preparationID = UUID()
+    }
+
+    private func prepare(_ model: InboxModel, identity: String) async {
         let revision = model.focusedTranscriptRevision
         if value?.revision == revision, value?.identity == identity { return }
-        guard let queue = await model.prepareFocusedQueue(),
-              !Task.isCancelled, model.focusedTranscriptRevision == revision,
-              model.focusedConversationIdentity == identity else { return }
-        let rows = queue.rows
-        let pending = queue.messages
+        // Capture all inputs before suspension, so a completed older snapshot
+        // never mixes its rows with a newer revision's turns or media.
         let turns = model.focused?.activeTurns ?? []
         let outputs = model.generatedOutputsByRow
+        guard let queue = await model.prepareFocusedQueue(),
+              !Task.isCancelled, model.focusedConversationIdentity == identity else { return }
+        let rows = queue.rows
+        let pending = queue.messages
         rebuildCount = rebuildCount == .max ? .max : rebuildCount + 1
         let worker = Task.detached(priority: .userInitiated) { () -> Value? in
             guard !Task.isCancelled else { return nil }
@@ -1529,7 +1556,6 @@ private final class ConversationRenderProjection: ObservableObject {
             worker.cancel()
         }
         guard !Task.isCancelled, let prepared,
-              model.focusedTranscriptRevision == revision,
               model.focusedConversationIdentity == identity else { return }
         value = prepared
     }
@@ -1556,7 +1582,8 @@ private struct ConversationView: View {
                                                 loading: model.threadLoading || (rendered == nil && preparing), error: model.threadError,
                                                 hasOlder: model.hasOlder, loadingOlder: model.loadingOlder || preparing,
                                                 hasNewer: model.hasNewer, loadingNewer: model.loadingNewer || preparing))
-            .task(id: revision) { await projection.prepare(model, identity: identity) }
+            .task(id: revision) { projection.request(model, identity: identity) }
+            .onDisappear { projection.cancel() }
             #if DEBUG
             .overlay(alignment: .topTrailing) {
                 if ProcessInfo.processInfo.environment["NANOCODEX_RENDER_COUNTER"] == "1" {
@@ -1714,6 +1741,8 @@ private struct ConversationContentView: View {
             let boundaryItemID = historyBoundaryItemID
             ZStack(alignment: .top) {
             ScrollView {
+                // Restoration uses measured row offsets. Lazy height estimates
+                // feed back into scrollTo while prepending variable-height tools.
                 VStack(alignment: .leading, spacing: 18) {
                     if revision.rows.isEmpty, revision.pending.isEmpty, !revision.loading, revision.error == nil {
                         VStack(alignment: .leading, spacing: 8) {
@@ -2110,7 +2139,9 @@ private struct ConversationToolCard: View {
                             disclosure
                         }
                         if !expanded {
-                            ChatCodeText(source: source, language: "javascript")
+                            // The disclosure preview must not highlight an entire
+                            // program that is clipped to three visible lines.
+                            ChatCodeText(source: String(source.prefix(512)), language: "javascript")
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundStyle(Ink.text)
                                 .multilineTextAlignment(.leading)

@@ -300,9 +300,9 @@ public final class ManagedClient: @unchecked Sendable {
         var events = page.events
         var counts = try await TranscriptPreparation.byteCounts(events)
         let projector = TranscriptStreamProjection()
-        var rows = try await projector.rows(events)
+        var readable = events.contains(where: \.producesConversationRow)
         var hasNewer = false
-        while page.hasMore, !rows.contains(where: { $0.role == "You" || $0.role == "Agent" }) {
+        while page.hasMore, !readable {
             try Task.checkCancellation()
             guard let before = events.first?.cursor else { throw APIError.invalidResponse }
             let older = try await history(id, before: before)
@@ -316,8 +316,12 @@ public final class ManagedClient: @unchecked Sendable {
             if removed > 0 {
                 events.removeLast(removed); counts.removeLast(removed); hasNewer = true
             }
-            rows = try await projector.rows(events)
+            // Only the newly prepended prefix can introduce conversation text.
+            // Projecting the entire growing window here repeatedly rebuilt every
+            // tool row while walking a long tool-only tail.
+            readable = events.prefix(min(older.events.count, events.count)).contains(where: \.producesConversationRow)
         }
+        let rows = try await projector.rows(events)
         try Task.checkCancellation()
         return ConversationHistory(events: events, latest: latest, hasMore: page.hasMore,
                                    byteCounts: counts, rows: rows, hasNewer: hasNewer, projector: projector)

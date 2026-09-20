@@ -54,6 +54,18 @@ public struct AgentEvent: Equatable, Sendable {
     /// Immutable tool results are prepared once when admitted, not on every
     /// streamed transcript rebuild (which may include large generated images).
     let preparedToolResult: ToolPresentation?
+    /// Opening history only needs to locate conversation text, not render tools.
+    /// Delegate the few candidate envelopes to the canonical projection so voice
+    /// lifecycle inputs and future message normalization keep the same semantics.
+    var producesConversationRow: Bool {
+        switch type {
+        case "turn_accepted", "turn_completed": break
+        case "event":
+            guard ["assistant.delta", "assistant.message"].contains(data["event"]["type"].string) else { return false }
+        default: return false
+        }
+        return transcript([self]).contains { $0.role == "You" || $0.role == "Agent" }
+    }
     public var type: String { data["type"].string }
     public var turnID: String { data["turn_id"].string.isEmpty ? data["id"].string : data["turn_id"].string }
     public init(_ data: JSON, cursor: String? = nil) throws {
