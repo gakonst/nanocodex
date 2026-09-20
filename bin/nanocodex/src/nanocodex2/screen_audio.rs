@@ -1,8 +1,11 @@
 //! Platform speaker capture. Encoding and lifetime ownership live in the shared core.
-use super::screen_video::{Capture, Task, VideoSource};
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use super::screen_video::Task;
+use super::screen_video::{Capture, VideoSource};
+use nanocodex_remote::Result;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use nanocodex_remote::audio::FRAME_SAMPLES;
 use std::sync::Arc;
-use nanocodex_remote::Result;
 
 pub(crate) fn native_source() -> Option<VideoSource> {
     #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]

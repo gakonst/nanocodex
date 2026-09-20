@@ -95,7 +95,11 @@ async fn macos_live_webrtc() -> Result<()> {
             eprintln!("local verification server: {error}");
         }
     }));
-    video.add("local-chromium", Vec::new(), tokio::time::Instant::now() + Duration::from_secs(8))?;
+    video.add(
+        "local-chromium",
+        Vec::new(),
+        tokio::time::Instant::now() + Duration::from_secs(8),
+    )?;
     eprintln!("macOS live WebRTC verification: {url}");
     let profile = tempfile::Builder::new()
         .prefix("nanocodex-live-chrome-")

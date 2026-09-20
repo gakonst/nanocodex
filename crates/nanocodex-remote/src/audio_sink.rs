@@ -1,7 +1,9 @@
 //! Linux PulseAudio / PipeWire-Pulse virtual input. Only session-owned modules
 //! are unloaded; no global defaults or application routes are explicitly set.
 //! PulseAudio may automatically select the virtual input on monitor-only hosts.
-use super::{AudioSink, Result, SinkFactory};
+use super::SinkFactory;
+#[cfg(any(target_os = "linux", test))]
+use super::{AudioSink, Result};
 
 pub async fn native_factory(machine_id: &str) -> Option<SinkFactory> {
     #[cfg(target_os = "linux")]

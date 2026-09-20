@@ -1,6 +1,9 @@
 [files]
 extend-exclude = [
     ".nanocodex/",
+    # Imported binary game art and fonts are not prose.
+    "examples/wow/web/assets/wow/**/*.PNG",
+    "examples/wow/web/assets/wow/**/*.TTF",
     "crates/nanocodex-browser/assets/axe.js",
     "crates/nanocodex-browser/assets/react_diagnostics.js",
     # Preserve upstream sources and captured protocol/encoding fixture bytes.
@@ -22,7 +25,8 @@ extend-ignore-re = ['\b[0-9A-F]{24}\b']
 # Tool call IDs are provider-generated opaque values, including nested call suffixes.
 # Keep spelling enabled for prose and model output in the benchmark JSON.
 [type.json]
-extend-ignore-re = ['\b(?:req|resp|sess|msg)_[0-9a-f]+\b', '\b[0-9a-f]{16}-[A-Z]{3}\b', '\b[0-9a-f]{5}-[0-9a-z]{4}\b', '"call_id"\s*:\s*"call_[A-Za-z0-9_-]+(?:/code-[0-9]+)?"']
+# Preserve exact WebRTC statistics fields and browser-generated RTP IDs.
+extend-ignore-re = ['\bpackets(?:Received|Sent)WithEct1\b', '\bOT[0-9]+A[0-9]+\b', '\b(?:req|resp|sess|msg)_[0-9a-f]+\b', '\b[0-9a-f]{16}-[A-Z]{3}\b', '\b[0-9a-f]{5}-[0-9a-z]{4}\b', '"call_id"\s*:\s*"call_[A-Za-z0-9_-]+(?:/code-[0-9]+)?"']
 
 # Match both 'truncated' and 'truncation' in retained measurement helpers.
 [type.py]
@@ -68,3 +72,8 @@ daa = "daa"
 # `iz` appears inside the exact retained benchmark flag
 # `flag{gc0d3_iz_ch4LLenGiNg}`.
 iz = "iz"
+
+# This audit quotes the original font's multilingual name table.
+[type.wow-asset-metadata]
+extend-glob = ["visual-assets.md"]
+extend-ignore-re = ['\bNormale\b']

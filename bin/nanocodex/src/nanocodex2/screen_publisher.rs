@@ -26,12 +26,14 @@ impl ScreenPublisher {
     ) -> Result<Self, ManagedError> {
         #[cfg(target_os = "macos")]
         let native_broadcast = broadcast.is_some();
-        let mut broadcast = super::screen_broadcast::Broadcast::new(broadcast, audio.clone())
+        let broadcast = super::screen_broadcast::Broadcast::new(broadcast, audio.clone())
             .with_encoded(video.clone());
         #[cfg(target_os = "macos")]
-        if native_broadcast {
-            broadcast = broadcast.with_raw(super::screen_native::native_broadcast_frames());
-        }
+        let broadcast = if native_broadcast {
+            broadcast.with_raw(super::screen_native::native_broadcast_frames())
+        } else {
+            broadcast
+        };
         let require_video = cfg!(target_os = "macos") && video.is_some();
         let video = if std::env::var("NANOCODEX_SCREEN_TRANSPORT").as_deref() == Ok("frames-v1") {
             if require_video {
