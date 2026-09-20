@@ -175,7 +175,6 @@
     { "tag": "v9", "new_sqlite_classes": ["PhoneContainer"] }
   ],
   "vars": {
-    "NANOCODEX_ATTACHMENT_R2_BUCKET": "nanocodex-sandbox-workspaces",
     "NANOCODEX_PHONE_ADMIN_ID": "631f6a83-9e3f-474a-977a-68897d3ee436",
     "NANOCODEX_ADMIN_USER_ID": "631f6a83-9e3f-474a-977a-68897d3ee436",
     "NANOCODEX_EMAIL_ADMIN_ID": "631f6a83-9e3f-474a-977a-68897d3ee436",

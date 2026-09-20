@@ -62,22 +62,7 @@ export function createBrainBucket(storage: DurableObjectStorage, backing: R2Buck
     abort: () => upload.abort(),
     async complete(parts) {
       await ready();
-      try {
-        return retain(await upload.complete(parts), null);
-      } catch (error) {
-        // R2 can commit before a response or local catalog write fails. Recover
-        // only the exact multipart result; never adopt an older object at key.
-        // R2 part ETags are MD5 digests, and the final ETag hashes their bytes.
-        const digests = parts.map((part) => part.etag.replace(/^"|"$/g, ""));
-        if (digests.length && digests.every((etag) => /^[a-f0-9]{32}$/.test(etag))) {
-          const hash = createHash("md5");
-          for (const digest of digests) hash.update(Uint8Array.from(digest.match(/../g)!, (byte) => parseInt(byte, 16)));
-          const expected = `${hash.digest("hex")}-${digests.length}`;
-          const committed = await backing.head(upload.key);
-          if (committed?.etag === expected) return retain(committed, null);
-        }
-        throw error;
-      }
+      return retain(await upload.complete(parts), null);
     },
   });
   return {

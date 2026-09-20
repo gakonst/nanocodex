@@ -51,7 +51,6 @@ import { Agent as ManagedAgent } from "nanocodex/managed";
 import { imageGeneration, updatePlan, web } from "nanocodex/tools";
 import { createWorkspaceFilesystem, resolveNamespaceCwd } from "nanocodex-tools";
 import { SessionAttachments } from "./attachments";
-import { createAttachmentUploadSigner } from "./attachment-r2";
 import { createR2ViewImage } from "./attachment-image";
 import { createBrainWorkspace } from "./brain-workspace";
 import { createBrainBucket } from "./brain-bucket";
@@ -399,10 +398,6 @@ export interface Env extends
   NANOCODEX_HISTORY: R2Bucket;
   NANOCODEX_WORKSPACES: R2Bucket;
   NANOCODEX_ATTACHMENT_IMAGES?: ImagesBinding;
-  NANOCODEX_ATTACHMENT_R2_ACCOUNT_ID?: string;
-  NANOCODEX_ATTACHMENT_R2_BUCKET?: string;
-  NANOCODEX_ATTACHMENT_R2_ACCESS_KEY_ID?: string;
-  NANOCODEX_ATTACHMENT_R2_SECRET_ACCESS_KEY?: string;
   NANOCODEX_ADMIN_TOKEN: string;
   NANOCODEX_ADMIN_USER_ID?: string;
   NANOCODEX_SYSTEM_HOST_TOKEN?: string;
@@ -4138,17 +4133,9 @@ export class DurableAgentSession extends DurableComputerSession {
   }
 
   #attachmentStore(): SessionAttachments {
-    if (this.#attachments) return this.#attachments;
-    const accountId = this.env.NANOCODEX_ATTACHMENT_R2_ACCOUNT_ID;
-    const bucket = this.env.NANOCODEX_ATTACHMENT_R2_BUCKET;
-    const accessKeyId = this.env.NANOCODEX_ATTACHMENT_R2_ACCESS_KEY_ID;
-    const secretAccessKey = this.env.NANOCODEX_ATTACHMENT_R2_SECRET_ACCESS_KEY;
-    const signer = accountId && bucket && accessKeyId && secretAccessKey
-      ? createAttachmentUploadSigner({ accountId, bucket, accessKeyId, secretAccessKey }) : undefined;
-    return this.#attachments = new SessionAttachments(
+    return this.#attachments ??= new SessionAttachments(
       this.ctx.storage, this.#brainBucket(), this.#sessionId()!,
       () => !this.#deleting && !this.#deleted && !this.#durabilityExported,
-      signer,
     );
   }
 

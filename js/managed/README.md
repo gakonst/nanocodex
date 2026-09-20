@@ -547,63 +547,40 @@ client; no update to an existing Hand is required.
 
 ### Original media attachments
 
-Apple clients upload image and MP4/MOV bytes directly to the private R2 S3
-endpoint. Workers authorize and finalize transfers using small JSON requests;
-original and preview upload bodies do not pass through a Worker. Files retain
-their existing `/brain/attachments/:uuid/original.*` paths.
+The authenticated `/v1/agents/:id/attachments/:uuid` route streams original
+image and MP4/MOV files into the existing R2 binding. It does not buffer complete
+files or parts in Worker memory, and requires no S3 signing keys. Files keep
+their `/brain/attachments/:uuid/original.*` paths.
 
-1. Authenticated `POST /v1/agents/:id/attachments/:uuid` accepts
-   `{name, media_type, size, transport: "r2"}` and returns the path, part size,
-   next acknowledged part, completion state, and `transport: "r2"`.
-2. `POST .../parts/:number` accepts `{size, md5}` (base64 MD5) and returns a
-   short-lived presigned R2 `UploadPart` URL and required headers. Authorization
-   binds the exact object, upload, part number, byte count, and checksum. The
-   client uploads a file-backed body directly to R2 without account credentials,
-   then acknowledges its R2 ETag with `POST .../parts/:number/complete`.
-3. `POST .../complete` finalizes the R2 multipart upload and records its metadata
-   in the brain filesystem catalog. Completion validates the submitted R2 ETags
-   and final object size. Retrying the same intent resumes acknowledged parts.
-4. JPEG previews follow the same direct flow using `POST .../preview` with
-   `{size, md5}` and `POST .../preview/complete` with `{etag}`. A single-part
-   multipart upload seals the preview: an old upload URL cannot overwrite the
-   completed object. Preview files are at most 2 MiB.
+`POST` accepts `{name, media_type, size}` and returns the path, part size, next
+part number, and completion state. The Apple client uploads file-backed parts
+with `PUT .../parts/:number`; the service hashes each incoming stream while
+forwarding it to R2 with backpressure. Only one part body is ingested at a time
+per agent. Identical retries are safe and conflicting bytes are rejected.
+`POST .../complete` finalizes the R2 multipart upload and records it in the brain
+filesystem catalog. Parts are normally 8 MiB and grow up to 100 MB to fit R2's
+10,000-part limit. The Worker ingress limit applies per request, not per file;
+this permits originals up to 1 TB. Original and preview bytes remain separate.
 
-Direct uploads use R2's object and 10,000-part limits; part sizing is independent
-of Worker request ingress limits. Existing clients can continue using the legacy
-streaming `PUT .../parts/:number` and `PUT .../preview` routes. New clients require
-R2 transport and fail explicitly if it is unavailable, rather than silently
-proxying media through Workers. Authenticated original downloads remain private
-and support ranges; preview downloads remain immutable and account-scoped.
+The phone prepares an oriented JPEG inspection fallback bounded to 2048 pixels
+and 2 MiB. Preview uploads stream through the same R2 binding. Original downloads
+remain private and support ranges; preview downloads are immutable and
+account-scoped. Account, organization, team, authorization epoch, and capability
+checks apply before upload. Connect grants cannot use this route. Deletion
+cancels readers and aborts incomplete uploads before brain cleanup.
 
-`view_image` streams R2 image sources to the Cloudflare Images binding for default
-inspection, where resizing and decoding happen outside the brain's JavaScript
-heap. Only bounded output is encoded for the model. The original remains intact.
-Exact `detail: "original"` reads retain the existing supported-format and 10 MiB
-output constraints; oversized exact reads fail explicitly. A bounded JPEG preview
-is available when the original format cannot be transformed. Image editing's
-original-file reads retain an early size check and bounded stream reader.
+Default `view_image` passes the original R2 body stream to Cloudflare Images,
+which decodes and resizes it outside the brain's JavaScript heap. Only the bounded
+model image is encoded in the Worker. If the original cannot be transformed,
+the tool can return the attachment's labeled JPEG fallback. Exact
+`detail: "original"` reads preserve original bytes and supported-format behavior,
+with an early 10 MiB size check; use default inspection for larger originals.
+The production Wrangler configuration declares `NANOCODEX_ATTACHMENT_IMAGES`.
+No R2 access key or new upload credential is needed.
 
-#### Deployment configuration
-
-Deploy the backend before the updated Apple clients. Configure the managed Worker
-with `NANOCODEX_ATTACHMENT_R2_ACCOUNT_ID` and `NANOCODEX_ATTACHMENT_R2_BUCKET`
-matching its `NANOCODEX_WORKSPACES` binding, plus Worker secrets
-`NANOCODEX_ATTACHMENT_R2_ACCESS_KEY_ID` and
-`NANOCODEX_ATTACHMENT_R2_SECRET_ACCESS_KEY` from an R2 token scoped to that bucket.
-Never embed the signing secret in an app, source file, log, or model context.
-Presigned URLs are short-lived upload capabilities kept inside the transfer flow.
-The production Wrangler configuration declares `NANOCODEX_ATTACHMENT_IMAGES`;
-enable Cloudflare Images transformations for the account. Missing signing
-configuration returns `attachment_direct_upload_unavailable` for new uploads.
-Native URLSession uploads do not require bucket CORS; any future browser uploader
-must configure exact allowed origins, PUT, signed headers, and exposed ETag.
-
-Account ownership, organization, team, authorization epoch, and capabilities are
-checked before issuing upload capabilities. Connect grants cannot use this route.
-Session deletion fences new authorizations and aborts incomplete multipart uploads
-before brain cleanup. Tests cover direct completion and catalog visibility,
-resumption, checksum/size conflicts, deletion, presigning scope, and the absence
-of original-body buffering during image transformation.
+Tests cover multipart streaming and retries, image transformation without
+original-body buffering, bounded preview handling, cancellation, filesystem
+visibility, and preserved original bytes on Apple clients.
 
 ## Browser on the Cloudflare sandbox desktop
 
