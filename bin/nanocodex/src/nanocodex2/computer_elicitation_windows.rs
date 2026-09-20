@@ -1,21 +1,29 @@
 //! Local Windows consent UI. Provider text is data, never PowerShell source.
+#[cfg(windows)]
+use nanocodex_computer::{ComputerConfig, ComputerElicitationHandler, ComputerElicitationRequest};
 use nanocodex_computer::{
-    ComputerConfig, ComputerElicitationAction as Action, ComputerElicitationHandler,
-    ComputerElicitationRequest, ComputerElicitationResponse as Response,
+    ComputerElicitationAction as Action, ComputerElicitationResponse as Response,
 };
 use nanocodex_tools::contract::ToolError;
+#[cfg(windows)]
 use std::{process::Stdio, sync::Arc};
+#[cfg(windows)]
 use tokio::{io::AsyncWriteExt, process::Command, sync::Mutex};
+#[cfg(windows)]
 static DIALOG: Mutex<()> = Mutex::const_new(());
+#[cfg(windows)]
 const LIMIT: usize = 64 * 1024;
 
+#[cfg(windows)]
 pub(super) fn configure(config: &mut ComputerConfig) {
     if config.elicitation_handler.is_none() {
         config.elicitation_handler = Some(Arc::new(WindowsConsent));
     }
 }
+#[cfg(windows)]
 #[derive(Debug)]
 struct WindowsConsent;
+#[cfg(windows)]
 #[async_trait::async_trait]
 impl ComputerElicitationHandler for WindowsConsent {
     async fn elicit(&self, request: ComputerElicitationRequest) -> Result<Response, ToolError> {
@@ -90,6 +98,7 @@ fn parse_response(bytes: &[u8], validator: &jsonschema::Validator) -> Result<Res
 
 // WinForms renders the entire request in a scrollable read-only box. Only real
 // button events set the outcome; closing the dialog cancels. No default accept.
+#[cfg(windows)]
 const SCRIPT: &str = r#"
 $ErrorActionPreference = 'Stop'
 [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
