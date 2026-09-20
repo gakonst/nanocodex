@@ -1867,10 +1867,12 @@ private struct ConversationContentView: View {
     }
     var body: some View {
         ScrollViewReader { scroll in
+            VStack(spacing: 0) {
+            // Measure only the transcript viewport: scrollTo anchors exclude
+            // the thread controls below it when restoring a reading offset.
             GeometryReader { viewport in
             let boundaryItemID = historyBoundaryItemID
             ZStack(alignment: .top) {
-            VStack(spacing: 0) {
             ScrollView {
                 // Restoration uses measured row offsets. Lazy height estimates
                 // feed back into scrollTo while prepending variable-height tools.
@@ -2076,8 +2078,6 @@ private struct ConversationContentView: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel(revision.title)
             .accessibilityIdentifier("conversation")
-            threadControls(using: scroll)
-            }
             // Keep controls as siblings of the native scroll accessibility node.
             // An overlay can replace that node after accessibilityHidden changes
             // during drawer navigation, expanding the button to the whole viewport.
@@ -2108,7 +2108,7 @@ private struct ConversationContentView: View {
                     }
                     .buttonStyle(.plain)
                     .frame(width: 42, height: 42)
-                    .padding(.bottom, 60)
+                    .padding(.bottom, 8)
                     .disabled(model.loadingNewer || model.loadingOlder)
                     .accessibilityLabel("Latest messages")
                     .accessibilityHint("Scroll to the latest message and follow new responses")
@@ -2131,6 +2131,8 @@ private struct ConversationContentView: View {
                     .accessibilityIdentifier("loading-older")
             }
             }
+            }
+            threadControls(using: scroll)
             }
             .onChange(of: revision.rows.first?.id, initial: true) { _, _ in
                 if !hasInitialPosition, !revision.rows.isEmpty {
