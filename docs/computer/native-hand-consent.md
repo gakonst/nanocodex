@@ -4,8 +4,8 @@ A foreground `nanocodex2 hand` on macOS or Linux can present CUA MCP form
 elicitation in its controlling terminal, including a dedicated tmux pane. Run
 that Hand in the foreground and leave the pane available to the person operating
 it. The handler is installed before external provider discovery, so the MCP
-initialize request advertises form elicitation only when a real foreground
-canonical terminal is available on stdin. The handler opens a separate descriptor
+initialize request advertises form elicitation when a real foreground
+canonical terminal is available on stdin or a supported native dialog is available. The handler opens a separate descriptor
 for the resolved terminal device; it does not read stdin. This avoids macOS
 kqueue rejecting the `/dev/tty` alias. The existing provider configuration and sandbox
 are unchanged.
@@ -45,12 +45,20 @@ Hand. The existing `ComputerConfig.elicitation_timeout` remains the overall
 response deadline (five minutes by default); an enclosing tool deadline can
 cancel sooner. Oversized forms and unsupported schemas fail closed.
 
-This path is for a local person operating a dedicated foreground Hand terminal.
-The agent must never enter consent responses through shell, tmux, or CUA tools.
-It does not provide a remote approval inbox. Detached services without a
-controlling terminal, background process groups, raw-mode TUIs, and Windows
-advertise no local terminal elicitation handler. Native CLI/TUI agent sessions
-are intentionally not wired to this reader because their event loop owns input.
+On macOS, a Hand running as the console user can instead present a native
+AppKit dialog when no suitable terminal is available. Permission-only forms
+display the provider message and subtitle; forms with fields also display their
+schema and a JSON response editor. Allow Once and Allow This Session preserve
+the same validation and session scope as the terminal path. Windows Hands
+present a native WinForms dialog with per-request approval and schema validation.
+Closing either dialog cancels; cancellation terminates the pending dialog.
+
+These paths are for the local person operating the computer. The agent must
+never enter consent responses through shell, tmux, or CUA tools. They do not
+provide a remote approval inbox. Linux services without a foreground canonical
+terminal do not advertise a local elicitation handler. Native CLI/TUI agent
+sessions are intentionally not wired to the terminal reader because their
+event loop owns input.
 
 Managed UI consent requires a wider protocol change: the attachment transport
 currently carries tool calls/results, cancellation, heartbeats, and draining,
