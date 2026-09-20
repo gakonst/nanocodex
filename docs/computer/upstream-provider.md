@@ -99,3 +99,46 @@ human approval UI, screen capture, or input acceptance. The diagnostic fixture i
 beside the host script and run with the verified bundled Node on Windows). Its
 responses to every elicitation are declines. Transport fixtures run with
 `node --test crates/experimental/nanocodex-computer/tests/windows-sky/host.test.mjs`.
+
+## Linux native host
+
+A configured Linux provider must launch the native Sky service outside the model
+sandbox so it can reach the desktop X server. `linux_sky_host.mjs` hosts the
+unchanged `@oai/sky/service` in a disposable desktop-user process. Its trusted
+proxy uses the upstream NodeREPL `nativePipe` bridge; ordinary model JavaScript
+keeps the Codex sandbox and has no nativePipe capability. MCP tool definitions,
+descriptions and results still come from the official provider.
+
+For an already installed, compatible upstream Linux runtime, create a separate
+host installation from this checkout:
+
+```sh
+python3 scripts/install-linux-sky-host.py \
+  --runtime /path/to/cua_node \
+  --codex-cli /path/to/codex \
+  --destination "$HOME/.local/share/nanocodex/sky-host-version"
+```
+
+Set `NANOCODEX_COMPUTER` to the printed launcher path and
+`NANOCODEX_COMPUTER_TRANSPORT=mcp`. Run the Hand/provider as the desktop user with
+its real DISPLAY and session bus. Keep the host modules outside model-writable
+workspaces. A system administrator can install the same modules in a protected
+system directory and wrap the launcher with the desktop-session environment.
+The script does not obtain or authenticate an upstream Linux distribution;
+automatic `computer setup` remains limited to macOS and Windows.
+
+The host serializes native calls, bounds frames and queues, and owns a private
+Unix socket. Disconnect, cancellation, reset and turn completion reject queued
+work, release tracked drags through upstream `drag_end`, and terminate the
+service/helper process group after bounded cleanup. An in-flight input operation
+can have partial effects before cancellation; cancellation is never a rollback.
+
+The installed Linux Sky target controls X11/Xwayland windows. This transport does
+not make native Wayland windows visible to that target. Application-level input
+filters still apply (for example, xterm rejects synthetic SendEvent input by
+default). Browser control remains the separate official browser surface.
+
+Transport tests: `node --test crates/experimental/nanocodex-computer/tests/linux-sky/host.test.mjs`.
+Live verification used the unmodified Linux service: inventory, a GTK X11 test
+window screenshot, exact text plus Enter received by that app, and reconnect after
+turn completion. The model process retained NoNewPrivs/Seccomp and had no nativePipe.

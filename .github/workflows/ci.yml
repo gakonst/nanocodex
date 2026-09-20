@@ -508,6 +508,7 @@ jobs:
       - name: Test official computer adapters
         run: |
           pnpm test:computer
+          node --test crates/experimental/nanocodex-computer/tests/linux-sky/host.test.mjs
           pnpm --filter nanocodex-computer typecheck
           pnpm --filter nanocodex-managed-service exec vitest run test/namespace-tools.test.ts
 
