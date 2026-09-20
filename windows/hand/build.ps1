@@ -34,7 +34,7 @@ Copy-Item -LiteralPath $Nanocodex2 -Destination (Join-Path $payload "nanocodex2.
 
 $ffmpegVersion = "9.0.1"
 $ffmpegDigest = "fec81ae03971d9dd4be3ebe02e263bd2ec1d789483f931bdba5f5715e65da2e9"
-$ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-$ffmpegVersion-essentials_build.zip"
+$ffmpegUrl = "https://github.com/GyanD/codexffmpeg/releases/download/$ffmpegVersion/ffmpeg-$ffmpegVersion-essentials_build.zip"
 $downloadedArchive = $false
 try {
     if (-not $FfmpegArchive) {
