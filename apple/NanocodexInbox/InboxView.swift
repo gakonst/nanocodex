@@ -422,18 +422,7 @@ struct InboxView: View {
                     Text("Tasks you start can keep this Hand connected in the background on iOS 26 or later. iOS shows progress and lets you stop the task. When idle, this phone connects only during brief background windows or while Nanocodex is open. Force-quitting ends background work.").font(.caption).foregroundStyle(.secondary)
                     if let error = model.handBackgroundError { Text(error).font(.caption).foregroundStyle(.secondary) }
                 }
-                Section("Nanocodex updates") {
-                    LabeledContent("Installed", value: (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") + " (" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—") + ")")
-                    Button("Install available update") {
-                        guard let testFlight = URL(string: "itms-beta://") else { return }
-                        UIApplication.shared.open(testFlight) { opened in
-                            guard !opened, let store = URL(string: "https://apps.apple.com/app/testflight/id899247664") else { return }
-                            UIApplication.shared.open(store)
-                        }
-                    }
-                    .accessibilityIdentifier("install-nanocodex-update")
-                    Text("Builds requested from Nanocodex are delivered through Apple's internal TestFlight channel. Turn on Automatic Updates there for hands-free installation after Apple finishes processing.").font(.caption).foregroundStyle(.secondary)
-                }
+                NativeAppUpdateSection()
             }
             Section {
                 NavigationLink { DevicePermissionsView() } label: {
@@ -2701,5 +2690,95 @@ private struct PrivateBrowserCanvas: UIViewRepresentable {
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = tracked, touches.contains(touch) else { return }
         if acceptsInput { emit("cancel", touch.location(in: self)) }; resetTouch()
+    }
+}
+
+
+// Reject all feed redirects: update discovery only contacts the pinned endpoint.
+private final class AppUpdateSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+
+@MainActor
+private struct NativeAppUpdateSection: View {
+    @State private var update: AppUpdate?
+    @State private var checking = false
+    @State private var checked = false
+    @State private var installing = false
+    @State private var error: String?
+    @State private var installRequested = false
+    private var installedBuild: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "" }
+    private var installedVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—" }
+
+    var body: some View {
+        Section("Nanocodex updates") {
+            LabeledContent("Installed", value: "\(installedVersion) (\(installedBuild))")
+            if checking { ProgressView("Checking for updates…") }
+            if let update {
+                LabeledContent("Available", value: "\(update.version) (\(update.build))")
+                if let notes = update.notes, !notes.isEmpty { Text(notes).font(.caption).foregroundStyle(.secondary) }
+                Button(installing ? "Opening installer…" : "Install update") { Task { await install(update) } }
+                    .disabled(checking || installing)
+                    .accessibilityIdentifier("install-nanocodex-update")
+            } else if checked && !checking && error == nil {
+                Text("You’re up to date.").foregroundStyle(.secondary)
+            }
+            if installRequested { Text("Installation requested. Confirm the iOS installation prompt.").font(.caption).foregroundStyle(.secondary) }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+            Button(error == nil ? "Check for updates" : "Retry update check") { Task { await check() } }
+                .disabled(checking || installing)
+                .accessibilityIdentifier("check-nanocodex-update")
+        }
+        .task { await check() }
+    }
+
+    private func check() async {
+        guard !checking else { return }
+        checking = true
+        error = nil
+        update = nil
+        installRequested = false
+        defer { checking = false }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 20
+        configuration.timeoutIntervalForResource = 30
+        let session = URLSession(configuration: configuration, delegate: AppUpdateSessionDelegate(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        do {
+            var request = URLRequest(url: AppUpdate.feedURL)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            let (data, response) = try await session.data(for: request)
+            try Task.checkCancellation()
+            guard let response = response as? HTTPURLResponse, response.statusCode == 200,
+                  response.url == AppUpdate.feedURL, data.count <= 128 * 1024 else {
+                throw AppUpdate.ValidationError.invalidFeed
+            }
+            let candidate = try JSONDecoder().decode(AppUpdate.self, from: data)
+            try candidate.validate()
+            if try AppUpdate.isNewer(candidate.build, than: installedBuild) { update = candidate }
+            checked = true
+        } catch is CancellationError {
+        } catch {
+            self.error = "Couldn’t check for updates. " + error.localizedDescription
+        }
+    }
+
+    private func install(_ candidate: AppUpdate) async {
+        error = nil
+        installRequested = false
+        do {
+            guard let url = try candidate.installationURL(installedBuild: installedBuild) else { return }
+            installing = true
+            defer { installing = false }
+            // Open the installer scheme directly, independent of the default web browser.
+            let opened = await UIApplication.shared.open(url, options: [:])
+            if opened { installRequested = true }
+            else { error = "iOS couldn’t open the installer. Try Install update again." }
+        } catch { self.error = error.localizedDescription }
     }
 }
