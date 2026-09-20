@@ -2591,9 +2591,7 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(source.waitForExistence(timeout: 5))
         XCTAssertEqual(source.label, expectedSource, "Expanded source preserves every character and newline")
         let copy = conversation.buttons["code-mode-copy-demo-code-mode-card"]
-        XCTAssertTrue(NSPredicate(format: "hittable == true").evaluate(with: copy)
-            || XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: copy)], timeout: 5) == .completed,
-            "Copy becomes accessible when the disclosure animation finishes")
+        XCTAssertTrue(copy.isHittable, "Copy is directly accessible outside the disclosure button")
         copy.tap()
         let detail = conversation.descendants(matching: .any)["tool-detail-demo-code-mode-card"]
         XCTAssertTrue(detail.waitForExistence(timeout: 5))

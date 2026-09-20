@@ -2100,35 +2100,45 @@ private struct ConversationCodeModeBatch: View {
                     ForEach(Array(item.activity.dropFirst())) { row in
                         ConversationToolCard(row: row, live: item.isRunning && row.running, onToggle: onToggle)
                     }
-                    DisclosureGroup(isExpanded: Binding(
-                        get: { showsJavaScript },
-                        set: { value in onToggle(); showsJavaScript = value }
-                    )) {
-                        if let source = parent.tool?.input.first(where: { $0.label == "Code" })?.value {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button {
+                            onToggle()
+                            showsJavaScript.toggle()
+                        } label: {
                             HStack {
+                                Text("JavaScript and batch output")
                                 Spacer()
-                                Button("Copy code", systemImage: "doc.on.doc") { UIPasteboard.general.string = source }
-                                    .buttonStyle(.plain).font(.caption).frame(minHeight: 44)
-                                    .accessibilityIdentifier("code-mode-copy-" + parent.id)
-                            }
-                            if ChatCodePreview(source, maximumCharacters: 16_384, maximumLines: 120).isTruncated {
-                                Button("View full code") { sourceSheet = .init(title: "Code", source: source) }
-                                    .frame(minHeight: 44)
-                                    .accessibilityIdentifier("code-mode-full-source-" + parent.id)
-                            } else {
-                                ScrollView(.horizontal) {
-                                    ChatCodeText(source: source, language: "javascript")
-                                        .font(.system(.footnote, design: .monospaced))
-                                        .textSelection(.enabled).fixedSize(horizontal: true, vertical: true)
-                                        .accessibilityIdentifier("code-mode-source-" + parent.id)
+                                Image(systemName: showsJavaScript ? "chevron.up" : "chevron.down")
+                            }.font(.caption).foregroundStyle(Ink.muted)
+                                .frame(minHeight: 44).contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                            .accessibilityIdentifier("code-mode-javascript-" + parent.id)
+                            .accessibilityValue(showsJavaScript ? "Expanded" : "Collapsed")
+                        if showsJavaScript {
+                            if let source = parent.tool?.input.first(where: { $0.label == "Code" })?.value {
+                                HStack {
+                                    Spacer()
+                                    Button("Copy code", systemImage: "doc.on.doc") { UIPasteboard.general.string = source }
+                                        .buttonStyle(.plain).font(.caption).frame(minHeight: 44)
+                                        .accessibilityIdentifier("code-mode-copy-" + parent.id)
+                                }
+                                if ChatCodePreview(source, maximumCharacters: 16_384, maximumLines: 120).isTruncated {
+                                    Button("View full code") { sourceSheet = .init(title: "Code", source: source) }
+                                        .frame(minHeight: 44)
+                                        .accessibilityIdentifier("code-mode-full-source-" + parent.id)
+                                } else {
+                                    ScrollView(.horizontal) {
+                                        ChatCodeText(source: source, language: "javascript")
+                                            .font(.system(.footnote, design: .monospaced))
+                                            .textSelection(.enabled).fixedSize(horizontal: true, vertical: true)
+                                            .accessibilityIdentifier("code-mode-source-" + parent.id)
+                                    }
                                 }
                             }
+                            ToolActivityView(row: parent, hidesCode: true).padding(.vertical, 12)
+                                .accessibilityIdentifier("tool-detail-" + parent.id)
                         }
-                        ToolActivityView(row: parent, hidesCode: true).padding(.vertical, 12)
-                            .accessibilityIdentifier("tool-detail-" + parent.id)
-                    } label: {
-                        Text("JavaScript and batch output").font(.caption).foregroundStyle(Ink.muted)
-                    }.accessibilityIdentifier("code-mode-javascript-" + parent.id)
+                    }
                 }
             }.padding(12)
                 .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Ink.border, lineWidth: 0.5))
