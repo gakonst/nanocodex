@@ -2052,6 +2052,7 @@ private struct ConversationToolCard: View {
     let live: Bool
     var onToggle: () -> Void
     @State private var expanded = false
+    @State private var sourceSheet: ToolSourceDocument?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var failed: Bool { row.tool?.status == "Failed" }
     private var title: String { row.tool?.title ?? row.text }
@@ -2119,13 +2120,18 @@ private struct ConversationToolCard: View {
                             statusIndicator
                             disclosure
                         }
-                        ChatCodeText(source: command, language: "bash")
+                        let preview = ChatCodePreview(command)
+                        ChatCodeText(source: preview.text, language: "bash")
                             .font(.system(.footnote, design: .monospaced))
                             .foregroundStyle(Ink.text)
                             .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .lineLimit(preview.isTruncated ? 3 : nil)
                             .accessibilityIdentifier("command-source-" + row.id)
+                        if preview.isTruncated {
+                            Text("Show command and results").font(.caption2).foregroundStyle(Ink.muted)
+                        }
                         if let shell {
                             Text(shell).font(.caption2.monospaced()).foregroundStyle(Ink.muted)
                         }
@@ -2141,7 +2147,7 @@ private struct ConversationToolCard: View {
                         if !expanded {
                             // The disclosure preview must not highlight an entire
                             // program that is clipped to three visible lines.
-                            ChatCodeText(source: String(source.prefix(512)), language: "javascript")
+                            ChatCodeText(source: ChatCodePreview(source).text, language: "javascript")
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundStyle(Ink.text)
                                 .multilineTextAlignment(.leading)
@@ -2184,6 +2190,11 @@ private struct ConversationToolCard: View {
                     }
                 }
             if expanded {
+                if let command, ChatCodePreview(command).isTruncated {
+                    Button("View full command") { sourceSheet = .init(title: "Command", source: command) }
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("command-full-source-" + row.id)
+                }
                 if let source = codeModeSource {
                     Divider()
                     HStack {
@@ -2199,25 +2210,83 @@ private struct ConversationToolCard: View {
                         .frame(minHeight: 44)
                         .accessibilityIdentifier("code-mode-copy-" + row.id)
                     }
-                    ScrollView(.horizontal) {
-                        ChatCodeText(source: source, language: "javascript")
-                            .font(.system(.footnote, design: .monospaced))
-                            .foregroundStyle(Ink.text)
-                            .lineSpacing(4)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: true, vertical: true)
-                            .padding(.bottom, 12)
-                            .accessibilityIdentifier("code-mode-source-" + row.id)
+                    if ChatCodePreview(source, maximumCharacters: 16_384, maximumLines: 120).isTruncated {
+                        Button("View full code") { sourceSheet = .init(title: "Code", source: source) }
+                            .frame(minHeight: 44)
+                            .accessibilityIdentifier("code-mode-full-source-" + row.id)
+                    } else {
+                        ScrollView(.horizontal) {
+                            ChatCodeText(source: source, language: "javascript")
+                                .font(.system(.footnote, design: .monospaced))
+                                .foregroundStyle(Ink.text)
+                                .lineSpacing(4)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: true, vertical: true)
+                                .padding(.bottom, 12)
+                                .accessibilityIdentifier("code-mode-source-" + row.id)
+                        }
+                        .accessibilityIdentifier("code-mode-scroll-" + row.id)
                     }
-                    .accessibilityIdentifier("code-mode-scroll-" + row.id)
                 }
                 Divider()
                 ToolActivityView(row: row, hidesCommand: command != nil, hidesCode: codeModeSource != nil).padding(.vertical, 12)
                     .accessibilityIdentifier("tool-detail-" + row.id)
             }
         }.padding(.horizontal, 12)
+            .sheet(item: $sourceSheet) { document in ToolSourceSheet(document: document) }
             .background(Ink.surface, in: RoundedRectangle(cornerRadius: 12))
             .accessibilityElement(children: .contain)
+    }
+}
+
+private struct ToolSourceDocument: Identifiable {
+    let id = UUID()
+    let title: String
+    let source: String
+}
+
+/// A viewport-sized native text view owns scrolling for large source payloads.
+/// Never ask the transcript to measure the full document's intrinsic height.
+private struct ToolSourceSheet: View {
+    let document: ToolSourceDocument
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            ToolSourceTextView(source: document.source)
+                .navigationTitle(document.title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Copy source") { UIPasteboard.general.string = document.source }
+                            .accessibilityIdentifier("tool-source-copy")
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") { dismiss() }.accessibilityIdentifier("tool-source-done")
+                    }
+                }
+        }
+    }
+}
+
+private struct ToolSourceTextView: UIViewRepresentable {
+    let source: String
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView(usingTextLayoutManager: true)
+        view.isEditable = false
+        view.isSelectable = true
+        view.isScrollEnabled = true
+        view.alwaysBounceVertical = true
+        view.font = UIFontMetrics(forTextStyle: .footnote).scaledFont(for: .monospacedSystemFont(ofSize: 13, weight: .regular))
+        view.adjustsFontForContentSizeCategory = true
+        view.textColor = .label
+        view.backgroundColor = .systemBackground
+        view.textContainerInset = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        view.accessibilityIdentifier = "tool-source-text"
+        view.text = source
+        return view
+    }
+    func updateUIView(_ view: UITextView, context: Context) {
+        if view.text != source { view.text = source }
     }
 }
 

@@ -2948,6 +2948,24 @@ final class InboxModel: ObservableObject {
             ]))
             demoRows["inbox"] = [.init(id: "demo-command-card", role: "Tool", text: activity.title, tool: activity)]
         }
+        if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_OVERSIZED_COMMAND"] == "1" {
+            // Presentation-only fixture: the synthetic base64 and shell source never execute.
+            let command = "printf '%s' '"
+                + String(repeating: "QUJD", count: 47_279)
+                + "' | base64 -d > /workspace/synthetic.png"
+            var activity = ToolPresentation(name: "exec_command", arguments: .object([
+                "cmd": .string(command)
+            ]))
+            activity.finish(.object([
+                "stdout": .string("Synthetic oversized command completed. No command was executed."),
+                "exit_code": .number(0)
+            ]))
+            demoRows["inbox"] = [
+                .init(id: "demo-oversized-command", role: "Tool", text: activity.title, tool: activity),
+                .init(id: "demo-after-oversized-command", role: "Agent",
+                      text: "The oversized command is complete. This message stays reachable.")
+            ]
+        }
         if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_CODE_MODE_CARD"] == "1"
             || ProcessInfo.processInfo.environment["NANOCODEX_DEMO_CODE_MODE_OBJECT_CARD"] == "1" {
             // Presentation-only fixture: this JavaScript and its result never execute.

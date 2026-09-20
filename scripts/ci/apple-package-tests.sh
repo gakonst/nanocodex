@@ -23,8 +23,8 @@ lane() {
   done
   return "$failed"
 }
-# Balance the measured 52+35 and 59+31 second serial package steps.
-lane InboxCore NanocodexContext &
+# Keep native protocol and shared rendering coverage in the same two bounded lanes.
+lane InboxCore NanocodexContext NanocodexUI &
 first=$!
 lane NanocodexVoice NanocodexHand &
 second=$!
@@ -33,7 +33,7 @@ status=0
 wait "$first" || status=1
 wait "$second" || status=1
 trap - EXIT
-for package in InboxCore NanocodexVoice NanocodexContext NanocodexHand; do
+for package in InboxCore NanocodexVoice NanocodexContext NanocodexHand NanocodexUI; do
   echo "::group::$package"
   cat "$log_dir/$package.log"
   echo '::endgroup::'

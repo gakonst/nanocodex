@@ -2470,6 +2470,52 @@ final class InboxUITests: XCTestCase {
         capture(app, "command-card-expanded-failure")
     }
 
+    func testOversizedCommandStaysCompactAndOpensCompleteNativeSourceViewer() {
+        let app = launch(["NANOCODEX_DEMO_OVERSIZED_COMMAND": "1",
+                          "NANOCODEX_DEMO_PROFILE": UUID().uuidString]); selectInbox(app)
+        let conversation = app.scrollViews["conversation"]
+        XCTAssertTrue(conversation.waitForExistence(timeout: 5))
+        let card = conversation.buttons["tool-disclosure-demo-oversized-command"]
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        print("OVERSIZED_COMMAND_CARD_HEIGHT=\(card.frame.height)")
+        XCTAssertEqual(card.descendants(matching: .any)["command-directory-demo-oversized-command"].label, "Default directory")
+        XCTAssertGreaterThan(card.frame.height, 0)
+        XCTAssertLessThanOrEqual(card.frame.height, 300, "Oversized source must not create screens of blank command card")
+        let followingMessage = conversation.staticTexts["The oversized command is complete. This message stays reachable."]
+        XCTAssertTrue(followingMessage.waitForExistence(timeout: 5))
+        XCTAssertTrue(followingMessage.isHittable, "The next assistant message stays accessible below the collapsed card")
+        capture(app, "oversized-command-collapsed")
+
+        card.tap()
+        let fullSource = conversation.buttons["command-full-source-demo-oversized-command"]
+        XCTAssertTrue(fullSource.waitForExistence(timeout: 5))
+        XCTAssertEqual(fullSource.label, "View full command")
+        for _ in 0..<3 { if fullSource.isHittable { break }; conversation.swipeUp() }
+        XCTAssertTrue(fullSource.isHittable)
+        fullSource.tap()
+        XCTAssertTrue(app.navigationBars["Command"].waitForExistence(timeout: 5))
+        let source = app.textViews["tool-source-text"]
+        XCTAssertTrue(source.waitForExistence(timeout: 5), "Full source uses a native text view")
+        let expectedSource = "printf '%s' '"
+            + String(repeating: "QUJD", count: 47_279)
+            + "' | base64 -d > /workspace/synthetic.png"
+        XCTAssertGreaterThan(expectedSource.utf8.count, 189_000)
+        XCTAssertEqual(source.value as? String, expectedSource, "The viewer preserves all source characters and newlines")
+        source.tap()
+        XCTAssertFalse(app.keyboards.firstMatch.exists, "Source is read-only")
+        let copy = app.buttons["tool-source-copy"]
+        XCTAssertTrue(copy.isHittable)
+        XCTAssertEqual(copy.label, "Copy source")
+        copy.tap()
+        capture(app, "oversized-command-full-source")
+        let done = app.buttons["tool-source-done"]
+        XCTAssertTrue(done.isHittable)
+        XCTAssertEqual(done.label, "Done")
+        done.tap()
+        gone(source, timeout: 3)
+        XCTAssertTrue(conversation.isHittable, "Dismissing the source viewer promptly returns to the conversation")
+    }
+
     func testCodeModeCardShowsFullMultilineSourceAndOutput() {
         assertCodeModeCardShowsFullMultilineSourceAndOutput(environment: "NANOCODEX_DEMO_CODE_MODE_CARD")
     }

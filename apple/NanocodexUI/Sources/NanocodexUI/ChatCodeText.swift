@@ -45,7 +45,9 @@ enum ChatCodeHighlighter {
     static func highlight(_ source: String, language: String, dark: Bool) async -> AttributedString {
         let plain = AttributedString(source)
         let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !Task.isCancelled else { return plain }
+        // Large tool payloads (including encoded images) are not syntax documents.
+        // Keep their exact text without sending them through the HTML highlighter.
+        guard source.utf8.count <= 16_384, !trimmed.isEmpty, !Task.isCancelled else { return plain }
         let alias = language.split(whereSeparator: \.isWhitespace).first.map(String.init)?.lowercased() ?? ""
         // Length-prefix the language so arbitrary fence hints cannot collide
         // with source text. Appearance is part of the rendered attributes.

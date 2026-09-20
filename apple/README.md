@@ -48,7 +48,11 @@ and cancelled parses cannot replace newer content. The
 `ChatMarkdownParse` Points of Interest signpost measures actual parsing work.
 
 Commentary and reasoning summaries appear inline in chronological order. Each
-tool call has a compact single-line card with expandable input and result details.
+tool call has a compact card with expandable input and result details. Short shell
+commands remain readable in full; oversized commands use a bounded preview. Full
+large source opens in a scrollable, read-only native viewer with a copy control,
+so encoded payloads and long blank runs cannot stretch the conversation. Syntax
+highlighting is skipped for sources larger than 16 KiB.
 Generated attachments appear directly after their originating tool card.
 Tool text, memory payloads, and command diagnostics stay inside that disclosure. The shared
 `ChatGeneratedOutput` parser combines raw and structured tool results, including
