@@ -57,10 +57,11 @@ js/account/node_modules/.bin/tsc -p js/account/tsconfig.remote-controls.json
 node js/account/scripts/remote-controls-smoke.mjs
 ```
 
-The focused typecheck covers the production viewer and protocol tests. The full
-account typecheck has four pre-existing TS7006 errors in `HostedToolsDemo.tsx`
-and `monsterWorldAgent.worker.ts`; these were reproduced in a detached checkout
-of the same base, `74232979b`, with the same installed dependencies.
+The focused typecheck covers the production viewer and protocol tests. Full
+account typechecking also passes. It initially reproduced four existing TS7006
+errors in `HostedToolsDemo.tsx` and `monsterWorldAgent.worker.ts` on the detached
+base, `74232979b`; explicit `unknown` input and `ToolContext` annotations fix
+those two handler signatures without changing runtime behavior.
 
 Browser protocol mocks and real loopback WebRTC have distinct scopes in the
 smoke fixture. Neither is a live WoW, hardware-microphone or internet latency

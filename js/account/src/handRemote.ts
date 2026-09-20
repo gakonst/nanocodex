@@ -8,20 +8,15 @@ export type RemoteHand = Readonly<{
 }>;
 export type BroadcastPreset = "source" | "1080p" | "720p" | "twitch" | "x";
 export type BroadcastStatus = "idle" | "starting" | "live" | "reconnecting" | "stopping" | "failed" | "stopped";
-export type RemoteState = Readonly<{ broadcastStatus?: BroadcastStatus; broadcastAudio?: boolean; broadcastPending?: boolean; broadcastError?: string; status: string; connected: boolean; controlling: boolean; connecting: boolean; audioAvailable?: boolean; audioEnabled?: boolean; microphoneAvailable?: boolean; microphoneEnabled?: boolean; microphonePending?: boolean; microphoneError?: string; controlPending?: boolean; relativePointer?: boolean; gamepadAvailable?: boolean }>;
+export type RemoteState = Readonly<{ broadcastStatus?: BroadcastStatus; broadcastAudio?: boolean; broadcastPending?: boolean; broadcastError?: string; status: string; connected: boolean; controlling: boolean; connecting: boolean; audioAvailable?: boolean; audioEnabled?: boolean; microphoneAvailable?: boolean; microphoneEnabled?: boolean; microphonePending?: boolean; microphoneError?: string; controlPending?: boolean; relativePointer?: boolean }>;
 /** The start button waits for a known, inactive native stream state. */
 export function canStartBroadcast(state: RemoteState): boolean {
   return state.connected && !state.broadcastPending && ["idle", "failed", "stopped"].includes(state.broadcastStatus ?? "");
 }
 
-/** Complete snapshot, using the Rust/Swift controller wire field names. */
-export type RemoteGamepadSnapshot = Readonly<{
-  leftX: number; leftY: number; rightX: number; rightY: number;
-  leftTrigger: number; rightTrigger: number; buttons: readonly string[];
-}>;
 export type RemoteInput = {
-  kind: "move" | "relativeMove" | "button" | "scroll" | "key" | "text" | "releaseAll" | "gamepad";
-  x?: number; y?: number; button?: number; down?: boolean; key?: number; text?: string; deltaX?: number; deltaY?: number; gamepad?: RemoteGamepadSnapshot;
+  kind: "move" | "relativeMove" | "button" | "scroll" | "key" | "text" | "releaseAll";
+  x?: number; y?: number; button?: number; down?: boolean; key?: number; text?: string; deltaX?: number; deltaY?: number;
 };
 
 const encoder = new TextEncoder();
@@ -505,11 +500,10 @@ export class RemoteBrowserSession {
     else if (generation) this.control = { kind: "releasing", generation };
     clearInterval(this.controlTimer); this.controlTimer = undefined;
     if (generation && !this.closed) this.send({ type: "release", generation });
-    if (!this.closed) this.update({ controlling: false, controlPending: false, relativePointer: false, gamepadAvailable: false, ...(this.state.connected ? { status: "Watching" } : {}) });
+    if (!this.closed) this.update({ controlling: false, controlPending: false, relativePointer: false, ...(this.state.connected ? { status: "Watching" } : {}) });
   }
   input(event: RemoteInput): void {
     if (!this.state.controlling || !this.generation || this.closed || this.suspended) return;
-    if (event.kind === "gamepad" && !this.state.gamepadAvailable) return;
     this.send({ ...event, sequence: ++this.sequence, generation: this.generation }, event.kind === "move");
   }
   close(status = "Disconnected"): void {
@@ -549,7 +543,7 @@ export class RemoteBrowserSession {
     if (this.peer) { this.peer.onconnectionstatechange = this.peer.ontrack = this.peer.onicecandidate = this.peer.ondatachannel = null; this.peer.close(); }
     this.socket = undefined; this.peer = undefined; this.reliable = undefined; this.motion = undefined;
     this.video.srcObject = null;
-    this.update({ audioAvailable: false, microphoneAvailable: false, controlPending: false, relativePointer: false, gamepadAvailable: false, broadcastStatus: undefined, broadcastAudio: undefined, broadcastPending: false, broadcastError: undefined });
+    this.update({ audioAvailable: false, microphoneAvailable: false, controlPending: false, relativePointer: false, broadcastStatus: undefined, broadcastAudio: undefined, broadcastPending: false, broadcastError: undefined });
     if (this.canvas) { this.canvas.width = 0; this.canvas.height = 0; }
   }
   private fail(error: unknown): void {
@@ -677,12 +671,11 @@ export class RemoteBrowserSession {
       }
       if (this.control !== "acquiring") throw new RemoteError("Invalid remote control response.", true);
       if (value.relativePointer !== undefined && typeof value.relativePointer !== "boolean") throw new RemoteError("Invalid remote control response.", true);
-      if (value.gamepad !== undefined && typeof value.gamepad !== "boolean") throw new RemoteError("Invalid remote control response.", true);
       if (value.microphone !== undefined && typeof value.microphone !== "boolean") throw new RemoteError("Invalid remote control response.", true);
       this.control = { kind: "held", generation: value.generation }; this.sequence = 0;
       this.microphoneSupported = value.microphone === true;
       this.update({ microphoneAvailable: this.microphoneAvailable() });
-      this.update({ controlling: true, controlPending: false, relativePointer: value.relativePointer === true, gamepadAvailable: value.gamepad === true, status: "You’re controlling" });
+      this.update({ controlling: true, controlPending: false, relativePointer: value.relativePointer === true, status: "You’re controlling" });
       clearInterval(this.controlTimer);
       this.controlTimer = setInterval(() => { if (this.current(epoch)) this.send({ type: "renew", generation: this.generation }); }, 3000);
     } else if (value.type === "revoked") {
@@ -693,18 +686,18 @@ export class RemoteBrowserSession {
         const released = this.control.kind === "releasing";
         this.control = "idle";
         clearInterval(this.controlTimer); this.controlTimer = undefined;
-        this.update({ controlling: false, controlPending: false, relativePointer: false, gamepadAvailable: false, status: "Watching" });
+        this.update({ controlling: false, controlPending: false, relativePointer: false, status: "Watching" });
         if (released) { this.acquireControl(); return; }
       } else if (this.control === "acquiring") this.control = "cancelled-acquire";
       // An unsolicited revocation cancels intent, including an in-flight grant.
       this.controlRequested = false;
-      this.update({ controlling: false, controlPending: false, relativePointer: false, gamepadAvailable: false });
+      this.update({ controlling: false, controlPending: false, relativePointer: false });
     } else if (value.type === "denied") {
       const cancelled = this.control === "cancelled-acquire";
       if (!cancelled && this.control !== "acquiring") throw new RemoteError("Invalid remote control response.", true);
       this.control = "idle";
       if (cancelled) this.acquireControl();
-      else { this.controlRequested = false; this.update({ controlPending: false, relativePointer: false, gamepadAvailable: false, status: "Another viewer is controlling this screen." }); }
+      else { this.controlRequested = false; this.update({ controlPending: false, relativePointer: false, status: "Another viewer is controlling this screen." }); }
     }
     else throw new RemoteError("Invalid remote control response.", true);
   }
