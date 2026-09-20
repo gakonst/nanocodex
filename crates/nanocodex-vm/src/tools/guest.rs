@@ -1575,6 +1575,15 @@ mod tests {
             "foreground command failed: {:?}",
             execution.output
         );
+        // A yielded exec response confirms a running session, not that its shell
+        // has reached the first command. Wait for the fixture's readiness signal.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !pid_file.is_file() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("foreground command must publish its PID before termination");
         let pid = fs::read_to_string(&pid_file)
             .unwrap()
             .parse::<i32>()
