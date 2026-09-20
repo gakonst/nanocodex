@@ -73,7 +73,8 @@ import {
 } from "./sandbox-tools";
 import {
   createNamespaceExecutionRuntime,
-  prepareNamespaceHostMount,
+  prepareNamespaceHostMounts,
+  type NamespaceCaptureFilter,
   isBrainExecution,
   machineMountRoot,
   type MachineToolResolver,
@@ -2799,7 +2800,7 @@ export function createManagedNamespaceTools(
   canUseExecutionNamespace: (context: ToolContext) => boolean,
   machines: (context: ToolContext) => readonly NamespaceMachine[] = () => [],
   resolveMachineTool: MachineToolResolver = () => undefined,
-  prepareNamespace: (context: ToolContext, toolName?: string, input?: unknown) => Promise<void> = async () => {},
+  prepareNamespace: (context: ToolContext, toolName?: string) => Promise<void | NamespaceCaptureFilter> = async () => {},
   brain?: Readonly<{ tool: NamedTool; allowed(context: ToolContext): boolean }>,
   resolveScreenTool?: ScreenToolResolver,
 ): NamedTool[] {
@@ -2817,7 +2818,7 @@ function createManagedNamespaceRuntime(
   canUseExecutionNamespace: (context: ToolContext) => boolean,
   machines: (context: ToolContext) => readonly NamespaceMachine[] = () => [],
   resolveMachineTool: MachineToolResolver = () => undefined,
-  prepareNamespace: (context: ToolContext, toolName?: string, input?: unknown) => Promise<void> = async () => {},
+  prepareNamespace: (context: ToolContext, toolName?: string) => Promise<void | NamespaceCaptureFilter> = async () => {},
   brain?: Readonly<{ tool: NamedTool; allowed(context: ToolContext): boolean }>,
   resolveScreenTool?: ScreenToolResolver,
 ): Readonly<{ tools: NamedTool[]; capture(context: ToolContext): Promise<void> }> {
@@ -2832,14 +2833,18 @@ function createManagedNamespaceRuntime(
   const cellKey = (context: ToolContext): string => (
     `${context.sessionId}\u0000${context.parentCallId || context.callId}`
   );
-  const capture = async (context: ToolContext, toolName?: string, input?: unknown): Promise<void> => {
+  const capture = async (context: ToolContext, toolName?: string): Promise<void> => {
     const key = cellKey(context);
     if (captured.has(key)) return;
     const pending = preparations.get(key);
     if (pending !== undefined) return pending;
     const preparation = (async () => {
-      await prepareNamespace(context, toolName, input);
-      runtime.capture(context);
+      const filter = await prepareNamespace(context, toolName);
+     if (!canUseExecutionNamespace(context)) {
+        throw new ManagedRequestError(403, "namespace_forbidden", "the current authorization cannot use execution hands");
+      }
+      context.signal.throwIfAborted();
+      runtime.capture(context, filter || undefined);
       captured.add(key);
     })();
     preparations.set(key, preparation);
@@ -2876,7 +2881,7 @@ function createManagedNamespaceRuntime(
           "the current authorization cannot use execution hands",
         );
       }
-      await capture(context, name, input);
+      await capture(context, name);
       return tool.handler(input, context);
     },
     releaseSession: (sessionId: string) => {
@@ -3110,7 +3115,6 @@ export class DurableAgentSession extends DurableComputerSession {
   readonly #realtimeOperations = new Map<string, Promise<unknown>>();
   #realtimeOperationTail: Promise<void> = Promise.resolve();
   readonly #inFlight = new Set<Promise<unknown>>();
-  readonly #namespaceMountRefreshTasks = new Map<string, Promise<void>>();
   #realtimeEventBuffer?: AgentEvent[];
   #realtimeRouteTail: Promise<void> = Promise.resolve();
   readonly #cronTriggers: CronTriggers;
@@ -7796,14 +7800,15 @@ export class DurableAgentSession extends DurableComputerSession {
       (context) => this.#canUseExecutionNamespace(this.#authorizationForToolContext(context)),
       namespaceMachines,
       resolveNamespaceMachineTool,
-      async (context, toolName, input) => {
-        await this.#refreshMountedHostMounts(this.#authorizationForToolContext(context), input);
+      async (context, toolName) => {
+        const filter = await this.#refreshMountedHostMounts(this.#authorizationForToolContext(context));
         // Publishers reconnect independently of shell attachments. A cached
         // startup inventory must not hide a screen that has since come online.
         if (toolName === "select_computer"
           && this.#hasFullAccountAuthority(this.#authorizationForToolContext(context))) {
           await this.#accountHostedTools?.refresh();
         }
+        return filter;
       },
       {
         tool: computer.tool,
@@ -8624,37 +8629,81 @@ export class DurableAgentSession extends DurableComputerSession {
 
   async #refreshMountedHostMounts(
     authorization: TurnAuthorization | undefined,
-    input: unknown,
-  ): Promise<void> {
+  ): Promise<NamespaceCaptureFilter> {
     if (!this.#canUseExecutionNamespace(authorization)) {
-      throw new ManagedRequestError(
-        403,
-        "namespace_forbidden",
-        "the current authorization cannot use execution hands",
-      );
+      throw new ManagedRequestError(403, "namespace_forbidden", "the current authorization cannot use execution hands");
     }
     if (this.#deleting || this.#deleted) throw retryableError("agent is being deleted");
     const deletionGeneration = this.#deletionGeneration;
     const mounts = this.#managedMounts("mounted").filter((mount) => (
       mount.provider === "host" && vmHostMountAllocation(mount) !== undefined
-    ));
-    await prepareNamespaceHostMount(mounts, input, (mount) => this.#refreshMountedHostMount(mount));
+    )).map(mount => ({ id: `sandbox:${mount.id}`, mount }));
+    const filter = await prepareNamespaceHostMounts(mounts, async ({ mount }) => {
+      const ready = await this.#probeMountedHostMount(mount);
+      if (ready === undefined || ready.route_id === undefined) return undefined;
+      const routeId = ready.route_id;
+      // Validate again synchronously when the complete cell snapshot is captured.
+      return () => {
+        const current = this.#managedMount(mount.id);
+        const allocation = current && vmHostMountAllocation(current);
+        return current?.state === "mounted" && current.provider === "host"
+          && allocation?.pool_locator === ready.pool_locator
+          && allocation.allocation_id === ready.allocation_id
+          && allocation.generation === ready.generation
+          && allocation.machine_id === ready.machine_id
+          && allocation.route_id === ready.route_id
+          && this.#hostedTools.machineOnRoute(routeId, ready.machine_id) !== undefined;
+      };
+    });
+    if (!this.#canUseExecutionNamespace(authorization)) {
+      throw new ManagedRequestError(403, "namespace_forbidden", "the current authorization cannot use execution hands");
+    }
     if (this.#deleting || this.#deleted || this.#deletionGeneration !== deletionGeneration) {
       throw retryableError("agent is being deleted");
     }
+    return filter;
   }
 
-  #refreshMountedHostMount(mount: ManagedMountRow): Promise<void> {
-    const pending = this.#namespaceMountRefreshTasks.get(mount.id);
-    if (pending !== undefined) return pending;
-    const refresh = this.#prepareHostMount(mount);
-    this.#namespaceMountRefreshTasks.set(mount.id, refresh);
-    void refresh.finally(() => {
-      if (this.#namespaceMountRefreshTasks.get(mount.id) === refresh) {
-        this.#namespaceMountRefreshTasks.delete(mount.id);
-      }
-    }).catch(() => {});
-    return refresh;
+  async #probeMountedHostMount(
+    mount: ManagedMountRow,
+  ): Promise<NonNullable<ManagedMountConfiguration["vm_host"]> | undefined> {
+    const retained = vmHostMountAllocation(mount);
+    const session = this.#session();
+    const factoryName = vmHostFactoryName(mount);
+    if (mount.state !== "mounted" || retained === undefined || session === undefined || factoryName === undefined) return undefined;
+    try {
+      // Namespace discovery only probes existing allocations. Explicit mount
+      // still uses #prepareHostMount's allocation and readiness retry loop.
+      const status = await fetchResponseWithDeadline(
+        this.env.NANOCODEX_VM_HOST_POOLS.getByName(retained.pool_locator),
+        "https://vm-host-pool.internal/ready",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            owner_id: session.owner_id, agent_id: session.session_id, mount_id: mount.id,
+            allocation_id: retained.allocation_id, generation: retained.generation,
+            pool_locator: retained.pool_locator,
+          }),
+        },
+        5_000,
+        "VM namespace readiness",
+        async response => {
+          if (!response.ok) throw new Error(`VM readiness returned HTTP ${response.status}`);
+          return response.json<unknown>();
+        },
+      );
+      if (!validVmHostAllocation(status) || (status as { ready?: unknown }).ready !== true
+        || status.factory_name !== factoryName || status.allocation_id !== retained.allocation_id
+        || status.generation !== retained.generation || status.machine_id !== retained.machine_id) return undefined;
+      const current = this.#managedMount(mount.id);
+      if (this.#deleting || this.#deleted || current?.state !== "mounted") return undefined;
+      return this.#persistRefreshedHostRoute(mount, retained, status.route_id);
+    } catch (error) {
+      console.warn({ type: "vm.namespace.unavailable", mount_id: mount.id,
+        error: error instanceof Error ? error.message : "VM readiness failed" });
+      return undefined;
+    }
   }
 
   async #prepareHostMount(mount: ManagedMountRow): Promise<void> {

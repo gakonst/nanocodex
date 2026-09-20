@@ -64,9 +64,11 @@ type ProcessBinding = Readonly<{
   writeStdin: RoutedTool;
 }>;
 
+export type NamespaceCaptureFilter = (machine: NamespaceMachine) => boolean;
+
 export type NamespaceExecutionRuntime = Readonly<{
   tools: ToolMap;
-  capture(context: ToolContext): void;
+  capture(context: ToolContext, filter?: NamespaceCaptureFilter): void;
 }>;
 
 /**
@@ -90,13 +92,13 @@ export function createNamespaceExecutionRuntime(
   const sessions = new Map<number, ProcessBinding>();
   const computers = new Map<string, MountedHand>();
 
-  const cell = (context: ToolContext): CellBinding => {
+  const cell = (context: ToolContext, filter?: NamespaceCaptureFilter): CellBinding => {
     // Direct tools have an empty parentCallId. Pin those to their own call,
     // while nested Code Mode tools keep sharing their parent's captured lease.
     const key = `${context.sessionId}\u0000${context.parentCallId || context.callId}`;
     const retained = cells.get(key);
     if (retained !== undefined) return retained;
-    const created = createCellBinding(brain, machines(context), resolveMachineTool, context, key, resolveScreenTool);
+    const created = createCellBinding(brain, machines(context).filter(filter ?? (() => true)), resolveMachineTool, context, key, resolveScreenTool);
     cells.set(key, created);
     return created;
   };
@@ -281,7 +283,7 @@ export function createNamespaceExecutionRuntime(
   };
   return Object.freeze({
     tools,
-    capture: (context: ToolContext) => { void cell(context); },
+    capture: (context: ToolContext, filter?: NamespaceCaptureFilter) => { void cell(context, filter); },
   });
 }
 
@@ -455,18 +457,17 @@ function stableHash(value: string): string {
   return hash.toString(16).padStart(16, "0");
 }
 
-/** Refresh only the VM selected by this call before capturing its route. An
- * unrelated disconnected VM must not prevent access to other Hands or mounts.
- * Calls without a workdir (mount, pinned process/CUA calls) need no VM refresh.
+/** Admit each retained VM independently, then capture all verified routes once.
+ * A rejected probe or a negative receipt excludes that VM, including cached routes.
  */
-export async function prepareNamespaceHostMount<T extends Readonly<{ root: string }>>(
+export async function prepareNamespaceHostMounts<T extends Readonly<{ id: string }>>(
   mounts: readonly T[],
-  input: unknown,
-  refresh: (mount: T) => Promise<void>,
-): Promise<void> {
-  if (input === null || typeof input !== "object" || Array.isArray(input)) return;
-  const workdir = (input as Record<string, unknown>).workdir;
-  if (typeof workdir !== "string") return;
-  const mount = mounts.find(({ root }) => workdir === root || workdir.startsWith(`${root}/`));
-  if (mount !== undefined) await refresh(mount);
+  probe: (mount: T) => Promise<NamespaceCaptureFilter | undefined>,
+): Promise<NamespaceCaptureFilter> {
+  const results = await Promise.allSettled(mounts.map(probe));
+  const checks = new Map(mounts.map((mount, index) => {
+    const result = results[index]!;
+    return [mount.id, result.status === "fulfilled" ? result.value : undefined] as const;
+  }));
+  return machine => !checks.has(machine.id) || checks.get(machine.id)?.(machine) === true;
 }
