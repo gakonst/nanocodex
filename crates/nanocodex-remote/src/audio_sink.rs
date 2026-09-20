@@ -1,11 +1,18 @@
 //! Linux PulseAudio / PipeWire-Pulse virtual input. Only session-owned modules
-//! are unloaded; global defaults and existing application routing are untouched.
+//! are unloaded; no global defaults or application routes are explicitly set.
+//! PulseAudio may automatically select the virtual input on monitor-only hosts.
 use super::{AudioSink, Result, SinkFactory};
 
 pub async fn native_factory(machine_id: &str) -> Option<SinkFactory> {
     #[cfg(target_os = "linux")]
     {
-        return linux::factory(machine_id).await.ok();
+        return match linux::factory(machine_id).await {
+            Ok(factory) => Some(factory),
+            Err(error) => {
+                tracing::warn!(%error, "remote microphone unavailable");
+                None
+            }
+        };
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -117,6 +124,9 @@ mod linux {
         if pactl(&["get-default-sink"])?.is_empty() || pactl(&["get-default-source"])?.is_empty() {
             return Err("existing playback and input defaults required".into());
         }
+        // PulseAudio prefers non-monitor sources over monitors. On a headless
+        // host with only a monitor input, it may automatically select our source.
+        // Leave that server policy intact; never reset a user's global defaults.
         let source = format!("{name}_source");
         // Never adopt or unload an existing device, including a racing publisher.
         for (kind, requested) in [("sinks", name), ("sources", source.as_str())] {
@@ -236,7 +246,22 @@ mod linux {
         let default_source = pactl(&["get-default-source"]).unwrap();
         let machine_id = "synthetic-microphone-lifetime";
         let name = device_name(machine_id);
+        let source_info: serde_json::Value =
+            serde_json::from_str(&pactl(&["--format=json", "list", "sources"]).unwrap()).unwrap();
+        let default_was_monitor = source_info.as_array().unwrap().iter().any(|source| {
+            source["name"].as_str() == Some(default_source.as_str())
+                && source["monitor_source"]
+                    .as_str()
+                    .is_some_and(|sink| !sink.is_empty())
+        });
         let factory = factory(machine_id).await.unwrap();
+        assert_eq!(pactl(&["get-default-sink"]).unwrap(), default_sink);
+        let current_source = pactl(&["get-default-source"]).unwrap();
+        assert!(
+            current_source == default_source
+                || (default_was_monitor && current_source == format!("{name}_source")),
+            "only a monitor default may be automatically replaced by the owned virtual input"
+        );
         assert!(
             self::factory(machine_id).await.is_err(),
             "occupied name must fail closed"

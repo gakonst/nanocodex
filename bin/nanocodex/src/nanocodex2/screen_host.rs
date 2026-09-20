@@ -22,6 +22,8 @@ pub(crate) enum Mode {
 
 #[derive(Args)]
 pub(crate) struct HostCommand {
+    #[command(flatten)]
+    observability: super::hand_observability::HandObservabilityArgs,
     #[arg(long)]
     url: String,
     #[arg(long)]
@@ -343,6 +345,7 @@ fn attachment(target: &PublisherTarget) -> Result<AttachmentTarget, ManagedError
 }
 
 pub(crate) async fn serve(mut prepared: Prepared) -> Result<(), ManagedError> {
+    let _observability = prepared.command.observability.install().map_err(error)?;
     let mut desktop = if prepared.mode == Mode::Wayland {
         None
     } else {
@@ -421,6 +424,14 @@ mod tests {
         std::fs::write(&credential_file, "synthetic-host-token\n").unwrap();
         std::fs::set_permissions(&credential_file, std::fs::Permissions::from_mode(0o600)).unwrap();
         HostCommand {
+            observability: clap::FromArgMatches::from_arg_matches(
+                &super::super::hand_observability::HandObservabilityArgs::augment_args(
+                    clap::Command::new("host"),
+                )
+                .try_get_matches_from(["host"])
+                .unwrap(),
+            )
+            .unwrap(),
             url: origin,
             credential_file,
             machine_id: "host:test".into(),
