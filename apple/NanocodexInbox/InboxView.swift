@@ -1622,7 +1622,10 @@ private struct ConversationContentView: View {
     @State private var historyRequestRevision: UUID?
     private func rememberHistoryPosition(in viewport: GeometryProxy) {
         let visible = rowGeometry.frames.filter { revision.itemsByID[$0.key] != nil && $0.value.maxY > 0 && $0.value.minY < viewport.size.height }
-        let sourceRows = visible.keys.compactMap { revision.itemsByID[$0]?.sourceRowID }
+        let sourceRows = visible.keys.flatMap { key -> [String] in
+            guard let item = revision.itemsByID[key] else { return [] }
+            return (item.content?.activity.map(\.id) ?? []) + (item.sourceRowID.map { [$0] } ?? [])
+        }
         model.protectHistoryRows(Set(visible.keys).union(sourceRows))
         guard let first = visible.min(by: { $0.value.minY < $1.value.minY }) else { return }
         historyRestore = (first.key, first.value.minY, nil)
@@ -1683,7 +1686,10 @@ private struct ConversationContentView: View {
             let visible = rowGeometry.frames.filter {
                 revision.itemsByID[$0.key] != nil && $0.value.maxY > 0 && $0.value.minY < viewport.size.height
             }
-            let sourceRows = visible.keys.compactMap { revision.itemsByID[$0]?.sourceRowID }
+            let sourceRows = visible.keys.flatMap { key -> [String] in
+            guard let item = revision.itemsByID[key] else { return [] }
+            return (item.content?.activity.map(\.id) ?? []) + (item.sourceRowID.map { [$0] } ?? [])
+        }
             model.protectHistoryRows(Set(visible.keys).union(sourceRows))
         }
         if followsLatest && !model.needsLatestHistory {
@@ -1742,15 +1748,18 @@ private struct ConversationContentView: View {
                                         .padding(.bottom, 12)
                                 }
                             }
-                            ForEach(content.activity) { row in
-                                ConversationToolCard(row: row, live: content.isRunning) {
-                                    // Opening details is a reading action. Keep the
-                                    // tapped card in place instead of following the bottom.
-                                    followsLatest = false
-                                    pendingReadingRestore = rowGeometry.frames[item.id].map {
-                                        .init(atLatest: false, rowID: item.id, offsetY: $0.minY)
-                                    }
-                                    if historyRequestInFlight { rememberHistoryPosition(in: viewport) }
+                            let onToggle = {
+                                followsLatest = false
+                                pendingReadingRestore = rowGeometry.frames[item.id].map {
+                                    .init(atLatest: false, rowID: item.id, offsetY: $0.minY)
+                                }
+                                if historyRequestInFlight { rememberHistoryPosition(in: viewport) }
+                            }
+                            if content.isCodeModeBatch {
+                                ConversationCodeModeBatch(item: content, onToggle: onToggle)
+                            } else {
+                                ForEach(content.activity) { row in
+                                    ConversationToolCard(row: row, live: content.isRunning && row.running, onToggle: onToggle)
                                 }
                             }
                         }
@@ -2016,6 +2025,78 @@ private struct ConversationContentPosition: Equatable {
     var approachingTop = false
     var atLatest = false
     var isMeasured = false
+}
+
+
+private struct ConversationCodeModeBatch: View {
+    let item: ConversationItem
+    var onToggle: () -> Void
+    @State private var expanded = true
+    @State private var showsJavaScript = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        if let parent = item.activity.first {
+            VStack(alignment: .leading, spacing: 10) {
+                Button {
+                    onToggle()
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { expanded.toggle() }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "curlybraces").foregroundStyle(Color.accentColor)
+                        Text("Code Mode").font(.subheadline.weight(.medium))
+                        Text(item.activity.count == 2 ? "1 tool" : "\(item.activity.count - 1) tools").font(.caption).foregroundStyle(Ink.muted)
+                        Spacer(minLength: 4)
+                        if item.isRunning {
+                            ProgressView().controlSize(.mini).accessibilityLabel("Running")
+                        } else if parent.running || parent.tool?.status == "Running" {
+                            Text("Interrupted").font(.caption2).foregroundStyle(Ink.muted)
+                        } else if let status = parent.tool?.status, status != "Completed" {
+                            Text(status).font(.caption2)
+                                .foregroundStyle(status == "Failed" ? Color.orange : Ink.muted)
+                        } else {
+                            Image(systemName: "checkmark").font(.caption2.weight(.semibold))
+                                .foregroundStyle(Ink.muted).accessibilityLabel("Completed")
+                        }
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.caption2.weight(.semibold)).foregroundStyle(Ink.muted)
+                    }.frame(minHeight: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                    .accessibilityIdentifier("code-mode-batch-" + parent.id)
+                    .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+                if expanded {
+                    ForEach(Array(item.activity.dropFirst())) { row in
+                        ConversationToolCard(row: row, live: item.isRunning && row.running, onToggle: onToggle)
+                    }
+                    DisclosureGroup(isExpanded: Binding(
+                        get: { showsJavaScript },
+                        set: { value in onToggle(); showsJavaScript = value }
+                    )) {
+                        if let source = parent.tool?.input.first(where: { $0.label == "Code" })?.value {
+                            HStack {
+                                Spacer()
+                                Button("Copy code", systemImage: "doc.on.doc") { UIPasteboard.general.string = source }
+                                    .buttonStyle(.plain).font(.caption).frame(minHeight: 44)
+                                    .accessibilityIdentifier("code-mode-copy-" + parent.id)
+                            }
+                            ScrollView(.horizontal) {
+                                ChatCodeText(source: source, language: "javascript")
+                                    .font(.system(.footnote, design: .monospaced))
+                                    .textSelection(.enabled).fixedSize(horizontal: true, vertical: true)
+                                    .accessibilityIdentifier("code-mode-source-" + parent.id)
+                            }
+                        }
+                        ToolActivityView(row: parent, hidesCode: true).padding(.vertical, 12)
+                            .accessibilityIdentifier("tool-detail-" + parent.id)
+                    } label: {
+                        Text("JavaScript and batch output").font(.caption).foregroundStyle(Ink.muted)
+                    }.accessibilityIdentifier("code-mode-javascript-" + parent.id)
+                }
+            }.padding(12)
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Ink.border, lineWidth: 0.5))
+                .accessibilityElement(children: .contain)
+        }
+    }
 }
 
 private struct ConversationToolCard: View {
