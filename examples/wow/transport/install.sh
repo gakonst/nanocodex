@@ -31,7 +31,7 @@ unit=unit_root/'nanocodex-wow.service'
 if not unit.exists():
     unit.write_text('\n'.join([
         '[Unit]', 'Description=Nanocodex WoW streaming companion', 'After=network.target',
-        '[Service]', 'Type=simple', 'WorkingDirectory='+quote(app),
+        '[Service]', 'Type=simple', 'WorkingDirectory='+str(app).replace('%','%%'),
         'ExecStart='+quote(app/'.venv/bin/python')+' '+quote(app/'durable_client.py')+' --port 17840',
         'Restart=on-failure', 'RestartSec=3', 'UMask=0077',
         '[Install]', 'WantedBy=default.target', '']))
