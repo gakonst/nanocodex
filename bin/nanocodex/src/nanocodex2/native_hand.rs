@@ -36,7 +36,6 @@ struct Identity {
 
 pub(super) struct NativeState {
     pub(super) machine: AttachmentMachine,
-    directory: PathBuf,
     _lock: NativeStateLock,
 }
 
@@ -177,7 +176,6 @@ impl NativeState {
         .map_err(configuration)?;
         Ok(Self {
             machine,
-            directory: directory.to_path_buf(),
             _lock: lock,
         })
     }
