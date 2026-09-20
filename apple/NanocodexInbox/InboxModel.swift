@@ -1290,6 +1290,7 @@ final class InboxModel: ObservableObject {
             let merged = listing.map { summary in
                 var card = retained[summary.id] ?? summary
                 card.title = summary.title; card.updatedAt = max(card.updatedAt, summary.updatedAt); card.turnCount = summary.turnCount
+                card.lastUserMessageAt = max(card.lastUserMessageAt, summary.lastUserMessageAt)
                 card.mayHaveScheduledJobs = summary.mayHaveScheduledJobs
                 if summary.presentationUpdatedAt >= card.presentationUpdatedAt {
                     card.presentationStatus = summary.presentationStatus
@@ -2166,6 +2167,7 @@ final class InboxModel: ObservableObject {
                 sourceCursor: max(cursor, card.latestCursor), sourceRowID: hasNewer ? nil : rows.last?.id))
         }
         attachmentDrafts[card.id] = nil; attachmentErrors[card.id] = nil
+        if let index = cards.firstIndex(where: { $0.id == card.id }) { cards[index].lastUserMessageAt = Date().timeIntervalSince1970 * 1000 }
         pending.append(message); drafts[card.id] = ""; selectedContext[card.id] = nil; excludedContext[card.id] = nil; busy.insert(card.id); notice = nil; persist()
         let epoch = generation
         if target != nil { startSteering(message.id) }
@@ -2786,7 +2788,7 @@ final class InboxModel: ObservableObject {
         prepareAgent(id)
     }
     private func newConversationCard(_ id: String) -> AgentCard {
-        var card = AgentCard(id: id, title: "New agent", updatedAt: Date().timeIntervalSince1970 * 1000)
+        var card = AgentCard(id: id, title: "New agent", updatedAt: Date().timeIntervalSince1970 * 1000, lastUserMessageAt: 0)
         card.checked = true; card.status = "Idle"; card.preview = "Send a message to begin."
         return card
     }

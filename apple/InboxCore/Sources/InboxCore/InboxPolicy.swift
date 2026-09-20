@@ -3,6 +3,7 @@ import Foundation
 public struct AgentCard: Identifiable, Equatable, Sendable {
     public let id: String
     public var title: String
+    public var lastUserMessageAt: Double
     public var updatedAt: Double
     public var turnCount: Int
     /// False only when the service knows this conversation has no schedules.
@@ -50,9 +51,13 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
     public private(set) var activitySummary = "Working"
     public private(set) var activityDetail = ""
     public private(set) var outcomeSummary = ""
-    public init(id: String, title: String, updatedAt: Double = 0, turnCount: Int = 0, mayHaveScheduledJobs: Bool = true) {
+    public init(id: String, title: String, updatedAt: Double = 0, turnCount: Int = 0, mayHaveScheduledJobs: Bool = true, lastUserMessageAt: Double? = nil) {
         self.id = id; self.title = title; self.updatedAt = updatedAt; self.turnCount = turnCount
         self.mayHaveScheduledJobs = mayHaveScheduledJobs
+        self.lastUserMessageAt = lastUserMessageAt ?? updatedAt
+    }
+    public static func mostRecentlyMessagedFirst(_ lhs: Self, _ rhs: Self) -> Bool {
+        lhs.lastUserMessageAt != rhs.lastUserMessageAt ? lhs.lastUserMessageAt > rhs.lastUserMessageAt : lhs.id < rhs.id
     }
     /// Historical conversations follow server activity, with a stable tie break.
     public static func mostRecentFirst(_ lhs: Self, _ rhs: Self) -> Bool {

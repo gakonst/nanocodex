@@ -7,6 +7,7 @@ export type AgentPresentation = {
   activity?: string;
   activityTurnId?: string;
   updatedAt: number;
+  lastUserMessageAt?: number;
 };
 export const PRESENTATION_MODEL = "gpt-5.6-luna";
 const INTERVAL = 20_000;
@@ -52,7 +53,14 @@ export class AgentPresentationWriter {
     private waitUntil: (promise: Promise<unknown>) => void) {
     storage.sql.exec("CREATE TABLE IF NOT EXISTS agent_presentation (singleton INTEGER PRIMARY KEY CHECK(singleton=1), value TEXT NOT NULL, delivered_revision INTEGER NOT NULL DEFAULT 0)");
     const row = storage.sql.exec<{ value: string }>("SELECT value FROM agent_presentation WHERE singleton=1").toArray()[0];
-    this.#value = row ? JSON.parse(row.value) : { revision: 0, status: "idle", activeTurnIds: [], updatedAt: 0 };
+    this.#value = row ? JSON.parse(row.value) : { revision: 0, status: "idle", activeTurnIds: [], updatedAt: 0, lastUserMessageAt: 0 };
+  }
+  recordUserMessage(id: string, at: number): void {
+    this.storage.sql.exec("CREATE TABLE IF NOT EXISTS sidebar_user_messages (id TEXT PRIMARY KEY, sent_at INTEGER NOT NULL)");
+    this.storage.transactionSync(() => {
+      const inserted = this.storage.sql.exec("INSERT OR IGNORE INTO sidebar_user_messages(id,sent_at) VALUES (?,?)", id, at);
+      if (inserted.rowsWritten > 0) this.#save({ ...this.#value, lastUserMessageAt: Math.max(this.#value.lastUserMessageAt ?? 0, at) });
+    });
   }
   observe(status: AgentPresentation["status"], activeTurnIds: string[], prompt: string, turnId?: string, commentary?: string): void {
     if (status !== this.#value.status || JSON.stringify(activeTurnIds) !== JSON.stringify(this.#value.activeTurnIds)) {

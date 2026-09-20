@@ -1901,15 +1901,17 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
         || !["running", "stopping", "completed", "cancelled", "failed", "idle"].includes(value.status)
         || !Array.isArray(value.activeTurnIds) || !value.activeTurnIds.every(id => typeof id === "string")
         || !Number.isFinite(value.updatedAt)
+        || (value.lastUserMessageAt !== undefined && (!Number.isFinite(value.lastUserMessageAt) || value.lastUserMessageAt < 0))
         || (value.title !== undefined && (typeof value.title !== "string" || value.title.length > 56))
         || (value.activity !== undefined && (typeof value.activity !== "string" || value.activity.length > 90))) {
         return json({ error: "invalid_presentation" }, { status: 400 });
       }
-      this.ctx.storage.sql.exec(`UPDATE agent_registry SET presentation = ?,
+      this.ctx.storage.sql.exec(`UPDATE agent_registry SET presentation = json_set(?, '$.lastUserMessageAt',
+        COALESCE(?, json_extract(presentation, '$.lastUserMessageAt'), CASE WHEN turn_count > 0 THEN updated_at ELSE 0 END)),
         title = COALESCE(?, title)
         WHERE id = ? AND deleted_at IS NULL
           AND COALESCE(json_extract(presentation, '$.revision'), 0) < ?`,
-        JSON.stringify(value), value.title ?? null, presentationMatch[1]!, value.revision);
+        JSON.stringify(value), value.lastUserMessageAt ?? null, value.title ?? null, presentationMatch[1]!, value.revision);
       return new Response(null, { status: 204 });
     }
     const activityMatch = url.pathname.match(/^\/agents\/([0-9a-f-]{36})\/activity$/);

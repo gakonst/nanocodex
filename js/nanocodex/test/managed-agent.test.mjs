@@ -317,7 +317,7 @@ test("managed Agent covers account-scoped create, list, get, and delete", async 
   const listed = await Agent.list(clientOptions);
   assert.deepEqual(listed.map((agent) => agent.id), [agentId]);
   assert.deepEqual(listed[0].summary, {
-    title: "First task", createdAt: 10, updatedAt: 20, turnCount: 3,
+    title: "First task", createdAt: 10, updatedAt: 20, turnCount: 3, lastUserMessageAt: 20,
   });
   assert.equal(Agent.open(agentId, clientOptions).id, agentId);
   assert.equal((await Agent.get(agentId, clientOptions)).id, agentId);
@@ -2289,9 +2289,10 @@ test("atomic create-and-prompt forwards caller location at first admission", asy
 test("agent listings retain bounded sidebar metadata and tolerate legacy summaries", async () => {
   const presentation = { revision: 2, status: "running", activeTurnIds: ["turn"], activityTurnId: "turn", activity: "I'm checking sidebar state", updatedAt: 30 };
   const fetch = async () => Response.json({ data: [agentId], summaries: {
-    [agentId]: { title: "Fix sidebar", created_at: 10, updated_at: 20, turn_count: 1, presentation },
+    [agentId]: { title: "Fix sidebar", created_at: 10, updated_at: 20, turn_count: 1, last_user_message_at: 15, presentation },
   } });
   const agents = await Agent.list({ baseUrl: "https://example.test", apiKey, fetch });
+  assert.equal(agents[0].summary.lastUserMessageAt, 15);
   assert.deepEqual(agents[0].summary.presentation, presentation);
   assert.equal(Object.isFrozen(agents[0].summary.presentation.activeTurnIds), true);
 });

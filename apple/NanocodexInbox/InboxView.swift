@@ -464,6 +464,11 @@ private struct InboxHeaderGlass: ViewModifier {
 }
 
 /// Navigation uses roster summaries only, without parsing Markdown or starting preview streams.
+private struct SidebarRecency: Equatable {
+    let id: String
+    let sentAt: Double
+}
+
 private struct ConversationDrawer: View {
     @ObservedObject var model: InboxModel
     let select: (String) -> Void
@@ -480,7 +485,7 @@ private struct ConversationDrawer: View {
          create: @escaping () -> Void, settings: @escaping () -> Void) {
         self.model = model; self.select = select; self.close = close
         self.create = create; self.settings = settings
-        _order = State(initialValue: model.cards.sorted(by: AgentCard.mostRecentFirst).map(\.id))
+        _order = State(initialValue: model.cards.sorted(by: AgentCard.mostRecentlyMessagedFirst).map(\.id))
     }
 
     private var visibleCards: [AgentCard] {
@@ -590,12 +595,9 @@ private struct ConversationDrawer: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation-drawer")
         .accessibilityAction(.escape, close)
-        .onChange(of: model.cards.map(\.id)) { _, ids in
-            // Streaming updates must not move a different row beneath a finger.
-            let available = Set(ids)
-            order.removeAll { !available.contains($0) }
-            let known = Set(order)
-            order.append(contentsOf: ids.filter { !known.contains($0) })
+        .onChange(of: model.cards.map { SidebarRecency(id: $0.id, sentAt: $0.lastUserMessageAt) }) { _, _ in
+            // Only user messages can move an existing conversation.
+            order = model.cards.sorted(by: AgentCard.mostRecentlyMessagedFirst).map(\.id)
         }
     }
 }

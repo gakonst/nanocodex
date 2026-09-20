@@ -198,7 +198,7 @@ agent was deleted during discovery. Only confirmed removals become empty results
 advertised but unreadable agents and authorization failures retain their warning.
 
 When no conversation is available, the empty page offers an action to start one.
-The sidebar opens sorted by most recent activity and retains its order while replies
+The sidebar sorts by your last sent message, newest first, and retains its order while replies
 arrive. Searching keeps the current conversation selected.
 Live changes preserve the selected conversation;
 new work does not steal focus while typing. Drafts belong to agent IDs. Multiple

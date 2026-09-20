@@ -234,6 +234,7 @@ export type AgentPresentation = Readonly<{
   title?: string;
   activity?: string;
   activityTurnId?: string;
+  lastUserMessageAt?: number;
   updatedAt: number;
 }>;
 
@@ -242,6 +243,7 @@ export type Summary = Readonly<{
   createdAt: number;
   updatedAt: number;
   turnCount: number;
+  lastUserMessageAt?: number;
   presentation?: AgentPresentation;
 }>;
 

@@ -2942,7 +2942,7 @@ final class InboxUITests: XCTestCase {
         capture(app, "accessibility-text-sidebar-and-settings")
     }
 
-    func testBrowserBackRestoresDraftAndOverviewUsesLatestActivity() {
+    func testBrowserBackRestoresDraftAndOverviewUsesLastSentMessage() {
         let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
         selectTab(app, id: "durability", title: "Make long sessions bulletproof")
         composer(app).tap(); composer(app).typeText("Retain my draft when going back")
@@ -2964,7 +2964,7 @@ final class InboxUITests: XCTestCase {
         let cards = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "conversation-row:"))
         XCTAssertTrue(cards.firstMatch.waitForExistence(timeout: 5))
         XCTAssertEqual(cards.element(boundBy: 0).identifier, "conversation-row:hands")
-        capture(app, "overview-sorted-by-latest-activity")
+        capture(app, "overview-sorted-by-last-sent-message")
         app.buttons["conversation-drawer-close"].tap()
         capture(app, "top-tabs-bottom-browser-controls")
     }

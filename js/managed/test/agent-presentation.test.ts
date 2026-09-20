@@ -6,6 +6,28 @@ import { AgentPresentationWriter, cleanPresentationText, generatePresentationTex
 const runtime = env as Parameters<typeof worker.fetch>[1];
 
 describe("agent sidebar presentation", () => {
+  it("keeps user-message recency independent of output, continuations and retries", async () => {
+    await runInDurableObject(runtime.NANOCODEX_USERS.getByName(crypto.randomUUID()), async (_, state) => {
+      const pending: Promise<unknown>[] = [], published: AgentPresentation[] = [];
+      const writer = new AgentPresentationWriter(state.storage, async value => { published.push(value); }, async () => undefined, p => pending.push(p));
+      writer.observe("running", ["cron:initial"], "");
+      await Promise.all(pending);
+      expect(published.at(-1)?.lastUserMessageAt).toBe(0);
+      writer.recordUserMessage("turn:first", 10);
+      writer.observe("running", ["cron:later"], "");
+      writer.observe("completed", [], "");
+      await Promise.all(pending);
+      expect(published.at(-1)?.lastUserMessageAt).toBe(10);
+      const restored = new AgentPresentationWriter(state.storage, async value => { published.push(value); }, async () => undefined, p => pending.push(p));
+      restored.recordUserMessage("turn:first", 100);
+      await restored.flush();
+      expect(published.at(-1)?.lastUserMessageAt).toBe(10);
+      restored.recordUserMessage("steer:second", 20);
+      await Promise.all(pending);
+      expect(published.at(-1)?.lastUserMessageAt).toBe(20);
+    });
+  });
+
   it("uses the small model and bounds source and output", async () => {
     let body: Record<string, any> = {};
     const fetcher = { fetch: async (request: Request) => {
@@ -68,8 +90,10 @@ describe("agent sidebar presentation", () => {
     const post = (value: AgentPresentation) => stub.fetch(`https://user.internal/agents/${id}/presentation`, {
       method: "POST", body: JSON.stringify(value),
     });
-    expect((await post({ revision: 3, status: "completed", activeTurnIds: [], updatedAt: 30, title: "Fix sidebar" })).status).toBe(204);
+    expect((await post({ revision: 3, status: "completed", activeTurnIds: [], updatedAt: 30, title: "Fix sidebar", lastUserMessageAt: 15 })).status).toBe(204);
     await post({ revision: 2, status: "running", activeTurnIds: ["a"], updatedAt: 20, activity: "I'm checking state" });
-    expect((await listAgents(runtime, owner))[0]).toMatchObject({ title: "Fix sidebar", presentation: { revision: 3, status: "completed" } });
+    expect((await listAgents(runtime, owner))[0]).toMatchObject({ title: "Fix sidebar", presentation: { revision: 3, status: "completed", lastUserMessageAt: 15 } });
+    await post({ revision: 4, status: "running", activeTurnIds: ["scheduled"], updatedAt: 40 });
+    expect((await listAgents(runtime, owner))[0]?.presentation?.lastUserMessageAt).toBe(15);
   });
 });

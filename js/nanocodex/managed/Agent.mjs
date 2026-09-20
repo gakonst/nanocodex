@@ -509,6 +509,7 @@ function managedSummary(value) {
     createdAt: value.created_at,
     updatedAt: value.updated_at,
     turnCount: value.turn_count,
+    lastUserMessageAt: nonnegativeNumber(value.last_user_message_at) ? value.last_user_message_at : value.turn_count > 0 ? value.updated_at : 0,
     ...(validPresentation(value.presentation) ? { presentation: Object.freeze({ ...value.presentation, activeTurnIds: Object.freeze([...value.presentation.activeTurnIds]) }) } : {}),
   });
 }
