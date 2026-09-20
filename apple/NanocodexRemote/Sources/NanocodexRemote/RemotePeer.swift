@@ -68,6 +68,7 @@ public final class RemotePeer: NSObject {
     private var localCandidates: [RemoteSignal] = []
     private var negotiationDeadline: Task<Void, Never>?
     private var closed = false
+    nonisolated private let inputMailbox = RemoteInputMailbox()
     private let publishing: Bool
     private var gatheredCandidates = 0
     private var receivedCandidates = 0
@@ -356,6 +357,7 @@ public final class RemotePeer: NSObject {
 
     public func close() {
         guard !closed else { return }; closed = true
+        inputMailbox.close()
         negotiationDeadline?.cancel(); negotiationDeadline = nil
         for observer in audioObservers { NotificationCenter.default.removeObserver(observer) }
         audioObservers.removeAll()
@@ -429,8 +431,22 @@ extension RemotePeer: RTCPeerConnectionDelegate, RTCDataChannelDelegate {
         }
     }
     nonisolated public func dataChannel(_ dataChannel: RTCDataChannel, didReceiveMessageWith buffer: RTCDataBuffer) {
-        guard buffer.data.count <= 8192 else { dataChannel.close(); return }
         let isMotion = dataChannel.label == "remote-motion-v1"
-        Task { @MainActor [weak self] in guard let self, !closed else { return }; onData(buffer.data, isMotion) }
+        guard inputMailbox.append(buffer.data, motion: isMotion) else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !closed {
+                switch inputMailbox.take() {
+                case .idle: return
+                case .overflow: close(); return
+                case .packets(let batch):
+                    for packet in batch {
+                        guard !closed else { return }
+                        onData(packet.data, packet.motion)
+                    }
+                }
+                await Task.yield()
+            }
+        }
     }
 }

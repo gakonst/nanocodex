@@ -70,6 +70,8 @@ function fixture(t: TestContext, hand: RemoteHand = screen) {
     connectionState = "new";
     remoteDescription?: RTCSessionDescriptionInit; localDescription?: RTCSessionDescriptionInit;
     appliedCandidates: unknown[] = []; calls: string[] = [];
+    transceivers: { receiver: { track: { kind: string } }; sender: { replaceTrack(track: unknown): Promise<void> }; stopped: boolean; direction: string; currentDirection: string | null }[] = [];
+    getTransceivers() { return this.transceivers; }
     config: RTCConfiguration;
     onconnectionstatechange?: (() => void) | null; ondatachannel?: ((event: { channel: Channel }) => void) | null;
     ontrack?: ((event: { track: unknown }) => void) | null;
@@ -98,7 +100,10 @@ function fixture(t: TestContext, hand: RemoteHand = screen) {
   const drawn: Bitmap[] = [], decoded: Blob[] = [];
   let decode = async (_source: Blob): Promise<Bitmap> => ({ width: 640, height: 360, close() {} });
   const canvas = { width: 0, height: 0, getContext: () => ({ drawImage(bitmap: Bitmap) { drawn.push(bitmap); } }) };
+  let capture = async (): Promise<MediaStream> => new MediaStream();
+  const captures: MediaStreamConstraints[] = [];
   const globals = {
+    navigator: { mediaDevices: { getUserMedia: (constraints: MediaStreamConstraints) => { captures.push(constraints); return capture(); } } },
     location: new URL("https://account.example"), RTCPeerConnection: Peer, WebSocket: Socket,
     MediaStream: class {
       tracks: any[] = [];
@@ -125,7 +130,8 @@ function fixture(t: TestContext, hand: RemoteHand = screen) {
   const session = new RemoteBrowserSession(hand, video as HTMLVideoElement, () => {}, canvas as unknown as HTMLCanvasElement);
   t.after(() => session.close());
   return {
-    peers, sockets, requests, session, video, canvas, drawn, decoded,
+    peers, sockets, requests, session, video, canvas, drawn, decoded, captures,
+    setCapture(value: typeof capture) { capture = value; },
     setDecode(value: typeof decode) { decode = value; },
     setIceResponse(value: typeof iceResponse) { iceResponse = value; },
     get catalogReads() { return catalogReads; },
@@ -895,4 +901,280 @@ test("retired decoder completion cannot drain or change a reconnect's pending fr
   assert.deepEqual(f.drawn.map(bitmap => bitmap.width), [641, 642]);
   assert.equal(f.session.state.connected, true);
   assert.deepEqual(f.sockets[1]!.sent, [{ type: "frame_request", count: 1 }, { type: "frame_request", count: 1 }]);
+});
+
+async function microphoneFixture(t: TestContext, direction = "sendrecv", capability: unknown = true) {
+  const f = fixture(t);
+  await f.session.connect();
+  const peer = f.peers[0]!;
+  const attached: unknown[] = [];
+  let replace = async (_track: unknown) => {};
+  const transceiver = {
+    receiver: { track: { kind: "audio" } }, stopped: false,
+    direction: "recvonly", currentDirection: direction,
+    sender: { async replaceTrack(track: unknown) { attached.push(track); await replace(track); } },
+  };
+  peer.transceivers.push(transceiver);
+  f.sockets[0]!.message({ type: "signal", signal: { type: "offer", sdp: "audio-offer" } }); await flush();
+  peer.open(); f.session.takeControl();
+  peer.reliable.message({ type: "granted", generation: "microphone-lease", ...(capability === "legacy" ? {} : { microphone: capability }) });
+  const track = {
+    kind: "audio", enabled: true, readyState: "live", onended: null as (() => void) | null, stops: 0,
+    stop() { this.readyState = "ended"; this.stops++; },
+  };
+  const stream = new MediaStream(); stream.addTrack(track as unknown as MediaStreamTrack);
+  f.setCapture(async () => stream);
+  return {
+    ...f, peer, transceiver, attached, track, stream,
+    setReplace(value: typeof replace) { replace = value; },
+    request() { f.session.setMicrophoneEnabled(true); return peer.reliable.sent.at(-1); },
+    ack(request = peer.reliable.sent.at(-1), enabled = true) { peer.reliable.message({ ...request, enabled }); },
+  };
+}
+
+test("microphone reserves a return sender without capture, then requires explicit opt-in and matching ACK", async t => {
+  const f = await microphoneFixture(t);
+  assert.equal(f.transceiver.direction, "sendrecv");
+  assert.equal(f.session.state.microphoneAvailable, true);
+  assert.equal(f.captures.length, 0);
+  assert.deepEqual(f.attached, []);
+  const request = f.request();
+  assert.equal(request.type, "microphone"); assert.equal(request.generation, "microphone-lease");
+  assert.equal(request.enabled, true); assert.match(request.requestID, /^[a-f0-9-]{36}$/);
+  assert.equal(f.session.state.microphonePending, true); assert.equal(f.captures.length, 0);
+  f.ack({ ...request, generation: "old" }); f.ack({ ...request, requestID: "old" });
+  assert.equal(f.captures.length, 0);
+  f.ack(request); f.ack(request); await flush();
+  assert.deepEqual(f.captures, [{ audio: true, video: false }]);
+  assert.deepEqual(f.attached, [f.track]); assert.equal(f.track.enabled, true);
+  assert.equal(f.session.state.microphoneEnabled, true); assert.equal(f.session.state.microphonePending, false);
+  f.session.setMicrophoneEnabled(true); f.ack(request); await flush();
+  assert.equal(f.captures.length, 1, "repeated enable and duplicate ACK cannot reopen capture");
+});
+
+test("microphone requires host capability, browser capture support and a negotiated return direction", async t => {
+  for (const direction of ["recvonly", "inactive"]) {
+    await t.test(direction, async t => {
+      const f = await microphoneFixture(t, direction);
+      assert.equal(f.session.state.microphoneAvailable, false);
+      f.request(); assert.equal(f.captures.length, 0);
+      assert.equal(f.peer.reliable.sent.filter(value => value.type === "microphone").length, 0);
+    });
+  }
+  for (const capability of [false, "legacy"]) {
+    await t.test(`capability ${capability}`, async t => {
+      const f = await microphoneFixture(t, "sendrecv", capability);
+      assert.equal(f.session.state.microphoneAvailable, false); f.request(); assert.equal(f.captures.length, 0);
+    });
+  }
+  await t.test("browser capture unavailable", async t => {
+    const f = await microphoneFixture(t);
+    Object.defineProperty(navigator, "mediaDevices", { value: undefined });
+    f.session.setMicrophoneEnabled(true);
+    assert.equal(f.peer.reliable.sent.filter(value => value.type === "microphone").length, 0);
+  });
+});
+
+test("microphone ACK timeout disables the host request and ignores its late ACK", async t => {
+  const f = await microphoneFixture(t), request = f.request();
+  await f.tick(5000);
+  assert.equal(f.session.state.microphonePending, false);
+  assert.match(f.session.state.microphoneError!, /did not respond/);
+  assert.equal(f.peer.reliable.sent.at(-1).enabled, false);
+  f.ack(request); await flush(); assert.equal(f.captures.length, 0);
+  const retry = f.request(); assert.notEqual(retry.requestID, request.requestID);
+  f.ack(request); assert.equal(f.captures.length, 0);
+  f.ack(retry); await flush(); assert.equal(f.session.state.microphoneEnabled, true);
+});
+
+for (const phase of ["ACK", "permission", "sender", "active"] as const) {
+  for (const action of ["mute", "release", "revoke", "disconnect", "background", "close"] as const) {
+    test(`microphone ${phase}: ${action} stops capture and ignores stale completion`, async t => {
+      const f = await microphoneFixture(t);
+      const permission = deferred<MediaStream>(), replacement = deferred<void>();
+      if (phase === "permission") f.setCapture(() => permission.promise);
+      if (phase === "sender") f.setReplace(track => track ? replacement.promise : Promise.resolve());
+      const request = f.request();
+      if (phase !== "ACK") { f.ack(request); await flush(); }
+      if (action === "mute") f.session.setMicrophoneEnabled(false);
+      else if (action === "release") f.session.releaseControl();
+      else if (action === "revoke") f.peer.reliable.message({ type: "revoked", generation: "microphone-lease" });
+      else if (action === "disconnect") { f.peer.connectionState = "disconnected"; f.peer.onconnectionstatechange?.(); }
+      else if (action === "background") f.session.suspend(60_000);
+      else f.session.close();
+      assert.equal(f.session.state.microphoneEnabled, false); assert.equal(f.session.state.microphonePending, false);
+      if (phase === "sender" || phase === "active") {
+        assert.equal(f.track.readyState, "ended", "capture must stop synchronously, before sender cleanup finishes");
+        assert.equal(f.track.enabled, false);
+      }
+      permission.resolve(f.stream); replacement.resolve(); f.ack(request); await flush();
+      assert.equal(f.session.state.microphoneEnabled, false);
+      if (phase === "ACK") assert.equal(f.captures.length, 0);
+      else assert.equal(f.track.readyState, "ended");
+      if (phase === "permission") assert.equal(f.attached.includes(f.track), false);
+      if (phase === "sender" || phase === "active") assert.equal(f.attached.at(-1), null);
+    });
+  }
+}
+
+test("microphone permission and sender errors stop tracks, disable host input and permit explicit retry", async t => {
+  for (const failure of ["permission", "sender", "no track"]) {
+    await t.test(failure, async t => {
+      const f = await microphoneFixture(t);
+      if (failure === "permission") f.setCapture(async () => { throw new Error("permission denied"); });
+      if (failure === "sender") f.setReplace(async () => { throw new Error("cannot send"); });
+      if (failure === "no track") f.setCapture(async () => new MediaStream());
+      f.ack(f.request()); await flush();
+      assert.equal(f.session.state.microphoneEnabled, false); assert.equal(f.session.state.microphonePending, false);
+      assert.match(f.session.state.microphoneError!, /access is unavailable/);
+      assert.equal(f.peer.reliable.sent.at(-1).enabled, false);
+      if (failure === "sender") assert.equal(f.track.readyState, "ended");
+      const nextTrack = { ...f.track, readyState: "live", stops: 0 };
+      const nextStream = new MediaStream(); nextStream.addTrack(nextTrack as unknown as MediaStreamTrack);
+      f.setCapture(async () => nextStream); f.setReplace(async () => {});
+      f.ack(f.request()); await flush();
+      assert.equal(f.session.state.microphoneEnabled, true); assert.equal(f.session.state.microphoneError, undefined);
+    });
+  }
+});
+
+test("microphone pending permission times out and its eventual stream is stopped", async t => {
+  const f = await microphoneFixture(t), permission = deferred<MediaStream>();
+  f.setCapture(() => permission.promise); f.ack(f.request());
+  await f.tick(20_000); f.sockets[0]!.message({ type: "renewed" }); await flush();
+  await f.tick(10_000);
+  assert.match(f.session.state.microphoneError!, /timed out/);
+  permission.resolve(f.stream); await flush();
+  assert.equal(f.track.readyState, "ended"); assert.equal(f.attached.includes(f.track), false);
+});
+
+test("host microphone rejection and later receiver failure preserve speaker playback", async t => {
+  const f = await microphoneFixture(t);
+  const speaker = { kind: "audio", stop() { throw new Error("speaker must remain independent"); } };
+  f.peer.ontrack?.({ track: speaker }); await f.session.setAudioEnabled(true);
+  const playback = f.video.srcObject;
+  const denied = f.request(); f.ack(denied, false); await flush();
+  assert.equal(f.captures.length, 0); assert.match(f.session.state.microphoneError!, /unavailable/);
+  const accepted = f.request(); f.ack(accepted); await flush();
+  f.peer.reliable.message({ type: "revoked", generation: "stale-lease" });
+  assert.equal(f.session.state.microphoneEnabled, true);
+  f.ack(accepted, false); await flush();
+  assert.equal(f.track.readyState, "ended"); assert.equal(f.session.state.microphoneEnabled, false);
+  assert.equal(f.session.state.audioEnabled, true); assert.equal(f.video.muted, false);
+  assert.equal(f.video.srcObject, playback); assert.equal(f.session.state.audioAvailable, true);
+});
+
+test("microphone device ending disables the host while keeping the control lease", async t => {
+  const f = await microphoneFixture(t); f.ack(f.request()); await flush();
+  f.track.readyState = "ended"; f.track.onended?.(); await flush();
+  assert.equal(f.session.state.microphoneEnabled, false); assert.equal(f.session.state.controlling, true);
+  assert.match(f.session.state.microphoneError!, /device changed/);
+  assert.equal(f.peer.reliable.sent.at(-1).enabled, false);
+});
+
+test("matching malformed microphone ACK tears down while stale malformed ACK is ignored", async t => {
+  const f = await microphoneFixture(t), request = f.request();
+  f.peer.reliable.message({ ...request, requestID: "old", enabled: "yes" });
+  assert.equal(f.session.state.connected, true);
+  f.peer.reliable.message({ ...request, enabled: "yes" });
+  assert.equal(f.session.state.connected, false); assert.equal(f.captures.length, 0);
+});
+
+test("microphone sender replacement is serialized across mute and explicit re-enable", async t => {
+  const f = await microphoneFixture(t), replacement = deferred<void>();
+  f.setReplace(track => track === f.track ? replacement.promise : Promise.resolve());
+  const first = f.request(); f.ack(first); await flush();
+  f.session.setMicrophoneEnabled(false);
+  const newTrack = { ...f.track, readyState: "live", stops: 0 };
+  const newStream = new MediaStream(); newStream.addTrack(newTrack as unknown as MediaStreamTrack);
+  f.setCapture(async () => newStream);
+  const next = f.request(); f.ack(first); f.ack(next); await flush();
+  assert.equal(f.session.state.microphoneEnabled, false);
+  replacement.resolve(); await flush();
+  assert.deepEqual(f.attached, [f.track, null, newTrack]);
+  assert.equal(f.track.readyState, "ended"); assert.equal(newTrack.enabled, true);
+  assert.equal(f.session.state.microphoneEnabled, true);
+});
+
+test("microphone never resumes on reconnect, and a new peer is independent of old sender work", async t => {
+  const f = await microphoneFixture(t), oldReplacement = deferred<void>();
+  f.setReplace(track => track ? oldReplacement.promise : Promise.resolve());
+  const oldRequest = f.request(); f.ack(oldRequest); await flush();
+  f.session.reconnect(); await flush();
+  const nextPeer = f.peers[1]!;
+  const attached: unknown[] = [];
+  nextPeer.transceivers.push({ ...f.transceiver, sender: { async replaceTrack(track: unknown) { attached.push(track); } } });
+  f.sockets[1]!.message({ type: "signal", signal: { type: "offer", sdp: "reconnected" } }); await flush();
+  nextPeer.open(); f.session.takeControl();
+  nextPeer.reliable.message({ type: "granted", generation: "new-lease", microphone: true });
+  nextPeer.reliable.message(oldRequest); await flush();
+  assert.equal(f.session.state.microphoneAvailable, true);
+  assert.equal(f.session.state.microphoneEnabled, false); assert.equal(f.captures.length, 1);
+  const nextTrack = { ...f.track, readyState: "live", stops: 0 };
+  const nextStream = new MediaStream(); nextStream.addTrack(nextTrack as unknown as MediaStreamTrack);
+  f.setCapture(async () => nextStream);
+  f.session.setMicrophoneEnabled(true); nextPeer.reliable.message(nextPeer.reliable.sent.at(-1)); await flush();
+  assert.equal(f.session.state.microphoneEnabled, true); assert.deepEqual(attached, [nextTrack]);
+  oldReplacement.resolve(); await flush();
+  assert.deepEqual(attached, [nextTrack]); assert.equal(nextTrack.enabled, true); assert.equal(f.track.readyState, "ended");
+});
+
+test("frames-v1 never advertises or captures a microphone even with a microphone grant", async t => {
+  const f = fixture(t, frameHand);
+  await f.session.connect(); f.sockets[0]!.message({ type: "ready", connection_id: "frames-viewer" }); await flush();
+  f.sockets[0]!.message(frame()); await flush(); f.session.takeControl();
+  f.sockets[0]!.message({ type: "control", data: { type: "granted", generation: "frames-mic", microphone: true } }); await flush();
+  assert.equal(f.session.state.microphoneAvailable, false);
+  f.session.setMicrophoneEnabled(true);
+  assert.equal(f.captures.length, 0);
+});
+
+test("malformed microphone capability is rejected before capture", async t => {
+  const f = await microphoneFixture(t, "sendrecv", "yes");
+  assert.equal(f.session.state.connected, false); assert.equal(f.captures.length, 0);
+});
+
+test("gamepad snapshots require the current host capability and use reliable lease sequencing", async t => {
+  const f = fixture(t); await f.session.connect(); f.peers[0]!.open();
+  const channel = f.peers[0]!.reliable;
+  const gamepad = { leftX: 0.5, leftY: -0.5, rightX: 0, rightY: 0, leftTrigger: 0, rightTrigger: 1, buttons: ["a", "leftShoulder"] };
+  f.session.input({ kind: "gamepad", gamepad }); assert.deepEqual(channel.sent, []);
+  f.session.takeControl(); channel.message({ type: "granted", generation: "legacy" });
+  f.session.input({ kind: "gamepad", gamepad });
+  assert.equal(f.session.state.gamepadAvailable, false);
+  assert.deepEqual(channel.sent, [{ type: "acquire" }]);
+  f.session.releaseControl(); channel.message({ type: "revoked", generation: "legacy" });
+  f.session.takeControl(); channel.message({ type: "granted", generation: "controller", gamepad: true });
+  assert.equal(f.session.state.gamepadAvailable, true);
+  channel.message({ type: "revoked", generation: "stale" });
+  assert.equal(f.session.state.gamepadAvailable, true);
+  f.session.input({ kind: "gamepad", gamepad });
+  assert.deepEqual(channel.sent.at(-1), { kind: "gamepad", gamepad, sequence: 1, generation: "controller" });
+  assert.deepEqual(f.peers[0]!.motion.sent, []);
+  f.session.releaseControl();
+  assert.equal(f.session.state.gamepadAvailable, false);
+  const count = channel.sent.length; f.session.input({ kind: "gamepad", gamepad }); assert.equal(channel.sent.length, count);
+  channel.message({ type: "revoked", generation: "controller" });
+  f.session.takeControl(); channel.message({ type: "granted", generation: "next", gamepad: false });
+  assert.equal(f.session.state.gamepadAvailable, false);
+  f.session.input({ kind: "gamepad", gamepad }); assert.equal(channel.sent.at(-1).type, "acquire");
+});
+
+for (const action of ["revoke", "background", "disconnect", "close"] as const) {
+  test(`gamepad capability clears on ${action}`, async t => {
+    const f = fixture(t); await f.session.connect(); f.peers[0]!.open();
+    f.session.takeControl(); f.peers[0]!.reliable.message({ type: "granted", generation: "gamepad", gamepad: true });
+    assert.equal(f.session.state.gamepadAvailable, true);
+    if (action === "revoke") f.peers[0]!.reliable.message({ type: "revoked", generation: "gamepad" });
+    else if (action === "background") f.session.suspend(60_000);
+    else if (action === "disconnect") f.peers[0]!.fail();
+    else f.session.close();
+    assert.equal(f.session.state.gamepadAvailable, false);
+  });
+}
+
+test("malformed gamepad capability rejects the grant", async t => {
+  const f = fixture(t); await f.session.connect(); f.peers[0]!.open();
+  f.session.takeControl(); f.peers[0]!.reliable.message({ type: "granted", generation: "invalid", gamepad: "yes" });
+  assert.equal(f.session.state.connected, false); assert.equal(f.session.state.gamepadAvailable, false);
 });

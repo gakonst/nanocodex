@@ -414,8 +414,11 @@ async fn release(
         video.revoke_microphone(&owner);
     }
     let microphone_ack = socket.microphone.stopped();
-    let _ =
-        tokio::time::timeout(Duration::from_secs(3), backend(json!({"action":"release"}))).await;
+    // A cleared lease is not proof that the native device released its holds.
+    // Do not acknowledge release or grant a new owner after a failed cleanup.
+    if call(backend, json!({"action":"release"}), Duration::from_secs(3)).await["status"] != "ok" {
+        return Err(SessionError::Closed);
+    }
     if let Some(ack) = microphone_ack {
         send(socket, ack).await?;
     }
@@ -986,6 +989,40 @@ mod tests {
         .unwrap();
         (publisher, peer.await.unwrap())
     }
+    #[tokio::test]
+    async fn failed_native_release_cannot_grant_control() {
+        for failure in ["status", "error", "timeout"] {
+            let backend: Backend = Arc::new(move |input| {
+                Box::pin(async move {
+                    if input["action"] == "release" {
+                        match failure {
+                            "status" => return Ok(json!({"status":"unavailable"})),
+                            "error" => return Err(error("native release failed")),
+                            _ => std::future::pending::<()>().await,
+                        }
+                    }
+                    Ok(json!({"status":"ok","jpeg":"/9j/a","width":1,"height":1}))
+                })
+            });
+            let (publisher, mut wire) = test_session(backend, Options::default()).await;
+            wire_send(
+                &mut wire,
+                json!({"type":"control","viewer_id":"v","data":{"type":"acquire"}}),
+            )
+            .await;
+            // Closing the session fences every viewer. It must not continue with
+            // a grant when device state is unknown, including on timeout.
+            let next = tokio::time::timeout(Duration::from_secs(5), wire.next())
+                .await
+                .expect("release failure did not close the session");
+            assert!(
+                matches!(next, None | Some(Err(_)) | Some(Ok(Message::Close(_)))),
+                "{failure} release failure sent a control message: {next:?}"
+            );
+            publisher.shutdown().await.unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn human_takeover_cancels_agent_input_before_native_release_and_grant() {
         let events = Arc::new(std::sync::Mutex::new(Vec::new()));
