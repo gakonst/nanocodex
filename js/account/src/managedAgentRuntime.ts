@@ -30,6 +30,7 @@ export type ManagedConversation = Readonly<{
   title: string;
   updatedAt?: number;
   turnCount?: number;
+  presentation?: NonNullable<ManagedAgent["summary"]>["presentation"];
 }>;
 
 export type ManagedConversationSelection = Readonly<{
@@ -181,6 +182,7 @@ function managedConversation(agent: ManagedAgent): ManagedConversation {
     ...(agent.summary === undefined ? {} : {
       updatedAt: agent.summary.updatedAt,
       turnCount: agent.summary.turnCount,
+      ...(agent.summary.presentation ? { presentation: agent.summary.presentation } : {}),
     }),
   });
 }

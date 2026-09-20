@@ -1,3 +1,4 @@
+import { AgentPresentationWriter, generatePresentationText, presentationPending } from "./agent-presentation";
 import { retireSessionProjects, isRetiredProjectCompletion } from "./retired-projects";
 import { downloadPath, downloadBrainFile, downloadHandFile, fileDownloadFailure, FileDownloadError } from "./file-download";
 import { callerContext, type CallerContext } from "./request-origin";
@@ -1636,6 +1637,7 @@ async function managedFetchRoute(
           created_at: summary.createdAt,
           updated_at: summary.updatedAt,
           turn_count: summary.turnCount,
+          ...(summary.presentation ? { presentation: summary.presentation } : {}),
           ...(principal.connectGrant ? {} : { may_have_scheduled_jobs: summary.mayHaveScheduledJobs }),
         }])),
       });
@@ -3027,6 +3029,7 @@ export class DurableAgentSession extends DurableComputerSession {
   readonly #agentConstructions = new Set<AgentConstructionOwnership>();
   #agentShutdownPromise?: Promise<void>;
   #managedBrowserRuntimePromise?: Promise<ManagedBrowserRuntime>;
+  #presentation?: AgentPresentationWriter;
   #events?: EventWatcher;
   readonly #eventLog: DurableEventLog<StreamMessage>;
   readonly #eventArchive: ManagedEventArchive<StreamMessage>;
@@ -4182,6 +4185,7 @@ export class DurableAgentSession extends DurableComputerSession {
       }
       return;
     }
+    if (presentationPending(this.ctx.storage)) await this.#sidebarPresentation().flush();
     if (this.#operations.nextAlarm() !== undefined) await this.#operations.drain();
     await this.#fireCronTriggers();
     // Archival owns a separate durable retry deadline. It must neither block
@@ -7998,20 +8002,7 @@ export class DurableAgentSession extends DurableComputerSession {
       const owner = this.#credentialBinding?.strategy === "session_v1" || configuration.chatgpt_account_id ? {
         // Adapter lifecycle ownership is keyed by the exact context object.
         ctx: this.ctx,
-        env: { NANOCODEX: scopedManagedModelEgress(
-          this.env.NANOCODEX, this.ctx.id.toString(), this.#credentialSubject(),
-          this.#credentialBinding?.strategy !== "session_v1" || this.env.NANOCODEX_SESSION_MODEL_EGRESS === undefined ? undefined : {
-            binding: this.env.NANOCODEX_SESSION_MODEL_EGRESS,
-            owner: () => sessionCredentialOwner({
-              subject: this.#credentialSubject(), storageId: this.ctx.id.toString(),
-              binding: this.#credentialBinding, session: this.#session(),
-              initialization: this.#initializationOwnership(),
-              deleting: this.#deleting, deleted: this.#deleted,
-              exported: this.#durabilityExported, importPending: this.#durabilityImportState === "pending",
-            }),
-          },
-          configuration.chatgpt_account_id,
-        ) },
+        env: { NANOCODEX: this.#modelEgress() },
       } : this;
       agent = await CloudflareAgent.create(owner, agentOptions);
       cloudflareAgentMs = performance.now() - phaseStartedAt;
@@ -9476,7 +9467,61 @@ export class DurableAgentSession extends DurableComputerSession {
     this.#publish(persistence.event!);
   }
 
+  #modelEgress(): Pick<Fetcher, "fetch"> {
+    return scopedManagedModelEgress(
+      this.env.NANOCODEX, this.ctx.id.toString(), this.#credentialSubject(),
+      this.#credentialBinding?.strategy !== "session_v1" || this.env.NANOCODEX_SESSION_MODEL_EGRESS === undefined ? undefined : {
+        binding: this.env.NANOCODEX_SESSION_MODEL_EGRESS,
+        owner: () => sessionCredentialOwner({
+          subject: this.#credentialSubject(), storageId: this.ctx.id.toString(),
+          binding: this.#credentialBinding, session: this.#session(),
+          initialization: this.#initializationOwnership(),
+          deleting: this.#deleting, deleted: this.#deleted,
+          exported: this.#durabilityExported, importPending: this.#durabilityImportState === "pending",
+        }),
+      },
+      this.#configuration().chatgpt_account_id,
+    );
+  }
+
+  #sidebarPresentation(): AgentPresentationWriter {
+    const session = this.#session()!;
+    return this.#presentation ??= new AgentPresentationWriter(this.ctx.storage, async value => {
+      if (this.#deleting) return;
+      const response = await this.env.NANOCODEX_USERS.getByName(session.owner_id).fetch(
+        `https://user.internal/agents/${session.session_id}/presentation`, {
+          method: "POST", signal: AbortSignal.timeout(5_000),
+          headers: { "content-type": "application/json" }, body: JSON.stringify(value),
+        });
+      await response.body?.cancel();
+      if (!response.ok) throw new Error("presentation delivery failed");
+    }, async (kind, source) => {
+      const text = await generatePresentationText(this.#modelEgress(), this.ctx.id.toString(), kind, source,
+        this.#configuration().chatgpt_account_id);
+      return this.#deleting || this.#deleted || this.#durabilityExported ? undefined : text;
+    }, promise => this.ctx.waitUntil(promise.finally(() => this.#scheduleNextAlarm())));
+  }
+
   #publish(event: DurableEvent<StreamMessage>): void {
+    // Do no sidebar work per token or tool delta. Lifecycle and complete
+    // commentary messages are sufficient to describe current work.
+    const message = event.message;
+    const relevant = ["turn_accepted", "turn_cancelling", "turn_completed", "turn_cancelled", "turn_failed", "turn_retryable"].includes(message.type)
+      || (message.type === "event" && message.agent_id === undefined
+        && message.event.type === "assistant.message" && message.event.payload.phase === "commentary");
+    const session = relevant ? this.#session() : undefined;
+    if (session?.runtime_profile === "managed" && !this.#deleting) {
+      try {
+        const active = this.#activeTurnIds();
+        const status = active.length ? (active.some(id => this.#managedTurn(id)?.state === "cancelling") ? "stopping" : "running")
+          : message.type === "turn_failed" ? "failed" : message.type === "turn_cancelled" ? "cancelled"
+          : message.type === "turn_completed" ? "completed" : undefined;
+        const commentary = message.type === "event" && message.agent_id === undefined
+          && message.event.type === "assistant.message" && message.event.payload.phase === "commentary"
+          && typeof message.event.payload.text === "string" ? message.event.payload.text : undefined;
+        if (status) this.#sidebarPresentation().observe(status, active, message.type === "turn_accepted" ? promptInputText(message.input) : this.#firstPrompt(), event.turn_id ?? undefined, commentary);
+      } catch { /* Presentation failures must never affect execution or event delivery. */ }
+    }
     this.#eventLog.publish(event);
     if (this.#operations.nextAlarm() !== undefined) this.ctx.waitUntil(this.#scheduleNextAlarm());
     this.#broadcast({
@@ -10193,6 +10238,7 @@ export class DurableAgentSession extends DurableComputerSession {
     if (this.#deleting || !this.#sessionId()) return;
     const now = Date.now();
     const targets: number[] = [];
+    if (presentationPending(this.ctx.storage)) targets.push(now + 20_000);
     const webhookAlarm = this.#operations.nextAlarm();
     if (webhookAlarm !== undefined) targets.push(webhookAlarm);
     if (!this.#durabilityExported && this.#durabilityImportState !== "pending") {

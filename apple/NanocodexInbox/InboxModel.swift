@@ -1291,6 +1291,12 @@ final class InboxModel: ObservableObject {
                 var card = retained[summary.id] ?? summary
                 card.title = summary.title; card.updatedAt = max(card.updatedAt, summary.updatedAt); card.turnCount = summary.turnCount
                 card.mayHaveScheduledJobs = summary.mayHaveScheduledJobs
+                if summary.presentationUpdatedAt >= card.presentationUpdatedAt {
+                    card.presentationStatus = summary.presentationStatus
+                    card.presentationActivity = summary.presentationActivity
+                    card.presentationTurnID = summary.presentationTurnID
+                    card.presentationUpdatedAt = summary.presentationUpdatedAt
+                }
                 return card
             } + created
             if cards != merged { cards = merged }

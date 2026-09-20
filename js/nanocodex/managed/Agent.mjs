@@ -509,7 +509,18 @@ function managedSummary(value) {
     createdAt: value.created_at,
     updatedAt: value.updated_at,
     turnCount: value.turn_count,
+    ...(validPresentation(value.presentation) ? { presentation: Object.freeze({ ...value.presentation, activeTurnIds: Object.freeze([...value.presentation.activeTurnIds]) }) } : {}),
   });
+}
+
+function validPresentation(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    && Number.isSafeInteger(value.revision) && value.revision > 0
+    && ["running", "stopping", "completed", "cancelled", "failed", "idle"].includes(value.status)
+    && Array.isArray(value.activeTurnIds) && value.activeTurnIds.every(id => typeof id === "string")
+    && nonnegativeNumber(value.updatedAt)
+    && (value.activity === undefined || typeof value.activity === "string")
+    && (value.activityTurnId === undefined || typeof value.activityTurnId === "string");
 }
 
 function nonnegativeNumber(value) {

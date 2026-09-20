@@ -505,20 +505,19 @@ private struct ConversationDrawer: View {
     }
 
     private func conversationRow(_ card: AgentCard) -> some View {
-        let preview = String(card.preview.prefix(160))
-        // A roster entry has no activity state yet. Do not present the model's
-        // initial "Checking" value as ongoing work in every conversation.
-        let knownStatus = card.isRunning ? "Running" : card.status == "Checking" ? "" : card.status
-        let subtitle = card.error != nil ? "Couldn’t refresh" : card.isRunning ? card.activitySummary : (preview.isEmpty ? knownStatus : preview)
-        let status = [knownStatus, preview, card.error ?? ""].filter { !$0.isEmpty }.joined(separator: ". ")
+        let knownStatus = card.sidebarStatus
+        let running = ["Running", "Stopping"].contains(knownStatus)
+        let subtitle = card.error != nil ? "Couldn’t refresh" : card.sidebarActivity
+        let status = [knownStatus, subtitle, card.error ?? ""].filter { !$0.isEmpty }.joined(separator: ". ")
         return HStack(alignment: .top, spacing: 10) {
-            Image(systemName: card.isRunning ? "circle.fill" : card.error != nil ? "exclamationmark.circle" : "bubble.left")
-                .font(.system(size: card.isRunning ? 8 : 15))
-                .foregroundStyle(card.isRunning ? Ink.running : Ink.muted)
+            Image(systemName: running ? "circle.fill" : card.error != nil ? "exclamationmark.circle" : "bubble.left")
+                .font(.system(size: running ? 8 : 15))
+                .foregroundStyle(running ? Ink.running : Ink.muted)
                 .frame(width: 18, height: 22).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 5) {
                 Text(card.title).font(.subheadline.weight(model.focused?.id == card.id ? .semibold : .regular))
-                    .lineLimit(2).foregroundStyle(card.isRunning ? Ink.running : Ink.text)
+                    .lineLimit(2).foregroundStyle(running ? Ink.running : Ink.text)
+                Text(knownStatus).font(.caption2).foregroundStyle(running ? Ink.running : Ink.muted)
                 if !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.caption).foregroundStyle(Ink.muted).lineLimit(1)

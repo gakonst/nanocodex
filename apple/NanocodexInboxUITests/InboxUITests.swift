@@ -6,6 +6,18 @@ final class InboxUITests: XCTestCase {
     }
     override func setUp() { super.setUp(); continueAfterFailure = false }
 
+    func testSidebarShowsStatusAndGeneratedCurrentWork() {
+        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString, "NANOCODEX_DEMO_SIDEBAR": "1"])
+        app.buttons["conversation-drawer-open"].tap()
+        let running = app.buttons["conversation-row:inbox"]
+        XCTAssertTrue(running.waitForExistence(timeout: 5))
+        let value = running.value as? String ?? ""
+        XCTAssertTrue(value.contains("Running"))
+        XCTAssertTrue(value.contains("I'm checking inbox state"))
+        XCTAssertTrue((app.buttons["conversation-row:hands"].value as? String ?? "").contains("Failed"))
+        capture(app, "sidebar-agent-status-and-current-work")
+    }
+
     func testFlatConversationDrawerPreservesSeparateDrafts() {
         let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
         switchConversation(app, id: "inbox")
