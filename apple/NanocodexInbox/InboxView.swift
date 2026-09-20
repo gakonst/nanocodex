@@ -481,6 +481,9 @@ private struct ConversationDrawer: View {
     let close: () -> Void
     let create: () -> Void
     let settings: () -> Void
+    @ScaledMetric(relativeTo: .subheadline) private var titleSize = 15
+    @ScaledMetric(relativeTo: .footnote) private var detailSize = 13
+    @ScaledMetric(relativeTo: .caption) private var statusSize = 12
     @State private var query = ""
     @State private var order: [String]
 
@@ -509,24 +512,24 @@ private struct ConversationDrawer: View {
         let running = ["Running", "Stopping"].contains(knownStatus)
         let subtitle = card.error != nil ? "Couldn’t refresh" : card.sidebarActivity
         let status = [knownStatus, subtitle, card.error ?? ""].filter { !$0.isEmpty }.joined(separator: ". ")
-        return HStack(alignment: .top, spacing: 10) {
-            Image(systemName: running ? "circle.fill" : card.error != nil ? "exclamationmark.circle" : "bubble.left")
-                .font(.system(size: running ? 8 : 15))
-                .foregroundStyle(running ? Ink.running : Ink.muted)
-                .frame(width: 18, height: 22).accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 5) {
-                Text(card.title).font(.subheadline.weight(model.focused?.id == card.id ? .semibold : .regular))
-                    .lineLimit(2).foregroundStyle(running ? Ink.running : Ink.text)
-                Text(knownStatus).font(.caption2).foregroundStyle(running ? Ink.running : Ink.muted)
-                if !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(.caption).foregroundStyle(Ink.muted).lineLimit(1)
-                }
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(card.title)
+                .font(.system(size: titleSize, weight: model.focused?.id == card.id ? .medium : .regular))
+                .foregroundStyle(Ink.text).lineLimit(2)
+            HStack(spacing: 6) {
+                Circle().fill(running ? Ink.running : Ink.muted.opacity(0.65))
+                    .frame(width: 5, height: 5).accessibilityHidden(true)
+                Text(knownStatus).font(.system(size: statusSize)).foregroundStyle(Ink.muted)
             }
-            Spacer(minLength: 0)
+            if !subtitle.isEmpty {
+                Text(subtitle).font(.system(size: detailSize)).foregroundStyle(Ink.muted)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .padding(12).frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
-        .background(model.focused?.id == card.id ? Ink.surface : Color.clear, in: RoundedRectangle(cornerRadius: 18))
+        .padding(.horizontal, 12).padding(.vertical, 11)
+        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+        .background(model.focused?.id == card.id ? Ink.surface : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .contentShape(Rectangle())
         // Tap recognition must fail when dragging. A plain Button can fire
         // on release after the drawer's simultaneous swipe gesture.
@@ -540,17 +543,34 @@ private struct ConversationDrawer: View {
     }
 
     var body: some View {
-        VStack(spacing: 16) {
-            HStack {
-                Button(action: settings) { Image(systemName: "gearshape").frame(width: 44, height: 44) }
-                    .modifier(InboxHeaderGlass()).accessibilityLabel("Account settings")
+        VStack(spacing: 12) {
+            HStack(spacing: 4) {
+                Text("Agents").font(.headline.weight(.medium)).foregroundStyle(Ink.text)
+                    .padding(.leading, 12)
                 Spacer()
-                Text("Conversations").font(.subheadline.weight(.semibold))
-                Spacer()
-                Button(action: close) { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
-                    .modifier(InboxHeaderGlass()).accessibilityLabel("Return to conversation")
-                    .accessibilityIdentifier("conversation-drawer-close")
+                Button(action: create) {
+                    Image(systemName: "square.and.pencil").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("New conversation").accessibilityIdentifier("drawer-new-conversation")
+                Button(action: close) {
+                    Image(systemName: "sidebar.left").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Return to conversation").accessibilityIdentifier("conversation-drawer-close")
             }
+            .font(.system(size: 17, weight: .regular))
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(Ink.muted)
+                TextField("Search agents", text: $query)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .accessibilityIdentifier("conversation-search")
+                if !query.isEmpty {
+                    Button { query = "" } label: {
+                        Image(systemName: "xmark.circle.fill").frame(width: 44, height: 44)
+                    }.foregroundStyle(Ink.muted).accessibilityLabel("Clear search")
+                }
+            }
+            .font(.system(size: detailSize)).padding(.horizontal, 12).frame(minHeight: 44)
+            .background(Ink.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             ScrollView {
                 LazyVStack(spacing: 4) {
                     ForEach(visibleCards) { card in
@@ -564,28 +584,20 @@ private struct ConversationDrawer: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .accessibilityIdentifier("conversation-list")
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(Ink.muted)
-                TextField("Search conversations", text: $query)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .accessibilityIdentifier("conversation-search")
-                if !query.isEmpty {
-                    Button { query = "" } label: { Image(systemName: "xmark.circle.fill").frame(width: 44, height: 44) }
-                        .foregroundStyle(Ink.muted).accessibilityLabel("Clear search")
+            Divider().overlay(Ink.border.opacity(0.3))
+            Button(action: settings) {
+                HStack(spacing: 10) {
+                    Image(systemName: "gearshape")
+                    Text("Settings").font(.system(size: detailSize))
+                    Spacer()
                 }
-            }
-            .font(.subheadline).padding(.horizontal, 14).frame(minHeight: 48)
-            .modifier(InboxHeaderGlass())
-            HStack {
-                Spacer()
-                Button(action: create) { Image(systemName: "square.and.pencil").frame(width: 44, height: 44) }
-                    .modifier(InboxHeaderGlass()).accessibilityLabel("New conversation")
-                    .accessibilityIdentifier("drawer-new-conversation")
-            }
+                .foregroundStyle(Ink.muted).padding(.horizontal, 12).frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }.accessibilityLabel("Account settings")
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 8)
-        .background(Ink.background)
+        .background(ChatPalette.sidebar)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation-drawer")
         .accessibilityAction(.escape, close)
