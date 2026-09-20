@@ -490,8 +490,16 @@ install_root=$(dirname -- "$bin_dir")
 exec "$install_root/current/nanocodex-computer" "$@"
 "#;
         let path = self.root.join("bin/nanocodex-computer");
-        // Remove only the launcher installed by previous Nanocodex releases.
-        if fs::read(&path).is_ok_and(|bytes| bytes == LAUNCHER.as_bytes()) {
+        // Earlier installers used either this wrapper or a direct current link.
+        // Inspect the link itself so dangling launchers are retired as well.
+        let retired_link = fs::read_link(&path).is_ok_and(|target| {
+            target == Path::new("../current/nanocodex-computer")
+                || target == self.root.join("current/nanocodex-computer")
+        });
+        if retired_link
+            || (!path.is_symlink()
+                && fs::read(&path).is_ok_and(|bytes| bytes == LAUNCHER.as_bytes()))
+        {
             fs::remove_file(path)?;
         }
         Ok(())
@@ -618,6 +626,31 @@ mod tests {
         assert_eq!(store.active().unwrap().as_deref(), Some("0.2.0"));
         assert_eq!(fs::read(store.binary_path("0.2.0")).unwrap(), b"previous");
         assert_eq!(fs::read(store.binary_path("0.3.0")).unwrap(), b"current");
+    }
+
+    #[test]
+    fn activation_retires_dangling_cua_links_and_preserves_custom_launchers() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let store = VersionStore::at(directory.path());
+        store.prepare_with_contents("0.3.0", b"current").unwrap();
+        let launcher = directory.path().join("bin/nanocodex-computer");
+        for target in [
+            PathBuf::from("../current/nanocodex-computer"),
+            directory.path().join("current/nanocodex-computer"),
+        ] {
+            symlink(target, &launcher).unwrap();
+            store.activate("0.3.0").unwrap();
+            assert!(fs::symlink_metadata(&launcher).is_err());
+        }
+        let custom = directory.path().join("custom-provider");
+        symlink(&custom, &launcher).unwrap();
+        store.activate("0.3.0").unwrap();
+        assert_eq!(fs::read_link(&launcher).unwrap(), custom);
+        fs::remove_file(&launcher).unwrap();
+        fs::write(&launcher, b"user-owned launcher").unwrap();
+        store.activate("0.3.0").unwrap();
+        assert_eq!(fs::read(&launcher).unwrap(), b"user-owned launcher");
     }
 
     #[test]

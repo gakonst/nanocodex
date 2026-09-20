@@ -128,6 +128,12 @@ run_case() {
   printf '%s  %s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     nanocodex-computer-x86_64-unknown-linux-gnu >> "$fixture/SHA256SUMS"
   make_voice_fixture "$fixture" "${2:-valid}"
+  mkdir -p "$install_root/bin"
+  if [[ "$format" == gzip ]]; then
+    ln -s "$install_root/current/nanocodex-computer" "$install_root/bin/nanocodex-computer"
+  else
+    ln -s ../current/nanocodex-computer "$install_root/bin/nanocodex-computer"
+  fi
 
   output="$(
     PATH="$mock_bin:$PATH" \
@@ -141,17 +147,21 @@ run_case() {
   grep -Fq 'Installed nanocodex2 1.2.3' <<<"$output"
   [[ "$("$install_root/bin/nanocodex" --version)" == 'nanocodex 1.2.3' ]]
   [[ "$("$install_root/bin/nanocodex2" --version)" == 'nanocodex2 1.2.3' ]]
-  [[ ! -e "$install_root/bin/nanocodex-computer" ]]
+  [[ ! -e "$install_root/bin/nanocodex-computer" && ! -L "$install_root/bin/nanocodex-computer" ]]
   [[ ! -e "$install_root/current/nanocodex-computer" ]]
   [[ -f "$install_root/updater/nanocodex.sha256" ]]
   [[ -f "$install_root/versions/1.2.3/nanocodex.sha256" ]]
   [[ -f "$install_root/versions/1.2.3/nanocodex2.sha256" ]]
   [[ -x "$install_root/current/nanocodex-resources/voice/bin/nanocodex-voice-host" ]]
 
+  ln -s "$case_root/user-provider" "$install_root/bin/nanocodex-computer"
   rm "$install_root/current/nanocodex-resources/voice/bin/nanocodex-voice-host"
   PATH="$mock_bin:$PATH" HOME="$case_root/home" SHELL=/bin/bash NANOCODEX_DIR="$install_root" \
     NANOCODEX_INSTALL_FIXTURE="$fixture" bash "$workspace_root/install" >/dev/null
   [[ -x "$install_root/current/nanocodex-resources/voice/bin/nanocodex-voice-host" ]]
+  [[ "$(readlink "$install_root/bin/nanocodex-computer")" == "$case_root/user-provider" ]]
+  rm "$install_root/bin/nanocodex-computer"
+  printf 'user-owned launcher' > "$install_root/bin/nanocodex-computer"
   [[ -f "$install_root/current/nanocodex-voice.sha256" ]]
   [[ "$(cat "$install_root/current/nanocodex-voice.archive.sha256")" == "$(sha256_file "$fixture/$voice_asset")" ]]
 
@@ -161,6 +171,7 @@ run_case() {
     NANOCODEX_INSTALL_FIXTURE="$fixture" bash "$workspace_root/install" >/dev/null
   [[ -x "$install_root/current/nanocodex-resources/voice/bin/nanocodex-voice-host" ]]
 
+  [[ "$(cat "$install_root/bin/nanocodex-computer")" == 'user-owned launcher' ]]
   PATH=/usr/bin:/bin bash "$case_root/home/.bashrc"
   [[ ! -e "$marker" ]]
 }

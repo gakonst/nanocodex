@@ -262,6 +262,31 @@ export NANOCODEX_DIR="$install_root"
 exec "$install_root/current/nanocodex2" "$@"
 EOF
 install -m 755 "$temporary_dir/nanocodex2-launcher" "$bin_dir/nanocodex2"
+# Retire only launchers installed by older Nanocodex releases.
+retired_launcher="$bin_dir/nanocodex-computer"
+if [[ -L "$retired_launcher" ]]; then
+  retired_target="$(readlink "$retired_launcher")"
+  if [[ "$retired_target" == ../current/nanocodex-computer ||
+        "$retired_target" == "$install_root/current/nanocodex-computer" ]]; then
+    rm "$retired_launcher"
+  fi
+else
+  cat > "$temporary_dir/retired-computer-launcher" <<'EOF'
+#!/bin/sh
+set -eu
+case "$0" in
+    */*) launcher=$0 ;;
+    *) launcher=$(command -v "$0") ;;
+esac
+bin_dir=$(CDPATH= cd -- "$(dirname -- "$launcher")" && pwd -P)
+install_root=$(dirname -- "$bin_dir")
+exec "$install_root/current/nanocodex-computer" "$@"
+EOF
+  if cmp -s "$temporary_dir/retired-computer-launcher" "$retired_launcher"; then
+    rm "$retired_launcher"
+  fi
+fi
+
 # Both CLIs and local Hands use the same per-user upstream runtime. The native
 # helper verifies OpenAI's signature and atomically activates the complete app.
 if [[ "$platform" == apple-darwin ]]; then
