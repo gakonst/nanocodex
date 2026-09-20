@@ -2470,6 +2470,26 @@ final class InboxUITests: XCTestCase {
         capture(app, "command-card-expanded-failure")
     }
 
+    func testCodeModeBatchKeepsCommandsTogether() {
+        let app = launch(["NANOCODEX_DEMO_CODE_MODE_BATCH": "1", "NANOCODEX_DEMO_PROFILE": UUID().uuidString])
+        selectInbox(app)
+        let conversation = app.scrollViews["conversation"]
+        let batch = conversation.buttons["code-mode-batch-demo-code-mode-batch"]
+        XCTAssertTrue(batch.waitForExistence(timeout: 10))
+        XCTAssertEqual(batch.value as? String, "Expanded")
+        XCTAssertEqual(conversation.buttons.matching(identifier: "tool-disclosure-demo-code-mode-batch/code-1").count, 1)
+        XCTAssertTrue(conversation.buttons["tool-disclosure-demo-code-mode-batch/code-2"].isHittable)
+        capture(app, "code-mode-batch-expanded")
+        batch.tap()
+        XCTAssertEqual(batch.value as? String, "Collapsed")
+        XCTAssertFalse(conversation.buttons["tool-disclosure-demo-code-mode-batch/code-1"].exists)
+        capture(app, "code-mode-batch-collapsed")
+        batch.tap()
+        conversation.descendants(matching: .any)["code-mode-javascript-demo-code-mode-batch"].tap()
+        XCTAssertTrue(conversation.descendants(matching: .any)["code-mode-source-demo-code-mode-batch"].exists)
+        capture(app, "code-mode-batch-javascript")
+    }
+
     func testCodeModeCardShowsFullMultilineSourceAndOutput() {
         assertCodeModeCardShowsFullMultilineSourceAndOutput(environment: "NANOCODEX_DEMO_CODE_MODE_CARD")
     }

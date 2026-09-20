@@ -2961,6 +2961,20 @@ final class InboxModel: ObservableObject {
             activity.finish(.string("Synthetic code result"))
             demoRows["inbox"] = [.init(id: "demo-code-mode-card", role: "Tool", text: activity.title, tool: activity)]
         }
+        if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_CODE_MODE_BATCH"] == "1" {
+            // Synthetic presentation fixture; these tools never execute.
+            var batch = ToolPresentation(name: "exec", arguments: .string("text(await tools.exec_command({cmd: \"ls -la /brain\"}));\ntext(await tools.environment({}));"))
+            batch.finish(.string("Completed"))
+            var command = ToolPresentation(name: "exec_command", arguments: .object(["cmd": .string("ls -la /brain")]))
+            command.finish(.object(["output": .string("attachments/\noutputs/"), "exit_code": .number(0)]))
+            var environment = ToolPresentation(name: "environment", arguments: .object([:]))
+            environment.finish(.object(["status": .string("ready")]))
+            demoRows["inbox"] = [
+                .init(id: "demo-code-mode-batch", role: "Tool", text: batch.title, tool: batch),
+                .init(id: "demo-code-mode-batch/code-1", role: "Tool", text: command.title, tool: command),
+                .init(id: "demo-code-mode-batch/code-2", role: "Tool", text: environment.title, tool: environment)
+            ]
+        }
         if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_LIVE_SCREEN_ENTRY"] == "1",
            let image = DemoContent.rows("inbox").compactMap({ $0.tool?.generatedResults })
                .flatMap({ ChatGeneratedOutput.parse(results: $0) })
