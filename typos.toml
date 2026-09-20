@@ -39,8 +39,8 @@ extend-ignore-re = ['\btime_base\.numer\b']
 [default]
 # Exact executable name used by the remote-screen hand.
 # Chromium's Page.createIsolatedWorld parameter has this exact wire spelling.
-# Preserve the exact TestFlight URL scheme.
-extend-ignore-re = ['\bwaymote-streamd\b', '\bgrantUniveralAccess\b', '\bitms-beta://', '\bDuPont\b']
+# Preserve the exact Apple installation URL schemes.
+extend-ignore-re = ['\bwaymote-streamd\b', '\bgrantUniveralAccess\b', '\bitms-beta://', '\bitms-services\b', '\bDuPont\b']
 
 [default.extend-words]
 # Mesa's OpenGL-over-Vulkan driver.
