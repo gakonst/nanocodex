@@ -3005,6 +3005,18 @@ final class InboxModel: ObservableObject {
                 .init(id: "demo-code-mode-batch/code-2", role: "Tool", text: environment.title, tool: environment)
             ]
         }
+        if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_THREAD_CONTROLS"] == "1" {
+            let tools = demoRows["inbox"] ?? []
+            demoRows["inbox"] = [
+                .init(id: "navigation-user-1", role: "You", text: "Inspect the workspace and summarize the results."),
+                .init(id: "navigation-agent-1", role: "Agent", text: "I’ll inspect the workspace using the tools below.\n\n" + (1...8).map {
+                    "Review step \($0): Check the available files and confirm the workspace is ready for the next task."
+                }.joined(separator: "\n\n"))
+            ] + tools + [
+                .init(id: "navigation-user-2", role: "You", text: "What should we work on next?"),
+                .init(id: "navigation-agent-2", role: "Agent", text: "The workspace is ready. We can review the output and choose the next task.")
+            ]
+        }
         if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_LIVE_SCREEN_ENTRY"] == "1",
            let image = DemoContent.rows("inbox").compactMap({ $0.tool?.generatedResults })
                .flatMap({ ChatGeneratedOutput.parse(results: $0) })

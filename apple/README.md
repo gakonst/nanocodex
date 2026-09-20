@@ -57,6 +57,12 @@ large source opens in a scrollable, read-only native viewer with a copy control,
 so encoded payloads and long blank runs cannot stretch the conversation. Syntax
 highlighting is skipped for sources larger than 16 KiB.
 Generated attachments appear directly after their originating tool card.
+The thread controls above the composer collapse all tool disclosures, including nested
+Code Mode tools and JavaScript. Individual tools can be reopened, and their choices
+remain independent when switching threads. Up and down arrows move between user
+messages, fetching earlier or later history when necessary. Manual scrolling resets
+the arrow position; the separate latest-message control resumes following responses.
+All controls have 44-point targets and VoiceOver labels.
 Tool text, memory payloads, and command diagnostics stay inside that disclosure. The shared
 `ChatGeneratedOutput` parser combines raw and structured tool results, including
 emitted `input_text`/`input_image` blocks and MCP images, audio, video, and resources.

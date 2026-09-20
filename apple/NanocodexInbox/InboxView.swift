@@ -1444,6 +1444,23 @@ private final class ConversationReadingPositions {
         var childID: String? = nil
     }
     var values: [String: Position] = [:]
+    var tools: [String: ConversationToolExpansion] = [:]
+    func toolExpansion(for identity: String) -> ConversationToolExpansion {
+        if let value = tools[identity] { return value }
+        let value = ConversationToolExpansion()
+        tools[identity] = value
+        return value
+    }
+}
+
+@Observable private final class ConversationToolExpansion {
+    var collapsedAll = false
+    var expanded: [String: Bool] = [:]
+    func binding(_ id: String, initiallyExpanded: Bool = false) -> Binding<Bool> {
+        Binding(get: { self.expanded[id] ?? (initiallyExpanded && !self.collapsedAll) },
+                set: { self.expanded[id] = $0 })
+    }
+    func collapseAll() { collapsedAll = true; expanded.removeAll() }
 }
 
 private struct ConversationRenderedItem: Identifiable, Equatable, Sendable {
@@ -1576,6 +1593,7 @@ private struct ConversationView: View {
         let preparing = rendered?.revision != revision
         ConversationContentView(model: model,
                                 identity: identity, readingPositions: readingPositions,
+                                tools: readingPositions.toolExpansion(for: identity),
                                 revision: .init(projectionRevision: rendered?.revision, preparing: preparing,
                                                 rows: rendered?.rows ?? [], items: rendered?.items ?? [],
                                                 itemsByID: rendered?.itemsByID ?? [:], pending: rendered?.pending ?? [],
@@ -1629,7 +1647,17 @@ private struct ConversationContentView: View {
     let model: InboxModel
     let identity: String
     let readingPositions: ConversationReadingPositions
+    let tools: ConversationToolExpansion
     let revision: Revision
+    private struct UserNavigationTargets: Equatable {
+        var previous: String?
+        var next: String?
+    }
+    @State private var userNavigationTargets = UserNavigationTargets()
+    @State private var selectedUserMessage: String?
+    @State private var pendingUserDirection: HistoryDirection?
+    @State private var navigationKnownIDs: Set<String> = []
+    @State private var navigationProjectionRevision: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.conversationNavigationActive) private var navigationActive
     @State private var followsLatest = true
@@ -1743,11 +1771,106 @@ private struct ConversationContentView: View {
             scroll.scrollTo("latest", anchor: .bottom)
         }
     }
+    private var userMessages: [ConversationRenderedItem] {
+        revision.items.filter { $0.message?.role == "You" }
+    }
+    private func userTarget(_ direction: HistoryDirection) -> String? {
+        let users = userMessages
+        if let selectedUserMessage, let index = users.firstIndex(where: { $0.id == selectedUserMessage }) {
+            let next = direction == .older ? index - 1 : index + 1
+            return users.indices.contains(next) ? users[next].id : nil
+        }
+        if historyContent.atLatest { return direction == .older ? users.last?.id : nil }
+        return direction == .older ? userNavigationTargets.previous : userNavigationTargets.next
+    }
+    private func jumpToUser(_ id: String, using scroll: ScrollViewProxy) {
+        followsLatest = false
+        historyDirection = nil
+        historyRestore = nil
+        selectedUserMessage = id
+        pendingUserDirection = nil
+        pendingReadingRestore = .init(atLatest: false, rowID: id, offsetY: 0)
+        readingPositions.values[identity] = pendingReadingRestore
+        // Measured restoration retains the target through streaming and layout changes.
+        scroll.scrollTo(id, anchor: .top)
+    }
+    private func navigateUser(_ direction: HistoryDirection, using scroll: ScrollViewProxy) {
+        if let id = userTarget(direction) { jumpToUser(id, using: scroll); return }
+        navigationKnownIDs = Set(revision.items.map(\.id))
+        pendingUserDirection = direction
+        pendingReadingRestore = nil
+        historyRestore = nil
+        historyDirection = nil
+        followsLatest = false
+        fetchUserHistory(direction)
+    }
+    private func fetchUserHistory(_ direction: HistoryDirection) {
+        navigationProjectionRevision = revision.projectionRevision
+        Task {
+            guard model.focusedConversationIdentity == identity else { return }
+            let before = model.focusedTranscriptRevision
+            if direction == .older { await model.loadOlder() }
+            else { await model.loadNewer() }
+            guard model.focusedConversationIdentity == identity else { return }
+            if model.focusedTranscriptRevision == before { pendingUserDirection = nil }
+        }
+    }
+    private func continueUserNavigation(using scroll: ScrollViewProxy) {
+        guard model.focusedConversationIdentity == identity,
+              let direction = pendingUserDirection, !revision.preparing,
+              !model.loadingOlder, !model.loadingNewer else { return }
+        // Model history finishes before its off-main render projection. Wait for
+        // that publication before deciding whether another page is necessary.
+        guard revision.projectionRevision != navigationProjectionRevision || revision.error != nil else { return }
+        // Only inspect the requested side of the retained window. A live user
+        // message can arrive at the opposite end while history is in flight.
+        let page = direction == .older
+            ? Array(revision.items.prefix { !navigationKnownIDs.contains($0.id) })
+            : Array(revision.items.reversed().prefix { !navigationKnownIDs.contains($0.id) }.reversed())
+        let candidates = page.filter { $0.message?.role == "You" }
+        if let target = direction == .older ? candidates.last : candidates.first {
+            jumpToUser(target.id, using: scroll)
+        } else if revision.error == nil && (direction == .older ? model.hasOlder : model.hasNewer) {
+            navigationKnownIDs.formUnion(revision.items.map(\.id))
+            fetchUserHistory(direction)
+        } else { pendingUserDirection = nil }
+    }
+    private func threadControls(using scroll: ScrollViewProxy) -> some View {
+        HStack(spacing: 0) {
+            Button {
+                followsLatest = false
+                if let first = rowGeometry.frames.filter({ revision.itemsByID[$0.key] != nil && $0.value.maxY > 0 })
+                    .min(by: { $0.value.minY < $1.value.minY }) {
+                    pendingReadingRestore = .init(atLatest: false, rowID: first.key,
+                        offsetY: revision.itemsByID[first.key]?.message == nil ? max(0, first.value.minY) : first.value.minY)
+                }
+                tools.collapseAll()
+            } label: { Image(systemName: "rectangle.compress.vertical").frame(width: 44, height: 44) }
+                .accessibilityLabel("Collapse all tool calls")
+                .accessibilityIdentifier("collapse-all-tools")
+            Divider().frame(height: 20)
+            Button { navigateUser(.older, using: scroll) } label: {
+                Image(systemName: "arrow.up").frame(width: 44, height: 44)
+            }.accessibilityLabel("Previous user message").accessibilityIdentifier("previous-user-message")
+                .disabled(userTarget(.older) == nil && !model.hasOlder)
+            Button { navigateUser(.newer, using: scroll) } label: {
+                Image(systemName: "arrow.down").frame(width: 44, height: 44)
+            }.accessibilityLabel("Next user message").accessibilityIdentifier("next-user-message")
+                .disabled(userTarget(.newer) == nil && !model.hasNewer)
+        }
+        .buttonStyle(.plain)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Ink.border, lineWidth: 0.5))
+        .disabled(revision.loading || revision.preparing || model.loadingOlder || model.loadingNewer || pendingUserDirection != nil)
+        .padding(.horizontal, 20).padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
     var body: some View {
         ScrollViewReader { scroll in
             GeometryReader { viewport in
             let boundaryItemID = historyBoundaryItemID
             ZStack(alignment: .top) {
+            VStack(spacing: 0) {
             ScrollView {
                 // Restoration uses measured row offsets. Lazy height estimates
                 // feed back into scrollTo while prepending variable-height tools.
@@ -1787,10 +1910,10 @@ private struct ConversationContentView: View {
                                 if historyRequestInFlight { rememberHistoryPosition(in: viewport) }
                             }
                             if content.isCodeModeBatch {
-                                ConversationCodeModeBatch(item: content, onToggle: onToggle)
+                                ConversationCodeModeBatch(item: content, tools: tools, expanded: tools.binding(content.id, initiallyExpanded: true), showsJavaScript: tools.binding(content.id + ":javascript"), onToggle: onToggle)
                             } else {
                                 ForEach(content.activity) { row in
-                                    ConversationToolCard(row: row, live: content.isRunning && row.running, onToggle: onToggle)
+                                    ConversationToolCard(row: row, live: content.isRunning && row.running, expanded: tools.binding(row.id), onToggle: onToggle)
                                 }
                             }
                         }
@@ -1835,6 +1958,11 @@ private struct ConversationContentView: View {
             .coordinateSpace(name: "conversation-viewport")
             .onPreferenceChange(ConversationRowFrames.self) { frames in
                 rowGeometry.frames = frames
+                let users = userMessages
+                let targets = UserNavigationTargets(
+                    previous: users.last { (frames[$0.id]?.minY ?? .infinity) < -1 }?.id,
+                    next: users.first { (frames[$0.id]?.minY ?? -.infinity) > 1 }?.id)
+                if userNavigationTargets != targets { userNavigationTargets = targets }
                 if !navigationActive, !isInteractingTranscript, let target = pendingReadingRestore, let id = target.rowID, let parent = frames[id] {
                     let frame = target.childID.flatMap { frames[$0] } ?? parent
                     if abs(frame.minY - target.offsetY) < 1 {
@@ -1872,7 +2000,7 @@ private struct ConversationContentView: View {
                 saveReadingPosition(in: viewport)
             }
             .onScrollPhaseChange { previous, phase in
-                if phase == .tracking { scrollsTowardLatest = false }
+                if phase == .tracking { scrollsTowardLatest = false; selectedUserMessage = nil; pendingUserDirection = nil }
                 isInteractingTranscript = phase == .interacting
                 isScrollGestureActive = phase == .tracking || phase == .interacting || phase == .decelerating
                 // Horizontal drawer gestures can enter a scroll phase without
@@ -1894,6 +2022,7 @@ private struct ConversationContentView: View {
                 followLatest(using: scroll)
             }
             .onChange(of: revision.projectionRevision) { _, _ in
+                continueUserNavigation(using: scroll)
                 restoreHistoryPosition(using: scroll)
                 // Content-height observation follows after layout; issuing a second
                 // scroll here would retarget against the previous geometry.
@@ -1910,15 +2039,24 @@ private struct ConversationContentView: View {
                 }
             }
             .onChange(of: hasInitialPosition) { _, _ in updateHistoryPosition(in: viewport) }
+            .onChange(of: revision.error) { _, error in
+                if error != nil { pendingUserDirection = nil }
+            }
             .onChange(of: model.hasOlder) { _, _ in updateHistoryPosition(in: viewport) }
             .onChange(of: model.threadLoading) { _, _ in updateHistoryPosition(in: viewport) }
             .onChange(of: model.loadingOlder) { _, loading in
-                if !loading { restoreHistoryPosition(using: scroll) }
+                if !loading {
+                    continueUserNavigation(using: scroll)
+                    restoreHistoryPosition(using: scroll)
+                }
                 updateHistoryPosition(in: viewport)
             }
             .onChange(of: model.hasNewer) { _, _ in updateHistoryPosition(in: viewport) }
             .onChange(of: model.loadingNewer) { _, loading in
-                if !loading { restoreHistoryPosition(using: scroll) }
+                if !loading {
+                    continueUserNavigation(using: scroll)
+                    restoreHistoryPosition(using: scroll)
+                }
                 updateHistoryPosition(in: viewport)
             }
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { previous, offset in
@@ -1938,6 +2076,8 @@ private struct ConversationContentView: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel(revision.title)
             .accessibilityIdentifier("conversation")
+            threadControls(using: scroll)
+            }
             // Keep controls as siblings of the native scroll accessibility node.
             // An overlay can replace that node after accessibilityHidden changes
             // during drawer navigation, expanding the button to the whole viewport.
@@ -1945,6 +2085,8 @@ private struct ConversationContentView: View {
                 Spacer(minLength: 0)
                 if historyContent.isMeasured, !model.threadLoading, model.needsLatestHistory || (!followsLatest && !historyContent.atLatest) {
                     Button {
+                        selectedUserMessage = nil
+                        pendingUserDirection = nil
                         historyDirection = nil
                         historyRestore = nil
                         pendingReadingRestore = nil
@@ -1966,7 +2108,7 @@ private struct ConversationContentView: View {
                     }
                     .buttonStyle(.plain)
                     .frame(width: 42, height: 42)
-                    .padding(.bottom, 8)
+                    .padding(.bottom, 60)
                     .disabled(model.loadingNewer || model.loadingOlder)
                     .accessibilityLabel("Latest messages")
                     .accessibilityHint("Scroll to the latest message and follow new responses")
@@ -2061,9 +2203,10 @@ private struct ConversationContentPosition: Equatable {
 
 private struct ConversationCodeModeBatch: View {
     let item: ConversationItem
+    let tools: ConversationToolExpansion
+    @Binding var expanded: Bool
+    @Binding var showsJavaScript: Bool
     var onToggle: () -> Void
-    @State private var expanded = true
-    @State private var showsJavaScript = false
     @State private var sourceSheet: ToolSourceDocument?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -2098,7 +2241,7 @@ private struct ConversationCodeModeBatch: View {
                     .accessibilityValue(expanded ? "Expanded" : "Collapsed")
                 if expanded {
                     ForEach(Array(item.activity.dropFirst())) { row in
-                        ConversationToolCard(row: row, live: item.isRunning && row.running, onToggle: onToggle)
+                        ConversationToolCard(row: row, live: item.isRunning && row.running, expanded: tools.binding(row.id), onToggle: onToggle)
                     }
                     VStack(alignment: .leading, spacing: 8) {
                         Button {
@@ -2151,8 +2294,8 @@ private struct ConversationCodeModeBatch: View {
 private struct ConversationToolCard: View {
     let row: TranscriptRow
     let live: Bool
+    @Binding var expanded: Bool
     var onToggle: () -> Void
-    @State private var expanded = false
     @State private var sourceSheet: ToolSourceDocument?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var failed: Bool { row.tool?.status == "Failed" }

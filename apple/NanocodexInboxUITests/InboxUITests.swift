@@ -2537,6 +2537,55 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(conversation.isHittable, "Dismissing the source viewer promptly returns to the conversation")
     }
 
+    func testUserNavigationReleasesControlsAfterHistoryWithoutUserMessages() {
+        let app = launch(["NANOCODEX_DEMO_LONG_THREAD": "1", "NANOCODEX_DEMO_HISTORY_DELAY_MS": "50",
+                          "NANOCODEX_DEMO_PROFILE": UUID().uuidString])
+        selectInbox(app)
+        let previous = app.buttons["previous-user-message"]
+        XCTAssertTrue(previous.waitForExistence(timeout: 10))
+        XCTAssertTrue(previous.isEnabled)
+        previous.tap()
+        let collapse = app.buttons["collapse-all-tools"]
+        let finished = NSPredicate { _, _ in collapse.isEnabled && !previous.isEnabled }
+        expectation(for: finished, evaluatedWith: nil)
+        waitForExpectations(timeout: 10)
+        XCTAssertFalse(app.buttons["next-user-message"].isEnabled)
+    }
+
+    func testThreadControlsCollapseAndNavigateUserMessages() {
+        let app = launch(["NANOCODEX_DEMO_CODE_MODE_BATCH": "1", "NANOCODEX_DEMO_THREAD_CONTROLS": "1",
+                          "NANOCODEX_DEMO_PROFILE": UUID().uuidString])
+        selectInbox(app)
+        let collapse = app.buttons["collapse-all-tools"]
+        XCTAssertTrue(collapse.waitForExistence(timeout: 10))
+        collapse.tap()
+        let batch = app.buttons["code-mode-batch-demo-code-mode-batch"]
+        XCTAssertEqual(batch.value as? String, "Collapsed")
+        capture(app, "thread-controls-collapsed")
+        let previous = app.buttons["previous-user-message"]
+        let next = app.buttons["next-user-message"]
+        previous.tap()
+        if previous.isEnabled { previous.tap() }
+        XCTAssertFalse(previous.isEnabled)
+        XCTAssertTrue(next.isEnabled)
+        capture(app, "thread-controls-first-user-message")
+        next.tap()
+        XCTAssertFalse(next.isEnabled)
+        XCTAssertTrue(previous.isEnabled)
+        capture(app, "thread-controls-next-user-message")
+        previous.tap()
+        batch.tap()
+        let child = app.buttons["tool-disclosure-demo-code-mode-batch/code-1"]
+        XCTAssertEqual(child.value as? String, "Collapsed")
+        child.tap()
+        collapse.tap()
+        batch.tap()
+        XCTAssertEqual(child.value as? String, "Collapsed", "Collapse all also clears nested disclosure state")
+        switchConversation(app, id: "durability")
+        switchConversation(app, id: "inbox")
+        XCTAssertEqual(batch.value as? String, "Expanded", "Thread disclosure choices survive switching threads")
+    }
+
     func testCodeModeBatchKeepsCommandsTogether() {
         let app = launch(["NANOCODEX_DEMO_CODE_MODE_BATCH": "1", "NANOCODEX_DEMO_PROFILE": UUID().uuidString])
         selectInbox(app)
