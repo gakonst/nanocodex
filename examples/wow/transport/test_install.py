@@ -19,7 +19,7 @@ class InstallerUnits(unittest.TestCase):
             subprocess.run(['python3', '-', str(app)], input=code, text=True, env=env, check=True)
             unit = units / 'nanocodex-wow.service'
             self.assertIn('UMask=0077', unit.read_text())
-            self.assertIn('WorkingDirectory="' + str(app) + '"', unit.read_text())
+            self.assertIn('WorkingDirectory=' + str(app), unit.read_text())
             override = units / 'nanocodex-wow.service.d/streaming.conf'
             self.assertIn('durable_client.py" --port 17840', override.read_text())
             unit.write_text('[Service]\n# Existing user configuration\n')

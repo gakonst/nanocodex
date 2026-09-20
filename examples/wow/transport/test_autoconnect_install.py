@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 import subprocess
+import shutil
+import sys
 import tempfile
 import unittest
 
@@ -19,4 +21,13 @@ class InstallAutoConnectTests(unittest.TestCase):
             self.assertIn('--allow-input --duration 0 --key-hold-ms 1',unit)
             self.assertNotIn('must-not-persist',unit)
             self.assertEqual((app/'auto-bridge').stat().st_mode&0o777,0o700)
-            self.assertIn('WorkingDirectory="'+str(app)+'"',unit)
+            self.assertIn('WorkingDirectory='+str(app),unit)
+            # Validate with the real parser where systemd is available. Quoting
+            # this directive looks plausible but makes the unit unloadable.
+            if shutil.which('systemd-analyze'):
+                binary=app/'.venv/bin/python'
+                binary.parent.mkdir(parents=True)
+                binary.symlink_to(sys.executable)
+                unit_path=home/'.config/systemd/user/nanocodex-wow-bridge.service'
+                result=subprocess.run(['systemd-analyze','verify','--man=no',str(unit_path)],capture_output=True,text=True)
+                self.assertEqual(result.returncode,0,result.stdout+result.stderr)
