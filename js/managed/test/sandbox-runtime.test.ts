@@ -107,7 +107,8 @@ describe("sandbox runtime egress", () => {
 describe("managed sandbox preview wiring", () => {
   it("reads shared /brain files from the durable R2 prefix and preserves private fallback reads", async () => {
     const bucket = {
-      get: vi.fn(async () => ({ arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer })),
+      head: vi.fn(async () => ({ size: 3 })),
+      get: vi.fn(async () => ({ size: 3, body: new Response(new Uint8Array([1, 2, 3])).body })),
     } as unknown as R2Bucket;
     const fallback = { readFile: vi.fn(async () => new Uint8Array([9])) };
     const workspace = createSharedBrainReadWorkspace(bucket, "durable-agent", fallback);

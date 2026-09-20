@@ -99,21 +99,34 @@ public enum AttachmentPreparation {
         return try prepare(image: image, source: .data(data), name: name, byteCount: data.count)
     }
 
+    // This JPEG is also the model's inspection rendition. Bound both decoded
+    // dimensions and encoded bytes before upload; never make a Worker decode
+    // the potentially huge or unsupported original just to inspect a photo.
+    static let inspectionMaxPixelSize = 2048
+    static let inspectionMaxByteCount = 2 * 1024 * 1024
+
     private static func prepare(image: CGImageSource, source: PreparedAttachment.Source, name: String, byteCount: Int) throws -> PreparedAttachment {
         guard CGImageSourceGetCount(image) > 0, let identifier = CGImageSourceGetType(image) as String?,
-              let mediaType = UTType(identifier)?.preferredMIMEType,
-              let thumbnail = CGImageSourceCreateThumbnailAtIndex(image, 0, [
+              let mediaType = UTType(identifier)?.preferredMIMEType else { throw AttachmentError.unsupportedImage }
+        var dimension = inspectionMaxPixelSize
+        while dimension >= 256 {
+            guard let rendition = CGImageSourceCreateThumbnailAtIndex(image, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: 640,
+                kCGImageSourceThumbnailMaxPixelSize: dimension,
                 kCGImageSourceShouldCacheImmediately: true
-              ] as CFDictionary) else { throw AttachmentError.unsupportedImage }
-        let bytes = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(bytes, "public.jpeg" as CFString, 1, nil) else { throw AttachmentError.unsupportedImage }
-        CGImageDestinationAddImage(destination, thumbnail, [kCGImageDestinationLossyCompressionQuality: 0.82] as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { throw AttachmentError.unsupportedImage }
-        return PreparedAttachment(attachment: try MessageAttachment(name: name, mediaType: mediaType, byteCount: byteCount),
-                                  source: source, preview: bytes as Data)
+            ] as CFDictionary) else { throw AttachmentError.unsupportedImage }
+            let bytes = NSMutableData()
+            guard let destination = CGImageDestinationCreateWithData(bytes, "public.jpeg" as CFString, 1, nil) else { throw AttachmentError.unsupportedImage }
+            CGImageDestinationAddImage(destination, rendition, [kCGImageDestinationLossyCompressionQuality: 0.9] as CFDictionary)
+            guard CGImageDestinationFinalize(destination) else { throw AttachmentError.unsupportedImage }
+            if bytes.length <= inspectionMaxByteCount {
+                return PreparedAttachment(attachment: try MessageAttachment(name: name, mediaType: mediaType, byteCount: byteCount),
+                                          source: source, preview: bytes as Data)
+            }
+            dimension = dimension * 3 / 4
+        }
+        throw AttachmentError.unsupportedImage
     }
 
     static func imageContent(_ data: Data) -> JSON {

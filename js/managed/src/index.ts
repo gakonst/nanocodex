@@ -48,7 +48,7 @@ import type {
 import { Agent as CloudflareAgent } from "nanocodex/cloudflare";
 import { Agent as ManagedAgent } from "nanocodex/managed";
 import { imageGeneration, updatePlan, viewImage, web } from "nanocodex/tools";
-import { createWorkspaceFilesystem } from "nanocodex-tools";
+import { createWorkspaceFilesystem, resolveNamespaceCwd } from "nanocodex-tools";
 import { SessionAttachments } from "./attachments";
 import { createBrainWorkspace } from "./brain-workspace";
 import { createBrainBucket } from "./brain-bucket";
@@ -1237,12 +1237,55 @@ export function createSharedBrainReadWorkspace(
   bucket: R2Bucket,
   resourceId: string,
   fallback: Readonly<{ readFile(path: string): Promise<Uint8Array> }>,
+  options: Readonly<{ relativePathsUseBrain?: boolean }> = {},
 ): Readonly<{ readFile(path: string): Promise<Uint8Array> }> {
   return Object.freeze({
     readFile: async (path: string): Promise<Uint8Array> => {
-      const key = sharedBrainObjectKey(resourceId, path);
+      const relativeBrainPath = !path.startsWith("/") && options.relativePathsUseBrain !== false;
+      const brainPath = relativeBrainPath ? resolveNamespaceCwd("/brain", path) : path;
+      if (relativeBrainPath && !brainPath.startsWith("/brain/")) {
+        throw new Error("brain workspace path must name a file beneath /brain");
+      }
+      const key = sharedBrainObjectKey(resourceId, brainPath);
       if (key === undefined) return fallback.readFile(path);
-      return createBrainWorkspace(bucket, resourceId).readFile(path);
+      // Both viewImage and imageGeneration accept at most 10 MiB per image.
+      // Check HEAD before GET so an oversized original never starts a body read.
+      const maximum = 10 * 1024 * 1024;
+      const tooLarge = () => new Error(`${path} exceeds the 10 MiB image limit. Use the attachment preview_path when available, or a resized copy under 10 MiB.`);
+      const metadata = await bucket.head(key);
+      if (!metadata) throw new Error(`brain workspace file not found: ${path}`);
+      if (metadata.size > maximum) throw tooLarge();
+      const object = await bucket.get(key);
+      if (!object) throw new Error(`brain workspace file not found: ${path}`);
+      // The object may have been replaced between HEAD and GET.
+      if (object.size > maximum) {
+        await object.body.cancel();
+        throw tooLarge();
+      }
+      const reader = object.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let length = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value.byteLength > maximum - length) {
+            await reader.cancel();
+            throw tooLarge();
+          }
+          chunks.push(value);
+          length += value.byteLength;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      const bytes = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return bytes;
     },
   });
 }
@@ -7596,6 +7639,7 @@ export class DurableAgentSession extends DurableComputerSession {
         // filesystem during ordinary brain-only startup or relative reads.
         return (await createWorkspaceFilesystem(workspace)).readFile(path);
       } },
+      { relativePathsUseBrain: !multiplayer },
     );
     const computerRuntimeMs = performance.now() - phaseStartedAt;
     const currentAccountInfo = async (context: ToolContext) => {
