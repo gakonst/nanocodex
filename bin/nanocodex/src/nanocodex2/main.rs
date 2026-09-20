@@ -10,6 +10,8 @@
 mod computer;
 #[cfg(unix)]
 mod computer_elicitation;
+#[cfg(any(windows, test))]
+mod computer_elicitation_windows;
 #[allow(dead_code)]
 mod config;
 mod control;
