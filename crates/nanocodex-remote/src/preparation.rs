@@ -7,8 +7,30 @@ use tokio::time::{Instant, error::Elapsed, timeout_at};
 pub const VIEWER_CAPACITY: usize = 4;
 type Completion<T> = (String, Instant, Result<T, Elapsed>);
 
+type Entry<T> = (String, Instant, BoxFuture<'static, Result<T, Elapsed>>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmissionError {
+    Capacity,
+    Duplicate,
+}
+impl std::fmt::Display for AdmissionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Capacity => "viewer preparation capacity reached",
+            Self::Duplicate => "viewer preparation already exists",
+        })
+    }
+}
+impl std::error::Error for AdmissionError {}
+
 pub struct Preparations<T> {
-    entries: Vec<(String, Instant, BoxFuture<'static, Result<T, Elapsed>>)>,
+    entries: Vec<Entry<T>>,
+}
+impl<T: Send + 'static> Default for Preparations<T> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 impl<T: Send + 'static> Preparations<T> {
     pub fn new() -> Self {
@@ -19,6 +41,9 @@ impl<T: Send + 'static> Preparations<T> {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
     pub fn contains(&self, id: &str) -> bool {
         self.entries.iter().any(|(viewer, _, _)| viewer == id)
     }
@@ -27,9 +52,12 @@ impl<T: Send + 'static> Preparations<T> {
         id: &str,
         deadline: Instant,
         future: impl Future<Output = T> + Send + 'static,
-    ) -> Result<(), ()> {
-        if self.len() >= VIEWER_CAPACITY || self.contains(id) {
-            return Err(());
+    ) -> Result<(), AdmissionError> {
+        if self.len() >= VIEWER_CAPACITY {
+            return Err(AdmissionError::Capacity);
+        }
+        if self.contains(id) {
+            return Err(AdmissionError::Duplicate);
         }
         self.entries
             .push((id.into(), deadline, Box::pin(timeout_at(deadline, future))));

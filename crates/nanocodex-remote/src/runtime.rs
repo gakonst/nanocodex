@@ -428,6 +428,8 @@ async fn release(
     }
     Ok(())
 }
+// The session owns these separately borrowed transport and lifecycle resources.
+#[allow(clippy::too_many_arguments)]
 async fn session(
     target: &PublisherTarget,
     machine: &Machine,
@@ -548,9 +550,8 @@ async fn session(
                     }
                     release(&mut lease,backend,&mut socket).await?;
                 }
-                if socket.microphone.active.is_some() && !socket.video.as_ref().is_some_and(|v| v.microphone_enabled(lease.owner())) {
-                    if let Some(ack) = socket.microphone.stopped() { send(&mut socket, ack).await?; }
-                }
+                if socket.microphone.active.is_some() && !socket.video.as_ref().is_some_and(|v| v.microphone_enabled(lease.owner()))
+                    && let Some(ack) = socket.microphone.stopped() { send(&mut socket, ack).await?; }
                 if last_authorized.elapsed()>Duration::from_secs(25) { return Err(SessionError::Unauthorized); }
                 if !connection.is_empty() && last_renewal.elapsed()>=Duration::from_secs(10) && renewal.is_none() {
                     last_renewal=Instant::now(); let http=http.clone(); let url=renew_url.clone(); let token=target.bearer().to_string(); let id=connection.clone();
@@ -773,7 +774,8 @@ async fn session(
                                 // Tokio polls the inner future before its timeout. Do not
                                 // inject when scheduling consumed the remaining budget.
                                 if tokio::time::Instant::now() >= job_deadline { return json!({"status":"cancelled"}); }
-                                for (delay,input) in steps {if !delay.is_zero(){tokio::time::sleep(delay).await;}if tokio::time::Instant::now() >= job_deadline {return json!({"status":"cancelled"});}let result=call(&backend,json!({"action":"input","input":input}),Duration::from_secs(2)).await;if result["status"]!="ok"{return result;}}
+                                for (delay,input) in steps {if !delay.is_zero(){tokio::time::sleep(delay).await;}
+                                if tokio::time::Instant::now() >= job_deadline {return json!({"status":"cancelled"});}let result=call(&backend,json!({"action":"input","input":input}),Duration::from_secs(2)).await;if result["status"]!="ok"{return result;}}
                                 if settle { tokio::time::sleep(Duration::from_millis(80)).await; }
                                 observe_agent(&backend, &providers, context, deadline).await
                             }).await.unwrap_or_else(|_|json!({"status":"cancelled"}))

@@ -265,7 +265,8 @@ mod tests {
         };
         assert!(s.validate().is_err());
     }
-    struct Fake(Arc<Mutex<Vec<Vec<(u16, u16, i32)>>>>);
+    type EventLog = Arc<Mutex<Vec<Vec<(u16, u16, i32)>>>>;
+    struct Fake(EventLog);
     impl Device for Fake {
         fn write_state(&mut self, s: &GamepadState) -> io::Result<()> {
             self.0.lock().unwrap().push(s.events());

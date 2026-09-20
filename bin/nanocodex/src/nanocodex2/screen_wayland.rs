@@ -215,14 +215,13 @@ impl Platform {
     pub(crate) async fn shutdown(mut self) {
         let _ = self.state.release().await;
         self.stop.send_replace(true);
-        if let Some(mut worker) = self.worker.take() {
-            if tokio::time::timeout(Duration::from_secs(3), &mut worker)
+        if let Some(mut worker) = self.worker.take()
+            && tokio::time::timeout(Duration::from_secs(3), &mut worker)
                 .await
                 .is_err()
-            {
-                worker.abort();
-                let _ = worker.await;
-            }
+        {
+            worker.abort();
+            let _ = worker.await;
         }
     }
 }
@@ -256,10 +255,10 @@ impl State {
         if let Input::Gamepad { gamepad } = &event {
             return self.gamepad.apply(gamepad).map_err(error);
         }
-        if let Input::Text { text } = &event {
-            if self::text::type_text(text).await.map_err(error)? {
-                return Ok(());
-            }
+        if let Input::Text { text } = &event
+            && self::text::type_text(text).await.map_err(error)?
+        {
+            return Ok(());
         }
         let release = matches!(event, Input::ReleaseAll {});
         let gamepad = if release {

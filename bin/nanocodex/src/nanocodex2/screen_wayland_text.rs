@@ -53,20 +53,20 @@ pub(super) async fn type_text(text: &str) -> io::Result<bool> {
 }
 async fn type_with(config: &Config, text: &str) -> io::Result<bool> {
     tokio::time::timeout(Duration::from_secs(5), async {
-        if config.x11 && config.display {
-            if let Some(executable) = config.executable("xdotool")? {
-                if focused(&executable).await? {
-                    let result = run(
-                        &executable,
-                        &["type", "--clearmodifiers", "--delay", "1", "--file", "-"],
-                        text.as_bytes(),
-                        Duration::from_secs(5),
-                    )
-                    .await?;
-                    successful(result)?;
-                    return Ok(true);
-                }
-            }
+        if config.x11
+            && config.display
+            && let Some(executable) = config.executable("xdotool")?
+            && focused(&executable).await?
+        {
+            let result = run(
+                &executable,
+                &["type", "--clearmodifiers", "--delay", "1", "--file", "-"],
+                text.as_bytes(),
+                Duration::from_secs(5),
+            )
+            .await?;
+            successful(result)?;
+            return Ok(true);
         }
         if config.wtype {
             let executable = config

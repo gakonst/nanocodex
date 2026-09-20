@@ -127,7 +127,7 @@ fn checked_url(raw: &str, websocket: bool) -> io::Result<Url> {
 
 fn scoped_path(path: &str, suffix: &str) -> bool {
     let parts: Vec<_> = path.split('/').collect();
-    if parts.len() != 6 || parts[0] != "" || parts[1] != "v1" || parts[5] != suffix {
+    if parts.len() != 6 || !parts[0].is_empty() || parts[1] != "v1" || parts[5] != suffix {
         return false;
     }
     let uuid = |value: &str| value.len() == 36 && uuid::Uuid::parse_str(value).is_ok();

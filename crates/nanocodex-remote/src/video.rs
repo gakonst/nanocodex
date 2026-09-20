@@ -311,7 +311,7 @@ impl Video {
                                     if events.send(event).await.is_err() { break; }
                                 }
                             })));
-                            self.peers.insert(id.clone(), peer);
+                            self.peers.insert(id, peer);
                             (offer, true)
                         },
                         _ => (json!({"type":"viewer_left","viewer_id":id}), false),
@@ -628,10 +628,9 @@ impl PeerBuilder {
                 RTCPeerConnectionState::Failed
                     | RTCPeerConnectionState::Closed
                     | RTCPeerConnectionState::Disconnected
-            ) {
-                if let Some(microphone) = revoke_microphone.upgrade() {
-                    microphone.revoke();
-                }
+            ) && let Some(microphone) = revoke_microphone.upgrade()
+            {
+                microphone.revoke();
             }
             if matches!(
                 state,
