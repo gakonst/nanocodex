@@ -547,21 +547,63 @@ client; no update to an existing Hand is required.
 
 ### Original media attachments
 
-The authenticated `/v1/agents/:id/attachments/:uuid` route stores original
-image or MP4/MOV bytes in the agent's existing `/brain/attachments/:uuid/original.*`
-filesystem. `POST` accepts `{name, media_type, size}` and returns the file path,
-part size, next part number, and completion state. Parts are normally 8 MiB and scale up to 100 MB to fit R2’s 10,000-part limit. The current Free/Pro 100 MB request ingress limit therefore permits files up to 1 TB. Parts stream through hashing to R2 with backpressure, and the service serializes ingestion across attachments. `PUT .../parts/:number`
-accepts exact binary chunks in order; identical retries are safe and conflicting
-bytes are rejected. `POST .../complete` finalizes the file idempotently. `GET`
-returns private, uncached bytes and supports ranges. Multipart upload IDs remain
-server-side. Image previews use a separate immutable authenticated endpoint; original bytes remain unchanged.
+Apple clients upload image and MP4/MOV bytes directly to the private R2 S3
+endpoint. Workers authorize and finalize transfers using small JSON requests;
+original and preview upload bodies do not pass through a Worker. Files retain
+their existing `/brain/attachments/:uuid/original.*` paths.
 
-Account ownership, organization, team, authorization epoch, and capabilities
-are checked before filesystem access. Connect grants cannot use this route.
-Session deletion fences new work, cancels body readers, drains pending writes,
-and aborts incomplete uploads before the existing `/brain` cleanup. The
-`attachments.test.ts` Worker tests exercise real local R2 multipart behavior,
-reconstruction, retries, filesystem reads, deletion fencing, and account isolation.
+1. Authenticated `POST /v1/agents/:id/attachments/:uuid` accepts
+   `{name, media_type, size, transport: "r2"}` and returns the path, part size,
+   next acknowledged part, completion state, and `transport: "r2"`.
+2. `POST .../parts/:number` accepts `{size, md5}` (base64 MD5) and returns a
+   short-lived presigned R2 `UploadPart` URL and required headers. Authorization
+   binds the exact object, upload, part number, byte count, and checksum. The
+   client uploads a file-backed body directly to R2 without account credentials,
+   then acknowledges its R2 ETag with `POST .../parts/:number/complete`.
+3. `POST .../complete` finalizes the R2 multipart upload and records its metadata
+   in the brain filesystem catalog. Completion validates the submitted R2 ETags
+   and final object size. Retrying the same intent resumes acknowledged parts.
+4. JPEG previews follow the same direct flow using `POST .../preview` with
+   `{size, md5}` and `POST .../preview/complete` with `{etag}`. A single-part
+   multipart upload seals the preview: an old upload URL cannot overwrite the
+   completed object. Preview files are at most 2 MiB.
+
+Direct uploads use R2's object and 10,000-part limits; part sizing is independent
+of Worker request ingress limits. Existing clients can continue using the legacy
+streaming `PUT .../parts/:number` and `PUT .../preview` routes. New clients require
+R2 transport and fail explicitly if it is unavailable, rather than silently
+proxying media through Workers. Authenticated original downloads remain private
+and support ranges; preview downloads remain immutable and account-scoped.
+
+`view_image` streams R2 image sources to the Cloudflare Images binding for default
+inspection, where resizing and decoding happen outside the brain's JavaScript
+heap. Only bounded output is encoded for the model. The original remains intact.
+Exact `detail: "original"` reads retain the existing supported-format and 10 MiB
+output constraints; oversized exact reads fail explicitly. A bounded JPEG preview
+is available when the original format cannot be transformed. Image editing's
+original-file reads retain an early size check and bounded stream reader.
+
+#### Deployment configuration
+
+Deploy the backend before the updated Apple clients. Configure the managed Worker
+with `NANOCODEX_ATTACHMENT_R2_ACCOUNT_ID` and `NANOCODEX_ATTACHMENT_R2_BUCKET`
+matching its `NANOCODEX_WORKSPACES` binding, plus Worker secrets
+`NANOCODEX_ATTACHMENT_R2_ACCESS_KEY_ID` and
+`NANOCODEX_ATTACHMENT_R2_SECRET_ACCESS_KEY` from an R2 token scoped to that bucket.
+Never embed the signing secret in an app, source file, log, or model context.
+Presigned URLs are short-lived upload capabilities kept inside the transfer flow.
+The production Wrangler configuration declares `NANOCODEX_ATTACHMENT_IMAGES`;
+enable Cloudflare Images transformations for the account. Missing signing
+configuration returns `attachment_direct_upload_unavailable` for new uploads.
+Native URLSession uploads do not require bucket CORS; any future browser uploader
+must configure exact allowed origins, PUT, signed headers, and exposed ETag.
+
+Account ownership, organization, team, authorization epoch, and capabilities are
+checked before issuing upload capabilities. Connect grants cannot use this route.
+Session deletion fences new authorizations and aborts incomplete multipart uploads
+before brain cleanup. Tests cover direct completion and catalog visibility,
+resumption, checksum/size conflicts, deletion, presigning scope, and the absence
+of original-body buffering during image transformation.
 
 ## Browser on the Cloudflare sandbox desktop
 

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createExecutionContext, env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { createBrainBucket } from "../src/brain-bucket";
@@ -161,4 +162,45 @@ describe("brain storage local to its agent", () => {
       expect((await createBrainBucket(state.storage, backing, id).list()).objects).toHaveLength(0);
     });
   });
+  it("recovers exact multipart bytes when completion commits but its response is lost", async () => {
+    const id = crypto.randomUUID();
+    await runInDurableObject(bindings.NANOCODEX_SESSIONS.getByName(id), async (_instance, state) => {
+      const backing = bindings.NANOCODEX_WORKSPACES;
+      const original = createBrainBucket(state.storage, backing, id);
+      const key = `brains/${id}/attachments/recovery/original.png`;
+      const upload = await original.createMultipartUpload(key);
+      const bytes = new Uint8Array([1, 2, 3, 4]);
+      const nativePart = await upload.uploadPart(1, bytes);
+      // Miniflare's Workers uploadPart token is opaque; S3 UploadPart returns
+      // the documented MD5 ETag. Adapt only that simulator boundary.
+      const part = { partNumber: 1, etag: createHash("md5").update(bytes).digest("hex") };
+      const lostResponse = new Proxy(backing, { get(target, property) {
+        if (property === "resumeMultipartUpload") return (key: string, uploadId: string) => {
+          const pending = target.resumeMultipartUpload(key, uploadId);
+          return { key, uploadId, abort: () => pending.abort(), uploadPart: pending.uploadPart.bind(pending),
+            async complete(parts: R2UploadedPart[]) {
+              await pending.complete(parts.map((candidate) => candidate.etag === part.etag ? nativePart : candidate));
+              throw new Error("completion response lost");
+            } };
+        };
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      } });
+      const reopened = createBrainBucket(state.storage, lostResponse, id);
+      expect(await reopened.head(key)).toBeNull();
+      const completed = await reopened.resumeMultipartUpload(key, upload.uploadId).complete([part]);
+      expect(completed.size).toBe(4);
+      expect(new Uint8Array(await (await reopened.get(key))!.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3, 4]));
+      // A subsequent retry also reconciles against the exact committed ETag.
+      expect((await reopened.resumeMultipartUpload(key, upload.uploadId).complete([part])).etag).toBe(completed.etag);
+      const pending = await reopened.createMultipartUpload(key);
+      await expect(reopened.resumeMultipartUpload(key, pending.uploadId).complete([
+        { partNumber: 1, etag: "0".repeat(32) },
+      ])).rejects.toThrow();
+      expect((await reopened.head(key))!.etag).toBe(completed.etag);
+      await pending.abort();
+      await reopened.delete(key);
+    });
+  });
+
 });

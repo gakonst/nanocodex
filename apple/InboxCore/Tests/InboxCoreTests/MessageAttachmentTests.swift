@@ -39,7 +39,7 @@ final class MessageAttachmentTests: XCTestCase {
         let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(decoded, 0, nil))
         XCTAssertEqual(image.width, 2048)
         XCTAssertEqual(image.height, 1024)
-        XCTAssertTrue(prepared.content[0]["text"].string.contains("Use view_image on preview_path first"))
+        XCTAssertTrue(prepared.content[0]["text"].string.contains("Use view_image on path to inspect this image"))
         // Descriptor wording must still disappear from flattened history prose.
         let input = TranscriptInput(.string("Inspect this\n" + prepared.content[0]["text"].string))
         XCTAssertEqual(input.text, "Inspect this")
@@ -119,20 +119,38 @@ final class MessageAttachmentTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: source) }
         let parts = expectation(description: "Both file-backed parts uploaded")
         parts.expectedFulfillmentCount = 2
-        let fixture = try HTTPFixture { request in
-            if request.path.hasSuffix("/parts/1") {
+        let r2 = try HTTPFixture(host: UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased() + ".r2.cloudflarestorage.com") { request in
+            XCTAssertEqual(request.method, "PUT")
+            XCTAssertNil(request.headers["authorization"])
+            XCTAssertNil(request.headers["cookie"])
+            XCTAssertNil(request.headers["x-nanocodex-access"])
+            XCTAssertEqual(request.headers["content-length"], String(request.body.count))
+            XCTAssertEqual(request.headers["content-md5"], Data(Insecure.MD5.hash(data: request.body)).base64EncodedString())
+            if request.path == "/1" {
                 XCTAssertEqual(request.body.count, partSize)
                 XCTAssertEqual(SHA256.hash(data: request.body), firstDigest)
-                parts.fulfill()
-                return FixtureReply()
-            }
-            if request.path.hasSuffix("/parts/2") {
-                XCTAssertEqual(request.body, Data([1, 2, 3, 4, 5]))
-                parts.fulfill()
-                return FixtureReply()
+            } else { XCTAssertEqual(request.body, Data([1, 2, 3, 4, 5])) }
+            parts.fulfill()
+            return FixtureReply(headers: ["ETag": "\"r2-etag\""])
+        }
+        defer { r2.close() }
+        let fixture = try HTTPFixture { request in
+            XCTAssertEqual(request.method, "POST")
+            XCTAssertEqual(request.headers["authorization"], "Bearer " + fixtureKey)
+            if request.path.contains("/parts/") {
+                if request.path.hasSuffix("/complete") {
+                    XCTAssertEqual(request.json["etag"] as? String, "\"r2-etag\"")
+                    return FixtureReply()
+                }
+                let part = request.path.hasSuffix("/1") ? 1 : 2
+                let size = part == 1 ? partSize : 5
+                XCTAssertEqual(request.json["size"] as? Int, size)
+                let md5 = request.json["md5"] as! String
+                return FixtureReply(body: "{\"url\":\"\(r2.origin)/\(part)\",\"headers\":{\"content-length\":\"\(size)\",\"content-md5\":\"\(md5)\"},\"expires_at\":4102444800000}")
             }
             let complete = request.path.hasSuffix("/complete")
-            return FixtureReply(body: "{\"path\":\"\(attachment.originalPath)\",\"size\":\(attachment.byteCount),\"part_size\":\(partSize),\"next_part\":1,\"complete\":\(complete)}")
+            if !complete { XCTAssertEqual(request.json["transport"] as? String, "r2") }
+            return FixtureReply(body: "{\"transport\":\"r2\",\"path\":\"\(attachment.originalPath)\",\"size\":\(attachment.byteCount),\"part_size\":\(partSize),\"next_part\":1,\"complete\":\(complete)}")
         }
         defer { fixture.close() }
         let client = ManagedClient(credential: try AccountCredential(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)

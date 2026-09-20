@@ -77,6 +77,7 @@ enum ManagedResponseCache {
 public final class ManagedClient: @unchecked Sendable {
     let credential: AccountCredential
     private let session: URLSession
+    private let directSession: URLSession
     private let responseCache: URLCache?
     private let requestOrigin: [String: String]
     private let locationContext: (@Sendable () async -> JSON?)?
@@ -99,8 +100,16 @@ public final class ManagedClient: @unchecked Sendable {
         config.timeoutIntervalForRequest = 45
         config.timeoutIntervalForResource = 3600
         session = URLSession(configuration: config, delegate: NoRedirects(), delegateQueue: nil)
+        let direct = URLSessionConfiguration.ephemeral
+        direct.protocolClasses = configuration?.protocolClasses
+        direct.httpShouldSetCookies = false
+        direct.httpCookieStorage = nil
+        direct.urlCredentialStorage = nil
+        direct.urlCache = nil
+        direct.timeoutIntervalForResource = 3600
+        directSession = URLSession(configuration: direct, delegate: NoRedirects(), delegateQueue: nil)
     }
-    public func close() { session.invalidateAndCancel() }
+    public func close() { session.invalidateAndCancel(); directSession.invalidateAndCancel() }
     /// Call on explicit sign-out, not when suspending an observer.
     public func clearCachedResponses() { responseCache?.removeAllCachedResponses(); ManagedAccess.clear() }
     public func request(path: String, method: String = "GET", body: JSON? = nil, idempotencyKey: String? = nil, location: JSON? = nil) throws -> URLRequest {
@@ -336,10 +345,10 @@ public final class ManagedClient: @unchecked Sendable {
         guard values.isRegularFile == true, values.isSymbolicLink != true, values.fileSize == attachment.byteCount else { throw AttachmentError.invalidReference }
         let path = try Self.agentPath(agentID) + "/attachments/" + attachment.id.lowercased()
         let receipt = try await json(path: path, method: "POST", body: .object([
-            "name": .string(attachment.name), "media_type": .string(attachment.mediaType), "size": .number(Double(attachment.byteCount))]))
+            "transport": .string("r2"), "name": .string(attachment.name), "media_type": .string(attachment.mediaType), "size": .number(Double(attachment.byteCount))]))
         let filePath = receipt["path"].string
         _ = try attachment.originalContent(path: filePath)
-        guard receipt["size"].number == Double(attachment.byteCount) else { throw APIError.invalidResponse }
+        guard receipt["transport"].string == "r2", receipt["size"].number == Double(attachment.byteCount) else { throw APIError.invalidResponse }
         if receipt["complete"] == .bool(true) {
             if let preview { try await uploadPreview(path: path, source: preview) }
             return filePath
@@ -361,20 +370,26 @@ public final class ManagedClient: @unchecked Sendable {
             defer { try? FileManager.default.removeItem(at: temporary) }
             let output = try FileHandle(forWritingTo: temporary)
             defer { try? output.close() }
+            var digest = Insecure.MD5()
             var remaining = expected
             while remaining > 0 {
                 try Task.checkCancellation()
                 guard let chunk = try file.read(upToCount: min(8 * 1024 * 1024, remaining)), !chunk.isEmpty else { throw AttachmentError.unavailable }
+                digest.update(data: chunk)
                 try output.write(contentsOf: chunk)
                 remaining -= chunk.count
             }
             try output.close()
-            var request = try request(path: path + "/parts/" + String(part), method: "PUT")
-            request.timeoutInterval = 120
-            request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-            let (_, response) = try await session.upload(for: request, fromFile: temporary)
-            guard let response = response as? HTTPURLResponse else { throw APIError.invalidResponse }
-            guard response.statusCode == 200 else { throw APIError.http(response.statusCode) }
+            let partPath = path + "/parts/" + String(part)
+            let md5 = Data(digest.finalize()).base64EncodedString()
+            let signed = try await json(path: partPath, method: "POST", body: .object([
+                "size": .number(Double(expected)), "md5": .string(md5)]))
+            if signed["complete"] == .bool(true) {
+                guard signed["part"].number == Double(part) else { throw APIError.invalidResponse }
+            } else {
+                let etag = try await directUpload(signed, source: temporary, size: expected, md5: md5)
+                _ = try await json(path: partPath + "/complete", method: "POST", body: .object(["etag": .string(etag)]))
+            }
             part += 1
         }
         try Task.checkCancellation()
@@ -387,10 +402,57 @@ public final class ManagedClient: @unchecked Sendable {
     }
 
     private func uploadPreview(path: String, source: URL) async throws {
-        var request = try request(path: path + "/preview", method: "PUT")
-        request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
-        let (_, response) = try await session.upload(for: request, fromFile: source)
-        guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw APIError.invalidResponse }
+        guard source.isFileURL else { throw AttachmentError.invalidReference }
+        let values = try source.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true,
+              let size = values.fileSize, size > 0, size <= 2 * 1024 * 1024 else { throw AttachmentError.invalidReference }
+        let file = try FileHandle(forReadingFrom: source)
+        defer { try? file.close() }
+        var digest = Insecure.MD5()
+        var read = 0
+        while let chunk = try file.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+            try Task.checkCancellation()
+            read += chunk.count
+            guard read <= size else { throw AttachmentError.invalidReference }
+            digest.update(data: chunk)
+        }
+        guard read == size else { throw AttachmentError.invalidReference }
+        let md5 = Data(digest.finalize()).base64EncodedString()
+        let signed = try await json(path: path + "/preview", method: "POST", body: .object([
+            "size": .number(Double(size)), "md5": .string(md5)]))
+        if signed["complete"] == .bool(true) { return }
+        let etag = try await directUpload(signed, source: source, size: size, md5: md5)
+        _ = try await json(path: path + "/preview/complete", method: "POST", body: .object(["etag": .string(etag)]))
+    }
+
+    /// The signed capability is used only by an isolated, cookieless session.
+    /// Never surface URLSession errors, which can contain the signed URL.
+    private func directUpload(_ signed: JSON, source: URL, size: Int, md5: String) async throws -> String {
+        guard let url = URL(string: signed["url"].string), url.scheme == "https",
+              url.user == nil, url.password == nil, url.fragment == nil, url.port == nil,
+              let host = url.host,
+              host.range(of: #"^[a-f0-9]{32}\.r2\.cloudflarestorage\.com$"#, options: .regularExpression) != nil,
+              signed["expires_at"].number.isFinite,
+              signed["expires_at"].number > Date().timeIntervalSince1970 * 1000,
+              signed["headers"]["content-length"].string == String(size),
+              signed["headers"]["content-md5"].string == md5 else { throw APIError.invalidResponse }
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 900)
+        request.httpMethod = "PUT"
+        request.httpShouldHandleCookies = false
+        request.setValue(String(size), forHTTPHeaderField: "Content-Length")
+        request.setValue(md5, forHTTPHeaderField: "Content-MD5")
+        let response: URLResponse
+        do {
+            (_, response) = try await directSession.upload(for: request, fromFile: source)
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            throw APIError.invalidResponse
+        }
+        guard let response = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+        guard (200..<300).contains(response.statusCode) else { throw APIError.http(response.statusCode) }
+        guard let etag = response.value(forHTTPHeaderField: "ETag"), !etag.isEmpty,
+              etag.utf8.count <= 1024, etag.utf8.allSatisfy({ $0 >= 32 && $0 <= 126 }) else { throw APIError.invalidResponse }
+        return etag
     }
 
     /// Account-scoped URLCache retains immutable previews; original bytes never

@@ -28,11 +28,12 @@ struct FixtureReply {
 
 /// Each test gets an isolated HTTPS origin and URLSession protocol.
 final class HTTPFixture: @unchecked Sendable {
-    let origin = "https://" + UUID().uuidString.lowercased() + ".invalid"
+    let origin: String
     let configuration = URLSessionConfiguration.ephemeral
     let queue = DispatchQueue(label: "inbox.sms.fixture")
     let handler: (FixtureRequest) -> FixtureReply
-    init(_ handler: @escaping (FixtureRequest) -> FixtureReply) throws {
+    init(host: String = UUID().uuidString.lowercased() + ".invalid", _ handler: @escaping (FixtureRequest) -> FixtureReply) throws {
+        origin = "https://" + host
         self.handler = handler
         configuration.protocolClasses = [SMSFixtureProtocol.self]
         fixturesLock.lock(); defer { fixturesLock.unlock() }

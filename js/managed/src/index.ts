@@ -47,9 +47,11 @@ import type {
 } from "nanocodex";
 import { Agent as CloudflareAgent } from "nanocodex/cloudflare";
 import { Agent as ManagedAgent } from "nanocodex/managed";
-import { imageGeneration, updatePlan, viewImage, web } from "nanocodex/tools";
+import { imageGeneration, updatePlan, web } from "nanocodex/tools";
 import { createWorkspaceFilesystem, resolveNamespaceCwd } from "nanocodex-tools";
 import { SessionAttachments } from "./attachments";
+import { createAttachmentUploadSigner } from "./attachment-r2";
+import { createR2ViewImage } from "./attachment-image";
 import { createBrainWorkspace } from "./brain-workspace";
 import { createBrainBucket } from "./brain-bucket";
 import { browseX, X_API } from "nanocodex-tools/x";
@@ -395,6 +397,11 @@ export interface Env extends
   NANOCODEX_X?: Fetcher;
   NANOCODEX_HISTORY: R2Bucket;
   NANOCODEX_WORKSPACES: R2Bucket;
+  NANOCODEX_ATTACHMENT_IMAGES?: ImagesBinding;
+  NANOCODEX_ATTACHMENT_R2_ACCOUNT_ID?: string;
+  NANOCODEX_ATTACHMENT_R2_BUCKET?: string;
+  NANOCODEX_ATTACHMENT_R2_ACCESS_KEY_ID?: string;
+  NANOCODEX_ATTACHMENT_R2_SECRET_ACCESS_KEY?: string;
   NANOCODEX_ADMIN_TOKEN: string;
   NANOCODEX_ADMIN_USER_ID?: string;
   NANOCODEX_SYSTEM_HOST_TOKEN?: string;
@@ -4128,9 +4135,17 @@ export class DurableAgentSession extends DurableComputerSession {
   }
 
   #attachmentStore(): SessionAttachments {
-    return this.#attachments ??= new SessionAttachments(
+    if (this.#attachments) return this.#attachments;
+    const accountId = this.env.NANOCODEX_ATTACHMENT_R2_ACCOUNT_ID;
+    const bucket = this.env.NANOCODEX_ATTACHMENT_R2_BUCKET;
+    const accessKeyId = this.env.NANOCODEX_ATTACHMENT_R2_ACCESS_KEY_ID;
+    const secretAccessKey = this.env.NANOCODEX_ATTACHMENT_R2_SECRET_ACCESS_KEY;
+    const signer = accountId && bucket && accessKeyId && secretAccessKey
+      ? createAttachmentUploadSigner({ accountId, bucket, accessKeyId, secretAccessKey }) : undefined;
+    return this.#attachments = new SessionAttachments(
       this.ctx.storage, this.#brainBucket(), this.#sessionId()!,
       () => !this.#deleting && !this.#deleted && !this.#durabilityExported,
+      signer,
     );
   }
 
@@ -7641,6 +7656,11 @@ export class DurableAgentSession extends DurableComputerSession {
       } },
       { relativePathsUseBrain: !multiplayer },
     );
+    const brainViewImage = createR2ViewImage({
+      bucket: this.#brainBucket(), resourceId: session.session_id,
+      images: this.env.NANOCODEX_ATTACHMENT_IMAGES,
+      fallbackWorkspace: sharedBrainWorkspace, relativePathsUseBrain: !multiplayer,
+    });
     const computerRuntimeMs = performance.now() - phaseStartedAt;
     const currentAccountInfo = async (context: ToolContext) => {
       await this.#accountHostedTools?.refresh();
@@ -7863,7 +7883,7 @@ export class DurableAgentSession extends DurableComputerSession {
         fetch: managedImageFetch(this.env, this.#credentialSubject(), configuration.chatgpt_account_id),
         workspace: sharedBrainWorkspace,
       }),
-      viewImage({ workspace: sharedBrainWorkspace }),
+      brainViewImage,
       updatePlan(),
       {
         name: "runtimeInfo",
@@ -7959,7 +7979,7 @@ export class DurableAgentSession extends DurableComputerSession {
     let cloudflareAgentMs = 0;
     try {
       phaseStartedAt = performance.now();
-      const selectedTools = restrictedEnvironment ? [computer.tool, viewImage({ workspace: sharedBrainWorkspace }), updatePlan()] : cloudTools;
+      const selectedTools = restrictedEnvironment ? [computer.tool, brainViewImage, updatePlan()] : cloudTools;
       const configuredNames = configuration.tools?.flatMap(name => name === "memory"
         ? ["list", "read", "search", "add_ad_hoc_note"].map(method => `memories__${method}`) : [name]);
       const configuredTools = configuredNames === undefined ? selectedTools : selectedTools.filter(tool => configuredNames.includes(tool.name));
