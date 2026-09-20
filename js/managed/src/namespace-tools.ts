@@ -454,3 +454,19 @@ function stableHash(value: string): string {
   }
   return hash.toString(16).padStart(16, "0");
 }
+
+/** Refresh only the VM selected by this call before capturing its route. An
+ * unrelated disconnected VM must not prevent access to other Hands or mounts.
+ * Calls without a workdir (mount, pinned process/CUA calls) need no VM refresh.
+ */
+export async function prepareNamespaceHostMount<T extends Readonly<{ root: string }>>(
+  mounts: readonly T[],
+  input: unknown,
+  refresh: (mount: T) => Promise<void>,
+): Promise<void> {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return;
+  const workdir = (input as Record<string, unknown>).workdir;
+  if (typeof workdir !== "string") return;
+  const mount = mounts.find(({ root }) => workdir === root || workdir.startsWith(`${root}/`));
+  if (mount !== undefined) await refresh(mount);
+}

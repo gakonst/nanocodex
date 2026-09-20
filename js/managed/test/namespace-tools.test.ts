@@ -1,3 +1,4 @@
+import { createManagedNamespaceTools } from "../src/index";
 import { describe, expect, it, vi } from "vitest";
 import type { ToolMap } from "nanocodex";
 import { CUA_JS_NAME, CUA_RESET_NAME } from "nanocodex-computer/contract";
@@ -6,6 +7,7 @@ import { ToolRouter, toolMapSource } from "nanocodex-tools/runtime/tool-router";
 
 import {
   createNamespaceExecutionRuntime,
+  prepareNamespaceHostMount,
   createNamespaceExecutionTools as createRuntimeNamespaceExecutionTools,
   machineMountRoot,
 } from "../src/namespace-tools";
@@ -609,3 +611,47 @@ function createNamespaceExecutionTools(
       : resolveMachineTool(machineId, name, context),
   );
 }
+
+describe("targeted retained VM preparation", () => {
+  it("keeps a disconnected VM from blocking native shell and CUA selection", async () => {
+    const refresh = vi.fn(async () => { throw new Error("host_not_ready"); });
+    const exec = vi.fn(async () => ({ output: "native ready", exit_code: 0 }));
+    const prepare = vi.fn(async (_context, _name, input) => {
+      await prepareNamespaceHostMount([{ root: "/vm-offline" }], input, refresh);
+    });
+    const tools = createManagedNamespaceTools(
+      () => true,
+      () => [{ id: "native", root: "/desktop", workspace: "/workspace" }],
+      (_id, name) => name === "exec_command" ? { handler: exec }
+        : name === CUA_JS_NAME || name === CUA_RESET_NAME ? cuaTool(name, () => ({})) : undefined,
+      prepare,
+    );
+    const input = { cmd: "pwd", workdir: "/desktop" };
+    await tools.find(tool => tool.name === "exec_command")!.handler(input, context());
+    expect(prepare).toHaveBeenCalledWith(expect.anything(), "exec_command", input);
+    expect(exec).toHaveBeenCalledOnce();
+    await expect(tools.find(tool => tool.name === "select_computer")!.handler(
+      { workdir: "/desktop" }, context({ parentCallId: "select-cell" }),
+    )).resolves.toMatchObject({ workdir: "/desktop" });
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the requested VM subtree and preserves its readiness failure", async () => {
+    const requested = { root: "/vm-target" };
+    const refresh = vi.fn(async () => { throw new Error("host_not_ready"); });
+    await expect(prepareNamespaceHostMount(
+      [{ root: "/vm-unrelated" }, requested], { workdir: "/vm-target/src" }, refresh,
+    )).rejects.toThrow("host_not_ready");
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledWith(requested);
+  });
+
+  it("does not refresh VMs for new mounts, pinned calls, brain or sibling roots", async () => {
+    const refresh = vi.fn();
+    for (const input of [undefined, {}, { session_id: 7 }, { code: "await cua.getState()" },
+      { workdir: "/brain" }, { workdir: "/vm-target-other" }, { workdir: 7 }]) {
+      await prepareNamespaceHostMount([{ root: "/vm-target" }], input, refresh);
+    }
+    expect(refresh).not.toHaveBeenCalled();
+  });
+});

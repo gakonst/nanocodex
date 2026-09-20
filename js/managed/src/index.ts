@@ -73,6 +73,7 @@ import {
 } from "./sandbox-tools";
 import {
   createNamespaceExecutionRuntime,
+  prepareNamespaceHostMount,
   isBrainExecution,
   machineMountRoot,
   type MachineToolResolver,
@@ -2798,7 +2799,7 @@ export function createManagedNamespaceTools(
   canUseExecutionNamespace: (context: ToolContext) => boolean,
   machines: (context: ToolContext) => readonly NamespaceMachine[] = () => [],
   resolveMachineTool: MachineToolResolver = () => undefined,
-  prepareNamespace: (context: ToolContext, toolName?: string) => Promise<void> = async () => {},
+  prepareNamespace: (context: ToolContext, toolName?: string, input?: unknown) => Promise<void> = async () => {},
   brain?: Readonly<{ tool: NamedTool; allowed(context: ToolContext): boolean }>,
   resolveScreenTool?: ScreenToolResolver,
 ): NamedTool[] {
@@ -2816,7 +2817,7 @@ function createManagedNamespaceRuntime(
   canUseExecutionNamespace: (context: ToolContext) => boolean,
   machines: (context: ToolContext) => readonly NamespaceMachine[] = () => [],
   resolveMachineTool: MachineToolResolver = () => undefined,
-  prepareNamespace: (context: ToolContext, toolName?: string) => Promise<void> = async () => {},
+  prepareNamespace: (context: ToolContext, toolName?: string, input?: unknown) => Promise<void> = async () => {},
   brain?: Readonly<{ tool: NamedTool; allowed(context: ToolContext): boolean }>,
   resolveScreenTool?: ScreenToolResolver,
 ): Readonly<{ tools: NamedTool[]; capture(context: ToolContext): Promise<void> }> {
@@ -2831,13 +2832,13 @@ function createManagedNamespaceRuntime(
   const cellKey = (context: ToolContext): string => (
     `${context.sessionId}\u0000${context.parentCallId || context.callId}`
   );
-  const capture = async (context: ToolContext, toolName?: string): Promise<void> => {
+  const capture = async (context: ToolContext, toolName?: string, input?: unknown): Promise<void> => {
     const key = cellKey(context);
     if (captured.has(key)) return;
     const pending = preparations.get(key);
     if (pending !== undefined) return pending;
     const preparation = (async () => {
-      await prepareNamespace(context, toolName);
+      await prepareNamespace(context, toolName, input);
       runtime.capture(context);
       captured.add(key);
     })();
@@ -2875,7 +2876,7 @@ function createManagedNamespaceRuntime(
           "the current authorization cannot use execution hands",
         );
       }
-      await capture(context, name);
+      await capture(context, name, input);
       return tool.handler(input, context);
     },
     releaseSession: (sessionId: string) => {
@@ -7795,8 +7796,8 @@ export class DurableAgentSession extends DurableComputerSession {
       (context) => this.#canUseExecutionNamespace(this.#authorizationForToolContext(context)),
       namespaceMachines,
       resolveNamespaceMachineTool,
-      async (context, toolName) => {
-        await this.#refreshMountedHostMounts(this.#authorizationForToolContext(context));
+      async (context, toolName, input) => {
+        await this.#refreshMountedHostMounts(this.#authorizationForToolContext(context), input);
         // Publishers reconnect independently of shell attachments. A cached
         // startup inventory must not hide a screen that has since come online.
         if (toolName === "select_computer"
@@ -8623,6 +8624,7 @@ export class DurableAgentSession extends DurableComputerSession {
 
   async #refreshMountedHostMounts(
     authorization: TurnAuthorization | undefined,
+    input: unknown,
   ): Promise<void> {
     if (!this.#canUseExecutionNamespace(authorization)) {
       throw new ManagedRequestError(
@@ -8636,7 +8638,7 @@ export class DurableAgentSession extends DurableComputerSession {
     const mounts = this.#managedMounts("mounted").filter((mount) => (
       mount.provider === "host" && vmHostMountAllocation(mount) !== undefined
     ));
-    await Promise.all(mounts.map((mount) => this.#refreshMountedHostMount(mount)));
+    await prepareNamespaceHostMount(mounts, input, (mount) => this.#refreshMountedHostMount(mount));
     if (this.#deleting || this.#deleted || this.#deletionGeneration !== deletionGeneration) {
       throw retryableError("agent is being deleted");
     }
