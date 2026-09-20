@@ -2,9 +2,75 @@ import XCTest
 import ImageIO
 import CoreGraphics
 import CryptoKit
+import UniformTypeIdentifiers
 @testable import InboxCore
 
 final class MessageAttachmentTests: XCTestCase {
+    func testPastedProviderPreservesPNGAfterProviderFileExpires() async throws {
+        let bytes = try png(width: 120, height: 80)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let temporary = root.appendingPathComponent("screenshot.png")
+        try bytes.write(to: temporary)
+        let provider = NSItemProvider()
+        provider.registerFileRepresentation(forTypeIdentifier: UTType.png.identifier, fileOptions: [], visibility: .all) { completion in
+            completion(temporary, false, nil)
+            return nil
+        }
+        let copy = try await AttachmentProviderImport.copyImage(from: provider)
+        defer { try? FileManager.default.removeItem(at: copy) }
+        try FileManager.default.removeItem(at: temporary)
+        XCTAssertEqual(try Data(contentsOf: copy), bytes, "Keep source PNG bytes rather than recompressing a screenshot")
+        let prepared = try AttachmentPreparation.prepare(url: copy)
+        XCTAssertEqual(prepared.attachment.mediaType, "image/png")
+        let store = try AttachmentStore(scope: "paste", rootDirectory: root)
+        try store.save(prepared)
+        XCTAssertEqual(try Data(contentsOf: store.url(for: prepared.attachment)), bytes)
+        XCTAssertEqual(TranscriptInput(.array(try store.content(for: [prepared.attachment]))).imageFiles, [prepared.attachment])
+    }
+
+    func testDataBackedImageProviderImportsAsAFile() async throws {
+        let bytes = try png()
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.png.identifier, visibility: .all) { completion in
+            completion(bytes, nil)
+            return nil
+        }
+        let copy = try await AttachmentProviderImport.copyImage(from: provider)
+        defer { try? FileManager.default.removeItem(at: copy) }
+        XCTAssertEqual(try Data(contentsOf: copy), bytes)
+        XCTAssertEqual(try AttachmentPreparation.prepare(url: copy).attachment.mediaType, "image/png")
+    }
+
+    func testCancellingAnImageProviderReleasesAnUnfinishedImport() async throws {
+        let started = expectation(description: "Provider started")
+        let cancelled = expectation(description: "Provider progress cancelled")
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.png.identifier, visibility: .all) { _ in
+            let progress = Progress(totalUnitCount: 1)
+            progress.cancellationHandler = { cancelled.fulfill() }
+            started.fulfill()
+            return progress
+        }
+        let task = Task { try await AttachmentProviderImport.copyImage(from: provider) }
+        await fulfillment(of: [started], timeout: 2)
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation without waiting for a provider callback")
+        } catch is CancellationError {}
+        await fulfillment(of: [cancelled], timeout: 2)
+    }
+
+    func testTextProviderIsRejectedAsAnAttachment() async throws {
+        let provider = NSItemProvider(object: "hello" as NSString)
+        do {
+            _ = try await AttachmentProviderImport.copyImage(from: provider)
+            XCTFail("Expected unsupported image")
+        } catch { XCTAssertEqual(error as? AttachmentError, .unsupportedImage) }
+    }
+
     func testImagePreparationPreservesOriginalAndCreatesAnOrientedPreview() throws {
         let original = try png(width: 2200, height: 1100, orientation: 6)
         let prepared = try AttachmentPreparation.prepare(data: original, name: "Camera.png", mediaType: "image/png")

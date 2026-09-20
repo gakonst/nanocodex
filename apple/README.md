@@ -30,6 +30,13 @@ by the old tab interface. Rows are created lazily and search covers the whole ro
 Roster and state checks continue for background work; transcripts load when opened.
 The composer grows up to six lines, then scrolls; its expand button opens a larger
 editor sharing the same draft and attachments.
+Paste a copied screenshot or photo into either editor to attach it without opening
+the picker. Image providers enter the same account-scoped draft and original-file
+upload flow as Photos and Files; they do not replace your typed message. Plain
+text continues to use native text editing. Selected originals and inspection
+previews upload through the existing authenticated R2 multipart endpoints before
+the message is submitted, so later inspection does not require the phone online.
+
 
 The current conversation stays mounted while the session drawer opens. The drawer
 uses lightweight roster summaries and search, without tabs, preview grids, or status
@@ -439,6 +446,20 @@ actual workspace file was checked independently. UI screenshots are attached to
 the Xcode test result as `automatic-hand-connected`,
 `automatic-hand-real-file-roundtrip`, and
 `automatic-hand-restored-file-after-cold-launch`.
+
+## Read photos through the phone Hand
+
+With Photos read access already enabled in device permissions, the connected
+phone Hand can use `search_photos` to find accessible asset IDs and `read_photo`
+to inspect one image directly. Limited access stays limited to the selected
+library. The tool does not prompt for permission or download iCloud-only assets.
+It returns an oriented JPEG inspection image, bounded to 2048 pixels and 512 KiB,
+and saves that rendition under the phone workspace's `photos/` directory. The
+original remains in Photos. Code Mode can display the returned MCP image with
+`image(result.content[1])`; the phone's text-only `read_file` is not an image reader.
+The phone must be connected and have foreground or iOS-granted background time.
+For durable original files available while the phone is offline, attach with
+Photos, Files, or Paste and send the message through the R2-backed upload flow.
 
 ## Context from other apps
 

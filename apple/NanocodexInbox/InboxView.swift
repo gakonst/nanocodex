@@ -789,7 +789,8 @@ private struct AgentComposerView: View {
                 Button { focused = false; showAttachmentMenu = true } label: {
                     Image(systemName: "plus").frame(width: 44, height: 44).contentShape(Rectangle())
                 }.accessibilityLabel("Add attachments").accessibilityIdentifier("add-attachments")
-                ChatComposerEditor(text: $model.draft, focused: $focused, overflowing: $composerOverflows)
+                ChatComposerEditor(text: $model.draft, focused: $focused, overflowing: $composerOverflows,
+                                   onPasteImages: pasteImages)
                     .accessibilityIdentifier("composer")
                     .overlay(alignment: .topLeading) {
                         if model.draft.isEmpty {
@@ -880,6 +881,7 @@ private struct AgentComposerView: View {
                     draft: $model.draft,
                     canSend: model.canSend,
                     attachmentCount: model.focusedAttachments.count,
+                    onPasteImages: pasteImages,
                     onCollapse: {
                         showExpandedEditor = false
                         focused = true
@@ -918,6 +920,12 @@ private struct AgentComposerView: View {
                 case .failure(let error): pickerError = error.localizedDescription
                 }
             }
+    }
+
+    private func pasteImages(_ providers: [NSItemProvider]) {
+        guard let target = model.captureAttachmentTarget() else { return }
+        pickerError = nil
+        model.importAttachmentProviders(providers, target: target)
     }
 
     private func attachmentOption(_ title: String, icon: String, action: AttachmentAction, identifier: String) -> some View {
@@ -970,17 +978,18 @@ private struct ExpandedAgentComposer: View {
     @Binding var draft: String
     let canSend: Bool
     let attachmentCount: Int
+    let onPasteImages: ([NSItemProvider]) -> Void
     let onCollapse: () -> Void
     let onSend: () -> Void
-    @FocusState private var editorFocused: Bool
+    @State private var editorFocused = false
+    @State private var editorOverflow = false
 
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 8) {
-                TextEditor(text: $draft)
-                    .font(.body)
-                    .scrollContentBackground(.hidden)
-                    .focused($editorFocused)
+                ChatComposerEditor(text: $draft, focused: $editorFocused, overflowing: $editorOverflow,
+                                   expandsToFill: true, onPasteImages: onPasteImages)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .accessibilityLabel("Message")
                     .accessibilityIdentifier("expanded-composer")
                     .overlay(alignment: .topLeading) {
@@ -1362,6 +1371,8 @@ private struct ConversationMessageContent: View, Equatable {
                 if row.role == "Thinking" {
                     ChatMarkdown(text: row.text, compact: true)
                         .foregroundStyle(Ink.muted)
+                } else if row.role == "You", let receipt = BrowserReceiptPresentation.summary(row.text) {
+                    Label(receipt, systemImage: "lock.shield").font(.subheadline)
                 } else if row.role == "You", let content = ContextPrompt.separate(row.text) {
                     Text(content.request).font(.body).lineSpacing(3).textSelection(.enabled)
                     DisclosureGroup("Captured context (\(content.captures.count))") {
@@ -2802,10 +2813,15 @@ private struct BrowserTakeoverSheet: View {
         queue.removeAll(); screen = nil; keyboard = nil; inputs = []; keyboardVisible = false
         finishing = false; touching = false
     }
-    private func observe() {
-        enqueue(["action": .string("observe"), "viewport": .object([
-            "width": .number(Double(min(1920, max(240, viewport.width)).rounded())),
-            "height": .number(Double(min(1920, max(240, viewport.height)).rounded())), "mobile": .bool(true)])])
+    private func observe(configureViewport: Bool = false) {
+        // Poll pixels without resizing the remote page as the native keyboard opens.
+        var action: [String: JSON] = ["action": .string("observe")]
+        if configureViewport {
+            action["viewport"] = .object([
+                "width": .number(Double(min(1920, max(240, viewport.width)).rounded())),
+                "height": .number(Double(min(1920, max(240, viewport.height)).rounded())), "mobile": .bool(true)])
+        }
+        enqueue(action)
     }
     private func enqueue(_ action: [String: JSON]) {
         guard scenePhase == .active, account == model.vaultIntakeAccount, !finishing else { return }
@@ -2857,11 +2873,16 @@ private struct BrowserTakeoverSheet: View {
                         enabled: screen != nil && failure == nil && !finishing && scenePhase == .active,
                         send: enqueue, showKeyboard: { hint in keyboard = hint; keyboardVisible = true })
                         .onAppear { viewport = geometry.size }
-                        .onChange(of: geometry.size) { _, size in viewport = size }
+                        .onChange(of: geometry.size) { _, size in if !keyboardVisible { viewport = size } }
                 }
                 if let failure { Text(failure).font(.footnote).foregroundStyle(.red).padding(8) }
             }
             .background(Color.black).privacySensitive()
+            .overlay {
+                if screen == nil && failure == nil {
+                    ProgressView("Opening private browser…").tint(.white).foregroundStyle(.white)
+                }
+            }
             .navigationTitle(intake.origin ?? "Private browser")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -2870,7 +2891,7 @@ private struct BrowserTakeoverSheet: View {
                         .disabled(finishing || scenePhase != .active)
                 }
                 ToolbarItemGroup(placement: .bottomBar) {
-                    Button { guard submission == nil else { return }; failure = nil; observe() } label: {
+                    Button { guard submission == nil else { return }; failure = nil; observe(configureViewport: true) } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }.disabled(submission != nil || finishing || touching)
                     Spacer()
@@ -2883,7 +2904,7 @@ private struct BrowserTakeoverSheet: View {
         .presentationDetents([.large]).presentationDragIndicator(.hidden)
         .interactiveDismissDisabled()
         .task {
-            account = model.vaultIntakeAccount; observe()
+            account = model.vaultIntakeAccount; observe(configureViewport: true)
             observing = Task { @MainActor in
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(1))
@@ -2894,7 +2915,7 @@ private struct BrowserTakeoverSheet: View {
         }
         .onDisappear { observing?.cancel(); clear() }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { clear(); failure = "Private view paused. Refresh to continue." }
+            if phase != .active { clear(); if failure == nil { failure = "Private view paused. Refresh to continue." } }
         }
         .onChange(of: model.vaultIntakeAccount) { _, _ in clear(); dismiss() }
         .onChange(of: model.connected) { _, connected in if !connected { clear(); dismiss() } }

@@ -76,6 +76,17 @@ public actor HandWorkspace {
     public func call(name: String, input: JSON) async throws -> JSON {
         try Task.checkCancellation()
         guard case .object(let fields) = input else { throw HandFailure.invalidInput }
+        if HandPersonalTools.available, name == "read_photo" {
+            let request = try PersonalToolRequest(fields, allowed: ["id"])
+            let id = try request.text("id", required: true)!
+            #if os(iOS)
+            let data = try await IOSPhotoReader.read(id: id)
+            try Task.checkCancellation()
+            return try savePhoto(data, id: id)
+            #else
+            throw HandFailure.contextAccess("Personal device tools require iOS.")
+            #endif
+        }
         if HandPersonalTools.available, HandPersonalTools.names.contains(name) {
             return try await HandPersonalTools.call(name: name, fields: fields)
         }
@@ -120,6 +131,20 @@ public actor HandWorkspace {
             try Data(content.utf8).write(to: url, options: .atomic)
             return .object(["written_bytes": .number(Double(content.utf8.count))])
         }
+    }
+
+    /// Materialize only a validated inspection rendition inside this account's workspace.
+    func savePhoto(_ data: Data, id: String) throws -> JSON {
+        let dimensions = try HandPhotoRendition.dimensions(data)
+        let path = "/workspace/photos/" + UUID().uuidString.lowercased() + ".jpg"
+        let destination = try resolve(path)
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Task.checkCancellation()
+        try data.write(to: destination, options: .atomic)
+        #if os(iOS)
+        try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: destination.path)
+        #endif
+        return try HandPhotoRendition.result(data, id: id, path: path, width: dimensions.0, height: dimensions.1)
     }
 
     private func resolve(_ path: String) throws -> URL {

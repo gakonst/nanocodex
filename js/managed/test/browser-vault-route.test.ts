@@ -94,11 +94,35 @@ describe("private browser direct takeover endpoint", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(await response.json()).toEqual({ error: "challenge_unavailable" });
   });
+  it("accepts the native mobile contract through both HTTP boundaries", async () => {
+    const { principal, call } = await fixture("takeover");
+    for (const action of [
+      { action: "observe", viewport: { width: 390, height: 700, mobile: true } },
+      { action: "touch", phase: "start", x: 0.5, y: 0.5 },
+      { action: "touch", phase: "move", x: 0.5, y: 0.2 },
+      { action: "touch", phase: "end" },
+      { action: "touch", phase: "cancel" },
+      { action: "edit", delete_backward: 1, text: "synthetic🙂" },
+      { action: "finish" },
+    ]) {
+      const response = await call(principal, { body: JSON.stringify({ challenge_id: "opaque-fixture", ...action }) });
+      // No lease exists in this fixture. 409 proves parsing reached the runtime;
+      // the obsolete route contract rejected these requests with 400.
+      expect(response.status, JSON.stringify(action)).toBe(409);
+      expect(await response.json()).toEqual({ error: "challenge_unavailable" });
+    }
+  });
   it("rejects arbitrary or oversized action input before invoking runtime", async () => {
     const { principal, call } = await fixture("takeover");
     for (const action of [
       { action: "evaluate", code: "private-text" },
       { action: "observe", text: "private-text" },
+      { action: "observe", viewport: { width: 390, height: 700, mobile: true, secret: "private-text" } },
+      { action: "observe", viewport: { width: 239, height: 700, mobile: true } },
+      { action: "touch", phase: "start", x: 0.5 },
+      { action: "touch", phase: "other" },
+      { action: "edit", delete_backward: 129, text: "private-text" },
+      { action: "edit", delete_backward: 0, text: "x".repeat(513) },
       { action: "click", x: 2, y: 0.5 },
       { action: "click", x: 0.5 },
       { action: "type", text: "x".repeat(513) },

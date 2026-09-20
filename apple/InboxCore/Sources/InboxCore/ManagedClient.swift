@@ -338,6 +338,8 @@ public final class ManagedClient: @unchecked Sendable {
     /// service owns multipart state; credentials and upload IDs never enter a turn.
     public func uploadAttachment(agentID: String, attachment: MessageAttachment, source: URL, preview: URL? = nil,
                             isCancelled: @Sendable () async -> Bool = { false }) async throws -> String {
+        try Task.checkCancellation()
+        if await isCancelled() { throw CancellationError() }
         guard source.isFileURL else { throw AttachmentError.invalidReference }
         let values = try source.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true, values.fileSize == attachment.byteCount else { throw AttachmentError.invalidReference }
@@ -348,6 +350,8 @@ public final class ManagedClient: @unchecked Sendable {
         _ = try attachment.originalContent(path: filePath)
         guard receipt["size"].number == Double(attachment.byteCount) else { throw APIError.invalidResponse }
         if receipt["complete"] == .bool(true) {
+            try Task.checkCancellation()
+            if await isCancelled() { throw CancellationError() }
             if let preview { try await uploadPreview(path: path, source: preview) }
             return filePath
         }
@@ -389,6 +393,8 @@ public final class ManagedClient: @unchecked Sendable {
         let complete = try await json(path: path + "/complete", method: "POST")
         guard complete["complete"] == .bool(true), complete["path"].string == filePath,
               complete["size"].number == Double(attachment.byteCount) else { throw APIError.invalidResponse }
+        try Task.checkCancellation()
+        if await isCancelled() { throw CancellationError() }
         if let preview { try await uploadPreview(path: path, source: preview) }
         return filePath
     }
@@ -397,7 +403,8 @@ public final class ManagedClient: @unchecked Sendable {
         var request = try request(path: path + "/preview", method: "PUT")
         request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
         let (_, response) = try await session.upload(for: request, fromFile: source)
-        guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw APIError.invalidResponse }
+        guard let response = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+        guard response.statusCode == 200 else { throw APIError.http(response.statusCode) }
     }
 
     /// Account-scoped URLCache retains immutable previews; original bytes never

@@ -30,6 +30,7 @@ import { emailTools, type EmailConfig } from "./email-tool";
 import { PhoneContainer } from "./phone-container";
 export { PhoneContainer };
 import { createVaultIntakeTool } from "./vault-intake-tool";
+import { validateBrowserVaultTakeoverAction, type BrowserVaultTakeoverAction } from "./browser-vault-takeover";
 import {
   getWorkspace,
   withWorkspace,
@@ -918,19 +919,13 @@ async function readPrivateBrowserChallenge(request: Request, takeover = false): 
     if (takeover) {
       if (typeof fields.challenge_id !== "string" || !/^[A-Za-z0-9_-]{1,256}$/.test(fields.challenge_id)
         || typeof fields.action !== "string") throw new Error();
-      const keys: Record<string, readonly string[]> = {
-        observe: [], click: ["x", "y"], type: ["text"], key: ["key"], scroll: ["delta_y"], finish: [],
-      };
-      const extra = Object.hasOwn(keys, fields.action) ? keys[fields.action] : undefined;
-      if (!extra || Object.keys(fields).length !== extra.length + 2
-        || extra.some(key => !Object.hasOwn(fields, key))
-        || Object.keys(fields).some(key => !["challenge_id", "action", ...extra].includes(key))) throw new Error();
-      if (fields.action === "click" && (![fields.x, fields.y].every(value => typeof value === "number"
-        && Number.isFinite(value) && value >= 0 && value <= 1))) throw new Error();
-      if (fields.action === "type" && (typeof fields.text !== "string" || fields.text.length < 1 || fields.text.length > 512)) throw new Error();
-      if (fields.action === "key" && !["Enter", "Tab", "Backspace", "Escape"].includes(String(fields.key))) throw new Error();
-      if (fields.action === "scroll" && (typeof fields.delta_y !== "number" || !Number.isFinite(fields.delta_y)
-        || Math.abs(fields.delta_y) > 2000)) throw new Error();
+      const { challenge_id: _id, ...action } = fields;
+      if (action.action === "finish") {
+        if (Object.keys(action).length !== 1) throw new Error();
+      } else {
+        // Share the runtime contract: mobile clients send viewport, touch and edit.
+        validateBrowserVaultTakeoverAction(action as BrowserVaultTakeoverAction);
+      }
       return fields;
     }
     if (Object.keys(fields).length !== 2

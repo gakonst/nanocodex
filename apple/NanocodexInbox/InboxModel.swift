@@ -139,7 +139,8 @@ final class InboxModel: ObservableObject {
     @Published private(set) var attachmentDrafts: [String: [MessageAttachment]] = [:]
     private var attachmentURLs: [String: URL] = [:]
     private var attachmentMovieURLs: [String: URL] = [:]
-    @Published private var attachmentImports = Set<String>()
+    @Published private var attachmentImports: [String: Int] = [:]
+    private var attachmentProviderTasks: [UUID: Task<Void, Never>] = [:]
     @Published private var attachmentErrors: [String: String] = [:]
     @Published var contextItems: [CapturedContext] = []
     @Published var contextEnabled = false
@@ -486,7 +487,7 @@ final class InboxModel: ObservableObject {
         fileprivate let scope: String
     }
     var focusedAttachments: [MessageAttachment] { attachmentDrafts[focused?.id ?? ""] ?? [] }
-    var preparingAttachments: Bool { attachmentImports.contains(focused?.id ?? "") }
+    var preparingAttachments: Bool { (attachmentImports[focused?.id ?? ""] ?? 0) > 0 }
     var attachmentError: String? { attachmentErrors[focused?.id ?? ""] }
     var canSend: Bool {
         focused != nil && !hasUnconfirmedMessage && !preparingAttachments
@@ -494,7 +495,7 @@ final class InboxModel: ObservableObject {
             && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !focusedAttachments.isEmpty)
     }
     func captureAttachmentTarget() -> AttachmentTarget? {
-        guard let id = focused?.id, connected, !isDemo, !preparingAttachments else { return nil }
+        guard let id = focused?.id, connected, !isDemo else { return nil }
         attachmentErrors[id] = nil
         return AttachmentTarget(agentID: id, generation: generation, scope: scope)
     }
@@ -546,18 +547,56 @@ final class InboxModel: ObservableObject {
         persist(); releaseAttachments([attachment])
     }
     private func beginAttachmentImport(count: Int, target: AttachmentTarget) -> Bool {
-        guard generation == target.generation, !attachmentImports.contains(resolvedAgentID(target.agentID)) else { return false }
+        guard generation == target.generation else { return false }
         guard count > 0 else { return false }
-        attachmentImports.insert(resolvedAgentID(target.agentID)); attachmentErrors[resolvedAgentID(target.agentID)] = nil
+        attachmentImports[resolvedAgentID(target.agentID), default: 0] += 1; attachmentErrors[resolvedAgentID(target.agentID)] = nil
         return true
+    }
+    private func endAttachmentImport(target: AttachmentTarget) {
+        guard generation == target.generation else { return }
+        let id = resolvedAgentID(target.agentID)
+        let remaining = (attachmentImports[id] ?? 1) - 1
+        attachmentImports[id] = remaining > 0 ? remaining : nil
+    }
+    func importAttachmentProviders(_ providers: [NSItemProvider], target: AttachmentTarget) {
+        guard beginAttachmentImport(count: providers.count, target: target) else { return }
+        let importID = UUID()
+        attachmentProviderTasks[importID] = Task {
+            defer { endAttachmentImport(target: target); attachmentProviderTasks[importID] = nil }
+            for (index, provider) in providers.enumerated() {
+                do {
+                    let source = try await AttachmentProviderImport.copyImage(from: provider)
+                    defer { try? FileManager.default.removeItem(at: source) }
+                    guard generation == target.generation else { return }
+                    let attachment = try await Task.detached(priority: .userInitiated) {
+                        let prepared = try AttachmentPreparation.prepare(url: source, name: "Pasted image \(index + 1)." + source.pathExtension)
+                        try AttachmentStore(scope: target.scope).save(prepared)
+                        return prepared.attachment
+                    }.value
+                    guard generation == target.generation else {
+                        try? AttachmentStore(scope: target.scope).remove(attachment)
+                        return
+                    }
+                    cacheAttachment(attachment, scope: target.scope)
+                    attachmentDrafts[resolvedAgentID(target.agentID), default: []].append(attachment); persist()
+                } catch {
+                    guard generation == target.generation else { return }
+                    attachmentErrors[resolvedAgentID(target.agentID)] = error.localizedDescription
+                }
+            }
+        }
     }
     func importAttachmentFiles(_ urls: [URL], target: AttachmentTarget) {
         guard beginAttachmentImport(count: urls.count, target: target) else { return }
         Task {
-            defer { if generation == target.generation { attachmentImports.remove(resolvedAgentID(target.agentID)) } }
+            defer { endAttachmentImport(target: target) }
             for url in urls {
                 do {
                     let attachment = try await Task.detached(priority: .userInitiated) {
+                        // Keep Files-provider access alive until its original has
+                        // been copied into the account's attachment store.
+                        let access = url.startAccessingSecurityScopedResource()
+                        defer { if access { url.stopAccessingSecurityScopedResource() } }
                         if UTType(filenameExtension: url.pathExtension)?.conforms(to: .movie) == true {
                             let prepared = try await VideoAttachmentPreparation.prepare(url: url)
                             try AttachmentStore(scope: target.scope).save(prepared)
@@ -583,7 +622,7 @@ final class InboxModel: ObservableObject {
     func importAttachmentPhotos(_ items: [PhotosPickerItem], target: AttachmentTarget) {
         guard beginAttachmentImport(count: items.count, target: target) else { return }
         Task {
-            defer { if generation == target.generation { attachmentImports.remove(resolvedAgentID(target.agentID)) } }
+            defer { endAttachmentImport(target: target) }
             for (index, item) in items.enumerated() {
                 do {
                     let attachment: MessageAttachment
@@ -623,7 +662,7 @@ final class InboxModel: ObservableObject {
     func importCameraPhoto(_ image: UIImage, target: AttachmentTarget) {
         guard beginAttachmentImport(count: 1, target: target) else { return }
         Task {
-            defer { if generation == target.generation { attachmentImports.remove(resolvedAgentID(target.agentID)) } }
+            defer { endAttachmentImport(target: target) }
             do {
                 let attachment = try await Task.detached(priority: .userInitiated) {
                     guard let data = image.jpegData(compressionQuality: 0.95) else { throw AttachmentError.unsupportedImage }
@@ -1102,7 +1141,9 @@ final class InboxModel: ObservableObject {
         observedAgentID = nil; threadLoading = false; threadError = nil
         connected = false; restoringAccount = false; restorationError = nil
         isDemo = false; cards = []; deck = InboxDeck(); mediaProjection = InboxMediaProjection(); rows = []; events = []; drafts = [:]; seen = [:]
-        attachmentDrafts = [:]; attachmentURLs = [:]; attachmentMovieURLs = [:]; attachmentImports = []; attachmentErrors = [:]
+        for task in attachmentProviderTasks.values { task.cancel() }
+        attachmentProviderTasks = [:]
+        attachmentDrafts = [:]; attachmentURLs = [:]; attachmentMovieURLs = [:]; attachmentImports = [:]; attachmentErrors = [:]
         scope = ""; error = nil; notice = nil; busy = []; retries = [:]; refreshing = false
         newerAfter = nil; latestJumpEvents = nil
         hasOlder = false; hasNewer = false; loadingOlder = false; loadingNewer = false; followingLatest = true; connection = "Disconnected"; pending = []; pinnedThreadID = nil; demoRows = [:]; demoFaults = []
@@ -2859,7 +2900,7 @@ final class InboxModel: ObservableObject {
         if let value = drafts.removeValue(forKey: localID) { drafts[id] = value }
         if let value = attachmentDrafts.removeValue(forKey: localID) { attachmentDrafts[id] = value }
         if let value = attachmentErrors.removeValue(forKey: localID) { attachmentErrors[id] = value }
-        if attachmentImports.remove(localID) != nil { attachmentImports.insert(id) }
+        if let count = attachmentImports.removeValue(forKey: localID) { attachmentImports[id, default: 0] += count }
         if let value = selectedContext.removeValue(forKey: localID) { selectedContext[id] = value }
         if let value = excludedContext.removeValue(forKey: localID) { excludedContext[id] = value }
         if busy.remove(localID) != nil { busy.insert(id) }
