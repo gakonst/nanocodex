@@ -141,7 +141,27 @@ mod linux {
             ids: Vec::new(),
             name: name.into(),
         };
-        modules.ids.push(module_id(pactl(&["load-module", "module-null-sink", &format!("sink_name={name}"), "rate=48000", "channels=1", "sink_properties='device.description=Nanocodex_Remote_Microphone_Input device.class=filter priority.session=0'"])?)?);
+        let sink_name = format!("sink_name={name}");
+        let mut sink_args = vec![
+            "load-module",
+            "module-null-sink",
+            &sink_name,
+            "rate=48000",
+            "channels=1",
+            "sink_properties='device.description=Nanocodex_Remote_Microphone_Input device.class=filter priority.session=0'",
+        ];
+        let server: serde_json::Value = serde_json::from_str(&pactl(&["--format=json", "info"])?)?;
+        if server["server_name"]
+            .as_str()
+            .is_some_and(|name| name.eq_ignore_ascii_case("pulseaudio"))
+        {
+            // Pulse's default null-sink rewind window can buffer two seconds,
+            // stalling the bounded PCM writer before a game opens its input.
+            // norewinds bounds that window to 50 ms. PipeWire has a different
+            // scheduler and does not document this Pulse-specific module option.
+            sink_args.push("norewinds=1");
+        }
+        modules.ids.push(module_id(pactl(&sink_args)?)?);
         modules.ids.push(module_id(pactl(&["load-module", "module-remap-source", &format!("master={name}.monitor"), &format!("source_name={name}_source"), "source_properties='device.description=Nanocodex_Remote_Microphone device.class=filter priority.session=0'", "channels=1"])?)?);
         // Pulse may rename a device if another publisher wins the race. Verify
         // exact names AND returned module ownership; cleanup only our own IDs.
@@ -268,6 +288,15 @@ mod linux {
         );
         let source = format!("{name}_source");
         let mut sink = factory().await.unwrap();
+        // A user can enable remote mic before the game opens its input. The
+        // writer must remain live without a recorder driving monitor latency.
+        for _ in 0..75 {
+            tokio::time::timeout(Duration::from_millis(100), sink.write(&[0; 1920]))
+                .await
+                .expect("PCM must not stall before an input consumer opens")
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         let mut recorder = tokio::process::Command::new("parec")
             .args([
                 "--raw",
