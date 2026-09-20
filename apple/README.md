@@ -33,7 +33,10 @@ editor sharing the same draft and attachments.
 
 The current conversation stays mounted while the session drawer opens. The drawer
 uses lightweight roster summaries and search, without tabs, preview grids, or status
-filters. Running agents have a green title and dot, with status available to VoiceOver.
+filters. The drawer uses the shared neutral sidebar palette and system sans-serif typography.
+Titles stay neutral, with a small green dot for running agents and explicit status
+labels available to VoiceOver. Titles, status and current-work text scale with Dynamic
+Type. Search and compose sit at the top; Settings stays at the bottom.
 Selecting a row restores that agent's draft and reading position. Swipe right from
 the left 28 points of the screen to open the drawer; swipe left to close. The
 conversation follows the finger and settles with a short spring over the stationary list. Vertical scrolling

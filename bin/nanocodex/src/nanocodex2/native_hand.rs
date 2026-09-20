@@ -323,6 +323,8 @@ pub(super) async fn run_observed(
     {
         #[cfg(unix)]
         super::computer_elicitation::configure(&mut config);
+        #[cfg(windows)]
+        super::computer_elicitation_windows::configure(&mut config);
         if cfg!(target_os = "linux") && std::env::var_os("NANOCODEX_COMPUTER_BACKGROUND").is_none()
         {
             config.desktop_runtime = Some(state.directory.join("desktop"));

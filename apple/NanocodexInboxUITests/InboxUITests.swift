@@ -6,6 +6,27 @@ final class InboxUITests: XCTestCase {
     }
     override func setUp() { super.setUp(); continueAfterFailure = false }
 
+    func testSidebarShowsStatusAndGeneratedCurrentWork() {
+        let originalAppearance = XCUIDevice.shared.appearance
+        addTeardownBlock { XCUIDevice.shared.appearance = originalAppearance }
+        for appearance in ["Light", "Dark"] {
+            XCUIDevice.shared.appearance = appearance == "Dark" ? .dark : .light
+            let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString, "NANOCODEX_DEMO_SIDEBAR": "1",
+                              "NANOCODEX_DEMO_APPEARANCE": appearance.lowercased()])
+            app.buttons["conversation-drawer-open"].tap()
+            let running = app.buttons["conversation-row:inbox"]
+            XCTAssertTrue(running.waitForExistence(timeout: 5))
+            let value = running.value as? String ?? ""
+            XCTAssertTrue(value.contains("Running"))
+            XCTAssertTrue(value.contains("I'm checking inbox state"))
+            XCTAssertTrue((app.buttons["conversation-row:hands"].value as? String ?? "").contains("Failed"))
+            XCTAssertTrue(app.textFields["conversation-search"].isHittable)
+            XCTAssertTrue(app.buttons["drawer-new-conversation"].isHittable)
+            capture(app, "sidebar-redesign-" + appearance.lowercased())
+            app.terminate()
+        }
+    }
+
     func testFlatConversationDrawerPreservesSeparateDrafts() {
         let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
         switchConversation(app, id: "inbox")

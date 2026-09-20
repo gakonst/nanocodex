@@ -2285,3 +2285,13 @@ test("atomic create-and-prompt forwards caller location at first admission", asy
   assert.equal(result.agent.id, agentId);
   assert.deepEqual(JSON.parse(captured.get("x-nanocodex-client-context")), { client: "iphone", location });
 });
+
+test("agent listings retain bounded sidebar metadata and tolerate legacy summaries", async () => {
+  const presentation = { revision: 2, status: "running", activeTurnIds: ["turn"], activityTurnId: "turn", activity: "I'm checking sidebar state", updatedAt: 30 };
+  const fetch = async () => Response.json({ data: [agentId], summaries: {
+    [agentId]: { title: "Fix sidebar", created_at: 10, updated_at: 20, turn_count: 1, presentation },
+  } });
+  const agents = await Agent.list({ baseUrl: "https://example.test", apiKey, fetch });
+  assert.deepEqual(agents[0].summary.presentation, presentation);
+  assert.equal(Object.isFrozen(agents[0].summary.presentation.activeTurnIds), true);
+});

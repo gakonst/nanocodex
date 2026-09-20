@@ -194,10 +194,17 @@ export function AgentSidebar({
                       onSelect(conversation.id);
                     }}
                   >
-                    <span>
-                      {/^Conversation [a-f\d]{8}$/i.test(conversation.title)
+                    <span className="agent-navigation-copy">
+                      <span className="agent-navigation-title">{/^Conversation [a-f\d]{8}$/i.test(conversation.title)
                         ? "New agent"
-                        : conversation.title}
+                        : conversation.title}</span>
+                      <span className="agent-navigation-status" data-status={conversation.presentation?.status ?? "unknown"}>
+                        <i aria-hidden="true" />
+                        {sidebarStatus(conversation)}
+                      </span>
+                      {conversation.presentation?.activity && conversation.presentation.activeTurnIds.includes(conversation.presentation.activityTurnId ?? "") ? (
+                        <span className="agent-navigation-activity">{conversation.presentation.activity}</span>
+                      ) : null}
                     </span>
                   </button>
                 ))
@@ -278,4 +285,16 @@ export function AgentSidebar({
       ) : null}
     </>
   );
+}
+
+function sidebarStatus(conversation: ManagedConversation): string {
+  switch (conversation.presentation?.status) {
+    case "running": return "Running";
+    case "stopping": return "Stopping";
+    case "completed": return "Ready";
+    case "cancelled": return "Stopped";
+    case "failed": return "Failed";
+    case "idle": return "Idle";
+    default: return "Status unavailable";
+  }
 }

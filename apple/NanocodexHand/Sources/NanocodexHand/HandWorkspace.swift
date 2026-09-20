@@ -94,7 +94,7 @@ public actor HandWorkspace {
         }
         if name == "device_info" {
             guard fields.isEmpty else { throw HandFailure.invalidInput }
-            return .object(["id": .string(id), "name": .string(self.name), "platform": .string(platform), "workspace": .string("/workspace"), "availability": .string(platform == "ios" ? "automatic while active and during iOS-granted background time; locked-device availability is not guaranteed" : "automatic in the background while the app is running and the Mac is awake")])
+            return .object(["id": .string(id), "name": .string(self.name), "platform": .string(platform), "workspace": .string("/workspace"), "app_version": .string(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"), "app_build": .string(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"), "availability": .string(platform == "ios" ? "automatic while active and during iOS-granted background time; locked-device availability is not guaranteed" : "automatic in the background while the app is running and the Mac is awake")])
         }
         guard ["list_files", "read_file", "write_file"].contains(name),
               Set(fields.keys) == Set(name == "write_file" ? ["path", "content"] : ["path"]),

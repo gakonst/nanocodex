@@ -19,6 +19,26 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
     /// Last history event actually projected into the card, excluding newer
     /// state snapshots whose events have not been read yet.
     public var appliedHistoryCursor: Cursor { previewCursor }
+    public var presentationStatus = ""
+    public var presentationActivity = ""
+    public var presentationUpdatedAt: Double = 0
+    public var presentationTurnID = ""
+    public var sidebarStatus: String {
+        if presentationUpdatedAt > (observedAt?.timeIntervalSince1970 ?? 0) * 1000, !presentationStatus.isEmpty { return presentationStatus }
+        return isRunning ? "Running" : status == "Checking" ? "Status unavailable" : status
+    }
+    public var sidebarActivity: String {
+        guard ["Running", "Stopping"].contains(sidebarStatus) else { return "" }
+        if !presentationActivity.isEmpty, activeTurns.contains(presentationTurnID) || !checked { return presentationActivity }
+        return activityDetail.isEmpty ? activitySummary : activityDetail
+    }
+    public mutating func applyPresentation(_ value: JSON) {
+        let labels = ["running": "Running", "stopping": "Stopping", "completed": "Ready", "cancelled": "Stopped", "failed": "Failed", "idle": "Idle"]
+        guard let label = labels[value["status"].string], value["updatedAt"].number >= presentationUpdatedAt else { return }
+        presentationStatus = label; presentationUpdatedAt = value["updatedAt"].number
+        presentationTurnID = value["activityTurnId"].string
+        presentationActivity = value["activeTurnIds"].array.map(\.string).contains(value["activityTurnId"].string) ? value["activity"].string : ""
+    }
     public var preview = ""
     /// Keep the visible exchange together while the focused transcript reloads.
     /// Retain at most the latest user message and reply, not every card's history.

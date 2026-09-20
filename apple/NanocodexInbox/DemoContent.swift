@@ -101,6 +101,10 @@ enum DemoContent {
                         "final_message": .string(value.3)])
                 if let envelope = try? AgentEvent(event) { card.apply(events: [envelope]) }
             }
+            if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_SIDEBAR"] == "1", card.isRunning {
+                card.presentationActivity = card.id == "inbox" ? "I'm checking inbox state" : "I'm comparing forecast results"
+                card.presentationTurnID = "demo-turn-" + card.id
+            }
             return card
         }
     }
