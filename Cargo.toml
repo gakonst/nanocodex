@@ -11,6 +11,7 @@ members = [
     "crates/nanocodex-managed",
     "crates/nanocodex-phone",
     "crates/nanocodex-hand",
+    "crates/nanocodex-remote",
     "crates/nanocodex-durability",
     "crates/nanocodex-browser",
     "crates/experimental/nanocodex-computer",

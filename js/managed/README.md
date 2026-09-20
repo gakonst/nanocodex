@@ -547,21 +547,40 @@ client; no update to an existing Hand is required.
 
 ### Original media attachments
 
-The authenticated `/v1/agents/:id/attachments/:uuid` route stores original
-image or MP4/MOV bytes in the agent's existing `/brain/attachments/:uuid/original.*`
-filesystem. `POST` accepts `{name, media_type, size}` and returns the file path,
-part size, next part number, and completion state. Parts are normally 8 MiB and scale up to 100 MB to fit R2’s 10,000-part limit. The current Free/Pro 100 MB request ingress limit therefore permits files up to 1 TB. Parts stream through hashing to R2 with backpressure, and the service serializes ingestion across attachments. `PUT .../parts/:number`
-accepts exact binary chunks in order; identical retries are safe and conflicting
-bytes are rejected. `POST .../complete` finalizes the file idempotently. `GET`
-returns private, uncached bytes and supports ranges. Multipart upload IDs remain
-server-side. Image previews use a separate immutable authenticated endpoint; original bytes remain unchanged.
+The authenticated `/v1/agents/:id/attachments/:uuid` route streams original
+image and MP4/MOV files into the existing R2 binding. It does not buffer complete
+files or parts in Worker memory, and requires no S3 signing keys. Files keep
+their `/brain/attachments/:uuid/original.*` paths.
 
-Account ownership, organization, team, authorization epoch, and capabilities
-are checked before filesystem access. Connect grants cannot use this route.
-Session deletion fences new work, cancels body readers, drains pending writes,
-and aborts incomplete uploads before the existing `/brain` cleanup. The
-`attachments.test.ts` Worker tests exercise real local R2 multipart behavior,
-reconstruction, retries, filesystem reads, deletion fencing, and account isolation.
+`POST` accepts `{name, media_type, size}` and returns the path, part size, next
+part number, and completion state. The Apple client uploads file-backed parts
+with `PUT .../parts/:number`; the service hashes each incoming stream while
+forwarding it to R2 with backpressure. Only one part body is ingested at a time
+per agent. Identical retries are safe and conflicting bytes are rejected.
+`POST .../complete` finalizes the R2 multipart upload and records it in the brain
+filesystem catalog. Parts are normally 8 MiB and grow up to 100 MB to fit R2's
+10,000-part limit. The Worker ingress limit applies per request, not per file;
+this permits originals up to 1 TB. Original and preview bytes remain separate.
+
+The phone prepares an oriented JPEG inspection fallback bounded to 2048 pixels
+and 2 MiB. Preview uploads stream through the same R2 binding. Original downloads
+remain private and support ranges; preview downloads are immutable and
+account-scoped. Account, organization, team, authorization epoch, and capability
+checks apply before upload. Connect grants cannot use this route. Deletion
+cancels readers and aborts incomplete uploads before brain cleanup.
+
+Default `view_image` passes the original R2 body stream to Cloudflare Images,
+which decodes and resizes it outside the brain's JavaScript heap. Only the bounded
+model image is encoded in the Worker. If the original cannot be transformed,
+the tool can return the attachment's labeled JPEG fallback. Exact
+`detail: "original"` reads preserve original bytes and supported-format behavior,
+with an early 10 MiB size check; use default inspection for larger originals.
+The production Wrangler configuration declares `NANOCODEX_ATTACHMENT_IMAGES`.
+No R2 access key or new upload credential is needed.
+
+Tests cover multipart streaming and retries, image transformation without
+original-body buffering, bounded preview handling, cancellation, filesystem
+visibility, and preserved original bytes on Apple clients.
 
 ## Browser on the Cloudflare sandbox desktop
 

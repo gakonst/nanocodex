@@ -108,14 +108,15 @@ export function viewImage(options) {
       if (detail !== "high" && detail !== "original") {
         throw new Error("view_image.detail must be high or original");
       }
-      const bytes = await options.workspace.readFile(path);
+      const loaded = await options.loadImage?.(path, detail);
+      const bytes = loaded?.bytes ?? await options.workspace.readFile(path);
       if (bytes.byteLength > MAX_VIEW_IMAGE_BYTES) {
         throw new Error("view_image input exceeds 10 MiB");
       }
       const mimeType = imageMimeType(bytes);
       if (!mimeType) throw new Error("view_image supports PNG, JPEG, GIF, and WebP files");
       const result = { detail, image_url: `data:${mimeType};base64,${base64(bytes)}` };
-      return toolResult([{
+      return toolResult([...(loaded?.note ? [{ type: "input_text", text: loaded.note }] : []), {
         type: "input_image",
         image_url: result.image_url,
         detail,

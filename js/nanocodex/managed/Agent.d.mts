@@ -227,11 +227,24 @@ export type State = Readonly<{
   }>;
 }>;
 
+export type AgentPresentation = Readonly<{
+  revision: number;
+  status: "running" | "stopping" | "completed" | "cancelled" | "failed" | "idle";
+  activeTurnIds: readonly string[];
+  title?: string;
+  activity?: string;
+  activityTurnId?: string;
+  lastUserMessageAt?: number;
+  updatedAt: number;
+}>;
+
 export type Summary = Readonly<{
   title: string;
   createdAt: number;
   updatedAt: number;
   turnCount: number;
+  lastUserMessageAt?: number;
+  presentation?: AgentPresentation;
 }>;
 
 export type TurnState =

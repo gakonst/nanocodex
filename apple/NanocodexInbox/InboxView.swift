@@ -422,18 +422,7 @@ struct InboxView: View {
                     Text("Tasks you start can keep this Hand connected in the background on iOS 26 or later. iOS shows progress and lets you stop the task. When idle, this phone connects only during brief background windows or while Nanocodex is open. Force-quitting ends background work.").font(.caption).foregroundStyle(.secondary)
                     if let error = model.handBackgroundError { Text(error).font(.caption).foregroundStyle(.secondary) }
                 }
-                Section("Nanocodex updates") {
-                    LabeledContent("Installed", value: (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") + " (" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—") + ")")
-                    Button("Install available update") {
-                        guard let testFlight = URL(string: "itms-beta://") else { return }
-                        UIApplication.shared.open(testFlight) { opened in
-                            guard !opened, let store = URL(string: "https://apps.apple.com/app/testflight/id899247664") else { return }
-                            UIApplication.shared.open(store)
-                        }
-                    }
-                    .accessibilityIdentifier("install-nanocodex-update")
-                    Text("Builds requested from Nanocodex are delivered through Apple's internal TestFlight channel. Turn on Automatic Updates there for hands-free installation after Apple finishes processing.").font(.caption).foregroundStyle(.secondary)
-                }
+                NativeAppUpdateSection()
             }
             Section {
                 NavigationLink { DevicePermissionsView() } label: {
@@ -475,12 +464,20 @@ private struct InboxHeaderGlass: ViewModifier {
 }
 
 /// Navigation uses roster summaries only, without parsing Markdown or starting preview streams.
+private struct SidebarRecency: Equatable {
+    let id: String
+    let sentAt: Double
+}
+
 private struct ConversationDrawer: View {
     @ObservedObject var model: InboxModel
     let select: (String) -> Void
     let close: () -> Void
     let create: () -> Void
     let settings: () -> Void
+    @ScaledMetric(relativeTo: .subheadline) private var titleSize = 15
+    @ScaledMetric(relativeTo: .footnote) private var detailSize = 13
+    @ScaledMetric(relativeTo: .caption) private var statusSize = 12
     @State private var query = ""
     @State private var order: [String]
 
@@ -488,7 +485,7 @@ private struct ConversationDrawer: View {
          create: @escaping () -> Void, settings: @escaping () -> Void) {
         self.model = model; self.select = select; self.close = close
         self.create = create; self.settings = settings
-        _order = State(initialValue: model.cards.sorted(by: AgentCard.mostRecentFirst).map(\.id))
+        _order = State(initialValue: model.cards.sorted(by: AgentCard.mostRecentlyMessagedFirst).map(\.id))
     }
 
     private var visibleCards: [AgentCard] {
@@ -505,29 +502,28 @@ private struct ConversationDrawer: View {
     }
 
     private func conversationRow(_ card: AgentCard) -> some View {
-        let preview = String(card.preview.prefix(160))
-        // A roster entry has no activity state yet. Do not present the model's
-        // initial "Checking" value as ongoing work in every conversation.
-        let knownStatus = card.isRunning ? "Running" : card.status == "Checking" ? "" : card.status
-        let subtitle = card.error != nil ? "Couldn’t refresh" : card.isRunning ? card.activitySummary : (preview.isEmpty ? knownStatus : preview)
-        let status = [knownStatus, preview, card.error ?? ""].filter { !$0.isEmpty }.joined(separator: ". ")
-        return HStack(alignment: .top, spacing: 10) {
-            Image(systemName: card.isRunning ? "circle.fill" : card.error != nil ? "exclamationmark.circle" : "bubble.left")
-                .font(.system(size: card.isRunning ? 8 : 15))
-                .foregroundStyle(card.isRunning ? Ink.running : Ink.muted)
-                .frame(width: 18, height: 22).accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 5) {
-                Text(card.title).font(.subheadline.weight(model.focused?.id == card.id ? .semibold : .regular))
-                    .lineLimit(2).foregroundStyle(card.isRunning ? Ink.running : Ink.text)
-                if !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(.caption).foregroundStyle(Ink.muted).lineLimit(1)
-                }
+        let knownStatus = card.sidebarStatus
+        let running = ["Running", "Stopping"].contains(knownStatus)
+        let subtitle = card.error != nil ? "Couldn’t refresh" : card.sidebarActivity
+        let status = [knownStatus, subtitle, card.error ?? ""].filter { !$0.isEmpty }.joined(separator: ". ")
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(card.title)
+                .font(.system(size: titleSize, weight: model.focused?.id == card.id ? .medium : .regular))
+                .foregroundStyle(Ink.text).lineLimit(2)
+            HStack(spacing: 6) {
+                Circle().fill(running ? Ink.running : Ink.muted.opacity(0.65))
+                    .frame(width: 5, height: 5).accessibilityHidden(true)
+                Text(knownStatus).font(.system(size: statusSize)).foregroundStyle(Ink.muted)
             }
-            Spacer(minLength: 0)
+            if !subtitle.isEmpty {
+                Text(subtitle).font(.system(size: detailSize)).foregroundStyle(Ink.muted)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .padding(12).frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
-        .background(model.focused?.id == card.id ? Ink.surface : Color.clear, in: RoundedRectangle(cornerRadius: 18))
+        .padding(.horizontal, 12).padding(.vertical, 11)
+        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+        .background(model.focused?.id == card.id ? Ink.surface : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .contentShape(Rectangle())
         // Tap recognition must fail when dragging. A plain Button can fire
         // on release after the drawer's simultaneous swipe gesture.
@@ -541,17 +537,34 @@ private struct ConversationDrawer: View {
     }
 
     var body: some View {
-        VStack(spacing: 16) {
-            HStack {
-                Button(action: settings) { Image(systemName: "gearshape").frame(width: 44, height: 44) }
-                    .modifier(InboxHeaderGlass()).accessibilityLabel("Account settings")
+        VStack(spacing: 12) {
+            HStack(spacing: 4) {
+                Text("Agents").font(.headline.weight(.medium)).foregroundStyle(Ink.text)
+                    .padding(.leading, 12)
                 Spacer()
-                Text("Conversations").font(.subheadline.weight(.semibold))
-                Spacer()
-                Button(action: close) { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
-                    .modifier(InboxHeaderGlass()).accessibilityLabel("Return to conversation")
-                    .accessibilityIdentifier("conversation-drawer-close")
+                Button(action: create) {
+                    Image(systemName: "square.and.pencil").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("New conversation").accessibilityIdentifier("drawer-new-conversation")
+                Button(action: close) {
+                    Image(systemName: "sidebar.left").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Return to conversation").accessibilityIdentifier("conversation-drawer-close")
             }
+            .font(.system(size: 17, weight: .regular))
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(Ink.muted)
+                TextField("Search agents", text: $query)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .accessibilityIdentifier("conversation-search")
+                if !query.isEmpty {
+                    Button { query = "" } label: {
+                        Image(systemName: "xmark.circle.fill").frame(width: 44, height: 44)
+                    }.foregroundStyle(Ink.muted).accessibilityLabel("Clear search")
+                }
+            }
+            .font(.system(size: detailSize)).padding(.horizontal, 12).frame(minHeight: 44)
+            .background(Ink.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             ScrollView {
                 LazyVStack(spacing: 4) {
                     ForEach(visibleCards) { card in
@@ -565,37 +578,26 @@ private struct ConversationDrawer: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .accessibilityIdentifier("conversation-list")
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(Ink.muted)
-                TextField("Search conversations", text: $query)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .accessibilityIdentifier("conversation-search")
-                if !query.isEmpty {
-                    Button { query = "" } label: { Image(systemName: "xmark.circle.fill").frame(width: 44, height: 44) }
-                        .foregroundStyle(Ink.muted).accessibilityLabel("Clear search")
+            Divider().overlay(Ink.border.opacity(0.3))
+            Button(action: settings) {
+                HStack(spacing: 10) {
+                    Image(systemName: "gearshape")
+                    Text("Settings").font(.system(size: detailSize))
+                    Spacer()
                 }
-            }
-            .font(.subheadline).padding(.horizontal, 14).frame(minHeight: 48)
-            .modifier(InboxHeaderGlass())
-            HStack {
-                Spacer()
-                Button(action: create) { Image(systemName: "square.and.pencil").frame(width: 44, height: 44) }
-                    .modifier(InboxHeaderGlass()).accessibilityLabel("New conversation")
-                    .accessibilityIdentifier("drawer-new-conversation")
-            }
+                .foregroundStyle(Ink.muted).padding(.horizontal, 12).frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }.accessibilityLabel("Account settings")
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 8)
-        .background(Ink.background)
+        .background(ChatPalette.sidebar)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation-drawer")
         .accessibilityAction(.escape, close)
-        .onChange(of: model.cards.map(\.id)) { _, ids in
-            // Streaming updates must not move a different row beneath a finger.
-            let available = Set(ids)
-            order.removeAll { !available.contains($0) }
-            let known = Set(order)
-            order.append(contentsOf: ids.filter { !known.contains($0) })
+        .onChange(of: model.cards.map { SidebarRecency(id: $0.id, sentAt: $0.lastUserMessageAt) }) { _, _ in
+            // Only user messages can move an existing conversation.
+            order = model.cards.sorted(by: AgentCard.mostRecentlyMessagedFirst).map(\.id)
         }
     }
 }
@@ -1649,7 +1651,10 @@ private struct ConversationContentView: View {
     @State private var historyRequestRevision: UUID?
     private func rememberHistoryPosition(in viewport: GeometryProxy) {
         let visible = rowGeometry.frames.filter { revision.itemsByID[$0.key] != nil && $0.value.maxY > 0 && $0.value.minY < viewport.size.height }
-        let sourceRows = visible.keys.compactMap { revision.itemsByID[$0]?.sourceRowID }
+        let sourceRows = visible.keys.flatMap { key -> [String] in
+            guard let item = revision.itemsByID[key] else { return [] }
+            return (item.content?.activity.map(\.id) ?? []) + (item.sourceRowID.map { [$0] } ?? [])
+        }
         model.protectHistoryRows(Set(visible.keys).union(sourceRows))
         guard let first = visible.min(by: { $0.value.minY < $1.value.minY }) else { return }
         historyRestore = (first.key, first.value.minY, nil)
@@ -1710,7 +1715,10 @@ private struct ConversationContentView: View {
             let visible = rowGeometry.frames.filter {
                 revision.itemsByID[$0.key] != nil && $0.value.maxY > 0 && $0.value.minY < viewport.size.height
             }
-            let sourceRows = visible.keys.compactMap { revision.itemsByID[$0]?.sourceRowID }
+            let sourceRows = visible.keys.flatMap { key -> [String] in
+            guard let item = revision.itemsByID[key] else { return [] }
+            return (item.content?.activity.map(\.id) ?? []) + (item.sourceRowID.map { [$0] } ?? [])
+        }
             model.protectHistoryRows(Set(visible.keys).union(sourceRows))
         }
         if followsLatest && !model.needsLatestHistory {
@@ -1771,15 +1779,18 @@ private struct ConversationContentView: View {
                                         .padding(.bottom, 12)
                                 }
                             }
-                            ForEach(content.activity) { row in
-                                ConversationToolCard(row: row, live: content.isRunning) {
-                                    // Opening details is a reading action. Keep the
-                                    // tapped card in place instead of following the bottom.
-                                    followsLatest = false
-                                    pendingReadingRestore = rowGeometry.frames[item.id].map {
-                                        .init(atLatest: false, rowID: item.id, offsetY: $0.minY)
-                                    }
-                                    if historyRequestInFlight { rememberHistoryPosition(in: viewport) }
+                            let onToggle = {
+                                followsLatest = false
+                                pendingReadingRestore = rowGeometry.frames[item.id].map {
+                                    .init(atLatest: false, rowID: item.id, offsetY: $0.minY)
+                                }
+                                if historyRequestInFlight { rememberHistoryPosition(in: viewport) }
+                            }
+                            if content.isCodeModeBatch {
+                                ConversationCodeModeBatch(item: content, onToggle: onToggle)
+                            } else {
+                                ForEach(content.activity) { row in
+                                    ConversationToolCard(row: row, live: content.isRunning && row.running, onToggle: onToggle)
                                 }
                             }
                         }
@@ -2045,6 +2056,86 @@ private struct ConversationContentPosition: Equatable {
     var approachingTop = false
     var atLatest = false
     var isMeasured = false
+}
+
+
+private struct ConversationCodeModeBatch: View {
+    let item: ConversationItem
+    var onToggle: () -> Void
+    @State private var expanded = true
+    @State private var showsJavaScript = false
+    @State private var sourceSheet: ToolSourceDocument?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        if let parent = item.activity.first {
+            VStack(alignment: .leading, spacing: 10) {
+                Button {
+                    onToggle()
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { expanded.toggle() }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "curlybraces").foregroundStyle(Color.accentColor)
+                        Text("Code Mode").font(.subheadline.weight(.medium))
+                        Text(item.activity.count == 2 ? "1 tool" : "\(item.activity.count - 1) tools").font(.caption).foregroundStyle(Ink.muted)
+                        Spacer(minLength: 4)
+                        if item.isRunning {
+                            ProgressView().controlSize(.mini).accessibilityLabel("Running")
+                        } else if parent.running || parent.tool?.status == "Running" {
+                            Text("Interrupted").font(.caption2).foregroundStyle(Ink.muted)
+                        } else if let status = parent.tool?.status, status != "Completed" {
+                            Text(status).font(.caption2)
+                                .foregroundStyle(status == "Failed" ? Color.orange : Ink.muted)
+                        } else {
+                            Image(systemName: "checkmark").font(.caption2.weight(.semibold))
+                                .foregroundStyle(Ink.muted).accessibilityLabel("Completed")
+                        }
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.caption2.weight(.semibold)).foregroundStyle(Ink.muted)
+                    }.frame(minHeight: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                    .accessibilityIdentifier("code-mode-batch-" + parent.id)
+                    .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+                if expanded {
+                    ForEach(Array(item.activity.dropFirst())) { row in
+                        ConversationToolCard(row: row, live: item.isRunning && row.running, onToggle: onToggle)
+                    }
+                    DisclosureGroup(isExpanded: Binding(
+                        get: { showsJavaScript },
+                        set: { value in onToggle(); showsJavaScript = value }
+                    )) {
+                        if let source = parent.tool?.input.first(where: { $0.label == "Code" })?.value {
+                            HStack {
+                                Spacer()
+                                Button("Copy code", systemImage: "doc.on.doc") { UIPasteboard.general.string = source }
+                                    .buttonStyle(.plain).font(.caption).frame(minHeight: 44)
+                                    .accessibilityIdentifier("code-mode-copy-" + parent.id)
+                            }
+                            if ChatCodePreview(source, maximumCharacters: 16_384, maximumLines: 120).isTruncated {
+                                Button("View full code") { sourceSheet = .init(title: "Code", source: source) }
+                                    .frame(minHeight: 44)
+                                    .accessibilityIdentifier("code-mode-full-source-" + parent.id)
+                            } else {
+                                ScrollView(.horizontal) {
+                                    ChatCodeText(source: source, language: "javascript")
+                                        .font(.system(.footnote, design: .monospaced))
+                                        .textSelection(.enabled).fixedSize(horizontal: true, vertical: true)
+                                        .accessibilityIdentifier("code-mode-source-" + parent.id)
+                                }
+                            }
+                        }
+                        ToolActivityView(row: parent, hidesCode: true).padding(.vertical, 12)
+                            .accessibilityIdentifier("tool-detail-" + parent.id)
+                    } label: {
+                        Text("JavaScript and batch output").font(.caption).foregroundStyle(Ink.muted)
+                    }.accessibilityIdentifier("code-mode-javascript-" + parent.id)
+                }
+            }.padding(12)
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Ink.border, lineWidth: 0.5))
+                .accessibilityElement(children: .contain)
+                .sheet(item: $sourceSheet) { document in ToolSourceSheet(document: document) }
+        }
+    }
 }
 
 private struct ConversationToolCard: View {
@@ -2801,5 +2892,95 @@ private struct PrivateBrowserCanvas: UIViewRepresentable {
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = tracked, touches.contains(touch) else { return }
         if acceptsInput { emit("cancel", touch.location(in: self)) }; resetTouch()
+    }
+}
+
+
+// Reject all feed redirects: update discovery only contacts the pinned endpoint.
+private final class AppUpdateSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+
+@MainActor
+private struct NativeAppUpdateSection: View {
+    @State private var update: AppUpdate?
+    @State private var checking = false
+    @State private var checked = false
+    @State private var installing = false
+    @State private var error: String?
+    @State private var installRequested = false
+    private var installedBuild: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "" }
+    private var installedVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—" }
+
+    var body: some View {
+        Section("Nanocodex updates") {
+            LabeledContent("Installed", value: "\(installedVersion) (\(installedBuild))")
+            if checking { ProgressView("Checking for updates…") }
+            if let update {
+                LabeledContent("Available", value: "\(update.version) (\(update.build))")
+                if let notes = update.notes, !notes.isEmpty { Text(notes).font(.caption).foregroundStyle(.secondary) }
+                Button(installing ? "Opening installer…" : "Install update") { Task { await install(update) } }
+                    .disabled(checking || installing)
+                    .accessibilityIdentifier("install-nanocodex-update")
+            } else if checked && !checking && error == nil {
+                Text("You’re up to date.").foregroundStyle(.secondary)
+            }
+            if installRequested { Text("Installation requested. Confirm the iOS installation prompt.").font(.caption).foregroundStyle(.secondary) }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+            Button(error == nil ? "Check for updates" : "Retry update check") { Task { await check() } }
+                .disabled(checking || installing)
+                .accessibilityIdentifier("check-nanocodex-update")
+        }
+        .task { await check() }
+    }
+
+    private func check() async {
+        guard !checking else { return }
+        checking = true
+        error = nil
+        update = nil
+        installRequested = false
+        defer { checking = false }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 20
+        configuration.timeoutIntervalForResource = 30
+        let session = URLSession(configuration: configuration, delegate: AppUpdateSessionDelegate(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        do {
+            var request = URLRequest(url: AppUpdate.feedURL)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            let (data, response) = try await session.data(for: request)
+            try Task.checkCancellation()
+            guard let response = response as? HTTPURLResponse, response.statusCode == 200,
+                  response.url == AppUpdate.feedURL, data.count <= 128 * 1024 else {
+                throw AppUpdate.ValidationError.invalidFeed
+            }
+            let candidate = try JSONDecoder().decode(AppUpdate.self, from: data)
+            try candidate.validate()
+            if try AppUpdate.isNewer(candidate.build, than: installedBuild) { update = candidate }
+            checked = true
+        } catch is CancellationError {
+        } catch {
+            self.error = "Couldn’t check for updates. " + error.localizedDescription
+        }
+    }
+
+    private func install(_ candidate: AppUpdate) async {
+        error = nil
+        installRequested = false
+        do {
+            guard let url = try candidate.installationURL(installedBuild: installedBuild) else { return }
+            installing = true
+            defer { installing = false }
+            // Open the installer scheme directly, independent of the default web browser.
+            let opened = await UIApplication.shared.open(url, options: [:])
+            if opened { installRequested = true }
+            else { error = "iOS couldn’t open the installer. Try Install update again." }
+        } catch { self.error = error.localizedDescription }
     }
 }

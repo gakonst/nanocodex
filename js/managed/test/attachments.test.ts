@@ -59,7 +59,9 @@ it("validates metadata and part lengths and aborts an upload when deletion races
     const retained = (await ctx.storage.get<{ key: string; uploadId: string; created: number }>("attachment:" + id))!;
     await bucket.resumeMultipartUpload(retained.key, retained.uploadId).abort();
     await ctx.storage.put("attachment:" + id, { ...retained, created: 0 });
+    await ctx.storage.put("attachment:" + id + ":part:999", { partNumber: 999, etag: "expired" });
     expect(await (await store.fetch(request("POST", JSON.stringify(metadata(4))), id)).json()).toMatchObject({ next_part: 1, complete: false });
+    expect((await ctx.storage.list({ prefix: "attachment:" + id + ":part:" })).size).toBe(0);
     const part = store.fetch(request("PUT", new ReadableStream<Uint8Array>()), id, "parts/1");
     await new Promise((resolve) => setTimeout(resolve, 0));
     active = false;
@@ -120,8 +122,8 @@ it("preserves original image bytes through multipart upload and serves an immuta
     expect(await crypto.subtle.digest("SHA-256", await original.arrayBuffer()))
       .toEqual(await crypto.subtle.digest("SHA-256", bytes));
     const preview = new Uint8Array([255, 216, 255, 217]);
-    expect((await store.fetch(request("PUT", preview, { "content-type": "image/jpeg" }), id, "preview")).status).toBe(200);
-    expect((await store.fetch(request("PUT", new Uint8Array([1]), { "content-type": "image/jpeg" }), id, "preview")).status).toBe(200);
+    expect((await store.fetch(request("PUT", preview, { "content-type": "image/jpeg", "content-length": String(preview.length) }), id, "preview")).status).toBe(200);
+    expect((await store.fetch(request("PUT", new Uint8Array([1]), { "content-type": "image/jpeg", "content-length": "1" }), id, "preview")).status).toBe(200);
     const reopened = new SessionAttachments(ctx.storage, bucket, agent, () => true);
     const response = await reopened.fetch(request("GET"), id, "preview");
     expect(response.headers.get("cache-control")).toBe("private, max-age=31536000, immutable");
@@ -218,6 +220,108 @@ it("preserves a storage failure and releases ingestion for a safe retry", async 
     expect((await store.fetch(request("POST", JSON.stringify(metadata(4))), id)).status).toBe(200);
     await expect(store.fetch(request("PUT", new Uint8Array(4)), id, "parts/1")).rejects.toThrow("test storage unavailable");
     expect((await store.fetch(request("PUT", new Uint8Array(4)), id, "parts/1")).status).toBe(200);
+    await store.cleanup();
+  });
+});
+
+it("bounds preview bytes by the declared length and cancels stalled control requests during cleanup", async () => {
+  const agent = crypto.randomUUID(), id = crypto.randomUUID();
+  await runInDurableObject(sessions.getByName(agent), async (_session, ctx) => {
+    const store = new SessionAttachments(ctx.storage, bucket, agent, () => true);
+    expect((await store.fetch(request("POST", JSON.stringify(metadata(4))), id)).status).toBe(200);
+    const preview = (body: BodyInit, length?: string, type = "image/jpeg") => store.fetch(request("PUT", body,
+      { "content-type": type, ...(length === undefined ? {} : { "content-length": length }) }), id, "preview");
+    expect((await preview(new Uint8Array(1))).status).toBe(400);
+    expect((await preview(new Uint8Array(1), "1", "image/png")).status).toBe(400);
+    expect((await preview(new Uint8Array(1), String(2 * 1024 * 1024 + 1))).status).toBe(413);
+    expect((await preview(new Uint8Array(5), "4")).status).toBe(413);
+    expect((await preview(new Uint8Array(3), "4")).status).toBe(400);
+    let chunks = 0;
+    expect((await preview(new ReadableStream<Uint8Array>({ pull(controller) {
+      if (chunks++ === 0) controller.enqueue(new Uint8Array(4));
+      else { controller.enqueue(new Uint8Array(1)); controller.close(); }
+    } }, { highWaterMark: 0 }), "4")).status).toBe(413);
+    expect(await bucket.head(`brains/${agent}/attachments/${id}/preview.jpg`)).toBeNull();
+    expect((await preview(new Uint8Array(4), "4")).status).toBe(200);
+    expect((await store.fetch(request("POST", JSON.stringify({ ...metadata(4), name: "x".repeat(16 * 1024) })), crypto.randomUUID())).status).toBe(400);
+    let canceled = false, started!: () => void;
+    const reading = new Promise<void>((resolve) => { started = resolve; });
+    const control = store.fetch(request("POST", new ReadableStream<Uint8Array>({
+      pull() { started(); }, cancel() { canceled = true; },
+    }, { highWaterMark: 0 })), crypto.randomUUID());
+    await reading;
+    await store.cleanup();
+    expect((await control).status).toBe(409);
+    expect(canceled).toBe(true);
+    expect((await ctx.storage.list({ prefix: "attachment:" })).size).toBe(0);
+    await bucket.delete(`brains/${agent}/attachments/${id}/preview.jpg`);
+  });
+});
+
+it("keeps original ingestion bounded by sink demand across more than 128 MiB", async () => {
+  const agent = crypto.randomUUID(), id = crypto.randomUUID();
+  await runInDurableObject(sessions.getByName(agent), async (_session, ctx) => {
+    let produced = 0, consumed = 0, maxAhead = 0, maxChunk = 0;
+    const chunkSize = 64 * 1024;
+    const wrapped = new Proxy(bucket, { get(target, key) {
+      if (key === "resumeMultipartUpload") return (name: string, uploadID: string) => {
+        const upload = target.resumeMultipartUpload(name, uploadID);
+        return new Proxy(upload, { get(part, method) {
+          if (method === "uploadPart") return async (partNumber: number, body: ReadableStream<Uint8Array>) => {
+            const reader = body.getReader();
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              maxChunk = Math.max(maxChunk, value.byteLength);
+              consumed += value.byteLength;
+              // Yield to the producer while the sink owns a chunk.
+              await Promise.resolve();
+            }
+            return { partNumber, etag: `stream-${partNumber}` };
+          };
+          const value = Reflect.get(part, method, part);
+          return typeof value === "function" ? value.bind(part) : value;
+        } });
+      };
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    const store = new SessionAttachments(ctx.storage, wrapped, agent, () => true);
+    const total = ATTACHMENT_PART_BYTES * 17;
+    expect((await store.fetch(request("POST", JSON.stringify(metadata(total))), id)).status).toBe(200);
+    for (let part = 1; part <= 17; part++) {
+      let remaining = ATTACHMENT_PART_BYTES;
+      const body = new ReadableStream<Uint8Array>({ pull(controller) {
+        if (!remaining) { controller.close(); return; }
+        remaining -= chunkSize;
+        produced += chunkSize;
+        maxAhead = Math.max(maxAhead, produced - consumed);
+        controller.enqueue(new Uint8Array(chunkSize));
+      } }, { highWaterMark: 0 });
+      expect((await store.fetch(request("PUT", body), id, `parts/${part}`)).status).toBe(200);
+    }
+    expect(produced).toBe(total);
+    expect(consumed).toBe(total);
+    expect(total).toBeGreaterThan(128 * 1024 * 1024);
+    expect(maxChunk).toBeLessThanOrEqual(chunkSize);
+    expect(maxAhead).toBeLessThanOrEqual(2 * chunkSize);
+    await store.cleanup();
+  });
+}, 60_000);
+
+it("removes an incorrectly sized completed object and resets its receipts for retry", async () => {
+  const agent = crypto.randomUUID(), id = crypto.randomUUID();
+  await runInDurableObject(sessions.getByName(agent), async (_session, ctx) => {
+    const store = new SessionAttachments(ctx.storage, bucket, agent, () => true);
+    expect((await store.fetch(request("POST", JSON.stringify(metadata(4))), id)).status).toBe(200);
+    expect((await store.fetch(request("PUT", new Uint8Array(4)), id, "parts/1")).status).toBe(200);
+    expect((await store.fetch(request("POST"), id, "complete")).status).toBe(200);
+    const key = `brains/${agent}/attachments/${id}/original.mp4`;
+    await bucket.put(key, new Uint8Array(3));
+    expect((await store.fetch(request("POST"), id, "complete")).status).toBe(409);
+    expect(await bucket.head(key)).toBeNull();
+    expect((await ctx.storage.list({ prefix: "attachment:" + id + ":part:" })).size).toBe(0);
+    expect(await (await store.fetch(request("POST", JSON.stringify(metadata(4))), id)).json()).toMatchObject({ next_part: 1, complete: false });
     await store.cleanup();
   });
 });

@@ -95,9 +95,11 @@ async fn macos_live_webrtc() -> Result<()> {
             eprintln!("local verification server: {error}");
         }
     }));
-    outgoing
-        .send(video.add("local-chromium", Vec::new()).await?["signal"].clone())
-        .await?;
+    video.add(
+        "local-chromium",
+        Vec::new(),
+        tokio::time::Instant::now() + Duration::from_secs(8),
+    )?;
     eprintln!("macOS live WebRTC verification: {url}");
     let profile = tempfile::Builder::new()
         .prefix("nanocodex-live-chrome-")
@@ -125,7 +127,7 @@ async fn macos_live_webrtc() -> Result<()> {
         loop {
             tokio::select! {
                 message = messages.recv() => match message.ok_or("browser signaling closed")? {
-                    Incoming::Signal(signal) => video.signal("local-chromium", &signal).await?,
+                    Incoming::Signal(signal) => video.signal("local-chromium", &signal)?,
                     Incoming::Result(metrics) => {
                         eprintln!("macOS live WebRTC metrics: {} (wall {:.2}s)",
                             serde_json::to_string(&metrics)?, started.elapsed().as_secs_f64());

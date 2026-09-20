@@ -19,7 +19,12 @@ test("owned Chromium navigation, form input and screenshot through public CUA", 
     response.end('<!doctype html><title>Nanocodex browser fixture</title><label>Message <input id="message"></label><button onclick="document.getElementById(\'result\').textContent=\'Saved: \'+document.getElementById(\'message\').value">Save</button><p id="result">Waiting</p>');
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
-  const browser = spawn(process.env.NANOCODEX_TEST_BROWSER, [...(process.env.NANOCODEX_TEST_BROWSER_NO_SANDBOX === "1" ? ["--no-sandbox"] : []), "--headless", "--disable-background-networking", "--disable-sync", "--no-first-run", "--no-default-browser-check", "--password-store=basic", "--use-mock-keychain", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank"], { stdio: "ignore" });
+  const browser = spawn(process.env.NANOCODEX_TEST_BROWSER, [...(process.env.NANOCODEX_TEST_BROWSER_NO_SANDBOX === "1" ? ["--no-sandbox"] : []), "--headless", "--disable-background-networking", "--disable-sync", "--no-first-run", "--no-default-browser-check", "--password-store=basic", "--use-mock-keychain", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
+  let browserStderr = "";
+  let browserError;
+  browser.stderr.setEncoding("utf8");
+  browser.stderr.on("data", chunk => { browserStderr = (browserStderr + chunk).slice(-16_384); });
+  browser.on("error", error => { browserError = error; });
   let computer;
   t.after(async () => {
     await computer?.close();
@@ -40,10 +45,13 @@ test("owned Chromium navigation, form input and screenshot through public CUA", 
     const value = await readFile(join(profile, "DevToolsActivePort"), "utf8").catch(() => "");
     const [port, path] = value.trim().split("\n");
     if (port && path) { endpoint = `ws://127.0.0.1:${port}${path}`; break; }
-    if (browser.exitCode !== null) throw new Error("Owned browser exited before CDP became ready");
+    if (browserError) throw browserError;
+    if (browser.exitCode !== null || browser.signalCode !== null) {
+      throw new Error(`Owned browser exited before CDP became ready (${browser.exitCode ?? browser.signalCode}): ${browserStderr}`);
+    }
     await delay(100);
   }
-  assert(endpoint, "Owned browser CDP endpoint is required");
+  assert(endpoint, `Owned browser CDP endpoint is required: ${browserStderr}`);
   const executable = process.env.NANOCODEX_TEST_COMPUTER ?? fileURLToPath(new URL("../../../crates/experimental/nanocodex-computer/runtime/target/debug/nanocodex-computer", import.meta.url));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const preferences = join(profile, "computer-preferences.json");

@@ -6,7 +6,8 @@
 //! keys are USB HID keyboard-page usages, matching the remote Hand protocol.
 //! The publisher owns generation/control authorization. Each Unix connection
 //! carries one JSON line. A logical viewer disconnect must send `release` (or
-//! `disconnect`); raw held input also expires after five seconds without input.
+//! `disconnect`); raw held input also expires after five seconds without input
+//! or an authorized viewer keepalive.
 
 mod input;
 mod pixels;
@@ -981,6 +982,8 @@ impl Desktop {
         self.check_cancel()?;
         match action {
             Action::Observe {} => (),
+            // The server loop refreshes last_input; do not synthesize any events.
+            Action::KeepAlive {} => return Ok(json!({"status":"ok"})),
             Action::Release {} | Action::Shutdown {} => {
                 self.release()?;
                 return Ok(json!({"status":"ok"}));
@@ -1108,7 +1111,7 @@ impl Desktop {
                 )?;
                 if jpeg.len().div_ceil(3) * 4 <= FRAME_LIMIT {
                     return Ok(
-                        json!({"status":"ok","jpeg":STANDARD.encode(jpeg),"width":frame.width(),"height":frame.height()}),
+                        json!({"status":"ok","jpeg":STANDARD.encode(jpeg),"width":frame.width(),"height":frame.height(),"inputKeepalive":true}),
                     );
                 }
             }
@@ -1501,6 +1504,42 @@ mod tests {
         let pointer = connection.query_pointer(root).unwrap().reply().unwrap();
         assert_eq!((pointer.root_x, pointer.root_y), (1919, 1079));
         assert!(pointer.mask.contains(xproto::KeyButMask::BUTTON1));
+        // A live viewer may hold without moving while renewing its lease.
+        for _ in 0..3 {
+            thread::sleep(Duration::from_secs(2));
+            request(&runtime, json!({"action":"keepAlive"})).unwrap();
+        }
+        connection.stream().reset(OP_TIMEOUT);
+        assert!(
+            connection
+                .query_pointer(root)
+                .unwrap()
+                .reply()
+                .unwrap()
+                .mask
+                .contains(xproto::KeyButMask::BUTTON1)
+        );
+        // Observations alone must not keep abandoned input pressed.
+        for _ in 0..3 {
+            thread::sleep(Duration::from_secs(2));
+            let frame = request(&runtime, json!({"action":"observe"})).unwrap();
+            assert_eq!(frame["inputKeepalive"], true);
+        }
+        connection.stream().reset(OP_TIMEOUT);
+        assert!(
+            !connection
+                .query_pointer(root)
+                .unwrap()
+                .reply()
+                .unwrap()
+                .mask
+                .contains(xproto::KeyButMask::BUTTON1)
+        );
+        request(
+            &runtime,
+            json!({"action":"input","input":{"kind":"button","x":1,"y":1,"button":0,"down":true}}),
+        )
+        .unwrap();
         request(&runtime, json!({"action":"disconnect"})).unwrap();
         assert!(
             !connection

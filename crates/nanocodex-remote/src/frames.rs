@@ -6,8 +6,8 @@ use tokio::io::{
     AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
 };
 
-pub(crate) const FRAMED_H264_MAGIC: &[u8; 8] = b"NCH264F1";
-pub(crate) const MAX_H264_FRAME: usize = 8 * 1024 * 1024;
+pub const FRAMED_H264_MAGIC: &[u8; 8] = b"NCH264F1";
+pub const MAX_H264_FRAME: usize = 8 * 1024 * 1024;
 const MAX_METADATA_LINE: usize = 16 * 1024;
 
 fn invalid(message: &'static str) -> io::Error {
@@ -77,7 +77,7 @@ fn frame_size(line: &[u8]) -> io::Result<Option<usize>> {
 /// `NCH264F1`, followed by repeated big-endian u32 lengths and H.264 packet bytes.
 /// A packet is fully read and validated for length before any of its framing is
 /// published. Callers own encoder shutdown and deadlines on their pipe readers.
-pub(crate) async fn forward_encoded_frames<M, V, W>(
+pub async fn forward_encoded_frames<M, V, W>(
     metadata: M,
     mut video: V,
     mut output: W,

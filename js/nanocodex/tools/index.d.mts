@@ -23,6 +23,8 @@ export function imageGeneration(options?: ImageGenerationOptions): NamedTool;
 /** Reads supported image formats from a caller-owned workspace. */
 export function viewImage(options: {
   workspace: Pick<Workspace, "readFile">;
+  /** Optional streamed-image adapter. Undefined delegates to workspace.readFile. */
+  loadImage?(path: string, detail: "high" | "original"): Promise<{ bytes: Uint8Array; note?: string } | undefined>;
 }): NamedTool;
 
 /** A session-scoped planning tool. */

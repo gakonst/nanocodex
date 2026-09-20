@@ -1,11 +1,19 @@
-FROM --platform=$BUILDPLATFORM golang:1.26.5-trixie AS hand
-ARG TARGETARCH
-WORKDIR /src/hand
-COPY .generated/hand/go.mod .generated/hand/go.sum ./
-RUN go mod download
-COPY .generated/hand/*.go ./
-COPY .generated/hand/observation_helper.py .generated/hand/capture_policy.json ./
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -o /out/nanocodex-remote .
+# syntax=docker/dockerfile:1
+# Build against the same libc family as the Sandbox runtime. The publisher is
+# the shared Rust Hand implementation; Go remains only a developer toolchain.
+FROM --platform=$TARGETPLATFORM ubuntu:22.04 AS hand
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates curl git cmake pkg-config libssl-dev clang libpulse-dev libxkbcommon-dev \
+    libasound2-dev libudev-dev libwayland-dev libpipewire-0.3-dev libspa-0.2-dev uuid-dev \
+    && rm -rf /var/lib/apt/lists/*
+ENV CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup PATH=/usr/local/cargo/bin:${PATH}
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal --default-toolchain 1.97.0
+WORKDIR /source
+COPY .generated/remote-rust/ ./
+RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/usr/local/cargo/git --mount=type=cache,target=/source/target \
+    CARGO_BUILD_JOBS=2 cargo build --release --locked -p nanocodex2-bin --bin nanocodex2 \
+    && mkdir -p /out && cp target/release/nanocodex2 /out/nanocodex-remote
 
 # The SDK's Ubuntu 22.04 base has no labwc package. Bundle the VM's Debian
 # desktop stack with its own loader, preserving the SDK and shell libraries.

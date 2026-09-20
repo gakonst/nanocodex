@@ -509,8 +509,7 @@ text({ first: first.exit_code, second: second.exit_code });
 #[cfg(unix)]
 #[tokio::test]
 async fn nested_call_updates_stream_in_start_and_resolution_order() -> Result<()> {
-    #[derive(Default)]
-    struct Timeline(Vec<String>);
+    struct Timeline(Vec<String>, PathBuf);
 
     impl CodeModeObserver for Timeline {
         fn update(&mut self, update: CodeModeUpdate<'_>) {
@@ -520,6 +519,12 @@ async fn nested_call_updates_stream_in_start_and_resolution_order() -> Result<()
                 }
                 CodeModeUpdate::NestedCallCompleted(call) => {
                     self.0.push(format!("done:{}", call.call_id));
+                    if call.call_id == "call-exec/code-2" {
+                        // Release the first call only after observing the second
+                        // completion; a marker written by its shell races the
+                        // process-exit notification on a busy runner.
+                        std::fs::write(&self.1, b"observed").unwrap();
+                    }
                 }
             }
         }
@@ -528,7 +533,7 @@ async fn nested_call_updates_stream_in_start_and_resolution_order() -> Result<()
     let workspace = temporary_workspace("streaming-nested-tools")?;
     let tools = test_tools(&workspace);
     let history = Vec::new();
-    let mut timeline = Timeline::default();
+    let mut timeline = Timeline(Vec::new(), workspace.join("second.done"));
     let execution = tools
         .execute_code_with_updates(
             r#"
@@ -537,7 +542,7 @@ await Promise.all([
     cmd: "i=0; while [ \"$i\" -lt 500 ]; do [ -f second.done ] && exit 0; i=$((i + 1)); sleep 0.01; done; exit 91",
     login: false,
   }),
-  tools.exec_command({ cmd: "touch second.done", login: false }),
+  tools.exec_command({ cmd: "true", login: false }),
 ]);
 "#,
             test_context(&history),

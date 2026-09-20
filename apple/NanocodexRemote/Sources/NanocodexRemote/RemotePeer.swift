@@ -1,4 +1,5 @@
 import Foundation
+import AVFoundation
 import WebRTC
 
 public struct RemoteICE: Codable, Sendable {
@@ -47,8 +48,17 @@ public final class RemotePeer: NSObject {
     public var onSignal: (RemoteSignal) -> Void = { _ in }
     public var onState: (RTCPeerConnectionState) -> Void = { _ in }
     public var onVideoTrack: (RTCVideoTrack) -> Void = { _ in }
+    public var onMicrophoneStopped: () -> Void = {}
+    public var onAudioAvailability: (Bool) -> Void = { _ in }
     public var onData: (Data, Bool) -> Void = { _, _ in }
     public var onChannelsReady: () -> Void = {}
+    public private(set) var microphoneEnabled = false
+    public private(set) var speakersEnabled = true
+    private var microphoneTrack: RTCAudioTrack?
+    private var microphoneTransceiver: RTCRtpTransceiver?
+    private var remoteAudioTracks: [RTCAudioTrack] = []
+    private var microphoneRequest: UInt64 = 0
+    private var audioObservers: [NSObjectProtocol] = []
     private var connection: RTCPeerConnection!
     private var reliable: RTCDataChannel?
     private var motion: RTCDataChannel?
@@ -120,6 +130,12 @@ public final class RemotePeer: NSObject {
         videoSource = source ?? Self.screenSource()
         localVideoTrack = publishing ? Self.factory.videoTrack(with: videoSource, trackId: "screen") : nil
         super.init()
+        #if os(iOS)
+        if !publishing {
+            try configureAudioSession()
+            observeAudioSession()
+        }
+        #endif
         let config = RTCConfiguration()
         config.sdpSemantics = .unifiedPlan; config.bundlePolicy = .maxBundle; config.rtcpMuxPolicy = .require
         config.iceTransportPolicy = relayOnly ? .relay : .all
@@ -144,6 +160,49 @@ public final class RemotePeer: NSObject {
             motion = peer.dataChannel(forLabel: "remote-motion-v1", configuration: motionConfig)
             reliable?.delegate = self; motion?.delegate = self
         }
+    }
+
+    deinit {
+        for observer in audioObservers { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    #if os(iOS)
+    /// Configuration alone neither requests permission nor creates a capture track.
+    private func configureAudioSession() throws {
+        let session = RTCAudioSession.sharedInstance()
+        session.lockForConfiguration()
+        defer { session.unlockForConfiguration() }
+        let audio = RTCAudioSessionConfiguration.webRTC()
+        audio.sampleRate = 48_000
+        audio.ioBufferDuration = 0.010
+        audio.category = AVAudioSession.Category.playAndRecord.rawValue
+        audio.mode = AVAudioSession.Mode.voiceChat.rawValue
+        audio.categoryOptions = [.defaultToSpeaker, .allowBluetooth]
+        try session.setConfiguration(audio)
+    }
+
+    private func observeAudioSession() {
+        let center = NotificationCenter.default
+        audioObservers.append(center.addObserver(forName: AVAudioSession.interruptionNotification,
+            object: nil, queue: .main) { [weak self] notification in
+            guard let value = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  value == AVAudioSession.InterruptionType.began.rawValue else { return }
+            Task { @MainActor [weak self] in self?.audioSessionStoppedMicrophone() }
+        })
+        audioObservers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification,
+            object: nil, queue: .main) { [weak self] notification in
+            guard let value = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                  value == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue else { return }
+            Task { @MainActor [weak self] in self?.audioSessionStoppedMicrophone() }
+        })
+    }
+    #endif
+
+    /// Also invalidates permission requests still in flight. Resumption requires opt-in.
+    func audioSessionStoppedMicrophone() {
+        guard !closed, !publishing else { return }
+        stopMicrophone()
+        onMicrophoneStopped()
     }
 
     public func updateICE(_ ice: [RemoteICE]) throws {
@@ -207,6 +266,12 @@ public final class RemotePeer: NSObject {
         let candidates = pendingCandidates; pendingCandidates.removeAll()
         for candidate in candidates { try await connection.add(candidate); appliedCandidates += 1 }
         if signal.type == .offer {
+            // Reserve a sender in the answer without opening a capture device.
+            // The host's offer determines whether return audio is supported.
+            microphoneTransceiver = connection.transceivers.first { $0.mediaType == .audio && !$0.isStopped }
+            var directionError: NSError?
+            microphoneTransceiver?.setDirection(.sendRecv, error: &directionError)
+            if let directionError { throw directionError }
             let answer: RTCSessionDescription = try await withCheckedThrowingContinuation { continuation in
                 connection.answer(for: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)) { sdp, error in
                     if let error { continuation.resume(throwing: error) }
@@ -248,9 +313,57 @@ public final class RemotePeer: NSObject {
         return true
     }
 
+    /// Called only after explicit user opt-in and a valid control lease.
+    /// Permission completion cannot resurrect a muted or closed session.
+    public func setMicrophoneEnabled(_ enabled: Bool) async throws {
+        if !enabled { stopMicrophone(); return }
+        guard !closed, !publishing, remoteDescriptionSet,
+              let transceiver = microphoneTransceiver, !transceiver.isStopped else { throw RemoteError.unavailable }
+        var direction = RTCRtpTransceiverDirection.inactive
+        guard transceiver.currentDirection(&direction), direction == .sendRecv || direction == .sendOnly else { throw RemoteError.unavailable }
+        microphoneRequest &+= 1
+        let request = microphoneRequest
+        let granted = await AVCaptureDevice.requestAccess(for: .audio)
+        guard request == microphoneRequest, !closed else { throw RemoteError.closed }
+        guard granted else { throw RemoteError.unauthorized }
+        guard connection.connectionState == .connected else { throw RemoteError.unavailable }
+        #if os(iOS)
+        try configureAudioSession()
+        #endif
+        if microphoneTrack == nil {
+            let source = Self.factory.audioSource(with: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil))
+            let track = Self.factory.audioTrack(with: source, trackId: "viewer-microphone")
+            transceiver.sender.track = track
+            microphoneTrack = track
+        }
+        microphoneTrack?.isEnabled = true
+        microphoneEnabled = true
+    }
+
+    /// Synchronous release for lease expiry, backgrounding, disconnect and mute.
+    public func stopMicrophone() {
+        microphoneRequest &+= 1
+        microphoneTrack?.isEnabled = false
+        microphoneTransceiver?.sender.track = nil
+        microphoneTrack = nil
+        microphoneEnabled = false
+    }
+
+    public func setSpeakersEnabled(_ enabled: Bool) {
+        speakersEnabled = enabled
+        for track in remoteAudioTracks { track.isEnabled = enabled }
+    }
+
     public func close() {
         guard !closed else { return }; closed = true
         negotiationDeadline?.cancel(); negotiationDeadline = nil
+        for observer in audioObservers { NotificationCenter.default.removeObserver(observer) }
+        audioObservers.removeAll()
+        stopMicrophone()
+        microphoneTransceiver = nil
+        for track in remoteAudioTracks { track.isEnabled = false }
+        remoteAudioTracks.removeAll()
+        onAudioAvailability(false)
         localVideoTrack?.isEnabled = false
         reliable?.delegate = nil; motion?.delegate = nil
         reliable?.close(); motion?.close(); reliable = nil; motion = nil
@@ -277,11 +390,23 @@ extension RemotePeer: RTCPeerConnectionDelegate, RTCDataChannelDelegate {
         }
     }
     nonisolated public func peerConnection(_ peerConnection: RTCPeerConnection, didChange newState: RTCPeerConnectionState) {
-        Task { @MainActor [weak self] in guard let self, !closed else { return }; onState(newState) }
+        Task { @MainActor [weak self] in
+            guard let self, !closed else { return }
+            if newState == .disconnected || newState == .failed || newState == .closed { stopMicrophone() }
+            onState(newState)
+        }
     }
     nonisolated public func peerConnection(_ peerConnection: RTCPeerConnection, didAdd rtpReceiver: RTCRtpReceiver, streams: [RTCMediaStream]) {
-        guard let track = rtpReceiver.track as? RTCVideoTrack else { return }
-        Task { @MainActor [weak self] in guard let self, !closed else { return }; remoteVideoTrack = track; onVideoTrack(track) }
+        if let track = rtpReceiver.track as? RTCVideoTrack {
+            Task { @MainActor [weak self] in guard let self, !closed else { return }; remoteVideoTrack = track; onVideoTrack(track) }
+        } else if let track = rtpReceiver.track as? RTCAudioTrack {
+            Task { @MainActor [weak self] in
+                guard let self, !closed else { track.isEnabled = false; return }
+                track.isEnabled = speakersEnabled
+                remoteAudioTracks.append(track)
+                onAudioAvailability(true)
+            }
+        }
     }
     nonisolated public func peerConnection(_ peerConnection: RTCPeerConnection, didOpen dataChannel: RTCDataChannel) {
         Task { @MainActor [weak self] in

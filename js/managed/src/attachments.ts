@@ -40,7 +40,7 @@ export class SessionAttachments {
       }
     };
     const task = previous.catch(() => {}).then(() => {
-      if (request.method !== "PUT" || !action.startsWith("parts/")) return run();
+      if (request.method !== "PUT" || (!action.startsWith("parts/") && action !== "preview")) return run();
       // The service admits one part body at a time across attachment IDs. Calls
       // wait instead of multiplying buffers or imposing a concurrency rejection.
       const part = this.#ingesting.then(run, run);
@@ -127,9 +127,7 @@ export class SessionAttachments {
     let upload = await this.storage.get<Upload>(storageKey);
     this.#checkActive();
     if (request.method === "POST" && action === "") {
-      let value: unknown;
-      try { value = await request.json(); }
-      catch { throw new AttachmentFailure(400, "invalid_attachment"); }
+      const value = await controlJSON(request, this.#readers, () => this.#checkActive());
       const metadata = parseMetadata(value);
       this.#checkActive();
       if (upload && (upload.name !== metadata.name || upload.media_type !== metadata.media_type || upload.size !== metadata.size)) {
@@ -156,6 +154,8 @@ export class SessionAttachments {
           httpMetadata: { contentType: upload.media_type },
           customMetadata: { attachment_id: id },
         });
+        const stale = [...(await this.storage.list({ prefix: storageKey + ":part:" })).keys()];
+        for (let i = 0; i < stale.length; i += 128) await this.storage.delete(stale.slice(i, i + 128));
         upload = { ...upload, uploadId: multipart.uploadId, count: 0, created: Date.now() };
         await this.storage.put(storageKey, upload);
       }
@@ -167,11 +167,26 @@ export class SessionAttachments {
     if (action === "preview") {
       const key = `brains/${this.sessionId}/attachments/${id}/preview.jpg`;
       if (request.method === "PUT") {
-        if (!request.body || request.headers.get("content-type")?.split(";")[0] !== "image/jpeg") {
+        const length = request.headers.get("content-length");
+        const expected = Number(length);
+        if (!request.body || request.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== "image/jpeg"
+          || !length || !/^[0-9]+$/.test(length) || !Number.isSafeInteger(expected) || expected < 1) {
           throw new AttachmentFailure(400, "invalid_attachment_preview");
         }
-        if (!await this.bucket.head(key)) {
-          await this.bucket.put(key, request.body, { httpMetadata: { contentType: "image/jpeg" } });
+        if (expected > 2 * 1024 * 1024) throw new AttachmentFailure(413, "attachment_preview_too_large");
+        const exists = await this.bucket.head(key);
+        // URLSession sends Content-Length for its file upload. Forward only
+        // validated chunks through a fixed-length stream, awaiting R2 per chunk.
+        try {
+          await this.#partBody(request, expected, exists ? undefined : async (body) => {
+            await this.bucket.put(key, body, { httpMetadata: { contentType: "image/jpeg" } });
+            return { partNumber: 1, etag: "preview" };
+          });
+        } catch (error) {
+          // R2 may finish receiving the declared length before a trailing chunk
+          // reveals a malformed request. Never retain that unvalidated preview.
+          if (!exists) await this.bucket.delete(key);
+          throw error;
         }
         this.#checkActive();
         return reply({ complete: true });
@@ -220,7 +235,16 @@ export class SessionAttachments {
         object = await this.bucket.resumeMultipartUpload(upload.key, upload.uploadId).complete(parts);
       }
       this.#checkActive();
-      if (object.size !== upload.size) throw new AttachmentFailure(409, "attachment_size_mismatch");
+      if (object.size !== upload.size) {
+        await this.bucket.delete(upload.key);
+        const multipart = await this.bucket.createMultipartUpload(upload.key, {
+          httpMetadata: { contentType: upload.media_type }, customMetadata: { attachment_id: id },
+        });
+        await this.storage.put(storageKey, { ...upload, uploadId: multipart.uploadId, count: 0, created: Date.now() });
+        const stale = [...(await this.storage.list({ prefix: storageKey + ":" })).keys()];
+        for (let i = 0; i < stale.length; i += 128) await this.storage.delete(stale.slice(i, i + 128));
+        throw new AttachmentFailure(409, "attachment_size_mismatch");
+      }
       return reply({ id, path: upload.path, size: upload.size, complete: true });
     }
     if (request.method === "GET" && action === "") {
@@ -258,4 +282,28 @@ function parseMetadata(value: unknown): Metadata {
 class AttachmentFailure extends Error { constructor(readonly status: number, code: string) { super(code); } }
 function reply(body: unknown, status = 200): Response {
   return Response.json(body, { status, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+}
+
+// Bound control data while streaming; Content-Length is not a trustworthy limit.
+async function controlJSON(request: Request, readers: Set<ReadableStreamDefaultReader<Uint8Array>>, checkActive: () => void): Promise<unknown> {
+  if (!request.body) throw new AttachmentFailure(400, "invalid_attachment");
+  const reader = request.body.getReader();
+  readers.add(reader);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      checkActive();
+      if (done) break;
+      size += value.length;
+      if (size > 16 * 1024) throw new AttachmentFailure(400, "invalid_attachment");
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+    try { return JSON.parse(new TextDecoder().decode(bytes)); }
+    catch { throw new AttachmentFailure(400, "invalid_attachment"); }
+  } finally { await reader.cancel().catch(() => {}); readers.delete(reader); }
 }

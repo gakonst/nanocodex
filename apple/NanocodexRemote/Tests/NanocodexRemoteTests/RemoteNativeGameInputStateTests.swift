@@ -2,37 +2,54 @@ import XCTest
 @testable import NanocodexRemote
 
 final class RemoteNativeGameInputStateTests: XCTestCase {
-    func testDefaultShoulderAndMixedHints() {
-        var state = RemoteNativeGameInputState()
-        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("a"), "Jump")
-        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("b"), "Cancel")
-        XCTAssertEqual(RemoteNativeGameContext(input: state).rightAnalogHint, "LOOK")
-        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("dpadUp"), "Top-bar slot up")
-        state.button("leftShoulder", owner: "left", down: true)
-        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("a"), "Self")
-        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("dpadUp"), "Group")
-        state.button("rightShoulder", owner: "right", down: true)
-        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("a"), "—")
-        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("b"), "Bags")
-        XCTAssertEqual(RemoteNativeGameContext(input: state).rightAnalogHint, "ZOOM")
-        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("dpadLeft"), "Previous page")
-        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("leftStick"), "Center")
-        state.trigger("leftTrigger", down: true)
-        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("a"), "Modified")
-        XCTAssertEqual(RemoteNativeGameContext(input: state).rightAnalogHint, "RIGHT STICK")
-        state.button("leftShoulder", owner: "left", down: false)
-        state.button("rightShoulder", owner: "right", down: false)
-        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("a"), "Slot")
-        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeBankLabel, "LT · Left bar")
-        state.trigger("rightTrigger", down: true)
-        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeBankLabel, "LT + RT · Bottom bar")
+    func testXboxButtonsMatchBlizzardPhysicalKeysWithoutRewritingWireNames() throws {
+        // Source: Blizzard SharedConstants.lua Xbox (LTR) glyphs; pinned source in docs/wow-gamepad-controls.md.
+        let expected = ["a": "PAD1", "b": "PAD2", "x": "PAD3", "y": "PAD4",
+                        "dpadUp": "PADDUP", "dpadDown": "PADDDOWN", "dpadLeft": "PADDLEFT", "dpadRight": "PADDRIGHT",
+                        "leftShoulder": "PADLSHOULDER", "rightShoulder": "PADRSHOULDER",
+                        "leftTrigger": "PADLTRIGGER", "rightTrigger": "PADRTRIGGER",
+                        "leftStick": "PADLSTICK", "rightStick": "PADRSTICK", "back": "PADBACK", "start": "PADFORWARD"]
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: RemoteNativeGameControl.all.map { ($0.id, $0.wowKey) }), expected)
+        for control in RemoteNativeGameControl.all {
+            var state = RemoteNativeGameInputState()
+            if control.id.contains("Trigger") {
+                state.trigger(control.id, down: true)
+                XCTAssertEqual(state.snapshot.leftTrigger, control.id == "leftTrigger" ? 1 : 0)
+                XCTAssertEqual(state.snapshot.rightTrigger, control.id == "rightTrigger" ? 1 : 0)
+                XCTAssertTrue(state.snapshot.buttons.isEmpty)
+            } else {
+                state.button(control.id, owner: "touch", down: true)
+                XCTAssertEqual(state.snapshot.buttons, [control.id])
+            }
+            try state.snapshot.validate()
+        }
+        XCTAssertEqual(RemoteNativeGameControl.named("back")?.title, "View")
+        XCTAssertEqual(RemoteNativeGameControl.named("start")?.title, "Menu")
+        XCTAssertNil(RemoteNativeGameControl.named("jump"))
     }
 
-    func testHostileDefaultDoesNotInventDpadActions() {
-        var state = RemoteNativeGameInputState()
-        state.button("rightShoulder", owner: "right", down: true)
-        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("a"), "Last enemy")
-        XCTAssertEqual(RemoteNativeGameContext(input: state).nativeHint("dpadUp"), "—")
+    func testEveryModifierCombinationKeepsPhysicalHintsAndReportsOnlyHeldButtons() {
+        let baseline = RemoteNativeGameContext(input: RemoteNativeGameInputState())
+        let modifiers = ["leftTrigger", "rightTrigger", "leftShoulder", "rightShoulder"]
+        let titles = ["LT", "RT", "LB", "RB"]
+        for mask in 0..<16 {
+            var state = RemoteNativeGameInputState()
+            var held: [String] = []
+            for (index, name) in modifiers.enumerated() where mask & (1 << index) != 0 {
+                if name.contains("Trigger") { state.trigger(name, down: true) }
+                else { state.button(name, owner: name, down: true) }
+                held.append(titles[index])
+            }
+            let context = RemoteNativeGameContext(input: state)
+            XCTAssertEqual(context.heldControlsLabel, held.isEmpty ? "Use WoW’s on-screen prompts" : "Holding " + held.joined(separator: " + "))
+            for control in RemoteNativeGameControl.all {
+                XCTAssertEqual(context.nativeHint(control.id), baseline.nativeHint(control.id))
+                XCTAssertEqual(context.nativeTitle(control.id), control.title)
+                XCTAssertEqual(context.nativeAccessibilityHint(control.id), "WoW button \(control.wowKey). Uses your in-game binding.")
+            }
+            state.reset()
+            XCTAssertEqual(RemoteNativeGameContext(input: state).heldControlsLabel, baseline.heldControlsLabel)
+        }
     }
 
     func testNativePresentationSurvivesLostLeaseOnlyForSameHand() {
@@ -162,7 +179,9 @@ final class RemoteNativeGameInputStateTests: XCTestCase {
             let frames = layout.controlFrames
             XCTAssertEqual(frames.count, 18) // Two sticks, fourteen buttons, two triggers.
             XCTAssertEqual(layout.dpad.x, 188)
-            XCTAssertEqual(layout.width - layout.face.x, 188)
+            XCTAssertEqual(layout.width - layout.face.x, 68)
+            XCTAssertLessThan(layout.rightStick.x, layout.face.x)
+            XCTAssertEqual(layout.utilityCenter("rightStick").x, layout.rightStick.x)
             let bounds = CGRect(origin: .zero, size: size)
             for (index, frame) in frames.enumerated() {
                 XCTAssertGreaterThanOrEqual(frame.width, 44)

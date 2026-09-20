@@ -1,0 +1,33 @@
+const assert=require('node:assert/strict');const {chromium}=require('playwright');
+(async()=>{
+const browser=await chromium.launch({executablePath:'/usr/bin/chromium',headless:true,args:['--no-sandbox']});const context=await browser.newContext({viewport:{width:1440,height:1000},permissions:['clipboard-read','clipboard-write']});const page=await context.newPage();const errors=[],writes=[];page.on('pageerror',e=>errors.push(e.message));let projects=[{id:'root',name:'Work'}],threads=[{id:'chat',title:'Existing chat',status:'ready',project_id:'root',closed:false}],active=['turn:1'];
+await page.route('**/api/**',async route=>{const req=route.request(),u=new URL(req.url());const body=req.method()==='POST'?req.postDataJSON():null;let data={};if(body)writes.push({path:u.pathname,body});switch(u.pathname){
+case '/api/status':data={connected:true,voice:{available:false}};break;
+case '/api/projects':data={projects};break;
+case '/api/threads':data={threads:threads.filter(t=>t.project_id===u.searchParams.get('project_id')&&t.closed===(u.searchParams.get('closed')==='true'))};break;
+case '/api/thread':data={state:{active_turns:active}};break;
+case '/api/messages':{const old=u.searchParams.has('before');data={messages:[{role:'assistant',text:old?'Earlier answer':'Recent answer'}],message_details:[{role:'assistant',text:old?'Earlier answer':'Recent answer',cursor:old?'2':'10',turn_id:old?'old':'new',event_type:'turn_completed'}],first_cursor:old?'1':'9',last_cursor:old?'3':'10',has_more:!old};break;}
+case '/api/projects/create':projects.push({id:'new-root',name:body.name});data={project_id:'new-root',thread_id:'new-root',metadata_scope:'local_companion'};threads.push({id:'new-root',title:body.name,project_id:'new-root',closed:false});break;
+case '/api/projects/update':projects.find(p=>p.id===body.project_id).name=body.name;data={metadata_scope:'local_companion'};break;
+case '/api/threads/create':threads.push({id:'new-chat',title:body.title,project_id:body.project_id,closed:false});data={thread_id:'new-chat',project_id:body.project_id,metadata_scope:'local_companion'};break;
+case '/api/threads/update':threads.find(t=>t.id===body.thread_id).title=body.title;data={metadata_scope:'local_companion'};break;
+case '/api/threads/close':threads.find(t=>t.id===body.thread_id).closed=true;data={metadata_scope:'local_companion'};break;
+case '/api/threads/restore':threads.find(t=>t.id===body.thread_id).closed=false;data={metadata_scope:'local_companion'};break;
+case '/api/turns/cancel':active=[];data={receipt:{status:'cancelling'}};break;
+case '/api/turns/steer':data={receipt:{status:'accepted'}};break;
+default:throw Error('Unexpected path '+u.pathname);
+}await route.fulfill({json:data});});
+await page.goto(process.env.WOW_TEST_URL||'http://127.0.0.1:17843');await page.getByRole('button',{name:'Existing chat'}).click();await page.locator('#prompt').fill('Keep my draft');await page.locator('#loadEarlier').click();await page.waitForFunction(()=>document.querySelector('#messages').textContent.includes('Earlier answer'));assert((await page.locator('#messages').textContent()).includes('Earlier answer'));assert((await page.locator('#messages').textContent()).includes('Recent answer'));
+await page.locator('#steerTurn').click();await page.locator('#manageInput').fill('Focus on the failing test');await page.locator('#manageConfirm').click();await page.waitForFunction(()=>!document.querySelector('#manageDialog').open);assert.equal(writes.at(-1).path,'/api/turns/steer');assert.equal(writes.at(-1).body.turn_id,'turn:1');
+await page.locator('#cancelTurn').click();await page.locator('#manageConfirm').click();await page.waitForFunction(()=>!document.querySelector('#manageDialog').open);assert.equal(writes.at(-1).path,'/api/turns/cancel');
+async function nameAction(id,name){await page.locator('#'+id).click();await page.locator('#manageName').fill(name);await page.locator('#manageConfirm').click();await page.waitForFunction(()=>!document.querySelector('#manageDialog').open);await page.waitForFunction(()=>!document.querySelector('#createProject').disabled);}
+await nameAction('createProject','Quest agents');assert(projects.some(p=>p.name==='Quest agents'));
+await nameAction('createChat','Dungeon prep');assert.equal(writes.at(-1).body.project_id,'new-root');assert.equal(await page.locator('#prompt').inputValue(),'');
+await nameAction('renameChat','Raid prep');assert.equal(threads.find(t=>t.id==='new-chat').title,'Raid prep');
+await page.locator('#closeChat').click();await page.locator('#manageConfirm').click();await page.waitForFunction(()=>!document.querySelector('#manageDialog').open);await page.locator('#showClosed').click();await page.getByRole('button',{name:'Raid prep'}).click();await page.locator('#closeChat').click();await page.locator('#manageConfirm').click();await page.waitForFunction(()=>!document.querySelector('#manageDialog').open);assert.equal(threads.find(t=>t.id==='new-chat').closed,false);
+await page.locator('#projects').selectOption('root');await page.getByRole('button',{name:'Existing chat'}).click();assert.equal(await page.locator('#prompt').inputValue(),'Keep my draft');
+await page.locator('#copyWorkspace').click();await page.waitForFunction(()=>document.querySelector('#notice').textContent.startsWith('Workspace copied.'));const snapshot=await page.evaluate(()=>navigator.clipboard.readText());assert(snapshot.startsWith('ncw1\n'));assert(snapshot.includes('T\troot\tchat\tExisting%20chat'));
+const before=writes.length;await page.locator('#importContext').fill(JSON.stringify({type:'nanocodex.action',action:'rename_chat',project_id:'root',thread_id:'chat',name:'Needs explicit review'}));await page.locator('#import').click();await page.waitForFunction(()=>document.querySelector('#manageDialog').open);assert.equal(writes.length,before);await page.locator('#manageClose').click();
+await page.locator('#importContext').fill(JSON.stringify({type:'nanocodex.ask',mode:'agent',project_id:'foreign',thread_id:'foreign',prompt:'Do not run'}));await page.locator('#import').click();await page.waitForFunction(()=>document.querySelector('#notice').textContent.includes('not in the current account'));assert.equal(writes.length,before);
+await page.setViewportSize({width:390,height:844});assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));assert.deepEqual(errors,[]);await browser.close();console.log('PASS: project/chat CRUD, local close/restore, history paging, steer/cancel target, drafts, native snapshot, explicit imported action review, foreign ID rejection, mobile width');
+})().catch(e=>{console.error(e);process.exit(1)});

@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
 pub(super) enum Action {
     Observe {},
+    KeepAlive {},
     #[serde(alias = "disconnect", alias = "cancel")]
     Release {},
     Shutdown {},
@@ -150,7 +151,7 @@ impl Input {
 pub(super) fn parse(value: Value) -> Result<Action> {
     let action: Action = serde_json::from_value(value)?;
     match &action {
-        Action::Observe {} | Action::Release {} | Action::Shutdown {} => (),
+        Action::Observe {} | Action::KeepAlive {} | Action::Release {} | Action::Shutdown {} => (),
         Action::Input { input } => input.validate()?,
         Action::Click { x, y, button: b } => {
             point(*x, *y)?;
@@ -295,6 +296,7 @@ mod tests {
             json!({"action":"input","input":{"kind":"button","x":0,"y":0,"button":0}}),
             json!({"action":"input","input":{"kind":"move","x":0,"y":0,"key":4}}),
             json!({"action":"observe","program":"sh"}),
+            json!({"action":"keepAlive","input":{}}),
         ] {
             assert!(parse(value.clone()).is_err(), "accepted {value}");
         }
@@ -311,6 +313,7 @@ mod tests {
             json!({"action":"input","input":{"kind":"key","key":225,"down":false}}),
             json!({"action":"input","input":{"kind":"scroll","x":0.5,"y":0.5,"deltaX":-4096,"deltaY":0}}),
             json!({"action":"input","input":{"kind":"releaseAll"}}),
+            json!({"action":"keepAlive"}),
             json!({"action":"disconnect"}),
             json!({"action":"shutdown"}),
         ] {

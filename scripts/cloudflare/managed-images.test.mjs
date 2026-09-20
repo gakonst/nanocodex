@@ -52,6 +52,9 @@ test('input receipts survive unrelated commits and invalidate every relevant sou
     assert.equal(fingerprint('sandbox', account, '1', dir), firstSandbox);
     put('hands/remote/image/labwc/config', 'new desktop'); commit();
     assert.notEqual(fingerprint('sandbox', account, '1', dir), firstSandbox);
+    const beforeRust = fingerprint('sandbox', account, '1', dir);
+    put('crates/nanocodex-remote/src/runtime.rs', 'new shared publisher'); commit();
+    assert.notEqual(fingerprint('sandbox', account, '1', dir), beforeRust);
     const current = fingerprint('sandbox', account, '1', dir);
     assert.notEqual(fingerprint('sandbox', account, '2', dir), current);
     assert.notEqual(fingerprint('sandbox', 'f'.repeat(32), '1', dir), current);
@@ -66,6 +69,12 @@ test('every Docker COPY input is covered by the receipt fingerprint', () => {
       assert.ok(!line.includes('[') && !line.endsWith('\\'), 'update input audit for new Dockerfile syntax');
       const sources = line.split(/\s+/).slice(1).filter(token => !token.startsWith('--')).slice(0, -1);
       for (let source of sources) {
+        if (source === '.generated/remote-rust/' || source.startsWith('.generated/remote-rust/')) {
+          for (const path of ['Cargo.toml', 'Cargo.lock', 'bin', 'crates', 'examples', 'js/nanocodex', 'py/bindings', 'third_party']) {
+            assert.ok(spec.inputs.includes(path), `${image}: Rust source ${path} is not fingerprinted`);
+          }
+          continue;
+        }
         if (source.startsWith('.generated/hand/')) source = 'hands/remote';
         else if (source.startsWith('.generated/toolkit/')) source = 'crates/nanocodex-vm/image/toolkit';
         else source = spec.context === '.' ? source.replace(/^\.\//, '') : spec.context + '/' + source;

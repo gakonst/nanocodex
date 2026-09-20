@@ -17,12 +17,33 @@ final class MessageAttachmentTests: XCTestCase {
         XCTAssertFalse(prepared.content[0]["text"].string.contains("base64"))
         let source = try XCTUnwrap(CGImageSourceCreateWithData(prepared.preview as CFData, nil))
         let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
-        XCTAssertEqual(image.width, 320)
-        XCTAssertEqual(image.height, 640, "Only the preview is resized and oriented")
+        XCTAssertEqual(image.width, 1024)
+        XCTAssertEqual(image.height, 2048, "The inspection rendition retains readable detail and is oriented")
+        XCTAssertLessThanOrEqual(prepared.preview.count, AttachmentPreparation.inspectionMaxByteCount)
         let originalSource = try XCTUnwrap(CGImageSourceCreateWithData(retained as CFData, nil))
         let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(originalSource, 0, nil) as? [CFString: Any])
         XCTAssertEqual(properties[kCGImagePropertyPixelWidth] as? Int, 2200)
         XCTAssertEqual(properties[kCGImagePropertyPixelHeight] as? Int, 1100)
+    }
+
+    func testUnsupportedLargeOriginalHasBoundedModelViewableRendition() throws {
+        var original = try png(width: 2400, height: 1200, format: "public.tiff")
+        original.append(Data(repeating: 0, count: 11 * 1024 * 1024))
+        let prepared = try AttachmentPreparation.prepare(data: original, name: "scan.tiff", mediaType: "image/tiff")
+        XCTAssertEqual(prepared.attachment.mediaType, "image/tiff")
+        guard case .data(let retained) = prepared.source else { return XCTFail("Expected original data") }
+        XCTAssertEqual(retained, original)
+        XCTAssertLessThanOrEqual(prepared.preview.count, AttachmentPreparation.inspectionMaxByteCount)
+        let decoded = try XCTUnwrap(CGImageSourceCreateWithData(prepared.preview as CFData, nil))
+        XCTAssertEqual(CGImageSourceGetType(decoded) as String?, "public.jpeg")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(decoded, 0, nil))
+        XCTAssertEqual(image.width, 2048)
+        XCTAssertEqual(image.height, 1024)
+        XCTAssertTrue(prepared.content[0]["text"].string.contains("Use view_image on path to inspect this image"))
+        // Descriptor wording must still disappear from flattened history prose.
+        let input = TranscriptInput(.string("Inspect this\n" + prepared.content[0]["text"].string))
+        XCTAssertEqual(input.text, "Inspect this")
+        XCTAssertEqual(input.imageFiles, [prepared.attachment])
     }
 
     func testLargeOriginalFileIsPreservedWithoutInlineHistoryBytes() throws {
@@ -162,14 +183,14 @@ final class MessageAttachmentTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: outside, encoding: .utf8), "preserve")
     }
 
-    private func png(width: Int = 48, height: Int = 32, orientation: Int = 1) throws -> Data {
+    private func png(width: Int = 48, height: Int = 32, orientation: Int = 1, format: String = "public.png") throws -> Data {
         let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
                                              space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
         context.setFillColor(CGColor(red: 0.2, green: 0.5, blue: 0.8, alpha: 0.5))
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         let image = try XCTUnwrap(context.makeImage())
         let data = NSMutableData()
-        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil))
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, format as CFString, 1, nil))
         CGImageDestinationAddImage(destination, image, [kCGImagePropertyOrientation: orientation] as CFDictionary)
         XCTAssertTrue(CGImageDestinationFinalize(destination))
         return data as Data

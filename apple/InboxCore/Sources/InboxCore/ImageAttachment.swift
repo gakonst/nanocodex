@@ -62,7 +62,7 @@ enum ImageAttachmentContent {
             "path": .string(attachment.originalPath),
             "preview_path": .string("/brain/attachments/" + attachment.id.lowercased() + "/preview.jpg"), "media_type": .string(attachment.mediaType), "size": .number(Double(attachment.byteCount))])
         let encoded = (try? VideoAttachmentContent.encoder.encode(header)).map { String(decoding: $0, as: UTF8.self) } ?? ""
-        return [.object(["type": .string("text"), "text": .string(prefix + encoded + "\nUse image tools to inspect the original at path with its full resolution and original bytes preserved. A JPEG at preview_path is available for quick previews or formats unsupported by the image tool.")])]
+        return [.object(["type": .string("text"), "text": .string(prefix + encoded + "\nUse view_image on path to inspect this image; large originals are resized for inspection without loading them into the brain. preview_path is a model-viewable JPEG fallback, oriented and bounded to 2048 pixels and 2 MiB. The original at path preserves the full resolution and original bytes for tasks that need them. A JPEG at preview_path is available for quick previews or formats unsupported by the image tool.")])]
     }
     static func project(_ content: [JSON]) -> (images: [MessageAttachment], remaining: [JSON]) {
         var images: [MessageAttachment] = [], remaining: [JSON] = []

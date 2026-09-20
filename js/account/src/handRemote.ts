@@ -114,6 +114,8 @@ export class RemoteBrowserSession {
   private frameDeadline?: ReturnType<typeof setTimeout>;
   private framePending = 0;
   private frameQueued = 0;
+  private frameDecodeQueue: { bytes: Uint8Array<ArrayBuffer>; width: unknown; height: unknown }[] = [];
+  private frameDecoding = false;
   private get frameWindow(): number {
     const size = this.hand.frame_window;
     return Number.isInteger(size) && size! >= 1 && size! <= 6 ? size! : 1;
@@ -272,7 +274,14 @@ export class RemoteBrowserSession {
               broadcastError: message.error === undefined ? undefined : message.error === "busy" ? "A stream is already running on this Hand." : message.error === "unsupported" ? "Streaming is unavailable on this Hand." : "Streaming failed. Check the endpoint and try again." });
           }
           else if (message.type === "pong") return; // Liveness is not lease authorization.
-          else if (frames && message.type === "frame") await this.renderFrame(message, epoch);
+          else if (frames && message.type === "frame") {
+            // Validate in wire order, but never hold control/lease processing
+            // behind image decoding. Credits include queued and decoding frames.
+            if (!this.renewTimer) throw new RemoteError("Unexpected remote frame.", true);
+            const bytes = frameBytes(message);
+            this.frameDecodeQueue.push({ bytes, width: message.width, height: message.height });
+            void this.decodeFrames(epoch);
+          }
           else if (frames && message.type === "control") this.receiveControl(message.data, epoch);
           else if (!frames && message.type === "signal") {
             await peerReady;
@@ -409,6 +418,7 @@ export class RemoteBrowserSession {
     this.abort.abort();
     clearTimeout(this.watchdog); clearTimeout(this.connectingTimer); clearTimeout(this.retryTimer);
     clearTimeout(this.frameTimer); clearTimeout(this.frameDeadline); this.framePending = 0; this.frameQueued = 0;
+    this.frameDecodeQueue = []; this.frameDecoding = false;
     clearInterval(this.renewTimer); clearInterval(this.controlTimer);
     clearTimeout(this.renewRetryTimer); clearTimeout(this.disconnectTimer);
     this.renewRetryTimer = this.disconnectTimer = undefined; this.renewing = false;
@@ -488,9 +498,19 @@ export class RemoteBrowserSession {
     clearTimeout(this.frameDeadline);
     this.frameDeadline = setTimeout(() => { if (this.current(epoch)) this.fail(new RemoteError("This screen stopped sending frames.")); }, 10_000);
   }
-  private async renderFrame(value: { jpeg?: unknown; width?: unknown; height?: unknown }, epoch: number): Promise<void> {
+  private async decodeFrames(epoch: number): Promise<void> {
+    if (this.frameDecoding || !this.current(epoch)) return;
+    this.frameDecoding = true;
+    try {
+      while (this.current(epoch) && this.frameDecodeQueue.length) {
+        await this.renderFrame(this.frameDecodeQueue.shift()!, epoch);
+      }
+    } catch (error) { if (this.current(epoch)) this.fail(error); }
+    finally { if (this.current(epoch)) this.frameDecoding = false; }
+  }
+  private async renderFrame(value: { bytes: Uint8Array<ArrayBuffer>; width: unknown; height: unknown }, epoch: number): Promise<void> {
     if (!this.framePending || !this.canvas) throw new RemoteError("Unexpected remote frame.", true);
-    const bytes = frameBytes(value);
+    const { bytes } = value;
     let bitmap: ImageBitmap | undefined;
     try {
       bitmap = await createImageBitmap(new Blob([bytes], { type: "image/jpeg" }));

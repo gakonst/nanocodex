@@ -1,0 +1,12 @@
+## Interface: 50500
+## Title: Nanocodex WoW
+## Notes: Native Nanocodex projects, chats and game assistance.
+## Author: Nanocodex
+## Version: 0.1.0
+## SavedVariables: NanocodexWowDB
+Context.lua
+Settings.lua
+Core.lua
+Projects.lua
+Bridge.lua
+Transport.lua

@@ -1,0 +1,82 @@
+[2m2026-09-20T00:10:33.352028Z[0m [32m INFO[0m [2mnanocodex2[0m[2m:[0m [3mstage[0m[2m=[0m"screen.capture.initial" [3mmachine_id[0m[2m=[0m"synthetic-perf" [3melapsed_ms[0m[2m=[0m136.464164
+[2m2026-09-20T00:10:33.359255Z[0m [32m INFO[0m [2mnanocodex2[0m[2m:[0m [3mstage[0m[2m=[0m"screen.socket.resolved" [3mmachine_id[0m[2m=[0m"synthetic-perf" [3melapsed_ms[0m[2m=[0m3.3867749999999996
+[2m2026-09-20T00:10:33.360380Z[0m [32m INFO[0m [2mnanocodex2[0m[2m:[0m [3mstage[0m[2m=[0m"screen.socket.tcp" [3mmachine_id[0m[2m=[0m"synthetic-perf" [3melapsed_ms[0m[2m=[0m4.506825
+[2m2026-09-20T00:10:33.360414Z[0m [32m INFO[0m [2mnanocodex2[0m[2m:[0m [3mstage[0m[2m=[0m"screen.socket.trust" [3mmachine_id[0m[2m=[0m"synthetic-perf" [3melapsed_ms[0m[2m=[0m4.5522
+[2m2026-09-20T00:10:33.372817Z[0m [32m INFO[0m [2mnanocodex2[0m[2m:[0m [3mstage[0m[2m=[0m"screen.socket.connected" [3mmachine_id[0m[2m=[0m"synthetic-perf" [3melapsed_ms[0m[2m=[0m16.946582000000003
+[2m2026-09-20T00:10:33.943065Z[0m [32m INFO[0m [2mnanocodex2[0m[2m:[0m [3mstage[0m[2m=[0m"screen.socket.ready" [3mmachine_id[0m[2m=[0m"synthetic-perf" [3melapsed_ms[0m[2m=[0m587.18671
+[2m2026-09-20T00:10:33.948883Z[0m [32m INFO[0m [2mnanocodex2[0m[2m:[0m [3mstage[0m[2m=[0m"screen.published" [3mmachine_id[0m[2m=[0m"synthetic-perf" [3melapsed_ms[0m[2m=[0m593.013919
+[2m2026-09-20T00:10:41.580649Z[0m [33m WARN[0m [2mwebrtc_ice::agent::agent_internal[0m[2m:[0m [controlling]: pingAllCandidates called with no candidate pairs. Connection is not possible yet.
+[2m2026-09-20T00:10:41.598622Z[0m [33m WARN[0m [2mwebrtc_ice::agent::agent_internal[0m[2m:[0m [controlling]: discard success message from (127.0.0.1:58852), no such remote
+[2m2026-09-20T00:10:41.598780Z[0m [33m WARN[0m [2mwebrtc_ice::agent::agent_internal[0m[2m:[0m [controlling]: discard success message from (192.168.215.3:58852), no such remote
+[2m2026-09-20T00:10:41.773553Z[0m [33m WARN[0m [2mwebrtc_ice::agent::agent_internal[0m[2m:[0m [controlling]: discard success message from (192.168.215.3:58852), no such remote
+[2m2026-09-20T00:10:41.773578Z[0m [33m WARN[0m [2mwebrtc_ice::agent::agent_internal[0m[2m:[0m [controlling]: discard success message from (192.168.215.3:58852), no such remote
+[2m2026-09-20T00:10:42.660483Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.660551Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.660609Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.661578Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.661652Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.661748Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.665141Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.665158Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.665161Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.665202Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.665209Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.665211Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.665335Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.665341Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.665343Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.665346Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.665347Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.665349Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.665441Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.665445Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.665447Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.665450Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.665452Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.665454Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.665535Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.665540Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.665542Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.665545Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.665546Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.665548Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.665635Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.665641Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.665643Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.665646Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.665647Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.665649Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.665708Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.665711Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.665713Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.665717Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.665719Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.665720Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.665770Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.665772Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.665774Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.665784Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.665785Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.665787Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.665801Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.665803Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.665804Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.665807Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.665808Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.665810Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.667000Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.667009Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.667012Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.667016Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.667018Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.667019Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.667042Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.667047Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.667049Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:10:42.667101Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 51
+[2m2026-09-20T00:10:42.667104Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 45
+[2m2026-09-20T00:10:42.667106Z[0m [33m WARN[0m [2mdtls::handshake::handshake_message_client_hello[0m[2m:[0m Unsupported Extension Type 0 43
+[2m2026-09-20T00:11:01.481524Z[0m [33m WARN[0m [2mnanocodex_remote::audio_duplex[0m[2m:[0m remote microphone stopped [3merror[0m[2m=[0mdeadline has elapsed
+Exception in thread Thread-2 (forward):
+Traceback (most recent call last):
+  File "/usr/lib/python3.10/threading.py", line 1016, in _bootstrap_inner

@@ -1293,7 +1293,14 @@ final class InboxModel: ObservableObject {
             let merged = listing.map { summary in
                 var card = retained[summary.id] ?? summary
                 card.title = summary.title; card.updatedAt = max(card.updatedAt, summary.updatedAt); card.turnCount = summary.turnCount
+                card.lastUserMessageAt = max(card.lastUserMessageAt, summary.lastUserMessageAt)
                 card.mayHaveScheduledJobs = summary.mayHaveScheduledJobs
+                if summary.presentationUpdatedAt >= card.presentationUpdatedAt {
+                    card.presentationStatus = summary.presentationStatus
+                    card.presentationActivity = summary.presentationActivity
+                    card.presentationTurnID = summary.presentationTurnID
+                    card.presentationUpdatedAt = summary.presentationUpdatedAt
+                }
                 return card
             } + created
             if cards != merged { cards = merged }
@@ -2164,6 +2171,7 @@ final class InboxModel: ObservableObject {
                 sourceCursor: max(cursor, card.latestCursor), sourceRowID: hasNewer ? nil : rows.last?.id))
         }
         attachmentDrafts[card.id] = nil; attachmentErrors[card.id] = nil
+        if let index = cards.firstIndex(where: { $0.id == card.id }) { cards[index].lastUserMessageAt = Date().timeIntervalSince1970 * 1000 }
         pending.append(message); drafts[card.id] = ""; selectedContext[card.id] = nil; excludedContext[card.id] = nil; busy.insert(card.id); notice = nil; persist()
         let epoch = generation
         if target != nil { startSteering(message.id) }
@@ -2784,7 +2792,7 @@ final class InboxModel: ObservableObject {
         prepareAgent(id)
     }
     private func newConversationCard(_ id: String) -> AgentCard {
-        var card = AgentCard(id: id, title: "New agent", updatedAt: Date().timeIntervalSince1970 * 1000)
+        var card = AgentCard(id: id, title: "New agent", updatedAt: Date().timeIntervalSince1970 * 1000, lastUserMessageAt: 0)
         card.checked = true; card.status = "Idle"; card.preview = "Send a message to begin."
         return card
     }
@@ -2982,6 +2990,20 @@ final class InboxModel: ObservableObject {
                 ? .object(["code": .string(source)]) : .string(source))
             activity.finish(.string("Synthetic code result"))
             demoRows["inbox"] = [.init(id: "demo-code-mode-card", role: "Tool", text: activity.title, tool: activity)]
+        }
+        if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_CODE_MODE_BATCH"] == "1" {
+            // Synthetic presentation fixture; these tools never execute.
+            var batch = ToolPresentation(name: "exec", arguments: .string("text(await tools.exec_command({cmd: \"ls -la /brain\"}));\ntext(await tools.environment({}));"))
+            batch.finish(.string("Completed"))
+            var command = ToolPresentation(name: "exec_command", arguments: .object(["cmd": .string("ls -la /brain")]))
+            command.finish(.object(["output": .string("attachments/\noutputs/"), "exit_code": .number(0)]))
+            var environment = ToolPresentation(name: "environment", arguments: .object([:]))
+            environment.finish(.object(["status": .string("ready")]))
+            demoRows["inbox"] = [
+                .init(id: "demo-code-mode-batch", role: "Tool", text: batch.title, tool: batch),
+                .init(id: "demo-code-mode-batch/code-1", role: "Tool", text: command.title, tool: command),
+                .init(id: "demo-code-mode-batch/code-2", role: "Tool", text: environment.title, tool: environment)
+            ]
         }
         if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_LIVE_SCREEN_ENTRY"] == "1",
            let image = DemoContent.rows("inbox").compactMap({ $0.tool?.generatedResults })

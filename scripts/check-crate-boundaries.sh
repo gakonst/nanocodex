@@ -22,6 +22,7 @@ public_packages='[
   "nanocodex-oai-api",
   "nanocodex-observability",
   "nanocodex-phone",
+  "nanocodex-remote",
   "nanocodex-subagents",
   "nanocodex-tools",
   "nanocodex-tools-macros",
@@ -51,7 +52,7 @@ assert_snapshot() {
   exit 1
 }
 
-expected_packages=$'nanocodex\nnanocodex-agent\nnanocodex-browser\nnanocodex-durability\nnanocodex-egress\nnanocodex-hand\nnanocodex-managed\nnanocodex-oai-api\nnanocodex-observability\nnanocodex-phone\nnanocodex-subagents\nnanocodex-tools\nnanocodex-tools-macros\nnanocodex-vm\nnanocodex-voice\nnanocodex-voice-ffi\nnanocodex-voice-native\nnanocodex-voice-protocol'
+expected_packages=$'nanocodex\nnanocodex-agent\nnanocodex-browser\nnanocodex-durability\nnanocodex-egress\nnanocodex-hand\nnanocodex-managed\nnanocodex-oai-api\nnanocodex-observability\nnanocodex-phone\nnanocodex-remote\nnanocodex-subagents\nnanocodex-tools\nnanocodex-tools-macros\nnanocodex-vm\nnanocodex-voice\nnanocodex-voice-ffi\nnanocodex-voice-native\nnanocodex-voice-protocol'
 actual_packages="$(
   jq -r '
     .packages[]

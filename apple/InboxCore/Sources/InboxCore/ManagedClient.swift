@@ -170,9 +170,12 @@ public final class ManagedClient: @unchecked Sendable {
             let summary = body["summaries"][id]
             let count = summary["turn_count"].number
             guard count >= 0, count < Double(Int.max), count.rounded(.down) == count else { throw APIError.invalidResponse }
-            return AgentCard(id: id, title: summary["title"].string.isEmpty ? "Untitled agent" : summary["title"].string,
+            var card = AgentCard(id: id, title: summary["title"].string.isEmpty ? "Untitled agent" : summary["title"].string,
                              updatedAt: summary["updated_at"].number, turnCount: Int(summary["turn_count"].number),
-                             mayHaveScheduledJobs: summary["may_have_scheduled_jobs"] != .bool(false))
+                             mayHaveScheduledJobs: summary["may_have_scheduled_jobs"] != .bool(false),
+                             lastUserMessageAt: summary["last_user_message_at"] == .null ? (count > 0 ? summary["updated_at"].number : 0) : summary["last_user_message_at"].number)
+            card.applyPresentation(summary["presentation"])
+            return card
         }
     }
     public static func agentPath(_ id: String) throws -> String {

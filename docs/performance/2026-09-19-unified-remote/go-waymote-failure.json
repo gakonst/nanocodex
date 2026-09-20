@@ -1,0 +1,13 @@
+{
+  "label": "go",
+  "requested": {
+    "width": 1280,
+    "height": 720,
+    "fps": 60,
+    "bitrate_kbps": 6000,
+    "cpus": 2,
+    "memory_gib": 4
+  },
+  "host_arch": "amd64 emulation on arm64 Docker host",
+  "error": "TimeoutError('Page.wait_for_function: Timeout 45000ms exceeded.')"
+}

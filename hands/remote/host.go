@@ -29,6 +29,7 @@ type hostConfig struct {
 	quiet                                            bool
 	published                                        func()
 	capture                                          *waymoteCapture
+	broadcast                                        hostBroadcaster
 }
 
 func (config hostConfig) validateNetwork() error {
@@ -58,6 +59,7 @@ type hostEvent struct {
 	agentRequest   string
 	agentResult    *agentResult
 	frame          *agentResult
+	broadcast      *remoteMessage
 }
 type hostPeer struct {
 	viewerID       string
@@ -124,8 +126,6 @@ func serveWayland(parent context.Context, config hostConfig) error {
 		return err
 	}
 	defer socket.CloseNow()
-	broadcast := newDesktopBroadcast()
-	defer broadcast.stop()
 	output := make(chan remoteMessage, 128)
 	events := make(chan hostEvent, 128)
 	failures := make(chan error, 1)
@@ -154,6 +154,12 @@ func serveWayland(parent context.Context, config hostConfig) error {
 			fail(errors.New("remote signaling capacity exceeded"))
 		}
 	}
+	broadcaster := config.broadcast
+	if broadcaster == nil {
+		broadcaster = newDesktopBroadcast()
+	}
+	broadcast := newHostBroadcast(ctx, broadcaster, config, emit)
+	defer broadcast.close()
 	go func() {
 		for {
 			select {
@@ -206,6 +212,7 @@ func serveWayland(parent context.Context, config hostConfig) error {
 	}
 	peers := map[string]*hostPeer{}
 	preparations := map[string]context.CancelFunc{}
+	initialICE := newICEPreparation(ctx, service.ice)
 	lease := controlLease{}
 	var agent *agentJob
 	finishAgent := func(result agentResult) {
@@ -276,6 +283,8 @@ func serveWayland(parent context.Context, config hostConfig) error {
 		motionMu.Unlock()
 	}
 	defer func() {
+		// End session work before input release or peer teardown can block.
+		cancel()
 		finishAgent(agentResult{Status: "cancelled"})
 		release()
 		for id := range peers {
@@ -614,6 +623,10 @@ func serveWayland(parent context.Context, config hostConfig) error {
 				apply(event)
 			}
 		case event := <-events:
+			if event.broadcast != nil {
+				send(*event.broadcast)
+				continue
+			}
 			if event.frame != nil {
 				frameInFlight = false
 				for id, peer := range peers {
@@ -681,6 +694,9 @@ func serveWayland(parent context.Context, config hostConfig) error {
 					return errors.New("invalid remote connection")
 				}
 				connectionID = message.ConnectionID
+				if !config.Frames {
+					initialICE.prefetch()
+				}
 				lastAuthorization = time.Now()
 				authorizationTimer.Reset(25 * time.Second)
 				kind := "vm"
@@ -783,26 +799,25 @@ func serveWayland(parent context.Context, config hostConfig) error {
 					peers[message.ViewerID] = &hostPeer{viewerID: message.ViewerID, frames: true, answered: true}
 					continue
 				}
-				// Fetch fresh TURN credentials without blocking input from existing
-				// viewers. A departing viewer cancels its pending request.
+				// Reuse this host session's bounded ICE preparation without blocking
+				// input. A departing viewer cancels only its wait; peer renewals
+				// continue to fetch fresh credentials directly.
 				prepareContext, cancel := context.WithCancel(ctx)
 				id := message.ViewerID
 				preparations[id] = cancel
 				go func() {
-					ice, err := service.ice(prepareContext)
+					ice, err := initialICE.get(prepareContext)
 					emit(hostEvent{viewer: id, prepared: true, ice: ice, err: err})
 				}()
 			case "broadcast":
 				result := broadcastResult{Status: "failed", Error: "invalid_request"}
 				if message.ViewerID != "" && message.RequestID != "" && message.SurfaceID == "desktop" {
 					switch message.Action {
-					case "start":
-						result = broadcast.start(ctx, config.Waymote, message.URL, message.Preset, config.Width, config.Height)
-					case "stop":
-						broadcast.stop()
-						result = broadcast.status()
-					case "status":
-						result = broadcast.status()
+					case "start", "stop", "status":
+						if broadcast.enqueue(*message) {
+							continue
+						}
+						result = broadcastResult{Status: "failed", Error: "busy"}
 					}
 				}
 				send(remoteMessage{Type: "broadcast_result", ViewerID: message.ViewerID, RequestID: message.RequestID, BroadcastResult: &result})

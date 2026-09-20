@@ -1,4 +1,4 @@
-//! Foreground Hand consent. This owns the local terminal, never stdin or a tool.
+//! Local human consent through a foreground terminal or macOS native dialog.
 //! The managed attachment socket currently has no host-to-client form channel.
 
 use std::{
@@ -21,12 +21,19 @@ use nix::{
 use serde_json::Value;
 use tokio::{io::unix::AsyncFd, sync::Mutex};
 
+#[cfg(target_os = "macos")]
+#[path = "computer_elicitation_macos.rs"]
+mod macos;
+
 const MAX_FORM_BYTES: usize = 64 * 1024;
 // All conversations in this Hand share one terminal. Never interleave forms.
 static TERMINAL: Mutex<()> = Mutex::const_new(());
 
 pub(super) fn configure(config: &mut ComputerConfig) {
-    if config.elicitation_handler.is_none() && terminal().is_ok() {
+    let available = terminal().is_ok();
+    #[cfg(target_os = "macos")]
+    let available = available || macos::available();
+    if config.elicitation_handler.is_none() && available {
         config.elicitation_handler = Some(Arc::new(TerminalConsent::default()));
     }
 }
@@ -114,7 +121,6 @@ struct Permission {
 impl ComputerElicitationHandler for TerminalConsent {
     async fn elicit(&self, request: ComputerElicitationRequest) -> Result<Response, ToolError> {
         let _exclusive = TERMINAL.lock().await;
-        let terminal = AsyncFd::new(terminal()?)?;
         let scope = Scope::from_request(&request);
         {
             let mut permissions = self
@@ -130,7 +136,12 @@ impl ComputerElicitationHandler for TerminalConsent {
                 return Ok(permission.response.clone());
             }
         }
-        let response = review(&terminal, request).await?;
+        let response = match terminal() {
+            Ok(terminal) => review(&AsyncFd::new(terminal)?, request).await?,
+            #[cfg(target_os = "macos")]
+            Err(_) if macos::available() => macos::review(request).await?,
+            Err(error) => return Err(error.into()),
+        };
         if response.action == Action::Accept
             && response
                 .meta

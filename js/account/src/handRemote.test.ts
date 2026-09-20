@@ -802,3 +802,97 @@ test("a reconnect that needs twelve seconds retains its peer and completes", asy
   assert.equal(f.peers.length, 2);
   assert.equal(f.sockets.length, 2);
 });
+
+for (const frame_window of [1, 6]) {
+  test(`frames-v1 window ${frame_window}: grants and revocations bypass a pending bitmap decode`, async t => {
+    const f = fixture(t, { ...frameHand, frame_window });
+    await f.session.connect();
+    f.sockets[0]!.message({ type: "ready", connection_id: "viewer" }); await flush();
+    f.sockets[0]!.message(frame()); await flush(); await f.tick(34);
+    const pending = deferred<{ width: number; height: number; close(): void }>();
+    f.setDecode(() => pending.promise);
+    f.sockets[0]!.message(frame()); await flush();
+    assert.equal(f.decoded.length, 2);
+    f.session.takeControl();
+    f.sockets[0]!.message({ type: "control", data: { type: "granted", generation: "lease" } }); await flush();
+    assert.equal(f.session.state.controlling, true, "grant cannot wait for bitmap completion");
+    f.sockets[0]!.message({ type: "control", data: { type: "revoked", generation: "lease" } }); await flush();
+    assert.equal(f.session.state.controlling, false, "revocation cannot wait for bitmap completion");
+    const sent = f.sockets[0]!.sent.length;
+    f.session.input({ kind: "text", text: "after revoke" });
+    assert.equal(f.sockets[0]!.sent.length, sent);
+    assert.equal(f.drawn.length, 1);
+    let closed = 0;
+    pending.resolve({ width: 640, height: 360, close() { closed++; } }); await flush();
+    assert.equal(f.drawn.length, 2); assert.equal(closed, 1);
+    assert.equal(f.session.state.controlling, false);
+  });
+}
+
+for (const reason of ["malformed", "duplicate-ready", "overrun", "close"] as const) {
+  test(`frames-v1 ${reason} discards queued images and late control while bitmap decode is pending`, async t => {
+    const f = fixture(t, { ...frameHand, frame_window: 6 });
+    await f.session.connect();
+    f.sockets[0]!.message({ type: "ready", connection_id: "viewer" }); await flush();
+    f.sockets[0]!.message(frame()); await flush(); f.session.takeControl();
+    const pending = deferred<{ width: number; height: number; close(): void }>();
+    f.setDecode(() => pending.promise);
+    f.sockets[0]!.message(frame()); await flush();
+    f.sockets[0]!.message(frame()); await flush();
+    const late = f.sockets[0]!.onmessage!;
+    if (reason === "malformed") f.sockets[0]!.message({ ...frame(), jpeg: "bad" });
+    else if (reason === "duplicate-ready") f.sockets[0]!.message({ type: "ready", connection_id: "duplicate" });
+    else if (reason === "overrun") for (let i = 0; i < 5; i++) f.sockets[0]!.message(frame());
+    else f.session.close();
+    late({ data: JSON.stringify({ type: "control", data: { type: "granted", generation: "late" } }) });
+    await flush();
+    assert.equal(f.sockets[0]!.readyState, 3);
+    assert.equal(f.session.state.connected, false); assert.equal(f.session.state.controlling, false);
+    assert.equal(f.session.state.connecting, false);
+    const sent = f.sockets[0]!.sent.length;
+    let closed = 0;
+    pending.resolve({ width: 640, height: 360, close() { closed++; } }); await flush();
+    assert.equal(closed, 1); assert.equal(f.decoded.length, 2); assert.equal(f.drawn.length, 1);
+    assert.equal(f.session.state.connected, false); assert.equal(f.session.state.controlling, false);
+    assert.deepEqual([f.canvas.width, f.canvas.height], [0, 0]);
+    assert.equal(f.sockets[0]!.sent.length, sent);
+  });
+}
+
+test("windowed frames require ready before admitting images to the decoder", async t => {
+  const f = fixture(t, { ...frameHand, frame_window: 6 });
+  await f.session.connect();
+  f.sockets[0]!.message(frame());
+  f.sockets[0]!.message({ type: "ready", connection_id: "late" }); await flush();
+  assert.equal(f.decoded.length, 0); assert.equal(f.sockets[0]!.readyState, 3);
+  assert.equal(f.session.state.connected, false); assert.equal(f.session.state.connecting, false);
+});
+
+test("retired decoder completion cannot drain or change a reconnect's pending frame queue", async t => {
+  const f = fixture(t, { ...frameHand, frame_window: 6 });
+  await f.session.connect();
+  f.sockets[0]!.message({ type: "ready", connection_id: "old" }); await flush();
+  const old = deferred<{ width: number; height: number; close(): void }>();
+  f.setDecode(() => old.promise);
+  f.sockets[0]!.message(frame()); f.sockets[0]!.message(frame()); await flush();
+  const late = f.sockets[0]!.onmessage!;
+  f.session.suspend(); f.session.resume(); await flush();
+  f.sockets[1]!.message({ type: "ready", connection_id: "new" }); await flush();
+  const fresh = deferred<{ width: number; height: number; close(): void }>();
+  f.setDecode(() => fresh.promise);
+  f.sockets[1]!.message(frame(641)); await flush();
+  let closed = 0;
+  old.resolve({ width: 640, height: 360, close() { closed++; } });
+  late({ data: JSON.stringify({ type: "control", data: { type: "granted", generation: "stale" } }) });
+  await flush();
+  assert.equal(closed, 1); assert.equal(f.drawn.length, 0); assert.equal(f.decoded.length, 2);
+  assert.equal(f.session.state.connected, false); assert.equal(f.session.state.controlling, false);
+  assert.deepEqual(f.sockets[1]!.sent, []);
+  f.sockets[1]!.message(frame(642)); await flush();
+  assert.equal(f.decoded.length, 2, "old completion cannot clear the new decoder's busy flag");
+  f.setDecode(async () => ({ width: 642, height: 360, close() {} }));
+  fresh.resolve({ width: 641, height: 360, close() {} }); await flush();
+  assert.deepEqual(f.drawn.map(bitmap => bitmap.width), [641, 642]);
+  assert.equal(f.session.state.connected, true);
+  assert.deepEqual(f.sockets[1]!.sent, [{ type: "frame_request", count: 1 }, { type: "frame_request", count: 1 }]);
+});
