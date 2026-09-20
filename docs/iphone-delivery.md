@@ -60,8 +60,11 @@ from the deployed site. If the directory is lost, restore it before publishing.
 
 For the first installation, open the site above in **Safari on the registered
 iPhone**, tap **Install Nanocodex**, and accept the iOS installation prompt.
-After bootstrapping, open **Settings → Nanocodex updates** in Nanocodex to check
-for and install a newer build. iOS controls the final installation; opening the
+After bootstrapping, Nanocodex checks on foreground entry and once per minute
+while active. A prominent banner above the conversation offers **Install** when
+a newer build is published. **Settings → Nanocodex updates** also provides manual
+checking and installed-build details. Checks pause while the app is inactive;
+this is not a background push notification or a silent installation. iOS controls the final installation; opening the
 installation link does not itself prove completion. Expired profiles need a new
 signed build. Cellular downloading still depends on the phone's connectivity
 and data settings.

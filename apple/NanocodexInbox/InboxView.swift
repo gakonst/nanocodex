@@ -55,6 +55,8 @@ struct InboxView: View {
     @State private var showScheduledJobs = false
     @State private var showConnectors = false
     @State private var showSettings = false
+    @StateObject private var appUpdates = NativeAppUpdateModel()
+    @Environment(\.scenePhase) private var updateScenePhase
     @State private var showScreens = false
     @State private var screenThreads: Set<String> = []
     @State private var screenExpanded = false
@@ -88,6 +90,38 @@ struct InboxView: View {
                         .navigationBarTitleDisplayMode(.inline)
                         #endif
                 }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !model.isDemo, let update = appUpdates.update {
+                HStack(spacing: 12) {
+                    Image(systemName: "arrow.down.app.fill").font(.title2)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Nanocodex update available").font(.headline)
+                        Text(appUpdates.installRequested
+                             ? "Confirm Install, then return to the Home Screen."
+                             : "Build \(update.build) is ready to install.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if let error = appUpdates.error { Text(error).font(.caption).foregroundStyle(.red) }
+                    }
+                    Spacer(minLength: 0)
+                    Button(appUpdates.installing ? "Opening…" : "Install") {
+                        Task { await appUpdates.install(update) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(appUpdates.installing)
+                    .accessibilityIdentifier("install-update-banner")
+                }
+                .padding().background(.regularMaterial)
+                .accessibilityIdentifier("app-update-banner")
+            }
+        }
+        .task(id: updateScenePhase) {
+            guard updateScenePhase == .active, !model.isDemo else { return }
+            while !Task.isCancelled {
+                await appUpdates.check()
+                do { try await Task.sleep(for: .seconds(60)) }
+                catch { return }
+            }
         }
         .foregroundStyle(Ink.text)
         .tint(Ink.accent)
@@ -422,7 +456,7 @@ struct InboxView: View {
                     Text("Tasks you start can keep this Hand connected in the background on iOS 26 or later. iOS shows progress and lets you stop the task. When idle, this phone connects only during brief background windows or while Nanocodex is open. Force-quitting ends background work.").font(.caption).foregroundStyle(.secondary)
                     if let error = model.handBackgroundError { Text(error).font(.caption).foregroundStyle(.secondary) }
                 }
-                NativeAppUpdateSection()
+                NativeAppUpdateSection(updater: appUpdates)
             }
             Section {
                 NavigationLink { DevicePermissionsView() } label: {
@@ -2705,44 +2739,20 @@ private final class AppUpdateSessionDelegate: NSObject, URLSessionTaskDelegate, 
 }
 
 @MainActor
-private struct NativeAppUpdateSection: View {
-    @State private var update: AppUpdate?
-    @State private var checking = false
-    @State private var checked = false
-    @State private var installing = false
-    @State private var error: String?
-    @State private var installRequested = false
-    private var installedBuild: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "" }
-    private var installedVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—" }
+private final class NativeAppUpdateModel: ObservableObject {
+    @Published var update: AppUpdate?
+    @Published var checking = false
+    @Published var checked = false
+    @Published var installing = false
+    @Published var error: String?
+    @Published var installRequested = false
+    var installedBuild: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "" }
+    var installedVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—" }
 
-    var body: some View {
-        Section("Nanocodex updates") {
-            LabeledContent("Installed", value: "\(installedVersion) (\(installedBuild))")
-            if checking { ProgressView("Checking for updates…") }
-            if let update {
-                LabeledContent("Available", value: "\(update.version) (\(update.build))")
-                if let notes = update.notes, !notes.isEmpty { Text(notes).font(.caption).foregroundStyle(.secondary) }
-                Button(installing ? "Opening installer…" : "Install update") { Task { await install(update) } }
-                    .disabled(checking || installing)
-                    .accessibilityIdentifier("install-nanocodex-update")
-            } else if checked && !checking && error == nil {
-                Text("You’re up to date.").foregroundStyle(.secondary)
-            }
-            if installRequested { Text("Installation requested. Confirm the iOS installation prompt.").font(.caption).foregroundStyle(.secondary) }
-            if let error { Text(error).font(.caption).foregroundStyle(.red) }
-            Button(error == nil ? "Check for updates" : "Retry update check") { Task { await check() } }
-                .disabled(checking || installing)
-                .accessibilityIdentifier("check-nanocodex-update")
-        }
-        .task { await check() }
-    }
-
-    private func check() async {
+    func check() async {
         guard !checking else { return }
         checking = true
         error = nil
-        update = nil
-        installRequested = false
         defer { checking = false }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 20
@@ -2760,7 +2770,9 @@ private struct NativeAppUpdateSection: View {
             }
             let candidate = try JSONDecoder().decode(AppUpdate.self, from: data)
             try candidate.validate()
-            if try AppUpdate.isNewer(candidate.build, than: installedBuild) { update = candidate }
+            let next = try AppUpdate.isNewer(candidate.build, than: installedBuild) ? candidate : nil
+            if next?.build != update?.build { installRequested = false }
+            update = next
             checked = true
         } catch is CancellationError {
         } catch {
@@ -2768,7 +2780,7 @@ private struct NativeAppUpdateSection: View {
         }
     }
 
-    private func install(_ candidate: AppUpdate) async {
+    func install(_ candidate: AppUpdate) async {
         error = nil
         installRequested = false
         do {
@@ -2780,5 +2792,31 @@ private struct NativeAppUpdateSection: View {
             if opened { installRequested = true }
             else { error = "iOS couldn’t open the installer. Try Install update again." }
         } catch { self.error = error.localizedDescription }
+    }
+}
+
+@MainActor
+private struct NativeAppUpdateSection: View {
+    @ObservedObject var updater: NativeAppUpdateModel
+    var body: some View {
+        Section("Nanocodex updates") {
+            LabeledContent("Installed", value: "\(updater.installedVersion) (\(updater.installedBuild))")
+            if updater.checking { ProgressView("Checking for updates…") }
+            if let update = updater.update {
+                LabeledContent("Available", value: "\(update.version) (\(update.build))")
+                if let notes = update.notes, !notes.isEmpty { Text(notes).font(.caption).foregroundStyle(.secondary) }
+                Button(updater.installing ? "Opening installer…" : "Install update") { Task { await updater.install(update) } }
+                    .disabled(updater.installing)
+                    .accessibilityIdentifier("install-nanocodex-update")
+            } else if updater.checked && !updater.checking && updater.error == nil {
+                Text("You’re up to date.").foregroundStyle(.secondary)
+            }
+            if updater.installRequested { Text("Confirm the iOS installation prompt, then return to the Home Screen while the app updates.").font(.caption).foregroundStyle(.secondary) }
+            if let error = updater.error { Text(error).font(.caption).foregroundStyle(.red) }
+            Button(updater.error == nil ? "Check for updates" : "Retry update check") { Task { await updater.check() } }
+                .disabled(updater.checking || updater.installing)
+                .accessibilityIdentifier("check-nanocodex-update")
+        }
+        .task { await updater.check() }
     }
 }
