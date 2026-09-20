@@ -67,3 +67,14 @@ smoke fixture. Neither is a live WoW, hardware-microphone or internet latency
 benchmark. New code in this branch is not proof of installation on every host
 or a production web deployment. macOS/Windows host return-microphone sinks
 remain unavailable; Linux has the tested virtual input from the preceding merge.
+
+Follow-up results: **111 web protocol/input tests passed**, and the focused
+production-viewer typecheck passed. The Chromium fixture passed **13 interaction
+and audio cases**, including both mouse chord orders outside the picture,
+cancellation, unrelated pointer IDs, Shift+W with repeated keydown, local toolbar
+keyboard, wheel consumption, pointer lock, fullscreen exit, and focus release.
+The audio case negotiated real local WebRTC peers and received a generated
+440 Hz microphone input with nonzero decoded audio energy (52 RTP packets,
+4,192 bytes, energy 0.02358 in the recorded run). Mute and control release stopped
+and detached the captured tracks. No physical microphone was opened. Browser
+video/audio layout was inspected in windowed and fullscreen screenshots.
