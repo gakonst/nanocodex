@@ -58,7 +58,7 @@ describe("shared brain image reads", () => {
     expect(body.locked).toBe(false);
   });
 
-  it("preserves small inline PNGs and fallback routing", async () => {
+  it("preserves small inline PNG images and fallback routing", async () => {
     const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
     const bucket = {
       head: vi.fn(async () => ({ size: png.length })),

@@ -141,7 +141,6 @@ impl VmWorkspace {
 
     /// Returns a normal Nanocodex tool builder with workspace effects routed
     /// into this retained VM.
-    #[must_use]
     pub async fn tools_builder(
         &self,
     ) -> Result<ToolsBuilder, nanocodex_tools::contract::ToolError> {
@@ -149,7 +148,6 @@ impl VmWorkspace {
     }
 
     /// Returns an attachment-safe builder with only VM-backed workspace tools.
-    #[must_use]
     pub async fn attachment_tools_builder(
         &self,
     ) -> Result<ToolsBuilder, nanocodex_tools::contract::ToolError> {

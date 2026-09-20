@@ -112,7 +112,6 @@ impl DockerWorkspace {
 
     /// Standard workspace tools (including patches and images) for an embedded agent.
     /// Web search, image generation, and planning keep their normal host behavior.
-    #[must_use]
     pub async fn tools_builder(
         &self,
     ) -> Result<ToolsBuilder, nanocodex_tools::contract::ToolError> {
@@ -120,7 +119,6 @@ impl DockerWorkspace {
     }
 
     /// Process tools for the managed Hand cwd namespace, matching VM attachments.
-    #[must_use]
     pub async fn attachment_tools_builder(
         &self,
     ) -> Result<ToolsBuilder, nanocodex_tools::contract::ToolError> {

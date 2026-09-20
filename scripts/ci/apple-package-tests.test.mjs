@@ -5,13 +5,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-for (const failure of ['', 'NanocodexVoice']) {
+for (const failure of ['', 'NanocodexVoice', 'NanocodexUI']) {
   test(`two lanes retain all packages and ${failure ? 'propagate failure' : 'succeed'}`, () => {
     const root = mkdtempSync(join(tmpdir(), 'apple-package-ci-'));
     try {
       mkdirSync(join(root, 'scripts/ci'), { recursive: true });
       mkdirSync(join(root, 'bin'));
       copyFileSync(new URL('./apple-package-tests.sh', import.meta.url), join(root, 'scripts/ci/apple-package-tests.sh'));
+      writeFileSync(join(root, 'bin/python3'), `#!${process.execPath}
+const fs = require('node:fs');
+fs.writeFileSync(process.env.PYTHON_CALL, JSON.stringify(process.argv.slice(2)));
+`, { mode: 0o755 });
       writeFileSync(join(root, 'bin/swift'), `#!${process.execPath}
 const fs = require('node:fs');
 const args = process.argv.slice(2);
@@ -29,15 +33,16 @@ const timer = setInterval(() => {
 }, 10);
 `, { mode: 0o755 });
       const result = spawnSync('bash', ['scripts/ci/apple-package-tests.sh'], {
-        cwd: root, encoding: 'utf8', env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, EVENTS: join(root, 'events'), FAIL_PACKAGE: failure },
+        cwd: root, encoding: 'utf8', env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, EVENTS: join(root, 'events'), FAIL_PACKAGE: failure, PYTHON_CALL: join(root, 'python-call') },
       });
       assert.equal(result.status, failure ? 1 : 0, result.stderr);
+      assert.deepEqual(JSON.parse(readFileSync(join(root, 'python-call'), 'utf8')), ['apple/NanocodexInboxUITests/verify_render_projection.py']);
       const events = readFileSync(join(root, 'events'), 'utf8').trim().split('\n').map(JSON.parse);
       let active = 0, peak = 0;
       for (const event of events) { active += event.event === 'start' ? 1 : -1; peak = Math.max(peak, active); }
       assert.equal(active, 0);
       assert.equal(peak, 2);
-      for (const pkg of ['InboxCore', 'NanocodexVoice', 'NanocodexContext', 'NanocodexHand']) {
+      for (const pkg of ['InboxCore', 'NanocodexVoice', 'NanocodexContext', 'NanocodexHand', 'NanocodexUI']) {
         assert.equal(events.filter(event => event.pkg === pkg && event.event === 'start').length, 1);
         assert.ok(existsSync(join(root, `apple/build/evidence/package-tests/${pkg}.log`)));
         assert.ok(result.stdout.includes(`${pkg} full transcript`));

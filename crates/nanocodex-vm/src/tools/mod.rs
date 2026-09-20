@@ -272,7 +272,6 @@ impl VmTools {
     /// implementations. `update_plan` also stays host-side because it has no
     /// workspace effect. Callers can keep configuring the returned builder,
     /// including setting the guest-visible working directory and shell.
-    #[must_use]
     pub async fn tools_builder(
         &self,
     ) -> Result<ToolsBuilder, nanocodex_tools::contract::ToolError> {
@@ -288,7 +287,6 @@ impl VmTools {
     /// Host-owned tools such as web search, image generation, and
     /// `update_plan` deliberately stay with the managed brain rather than
     /// being advertised by a remote VM hand.
-    #[must_use]
     pub async fn attachment_tools_builder(
         &self,
     ) -> Result<ToolsBuilder, nanocodex_tools::contract::ToolError> {
