@@ -121,7 +121,7 @@ jobs:
       - name: Native iPhone journey
         run: |
           device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for ds in json.load(sys.stdin)["devices"].values() for d in ds if d["name"].startswith("iPhone")))')
-          xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination "platform=iOS Simulator,id=$device" -derivedDataPath apple/build/ios CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
+          xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination "platform=iOS Simulator,id=$device" -derivedDataPath apple/build/ios -clonedSourcePackagesDirPath "$RUNNER_TEMP/inbox-packages-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" -disablePackageRepositoryCache CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
           xcrun simctl boot "$device" || true
           xcrun simctl bootstatus "$device" -b
           xcrun simctl status_bar "$device" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 --batteryState charged --batteryLevel 100
@@ -192,5 +192,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Build shared Rust voice core
         run: bash apple/NanocodexVoice/scripts/build-core.sh
+      # Persistent runners must not reuse shared SwiftPM bare repositories or
+      # DerivedData whose repository references another job can remove.
       - name: Build iOS 27 App Intents
-        run: xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+        run: xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/inbox-sdk27-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" -clonedSourcePackagesDirPath "$RUNNER_TEMP/inbox-sdk27-packages-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" -disablePackageRepositoryCache CODE_SIGNING_ALLOWED=NO build

@@ -306,12 +306,14 @@ function voiceEntryKey(entry: Pick<VoiceTerminalEntry, "kind" | "text">): string
 function projectRealtimeTranscript(entry: AgentEntry): VoiceTerminalEntry[] | undefined {
   if (entry.kind !== "user") return undefined;
   const envelope = entry.text.trimStart();
-  if (/^<realtime_conversation(?:\s|>|$)/.test(envelope)) return [];
+  if (/^<(?:realtime_conversation|source|soruce|startup_context)(?:\s|>|$)/.test(envelope)) return [];
   if (!/^<realtime_delegation(?:\s|>|$)/.test(envelope)) return undefined;
   const encoded = /<transcript_delta>([\s\S]*?)<\/transcript_delta>/.exec(envelope)?.[1];
   if (!encoded?.trim()) {
     const input = /<input>([\s\S]*?)<\/input>/.exec(envelope)?.[1];
-    if (!input?.trim() || /<(?:source|soruce)>/.test(envelope)) return [];
+    const onlySpeechSources = ["source", "soruce"].every(name =>
+      !envelope.includes(`<${name}>`) || new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(envelope)?.[1]?.trim() === "voice_bootstrap");
+    if (!input?.trim() || !onlySpeechSources || (envelope.includes("<transcript_delta>") && encoded === undefined)) return [];
     return [{ id: `${entry.id}-voice-0`, kind: "user", source: "voice", streaming: false, text: decodeRealtimeText(input) }];
   }
 
@@ -357,6 +359,12 @@ const TerminalEntryView = memo(function TerminalEntryView({
   renderTool?(tool: ToolActivity): ReactNode;
 }) {
   const voice = isVoiceEntry(entry);
+  if (!voice && entry.responseIdentity?.agentId != null) return (
+    <details className="agent-terminal-child" data-agent-id={entry.responseIdentity.agentId}>
+      <summary>Agent {entry.responseIdentity.agentId} activity</summary>
+      <TerminalEntryView entry={{ ...entry, responseIdentity: { ...entry.responseIdentity, agentId: undefined } }} showToolCalls={showToolCalls} renderTool={renderTool} />
+    </details>
+  );
   if (entry.kind === "user") return <pre className="agent-terminal-user" data-source={voice ? "voice" : undefined}>
     {voice ? <span className="agent-terminal-entry-label">voice</span> : null}{entry.text}
   </pre>;

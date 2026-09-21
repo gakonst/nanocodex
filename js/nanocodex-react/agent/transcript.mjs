@@ -305,7 +305,7 @@ export function applyAgentEvents(state, events) {
       }
       case "tool.call": {
         const tool = payloadString(payload, "tool") ?? "tool";
-        if (tool === "write_stdin" && isObject(payload.arguments)) {
+        if (payload.managed_agent_id == null && tool === "write_stdin" && isObject(payload.arguments)) {
           const target = findTerminalSession(next.entries, payload.arguments.session_id);
           if (target) {
             const turnId = payloadString(payload, "turn_id") ?? next.activeTurnId;
@@ -321,7 +321,7 @@ export function applyAgentEvents(state, events) {
           if (update) {
             const turnId = payloadString(payload, "turn_id") ?? next.activeTurnId;
             mutableEntries().push({
-              id: `plan-${eventIdentity(event)}`, kind: "plan", update,
+              id: `plan-${eventIdentity(event)}`, kind: "plan", update, responseIdentity: responseIdentity(payload),
               ...(turnId === undefined ? {} : { turnId }),
             });
             next.status = "Working";
@@ -335,13 +335,13 @@ export function applyAgentEvents(state, events) {
       case "tool.result": {
         const turnId = payloadString(payload, "turn_id") ?? next.activeTurnId;
         const pollKey = terminalPollKey(payload.call_id, turnId);
-        const target = next.terminalPolls[pollKey];
+        const target = payload.managed_agent_id == null ? next.terminalPolls[pollKey] : undefined;
         if (target) {
           next.terminalPolls = { ...next.terminalPolls };
           delete next.terminalPolls[pollKey];
           applyToolResult(mutableEntries(), event, target.turnId, target.callId);
         }
-        if (!target || hasToolCall(next.entries, payload.call_id, turnId)) {
+        if (!target || hasToolCall(next.entries, payload.call_id, turnId, payload.managed_agent_id)) {
           applyToolResult(mutableEntries(), event, turnId);
         }
         next.status = "Working";
@@ -401,7 +401,7 @@ export function mergeHistoryEntries(current, historical, previouslyProjectedKeys
   });
   const historicalKinds = new Map();
   for (const group of historicalGroups) {
-    if (group.turnId) historicalKinds.set(group.turnId, new Set(group.entries.map((entry) => entry.kind)));
+    if (group.turnId) historicalKinds.set(group.turnId, new Set(group.entries.map((entry) => `${entry.kind}:${entry.responseIdentity?.agentId ?? "root"}`)));
   }
   const merged = [];
   const emittedCurrentTurns = new Set();
@@ -417,7 +417,7 @@ export function mergeHistoryEntries(current, historical, previouslyProjectedKeys
     }
     const replacedKinds = historicalKinds.get(group.turnId) ?? new Set();
     const liveEntries = live.entries.filter((entry) => (
-      entry.kind !== "user" && !(entry.kind === "assistant" && replacedKinds.has("assistant"))
+      entry.kind !== "user" && !(entry.kind === "assistant" && replacedKinds.has(`assistant:${entry.responseIdentity?.agentId ?? "root"}`))
     ));
     const finalAssistant = group.entries.findIndex((entry) => entry.kind === "assistant");
     if (finalAssistant < 0) merged.push(...group.entries, ...liveEntries);
@@ -529,7 +529,7 @@ function eventIdentity(event) {
 function applyToolCall(entries, event, turnId) {
   const payload = event.payload ?? {};
   const callId = payloadString(payload, "call_id") ?? `tool-${eventIdentity(event)}`;
-  if (hasToolCall(entries, callId, turnId)) return;
+  if (hasToolCall(entries, callId, turnId, payload.managed_agent_id)) return;
   const name = payloadString(payload, "tool") ?? "tool";
   const tool = {
     callId, name,
@@ -542,7 +542,7 @@ function applyToolCall(entries, event, turnId) {
   if (parentId !== callId) {
     for (let index = entries.length - 1; index >= 0; index -= 1) {
       const entry = entries[index];
-      if (entry?.kind === "tool" && entry.tool.callId === parentId
+      if (entry?.kind === "tool" && entry.responseIdentity?.agentId === (payload.managed_agent_id ?? undefined) && entry.tool.callId === parentId
         && (turnId === undefined || entry.turnId === turnId)) {
         entries[index] = {
           ...entry, tool: { ...entry.tool, children: [...entry.tool.children, tool] },
@@ -552,13 +552,14 @@ function applyToolCall(entries, event, turnId) {
     }
   }
   entries.push({
-    id: `tool-${callId}`, kind: "tool", tool,
+    id: `tool-${payload.managed_agent_id == null ? "" : `agent-${payload.managed_agent_id}-`}${callId}`, kind: "tool", tool, responseIdentity: responseIdentity(payload),
     ...(turnId === undefined ? {} : { turnId }),
   });
 }
 
-function hasToolCall(entries, callId, turnId) {
+function hasToolCall(entries, callId, turnId, agentId) {
   return entries.some((entry) => entry.kind === "tool"
+    && entry.responseIdentity?.agentId === (agentId ?? undefined)
     && (turnId === undefined || entry.turnId === turnId)
     && (entry.tool.callId === callId
       || entry.tool.children.some((child) => child.callId === callId)));
@@ -573,7 +574,7 @@ function applyToolResult(entries, event, turnId, terminalCallId) {
     : statusValue === "completed" ? "completed" : "failed";
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
-    if (entry?.kind !== "tool" || (turnId !== undefined && entry.turnId !== turnId)) continue;
+    if (entry?.kind !== "tool" || entry.responseIdentity?.agentId !== (payload.managed_agent_id ?? undefined) || (turnId !== undefined && entry.turnId !== turnId)) continue;
     if (entry.tool.callId === callId) {
       entries[index] = { ...entry, tool: completedTool(entry.tool, payload, status, terminalCallId !== undefined) };
       return;
@@ -592,7 +593,7 @@ function applyToolResult(entries, event, turnId, terminalCallId) {
   const typedOutput = [payload.structured_result, payload.result].some(value => hasTypedToolOutput(value));
   if (generatedOutput.some(item => item.kind !== "text") || typedOutput) {
     entries.push({
-      id: `tool-${callId}`, kind: "tool",
+      id: `tool-${payload.managed_agent_id == null ? "" : `agent-${payload.managed_agent_id}-`}${callId}`, kind: "tool", responseIdentity: responseIdentity(payload),
       tool: completedTool({ callId, name: payloadString(payload, "tool") ?? "exec", arguments: "", children: [] }, payload, status),
       ...(turnId === undefined ? {} : { turnId }),
     });
@@ -664,7 +665,7 @@ function findTerminalSession(entries, sessionId) {
   if (typeof sessionId !== "number" && typeof sessionId !== "string") return undefined;
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
-    if (entry.kind !== "tool") continue;
+    if (entry.kind !== "tool" || entry.responseIdentity?.agentId != null) continue;
     for (const tool of [entry.tool, ...entry.tool.children]) {
       if (tool.name !== "exec_command") continue;
       const output = decodeJsonString(tool.output);

@@ -79,6 +79,7 @@ nanocodex-vm = { workspace = true, features = ["desktop"] }
 nix = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
+rustls.workspace = true
 vt100.workspace = true
 portable-pty.workspace = true
 axum = { workspace = true, features = ["ws"] }

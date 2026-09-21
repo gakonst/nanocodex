@@ -2074,7 +2074,18 @@ private struct ConversationContentView: View {
                                 }
                                 if historyRequestInFlight { rememberHistoryPosition(in: viewport) }
                             }
-                            if content.isCodeModeBatch {
+                            if let child = content.childAgentID {
+                                DisclosureGroup("Agent " + child + " activity", isExpanded: tools.binding(content.id)) {
+                                    ForEach(content.activity) { row in
+                                        if row.role == "Tool" {
+                                            ConversationToolCard(row: row, live: content.isRunning && row.running, expanded: tools.binding(row.id + ":detail"), onToggle: onToggle)
+                                        } else {
+                                            ConversationMessageView(row: row, model: model, agentID: model.focused?.id ?? "")
+                                        }
+                                    }
+                                }
+                                .accessibilityIdentifier("child-agent-activity-" + child)
+                            } else if content.isCodeModeBatch {
                                 ConversationCodeModeBatch(item: content, tools: tools, expanded: tools.binding(content.id, initiallyExpanded: true), showsJavaScript: tools.binding(content.id + ":javascript"), onToggle: onToggle)
                             } else {
                                 ForEach(content.activity) { row in

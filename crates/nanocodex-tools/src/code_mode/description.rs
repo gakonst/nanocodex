@@ -118,6 +118,7 @@ pub(crate) fn exec_description(
     code_mode_only: bool,
 ) -> String {
     let mut description = EXEC_DESCRIPTION.to_owned();
+    description.push_str("\n- `ALL_TOOLS` is the catalog of callable nested tools for this execution. A tool exposed separately by the host is not necessarily callable through `tools`; use its direct tool entry when it is absent from this catalog.");
     if !provider_summaries.is_empty() {
         description.push_str("\n\nAdditional runtime-provided nested tools:");
         for (name, summary) in provider_summaries {
@@ -352,6 +353,9 @@ mod tests {
         );
         assert!(description.contains(
             "`ALL_TOOLS`: metadata for the enabled nested tools as `{ name, description }` entries."
+        ));
+        assert!(description.contains(
+            "A tool exposed separately by the host is not necessarily callable through `tools`"
         ));
         assert!(!description.contains("### `update_plan`"));
         assert!(!description.contains("declare const tools"));

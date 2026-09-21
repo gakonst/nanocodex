@@ -752,6 +752,7 @@ impl TranscriptModel {
             EntryKind::Assistant {
                 text: format!("**Voice**\n\n{}", caption.text),
                 complete: !caption.is_partial,
+                agent_id: record.managed_agent_id(),
             }
         };
         if let Some((id, complete)) = self.voice_messages.get(&key).copied() {
@@ -800,7 +801,7 @@ impl TranscriptModel {
             .unwrap_or_default();
         let matching = candidates.iter().filter_map(|id| {
             let index = self.index_of(*id)?;
-            matches!(&self.entries[index].kind, EntryKind::Assistant { text, complete: true } if text == &payload.text).then_some((index, *id))
+            matches!(&self.entries[index].kind, EntryKind::Assistant { text, complete: true, .. } if text == &payload.text).then_some((index, *id))
         }).max_by_key(|(index, _)| *index).map(|(_, id)| id);
         let unfinished = candidates
             .iter()
@@ -821,10 +822,11 @@ impl TranscriptModel {
             self.push(EntryKind::Assistant {
                 text: String::new(),
                 complete: false,
+                agent_id: record.managed_agent_id(),
             })
         });
         self.update(id, |kind| {
-            if let EntryKind::Assistant { text, complete } = kind {
+            if let EntryKind::Assistant { text, complete, .. } = kind {
                 *text = payload.text;
                 *complete = true;
             }
@@ -853,6 +855,7 @@ impl TranscriptModel {
             let id = self.push(EntryKind::Assistant {
                 text: String::new(),
                 complete: false,
+                agent_id: record.managed_agent_id(),
             });
             self.assistants.insert(key.clone(), id);
             self.active_assistants.insert(key.call.clone(), key.clone());
@@ -913,6 +916,7 @@ impl TranscriptModel {
                 self.push(EntryKind::Assistant {
                     text: String::new(),
                     complete: false,
+                    agent_id: record.managed_agent_id(),
                 })
             });
         self.track_managed_answer(&key.call, id);
@@ -2198,13 +2202,13 @@ mod tests {
             matches!(&model.entries()[0].kind, EntryKind::User { text } if text == "Check Omarchy")
         );
         assert!(
-            matches!(&model.entries()[1].kind, EntryKind::Assistant { text, complete: true } if text.ends_with(&long))
+            matches!(&model.entries()[1].kind, EntryKind::Assistant { text, complete: true, .. } if text.ends_with(&long))
         );
         assert!(
             matches!(&model.entries()[2].kind, EntryKind::User { text } if text == "Check Omarchy")
         );
         assert!(
-            matches!(&model.entries()[3].kind, EntryKind::Assistant { text, complete: true } if text.ends_with("New call"))
+            matches!(&model.entries()[3].kind, EntryKind::Assistant { text, complete: true, .. } if text.ends_with("New call"))
         );
     }
 
@@ -3565,7 +3569,7 @@ mod tests {
         model.apply(&stream(4, AgentEventKind::AssistantDelta, " stale"));
         assert_eq!(model.entries().len(), 1);
         assert!(
-            matches!(&model.entries()[0].kind, EntryKind::Assistant { text, complete: true } if text == "complete answer")
+            matches!(&model.entries()[0].kind, EntryKind::Assistant { text, complete: true, .. } if text == "complete answer")
         );
     }
 
@@ -3632,7 +3636,7 @@ mod tests {
         ));
         assert_eq!(model.entries().len(), 1);
         assert!(
-            matches!(&model.entries()[0].kind, EntryKind::Assistant { text, complete: true } if text == "complete answer")
+            matches!(&model.entries()[0].kind, EntryKind::Assistant { text, complete: true, .. } if text == "complete answer")
         );
     }
 
@@ -3657,10 +3661,10 @@ mod tests {
         ));
         assert_eq!(model.entries().len(), 2);
         assert!(
-            matches!(&model.entries()[0].kind, EntryKind::Assistant { text, complete: true } if text == "first complete")
+            matches!(&model.entries()[0].kind, EntryKind::Assistant { text, complete: true, .. } if text == "first complete")
         );
         assert!(
-            matches!(&model.entries()[1].kind, EntryKind::Assistant { text, complete: true } if text == "second complete")
+            matches!(&model.entries()[1].kind, EntryKind::Assistant { text, complete: true, .. } if text == "second complete")
         );
     }
 

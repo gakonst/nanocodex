@@ -64,7 +64,7 @@ public struct AgentEvent: Equatable, Sendable {
             guard ["assistant.delta", "assistant.message"].contains(data["event"]["type"].string) else { return false }
         default: return false
         }
-        return transcript([self]).contains { $0.role == "You" || $0.role == "Agent" }
+        return transcript([self]).contains { $0.agentID == nil && ($0.role == "You" || $0.role == "Agent") }
     }
     public var type: String { data["type"].string }
     public var turnID: String { data["turn_id"].string.isEmpty ? data["id"].string : data["turn_id"].string }
@@ -190,7 +190,9 @@ public struct TranscriptProjection: Sendable {
     }
     public mutating func append(_ events: ArraySlice<AgentEvent>) {
         for envelope in events where seen.insert(envelope.cursor.rawValue).inserted {
-            let d = envelope.data, turn = envelope.turnID, agent = envelope.data["agent_id"].pretty
+            let d = envelope.data, turn = envelope.turnID
+            let provenance = d["agent_id"] == .null ? d["event"]["payload"]["managed_agent_id"] : d["agent_id"]
+            let agent = provenance.pretty
             let firstNewRow = rows.count
             let prefix = turn + ":" + agent
             let id = prefix + ":" + envelope.cursor.rawValue

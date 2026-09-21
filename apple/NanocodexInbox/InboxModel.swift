@@ -2793,7 +2793,7 @@ final class InboxModel: ObservableObject {
             let delayKey = command.kind == .stop ? "NANOCODEX_DEMO_CANCEL_DELAY_MS" : command.kind == .steer ? "NANOCODEX_DEMO_STEER_DELAY_MS" : "NANOCODEX_DEMO_DELAY_MS"
             let delay = Int(ProcessInfo.processInfo.environment[delayKey] ?? ProcessInfo.processInfo.environment["NANOCODEX_DEMO_DELAY_MS"] ?? "200") ?? 200
             try await Task.sleep(for: .milliseconds(delay))
-            let fault = command.kind == .stop ? "cancel" : command.kind == .steer ? "steer" : "submit"
+            let fault = command.kind == .stop ? "cancel" : command.kind == .steer ? "steer" : command.kind == .withdrawSteer ? "withdraw" : "submit"
             if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_FAIL_ONCE"] == fault, demoFaults.insert(fault).inserted {
                 throw APIError.http(503)
             }

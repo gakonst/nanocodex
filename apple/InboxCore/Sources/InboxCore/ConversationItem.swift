@@ -8,10 +8,19 @@ public struct ConversationItem: Identifiable, Equatable, Sendable {
     /// Code Mode batches retain the parent first, followed by its individual calls.
     /// Keeping all rows here also preserves generated outputs and history anchors.
     public var activity: [TranscriptRow] = []
+    public var childAgentID: String?
     public var isRunning = false
     public var isCodeModeBatch: Bool { activity.first?.tool?.title == "Run code" }
 
     public static func group(_ rows: [TranscriptRow], activeTurns: [String] = []) -> [ConversationItem] {
+        // Keep canonical rows and their anchors, but expose child content only
+        // through a labeled activity disclosure, never as a parent answer.
+        var childGroups: [String: [TranscriptRow]] = [:]
+        for row in rows where row.agentID != nil {
+            let key = (row.turnID ?? "") + "\0" + row.agentID!
+            childGroups[key, default: []].append(row)
+        }
+        var emittedChildren = Set<String>()
         let batches = Set(rows.filter { $0.role == "Tool" && $0.tool?.title == "Run code" }.map(\.id))
         var children: [String: [TranscriptRow]] = [:]
         var nested = Set<String>()
@@ -40,6 +49,12 @@ public struct ConversationItem: Identifiable, Equatable, Sendable {
             row.running && row.turnID != nil && row.turnID == activeTurns.first
         }
         return rows.compactMap { row in
+            if let agent = row.agentID {
+                let key = (row.turnID ?? "") + "\0" + agent
+                guard emittedChildren.insert(key).inserted else { return nil }
+                let activity = childGroups[key] ?? [row]
+                return .init(id: row.id, activity: activity, childAgentID: agent, isRunning: activity.contains(where: live))
+            }
             guard !nested.contains(row.id) else { return nil }
             if row.role == "Tool" {
                 let activity = [row] + (children[row.id] ?? [])

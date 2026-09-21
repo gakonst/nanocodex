@@ -624,6 +624,34 @@ mod tests {
         );
     }
 
+    // Yield is an observation deadline, not a promise that a scheduled child
+    // has produced output. Wait for its explicit readiness before releasing it.
+    #[cfg(unix)]
+    async fn ready_child(
+        sessions: &ShellSessions,
+        mut result: super::ExecCommandResult,
+    ) -> super::ExecCommandResult {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !result.output.contains('\n') {
+                let id = i32::try_from(
+                    result
+                        .session_id
+                        .expect("child must remain active before readiness"),
+                )
+                .unwrap();
+                let next = sessions
+                    .write_stdin(WriteStdin::new(id, String::new(), Some(100), None))
+                    .await;
+                result.output.push_str(&next.output);
+                result.session_id = next.session_id;
+                result.exit_code = next.exit_code;
+            }
+            result
+        })
+        .await
+        .expect("child must announce readiness")
+    }
+
     #[cfg(unix)]
     async fn assert_unpolled_child_is_reaped(tty: bool) {
         use nix::{errno::Errno, sys::signal::kill, unistd::Pid};
@@ -639,6 +667,7 @@ mod tests {
             std::path::Path::new("/"),
         ).await;
         assert_eq!(first.session_id, Some(1));
+        let first = ready_child(&sessions, first).await;
         let pid = Pid::from_raw(first.output.trim().parse().expect("shell PID"));
         std::fs::write(&release, "exit").expect("release child");
         // kill(pid, 0) still succeeds for a zombie: ESRCH proves the child was
@@ -692,6 +721,7 @@ mod tests {
                 )
                 .await;
             assert_eq!(first.session_id, Some(1));
+            let first = ready_child(&sessions, first).await;
             let pid = Pid::from_raw(first.output.trim().parse().expect("shell PID"));
             drop(sessions);
             tokio::time::timeout(Duration::from_secs(5), async {
@@ -1107,7 +1137,8 @@ mod tests {
                 futures_util::future::join_all((0..16).map(|_| {
                     sessions.execute(
                         ExecCommand::new(
-                            "stty -echo; read value; printf 'got:%s' \"$value\"".to_owned(),
+                            "stty -echo; printf 'ready\\n'; read value; printf 'got:%s' \"$value\""
+                                .to_owned(),
                             None,
                             Some("/bin/sh".to_owned()),
                             Some(false),
@@ -1121,13 +1152,37 @@ mod tests {
                 .await,
             );
         }
+        let started = futures_util::future::join_all(
+            started
+                .into_iter()
+                .map(|result| ready_child(&sessions, result)),
+        )
+        .await;
         let finished = futures_util::future::join_all((1..=80).map(|id| {
-            sessions.write_stdin(WriteStdin::new(
-                id,
-                format!("release-{id}\n"),
-                Some(1_000),
-                None,
-            ))
+            let sessions = &sessions;
+            async move {
+                tokio::time::timeout(Duration::from_secs(30), async {
+                    let mut result = sessions
+                        .write_stdin(WriteStdin::new(
+                            id,
+                            format!("release-{id}\n"),
+                            Some(100),
+                            None,
+                        ))
+                        .await;
+                    while result.exit_code.is_none() {
+                        let next = sessions
+                            .write_stdin(WriteStdin::new(id, String::new(), Some(100), None))
+                            .await;
+                        result.output.push_str(&next.output);
+                        result.exit_code = next.exit_code;
+                        result.session_id = next.session_id;
+                    }
+                    result
+                })
+                .await
+                .expect("released child must terminate")
+            }
         }))
         .await;
         sessions.terminate_all().await;

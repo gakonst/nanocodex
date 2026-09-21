@@ -1,6 +1,9 @@
 //! Reusable, application-composed subagent tools and task-tree runtime.
 
 mod capacity;
+mod diagnostics;
+
+pub use diagnostics::{CompletionError, CompletionErrorCode};
 mod harness;
 mod message;
 mod model;

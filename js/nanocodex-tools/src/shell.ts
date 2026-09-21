@@ -57,10 +57,12 @@ export function createGhCommand(
       try {
         context.signal?.throwIfAborted();
         if (args[0] === "auth" && args[1] === "status") {
+          validateGhArguments(args.slice(2), [], 0);
           const user = await github(request, "/user");
           return ok(`Logged in to github.com as ${text(user, "login")} through the connected account.\n`);
         }
         if (args[0] === "api") {
+          validateGhArguments(args.slice(1), ["--method", "-X", "-f", "-F", "--field", "--raw-field"], 1);
           const fields = apiFields(args);
           const explicitMethod = option(args, "--method", "-X");
           const method = (explicitMethod ?? (Object.keys(fields).length ? "POST" : "GET")).toUpperCase();
@@ -83,6 +85,7 @@ export function createGhCommand(
           }), null, 2)}\n`);
         }
         if (args[0] === "repo" && args[1] === "view") {
+          validateGhArguments(args.slice(2), ["--repo", "-R"], 1);
           const repository = option(args.slice(2), "--repo", "-R")
             ?? args.slice(2).find((value) => !value.startsWith("-"));
           requireRepository(repository, "gh repo view requires OWNER/REPO");
@@ -102,6 +105,7 @@ export function createGhCommand(
           return clone(ghRepoCloneArguments(args.slice(2)), context);
         }
         if (args[0] === "repo" && args[1] === "list") {
+          validateGhArguments(args.slice(2), ["--limit", "-L"], 1);
           const owner = positional(args.slice(2), ["--limit", "-L"]);
           const perPage = limit(option(args.slice(2), "--limit", "-L"));
           const repositories = await github(request, `/user/repos?${new URLSearchParams({
@@ -126,6 +130,7 @@ export function createGhCommand(
           }).join("\n") + (selected.length ? "\n" : ""));
         }
         if (args[0] === "pr" && args[1] === "list") {
+          validateGhArguments(args.slice(2), ["--repo", "-R", "--limit", "-L"], 0);
           const repository = option(args.slice(2), "--repo", "-R");
           requireRepository(repository, "gh pr list requires --repo OWNER/REPO");
           const pulls = await github(request, `/repos/${repository}/pulls?${new URLSearchParams({
@@ -158,6 +163,24 @@ export function createGhCommand(
       }
     },
   };
+}
+
+/** Validate before any request, so ignored flags cannot change a caller's intent. */
+function validateGhArguments(args: string[], valueOptions: string[], maximumPositionals: number): void {
+  let positionals = 0;
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index]!;
+    if (valueOptions.includes(value)) {
+      const argument = args[++index];
+      if (!argument || argument.startsWith("-")) throw new Error(`${value} requires a value`);
+      continue;
+    }
+    if (value === "--jq" || value.startsWith("--jq=") || value.startsWith("-q")) {
+      throw new Error("--jq/-q is unsupported in this runtime; use gh api ENDPOINT | jq 'FILTER' instead");
+    }
+    if (value.startsWith("-")) throw new Error(`unsupported option '${value}'`);
+    if (++positionals > maximumPositionals) throw new Error("unexpected positional argument");
+  }
 }
 
 function ghRepoCloneArguments(args: string[]): string[] {

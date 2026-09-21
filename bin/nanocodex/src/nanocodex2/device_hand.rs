@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::native_hand::NativeState;
 
+mod account;
 mod transport;
 
 #[derive(Args, Default)]
@@ -191,19 +192,7 @@ async fn directory(origin: &str, key: &str) -> Result<PathBuf, ManagedError> {
                 .timeout(Duration::from_secs(10))
                 .build()
                 .map_err(error)?;
-            let response = client
-                .get(format!("{origin}/v1/me"))
-                .bearer_auth(key)
-                .send()
-                .await
-                .map_err(|_| error("Cannot identify the computer Hand account"))?;
-            if !response.status().is_success() {
-                return Err(error("Computer Hand sign-in failed; run nanocodex2 login"));
-            }
-            let body: Value = response
-                .json()
-                .await
-                .map_err(|_| error("Invalid Hand account response"))?;
+            let body = account::identify(&client, origin, key).await?;
             let owner = body["user"]["id"]
                 .as_str()
                 .filter(|id| valid(id))

@@ -512,7 +512,7 @@ final class InboxUITests: XCTestCase {
             let opened = app.navigationBars["Scheduled jobs"].waitForExistence(timeout: 10)
             capture(app, "menu-after-tap-\(pass)")
             XCTAssertTrue(opened, app.debugDescription)
-            app.navigationBars.buttons["Inbox"].tap()
+            app.navigationBars["Scheduled jobs"].buttons.element(boundBy: 0).tap()
         }
         app.buttons["add-attachments"].tap()
         let camera = app.buttons["choose-camera"]
@@ -828,7 +828,7 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Ask an agent to run a task on a schedule. It will appear here."].exists)
         XCTAssertFalse(app.buttons["New schedule"].exists)
         capture(app, "scheduled-jobs-empty")
-        app.navigationBars.buttons["Inbox"].tap()
+        app.navigationBars["Scheduled jobs"].buttons.element(boundBy: 0).tap()
         navigationAction(app, "Account settings").tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Done"].exists, "Settings must dismiss back to the existing conversation")
@@ -1940,16 +1940,17 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["STEERED_" + marker].exists)
     }
     func testFailedWithdrawalCanRetryWithoutDuplicateInput() {
-        let app = launch(["NANOCODEX_DEMO_FAIL_ONCE": "submit"])
+        let app = launch(["NANOCODEX_DEMO_FAIL_ONCE": "withdraw", "NANOCODEX_DEMO_PROFILE": UUID().uuidString])
         selectInbox(app); queue(app, "Keep the captured target")
         XCTAssertTrue(app.buttons["withdraw-steering"].waitForExistence(timeout: 5))
         app.buttons["withdraw-steering"].tap()
+        XCTAssertTrue(app.staticTexts["Steering could not be confirmed. Retry keeps the same message and target."].waitForExistence(timeout: 5))
         let retry = app.buttons["withdraw-steering"]
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: retry)
         XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 5), .completed)
         retry.tap()
         XCTAssertTrue(app.staticTexts["Steering withdrawn: Keep the captured target"].waitForExistence(timeout: 5))
-        XCTAssertEqual(app.scrollViews["conversation"].staticTexts.matching(NSPredicate(format: "label == %@", "Keep the captured target")).count, 1)
+        XCTAssertEqual(app.scrollViews["conversation"].staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Keep the captured target")).count, 1)
     }
 
     func testDirectMessageSurvivesRelaunchAndCanBeWithdrawn() {

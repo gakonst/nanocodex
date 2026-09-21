@@ -1065,7 +1065,12 @@ test("voice projection hides lifecycle and incomplete envelopes and retains inpu
     "<realtime_delegation><soruce>transcript_tail_flush</soruce><input>Synthetic tail instruction</input></realtime_delegation>",
     "  <realtime_delegation><transcript_delta>unfinished",
     "<realtime_conversation>Internal mode instructions</realtime_conversation>",
+    "<startup_context>Internal startup</startup_context>",
+    "<source>Internal metadata</source>",
+    "<soruce>Internal metadata</soruce>",
+    "<realtime_delegation><input>Hidden</input><transcript_delta>unfinished",
   ]) assert.deepEqual(project(text), []);
+  assert.equal(project("<realtime_delegation><source>voice_bootstrap</source><input>Hello</input></realtime_delegation>")[0].text, "Hello");
   for (const text of ["Explain <realtime_delegation>", "Use <source> here", "2 < 3 & 4 > 1"]) {
     assert.equal(project(text)[0].text, text);
   }
@@ -1162,4 +1167,37 @@ test("clone verification leaves current voice unchanged and clears recordings", 
   assert.match(root.findByProps({ role: "status" }).children.join(""), /Complete verification/);
   assert.equal(root.findByProps({ type: "checkbox" }).props.checked, false);
   await act(async () => renderer.unmount());
+});
+
+test("child JSON is disclosed separately while root JSON survives live and replay", async () => {
+  const { applyAgentEvents, initialState } = await import("../../nanocodex-react/agent/transcript.mjs");
+  const events = [
+    ["assistant.delta", '{"answer":', {}],
+    ["assistant.delta", '{"report":', { managed_agent_id: 7 }],
+    ["assistant.message", '{"report":"child"}', { managed_agent_id: 7 }],
+    ["assistant.message", '{"answer":"root"}', {}],
+  ].map(([type, text, identity], seq) => ({ protocol_version: 1, request_id: "session", seq, type, payload: { turn_id: "turn", text, ...identity } }));
+  const replay = applyAgentEvents(initialState(), events);
+  const live = events.reduce((state, event) => applyAgentEvents(state, [event]), initialState());
+  assert.deepEqual(live.entries, replay.entries);
+  for (const state of [live, replay]) {
+    let renderer;
+    await act(async () => {
+      renderer = TestRenderer.create(React.createElement(TerminalTranscriptSurface, {
+        entries: state.entries, canLoadOlder: false, composer: null, inactiveMessage: "", isLoadingOlder: false,
+        mode: "full", status: "ready", onLoadOlder: async () => false,
+      }), { createNodeMock: () => ({ clientHeight: 300, scrollHeight: 600, scrollTop: 0 }) });
+    });
+    try {
+      const child = renderer.root.findByProps({ "data-agent-id": 7 });
+      assert.equal(child.type, "details");
+      assert.equal(child.props.open, undefined);
+      assert.equal(child.findByType("summary").children.join(""), "Agent 7 activity");
+      assert.ok(child.findAll(node => node.props.children === '{"report":"child"}').length > 0);
+      const root = renderer.root.findAllByType("article").find(article => article.findAll(node => node.props.children === '{"answer":"root"}').length > 0);
+      assert.ok(root);
+      assert.match(JSON.stringify(renderer.toJSON()), /root/);
+      assert.equal(state.entries.filter(entry => entry.responseIdentity?.agentId === 7).length, 1);
+    } finally { await act(async () => renderer.unmount()); }
+  }
 });

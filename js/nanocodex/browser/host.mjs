@@ -12,6 +12,8 @@ import { openHostManagedWebSocket } from "./hostManagedWebSocket.mjs";
 const DEFAULT_MAX_QUEUED_MESSAGES = 4_096;
 const DEFAULT_MAX_QUEUED_BYTES = 32 * 1024 * 1024;
 const DEFAULT_MAX_BUFFERED_SEND_BYTES = 16 * 1024 * 1024;
+const SEND_BUFFER_WAIT_MS = 5_000;
+const SEND_BUFFER_POLL_MS = 10;
 const MPP_CLIENT_PROTOCOL_ERROR_CLOSE_CODE = 3008;
 const WEBSOCKET_OPEN = 1;
 
@@ -234,6 +236,7 @@ export function createBrowserHost(options = {}) {
           : { kind: "binary" });
       });
       socket.addEventListener("close", (event) => {
+        connection.wakeSend?.();
         if (!settled) {
           rejectConnection(new Error(`WebSocket closed during connection with code ${event.code}`));
         } else if (!connection.intentionallyClosed && !connection.overflowed) {
@@ -300,37 +303,66 @@ export function createBrowserHost(options = {}) {
     return JSON.stringify({ handle, status: 101, reasoning_included: false });
   }
 
-  function send(handle, message) {
+  async function send(handle, message) {
     const connection = connections.get(handle);
-    if (!connection || connection.socket.readyState !== WEBSOCKET_OPEN) {
-      return Promise.resolve(JSON.stringify({
-        ok: false,
-        reconnectable: true,
-        error: "WebSocket is no longer open",
-      }));
+    const closed = () => disposal || !connection || connections.get(handle) !== connection
+      || connection.socket.readyState !== WEBSOCKET_OPEN;
+    const closedResult = () => JSON.stringify({
+      ok: false,
+      reconnectable: true,
+      error: "WebSocket is no longer open",
+    });
+    if (closed()) return closedResult();
+    // The runtime sends one request at a time. Do not retain an unbounded queue
+    // of request bodies while the underlying socket is under pressure.
+    if (connection.sending) {
+      return JSON.stringify({ ok: false, reconnectable: false,
+        error: "concurrent WebSocket sends are unsupported" });
     }
+    connection.sending = true;
     try {
       if (connection.managed) {
         connection.socket.send(JSON.stringify({ mpp: "message", data: message }));
-        return Promise.resolve(JSON.stringify({ ok: true }));
+        return JSON.stringify({ ok: true });
       }
       const frameBytes = utf8ByteLength(message);
-      if (frameBytes > maxBufferedSendBytes
-        || connection.socket.bufferedAmount + frameBytes > maxBufferedSendBytes) {
-        return Promise.resolve(JSON.stringify({
+      if (frameBytes > maxBufferedSendBytes) {
+        return JSON.stringify({
           ok: false,
           reconnectable: false,
-          error: `buffered WebSocket sends exceeded ${maxBufferedSendBytes} bytes`,
-        }));
+          error: `WebSocket frame size ${frameBytes} bytes exceeds ${maxBufferedSendBytes} bytes (buffered ${connection.socket.bufferedAmount} bytes)`,
+        });
       }
+      const deadline = Date.now() + SEND_BUFFER_WAIT_MS;
+      while (connection.socket.bufferedAmount + frameBytes > maxBufferedSendBytes) {
+        if (closed()) return closedResult();
+        if (Date.now() >= deadline) {
+          // Nothing was sent. The transport may reconnect, but this invocation
+          // must never send later after reporting a retryable failure.
+          return JSON.stringify({ ok: false, reconnectable: true,
+            error: `WebSocket send buffer did not drain within ${SEND_BUFFER_WAIT_MS} ms (frame ${frameBytes} bytes, buffered ${connection.socket.bufferedAmount} bytes, limit ${maxBufferedSendBytes} bytes)` });
+        }
+        await new Promise((resolve) => {
+          const timer = setTimeout(wake, SEND_BUFFER_POLL_MS);
+          function wake() {
+            clearTimeout(timer);
+            connection.wakeSend = undefined;
+            resolve();
+          }
+          connection.wakeSend = wake;
+        });
+      }
+      if (closed()) return closedResult();
       connection.socket.send(message);
-      return Promise.resolve(JSON.stringify({ ok: true }));
+      return JSON.stringify({ ok: true });
     } catch (error) {
-      return Promise.resolve(JSON.stringify({
+      return JSON.stringify({
         ok: false,
         reconnectable: connection.socket.readyState !== WEBSOCKET_OPEN,
         error: error instanceof Error ? error.message : String(error),
-      }));
+      });
+    } finally {
+      connection.sending = false;
     }
   }
 
@@ -358,6 +390,7 @@ export function createBrowserHost(options = {}) {
     if (!connection) return;
     connections.delete(handle);
     connection.intentionallyClosed = true;
+    connection.wakeSend?.();
     connection.waiter?.({ kind: "closed", detail: "by the WASM runtime" });
     return connection.socket.close();
   }

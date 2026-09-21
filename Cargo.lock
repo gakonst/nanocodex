@@ -6388,6 +6388,7 @@ dependencies = [
  "ratatui-image 11.0.6",
  "rayon",
  "reqwest",
+ "rustls",
  "semver 1.0.28",
  "serde",
  "serde_json",

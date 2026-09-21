@@ -17,7 +17,7 @@ final class ProtocolTests: XCTestCase {
         let live = ConversationItem.group(transcript(events), activeTurns: ["t"])
         XCTAssertEqual(live.count, 4)
         let groupID = try XCTUnwrap(live.last?.id)
-        XCTAssertEqual(live.compactMap(\.message).map(\.role), ["You", "Thinking", "Agent", "Agent"])
+        XCTAssertEqual(live.compactMap(\.message).map(\.role), ["You", "Thinking", "Agent"])
         XCTAssertEqual(live.last?.isRunning, true)
         // A queued acceptance must not split the first response or absorb its work.
         events.append(try event("5", "turn_accepted", ["turn_id": .string("next:turn"), "input": .string("Follow up")]))
@@ -27,7 +27,7 @@ final class ProtocolTests: XCTestCase {
         let rows = transcript(events)
         let grouped = ConversationItem.group(rows)
         XCTAssertEqual(grouped.map(\.id).filter { $0 == groupID }.count, 1)
-        XCTAssertEqual(grouped.compactMap(\.message).map(\.text), ["Find the answer", "Compare sources.", "Checking sources.", "A helper update.", "Follow up", "The answer"])
+        XCTAssertEqual(grouped.compactMap(\.message).map(\.text), ["Find the answer", "Compare sources.", "Checking sources.", "Follow up", "The answer"])
         XCTAssertFalse(grouped.contains(where: \.isRunning))
         XCTAssertEqual(rows.filter { $0.phase == "commentary" }.map(\.text), ["Checking sources."])
         XCTAssertEqual(try JSONDecoder().decode([TranscriptRow].self, from: JSONEncoder().encode(rows)), rows)
@@ -105,7 +105,7 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(try answer().id, identity)
         XCTAssertEqual(try answer().text, "Hello world")
         let terminalOnly = events + [try event("40", "turn_completed", ["final_message": .string("Hello world!")])]
-        XCTAssertEqual(ConversationItem.group(transcript(terminalOnly)).compactMap(\.message).map(\.text), ["Hello world!", "Helper"])
+        XCTAssertEqual(ConversationItem.group(transcript(terminalOnly)).compactMap(\.message).map(\.text), ["Hello world!"])
         try receive(4, "assistant.delta", " update", agent: "helper")
         try receive(5, "assistant.message", "Hello world!")
         XCTAssertEqual(try answer().text, "Hello world!")
@@ -113,8 +113,35 @@ final class ProtocolTests: XCTestCase {
         try receive(6, "assistant.message", "Helper update", agent: "helper")
         events.append(try event("7", "turn_completed", ["final_message": .string("Hello world!")]))
         let answers = ConversationItem.group(transcript(events + events)).compactMap(\.message)
-        XCTAssertEqual(answers.map(\.text), ["Hello world!", "Helper update"])
+        XCTAssertEqual(answers.map(\.text), ["Hello world!"])
         XCTAssertEqual(answers.first?.id, identity)
+    }
+
+    func testChildJSONUsesActivityForLiveReplayAndCachedRows() throws {
+        func output(_ cursor: String, _ type: String, _ text: String, child: Bool = false) throws -> AgentEvent {
+            var payload: [String: JSON] = ["text": .string(text)]
+            if child { payload["managed_agent_id"] = .number(7) }
+            return try event(cursor, "event", ["event": .object(["type": .string(type), "payload": .object(payload)])])
+        }
+        let events = try [output("1", "assistant.delta", "{\"answer\":"),
+                          output("2", "assistant.delta", "{\"report\":", child: true),
+                          output("3", "assistant.message", "{\"report\":\"child\"}", child: true),
+                          output("4", "assistant.message", "{\"answer\":\"root\"}")]
+        XCTAssertFalse(events[1].producesConversationRow)
+        XCTAssertFalse(events[2].producesConversationRow)
+        XCTAssertTrue(events[3].producesConversationRow)
+        var projection = TranscriptProjection()
+        for event in events { projection.append([event][...]) }
+        let replay = transcript(events + events)
+        XCTAssertEqual(projection.rows, replay)
+        let cached = try JSONDecoder().decode([TranscriptRow].self, from: JSONEncoder().encode(replay))
+        for rows in [projection.rows, replay, cached] {
+            let feed = ConversationItem.group(rows)
+            XCTAssertEqual(feed.compactMap(\.message).map(\.text), ["{\"answer\":\"root\"}"])
+            let child = try XCTUnwrap(feed.first { $0.childAgentID == "7" })
+            XCTAssertEqual(child.activity.map(\.text), ["{\"report\":\"child\"}"])
+            XCTAssertNil(child.message)
+        }
     }
 
     func event(_ cursor: String, _ type: String, _ fields: [String: JSON] = [:]) throws -> AgentEvent {

@@ -1,5 +1,7 @@
 //! Run with NANOCODEX_DOCKER_TEST_IMAGE=nanocodex-hand:local cargo test
 //! -p nanocodex-vm --test docker_live -- --ignored --nocapture.
+//! Desktop cases register a fixture MCP provider and exercise guest desktop I/O.
+//! They do not validate an installed production CUA provider or its JavaScript REPL.
 #![cfg(any(
     all(target_os = "linux", not(target_env = "musl")),
     all(target_os = "macos", target_arch = "aarch64")
@@ -78,6 +80,41 @@ impl Drop for Volume {
 fn image() -> String {
     std::env::var("NANOCODEX_DOCKER_TEST_IMAGE")
         .expect("set NANOCODEX_DOCKER_TEST_IMAGE to the built Hand image")
+}
+// Install an explicit MCP provider in a derived test image. Production images
+// deliberately have no implicit CUA provider; discovery must register this one.
+struct ProviderImage(String);
+impl ProviderImage {
+    async fn new() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("provider.py"),
+            include_str!("fixtures/desktop_provider.py"),
+        )
+        .unwrap();
+        std::fs::write(directory.path().join("Dockerfile"), format!(
+            "FROM {}\nCOPY --chmod=755 provider.py /usr/local/bin/test-desktop-provider\nENV NANOCODEX_COMPUTER=/usr/local/bin/test-desktop-provider\n", image()
+        )).unwrap();
+        let tag = format!(
+            "nanocodex-provider-test:{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        docker(&["build", "--tag", &tag, directory.path().to_str().unwrap()]).await;
+        Self(tag)
+    }
+}
+impl Drop for ProviderImage {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("docker")
+            .args(["image", "rm", &self.0])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
 }
 async fn docker(args: &[&str]) -> String {
     let output = tokio::time::timeout(
@@ -262,9 +299,10 @@ async fn startup_failure_cleans_up_and_explicit_internet_works() {
 
 #[tokio::test]
 #[ignore = "requires a Linux Docker daemon and the built Hand image; no KVM needed"]
-async fn cua_starts_a_private_desktop_without_a_screen_publisher() {
+async fn registered_provider_starts_a_private_desktop_without_a_screen_publisher() {
+    let provider = ProviderImage::new().await;
     let volume = Volume::new();
-    let workspace = DockerWorkspace::builder(image(), &volume.0)
+    let workspace = DockerWorkspace::builder(&provider.0, &volume.0)
         .launch()
         .await
         .unwrap();
@@ -285,11 +323,14 @@ async fn cua_starts_a_private_desktop_without_a_screen_publisher() {
             .build()
             .unwrap();
         let runtime = ToolRuntime::new_with_tools("/app", None, None, &tools);
-        let result = runtime.execute_tool(
-            "mcp__cua_repl__js",
-            function(json!({"code":"const frames = await cua.computer.get_screenshot(); await nodeRepl.emitImage(frames[0].data_url);"})),
-            ToolContext::new("test", "cli-desktop", "first-cua", &[], 4000),
-        ).await.unwrap();
+        let result = runtime
+            .execute_tool(
+                "mcp__cua_repl__desktop",
+                function(json!({"action":"observe"})),
+                ToolContext::new("test", "cli-desktop", "first-cua", &[], 4000),
+            )
+            .await
+            .unwrap();
         assert!(result.success, "{:?}", result.output);
         assert!(
             matches!(result.output, ToolOutputBody::Content(ref content) if content.iter().any(|item| matches!(item, ToolOutputContent::InputImage { .. })))
@@ -309,8 +350,9 @@ async fn cua_starts_a_private_desktop_without_a_screen_publisher() {
 #[tokio::test]
 #[ignore = "requires a Linux Docker daemon and the built Hand image; no KVM needed"]
 async fn desktop_and_last_capability_cleanup() {
+    let provider = ProviderImage::new().await;
     let volume = Volume::new();
-    let workspace = DockerWorkspace::builder(image(), &volume.0)
+    let workspace = DockerWorkspace::builder(&provider.0, &volume.0)
         .launch()
         .await
         .unwrap();
@@ -374,31 +416,45 @@ async fn desktop_and_last_capability_cleanup() {
             .build()
             .unwrap();
         let runtime = ToolRuntime::new_with_tools("/app", None, None, &tools);
-        let computer = runtime.execute_tool("mcp__cua_repl__js",
-            function(json!({"code":"let desktop = cua.computer; const frames = await desktop.get_screenshot(); await nodeRepl.emitImage(frames[0].data_url);"})),
-            ToolContext::new("test", "docker-live", "cua-image", &[], 4000)).await.unwrap();
+        let computer = runtime
+            .execute_tool(
+                "mcp__cua_repl__desktop",
+                function(json!({"action":"observe"})),
+                ToolContext::new("test", "docker-live", "cua-image", &[], 4000),
+            )
+            .await
+            .unwrap();
         assert!(computer.success, "{:?}", computer.output);
         assert!(
             matches!(computer.output, ToolOutputBody::Content(ref items) if items.iter().any(|item| matches!(item, ToolOutputContent::InputImage { .. })))
         );
-        let retained = runtime
-            .execute_tool(
-                "mcp__cua_repl__js",
-                function(json!({"code":"nodeRepl.write(desktop.target);"})),
-                ToolContext::new("test", "docker-live", "cua-state", &[], 4000),
-            )
-            .await
-            .unwrap();
-        assert!(retained.success && retained.structured_result().to_string().contains("linux"));
-        let reset = runtime
-            .execute_tool(
-                "mcp__cua_repl__js_reset",
-                function(json!({})),
-                ToolContext::new("test", "docker-live", "cua-reset", &[], 4000),
-            )
-            .await
-            .unwrap();
-        assert!(reset.success, "{:?}", reset.output);
+        // Input must traverse the discovered provider and affect the guest.
+        for arguments in [
+            json!({"action":"type", "text":"printf provider-input > /app/provider-input.txt"}),
+            json!({"action":"key", "key":40}),
+        ] {
+            let input = runtime
+                .execute_tool(
+                    "mcp__cua_repl__desktop",
+                    function(arguments),
+                    ToolContext::new("test", "docker-live", "cua-input", &[], 4000),
+                )
+                .await
+                .unwrap();
+            assert!(input.success, "{:?}", input.output);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(bytes) = control.read_file("/app/provider-input.txt").await {
+                assert_eq!(bytes, b"provider-input");
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "provider input did not reach guest terminal"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         let output = runtime
             .execute_tool(
                 "view_image",
