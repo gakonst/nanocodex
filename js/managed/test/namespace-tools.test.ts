@@ -71,7 +71,9 @@ describe("cwd-root namespace execution", () => {
     await expect(runtime.tools[CUA_JS_NAME]!.handler({ code: "1" }, context()))
       .rejects.toThrow("explicit Hand workdir");
     const selection = await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/native" }, context());
-    expect(selection).toMatchObject({ definitions: [
+    expect(selection).toMatchObject({
+      browser_selection: expect.stringContaining("'brave', not 'Brave Browser'"),
+      definitions: [
       { name: CUA_JS_NAME, description, parameters: providerParameters, output_schema: { type: "object" },
         _meta: { provider: { retained: true } }, annotations: { readOnlyHint: false } },
       { name: CUA_RESET_NAME, description, parameters: resetParameters },

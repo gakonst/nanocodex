@@ -23,6 +23,37 @@ application access and approvals to that host. Build 9922 is currently supported
 setup rejects other builds before publication. Official sign-in and OS permissions
 still apply. See [managed macOS host](official-app-server-bridge.md).
 
+A running Hand retains its provider launch configuration. Updating the installed
+launcher or reloading a TUI does not replace that configuration in the shared
+Hand daemon. Restart the Hand after upgrading from the older direct provider
+launcher to the managed macOS bridge, then rediscover its CUA contract. Existing
+CUA JavaScript bindings and browser debugger attachments do not survive this
+restart. Calls already admitted to the old connection are never retargeted.
+
+If native app access reports `nodeRepl.createElicitation is unavailable because
+the MCP client does not support form elicitation`, check the **active process
+chain**, not just `provider.json`. The managed path is Hand → native host →
+official Codex app server → CUA provider, with the official GUI handling approval
+requests. A provider launched directly by an older Hand bypasses that path. The
+outer Nanocodex adapter intentionally advertises no elicitation capability;
+adding it there does not establish a working permission UI.
+
+## Browser selection
+
+OpenAI's browser selector accepts exact discovered browser IDs and lowercase
+family aliases such as `brave`. The display name `Brave Browser` is not an
+accepted alias in the pinned provider, despite its browser instructions saying
+to pass a browser name. Codex-rs forwards JavaScript unchanged and does not
+normalize this string. Nanocodex includes a separate selection note alongside
+workdir-only discovery; the provider's tool definitions and call arguments
+remain unchanged.
+
+Use a known browser ID from current provider state. For an unambiguous request
+for Brave, `cua.createBrowserTab('brave', url, options)` works directly. If
+multiple browser instances or profiles could match, use the provider's browser
+inventory to select the requested instance before creating a tab. Never guess a
+numeric ID or retry a failed creation against another browser automatically.
+
 ## Distribution
 
 On macOS, setup uses the official architecture-specific desktop DMG URLs from

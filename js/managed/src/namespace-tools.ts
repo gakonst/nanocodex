@@ -150,6 +150,7 @@ export function createNamespaceExecutionRuntime(
       });
       return { workdir: hand.root, machine_id: hand.machineId,
         tools: [CUA_JS_NAME, CUA_RESET_NAME], definitions,
+        browser_selection: "For providers exposing cua.createBrowserTab, browser display names are not necessarily accepted identifiers. OpenAI's provider accepts lowercase family aliases (for example 'brave', not 'Brave Browser') or exact discovered browser IDs. Reuse an ID from current provider state; when browser/profile selection is ambiguous, inspect the provider's browser inventory first and match the requested instance. Do not guess IDs or silently retry a browser action with a different target.",
         routing: "Add the Hand workdir to each provider call. Nanocodex consumes workdir for routing and forwards all other arguments unchanged. Use Promise.all for different Hands; JS and reset on the same Hand are ordered." };
     }
     const tool = name === CUA_JS_NAME ? hand.cua : hand.cuaReset;
