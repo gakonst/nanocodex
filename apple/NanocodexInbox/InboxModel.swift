@@ -1496,11 +1496,40 @@ final class InboxModel: ObservableObject {
             return
         }
     }
+    private var schedulesMutating = false
+
+    func updateScheduledJob(_ job: ScheduledJob, cron: String, timezone: String, input: String,
+                            enabled: Bool, startsNewConversation: Bool) async throws {
+        guard !isDemo, !schedulesMutating, let client else { throw APIError.invalidCredential }
+        schedulesMutating = true
+        defer { schedulesMutating = false }
+        let epoch = generation
+        await schedulesTask?.value
+        guard generation == epoch else { throw CancellationError() }
+        let updated = try await client.updateScheduledJob(job, cron: cron, timezone: timezone, input: input,
+                                                         enabled: enabled, startsNewConversation: startsNewConversation)
+        guard generation == epoch else { throw CancellationError() }
+        scheduledJobs = scheduledJobs.map { $0.id == updated.id ? updated : $0 }
+    }
+
+    func cancelScheduledJob(_ job: ScheduledJob) async throws {
+        guard !isDemo, !schedulesMutating, let client else { throw APIError.invalidCredential }
+        schedulesMutating = true
+        defer { schedulesMutating = false }
+        let epoch = generation
+        await schedulesTask?.value
+        guard generation == epoch else { throw CancellationError() }
+        try await client.cancelScheduledJob(job)
+        guard generation == epoch else { throw CancellationError() }
+        scheduledJobs.removeAll { $0.id == job.id }
+    }
+
     func refreshScheduledJobs() async {
         await startScheduledJobsRefresh()?.value
     }
 
     @discardableResult private func startScheduledJobsRefresh(initialListing: [AgentCard]? = nil) -> Task<Void, Never>? {
+        guard !schedulesMutating else { return nil }
         guard connected else { return nil }
         // The model owns the read: opening the screen joins an existing prefetch,
         // and pushing a detail view does not cancel useful work for this account.

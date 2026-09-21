@@ -9,7 +9,7 @@ struct ScheduledJobsView: View {
     var body: some View {
         List {
             Section {
-                Text("Create new scheduled jobs by asking an agent in chat.")
+                Text("Tap a job to edit, pause, or cancel it. Create new jobs by asking an agent in chat.")
                     .font(.subheadline).foregroundStyle(.secondary)
                 if model.isDemo { Text("Sample jobs · Demo").font(.caption).foregroundStyle(.secondary) }
             }
@@ -73,9 +73,11 @@ struct ScheduledJobsView: View {
 }
 
 private struct ScheduledJobDetailView: View {
+    @Environment(\.dismiss) private var dismiss
     @ObservedObject var model: InboxModel
     let jobID: String
     var openChat: () -> Void
+    @State private var editing = false
     @State private var opening = false
     @State private var openingTask: Task<Void, Never>?
     @State private var error: String?
@@ -84,6 +86,11 @@ private struct ScheduledJobDetailView: View {
         Group {
             if let job = model.scheduledJobs.first(where: { $0.id == jobID }) {
                 List {
+                    Section {
+                        Button("Edit or cancel job", systemImage: "pencil") { editing = true }
+                            .disabled(model.isDemo)
+                            .accessibilityIdentifier("scheduled-job-edit")
+                    }
                     Section("Prompt") {
                         Text(job.input).textSelection(.enabled)
                     }
@@ -115,6 +122,15 @@ private struct ScheduledJobDetailView: View {
                     }
                     if let error { Section { Text(error).foregroundStyle(.secondary) } }
                     if opening { ProgressView().accessibilityLabel("Opening conversation") }
+                }
+                .sheet(isPresented: $editing) {
+                    ScheduledJobEditor(job: job) { cron, timezone, input, enabled, startsNew in
+                        try await model.updateScheduledJob(job, cron: cron, timezone: timezone, input: input,
+                                                           enabled: enabled, startsNewConversation: startsNew)
+                    } cancel: {
+                        try await model.cancelScheduledJob(job)
+                        dismiss()
+                    }
                 }
                 .navigationTitle(job.triggerID)
                 .disabled(opening)

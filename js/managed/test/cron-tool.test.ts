@@ -40,3 +40,30 @@ describe("managed cron tool protocol", () => {
     expect(create).not.toHaveBeenCalled();
   });
 });
+
+import { cronManagementTools } from "../src/cron-tool";
+
+describe("cron management tools", () => {
+  it("preserves patches and target IDs without injecting creation defaults", async () => {
+    const run = vi.fn(async () => ({ data: [] }));
+    const [list, update, remove] = cronManagementTools(run);
+    await list!.handler({}, context);
+    expect(run).toHaveBeenLastCalledWith("list", {}, context);
+    await update!.handler({ agent_id: "owner", id: "morning", enabled: false }, context);
+    expect(run).toHaveBeenLastCalledWith("update", { agent_id: "owner", id: "morning", enabled: false }, context);
+    await remove!.handler({ agent_id: "owner", id: "morning" }, context);
+    expect(run).toHaveBeenLastCalledWith("delete", { agent_id: "owner", id: "morning" }, context);
+  });
+
+  it.each([
+    [0, { authorization: {} }], [0, { id: "hidden" }], [0, { agent_id: "" }],
+    [1, { id: "morning" }], [1, { id: "../other", enabled: false }],
+    [1, { id: "morning", enabled: "false" }], [1, { id: "morning", input: " " }],
+    [1, { id: "morning", cron: "invalid" }], [1, { id: "morning", timezone: "invalid" }],
+    [2, { id: "morning", authorization: {} }], [2, null],
+  ])("rejects malformed or authority-bearing management inputs %s %j", async (index, input) => {
+    const run = vi.fn();
+    await expect(async () => cronManagementTools(run)[index as number]!.handler(input, context)).rejects.toThrow();
+    expect(run).not.toHaveBeenCalled();
+  });
+});

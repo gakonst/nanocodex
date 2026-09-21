@@ -362,6 +362,9 @@ function agentHandle(client, id, summary, retainedEventStream) {
       put: async (triggerId, config) => managedCronTrigger(await client.json(cronTriggerPath(id, triggerId), {
         method: "PUT", body: cronTriggerBody(config),
       })),
+      update: async (triggerId, patch) => managedCronTrigger(await client.json(cronTriggerPath(id, triggerId), {
+        method: "PATCH", body: cronTriggerPatch(patch),
+      })),
       delete: async (triggerId) => { await client.empty(cronTriggerPath(id, triggerId), { method: "DELETE" }); },
     }),
     toolsTarget: () => client.toolsTarget(id),
@@ -396,6 +399,14 @@ function cronTriggerBody(config) {
     throw new TypeError("invalid cron trigger configuration");
   }
   return JSON.stringify(config);
+}
+
+function cronTriggerPatch(patch) {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new TypeError("invalid cron trigger patch");
+  const defined = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
+  if (!Object.keys(defined).length) throw new TypeError("cron trigger patch must contain a setting");
+  cronTriggerBody({ cron: "0 9 * * *", input: "validation", ...defined });
+  return JSON.stringify(defined);
 }
 
 function managedCronTrigger(value) {

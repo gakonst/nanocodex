@@ -8,7 +8,7 @@ import {
   managedAccountMcpServers,
 } from "../src/default-mcp";
 import { memorySessionTools } from "../src/memory-session-tools";
-import { createCronTool } from "../src/cron-tool";
+import { createCronTool, cronManagementTools } from "../src/cron-tool";
 import { browseX } from "nanocodex-tools/x";
 
 describe("durable managed default MCP catalog", () => {
@@ -170,6 +170,7 @@ describe("durable managed default MCP catalog", () => {
         recordCitations() {},
       }),
       createCronTool(async () => { throw new Error("not called during discovery"); }),
+      ...cronManagementTools(async () => { throw new Error("not called during discovery"); }),
     ], mcp);
     const socket = new CatalogSocket();
     const connector = tools.attach({
@@ -184,6 +185,9 @@ describe("durable managed default MCP catalog", () => {
       expect(catalog?.tools?.map((entry) => entry.definition.name).sort()).toEqual([
         "accountInfo",
         "create_cron",
+        "list_crons",
+        "update_cron",
+        "delete_cron",
         "find_session",
         "browseX",
         "find_sessions",

@@ -1,3 +1,4 @@
+import InboxCore
 import SwiftUI
 import NanocodexRemote
 
@@ -284,5 +285,78 @@ struct SignInView: View {
     }
     private func resetPhone() {
         perform { try await model.cancelPhoneSignIn(); code = ""; focused = .phone }
+    }
+}
+
+struct MacScheduledJobsView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var jobs: [ScheduledJob] = []
+    @State private var selected: ScheduledJob?
+    @State private var loading = false
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Text("Select a job to edit, pause, or cancel it. Ask an agent in chat to create a new job.")
+                    .foregroundStyle(.secondary)
+                if loading { ProgressView("Loading scheduled jobs") }
+                if let error { Text(error).foregroundStyle(.red) }
+                if !loading && jobs.isEmpty && error == nil { Text("No scheduled jobs yet") }
+                ForEach(jobs) { job in
+                    Button { selected = job } label: {
+                        VStack(alignment: .leading) {
+                            Text(job.triggerID).font(.headline)
+                            Text(job.input).lineLimit(2)
+                            Text("Source: " + job.agentID).font(.caption).foregroundStyle(.secondary)
+                            Text("\(job.enabled ? "Active" : "Paused") · \(job.cron) · \(job.timezone)").font(.caption)
+                        }
+                    }.buttonStyle(.plain).disabled(loading)
+                }
+            }
+            .navigationTitle("Scheduled jobs")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
+                ToolbarItem { Button("Refresh", systemImage: "arrow.clockwise") { Task { await refresh() } }.disabled(loading) }
+            }
+            .sheet(item: $selected) { job in
+                ScheduledJobEditor(job: job) { cron, timezone, input, enabled, startsNew in
+                    let client = try model.schedulesClient(); defer { client.close() }
+                    let updated = try await client.updateScheduledJob(job, cron: cron, timezone: timezone, input: input,
+                                                                     enabled: enabled, startsNewConversation: startsNew)
+                    jobs = jobs.map { $0.id == updated.id ? updated : $0 }
+                } cancel: {
+                    let client = try model.schedulesClient(); defer { client.close() }
+                    try await client.cancelScheduledJob(job)
+                    jobs.removeAll { $0.id == job.id }
+                }
+            }
+        }.frame(minWidth: 560, minHeight: 480).task { await refresh() }
+    }
+
+    @MainActor private func refresh() async {
+        guard !loading else { return }
+        loading = true; error = nil
+        defer { loading = false }
+        do {
+            let client = try model.schedulesClient(); defer { client.close() }
+            let agents = try await client.list()
+            try Task.checkCancellation()
+            let owners = Set(agents.map(\.id))
+            jobs.removeAll { !owners.contains($0.agentID) }
+            let cachedOwners = Set(jobs.map(\.agentID))
+            let candidates = agents.filter { $0.mayHaveScheduledJobs || cachedOwners.contains($0.id) }
+            await client.scheduledJobs(for: candidates.map(\.id)) { owner, result in
+                await MainActor.run {
+                    switch result {
+                    case .success(let received):
+                        jobs = (jobs.filter { $0.agentID != owner } + received).sorted { $0.id < $1.id }
+                    case .failure:
+                        self.error = "Some jobs could not be loaded. Refresh to try again."
+                    }
+                }
+            }
+        } catch { self.error = error.localizedDescription }
     }
 }

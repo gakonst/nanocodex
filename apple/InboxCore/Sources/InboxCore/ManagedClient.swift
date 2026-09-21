@@ -233,6 +233,20 @@ public final class ManagedClient: @unchecked Sendable {
         guard Set(jobs.map(\.id)).count == jobs.count else { throw APIError.invalidResponse }
         return jobs
     }
+    public func updateScheduledJob(_ job: ScheduledJob, cron: String, timezone: String, input: String,
+                                   enabled: Bool, startsNewConversation: Bool) async throws -> ScheduledJob {
+        let body: JSON = .object(["cron": .string(cron), "timezone": .string(timezone), "input": .string(input),
+                                  "enabled": .bool(enabled), "session_mode": .string(startsNewConversation ? "new" : "continue")])
+        let value = try await json(path: Self.agentPath(job.agentID) + "/triggers/" + job.triggerID, method: "PATCH", body: body)
+        let updated = try ScheduledJob(value, agentID: job.agentID)
+        guard updated.id == job.id else { throw APIError.invalidResponse }
+        return updated
+    }
+
+    public func cancelScheduledJob(_ job: ScheduledJob) async throws {
+        _ = try await json(path: Self.agentPath(job.agentID) + "/triggers/" + job.triggerID, method: "DELETE")
+    }
+
     /// Deliver each agent's schedules immediately, keeping four reads in flight.
     /// A slow agent must not hold up completed results or the next agent's read.
     public func scheduledJobs(for agentIDs: [String],

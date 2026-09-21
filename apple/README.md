@@ -176,7 +176,7 @@ Return/Tab/Esc controls below the video.
 | Voice | Start an interactive spoken conversation with this agent; minimize the panel to keep talking |
 | Stop turn | Immediately cancel the selected turn from the send button |
 | Header menu → Account settings | Manage the account and device Hand in a dismissible sheet |
-| Header menu → Scheduled jobs | View active and paused jobs across the account, inspect their schedule, or open the source chat and latest run |
+| Header menu → Scheduled jobs | View, edit, pause, resume, or cancel jobs across the account; open the source chat and latest run |
 
 The compact header shows the selected conversation, its running indicator, a
 Conversations button, and the app menu. Below the composer, the floating dock
@@ -203,6 +203,11 @@ existing per-agent triggers API and shows the prompt, cron expression, time zone
 next run, last dispatch, and last skipped occurrence. Dispatch does not imply
 successful completion; open the linked conversation to read the result. Pull to
 refresh or use Refresh to pick up changes, including jobs created in chat.
+The job detail’s **Edit or cancel job** form changes the prompt, cron expression,
+time zone, active status, and conversation mode. Updates use the update-only PATCH
+endpoint, so an edit cannot recreate a concurrently deleted job. Cancellation
+requires confirmation and stops future scheduling; dispatched or running work
+is not stopped. Existing conversations remain available.
 Schedules prefetch after the opening conversation history using the sign-in agent list. Reads use a rolling
 four-request limit and publish each agent's jobs immediately; one slow agent does
 not block the others. The account summary's `may_have_scheduled_jobs` hint skips

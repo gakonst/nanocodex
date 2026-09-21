@@ -210,6 +210,7 @@ struct ContentView: View {
                 }
             }
         }
+        .sheet(isPresented: $model.showingScheduledJobs) { MacScheduledJobsView() }
         .sheet(isPresented: $model.showingSettings) { SettingsView() }
     }
     private var workspace: some View {

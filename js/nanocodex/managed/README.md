@@ -172,8 +172,9 @@ const morning = {
 await agent.triggers.put("morning-review", morning);
 await agent.triggers.list();
 await agent.triggers.get("morning-review");
-await agent.triggers.put("morning-review", { ...morning, enabled: false }); // pause
-await agent.triggers.put("morning-review", morning); // resume
+await agent.triggers.update("morning-review", { enabled: false }); // pause
+await agent.triggers.update("morning-review", { enabled: true }); // resume
+await agent.triggers.update("morning-review", { cron: "30 9 * * *" }); // preserve other fields
 await agent.triggers.delete("morning-review");
 ```
 
@@ -182,6 +183,7 @@ await agent.triggers.delete("morning-review");
 | GET | `/v1/agents/:agent/triggers` | `{ data: [...] }` |
 | GET | `/v1/agents/:agent/triggers/:id` | Trigger or 404 |
 | PUT | `/v1/agents/:agent/triggers/:id` | Create (201) or replace (200) |
+| PATCH | `/v1/agents/:agent/triggers/:id` | Partial update (200), or 404 |
 | DELETE | `/v1/agents/:agent/triggers/:id` | Idempotent deletion (204) |
 
 The managed-agent web composer also has a **Schedules** button. It opens the
@@ -194,10 +196,12 @@ PUT takes `{ cron, input, timezone?, enabled?, session_mode? }`. Expressions hav
 (minute, hour, day of month, month, day of week), supporting numeric values,
 lists, ranges, steps, and month/day names. The time zone defaults to UTC and
 accepts IANA names. Local times follow daylight saving transitions. Seconds,
-macros, and random `H` fields are rejected. Inputs are text up to 64 KiB;
-there can be at most 32 triggers per agent. IDs use 1–64 letters, digits,
+macros, and random `H` fields are rejected. Inputs must be non-empty text.
+IDs use 1–64 letters, digits,
 underscores, or hyphens. PUT is a full replacement; an identical retry preserves
-the next occurrence. A changed configuration starts from the next matching time.
+the next occurrence. PATCH (SDK `triggers.update`) changes only supplied fields
+and requires an existing schedule. A concurrent edit may return 409; refresh
+before deciding which changes to retry. A changed configuration starts from the next matching time.
 
 `session_mode: "new"` (the default for new configurations) creates a fresh managed
 session for every occurrence. It copies the source agent's model settings at
