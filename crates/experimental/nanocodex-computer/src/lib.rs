@@ -19,7 +19,9 @@ use nanocodex_oai_api::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, ffi::OsString, path::PathBuf, process::Stdio, sync::Arc};
+use std::{
+    collections::BTreeMap, ffi::OsString, path::PathBuf, process::Stdio, sync::Arc, time::Duration,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
@@ -240,6 +242,18 @@ impl ComputerExecutor for LocalComputer {
         arguments: Value,
         context: ToolContext<'_>,
     ) -> ToolResult {
+        // Bound the entire caller wait, including queueing and provider startup.
+        // Dropping the receiver cancels the active provider process.
+        let timeout = matches!(name, "js" | "js_reset").then(|| {
+            Duration::from_millis(
+                arguments
+                    .get("timeout_ms")
+                    .and_then(Value::as_u64)
+                    .filter(|millis| *millis > 0)
+                    .unwrap_or(30_000)
+                    .min(2_147_483_647),
+            )
+        });
         let session = context.session_id().to_owned();
         let (response, result) = oneshot::channel();
         self.dispatch
@@ -253,7 +267,13 @@ impl ComputerExecutor for LocalComputer {
                 response,
             })
             .map_err(|_| "CUA attachment is closed")?;
-        result.await.map_err(|_| "CUA attachment is closed")?
+        let result = match timeout {
+            Some(timeout) => tokio::time::timeout(timeout, result).await.map_err(|_| {
+                format!("CUA call exceeded its {} ms deadline. Call cua_repl.js_reset before continuing if execution had started.", timeout.as_millis())
+            })?,
+            None => result.await,
+        };
+        result.map_err(|_| "CUA attachment is closed")?
     }
 }
 
@@ -313,6 +333,10 @@ async fn run_session(
             mut response,
             ..
         } = request;
+        // A caller that expired while queued never owned the active scope.
+        if response.is_closed() {
+            continue;
+        }
         if interrupted && name != "js_reset" {
             let _ = response.send(Err("CUA session ended during cancellation or transport failure. Call cua_repl.js_reset, then select the surface again.".into()));
             continue;

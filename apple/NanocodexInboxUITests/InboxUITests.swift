@@ -2262,18 +2262,105 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(composer(app).value as? String, "Keep the latest reply in view")
     }
 
+    func testComposerPhotoThumbnailsUseHorizontalSquares() {
+        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString,
+                          "NANOCODEX_DEMO_COMPOSER_PHOTOS": "1"])
+        let tray = app.scrollViews["composer-attachments"]
+        XCTAssertTrue(tray.waitForExistence(timeout: 10))
+        let photos = tray.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "preview-image-"))
+        XCTAssertEqual(photos.count, 3)
+        var previous: CGRect?
+        for index in 1...3 {
+            let photo = photos.matching(NSPredicate(format: "label == %@", "Preview Phone photo \(index).png")).firstMatch
+            XCTAssertTrue(photo.exists)
+            let frame = photo.frame
+            XCTAssertEqual(frame.width, 120, accuracy: 1)
+            XCTAssertEqual(frame.height, 120, accuracy: 1)
+            if let previous {
+                XCTAssertEqual(frame.minY, previous.minY, accuracy: 1)
+                XCTAssertGreaterThan(frame.minX, previous.maxX)
+            }
+            previous = frame
+        }
+        capture(app, "composer-photo-square-thumbnails")
+        app.buttons["Remove Phone photo 1.png"].tap()
+        XCTAssertEqual(photos.count, 2)
+    }
+
+    func testSingleLocalPhotoPreservesAspectRatio() {
+        verifyLocalPhotoJourney(count: 1)
+    }
+
     func testMultipleLocalPhotoHistoryThumbnailsSurvivePreviewAndRelaunch() {
-        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString, "NANOCODEX_DEMO_LOCAL_PHOTOS": "1"])
+        verifyLocalPhotoJourney(count: 2)
+    }
+
+    func testThreeLocalPhotoHistoryThumbnailsFitOneRow() {
+        verifyLocalPhotoJourney(count: 3)
+    }
+
+    func testFourLocalPhotoHistoryThumbnailsWrapIntoGrid() {
+        verifyLocalPhotoJourney(count: 4)
+    }
+
+    func testSinglePortraitLocalPhotoPreservesAspectRatio() {
+        verifyLocalPhotoJourney(count: 1, styleIndex: 2)
+    }
+
+    func testSinglePanoramaLocalPhotoPreservesAspectRatio() {
+        verifyLocalPhotoJourney(count: 1, styleIndex: 3)
+    }
+
+    private func verifyLocalPhotoJourney(count: Int, styleIndex: Int = 1) {
+        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString, "NANOCODEX_DEMO_LOCAL_PHOTOS": "1",
+                          "NANOCODEX_DEMO_LOCAL_PHOTO_COUNT": String(count), "NANOCODEX_DEMO_LOCAL_PHOTO_STYLE": String(styleIndex)])
         func verifyPhotos() {
             let conversation = app.scrollViews["conversation"]
             XCTAssertTrue(conversation.waitForExistence(timeout: 10))
             let photos = conversation.descendants(matching: .any).matching(identifier: "message-image")
-            XCTAssertEqual(photos.count, 2, "Project both phone path references into separate thumbnails")
-            for index in 1...2 {
+            XCTAssertEqual(photos.count, count, "Project every phone path reference into a separate thumbnail: " + app.debugDescription)
+            var frames: [CGRect] = []
+            for index in 1...count {
                 let photo = photos.matching(NSPredicate(format: "label == %@", "Open Phone photo \(index).png")).firstMatch
-                for _ in 0..<4 { if photo.isHittable { break }; conversation.swipeDown() }
                 let loaded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Image loaded"), object: photo)
                 XCTAssertEqual(XCTWaiter.wait(for: [loaded], timeout: 10), .completed, "Decode photo \(index) from its retained local original")
+                XCTAssertTrue(photo.isHittable, "All compact thumbnails should be visible together")
+                let frame = photo.frame
+                if count == 1 {
+                    let ratio: CGFloat = styleIndex == 2 ? 480.0 / 800 : styleIndex == 3 ? 1080.0 / 480 : 800.0 / 480
+                    XCTAssertEqual(frame.width, styleIndex == 2 ? 192 : 256, accuracy: 1)
+                    XCTAssertLessThanOrEqual(frame.height, 321)
+                    XCTAssertEqual(frame.height, frame.width / ratio, accuracy: 1, "Single image retains its original aspect ratio")
+                } else {
+                    XCTAssertGreaterThanOrEqual(frame.width, 100)
+                    XCTAssertLessThanOrEqual(frame.width, 125)
+                    if count == 2 { XCTAssertEqual(frame.width, 125, accuracy: 1) }
+                    XCTAssertEqual(frame.width, frame.height, accuracy: 1, "Landscape and portrait originals share a square crop")
+                }
+                frames.append(frame)
+            }
+            if count > 1 {
+                XCTAssertEqual(frames[0].minY, frames[1].minY, accuracy: 1)
+                XCTAssertEqual(frames[1].minX - frames[0].maxX, 6, accuracy: 1)
+            }
+            for frame in frames.dropFirst() {
+                XCTAssertEqual(frame.width, frames[0].width, accuracy: 1)
+                XCTAssertEqual(frame.height, frames[0].height, accuracy: 1)
+            }
+            if count >= 3 {
+                XCTAssertEqual(frames[2].minY, frames[0].minY, accuracy: 1)
+                XCTAssertLessThan(frames[1].maxX, frames[2].minX)
+                XCTAssertLessThanOrEqual(frames[2].maxX - frames[0].minX, 360)
+            }
+            if count == 4 {
+                XCTAssertGreaterThan(frames[3].minY, frames[0].maxY, "The fourth photo wraps onto a second row")
+                XCTAssertEqual(frames[3].maxX, frames[2].maxX, accuracy: 1, "The incomplete row aligns to the right")
+            }
+            let caption = conversation.staticTexts[count == 1 ? "Review this phone photo." : "Compare these \(count) phone photos."]
+            XCTAssertTrue(caption.exists)
+            XCTAssertGreaterThanOrEqual(caption.frame.minY, frames.map(\.maxY).max()!)
+            for index in 1...count {
+                let photo = photos.matching(NSPredicate(format: "label == %@", "Open Phone photo \(index).png")).firstMatch
                 photo.tap()
                 let done = app.buttons["Done"]
                 XCTAssertTrue(done.waitForExistence(timeout: 10))
@@ -2283,12 +2370,11 @@ final class InboxUITests: XCTestCase {
             XCTAssertFalse(conversation.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "[Image attachment]")).firstMatch.exists)
         }
         verifyPhotos()
-        verifyPhotos()
-        capture(app, "local-photos-before-relaunch")
+        capture(app, "local-photos-\(count)-style-\(styleIndex)-before-relaunch")
         app.terminate()
         app.launch()
         verifyPhotos()
-        capture(app, "local-photos-after-relaunch")
+        capture(app, "local-photos-\(count)-style-\(styleIndex)-after-relaunch")
     }
 
     func testNativeMediaPreviewZoomPlaybackAndDraftRestoration() throws {

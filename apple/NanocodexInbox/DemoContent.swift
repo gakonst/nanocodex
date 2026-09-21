@@ -164,26 +164,91 @@ enum DemoContent {
     }
 
     #if DEBUG
+    /// Deterministic landscape, portrait and panorama originals reveal crop and
+    /// aspect-ratio mistakes without relying on bundled or remote photography.
+    private static func localPhotoArtwork(_ index: Int) -> Data {
+        let width = index == 2 ? 480 : index == 3 ? 1080 : 800
+        let height = index == 2 ? 800 : 480
+        let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.scaleBy(x: CGFloat(width) / 800, y: CGFloat(height) / 600)
+        func color(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> CGColor {
+            CGColor(red: r, green: g, blue: b, alpha: 1)
+        }
+        let sky = index == 2 ? color(0.96, 0.69, 0.48) : color(0.36, 0.67, 0.84)
+        let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+            colors: [color(0.91, 0.91, 0.78), sky] as CFArray, locations: [0, 1])!
+        context.drawLinearGradient(gradient, start: CGPoint(x: 0, y: 180), end: CGPoint(x: 0, y: 600), options: [])
+        context.setFillColor(color(1, 0.92, 0.64))
+        context.fillEllipse(in: CGRect(x: index == 2 ? 455 : 510, y: 400, width: 94, height: 94))
+        func ridge(_ points: [CGPoint], _ fill: CGColor) {
+            context.beginPath(); context.move(to: points[0])
+            for point in points.dropFirst() { context.addLine(to: point) }
+            context.closePath(); context.setFillColor(fill); context.fillPath()
+        }
+        ridge([CGPoint(x: 0, y: 170), CGPoint(x: 0, y: 320), CGPoint(x: 180, y: 450),
+               CGPoint(x: 330, y: 295), CGPoint(x: 480, y: 420), CGPoint(x: 800, y: 260),
+               CGPoint(x: 800, y: 170)], color(0.27, 0.43, 0.49))
+        ridge([CGPoint(x: 100, y: 370), CGPoint(x: 180, y: 450), CGPoint(x: 255, y: 374),
+               CGPoint(x: 197, y: 398), CGPoint(x: 166, y: 387)], color(0.95, 0.96, 0.88))
+        context.setFillColor(index == 2 ? color(0.24, 0.48, 0.45) : color(0.12, 0.48, 0.62))
+        context.fill(CGRect(x: 0, y: 0, width: 800, height: 230))
+        for line in 0..<22 {
+            let y = CGFloat(line * 10 + 8)
+            context.setStrokeColor(CGColor(red: 0.85, green: 0.94, blue: 0.87, alpha: 0.28))
+            context.setLineWidth(2)
+            context.move(to: CGPoint(x: CGFloat((line * 73) % 300), y: y))
+            context.addLine(to: CGPoint(x: CGFloat(420 + (line * 41) % 380), y: y))
+            context.strokePath()
+        }
+        ridge([CGPoint(x: 0, y: 0), CGPoint(x: 0, y: 190), CGPoint(x: 145, y: 155),
+               CGPoint(x: 290, y: 0)], color(0.12, 0.26, 0.23))
+        for tree in 0..<7 {
+            let x = CGFloat(40 + tree * 29)
+            let base = CGFloat(80 - tree * 7)
+            let top = base + CGFloat(180 - tree * 12)
+            context.setFillColor(color(0.09, 0.20, 0.19))
+            context.fill(CGRect(x: x - 3, y: base, width: 6, height: top - base))
+            ridge([CGPoint(x: x - 27, y: base + 30), CGPoint(x: x, y: top),
+                   CGPoint(x: x + 27, y: base + 30)], color(0.10, 0.29, 0.25))
+        }
+        // A small bright sailboat remains recognizable in a centered square crop.
+        context.setFillColor(color(0.97, 0.88, 0.66))
+        context.fill(CGRect(x: 448, y: 109, width: 3, height: 105))
+        ridge([CGPoint(x: 443, y: 127), CGPoint(x: 443, y: 214), CGPoint(x: 389, y: 127)], color(1, 0.96, 0.85))
+        ridge([CGPoint(x: 397, y: 113), CGPoint(x: 480, y: 113), CGPoint(x: 467, y: 97),
+               CGPoint(x: 410, y: 97)], color(0.72, 0.24, 0.15))
+        let png = NSMutableData()
+        let destination = CGImageDestinationCreateWithData(png, "public.png" as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+        CGImageDestinationFinalize(destination)
+        return png as Data
+    }
+
+    /// Seed through InboxModel.demo() so the composer exercises its ordinary attachment path.
+    static func composerPhotoFixtures() throws -> [PreparedAttachment] {
+        try (1...3).map { index in
+            try AttachmentPreparation.prepare(data: localPhotoArtwork(index),
+                name: "Phone photo \(index).png", mediaType: "image/png")
+        }
+    }
+
     /// Keep these originals across relaunches so preview cleanup cannot be
     /// hidden by regenerating fixture files. Each test uses a unique profile.
     private static func localPhotoRows() -> [TranscriptRow] {
         do {
             let scope = "demo." + (ProcessInfo.processInfo.environment["NANOCODEX_DEMO_PROFILE"] ?? "default")
             let store = try AttachmentStore(scope: scope)
-            let seededKey = "local-photo-fixture." + scope
+            let count = min(10, max(1, Int(ProcessInfo.processInfo.environment["NANOCODEX_DEMO_LOCAL_PHOTO_COUNT"] ?? "2") ?? 2))
+            let seededKey = "local-photo-fixture.artwork-v2.\(count)." + scope
             let seeded = UserDefaults.standard.bool(forKey: seededKey)
-            var content: [JSON] = [.object(["type": .string("text"), "text": .string("Compare these two phone photos.")])]
-            for index in 1...2 {
-                let context = CGContext(data: nil, width: 280, height: 150, bitsPerComponent: 8, bytesPerRow: 0,
-                    space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-                context.setFillColor(CGColor(red: index == 1 ? 0.85 : 0.1, green: 0.25, blue: index == 1 ? 0.1 : 0.85, alpha: 1))
-                context.fill(CGRect(x: 0, y: 0, width: 280, height: 150))
-                let png = NSMutableData()
-                let destination = CGImageDestinationCreateWithData(png, "public.png" as CFString, 1, nil)!
-                CGImageDestinationAddImage(destination, context.makeImage()!, nil)
-                CGImageDestinationFinalize(destination)
+            let caption = count == 1 ? "Review this phone photo." : "Compare these \(count) phone photos."
+            var content: [JSON] = [.object(["type": .string("text"), "text": .string(caption)])]
+            for index in 1...count {
+                let artworkIndex = count == 1 ? Int(ProcessInfo.processInfo.environment["NANOCODEX_DEMO_LOCAL_PHOTO_STYLE"] ?? "1") ?? 1 : index
+                let png = localPhotoArtwork(artworkIndex)
                 let prepared = try AttachmentPreparation.prepare(data: png as Data, name: "Phone photo \(index).png", mediaType: "image/png")
-                let attachment = try MessageAttachment(id: "00000000-0000-4000-8000-00000000000\(index)",
+                let attachment = try MessageAttachment(id: String(format: "00000000-0000-4000-8000-%012d", index),
                     name: prepared.attachment.name, mediaType: prepared.attachment.mediaType, byteCount: prepared.attachment.byteCount,
                     handID: "fixture-phone")
                 if !seeded {

@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { connectComputerTools, outputContent } from "../index.mjs";
-import { provider, png } from "./provider-fixture.mjs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setImmediate } from "node:timers/promises";
+import { connectComputerTools, createComputerTools, outputContent } from "../index.mjs";
+import { catalog, provider, png } from "./provider-fixture.mjs";
 
 const context = (sessionId, signal = new AbortController().signal) => ({ sessionId, signal, callId: "test", parentCallId: "", model: "fixture" });
 const open = async t => { const computer = await connectComputerTools(provider()); t.after(computer.close); return computer; };
@@ -23,9 +27,9 @@ test("each conversation owns a provider process and reset is forwarded to the pr
   assert.equal((await js.handler({get:true}, context("one"))).output[0].text, "undefined");
 });
 
-test("provider owns arguments, deadlines, errors, and post-error behavior", async t => {
+test("provider owns arguments, errors, and post-error behavior", async t => {
   const computer = await open(t), js = computer.tool("js");
-  const input = {unknown:{value:1},title:null,timeout_ms:1,wait:30,isError:true};
+  const input = {unknown:{value:1},title:null,timeout_ms:5000,wait:30,isError:true};
   const result = await js.handler(input, context("contracts"));
   assert.deepEqual(JSON.parse(result.output[0].text).arguments, input);
   assert.equal(result.success, false);
@@ -98,4 +102,82 @@ test("output conversion preserves provider MIME declarations and unfamiliar MCP 
   assert.equal(output[0].image_url, `data:image/jpeg;base64,${png}`);
   assert.equal(output[1].audio_url, "data:audio/provider-format;base64,fixture");
   assert.deepEqual(JSON.parse(output[2].text), resource);
+});
+
+for (const name of ["js", "js_reset"]) {
+  test(`${name} host deadline stops a blocked process and permits fresh calls without retry`, { timeout: 5000 }, async t => {
+    const computer = await open(t), js = computer.tool("js");
+    await js.handler({set:"old"}, context("deadline"));
+    const expired = assert.rejects(
+      computer.tool(name).handler({block:true,timeout_ms:100}, context("deadline")),
+      new RegExp(`CUA ${name} timed out after 100 ms`),
+    );
+    assert.equal((await js.handler({set:"independent"}, context("other"))).success, true);
+    await expired;
+    assert.equal((await js.handler({get:true}, context("deadline"))).output[0].text, "undefined");
+    assert.equal((await js.handler({get:true}, context("other"))).output[0].text, "independent");
+  });
+
+  test(`${name} queued deadline rejects before active work completes and preserves its process`, { timeout: 5000 }, async t => {
+    const computer = await open(t), js = computer.tool("js");
+    await js.handler({set:"kept"}, context("queue-deadline"));
+    let completed = false;
+    const active = js.handler({wait:200}, context("queue-deadline")).then(result => { completed = true; return result; });
+    await assert.rejects(
+      computer.tool(name).handler({set:"wrong",timeout_ms:30}, context("queue-deadline")),
+      new RegExp(`CUA ${name} timed out after 30 ms`),
+    );
+    assert.equal(completed, false);
+    await active;
+    assert.equal((await js.handler({get:true}, context("queue-deadline"))).output[0].text, "kept");
+  });
+}
+
+for (const blockMethod of ["initialize", "tools/list"]) {
+  test(`host deadline includes blocked ${blockMethod} during session startup`, { timeout: 5000 }, async t => {
+    const directory = await mkdtemp(join(tmpdir(), "cua-startup-deadline-"));
+    t.after(() => rm(directory, {recursive:true,force:true}));
+    const requestLog = join(directory, "requests");
+    const computer = createComputerTools({ ...provider({blockMethod,requestLog}), definitions: catalog });
+    t.after(computer.close);
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const expired = assert.rejects(
+      computer.tool("js").handler({timeout_ms:150}, context("startup-deadline")),
+      /CUA js timed out after 150 ms/,
+    );
+    // Wait for evidence that startup reached the stalled RPC before expiring it.
+    let requests;
+    while (!requests?.split("\n").includes(blockMethod)) {
+      requests = await readFile(requestLog, "utf8").catch(error => {
+        if (error.code !== "ENOENT") throw error;
+      });
+      await setImmediate();
+    }
+    t.mock.timers.tick(150);
+    await expired;
+    assert(!requests.split("\n").includes("tools/call"));
+  });
+}
+
+test("host deadline defaults to 30 seconds for invalid values and clamps timer overflow", { timeout: 5000 }, async t => {
+  const computer = await open(t), js = computer.tool("js");
+  await js.handler({}, context("timer-values"));
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const timeout_ms of [undefined, 0, -1, 1.5, "1", null, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, Number.MAX_SAFE_INTEGER]) {
+    const expected = timeout_ms === Number.MAX_SAFE_INTEGER ? 2_147_483_647 : 30_000;
+    const active = new AbortController();
+    const blocked = assert.rejects(js.handler({block:true}, context("timer-values", active.signal)));
+    let rejected = false;
+    const queued = assert.rejects(js.handler({timeout_ms}, context("timer-values")), error => {
+      rejected = true;
+      return error.message === `CUA js timed out after ${expected} ms`;
+    });
+    t.mock.timers.tick(expected - 1);
+    await setImmediate();
+    assert.equal(rejected, false);
+    t.mock.timers.tick(1);
+    await queued;
+    active.abort();
+    await blocked;
+  }
 });

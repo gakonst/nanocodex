@@ -1119,6 +1119,79 @@ final class RemoteViewerTests: XCTestCase {
         XCTAssertFalse(viewer.controlling)
     }
 
+    @MainActor func testRefreshConnectionRecoversAfterDeadlineWithFreshGeneration() async throws {
+        var catalog = surface("fresh")
+        catalog["transport"] = "frames-v1"
+        let service = try service { request in
+            if request.request.url?.path.hasSuffix("/screens") == true {
+                request.respond(200, ["surfaces": [catalog]])
+            } else { request.respond(503) }
+        }
+        let viewer = viewer(recoveryWindow: .zero)
+        var sockets: [ViewerSocket] = []
+        viewer.makeSignaling = { _ in
+            let socket = ViewerSocket()
+            socket.onConnect = { socket.onMessage(.init(type: "ready")) }
+            sockets.append(socket)
+            return socket
+        }
+        defer { viewer.close(); service.close() }
+        await viewer.connect(service: service, hand: try hand("expired"))
+        XCTAssertFalse(viewer.connecting)
+        XCTAssertFalse(viewer.connected)
+        XCTAssertEqual(viewer.hand?.generation, "expired")
+
+        await viewer.refreshConnection()
+        XCTAssertEqual(viewer.hand?.generation, "fresh")
+        XCTAssertEqual(sockets.count, 2)
+        XCTAssertTrue(sockets[0].closed)
+        XCTAssertFalse(viewer.controlling)
+        // Repeated Refresh must not tear down an in-flight replacement.
+        await viewer.refreshConnection()
+        XCTAssertEqual(sockets.count, 2)
+        XCTAssertFalse(sockets[1].closed)
+        let decoded = expectation(description: "Replacement frame decoded")
+        sockets[1].onSend = { if $0.type == "frame_request" { decoded.fulfill() } }
+        sockets[1].onMessage(try jpegFrame())
+        await fulfillment(of: [decoded], timeout: 3)
+        XCTAssertTrue(viewer.connected)
+        await viewer.refreshConnection()
+        XCTAssertEqual(sockets.count, 2, "A healthy viewer survives catalog refresh")
+        XCTAssertFalse(sockets[1].closed)
+        viewer.suspend()
+        await viewer.refreshConnection()
+        XCTAssertEqual(sockets.count, 2, "Refresh must not resume a hidden screen")
+        viewer.close()
+        await viewer.refreshConnection()
+        XCTAssertEqual(sockets.count, 2, "Refresh must not reopen a cleared selection")
+    }
+
+    @MainActor func testRefreshAuthorizationFailureDoesNotAutomaticallyRetry() async throws {
+        let catalog = surface("fresh")
+        let unexpected = expectation(description: "No automatic listing after authorization failure")
+        unexpected.isInverted = true
+        let lock = NSLock()
+        var listings = 0
+        let service = try service { request in
+            if request.request.url?.path.hasSuffix("/screens") == true {
+                let count = lock.withLock { listings += 1; return listings }
+                if count > 1 { unexpected.fulfill() }
+                request.respond(200, ["surfaces": [catalog]])
+            } else { request.respond(401) }
+        }
+        let viewer = viewer()
+        defer { viewer.close(); service.close() }
+        await viewer.connect(service: service, hand: try hand("expired"))
+        XCTAssertFalse(viewer.connecting)
+        await viewer.refreshConnection()
+        XCTAssertEqual(viewer.hand?.generation, "fresh")
+        XCTAssertEqual(viewer.status, RemoteError.unauthorized.localizedDescription)
+        XCTAssertFalse(viewer.connecting)
+        XCTAssertFalse(viewer.connected)
+        await fulfillment(of: [unexpected], timeout: 1.2)
+        XCTAssertEqual(lock.withLock { listings }, 1)
+    }
+
     @MainActor func testRecoveryDeadlineStopsRetryingWithoutLosingSelection() async throws {
         let unexpected = expectation(description: "No request after the recovery deadline")
         unexpected.isInverted = true

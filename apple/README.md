@@ -39,6 +39,12 @@ agent uses that phone’s `view_image` tool to inspect them; the phone must be
 connected. Composer and history thumbnails read the retained local previews,
 including after draft cleanup and relaunch. Videos and images sent with the Hand
 disabled continue to use authenticated cloud uploads.
+Image attachments appear in a compact, trailing-aligned grid above the message
+text, with square crops for multiple images and preserved proportions for a single
+image. Tapping opens the full original. The composer uses a horizontally
+scrollable 120-point thumbnail strip without filename captions. Thumbnail decoding starts
+when the view appears, preserves EXIF orientation, and shares a bounded cache
+so scrolling does not repeatedly blank and decode the same images.
 
 
 The current conversation stays mounted while the session drawer opens. The drawer

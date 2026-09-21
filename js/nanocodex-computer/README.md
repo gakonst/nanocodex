@@ -37,15 +37,20 @@ Trusted `args` and `environment` configure the child process. There are no
 companion launch flags, platform arguments, security configuration, private
 desktop routing, or protocol switches. The inherited child environment omits
 account/API credentials. The provider receives model arguments unchanged,
-including its own optional fields and timeouts. Tool execution deadlines and
-reset behavior belong to the provider.
+including its own optional fields and timeouts. For `js` and `js_reset`, the host
+also enforces a deadline covering queue wait, process startup, and the provider
+call. A positive safe integer `timeout_ms` selects that deadline (clamped to
+2,147,483,647 ms to avoid timer overflow); all other values default to 30 seconds.
+The provider still owns reset behavior.
 
 Each conversation has its own process and ordered call queue. Independent
 conversations run concurrently. Caller cancellation stops the active process;
-queued cancellation rejects without running that call. Session release and
-attachment close cancel their active and queued work. A later call after a
-transport failure starts a fresh provider process; the adapter does not require
-an invented reset command. It never retries a failed call automatically.
+queued cancellation rejects without running that call. Host deadline expiry uses
+the same cancellation path: active calls stop their process, while queued calls
+never run or stop another call's process. Session release and attachment close
+cancel their active and queued work. A later call after a transport failure or
+active deadline expiry starts a fresh provider process; the adapter does not
+require an invented reset command. It never retries a failed call automatically.
 
 MCP results and metadata remain available unchanged as the tool result's `value`.
 Text, images, and audio are translated into model content; other MCP content is

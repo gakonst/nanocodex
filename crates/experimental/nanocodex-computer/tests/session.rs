@@ -30,6 +30,7 @@ count=0
 while IFS= read -r call; do
     case "$call" in
         *'"code":"wait"'*) IFS= read -r never; exit 0 ;;
+        *'"code":"slow"'*) sleep 0.3; count=$((count + 1)) ;;
         *'"name":"js_reset"'*) count=0 ;;
         *) count=$((count + 1)) ;;
     esac
@@ -273,4 +274,84 @@ async fn rejects_repeated_cursors_and_duplicate_tool_names() {
         };
         assert!(error.to_string().contains(expected), "{error}");
     }
+}
+
+#[tokio::test]
+async fn requested_deadline_cancels_blocked_provider_and_requires_reset() {
+    let computer = ComputerTools::connect(config()).await.unwrap();
+    computer
+        .js()
+        .execute(input(json!({})), context("deadline"))
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        computer.js().execute(
+            input(json!({"code":"wait", "timeout_ms":100})),
+            context("deadline"),
+        ),
+    )
+    .await
+    .expect("host ignored the requested deadline");
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("100 ms deadline")
+    );
+    assert!(
+        computer
+            .js()
+            .execute(input(json!({})), context("deadline"))
+            .await
+            .is_err()
+    );
+    assert!(
+        computer
+            .js()
+            .execute(input(json!({})), context("other"))
+            .await
+            .unwrap()
+            .success
+    );
+    computer
+        .reset()
+        .execute(input(json!({})), context("deadline"))
+        .await
+        .unwrap();
+    assert!(
+        computer
+            .js()
+            .execute(input(json!({})), context("deadline"))
+            .await
+            .unwrap()
+            .success
+    );
+}
+
+#[tokio::test]
+async fn queued_deadline_does_not_execute_or_discard_the_active_scope() {
+    let computer = ComputerTools::connect(config()).await.unwrap();
+    let js = computer.js();
+    js.execute(input(json!({})), context("queue"))
+        .await
+        .unwrap();
+    let (active, queued) = tokio::join!(
+        js.execute(input(json!({"code":"slow"})), context("queue")),
+        js.execute(input(json!({"timeout_ms":50})), context("queue")),
+    );
+    assert_eq!(
+        active.unwrap().structured_result()["structuredContent"]["count"],
+        2
+    );
+    assert!(queued.err().unwrap().to_string().contains("50 ms deadline"));
+    let continued = js
+        .execute(input(json!({})), context("queue"))
+        .await
+        .unwrap();
+    assert_eq!(
+        continued.structured_result()["structuredContent"]["count"],
+        3
+    );
 }

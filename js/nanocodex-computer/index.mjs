@@ -111,7 +111,14 @@ export function createComputerTools(options) {
       });
     }
     const session = sessions.get(id);
-    const signal = AbortSignal.any([session.lifetime.signal, ...(context.signal ? [context.signal] : [])]);
+    const deadline = new AbortController();
+    const timeoutMs = Number.isSafeInteger(input?.timeout_ms) && input.timeout_ms > 0
+      ? Math.min(input.timeout_ms, 2_147_483_647) : 30_000;
+    const timer = name === "js" || name === "js_reset"
+      ? setTimeout(() => deadline.abort(new Error(`CUA ${name} timed out after ${timeoutMs} ms`)), timeoutMs)
+      : undefined;
+    timer?.unref();
+    const signal = AbortSignal.any([session.lifetime.signal, deadline.signal, ...(context.signal ? [context.signal] : [])]);
     const run = async () => {
       signal.throwIfAborted();
       if (disposed) throw new Error("CUA attachment is closed");
@@ -151,7 +158,7 @@ export function createComputerTools(options) {
     session.tail = result.catch(() => {});
     // A queued cancellation reaches the caller immediately. The queued run
     // still checks the signal and session identity before touching its process.
-    return interruptible(result, signal);
+    return interruptible(result, signal).finally(() => clearTimeout(timer));
   };
   const allTools = catalog.map(tool => namedTool(`mcp__cua_repl__${tool.name}`, {
       description: tool.description ?? "", parameters: tool.inputSchema,

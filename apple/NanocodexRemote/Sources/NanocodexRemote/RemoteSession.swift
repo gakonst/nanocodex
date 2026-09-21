@@ -235,6 +235,14 @@ public final class RemoteViewer: ObservableObject {
         await start(refresh: true)
     }
 
+    /// Explicit Refresh retries an idle failed viewer, like the Reconnect button.
+    /// Catalog polling must not call this: authorization failures remain terminal
+    /// until the user requests another connection.
+    func refreshConnection() async {
+        guard !connected, !connecting, !suspended else { return }
+        await reconnect()
+    }
+
     public func suspend() {
         guard hand != nil else { return }
         suspended = true; detach(); status = "Paused"

@@ -42,9 +42,13 @@ for supported arguments and APIs.
 Each conversation owns a provider process and a queue. Calls within that process
 remain ordered; other conversations execute independently. Cancellation or a
 protocol failure discards only the affected process. A subsequent upstream
-`js_reset` call is required before continuing that conversation. Caller deadlines
-and provider timeout handling remain effective; the adapter does not interpret
-provider argument fields as local timeout settings.
+`js_reset` call is required before continuing that conversation.
+
+For `js` and `js_reset`, a positive integer `timeout_ms` also bounds the full
+host wait, including queueing, startup, and execution (default: 30 seconds, maximum: 2,147,483,647 ms).
+Arguments still reach the provider unchanged. An active call that expires
+discards its process and requires `js_reset`; a call that expires while queued
+never runs or discards the active process. Other conversations remain usable.
 
 MCP text, image, and audio content is translated to Nanocodex multimodal tool
 output. The full MCP result, including structured content and metadata, remains

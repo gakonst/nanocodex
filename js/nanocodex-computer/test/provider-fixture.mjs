@@ -4,13 +4,14 @@ export const catalog = [
   { name: "js", description: "Synthetic MCP transport fixture", inputSchema: { type: "object", additionalProperties: true } },
   { name: "js_reset", description: "Synthetic provider reset", inputSchema: { type: "object", additionalProperties: true } },
 ];
-export function provider() {
+export function provider({ blockMethod, requestLog } = {}) {
   const script = `
     let marker;
     const send = value => process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value})+'\\n');
     require('node:readline').createInterface({input:process.stdin}).on('line', async line => {
       const request = JSON.parse(line);
-      if (request.id === undefined) return;
+      if (${JSON.stringify(requestLog)} !== undefined) require("node:fs").appendFileSync(${JSON.stringify(requestLog)}, request.method + "\\n");
+      if (request.id === undefined || request.method === ${JSON.stringify(blockMethod)}) return;
       let result;
       if (request.method === 'initialize') result = {protocolVersion:'2025-06-18',capabilities:{tools:{}}};
       else if (request.method === 'tools/list') result = {tools:${JSON.stringify(catalog)}};
