@@ -758,6 +758,12 @@ function cloudflareSubagentSessions(storage, reservation, lifecycle) {
       validateSubagentCheckpointSize(checkpoint);
       return checkpoint;
     },
+    consumeCheckpoint() {
+      if (!mayBindCloudflareSubagentSession(reservation)) {
+        throw new Error("Subagent checkpoint reader no longer owns the session");
+      }
+      storage.sql.exec("DELETE FROM nanocodex_cloudflare_subagent_checkpoints");
+    },
     checkpoint(checkpoint) {
       if (!mayReleaseCloudflareSubagentSession(reservation)) {
         throw new Error("Subagent checkpoint writer no longer owns the session");

@@ -152,12 +152,24 @@ impl SubagentCheckpoint {
                     }
                     runtime.validate().map_err(std::io::Error::other)?;
                 }
-                None if matches!(child.status, AgentStatus::Closed) => {}
+                // Legacy descriptor-only children are archival, never reusable.
+                None if matches!(child.status, AgentStatus::Closed | AgentStatus::Interrupted) => {}
                 None => {
                     return Err(std::io::Error::other(
                         "reusable child is missing its runtime checkpoint",
                     ));
                 }
+            }
+            if child.runtime.is_some()
+                && !matches!(child.status, AgentStatus::Closed | AgentStatus::Closing)
+                && let Some(parent) = child.descriptor.parent
+                && self.children.iter().any(|candidate| {
+                    candidate.descriptor.id == parent && candidate.runtime.is_none()
+                })
+            {
+                return Err(std::io::Error::other(
+                    "reusable child has a parent without a runtime checkpoint",
+                ));
             }
             let contract = OutputContract::compile(&child.output_schema)?;
             if let Some(output) = &child.last_output
@@ -1370,7 +1382,7 @@ impl Registry {
                 let contract = OutputContract::compile(&child.output_schema)?;
                 let closed = matches!(child.status, AgentStatus::Closed | AgentStatus::Closing);
                 let host_context = child.host_context.map(Arc::<str>::from);
-                let resources = if !closed {
+                let resources = if let Some(runtime) = child.runtime.clone().filter(|_| !closed) {
                     let parent = match descriptor.parent {
                         Some(id) => parents.get(&id).ok_or_else(|| {
                             std::io::Error::other("restored parent runtime is unavailable")
@@ -1378,10 +1390,7 @@ impl Registry {
                         None => root,
                     };
                     let (agent, events) = parent
-                        .restore_child(
-                            child.runtime.clone().expect("validated runtime"),
-                            host_context.clone(),
-                        )
+                        .restore_child(runtime, host_context.clone())
                         .await
                         .map_err(std::io::Error::other)?;
                     parents.insert(descriptor.id, agent.clone());
@@ -1426,7 +1435,7 @@ impl Registry {
                     AgentStatus::Closing => AgentStatus::Closed,
                     status => status,
                 };
-                session.evicted = false;
+                session.evicted = !closed && resources.is_none();
                 if let Some((harness, task, event_task)) = resources {
                     session.harness = Some(harness);
                     session.harness_task = Some(task);
@@ -4472,6 +4481,107 @@ mod tests {
                 .to_string()
                 .contains("limits")
         );
+    }
+
+    #[test]
+    fn checkpoint_archives_only_interrupted_children_and_rejects_reusable_descendants() {
+        let mut checkpoint = checkpoint_fixture();
+        checkpoint.children[0].runtime = None;
+        checkpoint.children[0].status = AgentStatus::Interrupted;
+        checkpoint.validate("root").unwrap();
+        for status in [
+            AgentStatus::Pending,
+            AgentStatus::Running,
+            AgentStatus::Closing,
+        ] {
+            checkpoint.children[0].status = status;
+            assert!(checkpoint.validate("root").is_err());
+        }
+        checkpoint.children[0].status = AgentStatus::Interrupted;
+        let mut descendant = checkpoint_fixture().children.remove(0);
+        descendant.descriptor.id = AgentId::new(8);
+        descendant.descriptor.parent = Some(AgentId::new(7));
+        descendant.descriptor.session_id = "018f1f9a-7b3c-7a17-8000-000000000108".to_owned();
+        descendant.runtime.as_mut().unwrap().session_id = descendant.descriptor.session_id.clone();
+        checkpoint.children.push(descendant);
+        assert!(
+            checkpoint
+                .validate("root")
+                .unwrap_err()
+                .to_string()
+                .contains("parent without a runtime")
+        );
+        checkpoint.children[1].runtime = None;
+        checkpoint.children[1].status = AgentStatus::Interrupted;
+        checkpoint.validate("root").unwrap();
+    }
+
+    #[tokio::test]
+    async fn checkpoint_roundtrips_legacy_archives_without_making_them_messageable() {
+        let (root, _events) = pending_agent(Arc::new(Notify::new()));
+        let root_id = root.session_id();
+        let (original, _, _updates) = super::channel(2);
+        let parent = checkpoint_fixture().children.remove(0).descriptor;
+        let mut child = parent.clone();
+        child.id = AgentId::new(8);
+        child.parent = Some(parent.id);
+        child.session_id = "018f1f9a-7b3c-7a17-8000-000000000108".to_owned();
+        original
+            .restore_with_host_contexts(
+                root_id,
+                vec![child.clone(), parent.clone()],
+                HashMap::from([
+                    (parent.session_id.clone(), Some(Arc::from("parent-context"))),
+                    (child.session_id.clone(), Some(Arc::from("child-context"))),
+                ]),
+            )
+            .await
+            .unwrap();
+        let checkpoint = original.checkpoint(root_id).await.unwrap();
+        assert!(
+            checkpoint
+                .children
+                .iter()
+                .all(|child| child.runtime.is_none() && child.status == AgentStatus::Interrupted)
+        );
+        let encoded = serde_json::to_string(&checkpoint).unwrap();
+        let (restored, _, _updates) = super::channel(2);
+        restored
+            .restore_checkpoint(&root, serde_json::from_str(&encoded).unwrap())
+            .await
+            .unwrap();
+        let directory = restored.directory(root_id, true, false).await;
+        assert_eq!(directory.len(), 2);
+        assert!(directory.iter().all(|child| !child.can_message));
+        {
+            let state = restored.state.lock().await;
+            assert!(
+                state.scopes[root_id]
+                    .sessions
+                    .values()
+                    .all(|session| session.evicted
+                        && session.harness.is_none()
+                        && session.stored_runtime.is_none())
+            );
+        }
+        assert!(
+            restored
+                .send_message(
+                    root_id,
+                    child.id,
+                    MessagePriority::Deferred,
+                    MessagePurpose::Coordinate,
+                    None,
+                    "Continue".to_owned()
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            serde_json::to_value(restored.checkpoint(root_id).await.unwrap()).unwrap(),
+            serde_json::to_value(checkpoint).unwrap()
+        );
+        root.shutdown().await.unwrap();
     }
 
     #[tokio::test]

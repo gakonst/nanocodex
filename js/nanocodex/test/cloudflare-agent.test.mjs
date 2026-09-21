@@ -91,6 +91,7 @@ class MemoryStorage {
       this.subagentCheckpoints.set(args[0], args[1]);
       rowsWritten = 1;
     } else if (statement.startsWith("DELETE FROM nanocodex_cloudflare_subagent_checkpoints")) {
+      if (this.failCheckpointDeletion) throw new Error("checkpoint deletion failed");
       rowsWritten = this.subagentCheckpoints.size;
       this.subagentCheckpoints.clear();
     } else if (statement.startsWith(
@@ -1655,6 +1656,7 @@ test("Cloudflare child checkpoints reject malformed chunks and stale owner write
   try {
     const retained = new Map(storage.subagentCheckpoints);
     assert.throws(() => sessions.checkpoint("{}"), /no longer owns the session/);
+    assert.throws(() => sessions.consumeCheckpoint(), /no longer owns the session/);
     assert.deepEqual(storage.subagentCheckpoints, retained, "a stale owner cannot overwrite the replacement checkpoint");
   } finally {
     await replacement.session.shutdown();
@@ -1736,7 +1738,11 @@ test("closing one child before owner shutdown preserves a resumable sibling", { 
     const [closed, retained] = children;
     const retainedSession = sessionsByAgent.get(String(retained.agent_id));
     await agent.session.shutdown();
+    const unloadedCheckpoint = new Map(storage.subagentCheckpoints);
     agent = await create(module, durableOwner(storage), options);
+    // Model a clean persisted boundary for the takeover/rollback assertions.
+    // Successful reconstruction consumes it before any new child work can run.
+    storage.subagentCheckpoints = unloadedCheckpoint;
     const retainedBindings = new Map(storage.subagents);
     const retainedChunks = new Map(storage.subagentCheckpoints);
     const bridge = globalThis.nanocodexHost;
@@ -1831,4 +1837,87 @@ test("Cloudflare SDK sibling shutdown cannot overwrite the root checkpoint", asy
     await retained.session.shutdown();
     await agent.session.shutdown();
   }
+});
+
+
+test("Cloudflare consumes a restored checkpoint before exposing a mutable owner", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const storage = new MemoryStorage();
+  const first = await create(module, durableOwner(storage));
+  await first.session.shutdown();
+  assert.ok(storage.subagentCheckpoints.size > 0);
+  const second = await create(module, durableOwner(storage));
+  try {
+    assert.equal(storage.subagentCheckpoints.size, 0,
+      "a restored snapshot must not survive subsequent child mutations or abrupt eviction");
+  } finally {
+    await second.session.shutdown();
+  }
+  assert.ok(storage.subagentCheckpoints.size > 0, "a clean unload writes a fresh snapshot");
+});
+
+
+test("Cloudflare recovers a legacy checkpoint older than the retained child bindings", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const storage = new MemoryStorage();
+  const first = await create(module, durableOwner(storage));
+  await first.session.shutdown();
+  const previous = { agentId: "1", parentAgentId: null, sessionId: "legacy-previous-child", role: "research", task: "Previous work" };
+  const checkpoint = JSON.parse([...storage.subagentCheckpoints.values()].join(""));
+  checkpoint.next_agent_id = 2;
+  checkpoint.children.push({
+    descriptor: { id: 1, parent: null, session_id: previous.sessionId, role: previous.role, task: previous.task },
+    runtime: null, output_schema: true, next_turn_token: 0, status: { state: "interrupted" },
+    last_output: null, host_context: "synthetic-host-context",
+  });
+  const savedCheckpoint = new Map([[0, JSON.stringify(checkpoint)]]);
+  storage.subagents.set(previous.sessionId, {
+    agentId: previous.agentId, descriptorJson: JSON.stringify(previous), hostContextRef: "synthetic-host-context",
+  });
+  const descriptor = { agentId: "2", parentAgentId: null, sessionId: "legacy-extra-child", role: "research", task: "Retained work" };
+  storage.subagents.set(descriptor.sessionId, {
+    agentId: descriptor.agentId, descriptorJson: JSON.stringify(descriptor), hostContextRef: null,
+  });
+  const corrupt = JSON.parse([...savedCheckpoint.values()].join(""));
+  corrupt.next_agent_id = 0;
+  storage.subagentCheckpoints = new Map([[0, JSON.stringify(corrupt)]]);
+  await assert.rejects(create(module, durableOwner(storage)), /agent.*id|allocator|checkpoint/i,
+    "legacy recovery must still validate the complete Rust checkpoint schema");
+  assert.equal(storage.subagents.size, 2);
+  corrupt.next_agent_id = 2;
+  corrupt.children[0].host_context = "different-host-context";
+  storage.subagentCheckpoints = new Map([[0, JSON.stringify(corrupt)]]);
+  await assert.rejects(create(module, durableOwner(storage)), /host context differs/);
+  storage.subagentCheckpoints = savedCheckpoint;
+  let replacement = await create(module, durableOwner(storage));
+  try {
+    assert.equal(replacement.sessionId, first.sessionId);
+    assert.equal(storage.subagentCheckpoints.size, 0);
+    let listed = await Subagents.list(replacement, { includeCompleted: true });
+    assert.deepEqual(listed.agents.map(({ agent_id }) => agent_id).sort(), [1, 2]);
+    assert.equal(listed.agents[0].status.state, "interrupted");
+    assert.equal(listed.agents[0].can_message, false, "stale child work is never replayed");
+    await replacement.session.shutdown();
+    replacement = await create(module, durableOwner(storage));
+    listed = await Subagents.list(replacement, { includeCompleted: true });
+    assert.equal(listed.agents[0].status.state, "interrupted");
+    assert.equal(listed.agents[0].can_message, false, "archived recovery survives another unload");
+    assert.equal(storage.subagents.size, 2);
+  } finally { await replacement.session.shutdown(); }
+});
+
+
+test("Cloudflare checkpoint consumption failure preserves the saved boundary", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const storage = new MemoryStorage();
+  const first = await create(module, durableOwner(storage));
+  await first.session.shutdown();
+  const retained = new Map(storage.subagentCheckpoints);
+  storage.failCheckpointDeletion = true;
+  await assert.rejects(create(module, durableOwner(storage)), /checkpoint deletion failed/);
+  assert.deepEqual(storage.subagentCheckpoints, retained);
+  storage.failCheckpointDeletion = false;
+  const replacement = await create(module, durableOwner(storage));
+  assert.equal(storage.subagentCheckpoints.size, 0);
+  await replacement.session.shutdown();
 });

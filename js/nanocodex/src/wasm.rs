@@ -1573,6 +1573,23 @@ impl WasmNanocodex {
         self.inner.session_id().to_string()
     }
 
+    /// Validates a persisted checkpoint without restoring children or opening resources.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed, oversized, or invalid checkpoints for this root session.
+    #[wasm_bindgen(js_name = validateSubagentCheckpoint)]
+    pub fn validate_subagent_checkpoint(&self, encoded: &str) -> Result<(), JsValue> {
+        if encoded.len() > MAX_SUBAGENT_CHECKPOINT_BYTES {
+            return Err(js_error("subagent checkpoint exceeds size limit"));
+        }
+        let checkpoint: SubagentCheckpoint = serde_json::from_str(encoded)
+            .map_err(|error| js_error(format!("invalid subagent checkpoint: {error}")))?;
+        checkpoint
+            .validate(self.inner.session_id())
+            .map_err(js_error)
+    }
+
     /// Restores persisted logical children after the JavaScript owner acquires
     /// its durability generation and activates the replacement host.
     ///

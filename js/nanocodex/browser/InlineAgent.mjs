@@ -184,8 +184,15 @@ export async function create(options = {}) {
           activateCloudflareAgentSession(cloudflareReservation);
           const restoredSubagents = subagentSessions?.restore?.() ?? [];
           const checkpoint = subagentSessions?.restoreCheckpoint?.();
+          let reusableCheckpoint = checkpoint;
           if (checkpoint !== undefined) {
-            validateRestoredChildBindings(checkpoint, raw.sessionId, restoredSubagents);
+            const complete = validateRestoredChildBindings(checkpoint, raw.sessionId, restoredSubagents, subagentSessions);
+            raw.validateSubagentCheckpoint(checkpoint);
+            if (!complete) {
+              // Older owners retained snapshots while admitting new children.
+              // Keep their durable identities, but never replay an obsolete tree.
+              reusableCheckpoint = undefined;
+            }
           }
           if (restoredSubagents.length > 0 || checkpoint !== undefined) {
             const restoredHostContextRefs = Object.fromEntries(
@@ -195,9 +202,12 @@ export async function create(options = {}) {
               }),
             );
             await raw.restoreSubagents(
-              checkpoint ?? JSON.stringify(restoredSubagents),
+              reusableCheckpoint ?? JSON.stringify(restoredSubagents),
               JSON.stringify(restoredHostContextRefs),
             );
+            // Once this owner can mutate children, the old snapshot is no longer
+            // a safe recovery boundary. Only a clean unload writes a new one.
+            if (checkpoint !== undefined) subagentSessions.consumeCheckpoint();
           }
         }
         return raw;
@@ -307,10 +317,10 @@ function releaseHost(host) {
   void host.release().catch(reportError);
 }
 
-function validateRestoredChildBindings(encoded, rootSessionId, bindings) {
+function validateRestoredChildBindings(encoded, rootSessionId, bindings, sessions) {
   const checkpoint = JSON.parse(encoded);
   if (checkpoint.version !== 1 || checkpoint.root_session_id !== rootSessionId
-    || !Array.isArray(checkpoint.children) || checkpoint.children.length !== bindings.length) {
+    || !Array.isArray(checkpoint.children) || checkpoint.children.length > bindings.length) {
     throw new Error("Durable child checkpoint does not match its session bindings");
   }
   const retained = new Map(bindings.map((binding) => [binding.sessionId, binding]));
@@ -321,6 +331,10 @@ function validateRestoredChildBindings(encoded, rootSessionId, bindings) {
       || (descriptor.parent == null ? null : String(descriptor.parent)) !== (binding.parentAgentId ?? null)) {
       throw new Error("Durable child checkpoint identity differs from its session binding");
     }
+    if ((child.host_context ?? null) !== (sessions.hostContextRef?.(binding.sessionId) ?? null)) {
+      throw new Error("child checkpoint host context differs from its retained binding");
+    }
     retained.delete(descriptor.session_id);
   }
+  return retained.size === 0;
 }

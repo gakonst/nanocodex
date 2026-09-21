@@ -80,6 +80,7 @@ export function createBrowserHost(options?: {
   subagentSessions?: {
     restore(): readonly SubagentToolContext[];
     restoreCheckpoint?(): string | undefined;
+    consumeCheckpoint?(): void;
     checkpoint?(encoded: string): void;
     hostContextRef?(sessionId: string): string | undefined;
     bindingDescriptor?(sessionId: string, descriptor: SubagentToolContext, hostContextRef?: string): SubagentToolContext;
