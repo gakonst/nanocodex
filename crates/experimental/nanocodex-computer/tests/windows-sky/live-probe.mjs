@@ -5,8 +5,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 const receipt = JSON.parse(fs.readFileSync(path.join(process.env.USERPROFILE, '.nanocodex/runtimes/openai-cua/provider.json'), 'utf8'));
-const wrapper = path.join(import.meta.dirname, 'windows_sky_host.mjs');
-const child = spawn(receipt.executable, [wrapper, ...receipt.args], { env: { ...process.env, ...receipt.environment }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+// The installed receipt already includes the native host wrapper.
+const child = spawn(receipt.executable, receipt.args, { env: { ...process.env, ...receipt.environment }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
 let nextId = 0; const pending = new Map();
 const lines = createInterface({ input: child.stdout });
 let stderr = '';
