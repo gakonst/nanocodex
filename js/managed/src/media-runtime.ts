@@ -18,8 +18,8 @@ export function createMediaExecutor(loader: WorkerLoader) {
         'core.js': {js: probe ? ffprobeSource : ffmpegSource},
         'core.wasm': {wasm: probe ? ffprobeWasm : ffmpegWasm},
       },
+      // Cloudflare owns resource limits; media adds no smaller CPU or size cap.
       globalOutbound: null,
-      limits: {cpuMs: 30_000, subRequests: 0},
       env: {},
     });
     const body = new FormData();
@@ -33,7 +33,7 @@ export function createMediaExecutor(loader: WorkerLoader) {
     if (outputPath) body.set('outputPath', outputPath);
     const response = await worker.getEntrypoint().fetch(new Request('https://media.internal/run', {method: 'POST', body, signal}));
     signal?.throwIfAborted();
-    if (!response.ok) throw new Error(`WASM media execution failed (${response.status}): ${(await response.text()).slice(0, 1024)}`);
+    if (!response.ok) throw new Error(`WASM media execution failed (${response.status}): ${await response.text()}`);
     const result = await response.formData();
     const fields = JSON.parse(String(result.get('result'))) as Omit<MediaResult, 'files'>;
     const output = result.get('output');

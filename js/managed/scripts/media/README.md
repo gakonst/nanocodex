@@ -14,10 +14,11 @@ ffmpeg -hide_banner -loglevel error -i /brain/clip.mov -vn -ac 1 -ar 16000 /brai
 
 The wrapper supports one input and, for conversion, one output. Use `--help` for the
 supported options. It refuses URLs, pipes, playlists, filter scripts, image sequences,
-and access outside the workspace. Inputs and outputs are each limited to 16 MiB;
-diagnostics to 64 KiB; WASM linear memory to 96 MiB; the child isolate to 30 seconds
-CPU. Larger media and operations outside the shipped codec/filter set still require
-a native Hand. Native Hands retain their normal FFmpeg executable.
+and access outside the workspace. Cloudflare enforces runtime memory and CPU limits;
+there are no additional media-specific file, diagnostic, argument, filter-count,
+or CPU caps. WASM memory grows as needed using the toolchain default maximum,
+which exceeds the Worker memory limit. Operations outside the shipped codec/filter
+set still require a native Hand. Native Hands retain their normal FFmpeg executable.
 
 The core decodes H.264/HEVC/MPEG-4/MJPEG video and AAC/MP3/PCM/FLAC/Vorbis/Opus audio;
 it writes JPEG and PCM WAV. See `build.sh` for the exact demuxer, encoder, and filter

@@ -3,7 +3,7 @@ import {readFile} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import {after, before, test} from 'node:test';
 import {Miniflare} from 'miniflare';
-import {transform} from 'esbuild';
+import {build, transform} from 'esbuild';
 import {createComputerRuntime, createMediaCommands} from 'nanocodex-tools';
 import {createWorkspace} from 'nanocodex-tools/workspace';
 
@@ -50,6 +50,35 @@ async function run(command,args,input=fixture) {
   const form=await response.formData();
   return {...JSON.parse(form.get('result')),output:form.get('output')};
 }
+test('media executor delegates resource limits to the worker platform',async()=>{
+  const compiled=await build({
+    entryPoints:[fileURLToPath(new URL('src/media-runtime.ts',root))],
+    bundle:true,format:'esm',write:false,
+    plugins:[{name:'stub-media-assets',setup(builder){
+      builder.onResolve({filter:/\.(?:txt|bin)$/},args=>({path:args.path,namespace:'media-assets'}));
+      builder.onLoad({filter:/.*/,namespace:'media-assets'},()=>({contents:'export default "";',loader:'js'}));
+    }}],
+  });
+  const {createMediaExecutor}=await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].contents).toString('base64')}`);
+  const configurations=[];
+  const execute=createMediaExecutor({load(configuration){
+    configurations.push(configuration);
+    return {getEntrypoint(){return {async fetch(){
+      const result=new FormData();
+      result.set('result',JSON.stringify({stdout:'version\n',stderr:'',exitCode:0}));
+      return new Response(result);
+    }}}};
+  }});
+  for(const command of ['ffmpeg','ffprobe']) {
+    assert.deepEqual(await execute({command,args:['-version'],files:[]}),{stdout:'version\n',stderr:'',exitCode:0,files:[]});
+  }
+  assert.equal(configurations.length,2);
+  for(const configuration of configurations) {
+    assert.equal(Object.hasOwn(configuration,'limits'),false);
+    assert.equal(configuration.globalOutbound,null);
+  }
+});
+
 test('real workerd ffprobe reads H264/AAC MOV metadata',async()=>{
   const result=await run('ffprobe',['-v','error','-show_entries','format=duration:stream=codec_name,codec_type,width,height','-of','json','/input.mov']);
   assert.equal(result.exitCode,0,result.stderr);
@@ -119,9 +148,31 @@ if(process.env.MEDIA_SMOKE_FILE) test('screen-sized clip finishes within the ins
   console.log(JSON.stringify({input_bytes:input.length,output_bytes:bytes.length,wall_ms:Math.round(performance.now()-start)}));
 });
 
-test('WASM output writes stop at 16 MiB and return failure without partial output',async()=>{
-  const result=await run('ffmpeg',['-hide_banner','-loglevel','error','-y','-i','/input.mov','-vn','-ac','8','-ar','768000','/output.wav']);
-  assert.notEqual(result.exitCode,0,result.stderr);
-  assert.equal(result.output,null);
-  assert.match(result.stderr,/too large|Error writing|Error closing|I\/O error/i);
+test('real workerd generates and probes a WAV larger than 16 MiB',async()=>{
+  const result=await run('ffmpeg',['-hide_banner','-loglevel','error','-y','-i','/input.mov','-vn','-t','2','-ac','8','-ar','576000','/output.wav']);
+  assert.equal(result.exitCode,0,result.stderr);
+  const data=new Uint8Array(await result.output.arrayBuffer());
+  assert.ok(data.length>16*1024*1024,`WAV contains ${data.length} bytes`);
+  assert.equal(new TextDecoder().decode(data.slice(0,4)),'RIFF');
+  assert.equal(new TextDecoder().decode(data.slice(8,12)),'WAVE');
+  const probe=await run('ffprobe',['-v','error','-show_entries','format=size,duration:stream=codec_name,sample_rate,channels','-of','json','/input.mov'],data);
+  assert.equal(probe.exitCode,0,probe.stderr);
+  const metadata=JSON.parse(probe.stdout);
+  assert.equal(Number(metadata.format.size),data.length);
+  assert.equal(Number(metadata.format.duration),2);
+  assert.equal(metadata.streams[0].codec_name,'pcm_s16le');
+  assert.equal(Number(metadata.streams[0].sample_rate),576000);
+  assert.equal(metadata.streams[0].channels,8);
+});
+
+test('real workerd preserves diagnostics beyond 64 KiB with long valid probe options',async()=>{
+  // Alternating fields prevent FFmpeg's repeated-log suppression from hiding diagnostics.
+  const entries=`format=${Array(600).fill('duration,size').join(',')}`;
+  const options=Array.from({length:65},(_,index)=>['-show_entries',index<2?entries:'format=duration,size']).flat();
+  const result=await run('ffprobe',['-v','debug',...options,'-of','json','/input.mov']);
+  assert.equal(result.exitCode,0,result.stderr);
+  assert.ok(Buffer.byteLength(result.stderr)>65536);
+  assert.equal(result.stderr.match(/Adding 'duration' to the entries to show in section 'format'/g)?.length,1263);
+  assert.equal(result.stderr.match(/Adding 'size' to the entries to show in section 'format'/g)?.length,1263);
+  assert.equal(Number(JSON.parse(result.stdout).format.duration),2);
 });

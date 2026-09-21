@@ -18,7 +18,9 @@ PY
 if [[ ! -d "$BUILD/ffmpeg-5.1.10" ]]; then tar -xf "$ARCHIVE" -C "$BUILD"; fi
 cd "$BUILD/ffmpeg-5.1.10"
 CFLAGS='-Oz'
-LDFLAGS='-O0 -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web,worker -sDYNAMIC_EXECUTION=0 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=16777216 -sMAXIMUM_MEMORY=100663296 -sSTACK_SIZE=1048576 -sEXIT_RUNTIME=1 -sINVOKE_RUN=0 -sEXPORTED_RUNTIME_METHODS=FS,callMain -sFORCE_FILESYSTEM=1'
+# Initial heap and C stack allocations are ABI configuration, not media quotas.
+# Leave maximum heap at the toolchain default, above Cloudflare's isolate limit.
+LDFLAGS='-O0 -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web,worker -sDYNAMIC_EXECUTION=0 -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=16777216 -sSTACK_SIZE=1048576 -sEXIT_RUNTIME=1 -sINVOKE_RUN=0 -sEXPORTED_RUNTIME_METHODS=FS,callMain -sFORCE_FILESYSTEM=1'
 emconfigure ./configure \
  --target-os=none --arch=wasm32 --enable-cross-compile --disable-asm \
  --disable-stripping --disable-doc --disable-debug --disable-autodetect \

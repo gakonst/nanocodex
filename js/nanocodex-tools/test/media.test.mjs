@@ -4,7 +4,7 @@ import { createMediaCommands, createComputerRuntime, createWorkspaceFilesystem }
 import { createWorkspace } from "../tools/workspace.mjs";
 
 const bytes = (text) => new TextEncoder().encode(text);
-const LIMIT = 16 * 1024 * 1024;
+const FORMER_FILE_LIMIT = 16 * 1024 * 1024;
 function fixture(execute = async (request) => ({ stdout: "", stderr: "", exitCode: 0,
   files: request.command === "ffmpeg" && request.files.length ? [{ path: request.args.at(-1), data: bytes("converted") }] : [] })) {
   const entries = new Map([["", null], ["media", null], ["media/input.mov", bytes("movie")]]);
@@ -73,8 +73,8 @@ for (const args of [
   ["-i", "input.mov", "-attach", "secret", "out.wav"],
   ["-i", "input.mov", "-y", "-n", "out.wav"],
   ["-i"], ["-version", "-i", "input.mov", "out.wav"],
-  ["-i", "input.mov\u0000", "out.wav"], ["-i", "input.mov", "-vf", "x".repeat(4097), "out.wav"],
-  Array(97).fill("-y"), Array(20).fill("x".repeat(1000)),
+  ["-i", "input.mov\u0000", "out.wav"], ["-i", "input.mov", "-vf", "unknown", "out.wav"],
+  ["-y"], ["-i", "input.mov", "-vf", "hflip,", "out.wav"],
 ]) test(`rejects unsafe or malformed arguments ${JSON.stringify(args).slice(0, 100)}`, async () => {
   const f = fixture();
   assert.equal((await f.ffmpeg.execute(args, context)).exitCode, 1);
@@ -102,25 +102,68 @@ test("requires an existing output parent and explicit overwrite; cannot overwrit
   assert.equal(new TextDecoder().decode(f.entries.get("media/output.wav")), "converted");
 });
 
-test("checks stat size before read and checks bytes again after read", async () => {
-  for (const size of [LIMIT + 1, undefined, -1, NaN]) {
+for (const size of [FORMER_FILE_LIMIT + 1, undefined, -1, NaN]) {
+  test(`accepts input stat size ${String(size)} without rejecting readable files`, async () => {
     const f = fixture();
     const list = f.backend.list;
     f.backend.list = async (...args) => (await list(...args)).map((entry) => entry.kind === "file" ? { ...entry, size } : entry);
-    assert.equal((await f.ffmpeg.execute(convert, context)).exitCode, 1);
-    assert.deepEqual(f.reads, []);
-    assert.deepEqual(f.requests, []);
-  }
+    assert.equal((await f.ffmpeg.execute(convert, context)).exitCode, 0);
+    assert.deepEqual(f.reads, ["media/input.mov"]);
+    assert.deepEqual(f.requests[0].files[0].data, bytes("movie"));
+  });
+}
+
+test("reads input and persists output larger than 16 MiB without truncation", async () => {
+  const data = new Uint8Array(FORMER_FILE_LIMIT + 1);
+  data[0] = 17;
+  data[data.length - 1] = 23;
+  const f = fixture(async (request) => ({ stdout: "", stderr: "", exitCode: 0,
+    files: [{ path: "/output.wav", data: request.files[0].data }] }));
+  f.entries.set("media/input.mov", data);
+  assert.equal((await f.ffmpeg.execute(convert, context)).exitCode, 0);
+  assert.deepEqual(f.requests[0].files[0].data, data);
+  assert.deepEqual(f.entries.get("media/output.wav"), data);
+  assert.deepEqual(f.writes, ["media/output.wav"]);
+});
+
+for (const [name, command, args] of [
+  ["more than 96 arguments", "ffmpeg", [...Array.from({ length: 49 }, () => ["-v", "error"]).flat(), ...convert]],
+  ["an argument longer than 4096 characters", "ffprobe", ["-show_entries", `format=${Array(600).fill("duration").join(",")}`, "input.mov"]],
+  ["arguments totaling more than 16384 characters", "ffprobe", [...Array.from({ length: 20 }, () => ["-show_entries", `format=${Array(100).fill("duration").join(",")}`]).flat(), "input.mov"]],
+  ["more than 16 filters", "ffmpeg", ["-i", "input.mov", "-vf", Array(17).fill("hflip").join(","), "output.jpg"]],
+]) test(`accepts valid options with ${name}`, async () => {
   const f = fixture();
-  f.backend.readFile = async () => new Uint8Array(LIMIT + 1);
-  assert.equal((await f.ffmpeg.execute(convert, context)).exitCode, 1);
-  assert.deepEqual(f.requests, []);
+  const result = await f[command].execute(args, context);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(f.requests.length, 1);
+  const forwarded = f.requests[0].args;
+  assert.deepEqual(forwarded, command === "ffprobe"
+    ? [...args.slice(0, -1), "-protocol_whitelist", "file", "/input.mov"]
+    : ["-nostdin", "-y", ...args.flatMap(arg => arg === "-i" ? ["-protocol_whitelist", "file", "-i"] : [arg === "input.mov" ? "/input.mov" : arg.startsWith("output.") ? `/${arg}` : arg])]);
+});
+
+test("accepts local input extensions longer than 16 characters", async () => {
+  const f = fixture();
+  const name = `input.${"a".repeat(17)}`;
+  f.entries.set(`media/${name}`, bytes("movie"));
+  const result = await f.ffprobe.execute([name], context);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.deepEqual(f.requests[0].files, [{ path: `/${name}`, data: bytes("movie") }]);
+  assert.equal(f.requests[0].args.at(-1), `/${name}`);
+});
+
+test("preserves thrown executor error text beyond 64 KiB", async () => {
+  const message = `${"diagnostic ".repeat(7000)}last diagnostic`;
+  const f = fixture(async () => { throw new Error(message); });
+  const result = await f.ffmpeg.execute(convert, context);
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.stderr, `ffmpeg: ${message}\n`);
+  assert.deepEqual(f.writes, []);
 });
 
 for (const [name, execute] of [
   ["backend failure", async () => ({ stdout: "", stderr: "failed", exitCode: 3, files: [{ path: "/output.wav", data: bytes("partial") }] })],
   ["backend exception", async () => { throw new Error("backend failed"); }],
-  ["oversized output", async () => ({ stdout: "", stderr: "", exitCode: 0, files: [{ path: "/output.wav", data: new Uint8Array(LIMIT + 1) }] })],
   ["empty output", async () => ({ stdout: "", stderr: "", exitCode: 0, files: [{ path: "/output.wav", data: new Uint8Array() }] })],
   ["missing output", async () => ({ stdout: "", stderr: "", exitCode: 0, files: [] })],
   ["wrong output", async () => ({ stdout: "", stderr: "", exitCode: 0, files: [{ path: "/brain/other.wav", data: bytes("bad") }] })],
@@ -161,15 +204,18 @@ test("rechecks no-clobber after backend execution", async () => {
   assert.deepEqual(f.entries.get("media/output.wav"), bytes("concurrent"));
 });
 
-test("help is local; version and formats use a file-free executor; text is bounded", async () => {
-  const f = fixture(async () => ({ stdout: "😀".repeat(100_000), stderr: "x".repeat(100_000), exitCode: 0, files: [] }));
-  assert.match((await f.ffmpeg.execute(["-help"])).stdout, /16 MiB/);
+test("help is local; file-free commands preserve stdout and stderr beyond 64 KiB", async () => {
+  const stdout = "😀".repeat(100_000), stderr = "x".repeat(100_000);
+  const f = fixture(async () => ({ stdout, stderr, exitCode: 0, files: [] }));
+  const help = (await f.ffmpeg.execute(["-help"])).stdout;
+  assert.match(help, /Cloudflare runtime limits apply/);
+  assert.doesNotMatch(help, /16 MiB|30 seconds|64 KiB/);
   assert.deepEqual(f.requests, []);
   for (const arg of ["-version", "-formats"]) {
     const result = await f.ffprobe.execute([arg]);
     assert.equal(result.exitCode, 0);
-    assert.ok(Buffer.byteLength(result.stdout) <= 65536);
-    assert.ok(Buffer.byteLength(result.stderr) <= 65536);
+    assert.equal(result.stdout, stdout);
+    assert.equal(result.stderr, stderr);
     assert.deepEqual(f.requests.at(-1).files, []);
   }
   assert.deepEqual(f.reads, []);

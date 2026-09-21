@@ -3,9 +3,6 @@ import wasm from './core.wasm';
 
 // One command per fresh isolate. The caller supplies only the selected input,
 // never a filesystem/network binding or credentials.
-const FILE_LIMIT = 16 * 1024 * 1024;
-const TEXT_LIMIT = 64 * 1024;
-const EFBIG = 22; // Emscripten uses WASI errno values (27 would mean retryable EINTR).
 export default {
   async fetch(request) {
     const form = await request.formData();
@@ -13,13 +10,12 @@ export default {
     const input = form.get('input');
     const inputPath = form.get('inputPath');
     const outputPath = form.get('outputPath');
-    if (!Array.isArray(args) || args.length > 128 || args.some(arg => typeof arg !== 'string' || arg.length > 8192)) {
+    if (!Array.isArray(args) || args.some(arg => typeof arg !== 'string')) {
       return new Response('Invalid media arguments', {status: 400});
     }
-    let stdout = '', stderr = '', overflow = false;
+    let stdout = '', stderr = '';
     const append = (stream, line) => {
       const value = `${line}\n`;
-      if ((stream === 'stdout' ? stdout.length : stderr.length) + value.length > TEXT_LIMIT) { overflow = true; return; }
       if (stream === 'stdout') stdout += value; else stderr += value;
     };
     try {
@@ -34,29 +30,20 @@ export default {
         },
       });
       if (input !== null) {
-        if (!(input instanceof File) || input.size > FILE_LIMIT || !/^\/input\.[a-z0-9]+$/.test(inputPath)) throw new Error('Invalid media input');
+        if (!(input instanceof File) || !/^\/input\.[a-z0-9]+$/.test(inputPath)) throw new Error('Invalid media input');
         core.FS.writeFile(inputPath, new Uint8Array(await input.arrayBuffer()));
       }
       if (outputPath !== null) {
         if (!/^\/output\.[a-z0-9]+$/.test(outputPath)) throw new Error('Invalid media output');
-        core.FS.writeFile(outputPath, new Uint8Array());
-        const node = core.FS.lookupPath(outputPath).node;
-        const write = node.stream_ops.write;
-        node.stream_ops = {...node.stream_ops, write(stream, buffer, offset, length, position, canOwn) {
-          if (position < 0 || position + length > FILE_LIMIT) throw new core.FS.ErrnoError(EFBIG);
-          return write(stream, buffer, offset, length, position, canOwn);
-        }};
       }
       // FS.init closes stdout only after callMain returns; EXIT_RUNTIME flushes
       // partial lines and preserves FFmpeg's normal status codes.
       let exitCode = core.callMain(args);
       if (!Number.isInteger(exitCode)) exitCode = 1;
-      if (overflow) { exitCode = 1; stderr = 'Media diagnostic output exceeded 64 KiB. Narrow ffprobe -show_entries.\n'; }
       const result = new FormData();
       result.set('result', JSON.stringify({stdout, stderr, exitCode}));
       if (exitCode === 0 && outputPath !== null) {
         const data = core.FS.readFile(outputPath);
-        if (data.byteLength > FILE_LIMIT) throw new Error('Media output exceeds 16 MiB');
         result.set('output', new Blob([data]), outputPath.slice(1));
       }
       return new Response(result);

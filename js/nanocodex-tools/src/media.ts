@@ -19,10 +19,6 @@ export type MediaCommandOptions = Readonly<{
 }>;
 
 type CommandContext = Readonly<{ cwd?: unknown; signal?: AbortSignal }>;
-const MAX_FILE_BYTES = 16 * 1024 * 1024;
-const MAX_TEXT_BYTES = 64 * 1024;
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 const flags = new Set(["-hide_banner", "-vn", "-an", "-sn", "-dn", "-y", "-n"]);
 const probeFlags = new Set(["-hide_banner", "-show_format", "-show_streams", "-show_error", "-count_frames", "-count_packets"]);
 const informational = new Set(["-version", "-formats", "-codecs", "-decoders", "-encoders", "-filters"]);
@@ -67,7 +63,7 @@ const probeScalars: Record<string, RegExp> = {
   "-print_format": /^(json|default|compact|csv|flat|ini|xml)$/,
 };
 
-/** Bounded local-file FFmpeg commands; the caller owns the isolated WASM executor. */
+/** Local-file FFmpeg commands; the caller owns the isolated WASM executor. */
 export function createMediaCommands(options: MediaCommandOptions) {
   return (["ffmpeg", "ffprobe"] as const).map((command) => ({
     name: command,
@@ -94,12 +90,8 @@ export function createMediaCommands(options: MediaCommandOptions) {
           }
           const entry = await stat(workspace, input);
           if (!entry || entry.kind !== "file") throw new Error("input must be an existing regular file");
-          if (!Number.isSafeInteger(entry.size) || entry.size! < 0 || entry.size! > MAX_FILE_BYTES) {
-            throw new Error("input requires a known size of at most 16 MiB");
-          }
           context.signal?.throwIfAborted();
           const data = await workspace.readFile(input);
-          if (data.byteLength > MAX_FILE_BYTES) throw new Error("input exceeds 16 MiB");
           files.push({ path: parsed.inputPath!, data });
         }
         context.signal?.throwIfAborted();
@@ -109,13 +101,12 @@ export function createMediaCommands(options: MediaCommandOptions) {
           || typeof result.stdout !== "string" || typeof result.stderr !== "string" || !Array.isArray(result.files)) {
           throw new Error("invalid media executor result");
         }
-        const response = { stdout: boundedText(result.stdout), stderr: boundedText(result.stderr), exitCode: result.exitCode };
+        const response = { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
         if (result.exitCode !== 0) return response;
         if (output !== undefined && workspace) {
           if (result.files.length !== 1 || result.files[0]?.path !== parsed.outputPath
             || !(result.files[0]?.data instanceof Uint8Array)) throw new Error("executor did not return the requested output file");
           const data = result.files[0].data;
-          if (data.byteLength > MAX_FILE_BYTES) throw new Error("output exceeds 16 MiB");
           if (data.byteLength === 0) throw new Error("executor returned an empty output file");
           await checkOutput(workspace, output, parsed.overwrite);
           context.signal?.throwIfAborted();
@@ -125,27 +116,22 @@ export function createMediaCommands(options: MediaCommandOptions) {
         }
         return response;
       } catch (error) {
-        return { stdout: "", stderr: boundedText(`${command}: ${error instanceof Error ? error.message : String(error)}\n`), exitCode: context.signal?.aborted ? 130 : 1 };
+        return { stdout: "", stderr: `${command}: ${error instanceof Error ? error.message : String(error)}\n`, exitCode: context.signal?.aborted ? 130 : 1 };
       }
     },
   }));
 }
 
 function validateArguments(args: string[]) {
-  if (!Array.isArray(args) || args.length > 96) throw new Error("at most 96 arguments are supported");
-  let bytes = 0;
+  if (!Array.isArray(args)) throw new Error("arguments must be an array");
   for (const arg of args) {
     if (typeof arg !== "string" || !arg || /[\x00-\x1f\x7f]/.test(arg)) throw new Error("arguments must be nonempty text without control characters");
-    const size = encoder.encode(arg).byteLength;
-    bytes += size;
-    if (size > 4096 || bytes > 16384) throw new Error("media arguments exceed the size limit");
   }
 }
 
 function parse(command: "ffmpeg" | "ffprobe", args: string[]) {
   if (args.length === 1 && informational.has(args[0]!)) return { args: [...args], overwrite: false };
-  // Durable overwrite policy is checked separately. The executor may preallocate
-  // its ephemeral output to enforce a write bound, so always replace that file.
+  // Durable overwrite policy is checked separately; ephemeral output may be replaced.
   const rewritten: string[] = command === "ffmpeg" ? ["-nostdin", "-y"] : [];
   let input: string | undefined;
   let output: string | undefined;
@@ -208,7 +194,6 @@ function validateFilter(value: string, option: string) {
     aresample: /^\d+$/,
   };
   const filters = value.split(",");
-  if (filters.length > 16) throw new Error("at most 16 filters are supported");
   for (const filter of filters) {
     const separator = filter.indexOf("=");
     const name = separator < 0 ? filter : filter.slice(0, separator);
@@ -219,7 +204,7 @@ function validateFilter(value: string, option: string) {
 
 function memoryPath(path: string | undefined, name: string) {
   if (!path || path.startsWith("-") || /[:\\%?#]/.test(path)) throw new Error("only local file paths are supported");
-  const extension = /\.([A-Za-z0-9]{1,16})$/.exec(path)?.[1]?.toLowerCase();
+  const extension = /\.([A-Za-z0-9]+)$/.exec(path)?.[1]?.toLowerCase();
   if (!extension) throw new Error("media paths require a filename extension");
   if (name === "output" && !outputExtensions.has(extension)) throw new Error("unsupported output extension; use JPEG (.jpg/.jpeg) or PCM audio (.wav)");
   return `/${name}.${extension}`;
@@ -256,16 +241,10 @@ async function checkOutput(workspace: Workspace, path: string, overwrite: boolea
   if (existing && !overwrite) throw new Error("output already exists; use -y to overwrite");
 }
 
-function boundedText(value: string) {
-  const bytes = encoder.encode(value);
-  if (bytes.byteLength <= MAX_TEXT_BYTES) return value;
-  return `${decoder.decode(bytes.subarray(0, MAX_TEXT_BYTES - 32))}\n[media output truncated]\n`;
-}
-
 function help(command: string) {
   return `${command} (isolated WASM media command)\n`
     + (command === "ffmpeg" ? "Usage: ffmpeg [options] -i INPUT [options] OUTPUT\n" : "Usage: ffprobe [options] INPUT\n")
-    + "One local input, and one ffmpeg output; each at most 16 MiB. Output parent must exist.\n"
+    + "One local input, and one ffmpeg output. Output parent must exist. Cloudflare runtime limits apply.\n"
     + "Use -y to replace an output; -n preserves it. URLs, scripts and extra file inputs are unsupported.\n"
     + "Information: -version, -formats, -codecs. Common options: -v/-loglevel, -ss, -t, -c:v/-c:a, -ac, -ar.\n"
     + "Outputs: JPEG (.jpg/.jpeg), PCM WAV (.wav). Video filters: fps, scale, tile, crop, transpose, hflip, vflip, format.\n"
