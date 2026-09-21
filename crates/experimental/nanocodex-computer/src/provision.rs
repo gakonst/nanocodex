@@ -27,9 +27,12 @@ pub fn managed_provider_path() -> Option<PathBuf> {
     if !cfg!(target_os = "macos") {
         return None;
     }
-    let current = runtime_root().ok()?.join("current");
-    std::fs::symlink_metadata(&current).ok()?;
-    Some(current.join("cua-provider"))
+    let path = runtime_root().ok()?.join("provider.json");
+    if std::fs::metadata(&path).ok()?.len() > 65536 {
+        return None;
+    }
+    let receipt = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    Some(config_from_receipt(&receipt).ok()?.executable)
 }
 
 /// Reuse the cached runtime by default; refresh explicitly fetches the official
@@ -163,6 +166,7 @@ async fn windows_provision(refresh: bool) -> Result<serde_json::Value, String> {
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
 mod mac {
+    use sha2::{Digest, Sha256};
     use std::{
         ffi::OsString,
         fs,
@@ -183,6 +187,9 @@ mod mac {
     const MODULES: &str = "cua_node/lib/node_modules";
     const SKY: &str = "@oai/sky/Codex Computer Use.app";
     const ENTRY: &str = "@oai/cua-repl/bin/cua-repl.mjs";
+    // Keep aligned with KNOWN_GUI_BUILD in the embedded readiness module.
+    // A contract test catches drift before either component ships.
+    const SUPPORTED_GUI_BUILD: &str = "9922";
 
     pub(super) trait Commands {
         fn run(&mut self, program: &str, args: &[OsString]) -> Result<String, String>;
@@ -292,6 +299,11 @@ mod mac {
         {
             return Err("OpenAI bundle has an invalid build identifier".into());
         }
+        if build != SUPPORTED_GUI_BUILD {
+            return Err(format!(
+                "Unsupported OpenAI CUA build {build}; the managed host supports build {SUPPORTED_GUI_BUILD}. Update Nanocodex when support for this build is available"
+            ));
+        }
         let resources = app.join(RESOURCES);
         for relative in [
             "codex".to_owned(),
@@ -367,21 +379,175 @@ mod mac {
                 return Err("current must select a managed version".into());
             }
             let version = root.join(target);
-            if io(fs::read_to_string(version.join("cua-provider")))? != launcher(&version)? {
-                return Err("managed launcher is missing or modified".into());
+            for path in [&version, &version.join(APP)] {
+                if !io(fs::symlink_metadata(path))?.is_dir() {
+                    return Err("managed bundle must be a directory, not a symlink".into());
+                }
             }
             Ok(version)
         };
         let result = validate().and_then(|version| {
-            verify(&version.join(APP), commands).map(|build| receipt(root, &build))
+            let build = verify(&version.join(APP), commands)?;
+            let host = ensure_host(root, &version, HOST_MODULES)?;
+            publish_receipt(root, &host, &build)
         });
-        result.map(Some).map_err(|error| format!(
-            "Managed OpenAI CUA runtime is damaged: {error}. Run `nanocodex computer setup --refresh` to replace it"
+        result.map(Some).map_err(|error| {
+            if error.starts_with("Unsupported OpenAI CUA build ") {
+                error
+            } else {
+                format!("Managed OpenAI CUA runtime is damaged: {error}. Run `nanocodex computer setup --refresh` to replace it")
+            }
+        })
+    }
+
+    const HOST_MODULES: &[(&str, &str)] = &[
+        (
+            "openai-cua-app-server.mjs",
+            include_str!("openai-cua-app-server.mjs"),
+        ),
+        (
+            "openai-cua-native-host.mjs",
+            include_str!("openai-cua-native-host.mjs"),
+        ),
+        (
+            "openai-cua-gui-readiness.mjs",
+            include_str!("openai-cua-gui-readiness.mjs"),
+        ),
+    ];
+
+    fn host_launcher(
+        root: &Path,
+        version: &Path,
+        host: &Path,
+        hash: &str,
+    ) -> Result<String, String> {
+        Ok(format!(
+            "#!/bin/sh\nset -eu\nexport NANOCODEX_CUA_NATIVE_APP={}\nexport NANOCODEX_CUA_NATIVE_PROVIDER={}\nexport NANOCODEX_CUA_NATIVE_STATE={}\nexec {} {} \"$@\"\n",
+            quote(&version.join(APP))?,
+            quote(&host.join("upstream-cua-provider"))?,
+            quote(&root.join("host-state").join(hash))?,
+            quote(&version.join(APP).join(RESOURCES).join("cua_node/bin/node"))?,
+            quote(&host.join("openai-cua-native-host.mjs"))?,
         ))
     }
 
-    fn receipt(root: &Path, build: &str) -> serde_json::Value {
-        serde_json::json!({"status": "installed", "build": build, "executable": root.join("current/cua-provider"), "transport": "mcp"})
+    // The signed bundle and generated host have independent lifetimes. Source
+    // upgrades select new content-addressed assets without touching the bundle.
+    fn ensure_host(
+        root: &Path,
+        version: &Path,
+        modules: &[(&str, &str)],
+    ) -> Result<PathBuf, String> {
+        let direct = launcher(version)?;
+        let mut digest = Sha256::new();
+        for content in modules
+            .iter()
+            .flat_map(|(name, source)| [*name, *source])
+            .chain([
+                direct.as_str(),
+                version.join(APP).to_str().ok_or("Invalid bundle path")?,
+            ])
+        {
+            digest.update((content.len() as u64).to_le_bytes());
+            digest.update(content.as_bytes());
+        }
+        // Include the wrapper template too; placeholders avoid a circular hash.
+        digest.update(host_launcher(
+            root,
+            version,
+            &root.join("hosts/HASH"),
+            "HASH",
+        )?);
+        let hash: String = digest
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let host = root.join("hosts").join(&hash);
+        let wrapper = host_launcher(root, version, &host, &hash)?;
+        let assets: Vec<_> = modules
+            .iter()
+            .copied()
+            .chain([
+                ("upstream-cua-provider", direct.as_str()),
+                ("cua-provider", wrapper.as_str()),
+            ])
+            .collect();
+        let validate = || -> Result<(), String> {
+            if !io(fs::symlink_metadata(&host))?.is_dir() {
+                return Err("managed host must be a directory, not a symlink".into());
+            }
+            for (name, content) in &assets {
+                let path = host.join(name);
+                let metadata = io(fs::symlink_metadata(&path))?;
+                if !metadata.is_file() || io(fs::read(&path))? != content.as_bytes() {
+                    return Err(format!(
+                        "managed host asset is modified: {}",
+                        path.display()
+                    ));
+                }
+                if name.ends_with("cua-provider") {
+                    use std::os::unix::fs::PermissionsExt;
+                    if metadata.permissions().mode() & 0o111 == 0 {
+                        return Err(format!(
+                            "managed host launcher is not executable: {}",
+                            path.display()
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        };
+        match fs::symlink_metadata(&host) {
+            Ok(_) => {
+                validate()?;
+                return Ok(host);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.to_string()),
+        }
+        io(fs::create_dir_all(root.join("hosts")))?;
+        let stage = Staging {
+            path: root.join("hosts").join(format!(".staging-{}", nonce())),
+            cleanup: true,
+        };
+        io(fs::create_dir(&stage.path))?;
+        for (name, content) in &assets {
+            let path = stage.path.join(name);
+            io(fs::write(&path, content))?;
+            if name.ends_with("cua-provider") {
+                use std::os::unix::fs::PermissionsExt;
+                io(fs::set_permissions(
+                    &path,
+                    fs::Permissions::from_mode(0o755),
+                ))?;
+            }
+        }
+        if let Err(error) = fs::rename(&stage.path, &host) {
+            // Another setup may have published this hash first. Never replace
+            // its nonempty directory or repair modified assets in place.
+            if fs::symlink_metadata(&host).is_err() {
+                return Err(error.to_string());
+            }
+        }
+        validate()?;
+        Ok(host)
+    }
+
+    fn publish_receipt(root: &Path, host: &Path, build: &str) -> Result<serde_json::Value, String> {
+        let receipt = serde_json::json!({"status": "installed", "build": build,
+            "executable": host.join("cua-provider"), "transport": "mcp", "args": [], "environment": {}});
+        let stage = root.join(format!(".provider-{}.json", nonce()));
+        io(fs::write(
+            &stage,
+            serde_json::to_vec(&receipt).map_err(|e| e.to_string())?,
+        ))?;
+        let result = io(fs::rename(&stage, root.join("provider.json")));
+        if result.is_err() {
+            let _ = fs::remove_file(&stage);
+        }
+        result?;
+        Ok(receipt)
     }
 
     struct Staging {
@@ -514,17 +680,10 @@ mod mac {
         }
         let relative = PathBuf::from("versions").join(format!("{build}-{}", nonce()));
         let version = root.join(&relative);
-        let provider = stage.path.join("payload/cua-provider");
-        io(fs::write(&provider, launcher(&version)?))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            io(fs::set_permissions(
-                &provider,
-                fs::Permissions::from_mode(0o755),
-            ))?;
-        }
         io(fs::rename(stage.path.join("payload"), &version))?;
+        // Finish the host before changing the selected bundle. Failed host
+        // preparation must leave the previous selection and receipt intact.
+        let host = ensure_host(root, &version, HOST_MODULES)?;
         // Publication is a single rename. Previous versions remain available to
         // processes already using their absolute bundle paths.
         let next = stage.path.join("next");
@@ -533,7 +692,7 @@ mod mac {
         #[cfg(not(unix))]
         return Err("macOS CUA publication requires Unix symlinks".into());
         io(fs::rename(&next, root.join("current")))?;
-        Ok(receipt(root, &build))
+        publish_receipt(root, &host, &build)
     }
 
     #[cfg(test)]

@@ -18,6 +18,15 @@ const passes = env => spawnSync('bash', ['-e', '-c', gate], { env: { ...process.
 test('full and intentionally reduced matrices pass the real gate', () => {
   assert.ok(passes(environment(true)));
   assert.ok(passes(environment(false)));
+  // CUA-only changes keep the native matrix while skipping voice/Python.
+  const cua = { ...environment(false), NATIVE_REQUIRED: 'true',
+    SHARED_HANDS: 'success', WINDOWS_HAND: 'success', VM_GUEST: 'success' };
+  assert.ok(passes(cua));
+  for (const job of selected.NATIVE_REQUIRED) {
+    for (const result of ['failure', 'cancelled', 'skipped', '']) {
+      assert.equal(passes({ ...cua, [job]: result }), false, `CUA ${job}: ${result}`);
+    }
+  }
 });
 test('every required check rejects failure, cancellation, and unexpected skips', () => {
   for (const job of [...always, ...Object.values(selected).flat()]) {
@@ -31,4 +40,16 @@ test('missing selection and unplanned execution fail closed', () => {
     for (const value of ['', 'null', 'invalid']) assert.equal(passes({ ...environment(false), [key]: value }), false);
   }
   for (const job of Object.values(selected).flat()) assert.equal(passes({ ...environment(false), [job]: 'success' }), false);
+});
+
+test('CUA native selection retains macOS bridge and lifecycle test coverage', () => {
+  const sharedHands = workflow.split('  shared-hands:\n')[1].split('  voice-native:\n')[0];
+  assert.match(sharedHands, /if: needs\.changes\.outputs\.native == 'true'/);
+  assert.match(sharedHands, /os: \[ubuntu-latest, windows-latest, macos-15\]/);
+  const bridgeStep = sharedHands.split('      - name: Check CUA bridge and native host lifecycle\n')[1]
+    .split('      - name:')[0];
+  assert.match(bridgeStep, /if: runner\.os == 'macOS'/);
+  for (const name of ['app-server', 'native-host', 'gui-readiness']) {
+    assert.ok(bridgeStep.includes(`scripts/tests/openai-cua-${name}.test.mjs`));
+  }
 });

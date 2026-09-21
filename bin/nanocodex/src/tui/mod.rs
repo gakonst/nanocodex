@@ -688,6 +688,7 @@ enum Submission {
     Cancel,
     Trace,
     Fast(Option<bool>),
+    AutoRoute,
     ModelPicker,
     Model(Model),
     ReasoningPicker,
@@ -3356,6 +3357,18 @@ fn submit(
             let enabled = enabled.unwrap_or(!app.fast_mode());
             send_command(commands, WorkerCommand::SetFastMode { enabled })?;
         }
+        Submission::AutoRoute => {
+            // The native driver owns a concrete OpenAi transport from startup.
+            // The managed routing endpoint cannot configure this local session;
+            // never acknowledge routing or send the slash command as a prompt.
+            let error = if app.can_change_start_settings() {
+                "Automatic routing is unavailable in the native client. Use /autoroute in nanocodex2 before its first message."
+            } else {
+                "/autoroute can only be enabled before the first message in a new thread. Automatic routing is unavailable in the native client."
+            };
+            app.push_active_error(error);
+            app.set_active_status("Automatic routing unavailable");
+        }
         Submission::ModelPicker => {
             if !app.can_change_start_settings() {
                 app.push_active_error("The model can only be changed before the first prompt");
@@ -3497,6 +3510,13 @@ fn classify_submission(input: impl Into<SubmittedPrompt>) -> Submission {
     }
     let mut settings = trimmed.split_whitespace();
     match settings.next() {
+        Some("/autoroute") => {
+            return if settings.next().is_none() {
+                Submission::AutoRoute
+            } else {
+                Submission::InvalidCommand("Usage: /autoroute".to_owned())
+            };
+        }
         Some("/model") => {
             let Some(argument) = settings.next() else {
                 return Submission::ModelPicker;
@@ -3965,6 +3985,47 @@ mod tests {
             classify_submission("/modeling"),
             Submission::Prompt("/modeling".into())
         );
+    }
+
+    #[test]
+    fn autoroute_is_a_command_and_rejects_arguments() {
+        assert_eq!(classify_submission(" /autoroute "), Submission::AutoRoute);
+        for input in ["/autoroute on", "/autoroute off", "/autoroute\ton"] {
+            assert_eq!(
+                classify_submission(input),
+                Submission::InvalidCommand("Usage: /autoroute".to_owned())
+            );
+        }
+        assert_eq!(
+            classify_submission("/autorouter"),
+            Submission::Prompt("/autorouter".into())
+        );
+    }
+
+    #[test]
+    fn native_autoroute_never_claims_success_or_dispatches_a_prompt() {
+        for started in [false, true] {
+            let (commands, mut worker) = mpsc::unbounded_channel();
+            let mut app = App::new("/workspace".into())
+                .with_model(Model::Sol)
+                .with_thinking(Thinking::High)
+                .with_fast_mode(true);
+            if started {
+                app.queue_prompt(PaneId::Main, "existing message".into());
+            }
+            let pending = app.main.pending_turns;
+            app.input = "/autoroute".to_owned();
+            app.cursor = app.input.len();
+
+            submit(&mut app, "local-thread", &commands, SubmitIntent::Immediate).unwrap();
+
+            assert!(worker.try_recv().is_err());
+            assert_eq!(app.main.pending_turns, pending);
+            assert_eq!(app.model(), Model::Sol);
+            assert_eq!(app.thinking(), Thinking::High);
+            assert!(app.fast_mode());
+            assert_eq!(app.main.status, "Automatic routing unavailable");
+        }
     }
 
     #[test]

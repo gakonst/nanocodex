@@ -34,13 +34,14 @@ const outcome = {
 };
 
 describe("hosted tools socket protocol", () => {
-  it("accepts optional bounded catalog capabilities while retaining legacy frames", () => {
-    for (const capabilities of [[], ["turn_metadata"], ["future_capability"]]) {
-      expect(parseHostedToolsHostFrame(JSON.stringify({type: "catalog", tools: [tool], capabilities})))
-        .toEqual({type: "catalog", tools: [tool], capabilities});
-    }
-    for (const capabilities of [null, true, "turn_metadata", ["turn_metadata", "turn_metadata"], [""], Array.from({length: 17}, (_, i) => `cap_${i}`)]) {
-      expect(() => parseHostedToolsHostFrame(JSON.stringify({type: "catalog", tools: [tool], capabilities}))).toThrow();
+  it("requires the fixed publisher contract without capability negotiation", () => {
+    expect(parseHostedToolsHostFrame(JSON.stringify({
+      type: "catalog", tools: [tool], capabilities: ["turn_metadata"],
+    }))).toMatchObject({ capabilities: ["turn_metadata"] });
+    for (const capabilities of [undefined, [], ["other"], ["turn_metadata", "other"], "turn_metadata"]) {
+      expect(() => parseHostedToolsHostFrame(JSON.stringify({
+        type: "catalog", tools: [tool], capabilities,
+      }))).toThrow(/capabilities must be/);
     }
   });
 
@@ -52,19 +53,19 @@ describe("hosted tools socket protocol", () => {
       capabilities: ["filesystem", "native-shell"],
     }];
     expect(parseHostedToolsHostFrame(JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       tools: [tool],
       machines,
       attachment_id: "laptop",
-    }))).toEqual({ type: "catalog", tools: [tool], machines, attachment_id: "laptop" });
-    expect(parseHostedToolsHostFrame(JSON.stringify({ type: "catalog", tools: [tool] })))
-      .toEqual({ type: "catalog", tools: [tool] });
+    }))).toEqual({ type: "catalog", capabilities: ["turn_metadata"], tools: [tool], machines, attachment_id: "laptop" });
+    expect(parseHostedToolsHostFrame(JSON.stringify({ type: "catalog", capabilities: ["turn_metadata"], tools: [tool] })))
+      .toEqual({ type: "catalog", capabilities: ["turn_metadata"], tools: [tool] });
     const maximumAttachmentId = "a".repeat(123);
     expect(parseHostedToolsHostFrame(JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       tools: [tool],
       attachment_id: maximumAttachmentId,
-    }))).toEqual({ type: "catalog", tools: [tool], attachment_id: maximumAttachmentId });
+    }))).toEqual({ type: "catalog", capabilities: ["turn_metadata"], tools: [tool], attachment_id: maximumAttachmentId });
     expect(parseHostedToolsHostFrame(JSON.stringify({ type: "result", call_id: "call:1", outcome })))
       .toEqual({ type: "result", call_id: "call:1", outcome });
     expect(parseHostedToolsHostFrame(JSON.stringify({ type: "ping", nonce: "n-1" })))
@@ -85,10 +86,10 @@ describe("hosted tools socket protocol", () => {
         },
       },
     };
-    expect(parseHostedToolsHostFrame(JSON.stringify({ type: "catalog", tools: [oneOfTool] })))
+    expect(parseHostedToolsHostFrame(JSON.stringify({ type: "catalog", capabilities: ["turn_metadata"], tools: [oneOfTool] })))
       .toMatchObject({ type: "catalog" });
     expect(() => parseHostedToolsHostFrame(JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       tools: [{
         ...oneOfTool,
         definition: {
@@ -123,12 +124,12 @@ describe("hosted tools socket protocol", () => {
 
   it("rejects legacy pins, removed frames, wrong directions, and extra fields", () => {
     for (const frame of [
-      { type: "catalog", tools: [tool], protocol_version: 1 },
-      { type: "catalog", tools: [tool], capability: "tools" },
-      { type: "catalog", tools: [tool], host_id: "host" },
-      { type: "catalog", tools: [tool], lease_id: "lease" },
-      { type: "catalog", tools: [tool], catalog_revision: 1 },
-      { type: "catalog", tools: [tool], catalog_digest: "0".repeat(64) },
+      { type: "catalog", capabilities: ["turn_metadata"], tools: [tool], protocol_version: 1 },
+      { type: "catalog", capabilities: ["turn_metadata"], tools: [tool], capability: "tools" },
+      { type: "catalog", capabilities: ["turn_metadata"], tools: [tool], host_id: "host" },
+      { type: "catalog", capabilities: ["turn_metadata"], tools: [tool], lease_id: "lease" },
+      { type: "catalog", capabilities: ["turn_metadata"], tools: [tool], catalog_revision: 1 },
+      { type: "catalog", capabilities: ["turn_metadata"], tools: [tool], catalog_digest: "0".repeat(64) },
       { type: "fenced" },
       { type: "cancel_ack", call_id: "call:1" },
       { type: "result_ack", call_id: "call:1" },
@@ -138,7 +139,7 @@ describe("hosted tools socket protocol", () => {
   });
 
   it("preserves catalog and output validation", () => {
-    expect(() => parseHostedToolsHostFrame(JSON.stringify({ type: "catalog", tools: [tool, tool] })))
+    expect(() => parseHostedToolsHostFrame(JSON.stringify({ type: "catalog", capabilities: ["turn_metadata"], tools: [tool, tool] })))
       .toThrow("duplicate tool name");
     expect(() => parseHostedToolsHostFrame(JSON.stringify({
       type: "result",
@@ -158,7 +159,7 @@ describe("hosted tools socket protocol", () => {
       },
     }))).toMatchObject({ outcome: { output: { output: large } } });
     expect(() => parseHostedToolsHostFrame(JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       tools: [tool],
       machines: [{
         id: "laptop",
@@ -175,7 +176,7 @@ describe("hosted tools socket protocol", () => {
       capabilities: ["filesystem"],
     };
     expect(() => parseHostedToolsHostFrame(JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       tools: [tool],
       machines: Array.from({ length: 2 }, (_, index) => ({
         ...machine,
@@ -184,19 +185,19 @@ describe("hosted tools socket protocol", () => {
     }))).toThrow("at most 1");
     for (const attachmentId of ["", "unsafe id", "é", "x".repeat(124), 1, null]) {
       expect(() => parseHostedToolsHostFrame(JSON.stringify({
-        type: "catalog",
+        type: "catalog", capabilities: ["turn_metadata"],
         tools: [tool],
         attachment_id: attachmentId,
       }))).toThrow("attachment_id must be 1-123 safe ASCII bytes");
     }
     expect(() => parseHostedToolsHostFrame(JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       tools: [tool],
       machines: [machine],
       attachment_id: "desktop",
     }))).toThrow("id equals attachment_id");
     expect(() => parseHostedToolsHostFrame(JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       tools: [tool],
       machines: [machine],
     }))).toThrow("id equals attachment_id");

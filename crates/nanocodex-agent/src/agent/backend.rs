@@ -119,6 +119,28 @@ pub trait LifecycleBackend: Send + Sync + 'static {
     /// Reads the latest safe model-visible context.
     fn context(&self) -> BackendFuture<Result<AgentSessionContext>>;
 
+    /// Captures a reconstructable local child driver boundary.
+    fn child_snapshot(&self) -> BackendFuture<Result<ChildRuntimeSnapshot>> {
+        Box::pin(async {
+            Err(NanocodexError::InvalidRequest(
+                "backend cannot snapshot children".into(),
+            ))
+        })
+    }
+
+    /// Reconstructs a child using this driver's current host capabilities.
+    fn restore_child(
+        &self,
+        _snapshot: ChildRuntimeSnapshot,
+        _host_context: Option<Arc<str>>,
+    ) -> BackendFuture<Result<(Nanocodex, AgentEvents)>> {
+        Box::pin(async {
+            Err(NanocodexError::InvalidRequest(
+                "backend cannot restore children".into(),
+            ))
+        })
+    }
+
     /// Starts a clean sibling lifecycle.
     fn spawn(&self, options: SpawnOptions) -> BackendFuture<Result<(Nanocodex, AgentEvents)>>;
 
@@ -480,6 +502,34 @@ impl LifecycleBackend for LocalLifecycle {
         let shutdown = self.shutdown.clone();
         Box::pin(async move {
             request_command(&commands, &shutdown, |result| Command::Context { result }).await
+        })
+    }
+
+    fn child_snapshot(&self) -> BackendFuture<Result<ChildRuntimeSnapshot>> {
+        let commands = self.commands.clone();
+        let shutdown = self.shutdown.clone();
+        Box::pin(async move {
+            request_command(&commands, &shutdown, |result| Command::Snapshot { result }).await
+        })
+    }
+
+    fn restore_child(
+        &self,
+        snapshot: ChildRuntimeSnapshot,
+        host_context: Option<Arc<str>>,
+    ) -> BackendFuture<Result<(Nanocodex, AgentEvents)>> {
+        let commands = self.commands.clone();
+        let shutdown = self.shutdown.clone();
+        Box::pin(async move {
+            request_command(&commands, &shutdown, |result| Command::Spawn {
+                options: SpawnOptions::new()
+                    .model(snapshot.model)
+                    .thinking(snapshot.thinking),
+                restore: Some(snapshot),
+                host_context,
+                result,
+            })
+            .await
         })
     }
 

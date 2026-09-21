@@ -209,9 +209,10 @@ private struct VoicePanel: View {
     private func returnToChat() { onReturnToChat(); dismiss() }
 }
 
-private struct VoiceSettingsView: View {
+struct VoiceSettingsView: View {
     @ObservedObject var session: VoiceSession
     let onStart: @MainActor () async throws -> VoiceConfiguration
+    var urlConfiguration: URLSessionConfiguration? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var draft = VoiceSettings()
     @State private var error: String?
@@ -228,7 +229,7 @@ private struct VoiceSettingsView: View {
                 }
                 .disabled(sampleAudioBusy)
                 if draft.outputProvider == .elevenlabs {
-                    ElevenLabsSettingsView(session: session, sampleAudioBusy: $sampleAudioBusy, settings: $draft, configuration: onStart)
+                    ElevenLabsSettingsView(session: session, sampleAudioBusy: $sampleAudioBusy, settings: $draft, onUseVoice: saveSettings, configuration: onStart, urlConfiguration: urlConfiguration)
                 }
                 if draft.outputProvider != .elevenlabs {
                     Picker("Voice", selection: $draft.voice) {
@@ -285,19 +286,15 @@ private struct VoiceSettingsView: View {
             #endif
             .navigationTitle("Voice settings")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(sampleAudioBusy) }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(session.isEngaged ? "Apply and reconnect" : "Save") {
-                        do {
-                            _ = try ManagedVoiceProtocol(settings: draft)
-                            session.settings = draft
-                            if session.isEngaged { session.restart(using: onStart) }
-                            dismiss()
-                        } catch { self.error = error.localizedDescription }
+                        saveSettings()
                     }.disabled(sampleAudioBusy).accessibilityIdentifier("save-voice-settings")
                 }
             }
         }
+        .interactiveDismissDisabled(sampleAudioBusy)
         .onAppear { draft = session.settings; if draft.outputProvider == nil { draft.outputProvider = .openai } }
         .onChange(of: session.outputLevel) { _, level in
             if testingAudio, level > 0.015 { receivedTestAudio = true }
@@ -306,6 +303,15 @@ private struct VoiceSettingsView: View {
         .frame(width: 560, height: 600)
         #endif
     }
+    private func saveSettings() {
+        do {
+            _ = try ManagedVoiceProtocol(settings: draft)
+            session.settings = draft
+            if session.isEngaged { session.restart(using: onStart) }
+            dismiss()
+        } catch { self.error = error.localizedDescription }
+    }
+
 }
 
 private struct VoiceSpinnerStyle: ProgressViewStyle {

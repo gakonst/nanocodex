@@ -16,12 +16,17 @@ async function fixture(t, platform = "darwin") {
     Object.defineProperty(process, "platform", originalPlatform);
     await rm(root, { recursive: true, force: true });
   });
-  const executable = join(process.env.NANOCODEX_DIR, "runtimes/openai-cua/current/cua-provider");
+  const executable = join(process.env.NANOCODEX_DIR, "runtimes/openai-cua/hosts/fixture/cua-provider");
   const binary = join(root, "native helper ; literal");
   const calls = join(root, "setup-calls.jsonl");
   async function script(path, source) {
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, `#!${process.execPath}\n${source}\n`, { mode: 0o755 });
+  }
+  async function receipt(command = executable, args = [], environment = {}) {
+    const path = join(process.env.NANOCODEX_DIR || join(root, ".nanocodex"), "runtimes/openai-cua/provider.json");
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, JSON.stringify({ status: "installed", transport: "mcp", executable: command, args, environment }));
   }
   async function helper(mode = "ok") {
     await script(binary, `
@@ -32,10 +37,14 @@ async function fixture(t, platform = "darwin") {
       if (${JSON.stringify(mode)} === 'unsupported') { console.log(JSON.stringify({ status: 'unsupported' })); process.exit(0); }
       const executable = ${JSON.stringify(executable)};
       if (${JSON.stringify(mode)} !== 'missing') { fs.mkdirSync(require('node:path').dirname(executable), { recursive: true }); fs.writeFileSync(executable, '', { mode: 0o755 }); }
-      console.log(JSON.stringify({ status: 'installed', executable, transport: 'mcp' }));
+      const receipt = { status: 'installed', executable, transport: 'mcp', args: [], environment: {} };
+      const path = require('node:path').join(process.env.NANOCODEX_DIR, 'runtimes/openai-cua/provider.json');
+      fs.mkdirSync(require('node:path').dirname(path), { recursive: true });
+      fs.writeFileSync(path, JSON.stringify(receipt));
+      console.log(JSON.stringify(receipt));
     `);
   }
-  return { root, executable, binary, calls, script, helper };
+  return { root, executable, binary, calls, script, helper, receipt };
 }
 
 test("discovery never selects an adjacent retired companion and has no setup side effects", async t => {
@@ -45,9 +54,12 @@ test("discovery never selects an adjacent retired companion and has no setup sid
   assert.equal(await discoverComputer({ binary: f.binary }), undefined);
   await assert.rejects(readFile(f.calls), { code: "ENOENT" });
   await f.script(f.executable, "process.exit(0)");
+  assert.equal(await discoverComputer({ binary: f.binary }), undefined, "an executable without a receipt is not selected");
+  await f.receipt();
   assert.equal(await discoverComputer({ binary: f.binary }), f.executable);
-  assert.equal(await ensureComputer({ binary: f.binary }), f.executable);
   await assert.rejects(readFile(f.calls), { code: "ENOENT" });
+  assert.equal(await ensureComputer({ binary: f.binary }), f.executable);
+  assert.equal((await readFile(f.calls, "utf8")).trim().split("\n").length, 1);
 });
 
 test("explicit providers and disable sentinels bypass managed discovery and setup", async t => {
@@ -135,10 +147,11 @@ test("every provider uses exact MCP arguments regardless of retired environment 
 test("the default install root follows HOME and unusable managed entries do not fall back", async t => {
   const f = await fixture(t);
   delete process.env.NANOCODEX_DIR;
-  const managed = join(f.root, ".nanocodex/runtimes/openai-cua/current/cua-provider");
+  const managed = join(f.root, ".nanocodex/runtimes/openai-cua/hosts/fixture/cua-provider");
   const companion = join(f.root, "nanocodex-computer");
   await f.script(companion, "process.exit(0)");
   await mkdir(managed, { recursive: true });
+  await f.receipt(managed);
   assert.equal(await discoverComputer({ binary: f.binary }), undefined);
   await rm(managed, { recursive: true });
   await f.script(managed, "process.exit(0)");
@@ -148,8 +161,8 @@ test("the default install root follows HOME and unusable managed entries do not 
   assert.equal(await ensureComputer(), managed);
 });
 
-test("Windows consumes the Store receipt's exact command and environment through MCP", async t => {
-  const f = await fixture(t, "win32");
+for (const platform of ["darwin", "win32"]) test(`${platform} consumes the managed receipt's exact command and environment through MCP`, async t => {
+  const f = await fixture(t, platform);
   await f.script(f.executable, `
     if (process.argv[2] !== 'provider-entry' || process.env.CODEX_CLI_PATH !== 'signed-host-fixture') process.exit(8);
     require('node:readline').createInterface({input:process.stdin}).on('line', line => {
@@ -161,8 +174,72 @@ test("Windows consumes the Store receipt's exact command and environment through
   const receipt = {status:'installed',transport:'mcp',executable:f.executable,args:['provider-entry'],environment:{CODEX_CLI_PATH:'signed-host-fixture'}};
   await writeFile(join(process.env.NANOCODEX_DIR,'runtimes/openai-cua/provider.json'), JSON.stringify(receipt));
   assert.equal(await discoverComputer({binary:f.binary}),f.executable);
-  assert.equal(await ensureComputer({binary:f.binary}),f.executable);
+  assert.equal(await ensureComputer(),f.executable);
   const computer=await connectComputerTools({executable:f.executable});
   t.after(computer.close);
   assert.deepEqual(computer.tools.map(tool=>tool.name),['mcp__cua_repl__js']);
+});
+
+test("installed helper selects its new host once even with an existing receipt", async t => {
+  const f = await fixture(t);
+  const previous = join(dirname(dirname(f.executable)), "previous", "cua-provider");
+  await f.script(previous, "process.exit(0)");
+  await f.receipt(previous);
+  assert.equal(await discoverComputer(), previous);
+  await f.helper();
+  assert.equal(await ensureComputer({ binary: f.binary }), f.executable);
+  assert.equal(await discoverComputer(), f.executable);
+  assert.equal(await ensureComputer({ binary: f.binary }), f.executable);
+  assert.equal((await readFile(f.calls, "utf8")).trim().split("\n").length, 1);
+  assert.equal(await readFile(previous, "utf8").then(source => source.includes("process.exit(0)")), true);
+});
+
+test("Mac discovery does not fall back to the old generated launcher", async t => {
+  const f = await fixture(t);
+  await f.script(join(process.env.NANOCODEX_DIR, "runtimes/openai-cua/current/cua-provider"), "process.exit(0)");
+  assert.equal(await discoverComputer(), undefined);
+  await assert.rejects(ensureComputer(), /native helper/);
+});
+
+for (const invalid of [null, { executable: "relative" }, { environment: [] }]) {
+  test(`managed discovery rejects malformed receipt ${JSON.stringify(invalid)}`, async t => {
+    const f = await fixture(t);
+    await f.receipt();
+    const path = join(process.env.NANOCODEX_DIR, "runtimes/openai-cua/provider.json");
+    const receipt = invalid === null ? null : { ...JSON.parse(await readFile(path, "utf8")), ...invalid };
+    await writeFile(path, JSON.stringify(receipt));
+    await assert.rejects(discoverComputer(), /Invalid managed CUA receipt/);
+  });
+}
+
+for (const platform of ["darwin", "win32"]) test(`${platform} explicit provider connects despite a malformed managed receipt`, async t => {
+  const f = await fixture(t, platform);
+  const custom = join(f.root, "explicit-provider");
+  await f.script(custom, `
+    if (process.argv[2] !== 'explicit-entry' || process.env.EXPLICIT_PROVIDER !== 'fixture') process.exit(8);
+    require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+      const request = JSON.parse(line);
+      if (!request.id) return;
+      const result = request.method === 'tools/list' ? { tools: [{ name: 'js', inputSchema: { type: 'object' } }] }
+        : request.method === 'tools/call' ? { content: [{ type: 'text', text: 'explicit MCP' }] } : {};
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\\n');
+    });
+  `);
+  await f.receipt();
+  process.env.NANOCODEX_COMPUTER = custom;
+  for (const malformed of ['invalid JSON', 'null']) {
+    await writeFile(join(process.env.NANOCODEX_DIR, "runtimes/openai-cua/provider.json"), malformed);
+    assert.equal(await discoverComputer(), custom);
+    assert.equal(await ensureComputer({ binary: f.binary }), custom);
+    const options = { executable: custom, args: ['explicit-entry'], environment: { EXPLICIT_PROVIDER: 'fixture' } };
+    const connected = await connectComputerTools(options);
+    t.after(connected.close);
+    const direct = createComputerTools({ ...options, definitions: connected.definitions });
+    t.after(direct.close);
+    for (const attachment of [connected, direct]) {
+      const result = await attachment.tool("js").handler({}, { sessionId: "synthetic-explicit", signal: new AbortController().signal });
+      assert.equal(result.output[0].text, "explicit MCP");
+    }
+  }
+  await assert.rejects(readFile(f.calls), { code: "ENOENT" });
 });

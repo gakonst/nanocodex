@@ -74,7 +74,7 @@ export function superviseVmFactory({ binary, args, env, signal, onState, sanitiz
               clearTimeout(timeout); timeout = undefined; failure = undefined; update({ status: "connected" }); resolveReady();
             }
             if (entry.fields?.stage === "vm.host.reconnecting") {
-              armDeadline();
+              // Registration outages must not terminate the factory or its guests.
               update({ status: "reconnecting", ...(entry.fields.error ? { error: sanitize(entry.fields.error) } : {}) });
             }
             if (entry.level === "ERROR") failure = sanitize(entry.fields?.error ?? entry.fields?.message ?? "Desktop factory failed.");

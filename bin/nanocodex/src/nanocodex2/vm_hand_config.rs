@@ -166,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_egress_is_an_explicit_hand_add_on() {
+    fn legacy_browser_options_are_preserved_for_startup_rejection() {
         let browser = config(&[
             "--docker",
             "image",

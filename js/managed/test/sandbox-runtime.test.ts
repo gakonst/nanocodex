@@ -177,7 +177,7 @@ describe("managed sandbox preview wiring", () => {
       (_machineId, name) => sourceTools[name],
     );
 
-    expect(tools.map(({ name }) => name)).toEqual(["select_computer", "mcp__cua_repl__js", "mcp__cua_repl__js_reset", "exec_command", "write_stdin", "preview"]);
+    expect(tools.map(({ name }) => name)).toEqual(["mcp__cua_repl__js", "mcp__cua_repl__js_reset", "exec_command", "write_stdin", "preview"]);
     const exec = tools.find(({ name }) => name === "exec_command")!;
     await expect(exec.handler(
       { cmd: "pwd", workdir: "/test" },
@@ -200,9 +200,9 @@ describe("managed sandbox preview wiring", () => {
     const tools = createManagedNamespaceTools(() => allowed,
       () => [{ id: "desktop", workspace: "/" }],
       (_id, name) => name.startsWith("mcp__cua_repl__") ? { handler: invoke, definition: { description: "Fixture CUA provider", parameters: { type: "object", additionalProperties: true } } } : undefined);
-    await tools.find(tool => tool.name === "select_computer")!.handler({ workdir: "/desktop" }, toolContext());
+    await tools.find(tool => tool.name === "mcp__cua_repl__js")!.handler({ workdir: "/desktop" }, toolContext());
     allowed = false;
-    await expect(tools.find(tool => tool.name === "mcp__cua_repl__js")!.handler({ code: "1" }, toolContext()))
+    await expect(tools.find(tool => tool.name === "mcp__cua_repl__js")!.handler({ workdir: "/desktop", code: "1" }, toolContext()))
       .rejects.toMatchObject({ status: 403, code: "namespace_forbidden" });
     expect(invoke).not.toHaveBeenCalled();
   });

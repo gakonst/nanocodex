@@ -21,7 +21,15 @@ anonymous accounts and read-only keys cannot mutate Vault. Website approval and
 Vault resolution use the current account's broker. The browser-only materialization
 RPC is reachable through the managed service binding, never model HTTP egress.
 
-## Private login workflow
+## Disabled legacy browser integration
+
+Managed `browser_execute` and all `browser_vault_*` agent tools are disabled.
+Browser interaction now uses the selected Hand's CUA MCP provider. Secure Vault
+intake and website approval remain available, but they do not authorize exposing
+secrets to CUA code. Automated Vault login requires a supported private CUA
+integration; the historical implementation below is not an available agent path.
+
+## Historical private login workflow
 
 1. Open the requested site with `browser_execute` and obtain its target ID.
 2. Call `browser_vault_status` with the named item, target and approved exact origin.
@@ -70,7 +78,7 @@ grants, enforce web CSRF, and bound input without logging bodies. Cross-origin
 identity providers remain unsupported. No live account password is required for
 testing. See [design and agent-browser comparison](design/vault-browser-continuation.md).
 
-## Validation and rollout
+## Legacy validation and rollout
 
 The Chrome fixture `js/managed/test/browser-vault.chrome.mjs` runs a temporary
 HTTPS two-step form with fake credentials, and rejects cross-origin, GET, hidden

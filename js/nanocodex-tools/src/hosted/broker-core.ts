@@ -33,11 +33,10 @@ export const HOSTED_MACHINE_TOOL_NAMES = Object.freeze([
   "mcp__cua_repl__js_reset",
 ] as const);
 const MACHINE_TOOL_NAMES: ReadonlySet<string> = new Set(HOSTED_MACHINE_TOOL_NAMES);
-// Placement overlays deliberately retain their canonical cloud name. The
-// owning ToolRouter admits them only when the callable contract is identical,
-// then prefers the live attachment with the cloud tool as a pre-dispatch-only
-// fallback. Every other machine-local tool remains namespaced by machine ID.
-const ATTACHED_OVERLAY_TOOL_NAMES: ReadonlySet<string> = new Set(["browser_execute"]);
+// Older attachments and persisted catalogs must not restore hosted browser tools.
+function disabledBrowserTool(name: string): boolean {
+  return name === "browser_execute" || name.startsWith("browser_vault_");
+}
 const encoder = new TextEncoder();
 
 /**
@@ -103,7 +102,6 @@ type HostedToolsSocketAttachment = {
   leaseId?: string;
   generation?: number;
   active?: true;
-  turnMetadata?: true;
   draining?: true;
   machines?: readonly HostedMachine[];
 };
@@ -303,7 +301,7 @@ export class HostedToolsBrokerCore {
     this.#now = options.now ?? Date.now;
     this.#onCallTiming = options.onCallTiming;
     this.#randomUUID = options.randomUUID ?? (() => crypto.randomUUID());
-    this.#maxInFlight = options.maxInFlight ?? Number.MAX_SAFE_INTEGER;
+    this.#maxInFlight = options.maxInFlight ?? 32;
     if (!Number.isSafeInteger(this.#maxInFlight) || this.#maxInFlight < 1) {
       throw new TypeError("maxInFlight must be a positive safe integer");
     }
@@ -555,7 +553,8 @@ export class HostedToolsBrokerCore {
       const protocol = error instanceof HostedToolsProtocolError
         ? error
         : new HostedToolsProtocolError("broker_failure", errorMessage(error));
-      this.#fence(socket, `${protocol.code}: ${protocol.message}`);
+      this.#fence(socket, `${protocol.code}: ${protocol.message}`,
+        protocol.code === "broker_failure" || protocol.code === "lease_validation_unavailable" ? 1011 : 1008);
     }
   }
 
@@ -576,7 +575,7 @@ export class HostedToolsBrokerCore {
     for (const state of this.#persistence.states()) {
       if (!state.lease_id || state.lease_expires_at > this.#now()) continue;
       const socket = this.#socketForState(state);
-      if (socket) this.#fence(socket, "Hosted Tools lease expired");
+      if (socket) this.#fence(socket, "Hosted Tools lease expired", 1012);
       else this.#retireState(state, "Hosted Tools lease expired");
     }
   }
@@ -687,6 +686,8 @@ export class HostedToolsBrokerCore {
     socket: HostedToolsSocket,
     frame: Extract<HostedToolsHostFrame, { type: "catalog" }>,
   ): Promise<void> {
+    // Keep exec and CUA available when an older Hand still advertises browser tools.
+    frame = { ...frame, tools: frame.tools.filter((entry) => !disabledBrowserTool(entry.definition.name)) };
     const initial = this.#attachment(socket);
     if (!initial || initial.leaseId || initial.generation !== undefined || initial.active) {
       throw new HostedToolsProtocolError("catalog_immutable", "one immutable catalog is allowed per socket");
@@ -729,7 +730,7 @@ export class HostedToolsBrokerCore {
     }
     if (state.lease_id && state.lease_expires_at <= this.#now()) {
       const expiredSocket = this.#socketForState(state);
-      if (expiredSocket) this.#fence(expiredSocket, "Hosted Tools lease expired");
+      if (expiredSocket) this.#fence(expiredSocket, "Hosted Tools lease expired", 1012);
       else this.#retireState(state, "Hosted Tools lease expired");
       state = this.#persistence.state(routeId) ?? emptyState(routeId);
     }
@@ -787,11 +788,10 @@ export class HostedToolsBrokerCore {
         const extra = frame.tools.find((entry) => (
           !MACHINE_TOOL_NAMES.has(entry.definition.name)
           && !entry.definition.name.startsWith("mcp__cua_repl__")
-          && !ATTACHED_OVERLAY_TOOL_NAMES.has(entry.definition.name)
         ));
         if (extra !== undefined) {
           throw new Error(
-            "leased tool attachments may publish only canonical machine primitives or placement overlays",
+            "leased tool attachments may publish only canonical machine primitives",
           );
         }
       }
@@ -890,7 +890,6 @@ export class HostedToolsBrokerCore {
       {
         ...candidate,
         active: true,
-        ...(frame.capabilities?.includes("turn_metadata") ? { turnMetadata: true as const } : {}),
         ...(frame.machines === undefined ? {} : { machines: frame.machines }),
       } satisfies HostedToolsSocketAttachment,
     );
@@ -1285,7 +1284,7 @@ export class HostedToolsBrokerCore {
         && state.generation === pending.generation
         && state.lease_expires_at <= now) {
         const socket = this.#socketForState(state);
-        if (socket) this.#fence(socket, "Hosted Tools lease expired during a call");
+        if (socket) this.#fence(socket, "Hosted Tools lease expired during a call", 1012);
         else this.#retireState(state, "Hosted Tools lease expired during a call");
         return;
       }
@@ -1381,7 +1380,7 @@ export class HostedToolsBrokerCore {
   #liveRoutingSocketForState(state: HostedToolsStateRow): HostedToolsSocket | undefined {
     if (state.lease_id && state.lease_expires_at <= this.#now()) {
       const socket = this.#socketForState(state);
-      if (socket) this.#fence(socket, "Hosted Tools lease expired");
+      if (socket) this.#fence(socket, "Hosted Tools lease expired", 1012);
       else this.#retireState(state, "Hosted Tools lease expired");
       return undefined;
     }
@@ -1432,6 +1431,7 @@ export class HostedToolsBrokerCore {
         continue;
       }
       for (const entry of entries) {
+        if (disabledBrowserTool(entry.definition.name)) continue;
         const machine = attachment?.machines?.[0] ?? savedMachines[0];
         bindings.push(Object.freeze({
           routeId: state.route_id,
@@ -1486,13 +1486,6 @@ export class HostedToolsBrokerCore {
   }
 
   #send(socket: HostedToolsSocket, frame: HostedToolsManagedFrame): void {
-    // Retain full identity in the ledger, but preserve the legacy wire shape
-    // until this exact socket generation advertises metadata support.
-    if (frame.type === "call" && this.#attachment(socket)?.turnMetadata !== true) {
-      const { turn_id: _turnId, ...legacy } = frame;
-      socket.send(JSON.stringify(legacy));
-      return;
-    }
     socket.send(JSON.stringify(frame));
   }
 
@@ -1619,7 +1612,7 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
 }
 
 function exposedEntry(entry: HostedToolCatalogEntry, machine: HostedMachine | undefined): HostedToolCatalogEntry {
-  if (machine === undefined || ATTACHED_OVERLAY_TOOL_NAMES.has(entry.definition.name)) return entry;
+  if (machine === undefined) return entry;
   const routeName = `user:${machine.id}:${entry.definition.name}`;
   const candidate = `user_${machine.id}_${entry.definition.name}`;
   const safeCandidate = candidate.replace(/[^A-Za-z0-9_-]/g, "_");

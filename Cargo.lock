@@ -5870,6 +5870,7 @@ dependencies = [
  "nanocodex-oai-api",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tokio",
 ]
 
@@ -6333,6 +6334,7 @@ dependencies = [
 name = "nanocodex-wasm"
 version = "0.6.4"
 dependencies = [
+ "async-trait",
  "futures-util",
  "js-sys",
  "nanocodex",
@@ -6366,7 +6368,6 @@ dependencies = [
  "kvm-ioctls",
  "nanocodex",
  "nanocodex-agent",
- "nanocodex-browser",
  "nanocodex-cli-auth",
  "nanocodex-computer",
  "nanocodex-hand",

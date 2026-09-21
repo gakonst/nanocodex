@@ -105,7 +105,7 @@ it("downloads from the account Hand while the conversation has no active model t
   socket.accept();
   try {
     const ready = new Promise(resolve => socket.addEventListener("message", event => resolve(JSON.parse(String(event.data))), { once: true }));
-    socket.send(JSON.stringify({ type: "catalog", attachment_id: "remote-machine", machines: [{
+    socket.send(JSON.stringify({ type: "catalog", capabilities: ["turn_metadata"], attachment_id: "remote-machine", machines: [{
       id: "remote-machine", name: "Omarchy Desktop", workspace: "/srv/remote", capabilities: ["native", "filesystem", "shell"],
     }], tools: [{ provider: "machine", remote_name: "exec_command", parallel_safe: true, timeout_ms: 30_000,
       definition: { type: "function", name: "exec_command", description: "Read fixture", strict: false,

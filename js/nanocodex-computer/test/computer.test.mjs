@@ -38,13 +38,17 @@ test("provider owns arguments, errors, and post-error behavior", async t => {
 });
 
 for (const trigger of ["abort", "release", "exit"]) {
-  test(`${trigger} stops the owned process; subsequent calls use a fresh provider without custom reset policy`, async t => {
+  test(`${trigger} stops the owned transport and preserves explicit recovery`, async t => {
     const computer = await open(t), js = computer.tool("js");
     await js.handler({set:"old"}, context(trigger));
     const abort = new AbortController();
     const pending = assert.rejects(js.handler(trigger === "exit" ? {crash:true} : {block:true}, context(trigger, abort.signal)));
     if (trigger !== "exit") setTimeout(() => trigger === "abort" ? abort.abort() : js.releaseSession(trigger), 30);
     await pending;
+    if (trigger !== "release") {
+      await assert.rejects(js.handler({get:true}, context(trigger)), /session interrupted.*js_reset/);
+      await computer.tool("js_reset").handler({}, context(trigger));
+    }
     assert.equal((await js.handler({get:true}, context(trigger))).output[0].text, "undefined");
   });
 }
@@ -104,80 +108,144 @@ test("output conversion preserves provider MIME declarations and unfamiliar MCP 
   assert.deepEqual(JSON.parse(output[2].text), resource);
 });
 
+async function loggedProvider(t, options = {}) {
+  const directory = await mkdtemp(join(tmpdir(), "cua-ownership-"));
+  t.after(() => rm(directory, {recursive:true,force:true}));
+  const callLog = join(directory, "calls"), requestLog = join(directory, "requests");
+  const read = async path => readFile(path, "utf8").catch(error => {
+    if (error.code !== "ENOENT") throw error;
+    return "";
+  });
+  return {
+    options: provider({...options, callLog, requestLog}),
+    calls: async () => (await read(callLog)).trim().split("\n").filter(Boolean).map(JSON.parse),
+    requests: async () => (await read(requestLog)).trim().split("\n"),
+  };
+}
+
+async function until(predicate) {
+  while (!await predicate()) await setImmediate();
+}
+
 for (const name of ["js", "js_reset"]) {
-  test(`${name} host deadline stops a blocked process and permits fresh calls without retry`, { timeout: 5000 }, async t => {
-    const computer = await open(t), js = computer.tool("js");
-    await js.handler({set:"old"}, context("deadline"));
-    const expired = assert.rejects(
-      computer.tool(name).handler({block:true,timeout_ms:100}, context("deadline")),
-      new RegExp(`CUA ${name} timed out after 100 ms`),
-    );
-    assert.equal((await js.handler({set:"independent"}, context("other"))).success, true);
-    await expired;
-    assert.equal((await js.handler({get:true}, context("deadline"))).output[0].text, "undefined");
-    assert.equal((await js.handler({get:true}, context("other"))).output[0].text, "independent");
+  test(`${name} preserves provider arguments through slow startup, queueing, and execution`, { timeout: 5000 }, async t => {
+    const fixture = await loggedProvider(t, {startupWait:50});
+    const definitions = structuredClone(catalog);
+    const computer = createComputerTools({...fixture.options, definitions});
+    t.after(computer.close);
+    const tool = computer.tool(name);
+    const firstInput = Object.freeze({timeout_ms:1, wait:100, set:"first"});
+    const queuedInput = Object.freeze({timeout_ms:1, wait:40, nested:Object.freeze({untouched:true})});
+    const [first, queued] = await Promise.all([
+      tool.handler(firstInput, context("provider-budget")),
+      tool.handler(queuedInput, context("provider-budget")),
+    ]);
+    assert.deepEqual(JSON.parse(first.output[0].text).arguments, firstInput);
+    assert.deepEqual(JSON.parse(queued.output[0].text).arguments, queuedInput);
+    assert.deepEqual((await fixture.calls()).map(call => call.arguments), [firstInput, queuedInput]);
+    assert.deepEqual(definitions, catalog);
+    assert.deepEqual(computer.definitions, catalog);
+    assert.deepEqual(computer.tools.map(tool => tool.providerDefinition), catalog);
   });
 
-  test(`${name} queued deadline rejects before active work completes and preserves its process`, { timeout: 5000 }, async t => {
-    const computer = await open(t), js = computer.tool("js");
-    await js.handler({set:"kept"}, context("queue-deadline"));
-    let completed = false;
-    const active = js.handler({wait:200}, context("queue-deadline")).then(result => { completed = true; return result; });
-    await assert.rejects(
-      computer.tool(name).handler({set:"wrong",timeout_ms:30}, context("queue-deadline")),
-      new RegExp(`CUA ${name} timed out after 30 ms`),
-    );
-    assert.equal(completed, false);
-    await active;
-    assert.equal((await js.handler({get:true}, context("queue-deadline"))).output[0].text, "kept");
+  test(`${name} has no default, parsed, or overflow tool deadline`, { timeout: 5000 }, async t => {
+    const fixture = await loggedProvider(t);
+    const computer = createComputerTools({...fixture.options, definitions:catalog});
+    t.after(computer.close);
+    await computer.tool("js").handler({}, context("unbounded"));
+    t.mock.timers.enable({apis:["setTimeout"]});
+    const active = new AbortController();
+    let activeSettled = false;
+    const blocked = assert.rejects(computer.tool(name).handler({block:true}, context("unbounded", active.signal)).finally(() => { activeSettled = true; }), /native effects may continue/);
+    await until(async () => (await fixture.calls()).length === 2);
+    const inputs = [{}, ...[0, -1, 1.5, "1", null, Number.MAX_SAFE_INTEGER + 1, Number.MAX_SAFE_INTEGER].map(timeout_ms => ({timeout_ms}))];
+    let settled = 0;
+    const queuedAbort = new AbortController();
+    const queued = inputs.map(input => assert.rejects(computer.tool(name).handler(input, context("unbounded", queuedAbort.signal)).finally(() => settled++), /queued cancellation/));
+    t.mock.timers.tick(2_147_483_648);
+    await setImmediate();
+    assert.equal(settled, 0);
+    assert.equal(activeSettled, false, "active calls have no host deadline either");
+    assert.equal((await fixture.calls()).length, 2);
+    queuedAbort.abort(new Error("queued cancellation"));
+    await Promise.all(queued);
+    active.abort();
+    await blocked;
+    assert.equal((await fixture.calls()).length, 2, "cancelled calls are never submitted or replayed");
   });
 }
 
 for (const blockMethod of ["initialize", "tools/list"]) {
-  test(`host deadline includes blocked ${blockMethod} during session startup`, { timeout: 5000 }, async t => {
-    const directory = await mkdtemp(join(tmpdir(), "cua-startup-deadline-"));
-    t.after(() => rm(directory, {recursive:true,force:true}));
-    const requestLog = join(directory, "requests");
-    const computer = createComputerTools({ ...provider({blockMethod,requestLog}), definitions: catalog });
-    t.after(computer.close);
-    t.mock.timers.enable({ apis: ["setTimeout"] });
-    const expired = assert.rejects(
-      computer.tool("js").handler({timeout_ms:150}, context("startup-deadline")),
-      /CUA js timed out after 150 ms/,
-    );
-    // Wait for evidence that startup reached the stalled RPC before expiring it.
-    let requests;
-    while (!requests?.split("\n").includes(blockMethod)) {
-      requests = await readFile(requestLog, "utf8").catch(error => {
-        if (error.code !== "ENOENT") throw error;
+  for (const mode of ["connection", "session"]) {
+    test(`${mode} startup bounds blocked ${blockMethod} independently of provider tool arguments`, { timeout: 5000 }, async t => {
+      const fixture = await loggedProvider(t, {blockMethod});
+      t.mock.timers.enable({ apis: ["setTimeout"] });
+      let rejected = false;
+      let pending;
+      if (mode === "connection") pending = connectComputerTools(fixture.options);
+      else {
+        const computer = createComputerTools({...fixture.options, definitions:catalog});
+        t.after(computer.close);
+        pending = computer.tool("js").handler({timeout_ms:1}, context("startup"));
+      }
+      const expired = assert.rejects(pending, error => {
+        rejected = true;
+        return /provider startup\/discovery timed out after 120000 ms/.test(error.message);
       });
+      await until(async () => (await fixture.requests()).includes(blockMethod));
+      t.mock.timers.tick(119_999);
       await setImmediate();
+      assert.equal(rejected, false);
+      t.mock.timers.tick(1);
+      await expired;
+      assert.equal((await fixture.calls()).length, 0);
+    });
+  }
+}
+
+for (const trigger of ["abort", "release", "close"]) {
+  test(`${trigger} reports uncertain dispatched effects and never replays cancelled work`, { timeout:5000 }, async t => {
+    const fixture = await loggedProvider(t);
+    const computer = createComputerTools({...fixture.options, definitions:catalog});
+    t.after(computer.close);
+    const js = computer.tool("js"), abort = new AbortController();
+    await js.handler({set:"independent"}, context("other"));
+    const active = assert.rejects(js.handler({block:true, set:"effect"}, context("cancel", abort.signal)), error => {
+      assert.match(error.message, /native effects may continue and completion is unknown/);
+      if (trigger === "abort") assert.equal(error.cause, abort.signal.reason);
+      return true;
+    });
+    await until(async () => (await fixture.calls()).some(call => call.arguments.set === "effect"));
+    const queued = assert.rejects(js.handler({set:"never"}, context("cancel", abort.signal)));
+    if (trigger === "abort") abort.abort(new Error("caller cancelled"));
+    else if (trigger === "release") js.releaseSession("cancel");
+    else await computer.close();
+    await Promise.all([active, queued]);
+    if (trigger !== "close") {
+      if (trigger === "abort") {
+        await assert.rejects(js.handler({get:true}, context("cancel")), /session interrupted.*js_reset/);
+        assert.equal((await computer.tool("js_reset").handler({isError:true}, context("cancel"))).success, false);
+        await assert.rejects(js.handler({get:true}, context("cancel")), /session interrupted.*js_reset/);
+        await computer.tool("js_reset").handler({}, context("cancel"));
+      }
+      assert.equal((await js.handler({get:true}, context("cancel"))).output[0].text, "undefined");
+      assert.equal((await js.handler({get:true}, context("other"))).output[0].text, "independent");
     }
-    t.mock.timers.tick(150);
-    await expired;
-    assert(!requests.split("\n").includes("tools/call"));
+    const calls = await fixture.calls();
+    assert.equal(calls.filter(call => call.arguments.set === "effect").length, 1);
+    assert.equal(calls.filter(call => call.arguments.set === "never").length, 0);
   });
 }
 
-test("host deadline defaults to 30 seconds for invalid values and clamps timer overflow", { timeout: 5000 }, async t => {
-  const computer = await open(t), js = computer.tool("js");
-  await js.handler({}, context("timer-values"));
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  for (const timeout_ms of [undefined, 0, -1, 1.5, "1", null, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, Number.MAX_SAFE_INTEGER]) {
-    const expected = timeout_ms === Number.MAX_SAFE_INTEGER ? 2_147_483_647 : 30_000;
-    const active = new AbortController();
-    const blocked = assert.rejects(js.handler({block:true}, context("timer-values", active.signal)));
-    let rejected = false;
-    const queued = assert.rejects(js.handler({timeout_ms}, context("timer-values")), error => {
-      rejected = true;
-      return error.message === `CUA js timed out after ${expected} ms`;
-    });
-    t.mock.timers.tick(expected - 1);
-    await setImmediate();
-    assert.equal(rejected, false);
-    t.mock.timers.tick(1);
-    await queued;
-    active.abort();
-    await blocked;
-  }
+test("dispatched transport failure blocks already queued work until explicit reset", {timeout:5000}, async t => {
+  const fixture = await loggedProvider(t);
+  const computer = createComputerTools({...fixture.options, definitions:catalog});
+  t.after(computer.close);
+  const js = computer.tool("js");
+  const failed = assert.rejects(js.handler({crash:true}, context("transport")), /interrupted after dispatch.*effects are uncertain.*js_reset/);
+  const queued = assert.rejects(js.handler({set:"never"}, context("transport")), /session interrupted.*js_reset/);
+  await Promise.all([failed, queued]);
+  await computer.tool("js_reset").handler({}, context("transport"));
+  assert.equal((await js.handler({get:true}, context("transport"))).output[0].text, "undefined");
+  assert.deepEqual((await fixture.calls()).map(call => call.arguments), [{crash:true}, {}, {get:true}]);
 });

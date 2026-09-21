@@ -50,16 +50,31 @@ test("factory readiness follows the registration stage and shutdown reaps its ch
   assert(children.every(child => child.exitCode !== null || child.signalCode !== null));
 });
 
-test("reconnection rearms the deadline and stops a stuck factory", { timeout: 5_000 }, async t => {
+test("reconnection outlives the initial readiness deadline without killing the factory", { timeout: 5_000 }, async t => {
   const { factory, states, children } = supervisor(t, `
     console.log(JSON.stringify({fields:{stage:'vm.host.ready'}}));
     setTimeout(() => console.log(JSON.stringify({fields:{stage:'vm.host.reconnecting'}})), 30);
+    setTimeout(() => console.log(JSON.stringify({fields:{stage:'vm.host.ready'}})), 1500);
     setInterval(() => {}, 1000);
   `, { readyTimeoutMs: 1_000 });
   await factory.ready;
+  await delay(1200);
+  assert.equal(states.at(-1).status, "reconnecting");
+  assert.equal(children.length, 1);
+  assert.equal(children[0].exitCode, null);
+  assert.equal(children[0].signalCode, null);
+  await delay(400);
+  assert.equal(states.at(-1).status, "connected");
+  await factory.close();
+  assert(children[0].signalCode);
+});
+
+test("initial registration still stops a factory that never becomes ready", { timeout: 5_000 }, async t => {
+  const { factory, states, children } = supervisor(t, `
+    console.log(JSON.stringify({fields:{stage:'vm.host.reconnecting'}}));
+    setInterval(() => {}, 1000);
+  `, { readyTimeoutMs: 100 });
   await factory.done;
-  assert(states.some(state => state.status === "connected"));
-  assert(states.some(state => state.status === "reconnecting"));
   assert.equal(states.at(-1).status, "error");
   assert.match(states.at(-1).error, /readiness deadline/);
   assert(children[0].signalCode);

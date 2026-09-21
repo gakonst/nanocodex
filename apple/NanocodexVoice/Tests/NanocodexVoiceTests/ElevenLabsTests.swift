@@ -3,6 +3,34 @@ import InboxCore
 @testable import NanocodexVoice
 
 final class ElevenLabsTests: XCTestCase {
+    func testCloneFormRejectsInvalidInputBeforeUpload() {
+        XCTAssertFalse(VoiceCloneGuidance.canCreate(name: "  ", count: 1, consent: true))
+        XCTAssertFalse(VoiceCloneGuidance.canCreate(name: String(repeating: "x", count: 101), count: 1, consent: true))
+        XCTAssertFalse(VoiceCloneGuidance.canCreate(name: "Sample", count: 0, consent: true))
+        XCTAssertFalse(VoiceCloneGuidance.canCreate(name: "Sample", count: 6, consent: true))
+        XCTAssertFalse(VoiceCloneGuidance.canCreate(name: "Sample", count: 1, consent: false))
+        XCTAssertTrue(VoiceCloneGuidance.canCreate(name: "Sample", count: 5, consent: true))
+    }
+    func testCloneWithoutVoiceIDIsNotReportedAsSuccessOrRetried() async throws {
+        var requests = 0
+        let fixture = try HTTPFixture { _ in
+            requests += 1
+            return FixtureReply(status: 201, body: "{}")
+        }
+        defer { fixture.close() }
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+        try Data("synthetic audio".utf8).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let client = try ElevenLabs(configuration: .init(baseURL: URL(string: fixture.origin)!, apiKey: fixtureKey, agentID: "019d2f5d-7491-8000-8000-000000000001"), urlConfiguration: fixture.configuration)
+        do {
+            _ = try await client.clone(name: "Synthetic", files: [file], consent: true)
+            XCTFail("Missing voice ID cannot select a clone")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Refresh"))
+        }
+        XCTAssertEqual(requests, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "Uncertain uploads must preserve the sample")
+    }
     func testCatalogSeparatesInstantAndProfessionalClones() {
         let instant: JSON = .object(["category": .string("cloned")])
         let professional: JSON = .object(["category": .string("professional")])

@@ -22,9 +22,12 @@ for (const failSetup of [false, true]) {
       fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');
       if (args[0] === 'computer') {
         if (${failSetup}) { console.error('fixture network failure'); process.exit(3); }
-        const executable = path.join(process.env.NANOCODEX_DIR, 'runtimes/openai-cua/current/cua-provider');
+        const runtimeRoot = path.join(process.env.NANOCODEX_DIR, 'runtimes/openai-cua');
+        const executable = path.join(runtimeRoot, 'hosts/fixture/cua-provider');
         fs.mkdirSync(path.dirname(executable), { recursive: true }); fs.writeFileSync(executable, '', { mode: 0o755 });
-        console.log(JSON.stringify({ status: 'installed', executable, transport: 'mcp' }));
+        const receipt = { status: 'installed', executable, transport: 'mcp', args: [], environment: {} };
+        fs.writeFileSync(path.join(runtimeRoot, 'provider.json'), JSON.stringify(receipt));
+        console.log(JSON.stringify(receipt));
       } else if (args.includes('--describe')) console.log(JSON.stringify(machine));
       else { console.log(JSON.stringify({ machine, status: 'connected' })); process.stdin.resume(); process.stdin.on('end', () => process.exit(0)); }
     `, { mode: 0o755 });

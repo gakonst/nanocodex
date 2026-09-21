@@ -1,0 +1,29 @@
+[
+  {
+    "runner": "nanocodex-jev-us-20260921",
+    "region": "us-east-1",
+    "url": "https://nanocodex-jev-us-20260921.gakonst.workers.dev",
+    "calibration_sha256": "408b7a66ff0b27b0de01342f1e869577ba0b397288ef6d6e6337306f5a0ffdbd",
+    "deploy_log_result": "wrangler exit 0; subsequent secret bulk exit 0; logs retained privately",
+    "initial_upload_version_id": "d2f458a7-f553-4cca-b4f1-2bfc81fcd806",
+    "version_note": "Initial deploy version from Wrangler; subsequent secret bulk updates active version, not captured here."
+  },
+  {
+    "runner": "nanocodex-jev-eu-20260921",
+    "region": "eu-west-1",
+    "url": "https://nanocodex-jev-eu-20260921.gakonst.workers.dev",
+    "calibration_sha256": "408b7a66ff0b27b0de01342f1e869577ba0b397288ef6d6e6337306f5a0ffdbd",
+    "deploy_log_result": "wrangler exit 0; subsequent secret bulk exit 0; logs retained privately",
+    "initial_upload_version_id": "59d84354-24da-46b3-be1c-11fd759d4761",
+    "version_note": "Initial deploy version from Wrangler; subsequent secret bulk updates active version, not captured here."
+  },
+  {
+    "runner": "nanocodex-jev-ap-20260921",
+    "region": "ap-northeast-1",
+    "url": "https://nanocodex-jev-ap-20260921.gakonst.workers.dev",
+    "calibration_sha256": "408b7a66ff0b27b0de01342f1e869577ba0b397288ef6d6e6337306f5a0ffdbd",
+    "deploy_log_result": "wrangler exit 0; subsequent secret bulk exit 0; logs retained privately",
+    "initial_upload_version_id": "2e4af607-5948-4c45-9f37-0cd5558f1565",
+    "version_note": "Initial deploy version from Wrangler; subsequent secret bulk updates active version, not captured here."
+  }
+]

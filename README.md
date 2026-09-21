@@ -607,34 +607,33 @@ runtime includes the bounded OpenAI/Codex-compatible web-search boundary, and
 JavaScript hosts can use the matching `web()` factory. Applications decide
 which network tool to install and where credentials live.
 
-For full deterministic Chromium control, the supported source-distributed
-[`nanocodex-browser`](crates/nanocodex-browser/README.md) crate
-provides an ordinary deferred `BrowserTool`. It supports semantic/CSS/role/text
-targets, tabs and frames, bounded DOM/layout/style and network inspection,
-screenshots and pixel diffs, PDFs, traces, video, accessibility, performance,
-coverage, heap and React diagnostics, uploads, and virtual passkeys. The full
-roughly 67 KiB action contract stays runtime-only until discovered, adding no
-browser schema bytes to the initial model request.
+Nanocodex agents use a Hand's `cua_repl` MCP provider for browser interaction.
+Route each CUA call with `workdir`, just like a shell call. First call
+`tools.mcp__cua_repl__js({workdir: "/desktop"})` to read the provider contract;
+then pass its arguments alongside `workdir`. The host consumes `workdir` and
+forwards every other argument unchanged. There is no `select_computer` tool or
+global target. Different Hands can run concurrently in one Code Mode cell:
 
-```rust,ignore
-use nanocodex::{Nanocodex, OpenAi, Tools};
-use nanocodex_browser::BrowserTool;
-
-# fn build(openai: OpenAi) -> Result<(), Box<dyn std::error::Error>> {
-let tools = Tools::builder().provider(BrowserTool::new()?).build()?;
-let (_agent, _events) = Nanocodex::builder(openai).tools(tools).build()?;
-# Ok(())
-# }
+```js
+await Promise.all([
+  tools.mcp__cua_repl__js({ workdir: "/desktop", code: desktopCode }),
+  tools.mcp__cua_repl__js({ workdir: "/vm", code: vmCode }),
+]);
 ```
 
-Local CLI mode uses a dedicated persistent browser profile by default so login
-and site state survive Nanocodex restarts; `--browser-profile=temporary` opts
-back into one disposable profile with host-cookie import. The profile is still
-private browser state, not an OS sandbox. The optional
-`BrowserVm` composition starts an unprivileged headed Chromium under Xvfb in a
-disposable libkrun guest and closes CDP, Chromium, networking, VMM, and disk as
-one owned lifecycle. Run the source in
-[`examples/browser_agent.rs`](examples/browser_agent.rs).
+Read each provider's contract first; `code` above assumes that provider's schema.
+JS and reset calls to the same Hand are ordered. Each cell pins its captured Hand
+connections, as shell routing does. A published screen alone does not provide
+CUA; attach a supported computer or report the missing capability.
+
+The managed cloud runtime and native/VM Hands do not expose `browser_execute`
+or the managed `browser_vault_*` tools. Secure Vault intake remains available,
+but automated Vault browser login needs a supported private CUA integration.
+Do not pass Vault secrets into CUA code or ordinary tool arguments.
+
+The source-distributed [`nanocodex-browser`](crates/nanocodex-browser/README.md)
+library remains in the workspace for explicit library consumers and legacy
+utilities; it is disabled as an agent browser backend.
 
 ## VMs, sandboxes, and voice
 

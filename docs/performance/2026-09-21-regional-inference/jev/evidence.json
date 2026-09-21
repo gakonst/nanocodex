@@ -1,0 +1,32 @@
+[
+  {
+    "source": "experiment_api_output_delivery_ttft_proxy_not_internal_generation_ttft",
+    "runner": "nanocodex-jev-us-20260921",
+    "placement_hint": "aws:us-east-1",
+    "controller_ingress_colo": "SJC",
+    "expected_api_ingress": "IAD",
+    "calibration_sha256": "408b7a66ff0b27b0de01342f1e869577ba0b397288ef6d6e6337306f5a0ffdbd",
+    "response_cf_placement": "remote-IAD",
+    "response_cf_ray": "a3ecdf7d5f7f3354-SJC"
+  },
+  {
+    "source": "experiment_api_output_delivery_ttft_proxy_not_internal_generation_ttft",
+    "runner": "nanocodex-jev-eu-20260921",
+    "placement_hint": "aws:eu-west-1",
+    "controller_ingress_colo": "SJC",
+    "expected_api_ingress": "LHR",
+    "calibration_sha256": "408b7a66ff0b27b0de01342f1e869577ba0b397288ef6d6e6337306f5a0ffdbd",
+    "response_cf_placement": "remote-LHR",
+    "response_cf_ray": "a3ecdf800b1988f5-SJC"
+  },
+  {
+    "source": "experiment_api_output_delivery_ttft_proxy_not_internal_generation_ttft",
+    "runner": "nanocodex-jev-ap-20260921",
+    "placement_hint": "aws:ap-northeast-1",
+    "controller_ingress_colo": "SJC",
+    "expected_api_ingress": "NRT",
+    "calibration_sha256": "408b7a66ff0b27b0de01342f1e869577ba0b397288ef6d6e6337306f5a0ffdbd",
+    "response_cf_placement": "remote-NRT",
+    "response_cf_ray": "a3ecdf82f8c11b51-SJC"
+  }
+]

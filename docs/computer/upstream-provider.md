@@ -7,8 +7,8 @@ Production Code Mode remains QuickJS; the provider uses its own bundled Node.
 
 Browser-enabled launchers set upstream `BROWSER_USE_TINYSKY_ENABLED=1`, matching
 the official desktop host. This exposes `Tab.ax`, which upstream `cua.getTab()`
-and `cua.createBrowserTab()` use to return accessibility state. Existing managed
-copies need `computer setup --refresh` after upgrading to regenerate the launcher.
+and `cua.createBrowserTab()` use to return accessibility state. Mac setup regenerates Nanocodex host assets independently of the cached signed
+bundle; a launcher update does not require `--refresh`.
 
 ```sh
 nanocodex2 computer setup           # provision once or verify/reuse the cache
@@ -16,11 +16,93 @@ nanocodex2 computer setup --refresh # check/download the current upstream releas
 # Both commands are also available as nanocodex computer setup.
 ```
 
-The native installers refresh the upstream runtime. Direct binary/source installs
-provision it on first CUA use. Older published CLIs that lack this command keep
-working with the installer, but require an updated Nanocodex release before this
-behavior becomes available. Installation does not launch the ChatGPT GUI or sign
-in to a ChatGPT account. OS permissions and provider access policies still apply.
+Direct binary/source installs provision the runtime on first CUA use. Installation
+does not sign in to an account. On macOS, CUA starts an isolated official app server
+without the desktop GUI and delegates application access and confirmation
+handling to the existing upstream permission policy. Nanocodex adds no prompts. Build 9922 is currently supported;
+setup rejects other builds before publication. Official sign-in and OS permissions
+still apply. See [managed macOS host](official-app-server-bridge.md).
+
+A running Hand retains its provider launch configuration. Updating the installed
+launcher or reloading a TUI does not replace that configuration in the shared
+Hand daemon. Restart the Hand after upgrading from the older direct provider
+launcher to the managed macOS bridge, then rediscover its CUA contract. Existing
+CUA JavaScript bindings and browser debugger attachments do not survive this
+restart. Calls already admitted to the old connection are never retargeted.
+
+If native app access reports `nodeRepl.createElicitation is unavailable because
+the MCP client does not support form elicitation`, check the **active process
+chain**, not just `provider.json`. The managed path is Hand → native host →
+official Codex app server → CUA provider. The server handles confirmations under
+its effective permission policy without starting the desktop GUI. A provider launched directly by an older Hand bypasses that path. The
+outer Nanocodex adapter intentionally advertises no elicitation capability;
+adding it there does not establish a working permission UI.
+
+## Timeout ownership and cancellation
+
+`timeout_ms` belongs to the upstream provider. Nanocodex forwards it unchanged and
+awaits the provider result; it does not subtract queueing or startup time, supply
+a default execution timeout, or abandon a call based on that argument. The macOS
+app-server bridge likewise delegates tool execution timeouts to the official app
+server ([configured MCP tool timeout](official-app-server-bridge.md#transport),
+upstream default 300 seconds) while keeping
+trusted connection and startup deadlines. This applies to standalone and managed
+bridges. An unresponsive tool remains governed by upstream timeout handling or
+caller cancellation.
+
+For direct MCP processes, the Rust adapter gives each provider startup a trusted
+120-second cumulative deadline covering initialization and complete catalog
+discovery. This applies both to `ComputerTools::connect` and to each conversation's
+new provider process. It does not consume or derive from `timeout_ms`, and ends
+before tool execution starts. Startup expiry discards that owned transport; a
+conversation interrupted during startup requires explicit reset. The managed
+macOS launcher also retains its separate phase deadlines.
+
+Genuine caller cancellation discards only the affected conversation's owned
+transport and marks its session interrupted. Other conversations retain their
+sessions. A successful explicit `js_reset` is required before continuing; a failed
+reset leaves the session interrupted. Follow reset with a fresh
+observation of the intended surface. Closing the transport or resetting the
+session is not proof that upstream/native input stopped. Effects may be uncertain;
+never automatically replay that input.
+
+## Browser selection
+
+OpenAI's browser selector accepts exact discovered browser IDs and lowercase
+family aliases such as `brave`. The display name `Brave Browser` is not an
+accepted alias in the pinned provider, despite its browser instructions saying
+to pass a browser name. Codex-rs forwards JavaScript unchanged and does not
+normalize this string. Nanocodex includes a separate selection note alongside
+workdir-only discovery; the provider's tool definitions and call arguments
+remain unchanged.
+
+Use a known browser ID from current provider state. For an unambiguous request
+for Brave, `cua.createBrowserTab('brave', url, options)` works directly. If
+multiple browser instances or profiles could match, use the provider's browser
+inventory to select the requested instance before creating a tab. Never guess a
+numeric ID or retry a failed creation against another browser automatically.
+
+## Native app recovery
+
+On macOS, the pinned provider's `cua.getApp` launches an app in the background
+and includes an initial accessibility observation. It accepts an app name, path,
+or bundle ID, not a native window ID. A running process alone does not guarantee
+a responsive or usable app window.
+
+If that initial observation fails with a provider timeout, or the caller cancels
+the wait, reset the CUA session before continuing. Reset does not establish that
+earlier upstream/native operations stopped; inspect fresh state before acting.
+Use supported CUA to open the intended app normally from an observed launcher, such as its item in Finder, then select it again. In live Slack testing,
+opening the installed app through Finder recovered a stalled initial snapshot;
+subsequent background observations, search, channel navigation, and a fresh CUA
+session succeeded without opening ChatGPT. This is a verified recovery, not proof
+of the upstream stall's root cause or a reason to replay input automatically.
+
+After a transient menu or window closes, `cgWindowNotFound` can refer to that
+vanished window. Select the same app again and inspect its fresh state before
+acting. This recovered Finder's desktop target in live testing. For window-based
+input, use an actual app window. These recovery notes accompany workdir-only
+discovery separately from the unchanged provider tool definitions.
 
 ## Distribution
 
@@ -89,7 +171,9 @@ to the official OpenAI runtime. Nanocodex does not display consent forms, rememb
 application permissions, or expose an embedding callback that makes approval
 decisions. Installing a provider does not grant consent.
 
-The adapters advertise no MCP elicitation capability. Unsupported provider
+The adapters advertise no MCP elicitation capability. On macOS, the official app server handles provider confirmations using its
+existing permission policy. The managed bridge declines unresolved interactive
+requests for its own thread without showing a prompt or launching the GUI. Direct provider-to-adapter requests use the following MCP behavior. Unsupported provider
 requests, including `elicitation/create` and `openai/elicitation/create`, receive
 a JSON-RPC method-not-found error (`-32601`), never an approval response. Operations
 that require this host capability can therefore fail; discovery or a successful

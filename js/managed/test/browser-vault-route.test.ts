@@ -45,7 +45,7 @@ describe("private browser direct challenge endpoint", () => {
     expect((await call({ ...principal, authorizationEpoch: 2 })).status).toBe(404);
     expect((await call({ ...principal, kind: "account_session" })).status).toBe(403);
     expect((await call({ ...principal, kind: "account_session" }, { headers: { origin: "https://evil.example" } })).status).toBe(403);
-    expect((await call({ ...principal, kind: "account_session" }, { headers: { origin: "https://nanocodex.example" } })).status).toBe(409);
+    expect((await call({ ...principal, kind: "account_session" }, { headers: { origin: "https://nanocodex.example" } })).status).toBe(410);
   });
   it("bounds and validates input without reflecting it", async () => {
     const { principal, call } = await fixture();
@@ -66,8 +66,8 @@ describe("private browser direct challenge endpoint", () => {
     }
     expect((await call(principal, {}, "?code=123456")).status).toBe(400);
     const unavailable = await call();
-    expect(unavailable.status).toBe(409);
-    expect(await unavailable.json()).toEqual({ error: "challenge_unavailable" });
+    expect(unavailable.status).toBe(410);
+    expect(await unavailable.json()).toEqual({ error: "managed_browser_disabled" });
   });
   it("rejects internal submissions lacking owner assertions", async () => {
     const { stub } = await fixture();
@@ -90,11 +90,11 @@ describe("private browser direct takeover endpoint", () => {
     expect((await call({ ...principal, kind: "account_session" }, init)).status).toBe(403);
     expect((await call({ ...principal, connectGrant: { grantId: `0x${"a".repeat(64)}`, connectors: ["chatgpt"], mcpIds: [] } }, init)).status).toBe(403);
     const response = await call(principal, init);
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(410);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(await response.json()).toEqual({ error: "challenge_unavailable" });
+    expect(await response.json()).toEqual({ error: "managed_browser_disabled" });
   });
-  it("accepts the native mobile contract through both HTTP boundaries", async () => {
+  it("disables native mobile browser continuation after authorization", async () => {
     const { principal, call } = await fixture("takeover");
     for (const action of [
       { action: "observe", viewport: { width: 390, height: 700, mobile: true } },
@@ -106,10 +106,9 @@ describe("private browser direct takeover endpoint", () => {
       { action: "finish" },
     ]) {
       const response = await call(principal, { body: JSON.stringify({ challenge_id: "opaque-fixture", ...action }) });
-      // No lease exists in this fixture. 409 proves parsing reached the runtime;
-      // the obsolete route contract rejected these requests with 400.
-      expect(response.status, JSON.stringify(action)).toBe(409);
-      expect(await response.json()).toEqual({ error: "challenge_unavailable" });
+      // Valid old clients receive an explicit disabled response without creating a browser.
+      expect(response.status, JSON.stringify(action)).toBe(410);
+      expect(await response.json()).toEqual({ error: "managed_browser_disabled" });
     }
   });
   it("rejects arbitrary or oversized action input before invoking runtime", async () => {

@@ -6,6 +6,7 @@ use crate::{
 };
 
 const SYSTEM_PROMPT: &str = include_str!("../../prompts/system.md");
+const GLM_SYSTEM_PROMPT: &str = include_str!("../../prompts/glm.md");
 const ASTRA_SYSTEM_PROMPT: &str = include_str!("../../prompts/astra.md");
 
 /// Validated, read-only settings passed to a [`ResponsesServiceFactory`].
@@ -78,6 +79,7 @@ impl ModelConfig {
     pub fn system_prompt(&self) -> Cow<'_, str> {
         let base = self.system_prompt.as_deref().unwrap_or(match self.model {
             Model::Astra => ASTRA_SYSTEM_PROMPT,
+            Model::Glm53 => GLM_SYSTEM_PROMPT,
             Model::Sol | Model::Terra | Model::Luna => SYSTEM_PROMPT,
         });
         match self.additional_instructions.as_deref() {
@@ -123,6 +125,17 @@ impl Default for ModelConfig {
 #[cfg(test)]
 mod prompt_tests {
     use super::*;
+
+    #[test]
+    fn glm53_prompt_preserves_its_identity() {
+        let config = ModelConfig {
+            model: Model::Glm53,
+            ..ModelConfig::default()
+        };
+        assert!(config.system_prompt().starts_with("You are Nanocodex"));
+        assert!(!config.system_prompt().contains("GPT-"));
+        assert!(!config.system_prompt().contains("You are Codex"));
+    }
 
     #[test]
     fn supported_models_select_exact_pinned_instructions() {

@@ -1,5 +1,6 @@
 import SwiftUI
 import InboxCore
+import NanocodexVoice
 
 @main
 struct NanocodexInboxApp: App {
@@ -9,14 +10,14 @@ struct NanocodexInboxApp: App {
     @Environment(\.scenePhase) private var scenePhase
     var body: some Scene {
         WindowGroup("Nanocodex", id: "inbox") {
-            #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--soundcloud-loopback-smoke") {
-                SpotifyLoopbackSmokeView(provider: .soundcloud)
-            } else if ProcessInfo.processInfo.arguments.contains("--spotify-loopback-smoke") {
-                SpotifyLoopbackSmokeView()
+            #if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--voice-clone-ui-fixture") {
+                VoiceCloneUIFixture()
             } else {
-                content.preferredColorScheme(demoColorScheme)
+                debugContent
             }
+            #elseif DEBUG
+            debugContent
             #else
             content
             #endif
@@ -27,6 +28,16 @@ struct NanocodexInboxApp: App {
     }
 
     #if DEBUG
+    @ViewBuilder private var debugContent: some View {
+        if ProcessInfo.processInfo.arguments.contains("--soundcloud-loopback-smoke") {
+            SpotifyLoopbackSmokeView(provider: .soundcloud)
+        } else if ProcessInfo.processInfo.arguments.contains("--spotify-loopback-smoke") {
+            SpotifyLoopbackSmokeView()
+        } else {
+            content.preferredColorScheme(demoColorScheme)
+        }
+    }
+
     private var demoColorScheme: ColorScheme? {
         guard ProcessInfo.processInfo.arguments.contains("--demo") else { return nil }
         return ["light": ColorScheme.light, "dark": ColorScheme.dark][ProcessInfo.processInfo.environment["NANOCODEX_DEMO_APPEARANCE"] ?? ""]

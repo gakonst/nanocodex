@@ -687,7 +687,7 @@ impl<'a> ResponseCreate<'a> {
                 // Astra rejects the legacy `reasoning.mode` field. Standard
                 // already serializes as absent; keep this model guard as a
                 // final wire-level invariant for custom service factories.
-                mode: (policy.model != crate::Model::Astra)
+                mode: (!matches!(policy.model, crate::Model::Astra | crate::Model::Glm53))
                     .then(|| reasoning_mode.request_value())
                     .flatten(),
                 effort: policy.thinking.as_str(),
@@ -704,6 +704,7 @@ impl<'a> ResponseCreate<'a> {
             // Astra standard mode is explicit so a project-level Fast default
             // cannot silently change processing or the local cost estimate.
             service_tier: match (policy.model, policy.fast_mode) {
+                (crate::Model::Glm53, _) => None,
                 (_, true) => Some("priority"),
                 (crate::Model::Astra, false) => Some("default"),
                 (_, false) => None,
@@ -1102,6 +1103,7 @@ mod tests {
             (Model::Terra, "gpt-5.6-terra"),
             (Model::Luna, "gpt-5.6-luna"),
             (Model::Astra, "gpt-6-astra"),
+            (Model::Glm53, "@cf/zai-org/glm-5.3"),
         ] {
             let config = ModelConfig::default();
             let profile = RequestProfile::new("model-agent", "model-lineage", Arc::from([]));

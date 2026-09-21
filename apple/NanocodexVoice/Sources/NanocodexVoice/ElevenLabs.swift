@@ -19,8 +19,7 @@ final class ElevenLabs: @unchecked Sendable {
         return try await http.data(http.request(base + "/speech", method: "POST", body: JSONEncoder().encode(body), key: key)).0
     }
     func clone(name: String, files: [URL], consent: Bool) async throws -> JSON {
-        guard consent, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.count <= 100,
-              (1...5).contains(files.count) else { throw ManagedError(code: "invalid_clone", message: "Provide a name, one to five audio samples, and consent.") }
+        guard VoiceCloneGuidance.canCreate(name: name, count: files.count, consent: consent) else { throw ManagedError(code: "invalid_clone", message: "Provide a name, one to five audio samples, and consent.") }
         let boundary = "Nanocodex-" + UUID().uuidString
         var body = Data()
         func append(_ text: String) { body.append(Data(text.utf8)) }
@@ -42,6 +41,11 @@ final class ElevenLabs: @unchecked Sendable {
         append("--\(boundary)--\r\n")
         var request = try http.request(base + "/voices", method: "POST", body: body, key: key)
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        return try await http.json(request)
+        request.timeoutInterval = 120
+        let result: JSON = try await http.json(request, timeout: .seconds(120))
+        guard !result["voice_id"].string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ManagedError(code: "clone_result_unknown", message: "The server did not return a voice ID. Refresh your voices before trying again; the clone may have been created.")
+        }
+        return result
     }
 }

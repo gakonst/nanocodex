@@ -274,7 +274,11 @@ enum DemoContent {
         #endif
         if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_GENERATED_OUTPUTS"] == "1" { return generatedOutputRows() }
         if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_RENDER_PROFILE"] == "1" {
-            return (1...80).map { index in
+            // Keep the default fixture stable; allow deterministic long-session
+            // profiling without account data or a live managed turn.
+            let requested = Int(ProcessInfo.processInfo.environment["NANOCODEX_DEMO_RENDER_ROWS"] ?? "") ?? 80
+            let count = min(2_000, max(1, requested))
+            var rows: [TranscriptRow] = (1...count).map { index in
                 .init(id: "profile-\(index)", role: "Agent", text: """
                 ## Review note \(index)
 
@@ -291,6 +295,12 @@ enum DemoContent {
                 | Draft | Retained |
                 """)
             }
+            if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_RENDER_TOOL"] == "1" {
+                var tool = ToolPresentation(name: "exec_command", arguments: .object(["cmd": .string("echo synthetic-recycling-fixture")]))
+                tool.finish(.object(["output": .string("Recycled tool output remains expanded."), "exit_code": .number(0)]))
+                rows.append(.init(id: "profile-recycling-tool", role: "Tool", text: tool.title, tool: tool))
+            }
+            return rows
         }
         if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_LONG_THREAD"] == "1" {
             return (1...36).map { .init(id: "note-\($0)", role: "Agent", text: "Progress note \($0). Checking the reconnect boundary and preserving your place while new output arrives.") }

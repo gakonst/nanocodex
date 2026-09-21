@@ -33,7 +33,22 @@ pub(crate) struct Task<T> {
     abort: AbortHandle,
 }
 
+#[cfg(any(target_family = "wasm", test))]
+pub(crate) struct TaskAbortGuard(AbortHandle);
+
+#[cfg(any(target_family = "wasm", test))]
+impl Drop for TaskAbortGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 impl<T> Task<T> {
+    #[cfg(any(target_family = "wasm", test))]
+    pub(crate) fn abort_on_drop(&self) -> TaskAbortGuard {
+        TaskAbortGuard(self.abort.clone())
+    }
+
     pub(crate) fn abort(&self) {
         self.abort.abort();
     }
@@ -132,4 +147,53 @@ fn schedule_timeout(duration: Duration) -> oneshot::Receiver<()> {
 extern "C" {
     #[wasm_bindgen::prelude::wasm_bindgen(js_namespace = globalThis, js_name = setTimeout)]
     fn set_timeout(callback: &js_sys::Function, milliseconds: i32) -> wasm_bindgen::JsValue;
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod tests {
+    use super::spawn;
+    use std::{future::pending, time::Duration};
+    use tokio::{sync::oneshot, time::timeout};
+
+    #[tokio::test]
+    async fn dropping_abort_guard_cancels_pending_work_and_releases_resources() {
+        let (started, ready) = oneshot::channel();
+        let (resource, released) = oneshot::channel::<()>();
+        let task = spawn(async move {
+            let _resource = resource;
+            started.send(()).unwrap();
+            pending::<()>().await;
+            panic!("cancelled task must not continue");
+        });
+        let guard = task.abort_on_drop();
+        timeout(Duration::from_secs(5), ready)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // The receipt can be dropped independently, as it is when the caller's
+        // future is cancelled. Its guard must still cancel the spawned work.
+        drop(task);
+        drop(guard);
+        assert!(
+            timeout(Duration::from_secs(5), released)
+                .await
+                .unwrap()
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn abort_guard_preserves_successful_task_results() {
+        let task = spawn(async { 42 });
+        let guard = task.abort_on_drop();
+        assert_eq!(
+            timeout(Duration::from_secs(5), task)
+                .await
+                .unwrap()
+                .unwrap(),
+            42
+        );
+        drop(guard);
+    }
 }

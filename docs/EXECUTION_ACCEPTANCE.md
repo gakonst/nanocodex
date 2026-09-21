@@ -22,10 +22,11 @@ It gives each case a checkbox and names the concrete execution environment.
 - **Connected device:** select its exact advertised mount when the user requests
   that device, or the task requires a capability available there. A connected
   Mac is not a suitable substitute for a Cloudflare hand's `/brain` access.
-- **Managed browser:** use the retained browser session through
-  `browser_execute` for public pages or workflows whose authenticated session
-  lives there. It is independent of a native build hand. A screenshot of it is
-  not a screenshot of the user's laptop or phone.
+- **Browser interaction:** call `mcp__cua_repl__js` with only a Hand's `workdir`
+  to read its provider contract, then add provider arguments alongside `workdir`
+  on every CUA call. Different Hands may run concurrently in Code Mode. A screen publication alone is insufficient; if
+  CUA is unavailable, attach a supported computer or report the limitation.
+  Managed `browser_execute` and `browser_vault_*` tools are disabled.
 - **Specialized hand:** select an advertised GPU, desktop application, CAD
   solver, operating system, or other required capability. Mount a provider only
   through its actual connected factory; do not invent GPU support or a provider
@@ -88,10 +89,10 @@ active so output, exit status, and cancellation cannot cross sessions.
 
 | ID | User instruction or action | Expected calls / environment | Required result |
 | --- | --- | --- | --- |
-| E23 | “Screenshot this public URL.” | Retained managed browser via `browser_execute`; no native build hand needed. | Navigate to the requested page, wait for the relevant content, and return an actual image attachment with the correct viewport. A URL or textual description is not a screenshot. |
-| E24 | “Screenshot the tab open on my Mac.” | Connected Mac/browser capability owning that tab. | Capture the selected tab's current state. Do not recreate the URL in the managed browser and call that the same tab. |
+| E23 | “Screenshot this public URL.” | Selected Hand’s CUA provider; follow its discovered screenshot contract. | Navigate to the requested page, wait for the relevant content, and return an actual image attachment with the correct viewport. A URL or textual description is not a screenshot. |
+| E24 | “Screenshot the tab open on my Mac.” | Connected Mac/browser capability owning that tab. | Capture the selected tab's current state. Do not recreate the URL in a different browser session and call that the same tab. |
 | E25 | “Screenshot this app on my phone.” | Phone Hand's advertised, user-granted capture capability. | Return that device/app's image when supported. If unavailable, explain the required supported capture step; do not fabricate background device access or return a cloud-browser screenshot. |
-| E26 | “Start this web app and show desktop and mobile screenshots.” | Native hand starts the server; `preview` exposes its port; managed browser visits that exact preview at two viewport sizes. | Screenshots reflect the running build, not another deployment. The server and browser have distinct lifecycles; stop targets the intended process. |
+| E26 | “Start this web app and show desktop and mobile screenshots.” | Native hand starts the server; `preview` exposes its port; the selected CUA provider visits that exact preview at desktop and mobile viewport sizes when supported. | Screenshots reflect the running build, not another deployment. The server and browser have distinct lifecycles; stop targets the intended process. |
 | E27 | “Screenshot my logged-in order page.” | Browser session that already owns the authorized account, managed or on a connected device. | Correct account/page; login-required or expired-session states are truthful. Initial setup can require user login; later work reuses the authorized session without handling raw credentials. |
 | E28 | “Compress this uploaded video and extract a thumbnail.” | Native media tools on a suitable hand; host can handle file metadata/routing. | Playable output, requested codec/size behavior, correct thumbnail, and durable downloadable artifacts after reconnect. |
 | E29 | “Read this CSV, calculate totals, and make a chart.” | Host for supported bounded parsing/calculation; native hand when the requested library/runtime or workload requires it. | Correct numeric results and a viewable chart/download. Do not provision native compute just to inspect a small text file. |

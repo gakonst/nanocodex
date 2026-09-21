@@ -9,7 +9,11 @@ and Python wheel jobs. It never skips individual assertions inside a selected jo
 complete before/after range for a push. Deletions and both sides of renames count.
 Unknown paths, shared Rust/build inputs, an unavailable diff, scheduled runs, and
 manual dispatches select all groups. Keep the allowlist conservative when adding
-new cross-language dependencies.
+new cross-language dependencies. The known CUA bridge scripts and their tests
+select the native matrix (the scripts are embedded in the Hand helper), but not
+the unrelated native voice or Python wheel jobs. The macOS Hand job also runs
+the bridge, host lifecycle, and GUI readiness unit tests. New CUA files and
+changes to shared Rust/build inputs still select all groups.
 
 The daily 05:23 UTC run exercises the full matrix even when no source changed.
 Scheduled, manual, PR, and push concurrency groups are separate so a push cannot

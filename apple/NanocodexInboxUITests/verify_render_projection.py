@@ -14,8 +14,10 @@ import Combine
 import os
 struct TranscriptRow: Sendable { var id: String }
 struct PendingMessage: Sendable {}
-struct ConversationRenderedItem: Sendable {
+struct Message: Sendable, Equatable { var role: String }
+struct ConversationRenderedItem: Sendable, Equatable {
     var id: String
+    var message: Message? = nil
     static func project(_ rows: [TranscriptRow], outputs: [String: String]) -> [Self] {
         rows.map { Self(id: $0.id) }
     }

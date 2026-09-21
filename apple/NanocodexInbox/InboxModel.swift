@@ -425,13 +425,14 @@ final class InboxModel: ObservableObject {
         }
         if isDemo, ProcessInfo.processInfo.environment["NANOCODEX_DEMO_STREAMING_GROWTH"] == "1", let id = focused?.id {
             let epoch = generation
+            let interval = min(1_000, max(50, Int(ProcessInfo.processInfo.environment["NANOCODEX_DEMO_STREAM_INTERVAL_MS"] ?? "") ?? 180))
             Task {
                 try? await Task.sleep(for: .seconds(3))
                 guard !Task.isCancelled, generation == epoch, focused?.id == id,
                       !rows.contains(where: { $0.id == "demo-streaming-growth" }) else { return }
                 rows.append(.init(id: "demo-streaming-growth", role: "Agent", text: "Streaming response begins.", running: true))
                 for index in 1...60 {
-                    try? await Task.sleep(for: .milliseconds(180))
+                    try? await Task.sleep(for: .milliseconds(interval))
                     guard !Task.isCancelled, generation == epoch, focused?.id == id,
                           let row = rows.firstIndex(where: { $0.id == "demo-streaming-growth" }) else { return }
                     rows[row].text += "\n\nStream paragraph \(index). A steadily growing response keeps the live tail visible while preserving the reader's chosen position."
@@ -2011,17 +2012,36 @@ final class InboxModel: ObservableObject {
         let history = events, revision = eventsRevision
         guard let projected = try? await streamProjector.rows(history),
               generation == epoch, observation == token, !Task.isCancelled else { return false }
-        let media = await prepareMedia(projected)
+        // The retained window can exceed its byte target while an active turn or
+        // reading anchor protects it. Keep every history-sized operation off the
+        // main actor, including equality and the card's event/preview scans.
+        let previousRows = rows, previousRowsRevision = rowsRevision
+        let previousMedia = mediaProjection
+        let previousCard = cards.first(where: { $0.id == id })
+        let task = Task.detached(priority: .userInitiated) {
+            let signpostID = OSSignpostID(log: accountPerformanceLog)
+            os_signpost(.begin, log: accountPerformanceLog, name: "HistoryPublicationPreparation", signpostID: signpostID, "events=%d rows=%d", history.count, projected.count)
+            defer { os_signpost(.end, log: accountPerformanceLog, name: "HistoryPublicationPreparation", signpostID: signpostID) }
+            let prepared = TranscriptPublicationPreparation(events: history, rows: projected,
+                previousRows: previousRows, card: previousCard, rowsRevision: previousRowsRevision)
+            var media = previousMedia
+            if prepared.rowsChanged { media.update(projected) }
+            return (media, prepared)
+        }
+        let (media, prepared) = await withTaskCancellationHandler(
+            operation: { await task.value }, onCancel: { task.cancel() })
         guard generation == epoch, observation == token, !Task.isCancelled else { return false }
+        // State refreshes and history navigation may run while preparation is
+        // suspended. Retry against their latest inputs instead of restoring an
+        // old card or publishing equality computed against different rows.
+        guard prepared.isCurrent(rowsRevision: rowsRevision,
+            card: cards.first(where: { $0.id == id })) else { return true }
         // Rows and media become visible together. A second asynchronous media
         // insertion after a history prepend would invalidate its reading anchor.
         if history.first?.cursor == events.first?.cursor {
-            if rows != projected { publishPreparedRows(projected, media: media) }
-            else { mediaProjection = media }
+            if prepared.rowsChanged { publishPreparedRows(projected, media: media) }
             projectedFirstCursor = history.first?.cursor
-            if let index = cards.firstIndex(where: { $0.id == id }) {
-                var card = cards[index]
-                card.apply(events: history, transcriptRows: projected)
+            if let card = prepared.card, let index = cards.firstIndex(where: { $0.id == id }) {
                 historyCursors[id] = max(historyCursors[id] ?? .zero, history.last?.cursor ?? .zero)
                 if cards[index] != card { cards[index] = card }
             }
