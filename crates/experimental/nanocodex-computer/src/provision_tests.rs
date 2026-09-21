@@ -139,6 +139,35 @@ fn installed_app_is_copied_verified_and_reused_without_network() {
 }
 
 #[test]
+fn launcher_enables_browser_ax_in_trusted_provider_environment() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let f = Fixture::new();
+    let version = f.directory.join("runtime ' quoted");
+    Fixture::app(&version.join(APP));
+    let node = version.join(APP).join(RESOURCES).join("cua_node/bin/node");
+    fs::write(
+        &node,
+        "#!/bin/sh\nprintf '%s\\n' \"$BROWSER_USE_TINYSKY_ENABLED\" \"$CUA_REPL_ENABLED_SURFACES\" \"$NODE_REPL_UNTRUSTED_ENV_ALLOWLIST\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+    let script = version.join("cua-provider");
+    fs::write(&script, launcher(&version).unwrap()).unwrap();
+    let output = Command::new("/bin/sh")
+        .arg(script)
+        .env("BROWSER_USE_TINYSKY_ENABLED", "0")
+        .env_remove("NODE_REPL_UNTRUSTED_ENV_ALLOWLIST")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "1\nbrowser,computer\nSKY_CUA_SERVICE_PATH\n"
+    );
+}
+
+#[test]
 fn clean_install_downloads_and_detaches_before_atomic_selection() {
     let mut f = Fixture::new();
     let root = f.directory.join("runtime");
