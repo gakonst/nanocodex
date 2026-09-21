@@ -125,6 +125,7 @@ export function classifyTurnFailure(id: string, error: unknown): TurnResolution 
       error: selected.message,
       ...(selected.blockedBy === undefined ? {} : { blockedBy: selected.blockedBy }),
       reopenAgent: selected.code === "reopen_required"
+        || selected.code === "host_interrupted"
         || /\bagent (?:has been |was |is )?(?:already )?disposed\b/i.test(selected.message),
     };
   }
@@ -177,7 +178,8 @@ function isRetryable(failure: ClassifiedError): boolean {
   // Rust's operation settlement is authoritative. Text from a committed
   // failure may mention a transport, a cancelled tool, or an old retry.
   if (failure.code !== undefined) {
-    return failure.code === "reopen_required" || failure.code === "retryable";
+    return failure.code === "reopen_required" || failure.code === "retryable"
+      || failure.code === "host_interrupted";
   }
   return /\bagent (?:has been |was |is )?(?:already )?disposed\b|already active|agent stopped|turn completed|durability (?:store|driver)|transport|websocket|startup (?:validation )?timed out|connection rejected with HTTP 5\d\d/i.test(failure.message);
 }

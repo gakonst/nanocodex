@@ -7335,15 +7335,14 @@ export class DurableAgentSession extends DurableComputerSession {
     if (session?.runtime_profile === "managed" && accountToolsEnabled(this.#configuration())) {
       const discoveryKey = JSON.stringify([session.owner_id, session.organization_id, session.team_id, session.authorization_epoch]);
       if (this.#accountDiscoveryKey !== discoveryKey) {
-        this.#accountHostedTools?.invalidate();
+        this.#accountHostedTools?.invalidate({ clearCatalog: true });
         this.#accountDiscoveryKey = discoveryKey;
       }
       catalog ??= this.#catalog(session);
       const refreshStartedAt = performance.now();
-      await Promise.all([
-        performanceStage("account.mcp_discovery", () => this.#refreshAccountMcpConnections(session, catalog)),
-        this.#refreshAccountHostedTools(session),
-      ]);
+      // Optional hand inventory must not gate admission or reuse of a ready agent.
+      this.#refreshAccountHostedTools(session);
+      await performanceStage("account.mcp_discovery", () => this.#refreshAccountMcpConnections(session, catalog));
       accountMcpRefreshMs = roundMilliseconds(performance.now() - refreshStartedAt);
     }
     if (this.#durabilityExported) throw new Error("durability state was exported");
@@ -7532,7 +7531,7 @@ export class DurableAgentSession extends DurableComputerSession {
     }
   }
 
-  async #refreshAccountHostedTools(session: SessionRow): Promise<void> {
+  #refreshAccountHostedTools(session: SessionRow): void {
     this.#accountHostedTools ??= new AccountHostedToolsProvider(
       this.env.NANOCODEX_ACCOUNT_TOOLS,
       session.owner_id,
@@ -7542,7 +7541,10 @@ export class DurableAgentSession extends DurableComputerSession {
           : this.#authorizationForToolContext(context),
       ),
     );
-    await performanceStage("account.hosted_tools", () => this.#accountHostedTools!.refresh(MANAGED_ACCESS_TTL_MS));
+    this.ctx.waitUntil(performanceStage("account.hosted_tools", () => this.#accountHostedTools!.refreshOptional(MANAGED_ACCESS_TTL_MS))
+      .catch((error) => {
+        console.warn({ type: "managed.account_hand_listing_failed", error_kind: errorKind(error), fallback: "cached_or_empty" });
+      }));
   }
 
   #authorizeVaultTool(context: ToolContext): void {

@@ -341,7 +341,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   #screenMachines: readonly HostedMachine[] = [];
   #validator: HostedToolsCatalogValidator | undefined;
   #refreshing?: Promise<void>;
-  #loaded = false;
+  #optionalRetryAt = 0;
   #loadedAt = 0;
   #generation = 0;
   #refreshGeneration = 0;
@@ -390,12 +390,28 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   }
 
   settled(): Promise<void> {
-    return this.#loaded ? Promise.resolve() : this.refresh();
+    // Account inventory is optional. Tool-router readiness must not depend on
+    // an account hand being reachable; explicit discovery still uses refresh().
+    return Promise.resolve();
   }
 
-  invalidate(): void {
+  invalidate(options: { clearCatalog?: boolean } = {}): void {
     this.#loadedAt = 0;
+    this.#optionalRetryAt = 0;
     this.#generation += 1;
+    if (options.clearCatalog) this.#publish({ tools: [], machines: [] });
+  }
+
+  /** Demand-driven background refresh; explicit refresh bypasses failure backoff. */
+  async refreshOptional(maxAgeMs: number): Promise<void> {
+    if (Date.now() < this.#optionalRetryAt) return;
+    const generation = this.#generation;
+    try {
+      await this.refresh(maxAgeMs);
+    } catch (error) {
+      if (generation === this.#generation) this.#optionalRetryAt = Date.now() + 10_000;
+      throw error;
+    }
   }
 
   refresh(maxAgeMs = 0): Promise<void> {
@@ -406,7 +422,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     this.#refreshGeneration = generation;
     const startedAt = Date.now();
     const refreshing = this.#load(generation).then(() => {
-      if (generation === this.#generation) { this.#loaded = true; this.#loadedAt = startedAt; }
+      if (generation === this.#generation) { this.#loadedAt = startedAt; this.#optionalRetryAt = 0; }
     }).finally(() => {
       if (this.#refreshing === refreshing) this.#refreshing = undefined;
     });

@@ -740,3 +740,67 @@ it("an invalidated in-flight discovery cannot publish or satisfy the next refres
   await provider.refresh(120_000);
   expect(fetch).toHaveBeenCalledTimes(2);
 });
+
+it("settles optional account tools without waiting for cold discovery", async () => {
+  const stalled = Promise.withResolvers<Response>();
+  const fetch = vi.fn(() => stalled.promise);
+  const provider = new AccountHostedToolsProvider({ getByName: () => ({ fetch }) } as unknown as DurableObjectNamespace<AccountHostedTools>, ACCOUNT_A, () => true);
+  const refresh = provider.refreshOptional(120_000);
+  await provider.settled();
+  expect(provider.machines()).toEqual([]);
+  stalled.resolve(Response.json(snapshot));
+  await refresh;
+  expect(provider.machines()).toHaveLength(1);
+});
+
+it("backs off optional failures while forced discovery and live authorization remain independent", async () => {
+  let now = 1000, allowed = true;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  const fetch = vi.fn(async () => Response.json(snapshot));
+  const provider = new AccountHostedToolsProvider({ getByName: () => ({ fetch }) } as unknown as DurableObjectNamespace<AccountHostedTools>, ACCOUNT_A, () => allowed);
+  try {
+    await provider.refreshOptional(120_000);
+    const captured = provider.machineTool("laptop", "exec_command")!;
+    now += 120_000;
+    fetch.mockImplementation(async () => new Response(null, { status: 503 }));
+    await expect(provider.refreshOptional(120_000)).rejects.toThrow("Account hand discovery interrupted");
+    expect(provider.machines()).toHaveLength(1);
+    await provider.refreshOptional(120_000);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    allowed = false;
+    expect(provider.definitions()).toEqual([]);
+    expect(provider.machines()).toEqual([]);
+    expect(provider.machineTool("laptop", "exec_command")).toBeUndefined();
+    await captured.handler({ cmd: "must not run" }, { sessionId: "fixture", callId: "revoked" });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    allowed = true;
+    now += 10_000;
+    await expect(provider.refreshOptional(120_000)).rejects.toThrow();
+    expect(fetch).toHaveBeenCalledTimes(3);
+    fetch.mockImplementation(async () => Response.json({ tools: [], machines: [] }));
+    await provider.refresh();
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(provider.machines()).toEqual([]);
+  } finally { clock.mockRestore(); }
+});
+
+it("clears inventory on authority changes and fences a late prior discovery", async () => {
+  const old = Promise.withResolvers<Response>();
+  const fetch = vi.fn().mockResolvedValueOnce(Response.json(snapshot))
+    .mockImplementationOnce(() => old.promise)
+    .mockResolvedValue(Response.json({ tools: [], machines: [] }));
+  const provider = new AccountHostedToolsProvider({ getByName: () => ({ fetch }) } as unknown as DurableObjectNamespace<AccountHostedTools>, ACCOUNT_A, () => true);
+  await provider.refresh();
+  const prior = provider.refresh();
+  provider.invalidate({ clearCatalog: true });
+  expect(provider.machines()).toEqual([]);
+  expect(provider.definitions()).toEqual([]);
+  expect(provider.machineTool("laptop", "exec_command")).toBeUndefined();
+  const current = provider.refreshOptional(120_000);
+  old.resolve(Response.json(snapshot));
+  await prior;
+  expect(provider.machines()).toEqual([]);
+  await current;
+  expect(fetch).toHaveBeenCalledTimes(3);
+  expect(provider.machines()).toEqual([]);
+});

@@ -2998,7 +2998,13 @@ fn blocked_operation(error: &NanocodexError) -> Option<String> {
         {
             return Some(pending_id.clone());
         }
-        source = error.source();
+        // thiserror exposes the Arc as the source. Arc::source forwards to
+        // the inner error's source, skipping the concrete error we must inspect.
+        source = match error.downcast_ref::<NanocodexError>() {
+            Some(NanocodexError::ExecutionPolicy { source, .. }) => Some(source.as_ref()),
+            Some(NanocodexError::Shutdown(source)) => Some(source.as_ref()),
+            _ => error.source(),
+        };
     }
     None
 }
