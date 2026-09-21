@@ -1,0 +1,19 @@
+{
+  "status": "streaming_complete",
+  "source": "ce18887fb71e7bd92b026a03519a0cfee8b3b3e1",
+  "managed_version": "5d343432-7e2f-440d-a720-f60bff2add7f",
+  "attempts": 45,
+  "successes": 45,
+  "buffering": [
+    "streaming"
+  ],
+  "prior_attempts_upper_bound": 99,
+  "total_attempts_upper_bound": 144,
+  "remaining_of_200": 56,
+  "regions": [
+    "IAD",
+    "LHR",
+    "NRT"
+  ],
+  "timestamp": "2026-09-21T23:27:32.662Z"
+}

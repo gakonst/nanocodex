@@ -22,7 +22,13 @@ export function configuredProbeTargets(env: ProviderProbeEnvironment): ProviderP
   return ROUTING_CANDIDATES.flatMap<ProviderProbeOptions["targets"][number]>(candidate => {
     const { backend, provider_model: model, thinking: effort } = candidate;
     if (backend === "workers_ai") return env.AI ? [{ backend, model, effort }] : [];
-    if (backend === "cloudflare") return available.cloudflare === true && env.AI ? [{ backend, model, effort }] : [];
+    if (backend === "cloudflare") {
+      if (available.cloudflare !== true) return [];
+      if (env.CLOUDFLARE_AI_API_TOKEN !== undefined || env.NANOCODEX_CLOUDFLARE_ACCOUNT_ID !== undefined) {
+        return [{ backend, model, effort, key: env.CLOUDFLARE_AI_API_TOKEN, accountId: env.NANOCODEX_CLOUDFLARE_ACCOUNT_ID }];
+      }
+      return [{ backend, model, effort }];
+    }
     if (backend !== "openrouter" && backend !== "vercel" || !available[backend]) return [];
     return [{ backend, model, effort, key: backend === "openrouter" ? env.OPENROUTER_API_KEY! : env.AI_GATEWAY_API_KEY! }];
   });
@@ -36,4 +42,19 @@ export function claimProbeSlot(sql: { exec(query: string, ...bindings: any[]): a
   const claimed = [...sql.exec("INSERT OR IGNORE INTO provider_probe_ticks(slot) VALUES (?) RETURNING slot", slot)].length === 1;
   sql.exec("DELETE FROM provider_probe_ticks WHERE slot < ?", slot - 96);
   return claimed;
+}
+
+/** Spread the daily cap over all cron slots and rotate the bounded target slice.
+ * A 45-target catalog needs 1620 requests/day to guarantee three samples in every
+ * two-hour/four-slot window. At the default 1600 cap a few cohorts stay sparse;
+ * routing must retain its minimum-three gate rather than invent evidence. */
+export function probeSlotAllocation(scheduledTime: number, dailyLimit: number, targetCount: number) {
+  if (!Number.isSafeInteger(scheduledTime) || scheduledTime < 0
+    || !Number.isInteger(dailyLimit) || dailyLimit < 1 || dailyLimit > 4096
+    || !Number.isInteger(targetCount) || targetCount < 1) return { startIndex: 0, maxTargetsPerRun: 0 };
+  const slotsPerDay = 86_400_000 / PROBE_INTERVAL_MS;
+  const slot = Math.floor(scheduledTime / PROBE_INTERVAL_MS);
+  const before = Math.floor(slot * dailyLimit / slotsPerDay);
+  const after = Math.floor((slot + 1) * dailyLimit / slotsPerDay);
+  return { startIndex: before % targetCount, maxTargetsPerRun: Math.min(targetCount, 45, after - before) };
 }

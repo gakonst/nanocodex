@@ -1,7 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
+import { ROUTING_CANDIDATES } from "./thread-model-routing";
 import { runProviderProbes } from "./provider-probes";
-import { SqliteProviderTelemetryStore, summarizeProviderObservationGroups } from "./provider-telemetry";
-import { configuredProbeTargets, claimProbeSlot, probeDailyLimit, PROBE_INTERVAL_MS,
+import { SqliteProviderTelemetryStore, summarizeProviderObservationGroups, projectLiveProviderObservation, type ProviderOriginContext } from "./provider-telemetry";
+import { configuredProbeTargets, claimProbeSlot, probeDailyLimit, probeSlotAllocation, PROBE_INTERVAL_MS,
   type ProviderProbeEnvironment } from "./provider-probe-schedule";
 
 /** Private service binding only: no public fetch route, credential setter or
@@ -19,13 +20,30 @@ export class ProviderProbeCoordinator extends DurableObject<ProviderProbeEnviron
     if (Math.abs(Date.now() - scheduledTime) > PROBE_INTERVAL_MS) return 0;
     if (this.#running) return 0;
     if (!claimProbeSlot(this.ctx.storage.sql, scheduledTime)) return 0;
+    const targets = configuredProbeTargets(this.env);
+    const allocation = probeSlotAllocation(scheduledTime, probeDailyLimit(this.env), targets.length);
+    if (!allocation.maxTargetsPerRun) return 0;
     const pending = runProviderProbes({ enabled: true, dailyRequestLimit: probeDailyLimit(this.env),
-      targets: configuredProbeTargets(this.env), store: this.#store, workerColo: null,
-      ai: this.env.AI, maxTargetsPerRun: 45, timeoutMs: 10_000 });
+      targets, store: this.#store, workerColo: null,
+      ai: this.env.AI, ...allocation, timeoutMs: 10_000 });
     this.#running = pending;
     try { return await pending; } finally { if (this.#running === pending) this.#running = undefined; }
   }
-  snapshot() {
-    return summarizeProviderObservationGroups(this.#store.read(), Date.now());
+  /** Private service-binding RPC only. No public route accepts observations. */
+  observe(value: unknown): boolean {
+    const sample = projectLiveProviderObservation(value, Date.now());
+    if (!sample) return false;
+    const candidate = ROUTING_CANDIDATES.find(candidate => candidate.backend === sample.backend
+      && candidate.thinking === sample.effort && (candidate.model === sample.model || candidate.provider_model === sample.model));
+    if (!candidate) return false;
+    // Aliases describe the same candidate; retain one canonical live cohort.
+    try { this.#store.append({ ...sample, model: candidate.model }); return true; } catch { return false; }
+  }
+  snapshot(origin?: ProviderOriginContext) {
+    // Explicit field projection also bounds malformed private callers.
+    const context = origin && typeof origin === "object" ? {
+      clientIngressColo: origin.clientIngressColo, workerColo: origin.workerColo,
+    } : {};
+    return summarizeProviderObservationGroups(this.#store.read(), Date.now(), context);
   }
 }

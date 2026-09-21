@@ -1,0 +1,20 @@
+[
+  {
+    "runner": "nanocodex-jev-us-20260921",
+    "deleted": true,
+    "verification": "Wrangler deletion log",
+    "verified_at": "2026-09-21T23:38:21.012Z"
+  },
+  {
+    "runner": "nanocodex-jev-eu-20260921",
+    "deleted": true,
+    "verification": "Wrangler deletion log",
+    "verified_at": "2026-09-21T23:38:21.013Z"
+  },
+  {
+    "runner": "nanocodex-jev-ap-20260921",
+    "deleted": true,
+    "verification": "Wrangler deletion log",
+    "verified_at": "2026-09-21T23:38:21.014Z"
+  }
+]

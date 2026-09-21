@@ -64,10 +64,10 @@ describe("successful generation TTFT and honest deployment scope", () => {
       sample(), sample({ workerColo: "LHR" }), sample({ workerColo: "SJC" }),
       sample({ source: "live", workerColo: "LHR" }), sample({ source: "live", workerColo: "SJC" }),
     ], now);
-    expect(groups).toHaveLength(3);
+    expect(groups).toHaveLength(4);
     expect(groups[0]).toMatchObject({ source: "probe", scope: "deployment_global", workerColo: null, sampleCount: 3 });
     expect(groups.slice(1).map(g => [g.scope, g.workerColo, g.sampleCount])).toEqual([
-      ["worker_colo", "LHR", 1], ["worker_colo", "SJC", 1],
+      ["deployment_global", null, 2], ["worker_colo", "LHR", 1], ["worker_colo", "SJC", 1],
     ]);
   });
   it("atomically supports a full scheduled day within the hard request cap", () => {
@@ -129,7 +129,7 @@ describe("Jev responsiveness trust boundary", () => {
         aggregate({ lastObservedAt: now + 1 }), aggregate({ lastObservedAt: now - PROVIDER_TELEMETRY_WINDOW_MS - 1 }),
         aggregate({ generationTtftP50Ms: Infinity }), aggregate({ generationTtftEwmaMs: -1 }),
         aggregate({ generationTtftSampleCount: 4 }), aggregate({ successCount: 5 }),
-        aggregate({ availabilityFailureCount: 1 }), aggregate({ source: "live" }),
+        aggregate({ availabilityFailureCount: 1 }), aggregate({ source: "probe", scope: "client_ingress", clientIngressColo: "LHR" }),
         aggregate({ workerColo: "LHR" }), aggregate({ model: "unlisted" }),
         aggregate({ scope: "worker_colo", workerColo: "SJC" }), aggregate({ windowMs: PROVIDER_TELEMETRY_WINDOW_MS + 1 }),
       ]) {
@@ -248,4 +248,84 @@ it("keeps the root provider/model/effort after latency reverses, including durab
     expect(store.read()).toEqual(initial);
     expect(ai.run).toHaveBeenCalledTimes(2);
   } finally { db.close(); vi.restoreAllMocks(); }
+});
+
+describe("trusted client ingress cohorts", () => {
+  it("conditions live samples on ingress without inventing execution and keeps probes global", () => {
+    const samples = [sample({ source: "live", clientIngressColo: "ATH", generationTtftMs: 10 }),
+      sample({ source: "live", clientIngressColo: "SJC", generationTtftMs: 100 }),
+      sample({ source: "probe", clientIngressColo: "ATH", workerColo: "LHR" })];
+    const groups = summarizeProviderObservationGroups(samples, now, { clientIngressColo: "ATH" });
+    expect(groups).toHaveLength(3);
+    expect(groups.find(x => x.scope === "client_ingress")).toMatchObject({ source: "live", workerColo: null,
+      clientIngressColo: "ATH", sampleCount: 1, generationTtftP50Ms: 10 });
+    expect(groups.find(x => x.scope === "deployment_global" && x.source === "live")).toMatchObject({
+      clientIngressColo: null, workerColo: null, sampleCount: 2, generationTtftP50Ms: 55, generationTtftP95Ms: 100 });
+    expect(groups.find(x => x.source === "probe")).toMatchObject({ scope: "deployment_global", clientIngressColo: null, workerColo: null });
+    expect(summarizeProviderObservationGroups(samples, now, {}).every(x => x.scope === "deployment_global")).toBe(true);
+  });
+  it("sends different matched live TTFT to Jev by ingress, preserves exact effort and retains pins", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      const a = ROUTING_CANDIDATES.find(c => c.backend === "cloudflare" && c.model === "gpt-6-astra" && c.thinking === "low")!;
+      const b = ROUTING_CANDIDATES.find(c => c.backend === "vercel" && c.model === "gpt-5.6-sol" && c.thinking === "high")!;
+      const samples = ["ATH", "SJC"].flatMap(clientIngressColo => [a, b].flatMap(c => Array.from({ length: 3 }, () => sample({
+        source: "live", clientIngressColo, backend: c.backend, model: c.provider_model, effort: c.thinking,
+        generationTtftMs: (clientIngressColo === "ATH") === (c.id === a.id) ? 20 : 180,
+      }))));
+      // This chooser asserts the trust boundary; it is not evidence of real Jev accuracy.
+      const ai = { run: vi.fn(async (_: string, input: any) => {
+        const state = JSON.parse(input.state);
+        expect(state.provider_telemetry.workerColo).toBeNull();
+        for (const c of state.candidates) expect(c.responsiveness.live).toMatchObject({
+          workerColo: null, regionalMatch: true, regionalMatchKind: "client_ingress", generationTtftSampleCount: 3,
+        });
+        return answer([...state.candidates].sort((x, y) => x.responsiveness.live.generationTtftP50Ms - y.responsiveness.live.generationTtftP50Ms)[0].id);
+      }) };
+      const choose = (clientIngressColo: string) => resolveThreadRoute(ai, "task", routingPolicySchema.parse({ candidates: [a.id, b.id] }), {
+        openrouter: true, vercel: true, cloudflare: true, workerColo: null, clientIngressColo,
+        provider_performance: summarizeProviderObservationGroups(samples, now, { clientIngressColo }),
+      });
+      const ath = await choose("ATH"), sjc = await choose("SJC");
+      expect(ath).toMatchObject({ backend: a.backend, model: a.model, provider_model: a.provider_model, thinking: a.thinking });
+      expect(sjc).toMatchObject({ backend: b.backend, model: b.model, provider_model: b.provider_model, thinking: b.thinking });
+      let saved: typeof ath | undefined;
+      await new ThreadRoutePin({ read: () => saved, commit: x => { saved = x; } }).resolve(async () => ath);
+      expect(await new ThreadRoutePin({ read: () => saved, commit: x => { saved = x; } }).resolve(() => choose("SJC"))).toBe(ath);
+      expect(ai.run).toHaveBeenCalledTimes(2);
+    } finally { vi.restoreAllMocks(); }
+  });
+  it("falls back to global live TTFT for unknown, sparse or stale ingress without claiming a regional match", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      const base = Array.from({ length: 3 }, () => sample({ source: "live", clientIngressColo: "SJC", generationTtftMs: 120 }));
+      for (const extra of [[], [sample({ source: "live", clientIngressColo: "ATH", generationTtftMs: 20 })],
+        Array.from({ length: 3 }, () => sample({ source: "live", clientIngressColo: "ATH", timestamp: now - PROVIDER_TELEMETRY_WINDOW_MS - 1 }))]) {
+        const ai = { run: vi.fn(async () => answer()) };
+        const result = await resolveThreadRoute(ai, "task", routingPolicySchema.parse({ candidates: [candidate.id] }), {
+          ...runtime(summarizeProviderObservationGroups([...base, ...extra], now, { clientIngressColo: "ATH" })), workerColo: null, clientIngressColo: "ATH",
+        });
+        expect(result.audit?.provider_telemetry?.provider_performance).toHaveLength(1);
+        expect(result.audit?.provider_telemetry?.provider_performance[0]).toMatchObject({ source: "live", scope: "deployment_global",
+          regionalMatch: false, regionalMatchKind: null, generationTtftP50Ms: 120, ttftUsable: true });
+      }
+    } finally { vi.restoreAllMocks(); }
+  });
+  it("rejects mismatched ingress, probe regional claims and conflicting regional aggregates while retaining global fallback", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      const global = aggregate({ source: "live" });
+      const regional = aggregate({ source: "live", scope: "client_ingress", clientIngressColo: "ATH" });
+      for (const bad of [regional, { ...regional, clientIngressColo: "LHR", workerColo: "LHR" },
+        { ...regional, clientIngressColo: "LHR", source: "probe" }]) {
+        expect((await route([bad])).result.audit?.provider_telemetry?.provider_performance).toEqual([]);
+      }
+      const ai = { run: vi.fn(async () => answer()) };
+      const result = await resolveThreadRoute(ai, "task", routingPolicySchema.parse({}), {
+        ...runtime([global, regional, { ...regional, generationTtftP50Ms: 80 }]), clientIngressColo: "ATH",
+      });
+      expect(result.audit?.provider_telemetry?.provider_performance).toHaveLength(1);
+      expect(result.audit?.provider_telemetry?.provider_performance[0]).toMatchObject({ scope: "deployment_global", regionalMatch: false });
+    } finally { vi.restoreAllMocks(); }
+  });
 });

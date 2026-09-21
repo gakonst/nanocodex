@@ -1,6 +1,6 @@
 import { authenticate, requireSameOriginMutation, type AccountAuthEnv, type Principal } from "./account-auth";
 import { authorizeInferenceKey, routeInferenceKeys, type InferenceKeysEnv } from "./inference-keys";
-import { executeStatelessInferenceResponse, type InferenceSessionEnv } from "./inference-session";
+import { executeStatelessInferenceResponse, inferenceOrigin, INFERENCE_INGRESS_HEADER, type InferenceSessionEnv } from "./inference-session";
 import { ROUTING_CANDIDATES } from "./thread-model-routing";
 import { gatewayAvailability } from "./gateway-runtime";
 
@@ -94,8 +94,11 @@ async function routeInferenceApiInternal(request: Request, env: InferenceApiEnv,
     return json({ object: "list", data: candidates.map(({ id, model, provider_model, backend, thinking }) => ({ id, object: "model", created: 0, owned_by: backend, model, provider_model, provider: backend, thinking })) });
   }
   try {
+    // Cloudflare-owned metadata only. User-provided geography headers are ignored.
+    const origin = inferenceOrigin(request.cf?.colo);
     const headers = new Headers({ "content-type": "application/json", "x-inference-key-id": key.id,
       "x-inference-max-output-tokens": String(key.limits.maxOutputTokens) });
+    if (origin.clientIngressColo) headers.set(INFERENCE_INGRESS_HEADER, origin.clientIngressColo);
     let id: string; let method = request.method; let path = "/session"; let body: Record<string, unknown> | undefined;
     if (suffix === "/sessions") {
       body = await readBody(request);
@@ -105,7 +108,7 @@ async function routeInferenceApiInternal(request: Request, env: InferenceApiEnv,
     } else if (suffix === "/responses") {
       body = await readBody(request);
       if (body.session_id === undefined) {
-        return executeStatelessInferenceResponse({ ...env, AI: env.AI }, body, key.limits.maxOutputTokens, request.signal);
+        return executeStatelessInferenceResponse({ ...env, AI: env.AI }, body, key.limits.maxOutputTokens, request.signal, origin);
       }
       if (typeof body.session_id !== "string" || !SESSION_ID.test(body.session_id)) return json({ error: "session_id_required" }, 400);
       id = body.session_id; delete body.session_id; path = "/responses";

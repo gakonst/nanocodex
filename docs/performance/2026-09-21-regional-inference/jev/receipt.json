@@ -1,0 +1,101 @@
+{
+  "source": "experiment_api_output_delivery_ttft_proxy_not_internal_generation_ttft",
+  "stopped": false,
+  "cases_reserved_locally": 18,
+  "total_attempts_upper_bound": 36,
+  "classifications_observed": 18,
+  "downstream_receipts": 18,
+  "paired": [
+    {
+      "runner": "nanocodex-jev-us-20260921",
+      "prompt_index": 0,
+      "global_selected": "openrouter:openai/gpt-5.6-luna:low",
+      "regional_selected": "openrouter:openai/gpt-5.6-luna:low",
+      "global_selection": "fallback",
+      "regional_selection": "fallback",
+      "valid": true,
+      "api_delivery_regional_minus_global_ms": -312
+    },
+    {
+      "runner": "nanocodex-jev-us-20260921",
+      "prompt_index": 1,
+      "global_selected": "openrouter:openai/gpt-5.6-luna:low",
+      "regional_selected": "openrouter:openai/gpt-5.6-luna:low",
+      "global_selection": "fallback",
+      "regional_selection": "fallback",
+      "valid": true,
+      "api_delivery_regional_minus_global_ms": 3473
+    },
+    {
+      "runner": "nanocodex-jev-us-20260921",
+      "prompt_index": 2,
+      "global_selected": "openrouter:openai/gpt-5.6-luna:low",
+      "regional_selected": "openrouter:openai/gpt-5.6-luna:low",
+      "global_selection": "fallback",
+      "regional_selection": "fallback",
+      "valid": true,
+      "api_delivery_regional_minus_global_ms": -4
+    },
+    {
+      "runner": "nanocodex-jev-eu-20260921",
+      "prompt_index": 0,
+      "global_selected": "openrouter:openai/gpt-5.6-luna:low",
+      "regional_selected": "openrouter:openai/gpt-5.6-luna:low",
+      "global_selection": "fallback",
+      "regional_selection": "fallback",
+      "valid": true,
+      "api_delivery_regional_minus_global_ms": 4435
+    },
+    {
+      "runner": "nanocodex-jev-eu-20260921",
+      "prompt_index": 1,
+      "global_selected": "openrouter:openai/gpt-5.6-luna:low",
+      "regional_selected": "openrouter:openai/gpt-5.6-luna:low",
+      "global_selection": "fallback",
+      "regional_selection": "fallback",
+      "valid": true,
+      "api_delivery_regional_minus_global_ms": -4463
+    },
+    {
+      "runner": "nanocodex-jev-eu-20260921",
+      "prompt_index": 2,
+      "global_selected": "openrouter:openai/gpt-5.6-luna:low",
+      "regional_selected": "cloudflare:openai/gpt-5.6-luna:low",
+      "global_selection": "fallback",
+      "regional_selection": "fallback",
+      "valid": true,
+      "api_delivery_regional_minus_global_ms": 499
+    },
+    {
+      "runner": "nanocodex-jev-ap-20260921",
+      "prompt_index": 0,
+      "global_selected": "openrouter:openai/gpt-5.6-luna:low",
+      "regional_selected": "openrouter:openai/gpt-5.6-luna:low",
+      "global_selection": "fallback",
+      "regional_selection": "fallback",
+      "valid": true,
+      "api_delivery_regional_minus_global_ms": -1301
+    },
+    {
+      "runner": "nanocodex-jev-ap-20260921",
+      "prompt_index": 1,
+      "global_selected": "vercel:openai/gpt-5.6-luna:low",
+      "regional_selected": "openrouter:openai/gpt-5.6-luna:low",
+      "global_selection": "fallback",
+      "regional_selection": "fallback",
+      "valid": true,
+      "api_delivery_regional_minus_global_ms": 4054
+    },
+    {
+      "runner": "nanocodex-jev-ap-20260921",
+      "prompt_index": 2,
+      "global_selected": "openrouter:openai/gpt-5.6-luna:low",
+      "regional_selected": "openrouter:openai/gpt-5.6-luna:low",
+      "global_selection": "fallback",
+      "regional_selection": "prior",
+      "valid": true,
+      "api_delivery_regional_minus_global_ms": -554
+    }
+  ],
+  "limitations": "n=3 fresh tasks per arm/region; stochastic classifier, sequential order/cache/load confounding; API delivery proxy calibration mixes 2 short + 1 long-prefix per regional candidate; no internal generation or task-success claim; null probabilities remain null; fallback is not a successful learned selection."
+}

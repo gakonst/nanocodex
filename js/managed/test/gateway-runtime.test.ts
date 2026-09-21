@@ -70,11 +70,12 @@ describe("Cloudflare frontier runtime", () => {
     const AI = { run: vi.fn(async () => ({})) }, check = vi.fn();
     const runtime = gatewayRuntime({ AI, NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true" }, pinned, check)!;
     expect(runtime.provider).toBe("cloudflare");
-    if (runtime.provider !== "cloudflare") throw Error("wrong transport");
-    await runtime.ai.run("openai/gpt-6-astra", { input: "fixture" });
-    expect(() => runtime.ai.run("openai/gpt-5.6-luna", {})).toThrow("pinned model");
+    if (runtime.provider !== "cloudflare" || !runtime.ai) throw Error("wrong transport");
+    const ai = runtime.ai;
+    await ai.run("openai/gpt-6-astra", { input: "fixture" });
+    expect(() => ai.run("openai/gpt-5.6-luna", {})).toThrow("pinned model");
     check.mockImplementation(() => { throw Error("revoked"); });
-    expect(() => runtime.ai.run("openai/gpt-6-astra", {})).toThrow("revoked");
+    expect(() => ai.run("openai/gpt-6-astra", {})).toThrow("revoked");
     expect(AI.run).toHaveBeenCalledTimes(1);
     expect(runtime).not.toHaveProperty("apiKey");
   });
@@ -94,5 +95,32 @@ describe("Cloudflare frontier runtime", () => {
     expect(observations[0]).toMatchObject({ backend: "cloudflare", model: "gpt-6-astra", effort: "low", source: "live",
       outcome: "success", status: null, headersMs: null, generationTtftMs: null, fullResponseMs: expect.any(Number) });
     expect(JSON.stringify(observations)).not.toContain("private");
+  });
+});
+
+
+describe("deployment-owned Cloudflare REST configuration", () => {
+  const rest = { NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true", CLOUDFLARE_AI_API_TOKEN: "private-fixture-token",
+    NANOCODEX_CLOUDFLARE_ACCOUNT_ID: "a".repeat(32) };
+  const pin = {backend:"cloudflare",model:"gpt-5.6-sol",provider_model:"openai/gpt-5.6-sol",thinking:"low"} as ThreadRoute;
+  it("keeps partial or invalid REST configuration unavailable even with a healthy binding", () => {
+    const AI={run:vi.fn()};
+    for(const extra of [{CLOUDFLARE_AI_API_TOKEN:undefined},{NANOCODEX_CLOUDFLARE_ACCOUNT_ID:undefined},
+      {NANOCODEX_CLOUDFLARE_ACCOUNT_ID:"../other"},{CLOUDFLARE_AI_API_TOKEN:"bad\nheader"},{CLOUDFLARE_AI_API_TOKEN:""}]) {
+      const env={...rest,AI,...extra}; expect(gatewayAvailability(env).cloudflare).toBe(false);
+      expect(()=>gatewayRuntime(env,pin,()=>{})).toThrow("configured transport");
+    }
+    expect(gatewayAvailability(rest).cloudflare).toBe(true);
+    expect(gatewayAvailability({...rest,NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED:"false"}).cloudflare).toBe(false);
+  });
+  it("checks model ownership and admission for every REST attempt without calling the binding", async () => {
+    const check=vi.fn(),send=vi.fn(async()=>new Response("{}")),AI={run:vi.fn()};
+    const runtime=gatewayRuntime({...rest,AI},pin,check,send as typeof fetch)!;
+    if(runtime.provider!=="cloudflare" || !("accountId" in runtime) || !runtime.fetch) throw Error("REST expected");
+    expect(runtime.accountId).toBe(rest.NANOCODEX_CLOUDFLARE_ACCOUNT_ID); expect(runtime).not.toHaveProperty("ai");
+    await runtime.fetch("https://fixture.invalid"); expect(check).toHaveBeenCalledTimes(1);
+    check.mockImplementation(()=>{throw Error("revoked");}); expect(()=>runtime.fetch!("https://fixture.invalid")).toThrow("revoked");
+    expect(send).toHaveBeenCalledTimes(1); expect(AI.run).not.toHaveBeenCalled();
+    expect(()=>gatewayRuntime(rest,{...pin,provider_model:"openai/gpt-6-astra"},()=>{})).toThrow("pinned model");
   });
 });
